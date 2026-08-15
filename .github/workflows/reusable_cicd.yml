@@ -1,0 +1,86 @@
+name: Application Reusable
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Load shared project config
+        run: |
+          grep -v '^#' .github/config/project.env \
+            | grep -v '^[[:space:]]*$' \
+            | sed -e $'s/\r$//' -e 's/="\(.*\)"$/=\1/' \
+            >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build every function
+        # Runs on every PR and push - proves every function's image still
+        # builds before anything is pushed to ECR or deployed. No AWS
+        # credentials needed for a local build, so this step doesn't wait
+        # on (or need) the OIDC role at all.
+        run: |
+          set -euo pipefail
+          for fn in $(ls functions); do
+            echo "::group::docker build $fn"
+            docker build --platform linux/arm64 -f "functions/$fn/Dockerfile" -t "$fn:latest" .
+            echo "::endgroup::"
+          done
+
+      - name: Configure AWS credentials
+        # Only needed from here down (ECR push + Lambda deploy) - a PR
+        # build has no reason to hold AWS credentials at all.
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ inputs.environment == 'prod' && env.OIDC_ROLE_ARN_PROD || env.OIDC_ROLE_ARN_DEV }}
+          aws-region: "${{ env.AWS_REGION }}"
+          role-session-name: gha-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Resolve AWS account ID
+        if: github.event_name == 'push'
+        run: echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+
+      - name: Log in to ECR
+        if: github.event_name == 'push'
+        run: |
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+      - name: Push every function to ECR and deploy to Lambda
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+
+          for fn in $(ls functions); do
+            if [ "${{ inputs.environment }}" = "prod" ]; then
+              resource_name="$fn"
+            else
+              resource_name="${{ inputs.environment }}-$fn"
+            fi
+            repo_url="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${resource_name}"
+
+            echo "::group::push + deploy $fn -> $resource_name"
+            docker tag "$fn:latest" "$repo_url:latest"
+            docker push "$repo_url:latest"
+            aws lambda update-function-code \
+              --function-name "$resource_name" \
+              --image-uri "$repo_url:latest" \
+              >/dev/null
+            echo "::endgroup::"
+          done

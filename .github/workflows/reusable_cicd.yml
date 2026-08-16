@@ -29,6 +29,23 @@ jobs:
         with:
           platforms: arm64
 
+      - name: Debug - decode OIDC token claims
+        if: github.event_name == 'push'
+        run: |
+          token=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$token" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+      
+      - name: Configure AWS credentials
+        # Only needed from here down (ECR push + Lambda deploy) - a PR
+        # build has no reason to hold AWS credentials at all.
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ inputs.environment == 'prod' && env.OIDC_ROLE_ARN_PROD || env.OIDC_ROLE_ARN_DEV }}
+          aws-region: "${{ env.AWS_REGION }}"
+          role-session-name: gha-${{ inputs.environment }}-${{ github.run_id }}
+
       - name: Build every function
         # Runs on every PR and push - proves every function's image still
         # builds before anything is pushed to ECR or deployed. No AWS
@@ -41,16 +58,6 @@ jobs:
             docker build --platform linux/arm64 -f "functions/$fn/Dockerfile" -t "$fn:latest" .
             echo "::endgroup::"
           done
-
-      - name: Configure AWS credentials
-        # Only needed from here down (ECR push + Lambda deploy) - a PR
-        # build has no reason to hold AWS credentials at all.
-        if: github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ inputs.environment == 'prod' && env.OIDC_ROLE_ARN_PROD || env.OIDC_ROLE_ARN_DEV }}
-          aws-region: "${{ env.AWS_REGION }}"
-          role-session-name: gha-${{ inputs.environment }}-${{ github.run_id }}
 
       - name: Resolve AWS account ID
         if: github.event_name == 'push'

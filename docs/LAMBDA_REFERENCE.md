@@ -322,6 +322,7 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 | `ENVIRONMENT` | `dev` or `prod` |
 | `COGNITO_USER_POOL_ID` | Target user pool for auth calls |
 | `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge` |
+| `COGNITO_CLIENT_SECRET` | App client secret used to calculate Cognito `SECRET_HASH` values |
 
 **AWS resource access:** Cognito `InitiateAuth` and `RespondToAuthChallenge` only, scoped to the user pool. No DynamoDB access at all — this function only talks to Cognito.
 

@@ -20,6 +20,7 @@ def app(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv("COGNITO_USER_POOL_ID", "local-test-pool")
     monkeypatch.setenv("COGNITO_CLIENT_ID", "local-test-client")
+    monkeypatch.setenv("COGNITO_CLIENT_SECRET", "local-test-secret")
 
     spec = importlib.util.spec_from_file_location("manage_auth_app", APP_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -41,6 +42,28 @@ def make_event(method="POST", proxy="login"):
         "body": "{}",
         "isBase64Encoded": False,
     }
+
+
+def test_requires_cognito_client_secret(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "local-test-pool")
+    monkeypatch.setenv("COGNITO_CLIENT_ID", "local-test-client")
+    monkeypatch.delenv("COGNITO_CLIENT_SECRET", raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        "manage_auth_without_client_secret",
+        APP_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+
+    with pytest.raises(KeyError, match="COGNITO_CLIENT_SECRET"):
+        spec.loader.exec_module(module)
+
+
+def test_calculates_secret_hash(app):
+    assert app._secret_hash("staff@example.com") == (
+        "lBMgbQL20sOl5Whi4M9rO7OsXqnaDwwYQlzlEM4j1G4="
+    )
 
 
 def test_unknown_route_returns_404(app):
@@ -130,6 +153,9 @@ def test_login_calls_cognito(app):
         AuthParameters={
             "USERNAME": "staff@example.com",
             "PASSWORD": "Example123!",
+            "SECRET_HASH": (
+                "lBMgbQL20sOl5Whi4M9rO7OsXqnaDwwYQlzlEM4j1G4="
+            ),
         },
     )
 
@@ -164,6 +190,7 @@ def test_login_returns_challenge(app):
             "USER_ID_FOR_SRP": "staff-user-id",
         },
         "session": "challenge-session",
+        "challengeUsername": "staff-user-id",
     }
 
 
@@ -362,7 +389,7 @@ def test_challenge_calls_cognito(app):
         {
             "challengeName": "NEW_PASSWORD_REQUIRED",
             "session": "challenge-session",
-            "username": "staff@example.com",
+            "username": "staff-user-id",
             "responses": {
                 "NEW_PASSWORD": "NewPassword123!",
             },
@@ -380,8 +407,11 @@ def test_challenge_calls_cognito(app):
         ChallengeName="NEW_PASSWORD_REQUIRED",
         Session="challenge-session",
         ChallengeResponses={
-            "USERNAME": "staff@example.com",
             "NEW_PASSWORD": "NewPassword123!",
+            "USERNAME": "staff-user-id",
+            "SECRET_HASH": (
+                "cSBwbixaKd5GK//CRUV4iOwch8vu+HGqPt9qROOPaHU="
+            ),
         },
     )
 
@@ -400,7 +430,7 @@ def test_challenge_can_return_another_challenge(app):
         {
             "challengeName": "NEW_PASSWORD_REQUIRED",
             "session": "challenge-session",
-            "username": "staff@example.com",
+            "username": "staff-user-id",
             "responses": {
                 "NEW_PASSWORD": "NewPassword123!",
             },
@@ -415,6 +445,7 @@ def test_challenge_can_return_another_challenge(app):
         "challengeName": "SOFTWARE_TOKEN_MFA",
         "challengeParameters": {},
         "session": "next-session",
+        "challengeUsername": "staff-user-id",
     }
 
 
@@ -499,13 +530,42 @@ def test_refresh_requires_refresh_token(app, refresh_token):
     cognito = Mock()
     app._cognito_client = cognito
     event = make_event(proxy="refresh")
-    event["body"] = json.dumps({"refreshToken": refresh_token})
+    event["body"] = json.dumps(
+        {
+            "refreshToken": refresh_token,
+            "sub": "staff-user-sub",
+        }
+    )
 
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
     assert json.loads(response["body"]) == {
         "error": "refreshToken is required",
+    }
+    cognito.initiate_auth.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "user_sub",
+    [None, "", "   ", 123],
+)
+def test_refresh_requires_sub(app, user_sub):
+    cognito = Mock()
+    app._cognito_client = cognito
+    event = make_event(proxy="refresh")
+    event["body"] = json.dumps(
+        {
+            "refreshToken": "existing-refresh-token",
+            "sub": user_sub,
+        }
+    )
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": "sub is required",
     }
     cognito.initiate_auth.assert_not_called()
 
@@ -526,6 +586,7 @@ def test_refresh_calls_cognito(app):
     event["body"] = json.dumps(
         {
             "refreshToken": "existing-refresh-token",
+            "sub": "staff-user-sub",
         }
     )
 
@@ -548,6 +609,9 @@ def test_refresh_calls_cognito(app):
         ClientId="local-test-client",
         AuthParameters={
             "REFRESH_TOKEN": "existing-refresh-token",
+            "SECRET_HASH": (
+                "0vd97YxqmNjyvyn+varg/zNl6VbGqTq+wfj5bpgPYi8="
+            ),
         },
     )
 
@@ -569,6 +633,7 @@ def test_refresh_maps_cognito_errors(app):
     event["body"] = json.dumps(
         {
             "refreshToken": "expired-refresh-token",
+            "sub": "staff-user-sub",
         }
     )
 
@@ -593,6 +658,7 @@ def test_refresh_maps_transport_errors_to_502(app):
     event["body"] = json.dumps(
         {
             "refreshToken": "existing-refresh-token",
+            "sub": "staff-user-sub",
         }
     )
 

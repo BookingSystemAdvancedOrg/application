@@ -13,6 +13,7 @@ ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     COGNITO_USER_POOL_ID -- Target user pool for auth calls
     COGNITO_CLIENT_ID -- App client ID for InitiateAuth/RespondToAuthChallenge
+    COGNITO_CLIENT_SECRET -- App client secret used to calculate SECRET_HASH
 
 AWS RESOURCE ACCESS:
     Cognito InitiateAuth and RespondToAuthChallenge only, scoped to the user
@@ -23,6 +24,8 @@ Full details: docs/LAMBDA_REFERENCE.md
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import os
 from http import HTTPStatus
@@ -35,6 +38,7 @@ from shared.responses import error_response, json_response
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 COGNITO_USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 COGNITO_CLIENT_ID = os.environ["COGNITO_CLIENT_ID"]
+COGNITO_CLIENT_SECRET = os.environ["COGNITO_CLIENT_SECRET"]
 
 _COGNITO_ERROR_MAPPING = {
     "NotAuthorizedException": (
@@ -141,6 +145,16 @@ def _required_string_map(body, field):
     return value
 
 
+def _secret_hash(username):
+    digest = hmac.new(
+        COGNITO_CLIENT_SECRET.encode("utf-8"),
+        f"{username}{COGNITO_CLIENT_ID}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+
+    return base64.b64encode(digest).decode("ascii")
+
+
 def _auth_error_response(status_code, message):
     return json_response(
         status_code,
@@ -160,7 +174,7 @@ def _cognito_error_response(exc):
     return _auth_error_response(status_code, message)
 
 
-def _cognito_auth_response(response):
+def _cognito_auth_response(response, challenge_username=None):
     if "AuthenticationResult" in response:
         return json_response(
             HTTPStatus.OK.value,
@@ -172,17 +186,25 @@ def _cognito_auth_response(response):
         )
 
     if "ChallengeName" in response:
+        challenge_parameters = response.get("ChallengeParameters", {})
+        challenge_username = (
+            challenge_parameters.get("USER_ID_FOR_SRP")
+            or challenge_username
+        )
+
+        response_body = {
+            "status": "challenge",
+            "challengeName": response["ChallengeName"],
+            "challengeParameters": challenge_parameters,
+            "session": response.get("Session"),
+        }
+
+        if challenge_username:
+            response_body["challengeUsername"] = challenge_username
+
         return json_response(
             HTTPStatus.OK.value,
-            {
-                "status": "challenge",
-                "challengeName": response["ChallengeName"],
-                "challengeParameters": response.get(
-                    "ChallengeParameters",
-                    {},
-                ),
-                "session": response.get("Session"),
-            },
+            response_body,
             headers={"Cache-Control": "no-store"},
         )
 
@@ -236,8 +258,9 @@ def handle_challenge(body):
             ChallengeName=challenge_name,
             Session=session,
             ChallengeResponses={
-                "USERNAME": username,
                 **responses,
+                "USERNAME": username,
+                "SECRET_HASH": _secret_hash(username),
             },
         )
     except ClientError as exc:
@@ -248,11 +271,12 @@ def handle_challenge(body):
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response)
+    return _cognito_auth_response(response, username)
 
 
 def handle_refresh(body):
     refresh_token = _required_string(body, "refreshToken")
+    user_sub = _required_string(body, "sub")
 
     try:
         response = _get_cognito_client().initiate_auth(
@@ -260,6 +284,7 @@ def handle_refresh(body):
             ClientId=COGNITO_CLIENT_ID,
             AuthParameters={
                 "REFRESH_TOKEN": refresh_token,
+                "SECRET_HASH": _secret_hash(user_sub),
             },
         )
     except ClientError as exc:
@@ -295,6 +320,7 @@ def handle_login(body):
             AuthParameters={
                 "USERNAME": username,
                 "PASSWORD": password,
+                "SECRET_HASH": _secret_hash(username),
             },
         )
     except ClientError as exc:
@@ -305,4 +331,4 @@ def handle_login(body):
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response)
+    return _cognito_auth_response(response, username)

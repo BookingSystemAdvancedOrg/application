@@ -72,6 +72,9 @@ pending → reserved → arrived
 ### 2. `get-location`
 **Trigger:** API Gateway — `GET /locations/{locationId}` — Auth: `JWT`
 **Purpose:** Returns full detail for a single location. JWT-gated per the user's explicit decision — even reading one location's detail requires a logged-in caller (staff-facing, not the public menu/booking flow).
+
+**Authorization and response:** Allows callers in `staff_user`, `owner_user`, or `super_user`. The handler performs one strongly consistent `GetItem` using `PK="PLATFORM"` and `SK="LOCATION#<locationId>"`. It returns the logical location without the internal `PK`/`SK` attributes, or HTTP `404` when the location does not exist. This function has no User-table environment variable or permission, so this task authorizes by group only; restricting a `staff_user` to their assigned location would require expanding the function's declared resource access.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|

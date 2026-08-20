@@ -50,7 +50,7 @@ Keyed by `cognitoSub` rather than location, because the frequent operation is "l
 
 **Lookup pattern (the one this table is optimized for):** `GetItem(PK=f"USER#{sub}", SK="PROFILE")` where `sub` comes from the verified JWT claims (`shared.auth.get_sub`). This is the `block-table` pattern referenced throughout `LAMBDA_REFERENCE.md` for "is this staff member allowed to act on this location."
 
-Note: `role` values here are `staff|owner_user|super_admin`, while the Cognito group names established elsewhere are `staff|owner_user|super_user` — check which the caller actually has (`cognito:groups` from the JWT) rather than assuming this table's `role` string always matches it verbatim.
+Note: `role` values here are `staff|owner_user|super_admin`, while the Cognito group names established elsewhere are `staff_user|owner_user|super_user` — check which the caller actually has (`cognito:groups` from the JWT) rather than assuming this table's `role` string always matches it verbatim.
 
 ---
 
@@ -163,12 +163,16 @@ Directory of all restaurant locations, created by a super-admin when onboarding 
 | `locationId` | String |
 | `name` | String |
 | `address` | String |
+| `timezone` | String (IANA timezone, e.g. `Europe/Stockholm`) |
+| `businessHours` | Map (lowercase weekday to a list of `{opensAt, closesAt}` maps) |
 | `bookingDurationHours` | Number |
 | `gracePeriodHours` | Number |
 | `createdBy` | String |
 | `createdAt` | String (ISO8601) |
 
 `PK` is the fixed literal string `PLATFORM` for every item in this table — every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
+
+`businessHours` contains all seven lowercase weekday names. Each value is a list of non-overlapping, same-day intervals using 24-hour `HH:MM` strings; an empty list means the location is closed that day. `timezone` determines how these local wall-clock times are interpreted, including daylight-saving transitions.
 
 `gracePeriodHours` is what `stripe-webhook` uses to compute `run_at` when scheduling the one-time `no-show-check` EventBridge Scheduler invocation (see that function's section in `LAMBDA_REFERENCE.md`).
 

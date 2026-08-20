@@ -12,6 +12,7 @@ get-availability, create-pending-reservation, cancel-reservation,
 manage-auth) - there is no JWT claims block on those requests at all.
 """
 
+import json
 from typing import List
 
 
@@ -22,9 +23,14 @@ class Unauthorized(Exception):
 def get_claims(event: dict) -> dict:
     """Verified Cognito access token claims for a JWT-protected route."""
     try:
-        return event["requestContext"]["authorizer"]["jwt"]["claims"]
-    except KeyError as exc:
+        claims = event["requestContext"]["authorizer"]["jwt"]["claims"]
+    except (KeyError, TypeError) as exc:
         raise Unauthorized("no JWT claims on this request") from exc
+
+    if not isinstance(claims, dict):
+        raise Unauthorized("no JWT claims on this request")
+
+    return claims
 
 
 def get_sub(event: dict) -> str:
@@ -33,15 +39,49 @@ def get_sub(event: dict) -> str:
     established for block-table; reuse it anywhere else that needs to know
     which location the caller is assigned to).
     """
-    return get_claims(event)["sub"]
+    sub = get_claims(event).get("sub")
+
+    if not isinstance(sub, str) or not sub.strip():
+        raise Unauthorized("JWT is missing a subject")
+
+    return sub
 
 
 def get_groups(event: dict) -> List[str]:
-    """Cognito groups the caller belongs to: staff / owner_user / super_user.
-    Empty list if absent from the claims - don't assume the key is present.
+    """Cognito groups the caller belongs to: staff_user / owner_user /
+    super_user. Empty list if absent from the claims - don't assume the key
+    is present.
     """
     raw = get_claims(event).get("cognito:groups", [])
-    return list(raw) if raw else []
+
+    if not raw:
+        return []
+
+    if isinstance(raw, str):
+        value = raw.strip()
+
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            decoded = None
+
+        if isinstance(decoded, list):
+            raw = decoded
+        elif isinstance(decoded, str):
+            raw = [decoded]
+        elif value.startswith("[") and value.endswith("]"):
+            raw = value[1:-1].split(",")
+        else:
+            raw = [value]
+
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+
+    return [
+        group.strip().strip('"\'')
+        for group in raw
+        if isinstance(group, str) and group.strip().strip('"\'')
+    ]
 
 
 def require_group(event: dict, *allowed: str) -> None:

@@ -25,7 +25,7 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 - For `JWT`-authorized routes only: `event["requestContext"]["authorizer"]["jwt"]["claims"]` — the verified Cognito access token claims, including `sub` (Cognito user id) and `cognito:groups` (list, may be absent if the user has no group)
 
 **Authorization: JWT vs NONE is only "is there a caller at all."** API Gateway's native JWT authorizer only verifies the token is valid and signed by our Cognito user pool — it rejects the request entirely before Lambda runs if the token is missing/invalid on a `JWT` route. It does **not** check *which* Cognito group the caller is in, and it does not check whether the caller is allowed to act on the specific `locationId` in the path. Both of those checks are the Lambda's job, on every `JWT` route:
-1. Read `cognito:groups` from the claims. Valid groups: `staff`, `owner_user`, `super_user`.
+1. Read `cognito:groups` from the claims. Valid groups: `staff_user`, `owner_user`, `super_user`.
 2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` — see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
 
 **Routes that are `NONE`** (`get-menu`, `get-availability`, `create-pending-reservation`, `cancel-reservation`, `manage-auth`) are intentionally public — customers never have Cognito accounts. Don't add JWT checks to these.
@@ -55,7 +55,10 @@ pending → reserved → arrived
 
 ### 1. `create-location`
 **Trigger:** API Gateway — `POST /locations` — Auth: `JWT`
-**Purpose:** Creates a new restaurant location record (name, address, business hours, etc. — whatever fields the front-end form collects). Should be restricted in-handler to `owner_user`/`super_user` groups; regular `staff` shouldn't be able to create locations.
+**Purpose:** Creates a new restaurant location record (name, address, business hours, etc. — whatever fields the front-end form collects). Should be restricted in-handler to `owner_user`/`super_user` groups; regular `staff_user` callers shouldn't be able to create locations.
+
+**Request body:** `name`, `address`, `timezone`, `businessHours`, `bookingDurationHours`, and `gracePeriodHours`. `timezone` is an IANA name such as `Europe/Stockholm`. `businessHours` contains every lowercase weekday mapped to a list of same-day `{opensAt, closesAt}` intervals in 24-hour `HH:MM` format; an empty list means closed. The handler generates `locationId`, `createdBy`, and `createdAt` and returns the created logical location with HTTP `201`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|

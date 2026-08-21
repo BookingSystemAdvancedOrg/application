@@ -336,7 +336,41 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 
 ### 17. `manage-user`
 **Trigger:** API Gateway — `ANY /users/{proxy+}` — Auth: `JWT`
-**Purpose:** Full staff lifecycle management — invite/create a staff member, update their profile, deactivate/reactivate, remove them, assign/change their group (`staff`/`owner_user`/`super_user`). Should be restricted in-handler to `owner_user`/`super_user` callers. `{proxy+}`/`ANY` dispatch, same pattern as `manage-menu`.
+**Purpose:** Full staff lifecycle management — invite/create a staff member, update their profile, deactivate/reactivate, remove them, and assign/change their Cognito group. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path.
+
+**Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. An `owner_user` may manage `staff_user` targets only. For non-self owner actions, current Cognito membership is checked rather than trusting only the mirrored User-table role. Only a `super_user` may create a privileged user or manage a target whose current group is `owner_user` or `super_user`. Self-profile updates are allowed, but self-status changes, self-deletion, and self-group changes are forbidden. Missing/malformed direct-invocation claims return `401`; a valid caller without sufficient permissions returns `403`.
+
+The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`. They deliberately map to the User-table `role` values as follows:
+
+| Cognito group | User-table `role` | Location rule |
+|---|---|---|
+| `staff_user` | `staff` | `locationId` is required and non-empty |
+| `owner_user` | `owner_user` | `locationId` is stored as an empty string |
+| `super_user` | `super_admin` | `locationId` is stored as an empty string |
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `POST` | `invite` | `name`, `email`, `phone`, `group`, plus conditional `locationId` | `201` with the logical user and `Location: /users/<cognitoSub>` |
+| `PUT` | `<cognitoSub>` | One or more of `name`, `email`, `phone`, `locationId` | `200` with the updated logical user |
+| `POST` | `<cognitoSub>/deactivate` | No body | `200` with `status="disabled"` |
+| `POST` | `<cognitoSub>/reactivate` | No body | `200` with `status="active"` |
+| `DELETE` | `<cognitoSub>` | No body | `204` with an empty body |
+| `PUT` | `<cognitoSub>/group` | `group`, plus conditional `locationId` | `200` with the updated logical user |
+
+`PUT /users/<cognitoSub>` is intentionally a partial update even though it uses `PUT`: the infrastructure's CORS configuration does not permit `PATCH`. At least one supported field is required. Server-controlled fields (`PK`, `SK`, `cognitoSub`, `role`, `status`, `createdBy`, and `createdAt`) and unknown fields are rejected. A group change uses the same location rule as creation: a target `staff_user` needs a non-empty `locationId`; privileged targets get an empty location.
+
+The logical user returned by successful non-delete actions contains `cognitoSub`, `role`, `locationId`, `name`, `email`, `phone`, `status`, `createdBy`, and `createdAt`; internal `PK`/`SK` attributes are never returned. Because these responses contain staff PII, successful and error responses include `Cache-Control: no-store`.
+
+**AWS operation behavior:** Creating a user calls `AdminCreateUser`, then `AdminAddUserToGroup`, then conditionally writes `PK="USER#<cognitoSub>"`, `SK="PROFILE"` to the User table. If group assignment or a definite DynamoDB non-write fails after confirmed Cognito creation, the handler attempts `AdminDeleteUser` compensation and returns a sanitized service error. An ambiguous transport failure from `AdminCreateUser` is never followed by deletion because the handler cannot prove that this request created the account. Profile, status, and group changes first load the mirrored user consistently, mutate Cognito, and conditionally update DynamoDB against the complete state that was loaded so concurrent changes return `409` instead of being overwritten. Profile/status flows snapshot the live Cognito attributes or enabled state with `AdminGetUser` and only restore changes this request actually made. A group change uses `AdminListGroupsForUser`, ensures the requested managed group is present, and removes other managed groups before updating the mapped role/location. Delete loads the mirror, calls `AdminDeleteUser`, then conditionally deletes the exact mirrored state; `UserNotFoundException` is treated as an already-completed Cognito deletion so a retry can repair a stale mirror.
+
+For a DynamoDB `5xx`, timeout, or transport error, a single-item write may already have committed. The handler performs a strongly consistent read and one idempotent retry before deciding the outcome. If the desired state is present, it returns success without compensating Cognito. If the result remains uncertain, it returns a sanitized `503` and deliberately avoids a potentially destructive rollback.
+
+Malformed JSON/fields return `400`; missing targets and unknown proxy paths return `404`; recognized paths with the wrong method return `405` with `Allow`; duplicate identities or conditional conflicts return `409`; throttling returns `429`; and unexpected Cognito/DynamoDB/transport failures return a sanitized `503`. Raw AWS error messages are never returned.
+
+This route family intentionally has no list/get action. API Gateway's greedy `/users/{proxy+}` route also does not match bare `/users`; a staff-directory read API requires a separate documented route. The function has no Location-table access, so it validates the shape of an assignment but cannot prove that a supplied `locationId` exists. Cognito disable/group changes also do not revoke an access token already accepted by API Gateway; with the current one-hour access-token lifetime and no `AdminUserGlobalSignOut` permission, old claims can remain usable until token expiry.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -347,8 +381,6 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 **AWS resource access:**
 - Full `dynamodb:*` on the User table.
 - Cognito, scoped to this specific action set on the user pool (not a wildcard): `AdminCreateUser`, `AdminDeleteUser`, `AdminDisableUser`, `AdminEnableUser`, `AdminUpdateUserAttributes`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminGetUser`, `AdminListGroupsForUser`.
-
-**Note:** creating a staff member is a two-step Cognito call — `AdminCreateUser` then `AdminAddUserToGroup` to assign them into `staff`/`owner_user`/`super_user`.
 
 ---
 

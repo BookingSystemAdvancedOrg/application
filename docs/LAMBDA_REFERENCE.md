@@ -100,7 +100,34 @@ pending → reserved → arrived
 
 ### 4. `manage-menu`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
-**Purpose:** Staff-facing CRUD for menu items (create/update/delete individual menu items or categories). The `{proxy+}` catch-all means this one function handles every sub-path under `/menu/...` (e.g. `/menu/items/{itemId}`) and every HTTP method (`ANY`) — your handler dispatches internally based on `event["requestContext"]["http"]["method"]` and the remaining path/payload, not on separate configured routes.
+**Purpose:** Staff-facing CRUD for menu items. The `{proxy+}` catch-all means this one function handles every configured sub-path under `/menu/...` and dispatches internally on the HTTP method and normalized `proxy` path.
+
+**Authorization:** Every action requires a caller in `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling DynamoDB. Missing or malformed direct-invocation claims return `401`; a valid token whose caller is not in one of those groups returns `403`.
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `GET` | `items` | No body | `200` with `{"items": [...]}` including active and inactive items |
+| `POST` | `items` | Exactly `name`, `description`, `price`, `category`, `imageKey`, and `active` | `201` with the created logical item and a `Location` header |
+| `GET` | `items/<menuItemId>` | No body | `200` with the logical item |
+| `PUT` | `items/<menuItemId>` | One or more editable item fields | `200` with the updated logical item |
+| `DELETE` | `items/<menuItemId>` | No body | `204` with an empty body |
+
+`PUT` is intentionally a partial update. The editable fields are `name`, `description`, `price`, `category`, `imageKey`, and `active`; an empty object and unknown or server-controlled fields are rejected. `name` and `imageKey` are non-empty strings, `description` is a string, `price` is a finite non-negative JSON number with at most two decimal places, `active` is a boolean, and `category` is exactly one of `starters`, `mains`, `desserts`, or `drinks`. Categories are fixed values on menu items, not separately stored resources, so this route family has no category CRUD paths.
+
+The handler generates `menuItemId` as a UUID and obtains all audit data from the verified request: `createdBy`/`updatedBy` are the caller's Cognito `sub`, and `createdAt`/`updatedAt` are UTC ISO8601 timestamps. On creation, both audit pairs have the same values. Updates preserve the creation audit fields and replace the update audit fields. Items are stored with `PK="LOCATION#<locationId>"` and `SK="MENU#<menuItemId>"`.
+
+The logical item returned by successful non-delete item actions contains exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal `PK`/`SK` attributes are never returned. The collection action queries only the requested location partition and the `MENU#` sort-key prefix, follows every DynamoDB pagination key, and returns both active and inactive items so staff can reactivate hidden items. All successful and error responses include `Cache-Control: no-store`.
+
+Individual reads are strongly consistent. Creation conditionally requires both keys not to exist. Update and delete first load the item consistently, validate the stored logical record, and condition the write on the complete state that was loaded; a concurrent change returns `409` rather than being overwritten or deleted. A no-op update returns the existing item without changing its audit fields.
+
+For a DynamoDB `5xx`, timeout, or transport error, a single-item operation may already have committed. The handler reconciles the result with a strongly consistent read and performs at most one idempotent retry when the previous state is still present. If the desired state is present it returns success; if another state is present it returns `409`; and if the result cannot be determined it returns a sanitized `503`. Raw AWS messages are never returned.
+
+Malformed paths, JSON, fields, or values return `400`; a missing item or unknown proxy path returns `404`; a recognized path with the wrong method returns `405` with `Allow`; generated-ID collisions, inconsistent records, and concurrent changes return `409`; and unexpected DynamoDB or transport failures return `503`. The greedy route does not match bare `/locations/<locationId>/menu`; that public read belongs to `get-menu`.
+
+This function has no User-table permission, so it can check the caller's group but cannot enforce that a `staff_user` is assigned to the `locationId` in the path. It also has no Location-table or S3 permission, so it cannot prove that the location exists, that `imageKey` exists, or that the image belongs to that location. It must not make incidental calls to those services. Enforcing location assignment requires adding `USER_TABLE_NAME` and read-only User-table access in a separate infrastructure/specification change.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|

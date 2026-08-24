@@ -26,21 +26,20 @@ shared/                        Common helper package, imported by every function
   dynamo.py                    Thin boto3 DynamoDB resource helper
 
 functions/<name>/
-  app.py                       Lambda handler - docstring has the same Trigger/Purpose/
-                                Env vars/Resources summary as LAMBDA_REFERENCE.md,
-                                followed by a stubbed handler(event, context)
+  app.py                       Lambda handler - its module docstring summarizes the
+                                trigger, purpose, environment variables, and resources
   requirements.txt             Third-party deps beyond boto3 (which the base image
                                 already includes). Pre-filled with `stripe` for the
                                 3 functions that need it.
   Dockerfile                   Builds this function's container image
 
 docs/LAMBDA_REFERENCE.md       Full per-function reference (see above)
+docs/openapi.yaml              OpenAPI 3.0 contract for implemented HTTP endpoints
 ```
 
-Every `app.py` currently ends with `return error_response(501, "not implemented")`
-(or, for the two non-HTTP functions, `raise NotImplementedError(...)`) - the
-docstrings and stubbed request-parsing are there, the actual business logic
-per function's docstring is what's left to build.
+Implementation is incremental. Completed handlers have unit tests under `tests/`;
+functions scheduled for later tasks may still return `501 not implemented` or raise
+`NotImplementedError`. The OpenAPI document includes only implemented HTTP routes.
 
 ## Building a function's image
 
@@ -59,9 +58,54 @@ source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -r functions/<name>/requirements.txt boto3
 ```
 
+For the complete test toolchain on Windows PowerShell, activate the virtual
+environment and install the repository's development requirements:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
 `shared/` is a plain Python package (`shared/__init__.py` exists) - as long
 as you run things from the repo root, `from shared.auth import get_claims`
 etc. resolves the same way it does inside the container.
+
+## OpenAPI and Swagger UI
+
+Validate the OpenAPI 3.0 document and its implemented-route guard locally:
+
+```powershell
+python -m openapi_spec_validator docs\openapi.yaml
+python -m pytest -q tests\test_openapi.py
+```
+
+Run Swagger UI from the repo root, then open `http://localhost:8081`:
+
+```powershell
+docker compose up -d swagger-ui
+docker compose logs swagger-ui
+```
+
+In Swagger's **Servers** selector, replace the `apiId` value (`replace-me`) with
+the deployed dev HTTP API ID and change `region` if needed. For a protected
+operation, select **Authorize** and paste the Cognito access token itself (do
+not include the `Bearer ` prefix). Swagger UI displays and calls the API; it
+does not start or proxy the Lambda backend.
+
+The OpenAPI file is the client-facing documentation and testing contract. It
+does not provision API Gateway: Lambda integrations, routes, CORS, and the JWT
+authorizer remain owned by the separate `infrastructure` repository.
+
+Stop and remove the local documentation container when finished:
+
+```powershell
+docker compose down
+```
+
+Swagger's requests originate in the browser. The selected API must allow
+`http://localhost:8081` in its API Gateway CORS configuration even if the same
+request already works from Postman or PowerShell.
 
 ## Conventions (see docs/LAMBDA_REFERENCE.md for the full version)
 

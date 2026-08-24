@@ -24,6 +24,21 @@ jobs:
             | sed -e $'s/\r$//' -e 's/="\(.*\)"$/=\1/' \
             >> "$GITHUB_ENV"
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:

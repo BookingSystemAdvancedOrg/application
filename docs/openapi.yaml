@@ -1,0 +1,1624 @@
+openapi: 3.0.3
+
+info:
+  title: Booking System Advanced API
+  version: 0.1.0
+  description: |
+    Contract for the HTTP endpoints that are currently implemented by the
+    application repository. Stubbed Lambda routes and non-HTTP event handlers
+    are intentionally omitted.
+
+    Requests are handled by API Gateway HTTP API payload version 2.0 and AWS
+    Lambda proxy integrations. Lambda validation remains authoritative: API
+    Gateway HTTP APIs do not enforce every OpenAPI request schema constraint.
+    In particular, conditional rules described below are checked by the
+    corresponding Lambda handler.
+
+    This is a client-facing documentation and testing contract. API Gateway,
+    Lambda integrations, routes, and the JWT authorizer are provisioned from
+    the separate infrastructure repository rather than imported from this file.
+
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com
+    description: AWS API Gateway HTTP API using its default stage
+    variables:
+      apiId:
+        default: replace-me
+        description: Replace with the deployed HTTP API identifier.
+      region:
+        default: eu-north-1
+        description: AWS region containing the HTTP API.
+
+tags:
+  - name: Authentication
+    description: Public Cognito sign-in, challenge, and token-refresh flows.
+  - name: Users
+    description: Owner and super-user management of internal users.
+  - name: Locations
+    description: Staff-facing location creation and detail retrieval.
+  - name: Menu
+    description: Staff-facing menu-item management.
+
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Sign in an internal user
+      operationId: authLogin
+      description: |
+        Starts Cognito `USER_PASSWORD_AUTH`. A successful call either returns
+        tokens or a challenge that must be continued through `/auth/challenge`.
+        This route is intentionally public because a caller cannot already
+        possess the token it is requesting.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: staff@example.com
+              password: Example123!
+      responses:
+        '200':
+          $ref: '#/components/responses/AuthSuccess'
+        '400':
+          $ref: '#/components/responses/AuthBadRequest'
+        '401':
+          $ref: '#/components/responses/AuthUnauthorized'
+        '403':
+          $ref: '#/components/responses/AuthForbidden'
+        '429':
+          $ref: '#/components/responses/AuthTooManyRequests'
+        '502':
+          $ref: '#/components/responses/AuthBadGateway'
+
+  /auth/challenge:
+    post:
+      tags:
+        - Authentication
+      summary: Respond to a Cognito authentication challenge
+      operationId: authRespondToChallenge
+      description: |
+        Continues the challenge returned by login or a previous challenge.
+        Use the returned `challengeUsername` as `username` when it is present.
+        Do not include `USERNAME` or `SECRET_HASH` in `responses`; the Lambda
+        supplies both values.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeRequest'
+            examples:
+              newPasswordRequired:
+                summary: Set the first permanent password
+                value:
+                  challengeName: NEW_PASSWORD_REQUIRED
+                  session: challenge-session
+                  username: staff-user-id
+                  responses:
+                    NEW_PASSWORD: NewPassword123!
+              softwareTokenMfa:
+                summary: Answer a software-token MFA challenge
+                value:
+                  challengeName: SOFTWARE_TOKEN_MFA
+                  session: challenge-session
+                  username: staff-user-id
+                  responses:
+                    SOFTWARE_TOKEN_MFA_CODE: '123456'
+      responses:
+        '200':
+          $ref: '#/components/responses/AuthSuccess'
+        '400':
+          $ref: '#/components/responses/AuthBadRequest'
+        '401':
+          $ref: '#/components/responses/AuthUnauthorized'
+        '403':
+          $ref: '#/components/responses/AuthForbidden'
+        '429':
+          $ref: '#/components/responses/AuthTooManyRequests'
+        '502':
+          $ref: '#/components/responses/AuthBadGateway'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh Cognito tokens
+      operationId: authRefresh
+      description: |
+        Starts Cognito `REFRESH_TOKEN_AUTH`. `sub` is the Cognito subject used
+        to calculate the confidential app client's secret hash. Cognito does
+        not normally return a new refresh token from this flow.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+            example:
+              refreshToken: existing-refresh-token
+              sub: staff-user-sub
+      responses:
+        '200':
+          $ref: '#/components/responses/AuthSuccess'
+        '400':
+          $ref: '#/components/responses/AuthBadRequest'
+        '401':
+          $ref: '#/components/responses/AuthUnauthorized'
+        '403':
+          $ref: '#/components/responses/AuthForbidden'
+        '429':
+          $ref: '#/components/responses/AuthTooManyRequests'
+        '502':
+          $ref: '#/components/responses/AuthBadGateway'
+
+  /users/invite:
+    post:
+      tags:
+        - Users
+      summary: Invite an internal user
+      operationId: inviteUser
+      description: |
+        Creates the Cognito user, assigns its managed group, and creates the
+        User-table mirror. Owners may invite staff users; only super-users may
+        invite owner or super-user accounts.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserInviteRequest'
+            examples:
+              staff:
+                summary: Invite a staff user assigned to a location
+                value:
+                  name: Test User
+                  email: test.user@example.com
+                  phone: '+46701234567'
+                  group: staff_user
+                  locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
+              owner:
+                summary: Super-user invites an owner
+                value:
+                  name: Restaurant Owner
+                  email: owner@example.com
+                  phone: '+46701234568'
+                  group: owner_user
+      responses:
+        '201':
+          description: User invited and mirrored successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            Location:
+              description: Relative URI of the created user resource.
+              schema:
+                type: string
+              example: /users/24824908-70e9-4d9b-934d-76953bca16b7
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                cognitoSub: 24824908-70e9-4d9b-934d-76953bca16b7
+                role: staff
+                locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
+                name: Test User
+                email: test.user@example.com
+                phone: '+46701234567'
+                status: active
+                createdBy: 506a9170-a571-4dbc-9f86-5d831ee90c23
+                createdAt: '2026-08-21T10:00:00Z'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
+  /users/{cognitoSub}:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    put:
+      tags:
+        - Users
+      summary: Update an internal user's profile
+      operationId: updateUser
+      description: |
+        Performs a partial profile update despite using `PUT` because the
+        deployed CORS policy does not permit `PATCH`. An owner may update a
+        staff target or their own profile; only a super-user may manage a
+        privileged target. The resulting location must remain non-empty for
+        staff and empty for privileged users.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfileUpdate'
+            example:
+              name: Changed Name
+              phone: '+46701234569'
+      responses:
+        '200':
+          description: User profile updated, or already in the requested state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+    delete:
+      tags:
+        - Users
+      summary: Delete an internal user
+      operationId: deleteUser
+      description: |
+        Deletes the Cognito user and its User-table mirror. Owners may delete
+        staff targets; only super-users may delete privileged targets. A
+        caller may not delete their own account.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: User deleted successfully. The response body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
+  /users/{cognitoSub}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    post:
+      tags:
+        - Users
+      summary: Deactivate an internal user
+      operationId: deactivateUser
+      description: |
+        Disables the Cognito user and records `disabled` in the User table.
+        Owners may deactivate staff targets; only super-users may deactivate
+        privileged targets. A caller may not deactivate their own account.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: User disabled, or already disabled.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
+  /users/{cognitoSub}/reactivate:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    post:
+      tags:
+        - Users
+      summary: Reactivate an internal user
+      operationId: reactivateUser
+      description: |
+        Enables the Cognito user and records `active` in the User table.
+        Owners may reactivate staff targets; only super-users may reactivate
+        privileged targets. A caller may not reactivate their own account.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: User active, or already active.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
+  /users/{cognitoSub}/group:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    put:
+      tags:
+        - Users
+      summary: Change an internal user's Cognito group
+      operationId: changeUserGroup
+      description: |
+        Converges the target to one managed Cognito group and updates the
+        mirrored role/location. Owners may update staff assignments but may
+        not promote a target; only super-users may assign privileged groups.
+        A caller may not change their own group.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserGroupChangeRequest'
+            examples:
+              staffAssignment:
+                value:
+                  group: staff_user
+                  locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
+              owner:
+                value:
+                  group: owner_user
+      responses:
+        '200':
+          description: Group and mirrored user state updated successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
+  /locations:
+    post:
+      tags:
+        - Locations
+      summary: Create a restaurant location
+      operationId: createLocation
+      description: |
+        Creates a location with weekly business hours and its booking policy.
+        All seven weekdays must be present, though a closed day may use an
+        empty interval list. Intervals are sorted before storage and must not
+        overlap.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationCreateRequest'
+            example:
+              name: Central Bistro
+              address: Main Street 1, Stockholm
+              timezone: Europe/Stockholm
+              businessHours:
+                monday:
+                  - opensAt: '11:00'
+                    closesAt: '22:00'
+                tuesday:
+                  - opensAt: '11:00'
+                    closesAt: '22:00'
+                wednesday:
+                  - opensAt: '11:00'
+                    closesAt: '22:00'
+                thursday:
+                  - opensAt: '11:00'
+                    closesAt: '22:00'
+                friday:
+                  - opensAt: '11:00'
+                    closesAt: '23:00'
+                saturday:
+                  - opensAt: '12:00'
+                    closesAt: '23:00'
+                sunday: []
+              bookingDurationHours: 2
+              gracePeriodHours: 0.25
+      responses:
+        '201':
+          description: Location created successfully.
+          headers:
+            Location:
+              description: Relative URI of the created location.
+              schema:
+                type: string
+              example: /locations/154b5c59-3a7f-4248-895c-29ee980356f3
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
+
+  /locations/{locationId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Locations
+      summary: Get a restaurant location
+      operationId: getLocation
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Full location details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
+
+  /locations/{locationId}/menu/items:
+    parameters:
+      - $ref: '#/components/parameters/MenuLocationId'
+    get:
+      tags:
+        - Menu
+      summary: List menu items for a location
+      operationId: listMenuItems
+      description: |
+        Returns all menu items in the location partition, including inactive
+        items. An empty list is returned when the partition has no items; this
+        Lambda cannot verify that the location itself exists.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Menu items retrieved successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuItemList'
+              example:
+                items:
+                  - menuItemId: c506d15f-dfb4-49d7-82bd-0bd2517d411d
+                    name: Mushroom Toast
+                    description: Sourdough, mushrooms, and herbs
+                    price: 125.50
+                    category: starters
+                    imageKey: menu/locations/central/mushroom-toast.jpg
+                    active: true
+                    createdBy: 506a9170-a571-4dbc-9f86-5d831ee90c23
+                    createdAt: '2026-08-21T10:00:00Z'
+                    updatedBy: 506a9170-a571-4dbc-9f86-5d831ee90c23
+                    updatedAt: '2026-08-21T10:00:00Z'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+    post:
+      tags:
+        - Menu
+      summary: Create a menu item
+      operationId: createMenuItem
+      description: |
+        Creates a menu item in the requested location partition. The Lambda
+        checks group membership but, with its current IAM permissions, cannot
+        confirm a staff caller's assigned location, location existence, or the
+        existence of the referenced image object.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MenuItemCreateRequest'
+            example:
+              name: Mushroom Toast
+              description: Sourdough, mushrooms, and herbs
+              price: 125.50
+              category: starters
+              imageKey: menu/locations/central/mushroom-toast.jpg
+              active: true
+      responses:
+        '201':
+          description: Menu item created successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            Location:
+              description: Relative URI of the created menu item.
+              schema:
+                type: string
+              example: /locations/154b5c59-3a7f-4248-895c-29ee980356f3/menu/items/c506d15f-dfb4-49d7-82bd-0bd2517d411d
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuItem'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+
+  /locations/{locationId}/menu/items/{menuItemId}:
+    parameters:
+      - $ref: '#/components/parameters/MenuLocationId'
+      - $ref: '#/components/parameters/MenuItemId'
+    get:
+      tags:
+        - Menu
+      summary: Get a menu item
+      operationId: getMenuItem
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Menu item retrieved successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuItem'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/MenuItemNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+    put:
+      tags:
+        - Menu
+      summary: Update a menu item
+      operationId: updateMenuItem
+      description: |
+        Partially updates one or more editable fields. `PUT` is used because
+        the deployed CORS policy does not permit `PATCH`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MenuItemUpdateRequest'
+            example:
+              price: 135.00
+              active: false
+      responses:
+        '200':
+          description: Menu item updated, or already in the requested state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuItem'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/MenuItemNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+    delete:
+      tags:
+        - Menu
+      summary: Delete a menu item
+      operationId: deleteMenuItem
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: Menu item deleted successfully. The response body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/MenuItemNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Cognito access token accepted by the API Gateway JWT authorizer.
+        In Swagger UI, paste the token itself; the UI adds the `Bearer` prefix.
+
+  parameters:
+    CognitoSub:
+      name: cognitoSub
+      in: path
+      required: true
+      description: Cognito subject of the target internal user.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '.*\S.*'
+      example: 24824908-70e9-4d9b-934d-76953bca16b7
+    LocationId:
+      name: locationId
+      in: path
+      required: true
+      description: Location identifier.
+      schema:
+        type: string
+        minLength: 1
+        pattern: '.*\S.*'
+      example: 154b5c59-3a7f-4248-895c-29ee980356f3
+    MenuLocationId:
+      name: locationId
+      in: path
+      required: true
+      description: Location identifier accepted by the menu-management handler.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '.*\S.*'
+      example: 154b5c59-3a7f-4248-895c-29ee980356f3
+    MenuItemId:
+      name: menuItemId
+      in: path
+      required: true
+      description: Menu-item identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '.*\S.*'
+      example: c506d15f-dfb4-49d7-82bd-0bd2517d411d
+
+  headers:
+    CacheControlNoStore:
+      description: Prevents storage of authentication, PII, or staff data.
+      schema:
+        type: string
+        enum:
+          - no-store
+
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Sanitized, client-facing error message.
+
+    GatewayUnauthorizedResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: API Gateway JWT-authorizer error message.
+          example: Unauthorized
+
+    NonBlankString:
+      type: string
+      minLength: 1
+      pattern: '.*\S.*'
+
+    LoginRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - username
+        - password
+      properties:
+        username:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Cognito username, normally the internal user's email.
+        password:
+          type: string
+          format: password
+          minLength: 1
+          pattern: '.*\S.*'
+
+    ChallengeRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - challengeName
+        - session
+        - username
+        - responses
+      properties:
+        challengeName:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Cognito challenge name returned by the previous step.
+        session:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Opaque Cognito challenge session returned previously.
+        username:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Returned challengeUsername, or the original username if absent.
+        responses:
+          type: object
+          minProperties: 1
+          description: |
+            Challenge-specific nonblank string values. Reserved keys
+            `USERNAME` and `SECRET_HASH` are rejected because the Lambda adds
+            them itself.
+          additionalProperties:
+            type: string
+            minLength: 1
+            pattern: '.*\S.*'
+
+    RefreshRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - refreshToken
+        - sub
+      properties:
+        refreshToken:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Refresh token returned by a prior successful login.
+        sub:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Cognito subject used to calculate SECRET_HASH.
+
+    AuthenticationResult:
+      type: object
+      additionalProperties: true
+      required:
+        - AccessToken
+        - ExpiresIn
+        - TokenType
+      properties:
+        AccessToken:
+          type: string
+        IdToken:
+          type: string
+        RefreshToken:
+          type: string
+        ExpiresIn:
+          type: integer
+          format: int32
+          minimum: 0
+          example: 3600
+        TokenType:
+          type: string
+          example: Bearer
+        NewDeviceMetadata:
+          type: object
+          additionalProperties: true
+          properties:
+            DeviceKey:
+              type: string
+            DeviceGroupKey:
+              type: string
+
+    AuthenticatedResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - authenticationResult
+      properties:
+        status:
+          type: string
+          enum:
+            - authenticated
+        authenticationResult:
+          $ref: '#/components/schemas/AuthenticationResult'
+
+    AuthChallengeResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - challengeName
+        - challengeParameters
+        - session
+      properties:
+        status:
+          type: string
+          enum:
+            - challenge
+        challengeName:
+          type: string
+        challengeParameters:
+          type: object
+          additionalProperties:
+            type: string
+        session:
+          type: string
+          nullable: true
+        challengeUsername:
+          type: string
+          description: Username to submit to the next challenge request.
+
+    AuthResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AuthenticatedResponse'
+        - $ref: '#/components/schemas/AuthChallengeResponse'
+      discriminator:
+        propertyName: status
+        mapping:
+          authenticated: '#/components/schemas/AuthenticatedResponse'
+          challenge: '#/components/schemas/AuthChallengeResponse'
+
+    CognitoGroup:
+      type: string
+      enum:
+        - staff_user
+        - owner_user
+        - super_user
+
+    UserRole:
+      type: string
+      enum:
+        - staff
+        - owner_user
+        - super_admin
+
+    UserStatus:
+      type: string
+      enum:
+        - active
+        - disabled
+
+    UserName:
+      type: string
+      minLength: 1
+      pattern: '.*\S.*'
+
+    UserEmail:
+      type: string
+      format: email
+      minLength: 1
+      maxLength: 320
+      pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+
+    UserPhone:
+      type: string
+      description: Phone number in E.164 form.
+      pattern: '^\+[1-9]\d{7,14}$'
+      example: '+46701234567'
+
+    UserInviteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - email
+        - phone
+        - group
+      description: |
+        `locationId` is required and nonblank when `group` is `staff_user`.
+        It must be omitted or the empty string for `owner_user` and
+        `super_user`. This conditional rule is enforced by the Lambda.
+      properties:
+        name:
+          $ref: '#/components/schemas/UserName'
+        email:
+          $ref: '#/components/schemas/UserEmail'
+        phone:
+          $ref: '#/components/schemas/UserPhone'
+        group:
+          $ref: '#/components/schemas/CognitoGroup'
+        locationId:
+          type: string
+
+    UserProfileUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        At least one supported field is required. The resulting `locationId`
+        must be nonblank for staff and empty for privileged users.
+      properties:
+        name:
+          $ref: '#/components/schemas/UserName'
+        email:
+          $ref: '#/components/schemas/UserEmail'
+        phone:
+          $ref: '#/components/schemas/UserPhone'
+        locationId:
+          type: string
+
+    UserGroupChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - group
+      description: |
+        `locationId` is required and nonblank for `staff_user`; it must be
+        omitted or empty for a privileged group.
+      properties:
+        group:
+          $ref: '#/components/schemas/CognitoGroup'
+        locationId:
+          type: string
+
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        - cognitoSub
+        - role
+        - locationId
+        - name
+        - email
+        - phone
+        - status
+        - createdBy
+        - createdAt
+      properties:
+        cognitoSub:
+          type: string
+        role:
+          $ref: '#/components/schemas/UserRole'
+        locationId:
+          type: string
+          description: Empty for owner and super-user accounts.
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    BusinessHoursInterval:
+      type: object
+      additionalProperties: false
+      required:
+        - opensAt
+        - closesAt
+      description: |
+        Both times use local 24-hour `HH:MM`. `opensAt` must precede
+        `closesAt`; overnight intervals are not accepted.
+      properties:
+        opensAt:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          example: '11:00'
+        closesAt:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          example: '22:00'
+
+    DayBusinessHours:
+      type: array
+      description: Non-overlapping intervals; an empty array means closed.
+      items:
+        $ref: '#/components/schemas/BusinessHoursInterval'
+
+    BusinessHours:
+      type: object
+      additionalProperties: false
+      required:
+        - monday
+        - tuesday
+        - wednesday
+        - thursday
+        - friday
+        - saturday
+        - sunday
+      properties:
+        monday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        tuesday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        wednesday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        thursday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        friday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        saturday:
+          $ref: '#/components/schemas/DayBusinessHours'
+        sunday:
+          $ref: '#/components/schemas/DayBusinessHours'
+
+    LocationCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - address
+        - timezone
+        - businessHours
+        - bookingDurationHours
+        - gracePeriodHours
+      properties:
+        name:
+          $ref: '#/components/schemas/NonBlankString'
+        address:
+          $ref: '#/components/schemas/NonBlankString'
+        timezone:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Valid IANA timezone name.
+          example: Europe/Stockholm
+        businessHours:
+          $ref: '#/components/schemas/BusinessHours'
+        bookingDurationHours:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          description: Booking duration in hours; must be greater than zero.
+          example: 2
+        gracePeriodHours:
+          type: number
+          minimum: 0
+          description: Grace period in hours; zero is allowed.
+          example: 0.25
+
+    Location:
+      type: object
+      additionalProperties: false
+      required:
+        - locationId
+        - name
+        - address
+        - timezone
+        - businessHours
+        - bookingDurationHours
+        - gracePeriodHours
+        - createdBy
+        - createdAt
+      properties:
+        locationId:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        timezone:
+          type: string
+        businessHours:
+          $ref: '#/components/schemas/BusinessHours'
+        bookingDurationHours:
+          type: number
+        gracePeriodHours:
+          type: number
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    MenuCategory:
+      type: string
+      enum:
+        - starters
+        - mains
+        - desserts
+        - drinks
+
+    MenuPrice:
+      type: number
+      minimum: 0
+      multipleOf: 0.01
+      description: |
+        Nonnegative amount with at most two decimal places. DynamoDB storage
+        additionally limits the normalized value to 38 significant digits and
+        an adjusted exponent no greater than 126.
+
+    MenuItemEditableFields:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+        description:
+          type: string
+          description: May be empty; surrounding whitespace is trimmed.
+        price:
+          $ref: '#/components/schemas/MenuPrice'
+        category:
+          $ref: '#/components/schemas/MenuCategory'
+        imageKey:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+          description: S3 object key; existence is not checked by this Lambda.
+        active:
+          type: boolean
+
+    MenuItemCreateRequest:
+      allOf:
+        - $ref: '#/components/schemas/MenuItemEditableFields'
+        - type: object
+          required:
+            - name
+            - description
+            - price
+            - category
+            - imageKey
+            - active
+
+    MenuItemUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/MenuItemEditableFields'
+        - type: object
+          minProperties: 1
+      description: At least one of the six editable fields is required.
+
+    MenuItem:
+      type: object
+      additionalProperties: false
+      required:
+        - menuItemId
+        - name
+        - description
+        - price
+        - category
+        - imageKey
+        - active
+        - createdBy
+        - createdAt
+        - updatedBy
+        - updatedAt
+      properties:
+        menuItemId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          $ref: '#/components/schemas/MenuPrice'
+        category:
+          $ref: '#/components/schemas/MenuCategory'
+        imageKey:
+          type: string
+        active:
+          type: boolean
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    MenuItemList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MenuItem'
+
+  responses:
+    AuthSuccess:
+      description: Authenticated successfully or another Cognito challenge is required.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthResponse'
+          examples:
+            authenticated:
+              value:
+                status: authenticated
+                authenticationResult:
+                  AccessToken: access-token
+                  IdToken: id-token
+                  RefreshToken: refresh-token
+                  ExpiresIn: 3600
+                  TokenType: Bearer
+            challenge:
+              value:
+                status: challenge
+                challengeName: NEW_PASSWORD_REQUIRED
+                challengeParameters:
+                  USER_ID_FOR_SRP: staff-user-id
+                session: challenge-session
+                challengeUsername: staff-user-id
+
+    AuthBadRequest:
+      description: |
+        The body or authentication request is invalid. Handler-level body
+        validation responses currently omit `Cache-Control`; Cognito-originated
+        400 responses include `no-store`, so the header is not promised here.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidBody:
+              value:
+                error: request body must be valid JSON
+            invalidChallenge:
+              value:
+                error: invalid challenge response
+    AuthUnauthorized:
+      description: Cognito rejected the credentials or refresh token.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid username or password
+    AuthForbidden:
+      description: The Cognito user is not confirmed or requires a password reset.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            unconfirmed:
+              value:
+                error: user is not confirmed
+            resetRequired:
+              value:
+                error: password reset required
+    AuthTooManyRequests:
+      description: Cognito throttled authentication attempts.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: too many authentication attempts
+    AuthBadGateway:
+      description: Cognito was unavailable or returned an invalid result.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            unavailable:
+              value:
+                error: authentication service unavailable
+            invalidResult:
+              value:
+                error: invalid response from authentication service
+
+    BadRequest:
+      description: The request is malformed or fails validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    GatewayUnauthorized:
+      description: |
+        API Gateway's JWT authorizer rejected a missing, malformed, expired,
+        or otherwise invalid Cognito access token before invoking the Lambda.
+      headers:
+        WWW-Authenticate:
+          description: Bearer-token challenge details when supplied by API Gateway.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayUnauthorizedResponse'
+          example:
+            message: Unauthorized
+    Forbidden:
+      description: The authenticated caller lacks the required group or permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: forbidden
+    Conflict:
+      description: The requested resource already exists or changed concurrently.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NoStoreBadRequest:
+      description: The request is malformed or fails Lambda validation.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NoStoreForbidden:
+      description: The authenticated caller lacks the required group or permission.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: forbidden
+    NoStoreConflict:
+      description: Stored state is inconsistent, already exists, or changed concurrently.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NoStoreTooManyRequests:
+      description: Cognito throttled a user-management operation.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: too many user-management requests
+
+    UserNotFound:
+      description: The target user does not exist.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: user not found
+    UserServiceUnavailable:
+      description: Cognito or the User table is unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: user service unavailable
+
+    LocationNotFound:
+      description: The requested location does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: location not found
+    LocationServiceUnavailable:
+      description: The Location table is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: location service unavailable
+
+    MenuItemNotFound:
+      description: The requested menu item does not exist in this location.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: menu item not found
+    MenuServiceUnavailable:
+      description: The Menu table is unavailable or returned an invalid result.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: menu service unavailable

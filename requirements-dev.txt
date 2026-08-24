@@ -2,3 +2,4 @@
 pytest
 moto[dynamodb]
 tzdata
+openapi-spec-validator==0.9.0

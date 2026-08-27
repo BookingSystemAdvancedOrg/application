@@ -247,7 +247,32 @@ There are two layout tables with distinct roles: **Live Layout Element** is the 
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
-**Purpose:** CRUD on individual floor-plan elements (tables, walls, decor — whatever the editor supports) in the live/draft layout. Same `{proxy+}`/`ANY` dispatch pattern as `manage-menu`.
+**Purpose:** Staff-facing CRUD for wall, door, window, and table elements in the mutable live/draft layout. The `{proxy+}`/`ANY` route dispatches internally in the same way as `manage-menu`.
+
+**Authorization:** Every action requires `staff_user`, `owner_user`, or `super_user` through `shared.auth.require_group()`. Authentication and group membership are checked before request-body parsing or DynamoDB access. Missing or malformed direct-invocation claims return `401`; an authenticated caller outside the allowed groups receives `403`.
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `GET` | `items` | No body | `200` with `{"items": [...]}` |
+| `POST` | `items` | One complete, type-discriminated layout element | `201` with the created logical element and a `Location` header |
+| `GET` | `items/<elementId>` | No body | `200` with the logical element |
+| `PUT` | `items/<elementId>` | One or more editable fields; `type` is immutable | `200` with the resulting logical element |
+| `DELETE` | `items/<elementId>` | No body | `204` with an empty body |
+
+The supported `type` values are exactly `wall`, `door`, `window`, and `table`; `decor` is not part of the current data model and is rejected. Every created element requires finite JSON-number values for `x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`. Coordinates and rotation may be signed or zero, while all three dimensions must be greater than zero. A `table` additionally requires `shape` (`rect` or `round`), a positive integer `seats`, and a non-empty `zone`. A `door` or `window` additionally requires a non-empty `wallId`. Variant fields that do not apply to the selected type, unknown fields, and server-controlled fields are rejected. Identifiers, `zone`, and `wallId` are bounded to 128 characters.
+
+`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
+
+The handler generates `elementId` as a UUID. It stores `updatedBy` from the verified JWT `sub` and `updatedAt` as a UTC ISO8601 timestamp on creation and each effective update. Records use `PK="LOCATION#<locationId>"` and `SK="LAYOUT#ELEMENT#<elementId>"`. Public responses contain only `elementId`, the applicable layout fields, `updatedBy`, and `updatedAt`; DynamoDB keys and unexpected stored attributes are not exposed.
+
+Collection reads query only the requested location partition and the `LAYOUT#ELEMENT#` prefix, follow every DynamoDB pagination key, and use strongly consistent reads. An empty partition returns `200` with `{"items": []}`; that can also represent an unknown location because this function cannot access the Location table. Individual reads are strongly consistent. Create, update, and delete use conditional writes. Update and delete condition on the state that was loaded, so a concurrent change returns `409`. Ambiguous DynamoDB write failures are reconciled with a consistent read and at most one idempotent retry.
+
+Malformed paths, JSON, fields, or values return `400`; missing elements and unknown proxy paths return `404`; a recognized path with the wrong method returns `405` with `Allow`; collisions, inconsistent records, and concurrent changes return `409`; and sanitized dependency failures return `503`. All responses include `Cache-Control: no-store`.
+
+The function has no User-table or Location-table permission. It therefore cannot verify that a location exists or that a `staff_user` is assigned to the requested location. `wallId` is shape-validated but the current specification does not define parent-wall existence checks, geometry containment, or delete cascades, so this Lambda does not invent those rules or access another service to enforce them.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|

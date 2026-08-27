@@ -20,6 +20,12 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
         {"get", "put", "delete"}
     ),
+    "/locations/{locationId}/layout-elements/items": frozenset(
+        {"get", "post"}
+    ),
+    "/locations/{locationId}/layout-elements/items/{elementId}": frozenset(
+        {"get", "put", "delete"}
+    ),
     "/menu-images/presigned-url": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"put", "delete"}),
@@ -46,6 +52,20 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/menu/items/{menuItemId}", "get"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "put"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "delete"),
+        ("/locations/{locationId}/layout-elements/items", "get"),
+        ("/locations/{locationId}/layout-elements/items", "post"),
+        (
+            "/locations/{locationId}/layout-elements/items/{elementId}",
+            "get",
+        ),
+        (
+            "/locations/{locationId}/layout-elements/items/{elementId}",
+            "put",
+        ),
+        (
+            "/locations/{locationId}/layout-elements/items/{elementId}",
+            "delete",
+        ),
     }
 )
 

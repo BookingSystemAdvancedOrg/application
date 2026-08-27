@@ -38,6 +38,8 @@ tags:
     description: Staff-facing location creation and detail retrieval.
   - name: Menu
     description: Public menu reads and staff-facing menu-item management.
+  - name: Media
+    description: Authenticated direct-upload capabilities for menu images.
 
 paths:
   /auth/login:
@@ -825,6 +827,83 @@ paths:
         '503':
           $ref: '#/components/responses/MenuServiceUnavailable'
 
+  /menu-images/presigned-url:
+    get:
+      tags:
+        - Media
+      summary: Create a menu-image upload URL
+      operationId: createMenuImageUploadUrl
+      description: |
+        Creates a five-minute S3 PUT URL for a new immutable, location-scoped
+        object key. After uploading with the required Content-Type header,
+        store the returned imageKey through the menu-item create or update
+        operation. The client cannot choose an S3 key or CloudFront
+        distribution.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      parameters:
+        - name: locationId
+          in: query
+          required: true
+          description: Location whose menu will reference the image.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+          example: 154b5c59-3a7f-4248-895c-29ee980356f3
+        - name: contentType
+          in: query
+          required: true
+          description: MIME type that must also be sent with the S3 PUT.
+          schema:
+            $ref: '#/components/schemas/MenuImageContentType'
+          example: image/webp
+      responses:
+        '200':
+          description: A short-lived S3 upload capability was created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuImageUpload'
+              example:
+                uploadUrl: https://menu-images.s3.eu-north-1.amazonaws.com/locations/location-id/menu/image-id.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256
+                imageKey: locations/location-id/menu/image-id.webp
+                expiresIn: 300
+                requiredHeaders:
+                  Content-Type: image/webp
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '405':
+          description: The Lambda was invoked with a method other than GET.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - GET
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '503':
+          $ref: '#/components/responses/ImageUploadServiceUnavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1457,6 +1536,44 @@ components:
           items:
             $ref: '#/components/schemas/MenuItem'
 
+    MenuImageContentType:
+      type: string
+      enum:
+        - image/avif
+        - image/jpeg
+        - image/png
+        - image/webp
+
+    MenuImageUpload:
+      type: object
+      additionalProperties: false
+      required:
+        - uploadUrl
+        - imageKey
+        - expiresIn
+        - requiredHeaders
+      properties:
+        uploadUrl:
+          type: string
+          format: uri
+          description: Presigned S3 URL used with an HTTP PUT request.
+        imageKey:
+          type: string
+          description: Store this key on the menu item after upload succeeds.
+        expiresIn:
+          type: integer
+          enum:
+            - 300
+          description: Number of seconds for which uploadUrl remains valid.
+        requiredHeaders:
+          type: object
+          additionalProperties: false
+          required:
+            - Content-Type
+          properties:
+            Content-Type:
+              $ref: '#/components/schemas/MenuImageContentType'
+
   responses:
     AuthSuccess:
       description: Authenticated successfully or another Cognito challenge is required.
@@ -1696,3 +1813,14 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: menu service unavailable
+    ImageUploadServiceUnavailable:
+      description: A temporary S3 upload capability could not be generated.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: image upload service unavailable

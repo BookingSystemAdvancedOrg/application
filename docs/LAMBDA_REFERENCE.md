@@ -523,14 +523,20 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 
 ### 21. `pre-signed-url`
 **Trigger:** API Gateway — `GET /menu-images/presigned-url` — Auth: `JWT`
-**Purpose:** Generates a presigned S3 URL (PUT, for upload) so the admin front-end can upload a menu item image directly to S3 without routing the binary through API Gateway/Lambda. After a successful replace, this function should also invalidate the relevant CloudFront distribution's cache for that object path so the new image is served immediately rather than the stale cached one.
+**Purpose:** Generates a short-lived presigned S3 URL (PUT, for upload) so the admin front-end can upload a menu item image directly to S3 without routing the binary through API Gateway/Lambda. Every upload uses a new immutable object key; replacing an image means updating the menu item's `imageKey` after the PUT succeeds, so CloudFront sees a new path instead of serving a stale cached object.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `MENU_IMAGES_BUCKET_NAME` | S3 bucket to generate the presigned URL against |
 
-**AWS resource access:** Full `s3:*` on the Menu Images bucket (bucket + objects). `cloudfront:CreateInvalidation` — currently scoped to `Resource: "*"` (both distributions) rather than specific distribution ARNs; this is a known-loose grant flagged for tightening once distribution ARNs are wired through, not something to worry about from the application code side.
+**Authorization:** The caller must have a valid subject and belong to `owner_user` or `super_user`, following the least-privilege group example in the original stub. Missing/malformed direct-invocation claims return `401`; a valid caller outside those groups, including `staff_user`, receives `403`.
+
+The request accepts only `GET` with exactly two query parameters: `locationId` and `contentType`. `locationId` is 1–128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. `contentType` is exactly `image/avif`, `image/jpeg`, `image/png`, or `image/webp` after case normalization. The handler generates `locations/<locationId>/menu/<uuid>.<extension>` itself; callers cannot select an arbitrary bucket key or CloudFront distribution.
+
+The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 300 seconds, and binds the selected content type. A successful `200` response contains exactly `uploadUrl`, `imageKey`, `expiresIn`, and `requiredHeaders`; the uploader must send the returned `Content-Type` header with its S3 `PUT`. Malformed input returns `400`, a wrong method returns `405` with `Allow: GET`, and signing failures return a sanitized `503`. All responses include `Cache-Control: no-store` because the URL carries temporary upload authority.
+
+**AWS resource access:** URL generation locally signs the permitted S3 `PutObject` operation; it does not call S3 to inspect or write an object and it does not call any other AWS service. The existing `cloudfront:CreateInvalidation` grant is unused. Correct post-upload invalidation would require both a CloudFront distribution ID and an S3 upload-completion trigger/callback, neither of which is present in this function's trigger or allowed environment-variable contract. If same-key replacement is introduced later, infra and this specification must add those inputs rather than accepting a client-supplied distribution ID or invalidating before the upload succeeds.
 
 ---
 

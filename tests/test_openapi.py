@@ -20,6 +20,7 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
         {"get", "put", "delete"}
     ),
+    "/menu-images/presigned-url": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"put", "delete"}),
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),

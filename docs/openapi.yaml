@@ -38,6 +38,8 @@ tags:
     description: Staff-facing location creation and detail retrieval.
   - name: Menu
     description: Public menu reads and staff-facing menu-item management.
+  - name: Layout
+    description: Staff-facing management of mutable floor-layout elements.
   - name: Media
     description: Authenticated direct-upload capabilities for menu images.
 
@@ -827,6 +829,221 @@ paths:
         '503':
           $ref: '#/components/responses/MenuServiceUnavailable'
 
+  /locations/{locationId}/layout-elements/items:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+    get:
+      tags:
+        - Layout
+      summary: List draft layout elements
+      operationId: listLayoutElements
+      description: |
+        Returns every wall, door, window, and table in the location's mutable
+        layout partition. An empty list can also mean that the location does
+        not exist because this Lambda has no Location-table access.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Layout elements retrieved successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutElementList'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutServiceUnavailable'
+    post:
+      tags:
+        - Layout
+      summary: Create a draft layout element
+      operationId: createLayoutElement
+      description: |
+        Creates one complete type-discriminated element. The API generates
+        `elementId`, `updatedBy`, and `updatedAt`. `wallId` is stored for doors
+        and windows, but parent existence and geometric containment are not
+        checked by this Lambda.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LayoutElementCreateRequest'
+            example:
+              type: table
+              x: 3.5
+              y: 0
+              z: -2
+              width: 1.4
+              height: 0.75
+              depth: 0.9
+              rotationY: 90
+              shape: rect
+              seats: 4
+              zone: dining-room
+      responses:
+        '201':
+          description: Layout element created successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            Location:
+              description: Relative URI of the created layout element.
+              schema:
+                type: string
+              example: /locations/154b5c59-3a7f-4248-895c-29ee980356f3/layout-elements/items/9befdbd3-45ba-4240-965c-a01b8c981fd3
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutElement'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutServiceUnavailable'
+
+  /locations/{locationId}/layout-elements/items/{elementId}:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+      - $ref: '#/components/parameters/LayoutElementId'
+    get:
+      tags:
+        - Layout
+      summary: Get a draft layout element
+      operationId: getLayoutElement
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Layout element retrieved successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutElement'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LayoutElementNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutServiceUnavailable'
+    put:
+      tags:
+        - Layout
+      summary: Update a draft layout element
+      operationId: updateLayoutElement
+      description: |
+        Strict partial update of one or more editable fields. `type` is
+        immutable. The submitted fields are merged with the stored element and
+        the complete resulting type-specific object is validated. A no-op
+        preserves the existing audit fields.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LayoutElementUpdateRequest'
+            example:
+              x: 4.25
+              rotationY: 135
+      responses:
+        '200':
+          description: Layout element updated, or already in the requested state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutElement'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LayoutElementNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutServiceUnavailable'
+    delete:
+      tags:
+        - Layout
+      summary: Delete a draft layout element
+      operationId: deleteLayoutElement
+      description: |
+        Deletes only the requested record. No relationship cascade is defined
+        for doors or windows that reference a wall.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: Layout element deleted successfully. The response body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LayoutElementNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutServiceUnavailable'
+
   /menu-images/presigned-url:
     get:
       tags:
@@ -958,6 +1175,28 @@ components:
         maxLength: 128
         pattern: '.*\S.*'
       example: c506d15f-dfb4-49d7-82bd-0bd2517d411d
+    LayoutLocationId:
+      name: locationId
+      in: path
+      required: true
+      description: Location whose mutable floor-layout draft is being edited.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '.*\S.*'
+      example: 154b5c59-3a7f-4248-895c-29ee980356f3
+    LayoutElementId:
+      name: elementId
+      in: path
+      required: true
+      description: Layout-element identifier generated by the API.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '.*\S.*'
+      example: 9befdbd3-45ba-4240-965c-a01b8c981fd3
 
   headers:
     CacheControlNoStore:
@@ -1536,6 +1775,310 @@ components:
           items:
             $ref: '#/components/schemas/MenuItem'
 
+    LayoutCoordinate:
+      type: number
+      description: |
+        Finite signed coordinate or rotation value. DynamoDB storage also
+        limits the normalized value to 38 significant digits and an adjusted
+        exponent from -130 through 125.
+
+    LayoutDimension:
+      type: number
+      minimum: 0
+      exclusiveMinimum: true
+      description: Finite dimension greater than zero.
+
+    LayoutBoundedString:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '.*\S.*'
+
+    LayoutWallCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      properties:
+        type:
+          type: string
+          enum:
+            - wall
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+
+    LayoutDoorCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+      properties:
+        type:
+          type: string
+          enum:
+            - door
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        wallId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Referenced wall identifier. This Lambda does not verify that the
+            wall exists or that the door lies within it.
+
+    LayoutWindowCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+      properties:
+        type:
+          type: string
+          enum:
+            - window
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        wallId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Referenced wall identifier. This Lambda does not verify that the
+            wall exists or that the window lies within it.
+
+    LayoutTableCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - shape
+        - seats
+        - zone
+      properties:
+        type:
+          type: string
+          enum:
+            - table
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        shape:
+          type: string
+          enum:
+            - rect
+            - round
+        seats:
+          type: integer
+          minimum: 1
+        zone:
+          $ref: '#/components/schemas/LayoutBoundedString'
+
+    LayoutElementCreateRequest:
+      oneOf:
+        - $ref: '#/components/schemas/LayoutWallCreateRequest'
+        - $ref: '#/components/schemas/LayoutDoorCreateRequest'
+        - $ref: '#/components/schemas/LayoutWindowCreateRequest'
+        - $ref: '#/components/schemas/LayoutTableCreateRequest'
+      discriminator:
+        propertyName: type
+        mapping:
+          wall: '#/components/schemas/LayoutWallCreateRequest'
+          door: '#/components/schemas/LayoutDoorCreateRequest'
+          window: '#/components/schemas/LayoutWindowCreateRequest'
+          table: '#/components/schemas/LayoutTableCreateRequest'
+      description: |
+        Complete type-specific layout element. `decor` is not supported by
+        the current data model.
+
+    LayoutElementUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        Strict partial update. `type` is deliberately absent because it is
+        immutable. `shape`, `seats`, and `zone` apply only to a stored table;
+        `wallId` applies only to a stored door or window. The Lambda validates
+        the merged complete element and rejects inapplicable fields.
+      properties:
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        shape:
+          type: string
+          enum:
+            - rect
+            - round
+        seats:
+          type: integer
+          minimum: 1
+        zone:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+
+    LayoutElement:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - updatedBy
+        - updatedAt
+      description: |
+        Logical layout record. A table also contains `shape`, `seats`, and
+        `zone`; a door or window also contains `wallId`; a wall has no variant
+        fields. Internal DynamoDB keys are never returned.
+      properties:
+        elementId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        type:
+          type: string
+          enum:
+            - wall
+            - door
+            - window
+            - table
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        shape:
+          type: string
+          enum:
+            - rect
+            - round
+        seats:
+          type: integer
+          minimum: 1
+        zone:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedBy:
+          type: string
+          minLength: 1
+          maxLength: 128
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutElementList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayoutElement'
+
     MenuImageContentType:
       type: string
       enum:
@@ -1813,6 +2356,28 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: menu service unavailable
+    LayoutElementNotFound:
+      description: The requested layout element does not exist in this location.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout element not found
+    LayoutServiceUnavailable:
+      description: The live layout table is unavailable or returned an invalid result.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout service unavailable
     ImageUploadServiceUnavailable:
       description: A temporary S3 upload capability could not be generated.
       headers:

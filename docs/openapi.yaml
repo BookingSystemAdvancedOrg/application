@@ -37,7 +37,7 @@ tags:
   - name: Locations
     description: Staff-facing location creation and detail retrieval.
   - name: Menu
-    description: Staff-facing menu-item management.
+    description: Public menu reads and staff-facing menu-item management.
 
 paths:
   /auth/login:
@@ -568,6 +568,45 @@ paths:
         '503':
           $ref: '#/components/responses/LocationServiceUnavailable'
 
+  /locations/{locationId}/menu:
+    parameters:
+      - $ref: '#/components/parameters/MenuLocationId'
+    get:
+      tags:
+        - Menu
+      summary: Get the public menu for a location
+      operationId: getPublicMenu
+      description: |
+        Returns only active menu items in a customer-facing shape. Audit
+        fields and internal DynamoDB keys are not exposed. An empty menu and
+        an unknown location both produce an empty list because this Lambda is
+        not permitted to read the Location table. Item ordering is not
+        guaranteed.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: Active menu items retrieved successfully.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicMenuItemList'
+              example:
+                items:
+                  - menuItemId: c506d15f-dfb4-49d7-82bd-0bd2517d411d
+                    name: Mushroom Toast
+                    description: Sourdough, mushrooms, and herbs
+                    price: 125.50
+                    category: starters
+                    imageKey: menu/locations/central/mushroom-toast.jpg
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+
   /locations/{locationId}/menu/items:
     parameters:
       - $ref: '#/components/parameters/MenuLocationId'
@@ -822,7 +861,7 @@ components:
       name: locationId
       in: path
       required: true
-      description: Location identifier accepted by the menu-management handler.
+      description: Location identifier accepted by the public and staff menu handlers.
       schema:
         type: string
         minLength: 1
@@ -1371,6 +1410,41 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    PublicMenuItem:
+      type: object
+      additionalProperties: false
+      required:
+        - menuItemId
+        - name
+        - description
+        - price
+        - category
+        - imageKey
+      properties:
+        menuItemId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          $ref: '#/components/schemas/MenuPrice'
+        category:
+          $ref: '#/components/schemas/MenuCategory'
+        imageKey:
+          type: string
+
+    PublicMenuItemList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicMenuItem'
 
     MenuItemList:
       type: object

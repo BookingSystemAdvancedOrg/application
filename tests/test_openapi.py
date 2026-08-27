@@ -15,6 +15,7 @@ EXPECTED_OPERATIONS = {
     "/auth/refresh": frozenset({"post"}),
     "/locations": frozenset({"post"}),
     "/locations/{locationId}": frozenset({"get"}),
+    "/locations/{locationId}/menu": frozenset({"get"}),
     "/locations/{locationId}/menu/items": frozenset({"get", "post"}),
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
         {"get", "put", "delete"}
@@ -30,6 +31,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/auth/login", "post"),
         ("/auth/challenge", "post"),
         ("/auth/refresh", "post"),
+        ("/locations/{locationId}/menu", "get"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]

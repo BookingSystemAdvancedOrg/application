@@ -87,7 +87,7 @@ pending → reserved → arrived
 
 ### 3. `get-menu`
 **Trigger:** API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
-**Purpose:** Public, unauthenticated menu read for the customer-facing site — returns the menu items for a given location.
+**Purpose:** Public, unauthenticated menu read for the customer-facing site — returns the active menu items for a given location.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -95,6 +95,12 @@ pending → reserved → arrived
 | `MENU_TABLE_NAME` | DynamoDB table to read from |
 
 **AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Menu table.
+
+The handler accepts only `GET` and requires a non-empty `locationId` of at most 128 characters. It queries `PK="LOCATION#<locationId>"` with `SK begins_with "MENU#"`, follows every DynamoDB pagination key, and returns `200` with `{"items": [...]}`. It does not scan the table or access Location, Cognito, User, or S3 resources.
+
+Only records whose `active` field is exactly `true` are returned. Each public item contains exactly `menuItemId`, `name`, `description`, `price`, `category`, and `imageKey`; `active`, audit subjects/timestamps, `PK`/`SK`, and unexpected stored attributes are not exposed. No customer-facing order is promised because the data model has no display-order attribute.
+
+An empty partition returns `200` with `{"items": []}`. This includes unknown location IDs because the function has no permission to check the Location table. Invalid paths return `400`; other methods return `405` with `Allow: GET`; malformed table results and unexpected DynamoDB or transport failures return a sanitized `503`. All responses include `Cache-Control: no-store`. No JWT or Cognito-group check is performed because the route is intentionally public.
 
 ---
 

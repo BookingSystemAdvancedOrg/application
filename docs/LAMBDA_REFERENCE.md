@@ -309,7 +309,25 @@ The function has no User-table or Location-table permission. It therefore cannot
 
 ### 12. `publish-layout`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/publish` — Auth: `JWT`
-**Purpose:** Takes the current state of the live layout and writes it as a new, immutable version in Published Layout Snapshot. Does not, by itself, change which version is active — that's `activate-layout-version`'s job (a newly published version is not necessarily made live automatically; confirm with product/frontend whether publish should also activate).
+**Purpose:** Takes the current state of the live layout and writes it as a new immutable-content version in Published Layout Snapshot. Publishing definitively does **not** activate the new version or change any existing version; activation belongs to `activate-layout-version`.
+
+**Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
+
+The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical wall, door, window, or table using the same type-specific constraints as `manage-layout-element`. Internal keys and unexpected stored attributes are not copied. Inconsistent source records return `409` rather than producing a corrupt snapshot. An empty draft is publishable; because this Lambda has no Location-table permission, that can also represent an unknown location.
+
+The next version is the numeric maximum across every existing `LAYOUT#v<N>` snapshot plus one; it is not based on lexical sort-key order. Existing snapshot keys and `version` attributes must agree. The new item uses `PK="LOCATION#<locationId>"`, `SK="LAYOUT#v<N>"`, and contains:
+
+- `version = N` and generated `label = "Version N"`
+- `isCurrent = false`, `effectiveFrom = null`, and `effectiveTo = null`
+- `expiresAt = publication time + 4 weeks`
+- the sanitized logical records in `elements`
+- `validPositions = []` because the current model defines no position-compilation rule
+- `createdBy`, `updatedBy` from the JWT subject and identical UTC creation/update timestamps
+
+Creation uses a conditional put so an existing version is never overwritten. If another publisher takes the selected version concurrently, the handler re-reads the numeric maximum and retries once; another collision returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. A successful response is `201` with the logical snapshot (never `PK`/`SK`), `Cache-Control: no-store`, and `Location: /locations/<locationId>/layout/versions/<N>`. The `Location` value identifies the version even though the current API exposes versions through the collection/list and activation routes rather than a dedicated single-version GET.
+
+Malformed paths return `400`; missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a wrong method returns `405` with `Allow: POST`; corrupt source/version records and exhausted allocation collisions return `409`; and sanitized dependency failures return `503`. Every Lambda response includes `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -317,7 +335,7 @@ The function has no User-table or Location-table permission. It therefore cannot
 | `LIVE_LAYOUT_ELEMENT_TABLE_NAME` | Read the current draft state from here |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Write the new version here |
 
-**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot.
+**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot. The implementation only calls `Query` on Live Layout Element and `Query`, `GetItem`, and conditional `PutItem` on Published Layout Snapshot. It accesses no Location/User table or other AWS service.
 
 ---
 

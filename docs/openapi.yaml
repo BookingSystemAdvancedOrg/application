@@ -39,7 +39,7 @@ tags:
   - name: Menu
     description: Public menu reads and staff-facing menu-item management.
   - name: Layout
-    description: Staff-facing management of mutable floor-layout elements.
+    description: Mutable floor-layout editing and versioned snapshot publication.
   - name: Media
     description: Authenticated direct-upload capabilities for menu images.
 
@@ -1242,6 +1242,104 @@ paths:
         '503':
           $ref: '#/components/responses/LayoutServiceUnavailable'
 
+  /locations/{locationId}/layout/publish:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+    post:
+      tags:
+        - Layout
+      summary: Publish a versioned layout snapshot
+      operationId: publishLayout
+      description: |
+        Copies every validated element in the location's mutable layout draft
+        into a new snapshot whose compiled content is immutable. The API
+        allocates the next numeric version and generates its label; the request
+        has no body. An empty
+        draft is a valid snapshot because this Lambda cannot distinguish it
+        from an unknown location without Location-table access.
+
+        Publishing does not activate the new version or modify any older
+        version. `isCurrent` is therefore `false`, both effective-date fields
+        are `null`, and `expiresAt` is four weeks after publication.
+        `validPositions` is currently empty because no compilation rule for
+        that field is defined by the layout model.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '201':
+          description: A new snapshot with immutable compiled content was created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            Location:
+              description: |
+                Identifies the new logical version. The current API does not
+                yet provide a dedicated single-version GET at this URI.
+              schema:
+                type: string
+              example: /locations/154b5c59-3a7f-4248-895c-29ee980356f3/layout/versions/1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedLayoutSnapshot'
+              example:
+                version: 1
+                label: Version 1
+                isCurrent: false
+                effectiveFrom: null
+                effectiveTo: null
+                expiresAt: '2026-09-28T10:00:00Z'
+                elements:
+                  - elementId: 9befdbd3-45ba-4240-965c-a01b8c981fd3
+                    type: table
+                    x: 3.5
+                    y: 0
+                    z: -2
+                    width: 1.4
+                    height: 0.75
+                    depth: 0.9
+                    rotationY: 90
+                    shape: rect
+                    seats: 4
+                    zone: dining-room
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:55:00Z'
+                validPositions: []
+                createdBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                createdAt: '2026-08-31T10:00:00Z'
+                updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                updatedAt: '2026-08-31T10:00:00Z'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '405':
+          description: The Lambda was invoked with a method other than POST.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - POST
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutPublishingServiceUnavailable'
+
   /menu-images/presigned-url:
     get:
       tags:
@@ -1378,7 +1476,7 @@ components:
       name: locationId
       in: path
       required: true
-      description: Location whose mutable floor-layout draft is being edited.
+      description: Location whose mutable floor layout is being accessed.
       schema:
         type: string
         minLength: 1
@@ -2342,6 +2440,77 @@ components:
           items:
             $ref: '#/components/schemas/LayoutElement'
 
+    PublishedLayoutSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - label
+        - isCurrent
+        - effectiveFrom
+        - effectiveTo
+        - expiresAt
+        - elements
+        - validPositions
+        - createdBy
+        - createdAt
+        - updatedBy
+        - updatedAt
+      description: |
+        Newly compiled version whose layout content is immutable. DynamoDB
+        `PK` and `SK` are internal and are never returned. A publish operation
+        always creates an inactive version and does not alter older snapshots;
+        later activation may update lifecycle metadata.
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        label:
+          type: string
+          minLength: 1
+          description: Generated as `Version <version>`.
+        isCurrent:
+          type: boolean
+          enum:
+            - false
+        effectiveFrom:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null until a later activation operation assigns it.
+        effectiveTo:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null on a newly published inactive version.
+        expiresAt:
+          type: string
+          format: date-time
+          description: UTC publication time plus exactly four weeks.
+        elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayoutElement'
+        validPositions:
+          type: array
+          maxItems: 0
+          description: |
+            Reserved for a future position-compilation rule. The current
+            publisher always returns and stores an empty list.
+          items:
+            type: object
+            additionalProperties: true
+        createdBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        createdAt:
+          type: string
+          format: date-time
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
     MenuImageContentType:
       type: string
       enum:
@@ -2647,6 +2816,17 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout service unavailable
+    LayoutPublishingServiceUnavailable:
+      description: A layout source or snapshot-table operation could not be completed safely.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout publishing service unavailable
     ImageUploadServiceUnavailable:
       description: A temporary S3 upload capability could not be generated.
       headers:

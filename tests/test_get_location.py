@@ -20,13 +20,19 @@ APP_PATH = (
 )
 TABLE_NAME = "test-location"
 LOCATION_ID = "location-id"
+_UNSET = object()
 
 
-def location_item():
-    return {
+def location_item(
+    *,
+    location_id=LOCATION_ID,
+    include_updated=False,
+    **overrides,
+):
+    item = {
         "PK": "PLATFORM",
-        "SK": f"LOCATION#{LOCATION_ID}",
-        "locationId": LOCATION_ID,
+        "SK": f"LOCATION#{location_id}",
+        "locationId": location_id,
         "name": "Södermalm",
         "address": "Götgatan 1, Stockholm",
         "timezone": "Europe/Stockholm",
@@ -44,6 +50,30 @@ def location_item():
         "createdBy": "creator-sub",
         "createdAt": "2026-08-20T10:00:00Z",
     }
+    if include_updated:
+        item.update(
+            {
+                "updatedBy": "editor-sub",
+                "updatedAt": "2026-08-21T10:00:00Z",
+            }
+        )
+    item.update(overrides)
+    return item
+
+
+def public_location(item):
+    return {
+        key: (
+            int(value)
+            if isinstance(value, Decimal)
+            and value == value.to_integral_value()
+            else float(value)
+            if isinstance(value, Decimal)
+            else value
+        )
+        for key, value in item.items()
+        if key not in {"PK", "SK"}
+    }
 
 
 def make_event(
@@ -53,7 +83,7 @@ def make_event(
     location_id=LOCATION_ID,
     sub="caller-sub",
 ):
-    return {
+    event = {
         "requestContext": {
             "http": {"method": method},
             "authorizer": {
@@ -65,8 +95,10 @@ def make_event(
                 }
             },
         },
-        "pathParameters": {"locationId": location_id},
     }
+    if location_id is not _UNSET:
+        event["pathParameters"] = {"locationId": location_id}
+    return event
 
 
 @pytest.fixture
@@ -233,8 +265,6 @@ def test_non_get_method_returns_405_before_reading(
 @pytest.mark.parametrize(
     "path_parameters",
     [
-        None,
-        {},
         {"locationId": None},
         {"locationId": ""},
         {"locationId": "   "},
@@ -350,3 +380,248 @@ def test_dynamodb_failures_return_sanitized_503(
         "error": "location service unavailable",
     }
     assert "sensitive AWS message" not in response["body"]
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]', '["super_user"]'])
+def test_privileged_groups_can_list_locations(app_and_table, groups):
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item(location_id="a"))
+
+    response = app.handler(
+        make_event(groups=groups, location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert len(json.loads(response["body"])["items"]) == 1
+
+
+def test_staff_cannot_list_the_location_directory_before_reading(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(location_id=_UNSET), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "forbidden"}
+    table_factory.assert_not_called()
+
+
+def test_list_returns_empty_array_for_an_empty_directory(app_and_table):
+    app, _ = app_and_table
+
+    response = app.handler(
+        make_event(groups='["owner_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"items": []}
+
+
+def test_list_queries_only_location_records_and_hides_internal_keys(
+    app_and_table,
+):
+    app, location_table = app_and_table
+    first = location_item(location_id="a", include_updated=True)
+    second = location_item(location_id="b")
+    location_table.put_item(Item=first)
+    location_table.put_item(Item=second)
+    location_table.put_item(
+        Item={"PK": "PLATFORM", "SK": "CONFIG", "value": "hidden"}
+    )
+    location_table.put_item(
+        Item={"PK": "OTHER", "SK": "LOCATION#other", "value": "hidden"}
+    )
+
+    response = app.handler(
+        make_event(groups='["super_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {
+        "items": [public_location(first), public_location(second)]
+    }
+    assert all(
+        "PK" not in item and "SK" not in item
+        for item in json.loads(response["body"])["items"]
+    )
+
+
+def test_list_follows_every_query_page_with_consistent_reads(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    first = location_item(location_id="a")
+    second = location_item(location_id="b", include_updated=True)
+    last_key = {"PK": "PLATFORM", "SK": "LOCATION#a"}
+    location_table = Mock()
+    location_table.query.side_effect = [
+        {"Items": [first], "LastEvaluatedKey": last_key},
+        {"Items": [second]},
+    ]
+    table_factory = Mock(return_value=location_table)
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(groups='["owner_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {
+        "items": [public_location(first), public_location(second)]
+    }
+    table_factory.assert_called_once_with(TABLE_NAME)
+    assert location_table.query.call_count == 2
+    first_request = location_table.query.call_args_list[0].kwargs
+    second_request = location_table.query.call_args_list[1].kwargs
+    assert first_request["ConsistentRead"] is True
+    assert "ExclusiveStartKey" not in first_request
+    assert "KeyConditionExpression" in first_request
+    assert second_request["ExclusiveStartKey"] == last_key
+
+
+@pytest.mark.parametrize(
+    "query_response",
+    [
+        None,
+        {},
+        {"Items": None},
+        {"Items": [None]},
+        {"Items": [], "LastEvaluatedKey": {}},
+        {"Items": [], "LastEvaluatedKey": "invalid"},
+    ],
+)
+def test_malformed_list_response_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    query_response,
+):
+    app, _ = app_and_table
+    location_table = Mock()
+    location_table.query.return_value = query_response
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+
+    response = app.handler(
+        make_event(groups='["owner_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"]) == {
+        "error": "location service unavailable",
+    }
+
+
+def test_list_rejects_a_repeated_last_evaluated_key(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    last_key = {"PK": "PLATFORM", "SK": "LOCATION#a"}
+    location_table = Mock()
+    location_table.query.side_effect = [
+        {"Items": [], "LastEvaluatedKey": last_key},
+        {"Items": [], "LastEvaluatedKey": last_key},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+
+    response = app.handler(
+        make_event(groups='["owner_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 503
+    assert location_table.query.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PK", "OTHER"),
+        ("SK", "LOCATION#wrong"),
+        ("locationId", "wrong"),
+        ("timezone", "Not/AZone"),
+        ("createdAt", "not-a-time"),
+        ("updatedBy", None),
+    ],
+)
+def test_inconsistent_location_in_list_returns_409(
+    app_and_table,
+    monkeypatch,
+    field,
+    value,
+):
+    app, _ = app_and_table
+    corrupt = location_item(include_updated=field == "updatedBy")
+    corrupt[field] = value
+    location_table = Mock()
+    location_table.query.return_value = {"Items": [corrupt]}
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+
+    response = app.handler(
+        make_event(groups='["super_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+
+
+def test_list_dynamodb_failure_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    location_table = Mock()
+    location_table.query.side_effect = EndpointConnectionError(
+        endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+    )
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+
+    response = app.handler(
+        make_event(groups='["owner_user"]', location_id=_UNSET),
+        None,
+    )
+
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"]) == {
+        "error": "location service unavailable",
+    }
+
+
+def test_single_read_returns_optional_update_audit_fields(app_and_table):
+    app, location_table = app_and_table
+    stored = location_item(include_updated=True)
+    location_table.put_item(Item=stored)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(stored)
+    assert response["headers"]["Cache-Control"] == "no-store"
+
+
+def test_single_read_rejects_an_overlong_location_id_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(location_id="x" * 129), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": "locationId is invalid"}
+    table_factory.assert_not_called()

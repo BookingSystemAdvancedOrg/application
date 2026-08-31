@@ -165,6 +165,43 @@ paths:
         '502':
           $ref: '#/components/responses/AuthBadGateway'
 
+  /users:
+    get:
+      tags:
+        - Users
+      summary: List visible internal users
+      operationId: listUsers
+      description: |
+        Returns the User-table staff directory. Super-users see every valid
+        mirrored user. Owners see staff users plus their own record, but not
+        other owner or super-user records. The Lambda follows every DynamoDB
+        scan page and sorts the result case-insensitively by name, then by
+        `cognitoSub`. This collection read uses the User-table mirror and does
+        not call Cognito.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Visible internal users, possibly an empty list.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserList'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
   /users/invite:
     post:
       tags:
@@ -243,6 +280,45 @@ paths:
   /users/{cognitoSub}:
     parameters:
       - $ref: '#/components/parameters/CognitoSub'
+    get:
+      tags:
+        - Users
+      summary: Get an internal user
+      operationId: getUser
+      description: |
+        Reads one User-table mirror record. A super-user may read any valid
+        user. An owner may read a staff user or their own record, but not
+        another owner or super-user. An owner's non-self staff read verifies
+        that the target's live managed Cognito group is still `staff_user`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Full logical user record without DynamoDB keys.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '429':
+          $ref: '#/components/responses/NoStoreTooManyRequests'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
     put:
       tags:
         - Users
@@ -469,6 +545,39 @@ paths:
           $ref: '#/components/responses/UserServiceUnavailable'
 
   /locations:
+    get:
+      tags:
+        - Locations
+      summary: List restaurant locations
+      operationId: listLocations
+      description: |
+        Returns every valid logical location from the `PLATFORM` partition.
+        The Lambda follows every DynamoDB query page and uses strongly
+        consistent reads. Response ordering is not guaranteed. Only owners
+        and super-users may list the complete location directory.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Restaurant locations, possibly an empty list.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationList'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
     post:
       tags:
         - Locations
@@ -478,7 +587,8 @@ paths:
         Creates a location with weekly business hours and its booking policy.
         All seven weekdays must be present, though a closed day may use an
         empty interval list. Intervals are sorted before storage and must not
-        overlap.
+        overlap. The caller and current time initialize both the creation and
+        update audit fields.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -520,6 +630,8 @@ paths:
         '201':
           description: Location created successfully.
           headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
             Location:
               description: Relative URI of the created location.
               schema:
@@ -530,13 +642,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Location'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/NoStoreBadRequest'
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/NoStoreForbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/LocationServiceUnavailable'
 
@@ -557,18 +669,104 @@ paths:
       responses:
         '200':
           description: Full location details.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Location'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/NoStoreBadRequest'
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/NoStoreForbidden'
         '404':
           $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
+    put:
+      tags:
+        - Locations
+      summary: Update a restaurant location
+      operationId: updateLocation
+      description: |
+        Performs a partial update despite using `PUT`; at least one editable
+        field is required. `businessHours`, when supplied, must still contain
+        all seven weekdays. Server-controlled identifiers and audit fields
+        cannot be changed. An effective change sets `updatedBy` and
+        `updatedAt`; an idempotent no-op preserves the existing audit fields.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationUpdateRequest'
+            example:
+              name: Central Bistro and Bar
+              gracePeriodHours: 0.5
+      responses:
+        '200':
+          description: Location updated, or already in the requested state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
+    delete:
+      tags:
+        - Locations
+      summary: Delete a restaurant location
+      operationId: deleteLocation
+      description: |
+        Deletes only the Location-table directory record. This is a hard,
+        non-cascading delete: related users, menus, layouts, reservations, and
+        other location-scoped records are not inspected or removed. Those
+        records may therefore remain accessible through Lambdas that do not
+        verify the Location table.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: Location directory record deleted; the body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/LocationServiceUnavailable'
 
@@ -1151,6 +1349,7 @@ components:
       schema:
         type: string
         minLength: 1
+        maxLength: 128
         pattern: '.*\S.*'
       example: 154b5c59-3a7f-4248-895c-29ee980356f3
     MenuLocationId:
@@ -1509,6 +1708,17 @@ components:
           type: string
           format: date-time
 
+    UserList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+
     BusinessHoursInterval:
       type: object
       additionalProperties: false
@@ -1595,6 +1805,37 @@ components:
           description: Grace period in hours; zero is allowed.
           example: 0.25
 
+    LocationUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        Partial location update. At least one editable field is required.
+        If `businessHours` is present, it must contain all seven weekdays.
+      properties:
+        name:
+          $ref: '#/components/schemas/NonBlankString'
+        address:
+          $ref: '#/components/schemas/NonBlankString'
+        timezone:
+          allOf:
+            - $ref: '#/components/schemas/NonBlankString'
+          description: Valid IANA timezone name.
+          example: Europe/Stockholm
+        businessHours:
+          $ref: '#/components/schemas/BusinessHours'
+        bookingDurationHours:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          description: Booking duration in hours; must be greater than zero.
+          example: 2
+        gracePeriodHours:
+          type: number
+          minimum: 0
+          description: Grace period in hours; zero is allowed.
+          example: 0.25
+
     Location:
       type: object
       additionalProperties: false
@@ -1628,6 +1869,28 @@ components:
         createdAt:
           type: string
           format: date-time
+        updatedBy:
+          type: string
+          description: |
+            Subject that created or most recently changed the location.
+            Optional only for legacy records created before update auditing.
+        updatedAt:
+          type: string
+          format: date-time
+          description: |
+            Creation or last effective-update time. Optional only for legacy
+            records created before update auditing.
+
+    LocationList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Location'
 
     MenuCategory:
       type: string
@@ -2319,6 +2582,9 @@ components:
 
     LocationNotFound:
       description: The requested location does not exist.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:
@@ -2327,6 +2593,9 @@ components:
             error: location not found
     LocationServiceUnavailable:
       description: The Location table is unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:

@@ -1,16 +1,19 @@
 """manage-user
 
 TRIGGER:
-    API Gateway -- ANY /users/{proxy+} -- Auth: JWT
+    API Gateway -- GET /users and ANY /users/{proxy+} -- Auth: JWT
 
 PURPOSE:
-    Manages the internal-user lifecycle: invite, profile update,
-    deactivate/reactivate, delete, and Cognito group change. Callers must be
-    owner_user or super_user. Owners may manage staff_user accounts; only
-    super-users may manage privileged accounts.
+    Lists and reads internal users and manages their lifecycle: invite,
+    profile update, deactivate/reactivate, delete, and Cognito group change.
+    Callers must be owner_user or super_user. Owners may read staff_user
+    accounts and themselves and manage staff_user accounts; only super-users
+    may read or manage other privileged accounts.
 
 ROUTES:
+    GET    /users
     POST   /users/invite
+    GET    /users/{cognitoSub}
     PUT    /users/{cognitoSub}
     POST   /users/{cognitoSub}/deactivate
     POST   /users/{cognitoSub}/reactivate
@@ -30,6 +33,11 @@ AWS RESOURCE ACCESS:
     configured user pool.
 
 NOTES:
+    User listing uses the DynamoDB directory mirror so it does not make one
+    Cognito request per row. Owner results are limited to mirrored staff rows
+    plus the caller's own row. A single non-self owner read verifies the
+    target's live Cognito group before returning it.
+
     Cognito and DynamoDB cannot be updated atomically. The handler compensates
     completed Cognito steps when a later step fails where the available API
     actions permit a safe rollback.
@@ -318,14 +326,14 @@ def _match_route(proxy_path):
 
     normalized = proxy_path.strip("/")
     if not normalized:
-        return None
+        return "list", None, ("GET",)
 
     segments = normalized.split("/")
     if segments == ["invite"]:
         return "invite", None, ("POST",)
 
     if len(segments) == 1 and segments[0]:
-        return "user", segments[0], ("PUT", "DELETE")
+        return "user", segments[0], ("GET", "PUT", "DELETE")
 
     if len(segments) == 2 and all(segments):
         target_sub, suffix = segments
@@ -363,6 +371,43 @@ def _public_user(item):
     return {field: item[field] for field in _PUBLIC_USER_FIELDS}
 
 
+def _validated_stored_user(item, expected_sub=None):
+    public_user = _public_user(item)
+    cognito_sub = public_user["cognitoSub"]
+
+    if (
+        not isinstance(cognito_sub, str)
+        or not cognito_sub
+        or cognito_sub != cognito_sub.strip()
+        or len(cognito_sub) > 128
+        or (expected_sub is not None and cognito_sub != expected_sub)
+        or item.get("PK") != f"USER#{cognito_sub}"
+        or item.get("SK") != "PROFILE"
+    ):
+        raise _UserConflict
+
+    if any(not isinstance(value, str) for value in public_user.values()):
+        raise _UserConflict
+    if any(
+        not public_user[field].strip()
+        for field in ("name", "email", "phone", "createdBy", "createdAt")
+    ):
+        raise _UserConflict
+    if public_user["role"] not in _ROLE_TO_GROUP:
+        raise _UserConflict
+    if public_user["status"] not in {"active", "disabled"}:
+        raise _UserConflict
+
+    location_id = public_user["locationId"]
+    if public_user["role"] == "staff":
+        if not location_id:
+            raise _UserConflict
+    elif location_id:
+        raise _UserConflict
+
+    return public_user
+
+
 def _read_user(target_sub):
     response = table(USER_TABLE_NAME).get_item(
         Key={
@@ -384,10 +429,64 @@ def _load_user(target_sub):
     item = _read_user(target_sub)
     if item is None:
         return None
-    if item.get("cognitoSub") != target_sub:
-        raise _UserConflict
-    _public_user(item)
+    _validated_stored_user(item, target_sub)
     return item
+
+
+def _list_users(caller_sub, caller_groups):
+    user_table = table(USER_TABLE_NAME)
+    request = {"ConsistentRead": True}
+    users = []
+    seen_last_keys = []
+    is_super_user = _is_super_user(caller_groups)
+
+    while True:
+        response = user_table.scan(**request)
+        if not isinstance(response, dict):
+            raise _UserServiceFailure
+
+        page = response.get("Items")
+        if not isinstance(page, list):
+            raise _UserServiceFailure
+
+        for item in page:
+            if not isinstance(item, dict):
+                raise _UserServiceFailure
+
+            public_user = _validated_stored_user(item)
+            if (
+                is_super_user
+                or public_user["role"] == "staff"
+                or public_user["cognitoSub"] == caller_sub
+            ):
+                users.append(public_user)
+
+        last_key = response.get("LastEvaluatedKey")
+        if last_key is None:
+            users.sort(
+                key=lambda user: (
+                    user["name"].casefold(),
+                    user["cognitoSub"],
+                )
+            )
+            return _user_response(
+                HTTPStatus.OK.value,
+                {"items": users},
+            )
+
+        if (
+            not isinstance(last_key, dict)
+            or set(last_key) != {"PK", "SK"}
+            or not all(
+                isinstance(last_key[key], str) and last_key[key]
+                for key in ("PK", "SK")
+            )
+            or any(last_key == seen_key for seen_key in seen_last_keys)
+        ):
+            raise _UserServiceFailure
+
+        seen_last_keys.append(last_key)
+        request["ExclusiveStartKey"] = last_key
 
 
 def _expected_item_condition(expected):
@@ -638,7 +737,7 @@ def _authorize_target(
     if _is_super_user(caller_groups):
         return
 
-    if action == "profile" and target_sub == caller_sub:
+    if action in {"profile", "read"} and target_sub == caller_sub:
         return
 
     if target.get("role") != "staff":
@@ -769,6 +868,20 @@ def _invite_user(event, caller_sub, caller_groups):
         _public_user(item),
         headers={"Location": f"/users/{cognito_sub}"},
     )
+
+
+def _get_user(caller_sub, caller_groups, target_sub):
+    target = _load_user(target_sub)
+    if target is None:
+        return _user_error(HTTPStatus.NOT_FOUND.value, "user not found")
+
+    _authorize_target(
+        caller_sub,
+        caller_groups,
+        target,
+        action="read",
+    )
+    return _user_response(HTTPStatus.OK.value, _public_user(target))
 
 
 def _update_profile(event, caller_sub, caller_groups, target_sub):
@@ -1087,6 +1200,14 @@ def handler(event, context):
 
         if route_name == "invite":
             return _invite_user(event, caller_sub, caller_groups)
+        if route_name == "list":
+            return _list_users(caller_sub, caller_groups)
+        if route_name == "user" and method == "GET":
+            return _get_user(
+                caller_sub,
+                caller_groups,
+                target_sub,
+            )
         if route_name == "user" and method == "PUT":
             return _update_profile(
                 event,

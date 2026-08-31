@@ -54,34 +54,58 @@ pending → reserved → arrived
 ## Locations & Menu
 
 ### 1. `create-location`
-**Trigger:** API Gateway — `POST /locations` — Auth: `JWT`
-**Purpose:** Creates a new restaurant location record (name, address, business hours, etc. — whatever fields the front-end form collects). Should be restricted in-handler to `owner_user`/`super_user` groups; regular `staff_user` callers shouldn't be able to create locations.
+**Triggers:** API Gateway — `POST /locations`, plus `PUT` and `DELETE /locations/{locationId}` — Auth: `JWT`
+**Purpose:** Creates, partially updates, and hard-deletes Location-table directory records. Every action is restricted in-handler to `owner_user`/`super_user`; a regular `staff_user` cannot mutate locations.
 
-**Request body:** `name`, `address`, `timezone`, `businessHours`, `bookingDurationHours`, and `gracePeriodHours`. `timezone` is an IANA name such as `Europe/Stockholm`. `businessHours` contains every lowercase weekday mapped to a list of same-day `{opensAt, closesAt}` intervals in 24-hour `HH:MM` format; an empty list means closed. The handler generates `locationId`, `createdBy`, and `createdAt` and returns the created logical location with HTTP `201`.
+**Dispatch and payload contract:**
+
+| Method | Path | Request | Success |
+|---|---|---|---|
+| `POST` | `/locations` | Complete editable location payload | `201` with the created logical location and `Location: /locations/<locationId>` |
+| `PUT` | `/locations/<locationId>` | One or more editable location fields | `200` with the updated or already-current logical location |
+| `DELETE` | `/locations/<locationId>` | No body | `204` with an empty body |
+
+The editable fields are `name`, `address`, `timezone`, `businessHours`, `bookingDurationHours`, and `gracePeriodHours`. `timezone` is an IANA name such as `Europe/Stockholm`. `businessHours` contains every lowercase weekday mapped to a list of same-day `{opensAt, closesAt}` intervals in 24-hour `HH:MM` format; an empty list means closed. The intervals for each day are sorted and may not overlap. `bookingDurationHours` must be greater than zero and `gracePeriodHours` may be zero.
+
+`POST` requires all six editable fields. It generates `locationId`, `createdBy`, and `createdAt`, and initializes `updatedBy`/`updatedAt` to the same caller and instant. `PUT` is intentionally a partial update despite using that method: at least one editable field is required, and `businessHours`, when present, must still contain all seven weekdays. Internal keys, IDs, and audit fields are server-controlled and rejected in request bodies. An effective update changes `updatedBy`/`updatedAt`; an idempotent no-op returns the stored record without changing those audit values. Legacy records that do not yet contain `updatedBy`/`updatedAt` remain readable and updatable.
+
+Updates and deletes first load the target with a strongly consistent `GetItem` and condition the write on the complete state that was read. A missing target returns `404`; an inconsistent stored record or concurrent change returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. Malformed paths, bodies, fields, or values return `400`; a recognized route with the wrong method returns `405` with `Allow`; and unexpected DynamoDB or transport failures return a sanitized `503`.
+
+All successful and error responses include `Cache-Control: no-store`.
+
+`DELETE` removes only `PK="PLATFORM", SK="LOCATION#<locationId>"`. It is deliberately hard and non-cascading: it does not inspect or remove assigned users, menus, layouts, reservations, or any other location-scoped records. Those records can remain orphaned, and Lambdas that lack Location-table access can continue to return them. Archival or cascading deletion requires a separate cross-table design.
 
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | DynamoDB table to write the new location item to |
+| `LOCATION_TABLE_NAME` | DynamoDB table containing the location records to mutate |
 
 **AWS resource access:** Full `dynamodb:*` on the Location table only.
 
 ---
 
 ### 2. `get-location`
-**Trigger:** API Gateway — `GET /locations/{locationId}` — Auth: `JWT`
-**Purpose:** Returns full detail for a single location. JWT-gated per the user's explicit decision — even reading one location's detail requires a logged-in caller (staff-facing, not the public menu/booking flow).
+**Triggers:** API Gateway — `GET /locations` and `GET /locations/{locationId}` — Auth: `JWT`
+**Purpose:** Returns the complete location directory or full detail for one location. Both reads are JWT-gated staff APIs, not part of the public menu or booking flow.
 
-**Authorization and response:** Allows callers in `staff_user`, `owner_user`, or `super_user`. The handler performs one strongly consistent `GetItem` using `PK="PLATFORM"` and `SK="LOCATION#<locationId>"`. It returns the logical location without the internal `PK`/`SK` attributes, or HTTP `404` when the location does not exist. This function has no User-table environment variable or permission, so this task authorizes by group only; restricting a `staff_user` to their assigned location would require expanding the function's declared resource access.
+`GET /locations` is restricted to `owner_user`/`super_user`. It queries `PK="PLATFORM"` with `SK begins_with "LOCATION#"`, uses strongly consistent reads, follows every DynamoDB pagination key, and returns `200` with `{"items": [...]}`. An empty directory returns `{"items": []}` and item ordering is not guaranteed.
+
+`GET /locations/<locationId>` allows callers in `staff_user`, `owner_user`, or `super_user`. It performs one strongly consistent `GetItem` using `PK="PLATFORM"` and `SK="LOCATION#<locationId>"`, returning the logical location or `404` when it does not exist. Both actions omit internal `PK`/`SK` attributes. New records contain `updatedBy`/`updatedAt`; those fields are optional on legacy records created before update auditing.
+
+Stored records are checked for the expected key, identifier, and public shape before they are returned. Inconsistent records return `409`; malformed location IDs return `400`; recognized routes with the wrong method return `405` with `Allow`; malformed DynamoDB responses and unexpected DynamoDB or transport failures return a sanitized `503`. This function has no User-table environment variable or permission, so it authorizes by Cognito group only; it cannot restrict a `staff_user` item read to their assigned location.
+
+All successful and error responses include `Cache-Control: no-store`.
 
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | DynamoDB table to read from |
+| `LOCATION_TABLE_NAME` | DynamoDB table containing the location directory |
 
 **AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Location table.
+
+**Infrastructure routing note:** API Gateway needs explicit `GET /locations`, `POST /locations`, and method-specific `GET`, `PUT`, and `DELETE /locations/{locationId}` routes. The two `GET` routes integrate with `get-location`; `POST`, `PUT`, and `DELETE` integrate with `create-location`. Route-scoped Lambda invoke permissions must cover the new method/path ARNs. The `create-location` execution role needs full Location-table access for its writes; `get-location` remains read-only. Every route in this family keeps the JWT authorizer, and CORS must allow `GET`, `POST`, `PUT`, and `DELETE` where applicable.
 
 ---
 
@@ -393,10 +417,12 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 ---
 
 ### 17. `manage-user`
-**Trigger:** API Gateway — `ANY /users/{proxy+}` — Auth: `JWT`
-**Purpose:** Full staff lifecycle management — invite/create a staff member, update their profile, deactivate/reactivate, remove them, and assign/change their Cognito group. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path.
+**Triggers:** API Gateway — `GET /users` and `ANY /users/{proxy+}` — Auth: `JWT`
+**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the bare collection read is a separate API Gateway route because a greedy `{proxy+}` does not match `/users`.
 
-**Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. An `owner_user` may manage `staff_user` targets only. For non-self owner actions, current Cognito membership is checked rather than trusting only the mirrored User-table role. Only a `super_user` may create a privileged user or manage a target whose current group is `owner_user` or `super_user`. Self-profile updates are allowed, but self-status changes, self-deletion, and self-group changes are forbidden. Missing/malformed direct-invocation claims return `401`; a valid caller without sufficient permissions returns `403`.
+**Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. A `super_user` may read every valid User-table mirror. An `owner_user` list contains staff records plus the caller's own record, and an owner may individually read only a staff record or their own record; another owner or super-user is hidden with `403`. The collection read deliberately uses the mirrored `role` without N+1 Cognito calls. A non-self owner read of one mirrored staff user verifies via `AdminListGroupsForUser` that the target's live managed membership is exactly `staff_user`; a mismatch returns `403`.
+
+For mutations, an `owner_user` may manage `staff_user` targets only. For non-self owner mutations, current Cognito membership is checked rather than trusting only the mirrored User-table role. Only a `super_user` may create a privileged user or manage a target whose current group is `owner_user` or `super_user`. Self-profile updates are allowed, but self-status changes, self-deletion, and self-group changes are forbidden. Missing/malformed direct-invocation claims return `401`; a valid caller without sufficient permissions returns `403`.
 
 The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`. They deliberately map to the User-table `role` values as follows:
 
@@ -410,7 +436,9 @@ The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`
 
 | Method | `proxy` path | Request | Success |
 |---|---|---|---|
+| `GET` | Bare `/users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
 | `POST` | `invite` | `name`, `email`, `phone`, `group`, plus conditional `locationId` | `201` with the logical user and `Location: /users/<cognitoSub>` |
+| `GET` | `<cognitoSub>` | No body | `200` with one visible logical user |
 | `PUT` | `<cognitoSub>` | One or more of `name`, `email`, `phone`, `locationId` | `200` with the updated logical user |
 | `POST` | `<cognitoSub>/deactivate` | No body | `200` with `status="disabled"` |
 | `POST` | `<cognitoSub>/reactivate` | No body | `200` with `status="active"` |
@@ -419,15 +447,15 @@ The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`
 
 `PUT /users/<cognitoSub>` is intentionally a partial update even though it uses `PUT`: the infrastructure's CORS configuration does not permit `PATCH`. At least one supported field is required. Server-controlled fields (`PK`, `SK`, `cognitoSub`, `role`, `status`, `createdBy`, and `createdAt`) and unknown fields are rejected. A group change uses the same location rule as creation: a target `staff_user` needs a non-empty `locationId`; privileged targets get an empty location.
 
-The logical user returned by successful non-delete actions contains `cognitoSub`, `role`, `locationId`, `name`, `email`, `phone`, `status`, `createdBy`, and `createdAt`; internal `PK`/`SK` attributes are never returned. Because these responses contain staff PII, successful and error responses include `Cache-Control: no-store`.
+The logical user returned by successful non-delete actions contains `cognitoSub`, `role`, `locationId`, `name`, `email`, `phone`, `status`, `createdBy`, and `createdAt`; internal `PK`/`SK` attributes are never returned. The collection read performs a paginated, strongly consistent DynamoDB `Scan`, validates every mirror, applies the caller visibility rule, and returns an empty `items` array when no records are visible. Results are sorted case-insensitively by `name`, then by `cognitoSub`. The individual read uses one strongly consistent `GetItem` and applies the live-group check described above when needed. Because these responses contain staff PII, successful and error responses include `Cache-Control: no-store`.
 
 **AWS operation behavior:** Creating a user calls `AdminCreateUser`, then `AdminAddUserToGroup`, then conditionally writes `PK="USER#<cognitoSub>"`, `SK="PROFILE"` to the User table. If group assignment or a definite DynamoDB non-write fails after confirmed Cognito creation, the handler attempts `AdminDeleteUser` compensation and returns a sanitized service error. An ambiguous transport failure from `AdminCreateUser` is never followed by deletion because the handler cannot prove that this request created the account. Profile, status, and group changes first load the mirrored user consistently, mutate Cognito, and conditionally update DynamoDB against the complete state that was loaded so concurrent changes return `409` instead of being overwritten. Profile/status flows snapshot the live Cognito attributes or enabled state with `AdminGetUser` and only restore changes this request actually made. A group change uses `AdminListGroupsForUser`, ensures the requested managed group is present, and removes other managed groups before updating the mapped role/location. Delete loads the mirror, calls `AdminDeleteUser`, then conditionally deletes the exact mirrored state; `UserNotFoundException` is treated as an already-completed Cognito deletion so a retry can repair a stale mirror.
 
 For a DynamoDB `5xx`, timeout, or transport error, a single-item write may already have committed. The handler performs a strongly consistent read and one idempotent retry before deciding the outcome. If the desired state is present, it returns success without compensating Cognito. If the result remains uncertain, it returns a sanitized `503` and deliberately avoids a potentially destructive rollback.
 
-Malformed JSON/fields return `400`; missing targets and unknown proxy paths return `404`; recognized paths with the wrong method return `405` with `Allow`; duplicate identities or conditional conflicts return `409`; throttling returns `429`; and unexpected Cognito/DynamoDB/transport failures return a sanitized `503`. Raw AWS error messages are never returned.
+Malformed paths, JSON, or fields return `400`; missing targets and unknown proxy paths return `404`; recognized paths with the wrong method return `405` with `Allow`; inconsistent directory mirrors, duplicate identities, or conditional conflicts return `409`; throttling returns `429`; and malformed AWS responses or unexpected Cognito/DynamoDB/transport failures return a sanitized `503`. Raw AWS error messages are never returned.
 
-This route family intentionally has no list/get action. API Gateway's greedy `/users/{proxy+}` route also does not match bare `/users`; a staff-directory read API requires a separate documented route. The function has no Location-table access, so it validates the shape of an assignment but cannot prove that a supplied `locationId` exists. Cognito disable/group changes also do not revoke an access token already accepted by API Gateway; with the current one-hour access-token lifetime and no `AdminUserGlobalSignOut` permission, old claims can remain usable until token expiry.
+The function has no Location-table access, so it validates the shape of an assignment but cannot prove that a supplied `locationId` exists. Cognito disable/group changes also do not revoke an access token already accepted by API Gateway; with the current one-hour access-token lifetime and no `AdminUserGlobalSignOut` permission, old claims can remain usable until token expiry.
 
 **Environment variables:**
 | Name | Meaning |
@@ -439,6 +467,8 @@ This route family intentionally has no list/get action. API Gateway's greedy `/u
 **AWS resource access:**
 - Full `dynamodb:*` on the User table.
 - Cognito, scoped to this specific action set on the user pool (not a wildcard): `AdminCreateUser`, `AdminDeleteUser`, `AdminDisableUser`, `AdminEnableUser`, `AdminUpdateUserAttributes`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminGetUser`, `AdminListGroupsForUser`.
+
+**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The greedy route cannot receive the bare collection path. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
 
 ---
 
@@ -569,8 +599,8 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 
 | # | Function | Trigger | Auth |
 |---|---|---|---|
-| 1 | `create-location` | API GW `POST /locations` | JWT |
-| 2 | `get-location` | API GW `GET /locations/{locationId}` | JWT |
+| 1 | `create-location` | API GW `POST /locations`; `PUT`/`DELETE /locations/{locationId}` | JWT |
+| 2 | `get-location` | API GW `GET /locations`; `GET /locations/{locationId}` | JWT |
 | 3 | `get-menu` | API GW `GET /locations/{locationId}/menu` | NONE |
 | 4 | `manage-menu` | API GW `ANY /locations/{locationId}/menu/{proxy+}` | JWT |
 | 5 | `get-availability` | API GW `GET /locations/{locationId}/availability` | NONE |
@@ -585,7 +615,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
-| 17 | `manage-user` | API GW `ANY /users/{proxy+}` | JWT |
+| 17 | `manage-user` | API GW `GET /users`; `ANY /users/{proxy+}` | JWT |
 | 18 | `stripe-webhook` | Lambda Function URL (public, Stripe-signed) | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |

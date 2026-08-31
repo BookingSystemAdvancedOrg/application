@@ -13,8 +13,8 @@ EXPECTED_OPERATIONS = {
     "/auth/login": frozenset({"post"}),
     "/auth/challenge": frozenset({"post"}),
     "/auth/refresh": frozenset({"post"}),
-    "/locations": frozenset({"post"}),
-    "/locations/{locationId}": frozenset({"get"}),
+    "/locations": frozenset({"get", "post"}),
+    "/locations/{locationId}": frozenset({"get", "put", "delete"}),
     "/locations/{locationId}/menu": frozenset({"get"}),
     "/locations/{locationId}/menu/items": frozenset({"get", "post"}),
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
@@ -27,8 +27,9 @@ EXPECTED_OPERATIONS = {
         {"get", "put", "delete"}
     ),
     "/menu-images/presigned-url": frozenset({"get"}),
+    "/users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
-    "/users/{cognitoSub}": frozenset({"put", "delete"}),
+    "/users/{cognitoSub}": frozenset({"get", "put", "delete"}),
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),
     "/users/{cognitoSub}/reactivate": frozenset({"post"}),
     "/users/{cognitoSub}/group": frozenset({"put"}),

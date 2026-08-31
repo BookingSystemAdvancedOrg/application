@@ -124,6 +124,23 @@ def user_item(
     }
 
 
+def public_user(item):
+    return {
+        field: item[field]
+        for field in (
+            "cognitoSub",
+            "role",
+            "locationId",
+            "name",
+            "email",
+            "phone",
+            "status",
+            "createdBy",
+            "createdAt",
+        )
+    }
+
+
 def set_create_response(cognito, sub=TARGET_SUB):
     cognito.admin_create_user.return_value = {
         "User": {
@@ -319,10 +336,11 @@ def test_unknown_route_returns_404_without_aws(app_state):
     ("method", "proxy", "allowed"),
     [
         ("GET", "invite", "POST"),
-        ("PATCH", TARGET_SUB, "PUT, DELETE"),
+        ("PATCH", TARGET_SUB, "GET, PUT, DELETE"),
         ("PUT", f"{TARGET_SUB}/deactivate", "POST"),
         ("PUT", f"{TARGET_SUB}/reactivate", "POST"),
         ("POST", f"{TARGET_SUB}/group", "PUT"),
+        ("POST", "", "GET"),
     ],
 )
 def test_known_route_wrong_method_returns_405(
@@ -338,6 +356,453 @@ def test_known_route_wrong_method_returns_405(
     assert_response(response, 405, {"error": "method not allowed"})
     assert response["headers"]["Allow"] == allowed
     assert user_table.scan()["Items"] == []
+    assert cognito.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    ("role", "location_id"),
+    [
+        ("staff", "location-id"),
+        ("owner_user", ""),
+        ("super_admin", ""),
+    ],
+)
+def test_super_user_can_get_any_user_without_calling_cognito(
+    app_state,
+    role,
+    location_id,
+):
+    app, user_table, cognito = app_state
+    stored = user_item(role=role, location_id=location_id)
+    put_user(user_table, stored)
+
+    response = app.handler(
+        make_event(
+            method="GET",
+            proxy=TARGET_SUB,
+            groups='["super_user"]',
+        ),
+        None,
+    )
+
+    assert_response(response, 200, public_user(stored))
+    assert cognito.mock_calls == []
+    assert get_user(user_table) == stored
+
+
+def test_owner_can_get_self_without_calling_cognito(app_state):
+    app, user_table, cognito = app_state
+    stored = user_item(
+        sub=CALLER_SUB,
+        role="owner_user",
+        location_id="",
+    )
+    put_user(user_table, stored)
+
+    response = app.handler(
+        make_event(method="GET", proxy=CALLER_SUB),
+        None,
+    )
+
+    assert_response(response, 200, public_user(stored))
+    assert cognito.mock_calls == []
+
+
+def test_owner_can_get_staff_after_live_group_check(app_state):
+    app, user_table, cognito = app_state
+    stored = user_item()
+    put_user(user_table, stored)
+
+    response = app.handler(
+        make_event(method="GET", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 200, public_user(stored))
+    cognito.admin_list_groups_for_user.assert_called_once_with(
+        UserPoolId=USER_POOL_ID,
+        Username=TARGET_SUB,
+    )
+    assert get_user(user_table) == stored
+
+
+@pytest.mark.parametrize("role", ["owner_user", "super_admin"])
+def test_owner_cannot_get_another_privileged_user(app_state, role):
+    app, user_table, cognito = app_state
+    stored = user_item(role=role, location_id="")
+    put_user(user_table, stored)
+
+    response = app.handler(
+        make_event(method="GET", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 403, {"error": "forbidden"})
+    assert cognito.mock_calls == []
+    assert get_user(user_table) == stored
+
+
+@pytest.mark.parametrize("live_group", ["owner_user", "super_user"])
+def test_owner_single_get_denies_a_staff_mirror_with_privileged_live_group(
+    app_state,
+    live_group,
+):
+    app, user_table, cognito = app_state
+    stored = user_item()
+    put_user(user_table, stored)
+    cognito.admin_list_groups_for_user.return_value = {
+        "Groups": [{"GroupName": live_group}],
+    }
+
+    response = app.handler(
+        make_event(method="GET", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 403, {"error": "forbidden"})
+    cognito.admin_list_groups_for_user.assert_called_once_with(
+        UserPoolId=USER_POOL_ID,
+        Username=TARGET_SUB,
+    )
+    assert get_user(user_table) == stored
+
+
+def test_get_user_returns_404_without_calling_cognito(app_state):
+    app, _, cognito = app_state
+
+    response = app.handler(
+        make_event(method="GET", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 404, {"error": "user not found"})
+    assert cognito.mock_calls == []
+
+
+def test_get_user_uses_the_exact_key_and_a_consistent_read(
+    app_state,
+    monkeypatch,
+):
+    app, user_table, cognito = app_state
+    stored = user_item()
+    put_user(user_table, stored)
+    table_spy = Mock(wraps=user_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(
+            method="GET",
+            proxy=TARGET_SUB,
+            groups='["super_user"]',
+        ),
+        None,
+    )
+
+    assert_response(response, 200, public_user(stored))
+    table_spy.get_item.assert_called_once_with(
+        Key={"PK": f"USER#{TARGET_SUB}", "SK": "PROFILE"},
+        ConsistentRead=True,
+    )
+    table_spy.put_item.assert_not_called()
+    table_spy.delete_item.assert_not_called()
+    assert cognito.mock_calls == []
+
+
+def test_super_user_lists_every_user_in_deterministic_order(app_state):
+    app, user_table, cognito = app_state
+    staff_zed = user_item(sub="staff-zed", name="zed")
+    staff_alpha = user_item(sub="staff-alpha", name="Alpha")
+    owner = user_item(
+        sub="owner-target",
+        role="owner_user",
+        location_id="",
+        name="alpha",
+    )
+    super_user = user_item(
+        sub="super-target",
+        role="super_admin",
+        location_id="",
+        name="Beta",
+    )
+    for stored in (staff_zed, staff_alpha, owner, super_user):
+        put_user(user_table, stored)
+
+    event = make_event(method="GET", proxy="", groups='["super_user"]')
+    event["pathParameters"] = None
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "items": [
+                public_user(owner),
+                public_user(staff_alpha),
+                public_user(super_user),
+                public_user(staff_zed),
+            ]
+        },
+    )
+    assert cognito.mock_calls == []
+
+
+def test_owner_list_contains_staff_and_self_but_not_other_privileged_users(
+    app_state,
+):
+    app, user_table, cognito = app_state
+    caller = user_item(
+        sub=CALLER_SUB,
+        role="owner_user",
+        location_id="",
+        name="Owner Caller",
+    )
+    staff = user_item(sub="staff-target", name="Staff Member")
+    other_owner = user_item(
+        sub="owner-target",
+        role="owner_user",
+        location_id="",
+        name="Other Owner",
+    )
+    super_user = user_item(
+        sub="super-target",
+        role="super_admin",
+        location_id="",
+        name="Super User",
+    )
+    for stored in (caller, staff, other_owner, super_user):
+        put_user(user_table, stored)
+
+    response = app.handler(
+        make_event(method="GET", proxy=""),
+        None,
+    )
+
+    assert_response(
+        response,
+        200,
+        {"items": [public_user(caller), public_user(staff)]},
+    )
+    # Listing deliberately trusts the directory mirror and avoids one
+    # AdminListGroupsForUser request for every returned staff member.
+    assert cognito.mock_calls == []
+
+
+def test_owner_list_returns_an_empty_array_when_no_visible_users_exist(
+    app_state,
+):
+    app, user_table, cognito = app_state
+    put_user(
+        user_table,
+        user_item(
+            sub="another-owner",
+            role="owner_user",
+            location_id="",
+        ),
+    )
+
+    response = app.handler(make_event(method="GET", proxy=""), None)
+
+    assert_response(response, 200, {"items": []})
+    assert cognito.mock_calls == []
+
+
+def test_list_users_reads_every_scan_page_consistently(
+    app_state,
+    monkeypatch,
+):
+    app, _, cognito = app_state
+    first = user_item(sub="first", name="Zulu")
+    second = user_item(sub="second", name="Alpha")
+    last_key = {"PK": "USER#first", "SK": "PROFILE"}
+    scanning_table = Mock()
+    scanning_table.scan.side_effect = [
+        {"Items": [first], "LastEvaluatedKey": last_key},
+        {"Items": [second]},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: scanning_table)
+
+    response = app.handler(
+        make_event(method="GET", proxy="", groups='["super_user"]'),
+        None,
+    )
+
+    assert_response(
+        response,
+        200,
+        {"items": [public_user(second), public_user(first)]},
+    )
+    assert scanning_table.scan.call_args_list == [
+        call(ConsistentRead=True),
+        call(ConsistentRead=True, ExclusiveStartKey=last_key),
+    ]
+    assert cognito.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    "scan_response",
+    [
+        None,
+        {},
+        {"Items": None},
+        {"Items": [None]},
+        {"Items": [], "LastEvaluatedKey": {}},
+        {"Items": [], "LastEvaluatedKey": "invalid"},
+        {"Items": [], "LastEvaluatedKey": {"PK": "USER#target-sub"}},
+        {
+            "Items": [],
+            "LastEvaluatedKey": {"PK": "", "SK": "PROFILE"},
+        },
+        {
+            "Items": [],
+            "LastEvaluatedKey": {
+                "PK": "USER#target-sub",
+                "SK": "PROFILE",
+                "extra": "invalid",
+            },
+        },
+    ],
+)
+def test_malformed_list_response_returns_sanitized_503(
+    app_state,
+    monkeypatch,
+    scan_response,
+):
+    app, _, cognito = app_state
+    scanning_table = Mock()
+    scanning_table.scan.return_value = scan_response
+    monkeypatch.setattr(app, "table", lambda _: scanning_table)
+
+    response = app.handler(
+        make_event(method="GET", proxy="", groups='["super_user"]'),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "user service unavailable"},
+    )
+    assert cognito.mock_calls == []
+
+
+def test_list_users_rejects_a_repeated_last_evaluated_key(
+    app_state,
+    monkeypatch,
+):
+    app, _, cognito = app_state
+    last_key = {"PK": "USER#target-sub", "SK": "PROFILE"}
+    scanning_table = Mock()
+    scanning_table.scan.side_effect = [
+        {"Items": [], "LastEvaluatedKey": last_key},
+        {"Items": [], "LastEvaluatedKey": dict(last_key)},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: scanning_table)
+
+    response = app.handler(
+        make_event(method="GET", proxy="", groups='["super_user"]'),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "user service unavailable"},
+    )
+    assert scanning_table.scan.call_count == 2
+    assert cognito.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PK", "USER#different"),
+        ("SK", "OTHER"),
+        ("cognitoSub", ""),
+        ("role", "unknown"),
+        ("locationId", ""),
+        ("status", "unknown"),
+        ("name", None),
+    ],
+)
+def test_inconsistent_user_in_list_returns_409(
+    app_state,
+    monkeypatch,
+    field,
+    value,
+):
+    app, _, cognito = app_state
+    inconsistent = {**user_item(), field: value}
+    scanning_table = Mock()
+    scanning_table.scan.return_value = {"Items": [inconsistent]}
+    monkeypatch.setattr(app, "table", lambda _: scanning_table)
+
+    response = app.handler(
+        make_event(method="GET", proxy="", groups='["super_user"]'),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "user record is inconsistent"},
+    )
+    assert cognito.mock_calls == []
+
+
+def test_list_dynamodb_failure_is_sanitized_and_does_not_call_cognito(
+    app_state,
+    monkeypatch,
+):
+    app, _, cognito = app_state
+    scanning_table = Mock()
+    scanning_table.scan.side_effect = client_error(
+        "InternalServerError",
+        "Scan",
+    )
+    monkeypatch.setattr(app, "table", lambda _: scanning_table)
+
+    response = app.handler(
+        make_event(method="GET", proxy="", groups='["super_user"]'),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "user service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+    assert cognito.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    "read_result",
+    [None, {"Item": []}],
+)
+def test_malformed_single_user_read_returns_sanitized_503(
+    app_state,
+    monkeypatch,
+    read_result,
+):
+    app, _, cognito = app_state
+    reading_table = Mock()
+    reading_table.get_item.return_value = read_result
+    monkeypatch.setattr(app, "table", lambda _: reading_table)
+
+    response = app.handler(
+        make_event(
+            method="GET",
+            proxy=TARGET_SUB,
+            groups='["super_user"]',
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "user service unavailable"},
+    )
     assert cognito.mock_calls == []
 
 

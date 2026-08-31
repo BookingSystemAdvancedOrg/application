@@ -32,7 +32,7 @@ Stores each restaurant's menu items, including the S3 key path to the item's foo
 
 Directory of all registered internal users (staff / owner-user / super-admin). Staff are scoped to one location; owner-users and super-admins have access to all locations. Mirrors Cognito identities for listing/editing — Cognito remains the auth source of truth.
 
-Keyed by `cognitoSub` rather than location, because the frequent operation is "look up the calling user's role/location from their token" (used by `block-table` and anything else doing per-request authorization) — a direct `GetItem`, no `Query`, no GSI. Listing all staff at a given location is the rare operation instead, handled with an occasional `Scan` filtered on `locationId` — cheap enough given this table's realistic size (a staff directory, not millions of rows).
+Keyed by `cognitoSub` rather than location, because the frequent operation is "look up the calling user's role/location from their token" (used by `block-table` and anything else doing per-request authorization) — a direct `GetItem`, no `Query`, no GSI. Directory listing uses a paginated, strongly consistent `Scan` — cheap enough given this table's realistic size (a staff directory, not millions of rows) — and sorts results case-insensitively by `name`, then `cognitoSub`. A `super_user` may read every valid mirror; an `owner_user` may read staff mirrors plus their own record, but not another owner or super-user. The collection view uses the mirror without N+1 Cognito calls. A non-self owner read of one staff record additionally verifies that the target's current managed Cognito membership is exactly `staff_user`.
 
 | Attribute | Type |
 |---|---|
@@ -154,7 +154,7 @@ No charge happens at booking — the card is saved via a Stripe SetupIntent inst
 
 ## Location
 
-Directory of all restaurant locations, created by a super-admin when onboarding a new location. Also stores per-location booking policy.
+Directory of all restaurant locations, created by an owner or super-admin when onboarding a new location. Also stores per-location booking policy.
 
 | Attribute | Type |
 |---|---|
@@ -169,8 +169,14 @@ Directory of all restaurant locations, created by a super-admin when onboarding 
 | `gracePeriodHours` | Number |
 | `createdBy` | String |
 | `createdAt` | String (ISO8601) |
+| `updatedBy` | String |
+| `updatedAt` | String (ISO8601) |
 
 `PK` is the fixed literal string `PLATFORM` for every item in this table — every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
+
+New records initialize `updatedBy`/`updatedAt` to the same values as `createdBy`/`createdAt`. An effective partial update changes `updatedBy`/`updatedAt`; an idempotent no-op preserves them. Legacy records created before update auditing may omit these two fields and remain readable.
+
+Deleting a location is a hard, non-cascading delete of this directory item only. It does not remove or validate User, Menu, Layout, Reservation, or other location-scoped records. Those records can remain orphaned, and a Lambda without Location-table access can continue to return them. A future archival or cascading workflow requires an explicit cross-table design rather than being inferred from this table operation.
 
 `businessHours` contains all seven lowercase weekday names. Each value is a list of non-overlapping, same-day intervals using 24-hour `HH:MM` strings; an empty list means the location is closed that day. `timezone` determines how these local wall-clock times are interpreted, including daylight-saving transitions.
 

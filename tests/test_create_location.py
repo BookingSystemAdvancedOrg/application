@@ -29,6 +29,7 @@ WEEKDAYS = (
     "saturday",
     "sunday",
 )
+_UNSET = object()
 
 
 def valid_body():
@@ -45,12 +46,75 @@ def valid_body():
     }
 
 
+def location_item(*, location_id="location-id", include_updated=True):
+    body = valid_body()
+    item = {
+        "PK": "PLATFORM",
+        "SK": f"LOCATION#{location_id}",
+        "locationId": location_id,
+        **body,
+        "bookingDurationHours": Decimal("2"),
+        "gracePeriodHours": Decimal("0.5"),
+        "createdBy": "creator-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+    }
+    if include_updated:
+        item.update(
+            {
+                "updatedBy": "previous-editor",
+                "updatedAt": "2026-08-21T10:00:00Z",
+            }
+        )
+    return item
+
+
+def public_location(item):
+    fields = (
+        "locationId",
+        "name",
+        "address",
+        "timezone",
+        "businessHours",
+        "bookingDurationHours",
+        "gracePeriodHours",
+        "createdBy",
+        "createdAt",
+    )
+    result = {field: item[field] for field in fields}
+    if "updatedBy" in item and "updatedAt" in item:
+        result.update(
+            updatedBy=item["updatedBy"],
+            updatedAt=item["updatedAt"],
+        )
+    for field in ("bookingDurationHours", "gracePeriodHours"):
+        value = result[field]
+        if isinstance(value, Decimal):
+            result[field] = (
+                int(value)
+                if value == value.to_integral_value()
+                else float(value)
+            )
+    return result
+
+
+def put_location(location_table, item=None):
+    location_table.put_item(Item=item or location_item())
+
+
+def get_location(location_table, location_id="location-id"):
+    return location_table.get_item(
+        Key={"PK": "PLATFORM", "SK": f"LOCATION#{location_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+
+
 def make_event(
     body=None,
     *,
     method="POST",
     groups='["owner_user"]',
     sub="caller-sub",
+    location_id=_UNSET,
 ):
     if body is None:
         body = valid_body()
@@ -70,6 +134,8 @@ def make_event(
         "body": json.dumps(body),
         "isBase64Encoded": False,
     }
+    if location_id is not _UNSET:
+        event["pathParameters"] = {"locationId": location_id}
     return event
 
 
@@ -409,7 +475,16 @@ def test_rejects_invalid_business_hours(
 
 @pytest.mark.parametrize(
     "field",
-    ["PK", "SK", "locationId", "createdBy", "createdAt", "unknown"],
+    [
+        "PK",
+        "SK",
+        "locationId",
+        "createdBy",
+        "createdAt",
+        "updatedBy",
+        "updatedAt",
+        "unknown",
+    ],
 )
 def test_rejects_caller_controlled_or_unknown_fields(
     app_and_table,
@@ -459,6 +534,8 @@ def test_creates_expected_location_item(app_and_table, monkeypatch):
         "gracePeriodHours": 0.5,
         "createdBy": "caller-sub",
         "createdAt": "2026-08-20T10:00:00Z",
+        "updatedBy": "caller-sub",
+        "updatedAt": "2026-08-20T10:00:00Z",
     }
 
     stored = location_table.get_item(
@@ -536,3 +613,350 @@ def test_maps_transport_errors_to_503(app_and_table, monkeypatch):
     assert json.loads(response["body"]) == {
         "error": "location service unavailable",
     }
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]', '["super_user"]'])
+def test_allowed_groups_can_update_locations(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, location_table = app_and_table
+    put_location(location_table)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated location"},
+            method="PUT",
+            groups=groups,
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert json.loads(response["body"])["name"] == "Updated location"
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_staff_cannot_mutate_locations(app_and_table, method):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+
+    response = app.handler(
+        make_event(
+            {"name": "Must not change"},
+            method=method,
+            groups='["staff_user"]',
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    assert get_location(location_table) == original
+
+
+def test_collection_and_item_routes_return_route_specific_allow_headers(
+    app_and_table,
+):
+    app, location_table = app_and_table
+
+    collection = app.handler(make_event(method="GET"), None)
+    item = app.handler(
+        make_event(method="POST", location_id="location-id"),
+        None,
+    )
+
+    assert collection["statusCode"] == 405
+    assert collection["headers"]["Allow"] == "POST"
+    assert item["statusCode"] == 405
+    assert item["headers"]["Allow"] == "PUT, DELETE"
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize("location_id", [None, "", "   ", 123, "x" * 129])
+def test_mutation_rejects_invalid_location_id(
+    app_and_table,
+    location_id,
+):
+    app, location_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id=location_id,
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ({}, "at least one editable field is required"),
+        ({"name": ""}, "name is required"),
+        ({"createdBy": "caller"}, "unsupported fields: createdBy"),
+        (
+            {"businessHours": {"monday": []}},
+            "businessHours is missing: friday, saturday, sunday, thursday, tuesday, wednesday",
+        ),
+    ],
+)
+def test_update_rejects_invalid_partial_body(
+    app_and_table,
+    body,
+    error,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+
+    response = app.handler(
+        make_event(
+            body,
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": error}
+    assert get_location(location_table) == original
+
+
+def test_partial_update_preserves_creation_fields_and_sets_update_audit(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "  Central Bistro  ", "gracePeriodHours": 1.25},
+            method="PUT",
+            sub="editor-sub",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(stored)
+    assert stored["name"] == "Central Bistro"
+    assert stored["gracePeriodHours"] == Decimal("1.25")
+    assert stored["createdBy"] == original["createdBy"]
+    assert stored["createdAt"] == original["createdAt"]
+    assert stored["updatedBy"] == "editor-sub"
+    assert stored["updatedAt"] == "2026-08-22T10:00:00Z"
+
+
+def test_update_accepts_a_legacy_record_and_adds_update_audit(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item(include_updated=False)
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"address": "New address"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored["updatedBy"] == "caller-sub"
+    assert stored["updatedAt"] == "2026-08-22T10:00:00Z"
+
+
+def test_noop_update_preserves_audit_and_skips_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    table_spy = Mock(wraps=location_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: "must-not-be-used")
+
+    response = app.handler(
+        make_event(
+            {"name": original["name"], "bookingDurationHours": 2.0},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(original)
+    table_spy.put_item.assert_not_called()
+    assert get_location(location_table) == original
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_mutating_a_missing_location_returns_404(app_and_table, method):
+    app, location_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method=method,
+            location_id="missing",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 404
+    assert json.loads(response["body"]) == {"error": "location not found"}
+    assert table_items(location_table) == []
+
+
+def test_delete_removes_only_the_requested_location(app_and_table):
+    app, location_table = app_and_table
+    target = location_item()
+    other = location_item(location_id="other-location")
+    put_location(location_table, target)
+    put_location(location_table, other)
+
+    response = app.handler(
+        make_event(method="DELETE", location_id="location-id"),
+        None,
+    )
+
+    assert response == {
+        "statusCode": 204,
+        "headers": {"Cache-Control": "no-store"},
+        "body": "",
+    }
+    assert get_location(location_table) is None
+    assert get_location(location_table, "other-location") == other
+
+
+def test_inconsistent_stored_location_returns_409_without_mutation(
+    app_and_table,
+):
+    app, location_table = app_and_table
+    corrupt = location_item()
+    del corrupt["createdAt"]
+    put_location(location_table, corrupt)
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+    assert get_location(location_table) == corrupt
+
+
+def test_concurrent_update_returns_409_and_preserves_winner(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    winner = {**original, "name": "Concurrent winner"}
+    put_location(location_table, original)
+    real_put = location_table.put_item
+    table_spy = Mock(wraps=location_table)
+
+    def racing_put(**kwargs):
+        real_put(Item=winner)
+        return real_put(**kwargs)
+
+    table_spy.put_item.side_effect = racing_put
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(
+            {"name": "Requested update"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location changed; retry request",
+    }
+    assert get_location(location_table) == winner
+
+
+def test_ambiguous_committed_update_is_reconciled(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    original = location_item()
+    desired = {
+        **original,
+        "name": "Updated",
+        "updatedBy": "caller-sub",
+        "updatedAt": "2026-08-22T10:00:00Z",
+    }
+    location_table = Mock()
+    location_table.get_item.side_effect = [
+        {"Item": original},
+        {"Item": desired},
+    ]
+    location_table.put_item.side_effect = EndpointConnectionError(
+        endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+    )
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(desired)
+    assert location_table.put_item.call_count == 1
+
+
+@pytest.mark.parametrize("value", [10**126, 1e200, float("nan")])
+def test_create_rejects_numbers_outside_dynamodb_range(
+    app_and_table,
+    value,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body["bookingDurationHours"] = value
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert table_items(location_table) == []

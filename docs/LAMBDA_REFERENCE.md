@@ -309,7 +309,25 @@ The function has no User-table or Location-table permission. It therefore cannot
 
 ### 12. `publish-layout`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/publish` — Auth: `JWT`
-**Purpose:** Takes the current state of the live layout and writes it as a new, immutable version in Published Layout Snapshot. Does not, by itself, change which version is active — that's `activate-layout-version`'s job (a newly published version is not necessarily made live automatically; confirm with product/frontend whether publish should also activate).
+**Purpose:** Takes the current state of the live layout and writes it as a new immutable-content version in Published Layout Snapshot. Publishing definitively does **not** activate the new version or change any existing version; activation belongs to `activate-layout-version`.
+
+**Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
+
+The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical wall, door, window, or table using the same type-specific constraints as `manage-layout-element`. Internal keys and unexpected stored attributes are not copied. Inconsistent source records return `409` rather than producing a corrupt snapshot. An empty draft is publishable; because this Lambda has no Location-table permission, that can also represent an unknown location.
+
+The next version is the numeric maximum across every existing `LAYOUT#v<N>` snapshot plus one; it is not based on lexical sort-key order. Existing snapshot keys and `version` attributes must agree. The new item uses `PK="LOCATION#<locationId>"`, `SK="LAYOUT#v<N>"`, and contains:
+
+- `version = N` and generated `label = "Version N"`
+- `isCurrent = false`, `effectiveFrom = null`, and `effectiveTo = null`
+- `expiresAt = publication time + 4 weeks`
+- the sanitized logical records in `elements`
+- `validPositions = []` because the current model defines no position-compilation rule
+- `createdBy`, `updatedBy` from the JWT subject and identical UTC creation/update timestamps
+
+Creation uses a conditional put so an existing version is never overwritten. If another publisher takes the selected version concurrently, the handler re-reads the numeric maximum and retries once; another collision returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. A successful response is `201` with the logical snapshot (never `PK`/`SK`), `Cache-Control: no-store`, and `Location: /locations/<locationId>/layout/versions/<N>`. The `Location` value identifies the version even though the current API exposes versions through the collection/list and activation routes rather than a dedicated single-version GET.
+
+Malformed paths return `400`; missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a wrong method returns `405` with `Allow: POST`; corrupt source/version records and exhausted allocation collisions return `409`; and sanitized dependency failures return `503`. Every Lambda response includes `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -317,7 +335,7 @@ The function has no User-table or Location-table permission. It therefore cannot
 | `LIVE_LAYOUT_ELEMENT_TABLE_NAME` | Read the current draft state from here |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Write the new version here |
 
-**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot.
+**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot. The implementation only calls `Query` on Live Layout Element and `Query`, `GetItem`, and conditional `PutItem` on Published Layout Snapshot. It accesses no Location/User table or other AWS service.
 
 ---
 
@@ -417,8 +435,8 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 ---
 
 ### 17. `manage-user`
-**Triggers:** API Gateway — `GET /users` and `ANY /users/{proxy+}` — Auth: `JWT`
-**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the bare collection read is a separate API Gateway route because a greedy `{proxy+}` does not match `/users`.
+**Triggers:** API Gateway — `GET /list-users` and `ANY /users/{proxy+}` — Auth: `JWT`
+**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the collection read uses the dedicated `/list-users` route and reaches the same handler without a `proxy` path parameter.
 
 **Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. A `super_user` may read every valid User-table mirror. An `owner_user` list contains staff records plus the caller's own record, and an owner may individually read only a staff record or their own record; another owner or super-user is hidden with `403`. The collection read deliberately uses the mirrored `role` without N+1 Cognito calls. A non-self owner read of one mirrored staff user verifies via `AdminListGroupsForUser` that the target's live managed membership is exactly `staff_user`; a mismatch returns `403`.
 
@@ -436,7 +454,7 @@ The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`
 
 | Method | `proxy` path | Request | Success |
 |---|---|---|---|
-| `GET` | Bare `/users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
+| `GET` | Dedicated `/list-users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
 | `POST` | `invite` | `name`, `email`, `phone`, `group`, plus conditional `locationId` | `201` with the logical user and `Location: /users/<cognitoSub>` |
 | `GET` | `<cognitoSub>` | No body | `200` with one visible logical user |
 | `PUT` | `<cognitoSub>` | One or more of `name`, `email`, `phone`, `locationId` | `200` with the updated logical user |
@@ -468,7 +486,7 @@ The function has no Location-table access, so it validates the shape of an assig
 - Full `dynamodb:*` on the User table.
 - Cognito, scoped to this specific action set on the user pool (not a wildcard): `AdminCreateUser`, `AdminDeleteUser`, `AdminDisableUser`, `AdminEnableUser`, `AdminUpdateUserAttributes`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminGetUser`, `AdminListGroupsForUser`.
 
-**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The greedy route cannot receive the bare collection path. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
+**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /list-users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The dedicated route invokes the list action without a `proxy` path parameter. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
 
 ---
 
@@ -615,7 +633,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
-| 17 | `manage-user` | API GW `GET /users`; `ANY /users/{proxy+}` | JWT |
+| 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |
 | 18 | `stripe-webhook` | Lambda Function URL (public, Stripe-signed) | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |

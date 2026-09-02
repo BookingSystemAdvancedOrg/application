@@ -26,8 +26,9 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/layout-elements/items/{elementId}": frozenset(
         {"get", "put", "delete"}
     ),
+    "/locations/{locationId}/layout/publish": frozenset({"post"}),
     "/menu-images/presigned-url": frozenset({"get"}),
-    "/users": frozenset({"get"}),
+    "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"get", "put", "delete"}),
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),
@@ -120,3 +121,38 @@ def test_openapi_security_matches_public_and_protected_routes(openapi_document):
                 else ADMIN_GROUPS
             )
             assert operation["x-required-groups"] == expected_groups
+
+
+def test_publish_layout_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    operation = document["paths"][
+        "/locations/{locationId}/layout/publish"
+    ]["post"]
+
+    assert "requestBody" not in operation
+    assert operation["operationId"] == "publishLayout"
+    assert operation["security"] == BEARER_SECURITY
+    assert operation["x-required-groups"] == ADMIN_GROUPS
+    assert set(operation["responses"]) == {
+        "201",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["201"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/PublishedLayoutSnapshot"
+    }
+    assert "Location" in operation["responses"]["201"]["headers"]
+
+    snapshot = document["components"]["schemas"][
+        "PublishedLayoutSnapshot"
+    ]
+    assert snapshot["additionalProperties"] is False
+    assert set(snapshot["required"]) == set(snapshot["properties"])
+    assert snapshot["properties"]["isCurrent"]["enum"] == [False]
+    assert snapshot["properties"]["validPositions"]["maxItems"] == 0

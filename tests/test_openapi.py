@@ -28,7 +28,7 @@ EXPECTED_OPERATIONS = {
     ),
     "/locations/{locationId}/layout/publish": frozenset({"post"}),
     "/menu-images/presigned-url": frozenset({"get"}),
-    "/users": frozenset({"get"}),
+    "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"get", "put", "delete"}),
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),

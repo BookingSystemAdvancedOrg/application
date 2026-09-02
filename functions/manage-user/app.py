@@ -1,7 +1,7 @@
 """manage-user
 
 TRIGGER:
-    API Gateway -- GET /users and ANY /users/{proxy+} -- Auth: JWT
+    API Gateway -- GET /list-users and ANY /users/{proxy+} -- Auth: JWT
 
 PURPOSE:
     Lists and reads internal users and manages their lifecycle: invite,
@@ -11,7 +11,7 @@ PURPOSE:
     may read or manage other privileged accounts.
 
 ROUTES:
-    GET    /users
+    GET    /list-users
     POST   /users/invite
     GET    /users/{cognitoSub}
     PUT    /users/{cognitoSub}

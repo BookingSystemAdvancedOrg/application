@@ -435,8 +435,8 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 ---
 
 ### 17. `manage-user`
-**Triggers:** API Gateway — `GET /users` and `ANY /users/{proxy+}` — Auth: `JWT`
-**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the bare collection read is a separate API Gateway route because a greedy `{proxy+}` does not match `/users`.
+**Triggers:** API Gateway — `GET /list-users` and `ANY /users/{proxy+}` — Auth: `JWT`
+**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the collection read uses the dedicated `/list-users` route and reaches the same handler without a `proxy` path parameter.
 
 **Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. A `super_user` may read every valid User-table mirror. An `owner_user` list contains staff records plus the caller's own record, and an owner may individually read only a staff record or their own record; another owner or super-user is hidden with `403`. The collection read deliberately uses the mirrored `role` without N+1 Cognito calls. A non-self owner read of one mirrored staff user verifies via `AdminListGroupsForUser` that the target's live managed membership is exactly `staff_user`; a mismatch returns `403`.
 
@@ -454,7 +454,7 @@ The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`
 
 | Method | `proxy` path | Request | Success |
 |---|---|---|---|
-| `GET` | Bare `/users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
+| `GET` | Dedicated `/list-users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
 | `POST` | `invite` | `name`, `email`, `phone`, `group`, plus conditional `locationId` | `201` with the logical user and `Location: /users/<cognitoSub>` |
 | `GET` | `<cognitoSub>` | No body | `200` with one visible logical user |
 | `PUT` | `<cognitoSub>` | One or more of `name`, `email`, `phone`, `locationId` | `200` with the updated logical user |
@@ -486,7 +486,7 @@ The function has no Location-table access, so it validates the shape of an assig
 - Full `dynamodb:*` on the User table.
 - Cognito, scoped to this specific action set on the user pool (not a wildcard): `AdminCreateUser`, `AdminDeleteUser`, `AdminDisableUser`, `AdminEnableUser`, `AdminUpdateUserAttributes`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminGetUser`, `AdminListGroupsForUser`.
 
-**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The greedy route cannot receive the bare collection path. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
+**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /list-users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The dedicated route invokes the list action without a `proxy` path parameter. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
 
 ---
 
@@ -633,7 +633,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
-| 17 | `manage-user` | API GW `GET /users`; `ANY /users/{proxy+}` | JWT |
+| 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |
 | 18 | `stripe-webhook` | Lambda Function URL (public, Stripe-signed) | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |

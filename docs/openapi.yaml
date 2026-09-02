@@ -165,19 +165,20 @@ paths:
         '502':
           $ref: '#/components/responses/AuthBadGateway'
 
-  /users:
+  /list-users:
     get:
       tags:
         - Users
       summary: List visible internal users
       operationId: listUsers
       description: |
-        Returns the User-table staff directory. Super-users see every valid
-        mirrored user. Owners see staff users plus their own record, but not
-        other owner or super-user records. The Lambda follows every DynamoDB
-        scan page and sorts the result case-insensitively by name, then by
-        `cognitoSub`. This collection read uses the User-table mirror and does
-        not call Cognito.
+        Dedicated collection route handled by the same `manage-user` Lambda as
+        the `/users/{proxy+}` family. Returns the User-table staff directory.
+        Super-users see every valid mirrored user. Owners see staff users plus
+        their own record, but not other owner or super-user records. The Lambda
+        follows every DynamoDB scan page and sorts the result
+        case-insensitively by name, then by `cognitoSub`. This collection read
+        uses the User-table mirror and does not call Cognito.
       security:
         - bearerAuth: []
       x-required-groups:

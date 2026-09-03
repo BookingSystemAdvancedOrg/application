@@ -1341,6 +1341,96 @@ paths:
         '503':
           $ref: '#/components/responses/LayoutPublishingServiceUnavailable'
 
+  /locations/{locationId}/layout/versions:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+    get:
+      tags:
+        - Layout
+      summary: List published layout versions
+      operationId: listLayoutVersions
+      description: |
+        Returns every published layout snapshot for the requested location,
+        ordered by numeric version from newest to oldest. Each item contains
+        the complete logical snapshot so a staff client can inspect it before
+        choosing a version to activate. DynamoDB keys and internal scheduler
+        metadata are never returned.
+
+        The Lambda follows every DynamoDB query page. An unknown location, or
+        a location with no published snapshots, returns `200` with an empty
+        `items` array because this function cannot read the Location table.
+        Lifecycle timestamps may be null: a newly published version has no
+        effective dates, while an activated version may have no expiry.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: Published snapshots ordered by version descending.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedLayoutVersionList'
+              example:
+                items:
+                  - version: 2
+                    label: Version 2
+                    isCurrent: true
+                    effectiveFrom: '2026-10-01T01:00:00Z'
+                    effectiveTo: null
+                    expiresAt: null
+                    elements: []
+                    validPositions: []
+                    createdBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    createdAt: '2026-09-03T10:00:00Z'
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-09-03T10:05:00Z'
+                  - version: 1
+                    label: Version 1
+                    isCurrent: false
+                    effectiveFrom: null
+                    effectiveTo: null
+                    expiresAt: '2026-10-01T10:00:00Z'
+                    elements: []
+                    validPositions: []
+                    createdBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    createdAt: '2026-09-03T09:00:00Z'
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-09-03T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '405':
+          description: The Lambda was invoked with a method other than GET.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - GET
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LayoutVersionServiceUnavailable'
+
   /menu-images/presigned-url:
     get:
       tags:
@@ -2512,6 +2602,85 @@ components:
           type: string
           format: date-time
 
+    PublishedLayoutVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - label
+        - isCurrent
+        - effectiveFrom
+        - effectiveTo
+        - expiresAt
+        - elements
+        - validPositions
+        - createdBy
+        - createdAt
+        - updatedBy
+        - updatedAt
+      description: |
+        A validated published snapshot returned by the version-list endpoint.
+        DynamoDB keys, scheduler metadata, and unexpected stored attributes
+        are internal and are never returned. Unlike the publish response,
+        this schema also represents versions whose lifecycle metadata was
+        changed by activation.
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        label:
+          type: string
+          minLength: 1
+          maxLength: 128
+        isCurrent:
+          type: boolean
+        effectiveFrom:
+          type: string
+          format: date-time
+          nullable: true
+        effectiveTo:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when an activated version has no scheduled expiry.
+        elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayoutElement'
+        validPositions:
+          type: array
+          maxItems: 0
+          description: Reserved for a future position-compilation rule.
+          items:
+            type: object
+            additionalProperties: true
+        createdBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        createdAt:
+          type: string
+          format: date-time
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    PublishedLayoutVersionList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          description: Complete snapshots ordered by numeric version descending.
+          items:
+            $ref: '#/components/schemas/PublishedLayoutVersion'
+
     MenuImageContentType:
       type: string
       enum:
@@ -2828,6 +2997,17 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout publishing service unavailable
+    LayoutVersionServiceUnavailable:
+      description: The snapshot table is unavailable or returned an unusable result.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout version service unavailable
     ImageUploadServiceUnavailable:
       description: A temporary S3 upload capability could not be generated.
       headers:

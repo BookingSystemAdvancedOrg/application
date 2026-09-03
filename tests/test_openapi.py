@@ -27,6 +27,7 @@ EXPECTED_OPERATIONS = {
         {"get", "put", "delete"}
     ),
     "/locations/{locationId}/layout/publish": frozenset({"post"}),
+    "/locations/{locationId}/layout/versions": frozenset({"get"}),
     "/menu-images/presigned-url": frozenset({"get"}),
     "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
@@ -68,6 +69,7 @@ STAFF_OPERATIONS = frozenset(
             "/locations/{locationId}/layout-elements/items/{elementId}",
             "delete",
         ),
+        ("/locations/{locationId}/layout/versions", "get"),
     }
 )
 
@@ -155,4 +157,49 @@ def test_publish_layout_contract_matches_handler(openapi_document):
     assert snapshot["additionalProperties"] is False
     assert set(snapshot["required"]) == set(snapshot["properties"])
     assert snapshot["properties"]["isCurrent"]["enum"] == [False]
+    assert "nullable" not in snapshot["properties"]["expiresAt"]
     assert snapshot["properties"]["validPositions"]["maxItems"] == 0
+
+
+def test_list_layout_versions_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    operation = document["paths"][
+        "/locations/{locationId}/layout/versions"
+    ]["get"]
+
+    assert "requestBody" not in operation
+    assert operation["operationId"] == "listLayoutVersions"
+    assert operation["security"] == BEARER_SECURITY
+    assert operation["x-required-groups"] == STAFF_GROUPS
+    assert set(operation["responses"]) == {
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/PublishedLayoutVersionList"
+    }
+
+    version_list = document["components"]["schemas"][
+        "PublishedLayoutVersionList"
+    ]
+    assert version_list["additionalProperties"] is False
+    assert version_list["required"] == ["items"]
+    assert version_list["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/PublishedLayoutVersion"
+    }
+
+    version = document["components"]["schemas"][
+        "PublishedLayoutVersion"
+    ]
+    assert version["additionalProperties"] is False
+    assert set(version["required"]) == set(version["properties"])
+    assert version["properties"]["isCurrent"] == {"type": "boolean"}
+    assert version["properties"]["expiresAt"]["nullable"] is True
+    assert version["properties"]["validPositions"]["maxItems"] == 0

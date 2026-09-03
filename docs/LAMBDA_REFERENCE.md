@@ -342,13 +342,22 @@ Malformed paths return `400`; missing/malformed direct-invocation claims return 
 ### 13. `list-layout-version`
 **Trigger:** API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
 **Purpose:** Lists past published layout versions for a location (for staff to browse/pick a version to activate).
+
+**Authorization and request:** The caller must have a valid Cognito subject and belong to `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before DynamoDB access. Missing or malformed direct-invocation claims return `401`; a valid caller outside those groups receives `403`. The only accepted method is `GET`, the request has no body, and `locationId` must be a non-empty path value of at most 128 characters. This Lambda has no User-table permission, so it authorizes by group only and cannot restrict a staff caller to an assigned location.
+
+The handler strongly consistently queries every page under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#v"`. It returns `200` with `{"items": [...]}` containing complete logical snapshots sorted by numeric `version` from newest to oldest. An empty partition returns `{"items": []}`; this also covers an unknown location because the function has no Location-table permission.
+
+Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded wall, door, window, and table records are checked with the same type-specific constraints as the live-layout model. Lifecycle timestamps are nullable where activation requires it, including `expiresAt` for an activated version. `validPositions` remains an empty list until a position-compilation rule is defined. DynamoDB keys, scheduler metadata, and unexpected stored attributes are not returned.
+
+Malformed paths return `400`; a recognized request with the wrong method returns `405` with `Allow: GET`; inconsistent or duplicate snapshot content returns `409`; and malformed pagination/results or unexpected DynamoDB and transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read from |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Published Layout Snapshot.
+**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Published Layout Snapshot. The implementation only calls `Query` and accesses no other table or AWS service.
 
 ---
 

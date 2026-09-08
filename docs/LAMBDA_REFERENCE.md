@@ -449,15 +449,17 @@ The actual input is serialized compactly with sorted keys. The schedule name mus
   "targetSK": "LAYOUT#v2"
 }
 ```
-**Purpose:** Runs once at cutover and completes the transition reserved by `activate-layout-version`. The worker must validate the event, strongly read the old snapshot, target snapshot, and activation-state item, then use one conditional DynamoDB transaction to:
+**Purpose:** Runs once at cutover and completes the transition reserved by `activate-layout-version`. The worker validates the exact five-field event, strongly reads the activation-state item and both snapshots, and then uses one conditional DynamoDB transaction to:
 
-1. set the outgoing snapshot's `isCurrent=false`;
-2. set the target snapshot's `isCurrent=true`;
+1. set the outgoing snapshot's `isCurrent=false`, preserving its `effectiveFrom` and setting both `effectiveTo` and `expiresAt` to the stored `cutoverAt`;
+2. set the target snapshot's `isCurrent=true`, with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`;
 3. move `currentVersion` to the target, increment `revision`, update audit metadata, and remove every pending field from the state item.
 
-The transaction conditions must bind the stored `pendingStatus`, old/current version, target version, lifecycle timestamps, and `activationToken` to the event. The worker must not complete the transition before the stored `cutoverAt`; late Scheduler delivery is allowed, but the effective interval boundary remains the stored cutoff. Snapshot audit fields use the activation state's `updatedBy` and the worker execution time as `updatedAt`.
+The normal `scheduled` phase requires the lifecycle timestamps to have already been staged by `activate-layout-version`. A due `scheduling` phase is also recoverable: it means Scheduler creation succeeded but the final DynamoDB staging transaction did not complete, so this worker applies the same lifecycle boundary while completing the cutover. The deterministic activation token binds environment, table, location, versions, revision, and cutoff to the event. Transaction conditions bind the stored phase, old/current version, target version, lifecycle timestamps, schedule metadata, audit version, and token to the values that were strongly read.
 
-Only a confirmed stale, duplicate, or already-completed token is an expected idempotent no-op. If a conditional write fails while the same token remains pending after a strongly consistent reconciliation read, the error must propagate so Scheduler can retry. The worker must never retire a different current version or activate a superseded target. This atomic three-item cutover is required for the exactly-one-current invariant.
+The worker must not complete the transition before the stored `cutoverAt`; late delivery is allowed, but the effective interval boundary remains the stored cutoff. Snapshot audit fields use the activation state's `updatedBy` and the worker execution time as `updatedAt`. Invalid event shapes and matching early, missing-snapshot, or corrupt transitions raise instead of being acknowledged.
+
+A missing state item, a state item with no pending transition, or a different authoritative token is a confirmed stale/orphaned invocation and returns `None` without writing. After any matching-path validation, conditional, transport, or ambiguous transaction failure, the worker strongly rereads state: it returns `None` only if that read proves the transition was completed or superseded; otherwise the original error propagates. EventBridge Scheduler invokes Lambda asynchronously, so a handler error is retried by Lambda's asynchronous invocation handling after Scheduler has delivered the event. Infrastructure should configure an on-failure destination or Lambda dead-letter queue for events that exhaust those retries; Scheduler retry/DLQ settings separately cover failures to deliver the event to Lambda. The worker must never retire a different current version or activate a superseded target. This atomic three-item cutover is required for the exactly-one-current invariant.
 
 **Environment variables:**
 | Name | Meaning |
@@ -466,6 +468,8 @@ Only a confirmed stale, duplicate, or already-completed token is an expected ide
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own — this function is the schedule's *target*, not the one creating/deleting schedules.
+
+**Deployment compatibility:** Deploy this five-field worker before deploying an `activate-layout-version` build that emits the event above. Any legacy one-time schedules containing only `PK` and `SK` are intentionally rejected and must be removed or recreated; they cannot safely perform the atomic replacement cutover.
 
 ---
 

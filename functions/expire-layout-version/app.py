@@ -8,7 +8,10 @@ TRIGGER:
 PURPOSE:
     At or after the stored cutover time, atomically retires the outgoing
     layout snapshot, activates the pending target, advances activation state,
-    and removes its pending fields. Stale or completed schedules are no-ops.
+    and removes its pending fields. It also recovers a due ``scheduling``
+    intent left after Scheduler creation but before lifecycle staging. Missing
+    state and stale or completed schedule tokens are idempotent no-ops;
+    matching early, corrupt, or failed transitions raise for async retry.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"

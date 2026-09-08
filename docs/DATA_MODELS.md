@@ -71,7 +71,7 @@ Per-table availability marker for a specific date and time slot. Written atomica
 
 ## Published Layout Snapshot
 
-Compiled, versioned snapshot of the layout that customers read and reservations reference. Uses SCD Type 2 — every version is retained with an effective date range, so privileged users can list or reactivate old versions without changing their compiled content. The `version`, `label`, `elements`, `validPositions`, and creation audit fields are immutable after publication. Later activation tasks may update `isCurrent`, `effectiveFrom`, `effectiveTo`, and the update audit fields; the unresolved `expiresAt` decision is called out below. Each published version **expires 4 weeks after publishing**, after which new bookings are blocked until an owner-user or super-user publishes and activates an unexpired replacement.
+Compiled, versioned snapshot of the layout that customers read and reservations reference. Uses SCD Type 2 — every version is retained with an effective date range, so privileged users can list or reactivate old versions without changing their compiled content. The `version`, `label`, `elements`, `validPositions`, and creation audit fields are immutable after publication. Activation may update only `isCurrent`, `effectiveFrom`, `effectiveTo`, `expiresAt`, and the update audit fields. Before the first activation a location has no current snapshot; afterward, the activation state machine keeps exactly one snapshot current, including while a replacement is pending.
 
 | Attribute | Type |
 |---|---|
@@ -82,7 +82,7 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `isCurrent` | Boolean |
 | `effectiveFrom` | String (ISO8601) or Null |
 | `effectiveTo` | String (ISO8601) or Null |
-| `expiresAt` | String (ISO8601) |
+| `expiresAt` | String (ISO8601) or Null |
 | `elements` | List (Map) |
 | `validPositions` | List (Map) |
 | `createdBy` | String |
@@ -90,15 +90,36 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It sets `expiresAt` to the UTC publication time plus four weeks. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
-**`expiresAt` vs `effectiveTo` — don't conflate these, they mean different things:**
-- `expiresAt` is set once, at **publish time** (`publish-layout`), to 4 weeks out. It's a hard "new bookings blocked past this date" cutoff, independent of `isCurrent`. Nothing in `activate-layout-version` should ever touch it.
-- `effectiveTo` is what SCD Type 2 activation flips: `null` while a version `isCurrent`, set to "now" the moment it's superseded by a different version becoming current. `effectiveFrom` is set to "now" on the version that's newly becoming current.
+**Lifecycle fields:**
 
-**Known contract conflict for the future `activate-layout-version` task:** its current reference draft says activation should replace `expiresAt` with `null`/the cutover time, while this model defines `expiresAt` as the fixed publish-time deadline. Task 9 follows this data model. That activation contract must be resolved with product/infra before reference section 14 is implemented; activation must not silently reinterpret the field.
+- The first activation is immediate: the selected snapshot gets `isCurrent=true`, `effectiveFrom=now`, `effectiveTo=null`, and `expiresAt=null`.
+- Replacing a current snapshot is delayed until `date(now + 4 weeks) at 01:00 UTC`. Before cutover, the old snapshot remains the only `isCurrent=true` record and receives `effectiveTo=cutover` and `expiresAt=cutover`. The replacement remains `isCurrent=false`, but receives `effectiveFrom=cutover`, `effectiveTo=null`, and `expiresAt=null`.
+- At cutover, `expire-layout-version` atomically changes the old snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and advances the activation-state record. `effectiveTo` is therefore the planned/actual end of a serving interval; `expiresAt` is the booking cutoff for the current serving snapshot and is null when no cutoff is pending.
+- `get-availability` and `create-pending-reservation` may use a snapshot only when `isCurrent=true`, `effectiveFrom` is not later than the current time, and each non-null `effectiveTo` or `expiresAt` is later than the current time. A future pending replacement is never bookable merely because its `effectiveFrom` is populated.
 
-**`get-availability`/`create-pending-reservation` bookability check is therefore two conditions, not one:** `isCurrent == True` **and** `expiresAt` is still in the future. A current-but-expired version blocks new bookings even though it's still the "active" one on record — an owner-user or super-user needs to publish and activate an unexpired replacement to clear that.
+### Layout Activation State
+
+Each location that has activated a layout also has one internal coordination item in the Published Layout Snapshot table. Its sort key does not use the `LAYOUT#v` prefix, so snapshot-list and version-allocation queries exclude it.
+
+| Attribute | Type |
+|---|---|
+| `PK` (`LOCATION#<locationId>`) | String |
+| `SK` (`LAYOUT#ACTIVATION`) | String |
+| `recordType` (`layoutActivationState`) | String |
+| `currentVersion` | Number |
+| `revision` | Number |
+| `updatedBy` | String |
+| `updatedAt` | String (ISO8601) |
+| `pendingVersion` | Number, pending activation only |
+| `pendingStatus` | String (`scheduling`\|`scheduled`), pending activation only |
+| `activationToken` | String, pending activation only |
+| `cutoverAt` | String (ISO8601), pending activation only |
+| `scheduleName` | String, pending activation only |
+| `scheduleArn` | String, `scheduled` phase only |
+
+`pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and `scheduleName` form one transition and must never be partially populated. `scheduling` is a durable intent created before the external Scheduler call; it has no `scheduleArn` and does not alter either snapshot's serving lifecycle. `scheduled` means the one-time schedule exists, `scheduleArn` is present, and the old/replacement lifecycle timestamps have been atomically staged. The activation token binds the state, schedule, and worker event so a stale or retried schedule cannot apply a different activation. Scheduler metadata and this coordination record are internal and are never returned by the version-list API.
 
 ---
 

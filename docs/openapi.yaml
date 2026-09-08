@@ -39,7 +39,7 @@ tags:
   - name: Menu
     description: Public menu reads and staff-facing menu-item management.
   - name: Layout
-    description: Mutable floor-layout editing and versioned snapshot publication.
+    description: Mutable floor-layout editing, publication, and scheduled activation.
   - name: Media
     description: Authenticated direct-upload capabilities for menu images.
 
@@ -1360,7 +1360,9 @@ paths:
         a location with no published snapshots, returns `200` with an empty
         `items` array because this function cannot read the Location table.
         Lifecycle timestamps may be null: a newly published version has no
-        effective dates, while an activated version may have no expiry.
+        effective dates, while an activated version may have no expiry. During
+        a scheduled replacement, the inactive pending target has a future
+        `effectiveFrom` while the outgoing version remains current.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1381,7 +1383,7 @@ paths:
                 items:
                   - version: 2
                     label: Version 2
-                    isCurrent: true
+                    isCurrent: false
                     effectiveFrom: '2026-10-01T01:00:00Z'
                     effectiveTo: null
                     expiresAt: null
@@ -1393,10 +1395,10 @@ paths:
                     updatedAt: '2026-09-03T10:05:00Z'
                   - version: 1
                     label: Version 1
-                    isCurrent: false
-                    effectiveFrom: null
-                    effectiveTo: null
-                    expiresAt: '2026-10-01T10:00:00Z'
+                    isCurrent: true
+                    effectiveFrom: '2026-08-01T01:00:00Z'
+                    effectiveTo: '2026-10-01T01:00:00Z'
+                    expiresAt: '2026-10-01T01:00:00Z'
                     elements: []
                     validPositions: []
                     createdBy: 24824908-70e9-4d9b-934d-76953bca16b7
@@ -1430,6 +1432,88 @@ paths:
           $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/LayoutVersionServiceUnavailable'
+
+  /locations/{locationId}/layout/versions/{versionId}/activate:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+      - $ref: '#/components/parameters/LayoutVersionId'
+    post:
+      tags:
+        - Layout
+      summary: Activate a published layout version
+      operationId: activateLayoutVersion
+      description: |
+        Activates the requested published snapshot. If the location has no
+        current version, activation is immediate. Otherwise, the replacement
+        is scheduled for 01:00 UTC on the date four weeks from the request.
+
+        Until cutover, exactly one snapshot remains current. The replacement
+        is pending with a future `effectiveFrom`, while the current version has
+        `effectiveTo` and `expiresAt` equal to `cutoverAt`. Repeating the active
+        or pending request is idempotent. Requesting another version while a
+        cutover is pending returns `409`. The request has no body.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '200':
+          description: The requested version is now active or was already active.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutActivationActive'
+              example:
+                status: active
+                version: 1
+                effectiveFrom: '2026-09-07T10:30:00Z'
+        '202':
+          description: The replacement has been scheduled and remains pending.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutActivationPending'
+              example:
+                status: pending
+                version: 2
+                currentVersion: 1
+                cutoverAt: '2026-10-05T01:00:00Z'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LayoutVersionNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than POST.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - POST
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/LayoutActivationConflict'
+        '503':
+          $ref: '#/components/responses/LayoutActivationServiceUnavailable'
 
   /menu-images/presigned-url:
     get:
@@ -1574,6 +1658,15 @@ components:
         maxLength: 128
         pattern: '.*\S.*'
       example: 154b5c59-3a7f-4248-895c-29ee980356f3
+    LayoutVersionId:
+      name: versionId
+      in: path
+      required: true
+      description: Canonical positive layout-version number without leading zeroes.
+      schema:
+        type: string
+        pattern: '^[1-9][0-9]{0,37}$'
+      example: '2'
     LayoutElementId:
       name: elementId
       in: path
@@ -2638,15 +2731,22 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: |
+            Start of the effective interval. A pending inactive replacement
+            has its future cutover time here.
         effectiveTo:
           type: string
           format: date-time
           nullable: true
+          description: Planned or completed end of the effective interval.
         expiresAt:
           type: string
           format: date-time
           nullable: true
-          description: Null when an activated version has no scheduled expiry.
+          description: |
+            Mutable booking cutoff. It is null for an indefinitely active
+            version or a pending replacement, and equals the scheduled cutover
+            on the outgoing current version.
         elements:
           type: array
           items:
@@ -2680,6 +2780,48 @@ components:
           description: Complete snapshots ordered by numeric version descending.
           items:
             $ref: '#/components/schemas/PublishedLayoutVersion'
+
+    LayoutActivationActive:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - version
+        - effectiveFrom
+      properties:
+        status:
+          type: string
+          enum:
+            - active
+        version:
+          type: integer
+          minimum: 1
+        effectiveFrom:
+          type: string
+          format: date-time
+
+    LayoutActivationPending:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - version
+        - currentVersion
+        - cutoverAt
+      properties:
+        status:
+          type: string
+          enum:
+            - pending
+        version:
+          type: integer
+          minimum: 1
+        currentVersion:
+          type: integer
+          minimum: 1
+        cutoverAt:
+          type: string
+          format: date-time
 
     MenuImageContentType:
       type: string
@@ -2997,6 +3139,54 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout publishing service unavailable
+    LayoutVersionNotFound:
+      description: The requested published layout version does not exist.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout version not found
+    LayoutActivationConflict:
+      description: The activation state is inconsistent, pending, or changed concurrently.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            pending:
+              summary: Another target is already pending.
+              value:
+                error: another layout activation is pending
+            state:
+              summary: Stored state and snapshots disagree.
+              value:
+                error: layout activation state is inconsistent
+            snapshot:
+              summary: A published snapshot is malformed.
+              value:
+                error: published layout record is inconsistent
+            concurrent:
+              summary: A concurrent request won the conditional write.
+              value:
+                error: layout activation changed; retry request
+    LayoutActivationServiceUnavailable:
+      description: DynamoDB or EventBridge Scheduler could not complete activation safely.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: layout activation service unavailable
     LayoutVersionServiceUnavailable:
       description: The snapshot table is unavailable or returned an unusable result.
       headers:

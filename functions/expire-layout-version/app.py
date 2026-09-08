@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from boto3.dynamodb.types import TypeSerializer
+from botocore.exceptions import BotoCoreError, ClientError
 
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
@@ -45,6 +46,7 @@ _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
 _MAX_VERSION_DIGITS = 38
+_MAX_DYNAMODB_INTEGER = int("9" * _MAX_VERSION_DIGITS)
 _VERSION_SK_PATTERN = re.compile(r"LAYOUT#v([1-9][0-9]{0,37})\Z")
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _EVENT_FIELDS = frozenset(
@@ -138,17 +140,15 @@ def _parse_utc_timestamp(value, field, *, nullable=False):
         not isinstance(value, str)
         or not value
         or value != value.strip()
-        or not value.endswith("Z")
     ):
         raise ValueError(f"{field} is invalid")
     try:
-        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (OverflowError, ValueError) as exc:
         raise ValueError(f"{field} is invalid") from exc
     if (
         parsed.tzinfo is None
         or parsed.utcoffset() != timedelta(0)
-        or _isoformat(parsed) != value
     ):
         raise ValueError(f"{field} is invalid")
     return parsed
@@ -300,6 +300,8 @@ def _validate_state(state, details):
         raise _CutoverConflict("layout activation state is inconsistent")
 
     try:
+        if revision >= _MAX_DYNAMODB_INTEGER:
+            raise ValueError("revision cannot be incremented")
         pending_version = _positive_integer(
             state.get("pendingVersion"),
             "pendingVersion",
@@ -442,14 +444,34 @@ def _validate_pending_lifecycle(outgoing, target, state_details, details):
         state_details["currentVersion"] != details["outgoingVersion"]
         or pending["version"] != details["targetVersion"]
         or outgoing["isCurrent"] is not True
-        or outgoing["effectiveTo"] != pending["cutoverAt"]
-        or outgoing["expiresAt"] != pending["cutoverAt"]
         or target["isCurrent"] is not False
-        or target["effectiveFrom"] != pending["cutoverAt"]
-        or target["effectiveTo"] is not None
-        or target["expiresAt"] is not None
     ):
         raise _CutoverConflict("layout cutover state is inconsistent")
+
+    if pending["status"] == _SCHEDULED:
+        if (
+            outgoing["effectiveTo"] != pending["cutoverAt"]
+            or outgoing["expiresAt"] != pending["cutoverAt"]
+            or target["effectiveFrom"] != pending["cutoverAt"]
+            or target["effectiveTo"] is not None
+            or target["expiresAt"] is not None
+        ):
+            raise _CutoverConflict("layout cutover state is inconsistent")
+    elif outgoing["effectiveTo"] is not None or outgoing["expiresAt"] is not None:
+        raise _CutoverConflict("layout cutover state is inconsistent")
+
+    return (
+        {
+            "effectiveFrom": outgoing["effectiveFrom"],
+            "effectiveTo": pending["cutoverAt"],
+            "expiresAt": pending["cutoverAt"],
+        },
+        {
+            "effectiveFrom": pending["cutoverAt"],
+            "effectiveTo": None,
+            "expiresAt": None,
+        },
+    )
 
 
 def _typed_map(values):
@@ -459,7 +481,16 @@ def _typed_map(values):
     }
 
 
-def _snapshot_update(snapshot, *, is_current, updated_by, updated_at):
+def _snapshot_update(
+    snapshot,
+    *,
+    is_current,
+    effective_from,
+    effective_to,
+    expires_at,
+    updated_by,
+    updated_at,
+):
     names = {
         "#version": "version",
         "#isCurrent": "isCurrent",
@@ -473,10 +504,13 @@ def _snapshot_update(snapshot, *, is_current, updated_by, updated_at):
         {
             ":version": snapshot["version"],
             ":expectedCurrent": snapshot["isCurrent"],
-            ":effectiveFrom": snapshot["effectiveFrom"],
-            ":effectiveTo": snapshot["effectiveTo"],
-            ":expiresAt": snapshot["expiresAt"],
+            ":expectedEffectiveFrom": snapshot["effectiveFrom"],
+            ":expectedEffectiveTo": snapshot["effectiveTo"],
+            ":expectedExpiresAt": snapshot["expiresAt"],
             ":nextCurrent": is_current,
+            ":nextEffectiveFrom": effective_from,
+            ":nextEffectiveTo": effective_to,
+            ":nextExpiresAt": expires_at,
             ":updatedBy": updated_by,
             ":updatedAt": updated_at,
         }
@@ -489,6 +523,9 @@ def _snapshot_update(snapshot, *, is_current, updated_by, updated_at):
             ),
             "UpdateExpression": (
                 "SET #isCurrent = :nextCurrent, "
+                "#effectiveFrom = :nextEffectiveFrom, "
+                "#effectiveTo = :nextEffectiveTo, "
+                "#expiresAt = :nextExpiresAt, "
                 "#updatedBy = :updatedBy, "
                 "#updatedAt = :updatedAt"
             ),
@@ -496,9 +533,9 @@ def _snapshot_update(snapshot, *, is_current, updated_by, updated_at):
                 "attribute_exists(PK) AND attribute_exists(SK) "
                 "AND #version = :version "
                 "AND #isCurrent = :expectedCurrent "
-                "AND #effectiveFrom = :effectiveFrom "
-                "AND #effectiveTo = :effectiveTo "
-                "AND #expiresAt = :expiresAt"
+                "AND #effectiveFrom = :expectedEffectiveFrom "
+                "AND #effectiveTo = :expectedEffectiveTo "
+                "AND #expiresAt = :expectedExpiresAt"
             ),
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": values,
@@ -522,24 +559,26 @@ def _state_update(state_details, details, updated_at):
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
     }
-    values = _typed_map(
-        {
-            ":recordType": _ACTIVATION_STATE_TYPE,
-            ":currentVersion": state_details["currentVersion"],
-            ":nextCurrentVersion": details["targetVersion"],
-            ":revision": state_details["revision"],
-            ":nextRevision": state_details["revision"] + 1,
-            ":pendingVersion": pending["version"],
-            ":pendingStatus": _SCHEDULED,
-            ":activationToken": pending["activationToken"],
-            ":cutoverAt": pending["cutoverAt"],
-            ":scheduleName": pending["scheduleName"],
-            ":scheduleArn": pending["scheduleArn"],
-            ":updatedBy": state_details["updatedBy"],
-            ":expectedUpdatedAt": state["updatedAt"],
-            ":updatedAt": updated_at,
-        }
-    )
+    raw_values = {
+        ":recordType": _ACTIVATION_STATE_TYPE,
+        ":currentVersion": state_details["currentVersion"],
+        ":nextCurrentVersion": details["targetVersion"],
+        ":revision": state_details["revision"],
+        ":nextRevision": state_details["revision"] + 1,
+        ":pendingVersion": pending["version"],
+        ":pendingStatus": pending["status"],
+        ":activationToken": pending["activationToken"],
+        ":cutoverAt": pending["cutoverAt"],
+        ":scheduleName": pending["scheduleName"],
+        ":updatedBy": state_details["updatedBy"],
+        ":expectedUpdatedAt": state["updatedAt"],
+        ":updatedAt": updated_at,
+    }
+    schedule_arn_condition = "attribute_not_exists(#scheduleArn)"
+    if pending["scheduleArn"] is not None:
+        raw_values[":scheduleArn"] = pending["scheduleArn"]
+        schedule_arn_condition = "#scheduleArn = :scheduleArn"
+    values = _typed_map(raw_values)
     return {
         "Update": {
             "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
@@ -562,7 +601,7 @@ def _state_update(state_details, details, updated_at):
                 "AND #activationToken = :activationToken "
                 "AND #cutoverAt = :cutoverAt "
                 "AND #scheduleName = :scheduleName "
-                "AND #scheduleArn = :scheduleArn "
+                f"AND {schedule_arn_condition} "
                 "AND #updatedBy = :updatedBy "
                 "AND #updatedAt = :expectedUpdatedAt"
             ),
@@ -572,19 +611,33 @@ def _state_update(state_details, details, updated_at):
     }
 
 
-def _complete_cutover(outgoing, target, state_details, details, now):
+def _complete_cutover(
+    outgoing,
+    target,
+    state_details,
+    details,
+    now,
+    outgoing_lifecycle,
+    target_lifecycle,
+):
     updated_at = _isoformat(now)
     dynamodb_client().transact_write_items(
         TransactItems=[
             _snapshot_update(
                 outgoing,
                 is_current=False,
+                effective_from=outgoing_lifecycle["effectiveFrom"],
+                effective_to=outgoing_lifecycle["effectiveTo"],
+                expires_at=outgoing_lifecycle["expiresAt"],
                 updated_by=state_details["updatedBy"],
                 updated_at=updated_at,
             ),
             _snapshot_update(
                 target,
                 is_current=True,
+                effective_from=target_lifecycle["effectiveFrom"],
+                effective_to=target_lifecycle["effectiveTo"],
+                expires_at=target_lifecycle["expiresAt"],
                 updated_by=state_details["updatedBy"],
                 updated_at=updated_at,
             ),
@@ -593,17 +646,44 @@ def _complete_cutover(outgoing, target, state_details, details, now):
     )
 
 
+def _classify_nonmatching_transition(state_details, details):
+    pending = state_details["pending"]
+    return (
+        pending is None
+        or pending["activationToken"] != details["activationToken"]
+    )
+
+
+def _reconcile_cutover_failure(snapshot_table, details, original_error):
+    try:
+        state = _read_item(snapshot_table, _state_key(details))
+        if state is None:
+            return None
+        state_details = _validate_state(state, details)
+    except (_CutoverConflict, BotoCoreError, ClientError) as exc:
+        raise original_error from exc
+
+    try:
+        resolved = _classify_nonmatching_transition(state_details, details)
+    except (_CutoverConflict, BotoCoreError, ClientError) as exc:
+        raise original_error from exc
+    if not resolved:
+        raise original_error
+
+    return None
+
+
 def handler(event, context):
     details = _event_details(event)
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     state = _read_item(snapshot_table, _state_key(details))
+    if state is None:
+        return None
     state_details = _validate_state(state, details)
     pending = state_details["pending"]
 
-    if pending is None or pending["activationToken"] != details["activationToken"]:
+    if _classify_nonmatching_transition(state_details, details):
         return None
-    if pending["status"] != _SCHEDULED:
-        raise _CutoverConflict("layout activation is not scheduled")
     if (
         state_details["currentVersion"] != details["outgoingVersion"]
         or pending["version"] != details["targetVersion"]
@@ -611,28 +691,48 @@ def handler(event, context):
         raise _CutoverConflict("layout cutover event does not match state")
 
     now = _utc_now()
-    if not isinstance(now, datetime) or now.tzinfo is None:
+    if (
+        not isinstance(now, datetime)
+        or now.tzinfo is None
+        or now.utcoffset() is None
+    ):
         raise _CutoverConflict("worker clock is invalid")
     now = now.astimezone(timezone.utc)
     if now < pending["parsedCutover"]:
         raise _CutoverConflict("layout cutover time has not arrived")
 
-    outgoing = _validate_snapshot(
-        _read_item(
-            snapshot_table,
-            {"PK": details["PK"], "SK": details["SK"]},
-        ),
-        details,
-        target=False,
-    )
-    target = _validate_snapshot(
-        _read_item(
-            snapshot_table,
-            {"PK": details["PK"], "SK": details["targetSK"]},
-        ),
-        details,
-        target=True,
-    )
-    _validate_pending_lifecycle(outgoing, target, state_details, details)
-    _complete_cutover(outgoing, target, state_details, details, now)
+    try:
+        outgoing = _validate_snapshot(
+            _read_item(
+                snapshot_table,
+                {"PK": details["PK"], "SK": details["SK"]},
+            ),
+            details,
+            target=False,
+        )
+        target = _validate_snapshot(
+            _read_item(
+                snapshot_table,
+                {"PK": details["PK"], "SK": details["targetSK"]},
+            ),
+            details,
+            target=True,
+        )
+        outgoing_lifecycle, target_lifecycle = _validate_pending_lifecycle(
+            outgoing,
+            target,
+            state_details,
+            details,
+        )
+        _complete_cutover(
+            outgoing,
+            target,
+            state_details,
+            details,
+            now,
+            outgoing_lifecycle,
+            target_lifecycle,
+        )
+    except (_CutoverConflict, BotoCoreError, ClientError) as exc:
+        _reconcile_cutover_failure(snapshot_table, details, exc)
     return None

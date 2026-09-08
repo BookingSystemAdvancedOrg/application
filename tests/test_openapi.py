@@ -28,6 +28,9 @@ EXPECTED_OPERATIONS = {
     ),
     "/locations/{locationId}/layout/publish": frozenset({"post"}),
     "/locations/{locationId}/layout/versions": frozenset({"get"}),
+    "/locations/{locationId}/layout/versions/{versionId}/activate": (
+        frozenset({"post"})
+    ),
     "/menu-images/presigned-url": frozenset({"get"}),
     "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
@@ -203,3 +206,75 @@ def test_list_layout_versions_contract_matches_handler(openapi_document):
     assert version["properties"]["isCurrent"] == {"type": "boolean"}
     assert version["properties"]["expiresAt"]["nullable"] is True
     assert version["properties"]["validPositions"]["maxItems"] == 0
+
+
+def test_activate_layout_version_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    operation = document["paths"][
+        "/locations/{locationId}/layout/versions/{versionId}/activate"
+    ]["post"]
+
+    assert "requestBody" not in operation
+    assert operation["operationId"] == "activateLayoutVersion"
+    assert operation["security"] == BEARER_SECURITY
+    assert operation["x-required-groups"] == ADMIN_GROUPS
+    assert document["paths"][
+        "/locations/{locationId}/layout/versions/{versionId}/activate"
+    ]["parameters"] == [
+        {"$ref": "#/components/parameters/LayoutLocationId"},
+        {"$ref": "#/components/parameters/LayoutVersionId"},
+    ]
+    assert set(operation["responses"]) == {
+        "200",
+        "202",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationActive"
+    }
+    assert operation["responses"]["202"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationPending"
+    }
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/LayoutVersionNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/LayoutActivationConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/LayoutActivationServiceUnavailable"
+    }
+
+    version_parameter = document["components"]["parameters"][
+        "LayoutVersionId"
+    ]
+    assert version_parameter["name"] == "versionId"
+    assert version_parameter["in"] == "path"
+    assert version_parameter["required"] is True
+    assert version_parameter["schema"] == {
+        "type": "string",
+        "pattern": "^[1-9][0-9]{0,37}$",
+    }
+
+    active = document["components"]["schemas"][
+        "LayoutActivationActive"
+    ]
+    pending = document["components"]["schemas"][
+        "LayoutActivationPending"
+    ]
+    for schema in (active, pending):
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+
+    assert active["properties"]["status"]["enum"] == ["active"]
+    assert pending["properties"]["status"]["enum"] == ["pending"]

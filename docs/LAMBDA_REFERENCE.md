@@ -347,7 +347,9 @@ Malformed paths return `400`; missing/malformed direct-invocation claims return 
 
 The handler strongly consistently queries every page under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#v"`. It returns `200` with `{"items": [...]}` containing complete logical snapshots sorted by numeric `version` from newest to oldest. An empty partition returns `{"items": []}`; this also covers an unknown location because the function has no Location-table permission.
 
-Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded wall, door, window, and table records are checked with the same type-specific constraints as the live-layout model. Lifecycle timestamps are nullable where activation requires it, including `expiresAt` for an activated version. `validPositions` remains an empty list until a position-compilation rule is defined. DynamoDB keys, scheduler metadata, and unexpected stored attributes are not returned.
+Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded wall, door, window, and table records are checked with the same type-specific constraints as the live-layout model. `validPositions` remains an empty list until a position-compilation rule is defined.
+
+Lifecycle timestamps are nullable and may describe a published, active, pending, or retired snapshot. During a scheduled replacement, the outgoing snapshot remains the sole `isCurrent=true` record and has `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`; the pending target remains `isCurrent=false` with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. The separate coordination item at `SK="LAYOUT#ACTIVATION"` is excluded by the `SK begins_with "LAYOUT#v"` query and is never returned. DynamoDB keys and unexpected stored attributes are also not returned.
 
 Malformed paths return `400`; a recognized request with the wrong method returns `405` with `Allow: GET`; inconsistent or duplicate snapshot content returns `409`; and malformed pagination/results or unexpected DynamoDB and transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
 
@@ -363,14 +365,36 @@ Malformed paths return `400`; a recognized request with the wrong method returns
 
 ### 14. `activate-layout-version`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-**Purpose:** Publishes/activates a specific layout version, with a delayed cutover rather than an instant flip — the version being replaced keeps serving traffic until a scheduled cutover time, at which point `expire-layout-version` (below) retires it. Full sequence:
-1. Compute `cutover = date(now + 4 weeks) at 01:00 UTC`.
-2. `TransactWriteItems` (atomic): the new version gets `effectiveFrom = cutover`, `expiresAt = None`, `isCurrent = true`; the version it's replacing gets `expiresAt = cutover` (its `isCurrent` stays `true` for now — it's still the one actually served until cutover fires).
-3. Look up any pending EventBridge schedule ARN stored on the version being superseded; if present, delete it. **Not currently possible — see known gap below.**
-4. Create a new one-time EventBridge schedule targeting `expire-layout-version`, firing at `cutover`, with the superseded version's key (`PK`/`SK`) as payload. Store the resulting schedule ARN back onto that version's item (this is what step 3 looks up on the *next* publish).
-5. **First-ever publish for a location** (no existing `isCurrent = true` item): skip all of the above — `effectiveFrom = now`, `expiresAt = None`, activation is immediate, no schedule is created.
+**Purpose:** Activates one published snapshot while preserving exactly one current version. The first activation for a location is immediate. Replacing an existing current version is scheduled for `date(now + 4 weeks) at 01:00 UTC`; the old version remains current until `expire-layout-version` performs the cutover.
 
-Also validate the `version` value (from the path or body — confirm which with the front-end) against the target item's SK (`v<N>`) before writing anything; reject on mismatch.
+**Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path validation or AWS access. The only accepted method is `POST`, and the request has no body. `locationId` must be non-empty and at most 128 characters. `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
+
+The handler strongly consistently reads every published snapshot and the internal `LAYOUT#ACTIVATION` state item. More than one current snapshot, malformed records, or disagreement between the state and snapshots returns `409`; the handler never guesses which record should win.
+
+**First activation:** One DynamoDB transaction creates the activation-state item and updates the requested snapshot to `isCurrent=true`, `effectiveFrom=now`, `effectiveTo=null`, and `expiresAt=null`. It returns `200`:
+
+```json
+{"status":"active","version":1,"effectiveFrom":"2026-09-07T10:30:00Z"}
+```
+
+Repeating a request for the current version is idempotent and returns the same response without creating a schedule. A legacy current snapshot with no state item is first normalized and bootstrapped into the state machine.
+
+**Replacement activation:** The operation is a recoverable two-phase saga because DynamoDB and EventBridge Scheduler cannot share one transaction:
+
+1. A conditional DynamoDB transaction increments the state revision and records a durable `scheduling` intent containing `pendingVersion`, `activationToken`, `cutoverAt`, and a deterministic `scheduleName`. Neither snapshot's serving lifecycle changes yet.
+2. Create a one-time EventBridge schedule in the `default` group. Its name is `expire-layout-version-` followed by the first 42 characters of the activation token, so it is IAM-compatible and never exceeds Scheduler's 64-character limit.
+3. A second conditional DynamoDB transaction changes the intent to `scheduled`, stores `scheduleArn`, gives the outgoing current snapshot `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`, and gives the pending target `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. Both `isCurrent` values remain unchanged: old is `true`, target is `false`.
+4. At cutover, `expire-layout-version` atomically retires the old snapshot, activates the target, advances the state, and clears all pending fields.
+
+A successfully staged or already-staged replacement returns `202`:
+
+```json
+{"status":"pending","version":2,"currentVersion":1,"cutoverAt":"2026-10-05T01:00:00Z"}
+```
+
+Only one different target may be pending. Requesting another target returns `409`; repeating the same target resumes safely. A retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If a pending schedule is missing or past due, its validated stored name is deleted when present and the activation is conservatively renewed for another four weeks. `ResourceNotFoundException` during recovery deletion is an expected no-op. An ambiguous final DynamoDB result is reconciled through strongly consistent reads before any error is returned.
+
+Malformed paths return `400`; missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a missing version returns `404`; a wrong method returns `405` with `Allow: POST`; conflicting or corrupt state returns `409`; and sanitized DynamoDB/Scheduler failures return `503`. Every response includes `Cache-Control: no-store`.
 
 **Environment variables:**
 | Name | Meaning |
@@ -380,42 +404,61 @@ Also validate the `version` value (from the path or body — confirm which with 
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` — the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 
-**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. `scheduler:*` (scoped to schedule names matching `expire-layout-version-*` in the `default` group, so this covers both `CreateSchedule` and `DeleteSchedule`) and `iam:PassRole` on the scheduler invoke role.
+**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. Scheduler `CreateSchedule`, `GetSchedule`, and `DeleteSchedule`, scoped to names matching `expire-layout-version-*` in the `default` group, plus `iam:PassRole` on the scheduler invoke role. It accesses no other table or AWS service.
 
-**Downstream — deleting the superseded version's pending schedule (step 3):**
-```python
-scheduler.delete_schedule(Name=f"expire-layout-version-{old_pk}-{old_sk}", GroupName="default")
-```
-Safe to call even if no schedule exists for that key (e.g. the version being superseded was never given one, such as the very first published version) — catch `scheduler.exceptions.ResourceNotFoundException` and treat it as a no-op.
+**Downstream schedule contract:**
 
-**Downstream — creating the cutover schedule:**
 ```python
 import json, os, boto3
 scheduler = boto3.client("scheduler")
 
 scheduler.create_schedule(
-    Name=f"expire-layout-version-{superseded_pk}-{superseded_sk}",
+    Name="expire-layout-version-<42-character-token-prefix>",
     GroupName="default",
+    ClientToken=activation_token,
     ScheduleExpression=f"at({cutover.strftime('%Y-%m-%dT%H:%M:%S')})",
+    ScheduleExpressionTimezone="UTC",
     FlexibleTimeWindow={"Mode": "OFF"},
-    ActionAfterCompletion="DELETE",   # schedule deletes itself after firing once
+    ActionAfterCompletion="DELETE",
     Target={
         "Arn": os.environ["EXPIRE_LAYOUT_VERSION_FUNCTION_ARN"],
         "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
-        "Input": json.dumps({"PK": superseded_pk, "SK": superseded_sk}),
+        "Input": json.dumps({
+            "PK": outgoing_pk,
+            "SK": outgoing_sk,
+            "activationStateSK": "LAYOUT#ACTIVATION",
+            "activationToken": activation_token,
+            "targetSK": target_sk,
+        }),
     },
 )
 ```
-The schedule name must start with `expire-layout-version-` — that prefix is exactly what the IAM policy's resource pattern matches against; anything else gets denied at the `CreateSchedule` call.
+
+The actual input is serialized compactly with sorted keys. The schedule name must retain the `expire-layout-version-` prefix because the IAM policy is scoped to that resource pattern.
 
 ---
 
 ### 15. `expire-layout-version`
 **Trigger:** EventBridge Scheduler, one-time, created by `activate-layout-version` (above) — not API Gateway, no HTTP semantics. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
-```python
-{"PK": "...", "SK": "..."}
+```json
+{
+  "PK": "LOCATION#154b5c59-3a7f-4248-895c-29ee980356f3",
+  "SK": "LAYOUT#v1",
+  "activationStateSK": "LAYOUT#ACTIVATION",
+  "activationToken": "<64-character-token>",
+  "targetSK": "LAYOUT#v2"
+}
 ```
-**Purpose:** Runs once at a version's cutover time. Conditionally writes `isCurrent = false` on the version identified by the payload key — the update's `ConditionExpression` should require `isCurrent = true` (i.e. it's still the target version) before writing. Treat a `ConditionalCheckFailedException` as an expected no-op, not an error — it just means this already ran (e.g. a retried invocation), not that something's wrong.
+**Purpose:** Runs once at cutover and completes the transition reserved by `activate-layout-version`. The worker must validate the event, strongly read the old snapshot, target snapshot, and activation-state item, then use one conditional DynamoDB transaction to:
+
+1. set the outgoing snapshot's `isCurrent=false`;
+2. set the target snapshot's `isCurrent=true`;
+3. move `currentVersion` to the target, increment `revision`, update audit metadata, and remove every pending field from the state item.
+
+The transaction conditions must bind the stored `pendingStatus`, old/current version, target version, lifecycle timestamps, and `activationToken` to the event. The worker must not complete the transition before the stored `cutoverAt`; late Scheduler delivery is allowed, but the effective interval boundary remains the stored cutoff. Snapshot audit fields use the activation state's `updatedBy` and the worker execution time as `updatedAt`.
+
+Only a confirmed stale, duplicate, or already-completed token is an expected idempotent no-op. If a conditional write fails while the same token remains pending after a strongly consistent reconciliation read, the error must propagate so Scheduler can retry. The worker must never retire a different current version or activate a superseded target. This atomic three-item cutover is required for the exactly-one-current invariant.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|

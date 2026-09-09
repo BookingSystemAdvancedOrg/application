@@ -24,6 +24,7 @@ LOCATION_ID = "location-id"
 OTHER_LOCATION_ID = "other-location-id"
 ELEMENT_ID = "element-id"
 OTHER_ELEMENT_ID = "other-element-id"
+FLOOR_ID = "floor-id"
 CALLER_SUB = "caller-sub"
 UPDATED_AT = "2026-08-27T10:00:00Z"
 NEXT_UPDATED_AT = "2026-08-27T11:00:00Z"
@@ -41,7 +42,9 @@ def valid_body(element_type="wall", **overrides):
         "depth": 0.2,
         "rotationY": -45,
     }
-    if element_type in {"door", "window"}:
+    if element_type == "floor":
+        body.update({"name": "Ground floor", "level": 0})
+    elif element_type in {"door", "window"}:
         body["wallId"] = "wall-id"
     elif element_type == "table":
         body.update({"shape": "rect", "seats": 4, "zone": "main"})
@@ -73,7 +76,9 @@ def element_item(
         "updatedBy": updated_by,
         "updatedAt": updated_at,
     }
-    if element_type in {"door", "window"}:
+    if element_type == "floor":
+        item.update({"name": "Ground floor", "level": Decimal("0")})
+    elif element_type in {"door", "window"}:
         item["wallId"] = "wall-id"
     elif element_type == "table":
         item.update(
@@ -99,6 +104,12 @@ def public_element(item):
         "depth",
         "rotationY",
     ]
+    if item["type"] == "floor":
+        fields.extend(["name", "level"])
+    else:
+        if "floorId" in item:
+            fields.append("floorId")
+
     if item["type"] in {"door", "window"}:
         fields.append("wallId")
     elif item["type"] == "table":
@@ -411,7 +422,10 @@ def test_oversized_path_values_are_rejected(app_and_table):
     assert_response(element_response, 400, {"error": "elementId is invalid"})
 
 
-@pytest.mark.parametrize("element_type", ["wall", "door", "window", "table"])
+@pytest.mark.parametrize(
+    "element_type",
+    ["floor", "wall", "door", "window", "table"],
+)
 def test_create_each_supported_element_type(app_and_table, element_type):
     app, layout_table = app_and_table
 
@@ -429,6 +443,36 @@ def test_create_each_supported_element_type(app_and_table, element_type):
     assert stored["SK"] == f"LAYOUT#ELEMENT#{ELEMENT_ID}"
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == UPDATED_AT
+
+
+@pytest.mark.parametrize("element_type", ["wall", "door", "window", "table"])
+def test_non_floor_element_can_reference_a_floor(app_and_table, element_type):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(element_type, floorId=f"  {FLOOR_ID}  "),
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert response["statusCode"] == 201
+    assert stored["floorId"] == FLOOR_ID
+    assert response_body(response)["floorId"] == FLOOR_ID
+
+
+def test_legacy_flat_element_remains_supported(app_and_table):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body("table")),
+        None,
+    )
+
+    assert response["statusCode"] == 201
+    assert "floorId" not in get_item(layout_table)
 
 
 @pytest.mark.parametrize("element_type", [None, "", "decor", "TABLE", 123])
@@ -462,6 +506,8 @@ def test_common_create_fields_are_required(app_and_table, field):
 @pytest.mark.parametrize(
     ("element_type", "field"),
     [
+        ("floor", "name"),
+        ("floor", "level"),
         ("door", "wallId"),
         ("window", "wallId"),
         ("table", "shape"),
@@ -487,6 +533,10 @@ def test_variant_create_fields_are_required(
 @pytest.mark.parametrize(
     ("element_type", "extra"),
     [
+        ("floor", {"floorId": FLOOR_ID}),
+        ("floor", {"shape": "rect"}),
+        ("wall", {"name": "Ground floor"}),
+        ("wall", {"level": 0}),
         ("wall", {"wallId": "wall-id"}),
         ("wall", {"shape": "rect"}),
         ("door", {"shape": "rect"}),
@@ -658,7 +708,13 @@ def test_table_shape_must_be_rect_or_round(app_and_table, shape):
 
 @pytest.mark.parametrize(
     ("element_type", "field"),
-    [("door", "wallId"), ("window", "wallId"), ("table", "zone")],
+    [
+        ("floor", "name"),
+        ("wall", "floorId"),
+        ("door", "wallId"),
+        ("window", "wallId"),
+        ("table", "zone"),
+    ],
 )
 @pytest.mark.parametrize("value", [None, "", "   ", 123, "x" * 129])
 def test_variant_strings_are_nonempty_and_bounded(
@@ -674,6 +730,32 @@ def test_variant_strings_are_nonempty_and_bounded(
             method="POST",
             body=valid_body(element_type, **{field: value}),
         ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize("level", [-3, 0, 4])
+def test_floor_level_accepts_signed_integers(app_and_table, level):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body("floor", level=level)),
+        None,
+    )
+
+    assert response["statusCode"] == 201
+    assert get_item(layout_table)["level"] == Decimal(level)
+
+
+@pytest.mark.parametrize("level", [None, True, "1", 1.5])
+def test_floor_level_rejects_non_integers(app_and_table, level):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body("floor", level=level)),
         None,
     )
 
@@ -847,6 +929,49 @@ def test_partial_update_merges_and_replaces_audit_fields(
     assert stored["zone"] == original["zone"]
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+def test_partial_update_can_move_an_element_to_another_floor(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="table", floorId=FLOOR_ID)
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"floorId": "second-floor"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert get_item(layout_table)["floorId"] == "second-floor"
+
+
+def test_partial_update_can_change_floor_metadata(app_and_table, monkeypatch):
+    app, layout_table = app_and_table
+    original = element_item(element_type="floor")
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"name": "Mezzanine", "level": 1},
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(response, 200, public_element(stored))
+    assert stored["name"] == "Mezzanine"
+    assert stored["level"] == Decimal("1")
 
 
 def test_noop_update_preserves_existing_audit_and_skips_write(

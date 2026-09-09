@@ -5,8 +5,9 @@ TRIGGER:
     Auth: JWT
 
 PURPOSE:
-    Staff-facing CRUD for wall, door, window, and table elements in a
-    location's mutable floor-layout draft. Dispatches GET/POST on ``items``
+    Staff-facing CRUD for floor, wall, door, window, and table elements in a
+    location's mutable multi-floor layout draft. Non-floor elements may refer
+    to a floor element through ``floorId``. Dispatches GET/POST on ``items``
     and GET/PUT/DELETE on ``items/{elementId}``.
 
 ENV_VARS:
@@ -19,8 +20,9 @@ AWS RESOURCE ACCESS:
 NOTES:
     Current IAM does not include Location or User tables, so this function
     cannot verify location existence or a staff user's location assignment.
-    ``wallId`` is stored and shape-validated, but relationship/cascade and
-    geometry-containment rules are not defined by the current specification.
+    ``floorId`` and ``wallId`` are stored and shape-validated, but
+    relationship/cascade and geometry-containment rules are enforced when a
+    draft is published rather than during granular editing.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -47,7 +49,7 @@ LIVE_LAYOUT_ELEMENT_TABLE_NAME = os.environ[
 ]
 
 _ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
-_ELEMENT_TYPES = frozenset({"wall", "door", "window", "table"})
+_ELEMENT_TYPES = frozenset({"floor", "wall", "door", "window", "table"})
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _GEOMETRY_FIELDS = (
     "x",
@@ -59,7 +61,9 @@ _GEOMETRY_FIELDS = (
     "rotationY",
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
-_VARIANT_FIELDS = frozenset({"shape", "seats", "zone", "wallId"})
+_VARIANT_FIELDS = frozenset(
+    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+)
 _LAYOUT_FIELDS = frozenset(
     {"type", *_GEOMETRY_FIELDS, *_VARIANT_FIELDS}
 )
@@ -194,7 +198,8 @@ def _canonical_number(value, field):
 def _number(source, field, *, positive=False, integer=False):
     value = _canonical_number(_present(source, field), field)
     if integer and value != value.to_integral_value():
-        raise ValueError(f"{field} must be a positive integer")
+        qualifier = "a positive integer" if positive else "an integer"
+        raise ValueError(f"{field} must be {qualifier}")
     if positive and value <= 0:
         qualifier = "a positive integer" if integer else "greater than zero"
         raise ValueError(f"{field} must be {qualifier}")
@@ -204,7 +209,7 @@ def _number(source, field, *, positive=False, integer=False):
 def _element_type(source):
     value = _present(source, "type")
     if not isinstance(value, str) or value not in _ELEMENT_TYPES:
-        raise ValueError("type must be wall, door, window, or table")
+        raise ValueError("type must be floor, wall, door, window, or table")
     return value
 
 
@@ -218,6 +223,11 @@ def _table_shape(source):
 def _validated_layout_fields(source):
     element_type = _element_type(source)
     allowed_variant_fields = set()
+    if element_type == "floor":
+        allowed_variant_fields.update({"name", "level"})
+    else:
+        allowed_variant_fields.add("floorId")
+
     if element_type in {"door", "window"}:
         allowed_variant_fields.add("wallId")
     elif element_type == "table":
@@ -239,6 +249,13 @@ def _validated_layout_fields(source):
             field,
             positive=field in _DIMENSION_FIELDS,
         )
+
+    if element_type == "floor":
+        fields["name"] = _nonempty_string(source, "name")
+        fields["level"] = _number(source, "level", integer=True)
+    else:
+        if "floorId" in source:
+            fields["floorId"] = _nonempty_string(source, "floorId")
 
     if element_type in {"door", "window"}:
         fields["wallId"] = _nonempty_string(source, "wallId")

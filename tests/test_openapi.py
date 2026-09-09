@@ -15,6 +15,7 @@ EXPECTED_OPERATIONS = {
     "/auth/refresh": frozenset({"post"}),
     "/locations": frozenset({"get", "post"}),
     "/locations/{locationId}": frozenset({"get", "put", "delete"}),
+    "/locations/{locationId}/tables/{tableId}/block": frozenset({"post"}),
     "/locations/{locationId}/menu": frozenset({"get"}),
     "/locations/{locationId}/menu/items": frozenset({"get", "post"}),
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
@@ -53,6 +54,7 @@ STAFF_GROUPS = ["staff_user", "owner_user", "super_user"]
 STAFF_OPERATIONS = frozenset(
     {
         ("/locations/{locationId}", "get"),
+        ("/locations/{locationId}/tables/{tableId}/block", "post"),
         ("/locations/{locationId}/menu/items", "get"),
         ("/locations/{locationId}/menu/items", "post"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "get"),
@@ -126,6 +128,78 @@ def test_openapi_security_matches_public_and_protected_routes(openapi_document):
                 else ADMIN_GROUPS
             )
             assert operation["x-required-groups"] == expected_groups
+
+
+def test_block_table_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    path = document["paths"][
+        "/locations/{locationId}/tables/{tableId}/block"
+    ]
+    operation = path["post"]
+
+    assert path["parameters"] == [
+        {"$ref": "#/components/parameters/LocationId"},
+        {"$ref": "#/components/parameters/BlockTableId"},
+    ]
+    assert operation["operationId"] == "setTableBlock"
+    assert operation["security"] == BEARER_SECURITY
+    assert operation["x-required-groups"] == STAFF_GROUPS
+    assert operation["requestBody"]["required"] is True
+    assert operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/TableBlockRequest"}
+    assert set(operation["responses"]) == {
+        "200",
+        "201",
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    for status in ("200", "201"):
+        assert operation["responses"][status]["content"][
+            "application/json"
+        ]["schema"] == {"$ref": "#/components/schemas/TableBlock"}
+    assert "content" not in operation["responses"]["204"]
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/BlockTargetNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/TableBlockConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/BlockTableServiceUnavailable"
+    }
+    assert operation["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["POST"]
+
+    request = document["components"]["schemas"]["TableBlockRequest"]
+    assert request["additionalProperties"] is False
+    assert set(request["required"]) == set(request["properties"])
+    assert request["properties"]["date"]["format"] == "date"
+    assert request["properties"]["startTime"]["pattern"] == (
+        "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+    )
+    assert request["properties"]["blocked"] == {
+        "type": "boolean",
+        "description": "True creates a manual hold; false removes one.",
+    }
+
+    result = document["components"]["schemas"]["TableBlock"]
+    assert result["additionalProperties"] is False
+    assert set(result["required"]) == set(result["properties"])
+    assert result["properties"]["blocked"]["enum"] == [True]
+
+    table_id = document["components"]["parameters"]["BlockTableId"]
+    assert table_id["name"] == "tableId"
+    assert table_id["in"] == "path"
+    assert table_id["required"] is True
+    assert table_id["schema"]["maxLength"] == 128
 
 
 def test_publish_layout_contract_matches_handler(openapi_document):

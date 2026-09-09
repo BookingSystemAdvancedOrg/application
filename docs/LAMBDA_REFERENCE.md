@@ -250,24 +250,84 @@ This function has no User-table permission, so it can check the caller's group b
 
 ### 10. `block-table`
 **Trigger:** API Gateway — `POST /locations/{locationId}/tables/{tableId}/block` — Auth: `JWT`
-**Purpose:** Staff manually holds a table out of online booking (e.g. reserved for a private event, or physically unusable). Writes a Slot Occupancy row with `source: manual_block`; the same handler should support un-blocking by deleting that row.
+
+**Purpose:** Staff manually holds a table out of online booking (for example,
+for a private event or because it is physically unusable). The same operation
+removes a manual hold without ever overwriting or deleting a real reservation.
+
+**Authorization:** The caller must belong to exactly one of `staff_user`,
+`owner_user`, or `super_user`, and must have a matching active User-table
+mirror. A staff user may act only on their assigned location. Owner and
+super-user mirrors must use an empty `locationId`.
+
+**Request body:** The JSON object contains exactly these fields:
+
+```json
+{
+  "date": "2026-09-20",
+  "startTime": "18:00",
+  "blocked": true
+}
+```
+
+`date` is a real calendar date in `YYYY-MM-DD`, `startTime` is local 24-hour
+`HH:MM`, and `blocked` is a boolean. For `blocked: true`, the handler derives
+the end time from `bookingDurationHours`. The slot must be in the future,
+start on the location's booking grid, remain inside one business-hours
+interval, and map to one unambiguous real interval in the location's IANA
+timezone. Slots at ambiguous/nonexistent local times or crossing a daylight
+saving transition are rejected. The requested table must be present as a
+`table` element in the currently active Published Layout Snapshot.
+
+`blocked: true` conditionally writes a Slot Occupancy row. A new hold returns
+`201`; an already-identical manual hold returns `200`. Both responses contain
+`locationId`, `tableId`, `date`, `startTime`, the derived `endTime`, and
+`blocked: true`. A reservation or overlapping hold returns `409` and is left
+unchanged.
+
+`blocked: false` looks up a manual hold by location, date, start time, and
+table rather than re-deriving its old end time. This permits cleanup after the
+booking duration or active layout has changed. Removing an existing manual
+hold and requesting removal when none exists both return `204` with an empty
+body. A reservation at that identity returns `409` and is never deleted.
+
+Every Lambda response uses `Cache-Control: no-store`. Invalid requests or
+slots return `400`; missing locations or active tables return `404`; invalid
+stored state and occupancy/concurrency conflicts return `409`; dependency
+failures return a sanitized `503`. Non-POST direct invocations return `405`
+with `Allow: POST`.
+
 **Environment variables:**
+
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | Validates the location/table exists, business hours |
-| `USER_TABLE_NAME` | Confirms the caller is staff assigned to this location |
+| `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
+| `USER_TABLE_NAME` | Caller role, status, and assigned location |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Where the manual block is written/deleted |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Active layout and table validation |
 
-**AWS resource access:** Read-only on Location and User tables; full `dynamodb:*` on Slot Occupancy.
+**AWS resource access:** Read-only on Location, User, and Published Layout
+Snapshot tables; full `dynamodb:*` on Slot Occupancy. The implementation uses
+strongly consistent reads, conditional writes/deletes, and bounded
+read-after-error reconciliation for ambiguous DynamoDB outcomes.
 
 **Established authorization pattern (reuse this elsewhere):** before authorizing the block, do a single `GetItem` on the User table with `PK = USER#<sub>` (where `sub` comes from the verified JWT claims) to confirm the caller's role and which location they're assigned to. This is the reference pattern for any route that needs "is this staff member allowed to act on this specific location," since that assignment lives in the User table, not in the JWT itself.
+
+**Current key-model limitation:** the conditional write prevents replacement
+of an identical Slot Occupancy key, and the preceding consistent date query
+detects existing overlapping intervals. Because intervals with different end
+times have different sort keys, two concurrent cross-key writes cannot be
+made mutually exclusive by the current table key alone if the location's
+booking duration changes between them. A future schema that needs that level
+of serialization should add a canonical per-start guard item and write it in
+the same DynamoDB transaction.
 
 ---
 
 ## Floor Layout
 
-There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. Only one snapshot version is "active" at a time, and that active version is what `get-availability`/`create-pending-reservation` actually read to know which tables exist.
+There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. Only one snapshot version is "active" at a time; `get-availability`, `create-pending-reservation`, and block creation in `block-table` use that active version to determine which tables exist.
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`

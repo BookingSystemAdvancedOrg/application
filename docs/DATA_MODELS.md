@@ -64,8 +64,25 @@ Per-table availability marker for a specific date and time slot. Written atomica
 | `SK` (`SLOT#<date>#<start-end>#<tableId>`) | String |
 | `reservationId` | String |
 | `ttl` | Number (Unix epoch) |
+| `source` | String (`manual_block`, manual holds only) |
+| `createdBy` | String (Cognito `sub`, manual holds only) |
+| `createdAt` | String (ISO8601, manual holds only) |
 
-`SK` is composite and self-describing — `date`, the `start-end` time range, and `tableId` are all embedded in it, not stored as separate attributes. A hold for `manual_block` (see `block-table` in `LAMBDA_REFERENCE.md`) is the same shape, just with a `reservationId` that isn't a real reservation.
+`SK` is composite and self-describing — `date`, the `start-end` time range,
+and `tableId` are all embedded in it, not stored as separate attributes. A
+manual hold created by `block-table` uses
+`reservationId = MANUAL_BLOCK#<UUIDv4>`, `source = manual_block`, and creation
+audit fields; ordinary reservation holds do not need those manual-only
+attributes. Its `ttl` is the derived slot-end instant in UTC.
+
+`block-table` writes with an attribute-not-exists condition and deletes only
+when the stored manual ID, source, TTL, and audit values still match. It never
+overwrites or deletes a reservation. A consistent query over the location/date
+prefix detects already-stored overlapping intervals, including holds created
+under an older booking duration. Different time ranges produce different sort
+keys, however, so the current key alone cannot serialize simultaneous
+cross-key overlapping writes; add a transactional canonical guard item if
+that stronger invariant becomes necessary.
 
 ---
 
@@ -97,7 +114,7 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 - The first activation is immediate: the selected snapshot gets `isCurrent=true`, `effectiveFrom=now`, `effectiveTo=null`, and `expiresAt=null`.
 - Replacing a current snapshot is delayed until `date(now + 4 weeks) at 01:00 UTC`. Normally, before cutover, the old snapshot remains the only `isCurrent=true` record and receives `effectiveTo=cutover` and `expiresAt=cutover`. The replacement remains `isCurrent=false`, but receives `effectiveFrom=cutover`, `effectiveTo=null`, and `expiresAt=null`.
 - At cutover, `expire-layout-version` atomically changes the old snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and advances the activation-state record. If the state is still `scheduling` because Scheduler creation succeeded but lifecycle staging failed, that same transaction first applies the planned lifecycle boundary. `effectiveTo` is therefore the planned/actual end of a serving interval; `expiresAt` is the booking cutoff for the current serving snapshot and is null when no cutoff is pending.
-- `get-availability` and `create-pending-reservation` may use a snapshot only when `isCurrent=true`, `effectiveFrom` is not later than the current time, and each non-null `effectiveTo` or `expiresAt` is later than the current time. A future pending replacement is never bookable merely because its `effectiveFrom` is populated.
+- `get-availability`, `create-pending-reservation`, and block creation in `block-table` may use a snapshot only when `isCurrent=true`, `effectiveFrom` is not later than the current time, and each non-null `effectiveTo` or `expiresAt` is later than the current time. A future pending replacement is never bookable merely because its `effectiveFrom` is populated. Unblocking skips layout validation so an old manual hold remains removable after a layout change.
 
 ### Layout Activation State
 

@@ -771,6 +771,109 @@ paths:
         '503':
           $ref: '#/components/responses/LocationServiceUnavailable'
 
+  /locations/{locationId}/tables/{tableId}/block:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/BlockTableId'
+    post:
+      tags:
+        - Locations
+      summary: Set or remove a manual table block
+      operationId: setTableBlock
+      description: |
+        Sets the desired manual-block state for one canonical booking slot.
+        The client supplies a local date and start time; the handler derives
+        `endTime` from the location's booking duration. Creating a block
+        requires a future slot aligned to one business-hours interval and a
+        table in the currently active published layout. Ambiguous,
+        nonexistent, and UTC-offset-transition-crossing local intervals are
+        rejected.
+
+        `blocked: true` creates a manual occupancy hold without overwriting a
+        reservation. Repeating it for the same manual hold is idempotent.
+        `blocked: false` removes only a manual hold and succeeds when it is
+        already absent; it never deletes a reservation. Removal does not
+        require the table to remain in the active layout and still locates a
+        hold created under an older booking duration.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TableBlockRequest'
+            examples:
+              block:
+                summary: Prevent online booking for the slot
+                value:
+                  date: '2026-09-20'
+                  startTime: '18:00'
+                  blocked: true
+              unblock:
+                summary: Remove the manual hold
+                value:
+                  date: '2026-09-20'
+                  startTime: '18:00'
+                  blocked: false
+      responses:
+        '200':
+          description: The requested slot was already manually blocked.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBlock'
+        '201':
+          description: A new manual table block was created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBlock'
+        '204':
+          description: The manual block was removed or was already absent. The body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BlockTargetNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than POST.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - POST
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/TableBlockConflict'
+        '503':
+          $ref: '#/components/responses/BlockTableServiceUnavailable'
+
   /locations/{locationId}/menu:
     parameters:
       - $ref: '#/components/parameters/MenuLocationId'
@@ -1625,6 +1728,17 @@ components:
         maxLength: 128
         pattern: '.*\S.*'
       example: 154b5c59-3a7f-4248-895c-29ee980356f3
+    BlockTableId:
+      name: tableId
+      in: path
+      required: true
+      description: Table-element identifier in the active published layout.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[^#\s](?:[^#]{0,126}[^#\s])?$'
+      example: 9befdbd3-45ba-4240-965c-a01b8c981fd3
     MenuLocationId:
       name: locationId
       in: path
@@ -2173,6 +2287,64 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Location'
+
+    TableBlockRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - date
+        - startTime
+        - blocked
+      properties:
+        date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Local calendar date in the location's timezone.
+          example: '2026-09-20'
+        startTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: Local 24-hour start time. The client never sends an end time.
+          example: '18:00'
+        blocked:
+          type: boolean
+          description: True creates a manual hold; false removes one.
+
+    TableBlock:
+      type: object
+      additionalProperties: false
+      required:
+        - locationId
+        - tableId
+        - date
+        - startTime
+        - endTime
+        - blocked
+      properties:
+        locationId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        tableId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        startTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: Derived from the location's booking duration.
+        blocked:
+          type: boolean
+          enum:
+            - true
 
     MenuCategory:
       type: string
@@ -3083,6 +3255,56 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: location service unavailable
+
+    BlockTargetNotFound:
+      description: The location does not exist or the table is not in the active layout.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            location:
+              value:
+                error: location not found
+            table:
+              value:
+                error: table not found
+    TableBlockConflict:
+      description: A hold conflicts, protected state changed, or stored state is inconsistent.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            occupied:
+              value:
+                error: slot is already occupied
+            reservation:
+              value:
+                error: slot is occupied by a reservation
+            layoutChanged:
+              value:
+                error: active layout changed; retry request
+            slotChanged:
+              value:
+                error: slot changed; retry request
+    BlockTableServiceUnavailable:
+      description: A required DynamoDB operation could not be completed safely.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: block-table service unavailable
 
     MenuItemNotFound:
       description: The requested menu item does not exist in this location.

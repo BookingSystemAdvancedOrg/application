@@ -15,6 +15,7 @@ EXPECTED_OPERATIONS = {
     "/auth/refresh": frozenset({"post"}),
     "/locations": frozenset({"get", "post"}),
     "/locations/{locationId}": frozenset({"get", "put", "delete"}),
+    "/locations/{locationId}/availability": frozenset({"get"}),
     "/locations/{locationId}/tables/{tableId}/block": frozenset({"post"}),
     "/locations/{locationId}/menu": frozenset({"get"}),
     "/locations/{locationId}/menu/items": frozenset({"get", "post"}),
@@ -45,6 +46,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/auth/login", "post"),
         ("/auth/challenge", "post"),
         ("/auth/refresh", "post"),
+        ("/locations/{locationId}/availability", "get"),
         ("/locations/{locationId}/menu", "get"),
     }
 )
@@ -128,6 +130,76 @@ def test_openapi_security_matches_public_and_protected_routes(openapi_document):
                 else ADMIN_GROUPS
             )
             assert operation["x-required-groups"] == expected_groups
+
+
+def test_get_availability_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    path = document["paths"]["/locations/{locationId}/availability"]
+    operation = path["get"]
+
+    assert path["parameters"] == [
+        {"$ref": "#/components/parameters/LocationId"}
+    ]
+    assert operation["operationId"] == "getAvailability"
+    assert operation["security"] == []
+    assert operation["x-required-groups"] == []
+    assert "requestBody" not in operation
+    assert operation["parameters"] == [
+        {
+            "name": "date",
+            "in": "query",
+            "required": True,
+            "description": (
+                "Calendar date interpreted in the location's timezone."
+            ),
+            "schema": {
+                "type": "string",
+                "format": "date",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            },
+            "example": "2026-09-20",
+        }
+    ]
+    assert set(operation["responses"]) == {
+        "200",
+        "400",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/Availability"}
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/LocationNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/AvailabilityConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/AvailabilityServiceUnavailable"
+    }
+    assert operation["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["GET"]
+
+    availability = document["components"]["schemas"]["Availability"]
+    slot = document["components"]["schemas"]["AvailabilitySlot"]
+    table = document["components"]["schemas"]["AvailabilityTable"]
+    for schema in (availability, slot, table):
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+
+    assert availability["properties"]["slots"]["items"] == {
+        "$ref": "#/components/schemas/AvailabilitySlot"
+    }
+    assert slot["properties"]["tables"]["minItems"] == 1
+    assert slot["properties"]["tables"]["items"] == {
+        "$ref": "#/components/schemas/AvailabilityTable"
+    }
+    assert table["properties"]["seats"]["type"] == "integer"
+    assert table["properties"]["seats"]["minimum"] == 1
 
 
 def test_block_table_contract_matches_handler(openapi_document):

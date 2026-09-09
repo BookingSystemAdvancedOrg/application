@@ -172,16 +172,80 @@ This function has no User-table permission, so it can check the caller's group b
 
 ### 5. `get-availability`
 **Trigger:** API Gateway — `GET /locations/{locationId}/availability` — Auth: `NONE`
-**Purpose:** Public — computes bookable time slots/tables for a location on a given date. Cross-references the location's business hours, the currently *active* published floor layout (which tables physically exist), and existing holds in Slot Occupancy to determine what's actually free.
+
+**Purpose:** Publicly computes the bookable local-time slots and free tables
+for one location and date. This route intentionally performs no JWT check;
+customers do not have Cognito accounts.
+
+**Request:** `GET /locations/{locationId}/availability?date=YYYY-MM-DD`.
+`locationId` must be nonblank, at most 128 characters, and may not contain
+`#`. `date` is the only accepted query parameter and must be a real calendar
+date in canonical form. Past dates return `400`. For the location's current
+local date, only slots whose start instant is strictly in the future are
+returned.
+
+The handler strongly consistently reads the Location record and derives a
+canonical slot grid from each same-day business-hours interval. The booking
+duration must resolve to a positive whole number of minutes below 24 hours;
+each interval has its own grid anchored at its opening time. Slots with an
+ambiguous or nonexistent local endpoint, or whose real duration crosses a
+timezone offset transition, are omitted without failing the rest of the day.
+
+When candidate slots exist, the handler reads the layout activation state,
+the referenced current Published Layout Snapshot, and the activation state
+again to detect a concurrent cutover. Only validated `table` elements are
+exposed, as `tableId` plus `seats`; layout geometry and audit fields remain
+internal. A location with no active layout, an active layout with no tables,
+or a closed day returns `200` with an empty `slots` list.
+
+One paginated, strongly consistent Slot Occupancy query reads every hold for
+the requested location/date. Both reservation and `manual_block` rows exclude
+the affected table. Interval overlap is used rather than exact-key matching,
+so a hold created under an older booking duration excludes every new slot it
+overlaps. Fully occupied slots are omitted. Slots are returned in ascending
+time order and tables in `tableId` order:
+
+```json
+{
+  "locationId": "154b5c59-3a7f-4248-895c-29ee980356f3",
+  "date": "2026-09-20",
+  "timezone": "Europe/Stockholm",
+  "slots": [
+    {
+      "startTime": "18:00",
+      "endTime": "20:00",
+      "tables": [
+        {"tableId": "table-4", "seats": 4}
+      ]
+    }
+  ]
+}
+```
+
+All responses use `Cache-Control: no-store`. Invalid input returns `400`, an
+unknown location returns `404`, inconsistent stored location/layout/occupancy
+state or a repeatedly changing active layout returns `409`, and dependency
+failures return a sanitized `503`. A non-GET direct invocation returns `405`
+with `Allow: GET`.
+
+Availability is advisory: an occupancy write can occur after this read.
+`create-pending-reservation` must validate again and conditionally acquire
+every requested table; clients must handle a booking-time conflict.
+
 **Environment variables:**
+
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | Business hours / booking rules |
-| `SLOT_OCCUPANCY_TABLE_NAME` | Existing holds (reservations + manual blocks) to exclude |
-| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | The active/published layout — defines which tables exist and their capacity |
+| `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
+| `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Active tables and seat counts |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Location, Slot Occupancy, and Published Layout Snapshot tables.
+**AWS resource access:** Read-only on Location, Slot Occupancy, and Published
+Layout Snapshot tables. The implementation calls strongly consistent
+`GetItem` on Location and Published Layout Snapshot and a strongly consistent
+paginated `Query` on Slot Occupancy. It accesses no user identity or other AWS
+service.
 
 ---
 

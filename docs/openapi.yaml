@@ -771,6 +771,83 @@ paths:
         '503':
           $ref: '#/components/responses/LocationServiceUnavailable'
 
+  /locations/{locationId}/availability:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Locations
+      summary: Get bookable slots and available tables
+      operationId: getAvailability
+      description: |
+        Publicly returns future canonical slots for one local calendar date.
+        Each returned slot contains only currently unoccupied active-layout
+        tables and their seat counts. Reservation and manual holds are both
+        excluded by interval overlap, so older-duration holds remain safe.
+
+        Past dates are rejected. On the current local date, a slot must start
+        strictly after the request time. Daylight-saving-unsafe intervals are
+        omitted. A closed day, missing active layout, layout without tables,
+        or fully occupied day returns an empty `slots` array. Availability is
+        advisory and must be conditionally revalidated when booking.
+      security: []
+      x-required-groups: []
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Calendar date interpreted in the location's timezone.
+          schema:
+            type: string
+            format: date
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          example: '2026-09-20'
+      responses:
+        '200':
+          description: Bookable slots, possibly an empty list.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Availability'
+              example:
+                locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
+                date: '2026-09-20'
+                timezone: Europe/Stockholm
+                slots:
+                  - startTime: '18:00'
+                    endTime: '20:00'
+                    tables:
+                      - tableId: table-4
+                        seats: 4
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than GET.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - GET
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/AvailabilityConflict'
+        '503':
+          $ref: '#/components/responses/AvailabilityServiceUnavailable'
+
   /locations/{locationId}/tables/{tableId}/block:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -2288,6 +2365,73 @@ components:
           items:
             $ref: '#/components/schemas/Location'
 
+    AvailabilityTable:
+      type: object
+      additionalProperties: false
+      required:
+        - tableId
+        - seats
+      properties:
+        tableId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Active published-layout table identifier.
+        seats:
+          type: integer
+          minimum: 1
+          description: Published seat capacity for this table.
+
+    AvailabilitySlot:
+      type: object
+      additionalProperties: false
+      required:
+        - startTime
+        - endTime
+        - tables
+      properties:
+        startTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        tables:
+          type: array
+          minItems: 1
+          description: Available tables ordered by tableId.
+          items:
+            $ref: '#/components/schemas/AvailabilityTable'
+
+    Availability:
+      type: object
+      additionalProperties: false
+      required:
+        - locationId
+        - date
+        - timezone
+        - slots
+      properties:
+        locationId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: IANA timezone used for every returned local time.
+          example: Europe/Stockholm
+        slots:
+          type: array
+          description: Bookable slots ordered by startTime.
+          items:
+            $ref: '#/components/schemas/AvailabilitySlot'
+
     TableBlockRequest:
       type: object
       additionalProperties: false
@@ -3255,6 +3399,40 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: location service unavailable
+
+    AvailabilityConflict:
+      description: Stored location, layout, or occupancy state is inconsistent.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            location:
+              value:
+                error: location record is inconsistent
+            layout:
+              value:
+                error: published layout record is inconsistent
+            occupancy:
+              value:
+                error: slot occupancy record is inconsistent
+            concurrentActivation:
+              value:
+                error: active layout changed; retry request
+    AvailabilityServiceUnavailable:
+      description: A required DynamoDB read could not be completed safely.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: availability service unavailable
 
     BlockTargetNotFound:
       description: The location does not exist or the table is not in the active layout.

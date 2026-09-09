@@ -30,6 +30,7 @@ from decimal import Decimal
 from http import HTTPStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from shared.dynamo import table
 from shared.responses import json_response
@@ -86,6 +87,11 @@ _GEOMETRY_FIELDS = (
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
 _ELEMENT_TYPES = frozenset({"wall", "door", "window", "table"})
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_MANUAL_SOURCE = "manual_block"
+_MANUAL_ID_PATTERN = re.compile(
+    r"MANUAL_BLOCK#[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
+)
 
 
 class _AvailabilityServiceFailure(Exception):
@@ -544,6 +550,174 @@ def _active_tables(location_id, now):
     raise _AvailabilityConflict("active layout changed; retry request")
 
 
+def _valid_occupancy_last_key(last_key, partition_key, prefix):
+    return (
+        isinstance(last_key, dict)
+        and set(last_key) == {"PK", "SK"}
+        and last_key.get("PK") == partition_key
+        and isinstance(last_key.get("SK"), str)
+        and last_key["SK"].startswith(prefix)
+    )
+
+
+def _query_occupancies(location_id, requested_date):
+    partition_key = f"LOCATION#{location_id}"
+    prefix = f"SLOT#{requested_date}#"
+    occupancy_table = table(SLOT_OCCUPANCY_TABLE_NAME)
+    request = {
+        "KeyConditionExpression": (
+            Key("PK").eq(partition_key) & Key("SK").begins_with(prefix)
+        ),
+        "ConsistentRead": True,
+    }
+    items = []
+    seen_last_keys = []
+    while True:
+        response = occupancy_table.query(**request)
+        if not isinstance(response, dict):
+            raise _AvailabilityServiceFailure
+        page = response.get("Items")
+        if not isinstance(page, list):
+            raise _AvailabilityServiceFailure
+        items.extend(page)
+
+        last_key = response.get("LastEvaluatedKey")
+        if last_key is None:
+            return items
+        if (
+            not _valid_occupancy_last_key(
+                last_key,
+                partition_key,
+                prefix,
+            )
+            or any(last_key == previous for previous in seen_last_keys)
+        ):
+            raise _AvailabilityServiceFailure
+        seen_last_keys.append(last_key)
+        request["ExclusiveStartKey"] = last_key
+
+
+def _occupancy_key_details(item, location_id, requested_date):
+    partition_key = f"LOCATION#{location_id}"
+    if not isinstance(item, dict) or item.get("PK") != partition_key:
+        raise _AvailabilityConflict("slot occupancy record is inconsistent")
+    sort_key = item.get("SK")
+    if not isinstance(sort_key, str):
+        raise _AvailabilityConflict("slot occupancy record is inconsistent")
+    parts = sort_key.split("#")
+    if len(parts) != 4 or parts[0] != "SLOT":
+        raise _AvailabilityConflict("slot occupancy record is inconsistent")
+
+    raw_date, raw_range, table_id = parts[1:]
+    try:
+        if (
+            raw_date != requested_date
+            or _DATE_PATTERN.fullmatch(raw_date) is None
+            or date.fromisoformat(raw_date).isoformat() != raw_date
+            or raw_range.count("-") != 1
+        ):
+            raise ValueError
+        start_time, end_time = raw_range.split("-")
+        if (
+            _TIME_PATTERN.fullmatch(start_time) is None
+            or _TIME_PATTERN.fullmatch(end_time) is None
+            or start_time >= end_time
+            or not table_id
+            or table_id != table_id.strip()
+            or len(table_id) > _MAX_IDENTIFIER_LENGTH
+        ):
+            raise ValueError
+    except ValueError:
+        raise _AvailabilityConflict(
+            "slot occupancy record is inconsistent"
+        ) from None
+
+    return {
+        "tableId": table_id,
+        "startMinute": _minute_of_day(start_time),
+        "endMinute": _minute_of_day(end_time),
+    }
+
+
+def _validate_occupancy(item, location_id, requested_date):
+    details = _occupancy_key_details(item, location_id, requested_date)
+    try:
+        reservation_id = _stored_string(
+            item,
+            "reservationId",
+            max_length=256,
+        )
+        _positive_integer(item.get("ttl"))
+
+        source = item.get("source")
+        if source is None:
+            if reservation_id.startswith("MANUAL_BLOCK#"):
+                raise ValueError
+        elif source == _MANUAL_SOURCE:
+            if _MANUAL_ID_PATTERN.fullmatch(reservation_id) is None:
+                raise ValueError
+            _stored_string(item, "createdBy")
+            _parse_utc_timestamp(item.get("createdAt"))
+        else:
+            raise ValueError
+    except (ArithmeticError, TypeError, ValueError):
+        raise _AvailabilityConflict(
+            "slot occupancy record is inconsistent"
+        ) from None
+    return details
+
+
+def _intervals_overlap(first_start, first_end, second_start, second_end):
+    return first_start < second_end and second_start < first_end
+
+
+def _public_availability(context, occupancies):
+    occupied_by_table = {item["tableId"]: [] for item in context["tables"]}
+    for item in occupancies:
+        details = _validate_occupancy(
+            item,
+            context["locationId"],
+            context["date"],
+        )
+        if details["tableId"] in occupied_by_table:
+            occupied_by_table[details["tableId"]].append(
+                (details["startMinute"], details["endMinute"])
+            )
+
+    public_slots = []
+    for slot in context["slots"]:
+        available_tables = []
+        for table_details in context["tables"]:
+            intervals = occupied_by_table[table_details["tableId"]]
+            occupied = any(
+                _intervals_overlap(
+                    slot["startMinute"],
+                    slot["endMinute"],
+                    start_minute,
+                    end_minute,
+                )
+                for start_minute, end_minute in intervals
+            )
+            if not occupied:
+                available_tables.append(dict(table_details))
+
+        if available_tables:
+            public_slots.append(
+                {
+                    "startTime": slot["startTime"],
+                    "endTime": slot["endTime"],
+                    "tables": available_tables,
+                }
+            )
+
+    return {
+        "locationId": context["locationId"],
+        "date": context["date"],
+        "timezone": context["timezone"],
+        "slots": public_slots,
+    }
+
+
 def _request_method(event):
     if not isinstance(event, dict):
         return ""
@@ -608,11 +782,16 @@ def _request_details(event):
     }
 
 
-def _availability_from_occupancy(_context):
-    """Stage 3 replaces this boundary with occupancy filtering."""
-    return _availability_error(
-        HTTPStatus.NOT_IMPLEMENTED.value,
-        "occupancy filtering not implemented",
+def _availability_from_occupancy(context):
+    occupancies = []
+    if context["slots"] and context["tables"]:
+        occupancies = _query_occupancies(
+            context["locationId"],
+            context["date"],
+        )
+    return _availability_response(
+        HTTPStatus.OK.value,
+        _public_availability(context, occupancies),
     )
 
 

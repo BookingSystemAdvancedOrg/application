@@ -176,6 +176,38 @@ def snapshot_item(version="1", *, elements=None, **overrides):
     return item
 
 
+def occupancy_item(
+    table_id="table-a",
+    *,
+    date_value="2026-09-20",
+    start_time="18:00",
+    end_time="20:00",
+    manual=False,
+    **overrides,
+):
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": (
+            f"SLOT#{date_value}#{start_time}-{end_time}#{table_id}"
+        ),
+        "reservationId": "reservation-id",
+        "ttl": Decimal("2000000000"),
+    }
+    if manual:
+        item.update(
+            {
+                "reservationId": (
+                    "MANUAL_BLOCK#11111111-1111-4111-8111-111111111111"
+                ),
+                "source": "manual_block",
+                "createdBy": "staff-sub",
+                "createdAt": "2026-09-08T12:00:00Z",
+            }
+        )
+    item.update(overrides)
+    return item
+
+
 def put_stage_two_records(tables, *, location=None, state=None, snapshot=None):
     tables["location"].put_item(Item=location or location_item())
     if state is not False:
@@ -837,9 +869,7 @@ def test_location_dependency_failure_is_sanitized(
     assert "sensitive AWS detail" not in response["body"]
 
 
-def test_valid_stage_two_request_stops_at_occupancy_boundary(
-    app_and_tables,
-):
+def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
     app, tables = app_and_tables
     put_stage_two_records(tables)
 
@@ -847,6 +877,354 @@ def test_valid_stage_two_request_stops_at_occupancy_boundary(
 
     assert_response(
         response,
-        501,
-        {"error": "occupancy filtering not implemented"},
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "date": "2026-09-20",
+            "timezone": "Europe/Stockholm",
+            "slots": [
+                {
+                    "startTime": start,
+                    "endTime": end,
+                    "tables": [
+                        {"tableId": "table-a", "seats": 2},
+                        {"tableId": "table-b", "seats": 4},
+                    ],
+                }
+                for start, end in (
+                    ("10:00", "12:00"),
+                    ("12:00", "14:00"),
+                    ("14:00", "16:00"),
+                    ("16:00", "18:00"),
+                    ("18:00", "20:00"),
+                    ("20:00", "22:00"),
+                )
+            ],
+        },
     )
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_reservation_and_manual_hold_both_remove_table(
+    app_and_tables,
+    manual,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=occupancy_item(manual=manual))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slot = next(
+        item
+        for item in response_body(response)["slots"]
+        if item["startTime"] == "18:00"
+    )
+    assert slot["tables"] == [{"tableId": "table-b", "seats": 4}]
+
+
+def test_fully_occupied_slot_is_omitted(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    for table_id in ("table-a", "table-b"):
+        tables["occupancy"].put_item(Item=occupancy_item(table_id))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert "18:00" not in {
+        slot["startTime"] for slot in response_body(response)["slots"]
+    }
+
+
+def test_overlapping_old_duration_hold_removes_every_overlapped_slot(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(start_time="17:00", end_time="19:00")
+    )
+
+    response = app.handler(make_event(), None)
+
+    slots = {
+        slot["startTime"]: slot
+        for slot in response_body(response)["slots"]
+    }
+    assert slots["16:00"]["tables"] == [
+        {"tableId": "table-b", "seats": 4}
+    ]
+    assert slots["18:00"]["tables"] == [
+        {"tableId": "table-b", "seats": 4}
+    ]
+
+
+def test_adjacent_hold_does_not_remove_table(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(start_time="08:00", end_time="10:00")
+    )
+
+    response = app.handler(make_event(), None)
+
+    first_slot = response_body(response)["slots"][0]
+    assert first_slot["startTime"] == "10:00"
+    assert first_slot["tables"] == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+
+
+def test_inactive_table_hold_does_not_change_availability(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=occupancy_item("removed-table"))
+
+    response = app.handler(make_event(), None)
+
+    slot = next(
+        item
+        for item in response_body(response)["slots"]
+        if item["startTime"] == "18:00"
+    )
+    assert slot["tables"] == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+
+
+def test_other_date_hold_is_not_returned_by_date_query(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(date_value="2026-09-21")
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert len(response_body(response)["slots"]) == 6
+
+
+def test_occupancy_query_is_single_and_strongly_consistent(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock(wraps=tables["occupancy"])
+    real_table = app.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    occupancy.query.assert_called_once()
+    query = occupancy.query.call_args.kwargs
+    assert query["ConsistentRead"] is True
+    assert "ExclusiveStartKey" not in query
+    occupancy.scan.assert_not_called()
+
+
+def test_occupancy_query_follows_all_pages(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    first = occupancy_item("table-a")
+    second = occupancy_item("table-b")
+    last_key = {"PK": first["PK"], "SK": first["SK"]}
+    occupancy = Mock()
+    occupancy.query.side_effect = [
+        {"Items": [first], "LastEvaluatedKey": last_key},
+        {"Items": [second]},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: occupancy)
+
+    items = app._query_occupancies(LOCATION_ID, "2026-09-20")
+
+    assert items == [first, second]
+    assert occupancy.query.call_count == 2
+    assert occupancy.query.call_args_list[1].kwargs["ExclusiveStartKey"] == (
+        last_key
+    )
+    assert all(
+        call.kwargs["ConsistentRead"] is True
+        for call in occupancy.query.call_args_list
+    )
+
+
+def test_no_slots_skips_occupancy_query(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    hours = business_hours()
+    hours["sunday"] = []
+    tables["location"].put_item(Item=location_item(hours=hours))
+    occupancy = Mock()
+    real_table = app.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "date": "2026-09-20",
+            "timezone": "Europe/Stockholm",
+            "slots": [],
+        },
+    )
+    occupancy.query.assert_not_called()
+
+
+def test_no_active_tables_skips_occupancy_query(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[wall_element()]),
+    )
+    occupancy = Mock()
+    real_table = app.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert response_body(response)["slots"] == []
+    occupancy.query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        occupancy_item(reservationId=None),
+        occupancy_item(ttl=Decimal("0")),
+        occupancy_item(source="reservation"),
+        occupancy_item(
+            reservationId="MANUAL_BLOCK#not-a-uuid",
+            source="manual_block",
+            createdBy="staff-sub",
+            createdAt="2026-09-08T12:00:00Z",
+        ),
+        occupancy_item(
+            reservationId=(
+                "MANUAL_BLOCK#11111111-1111-4111-8111-111111111111"
+            )
+        ),
+        occupancy_item(
+            SK="SLOT#2026-09-20#invalid-range#table-a"
+        ),
+    ],
+)
+def test_inconsistent_occupancy_returns_409(app_and_tables, item):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot occupancy record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "query_result",
+    [
+        [],
+        {},
+        {"Items": None},
+        {
+            "Items": [],
+            "LastEvaluatedKey": {
+                "PK": f"LOCATION#{LOCATION_ID}",
+                "SK": "OTHER#key",
+            },
+        },
+    ],
+)
+def test_malformed_occupancy_response_returns_503(
+    app_and_tables,
+    monkeypatch,
+    query_result,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock()
+    occupancy.query.return_value = query_result
+    real_table = app.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+
+
+@pytest.mark.parametrize(
+    "aws_error",
+    [
+        ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "sensitive occupancy detail",
+                }
+            },
+            "Query",
+        ),
+        EndpointConnectionError(endpoint_url="https://dynamodb.invalid"),
+    ],
+)
+def test_occupancy_dependency_failure_is_sanitized(
+    app_and_tables,
+    monkeypatch,
+    aws_error,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock()
+    occupancy.query.side_effect = aws_error
+    real_table = app.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+    assert "sensitive occupancy detail" not in response["body"]

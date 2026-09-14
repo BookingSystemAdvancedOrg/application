@@ -144,7 +144,7 @@ Invalid identifiers return `400`; unknown protected proxy paths return `404`; no
 
 **AWS resource access:** Read-only `GetItem` and `Query` on the Menu table. The function does not call Location, User, Cognito, or S3 services.
 
-**Infrastructure routing note:** The bare GET route must remain `NONE`-authorized, while `GET /locations/{locationId}/menu/{proxy+}` must use the JWT authorizer and integrate with this Lambda. The greedy path parameter must be named `proxy`; explicit routes that do not populate that key do not satisfy this dispatch contract. `POST`, `PUT`, and `DELETE` on the greedy route continue to integrate with `manage-menu`. During the staged migration, `manage-menu` temporarily retains its old GET dispatch as a rollback-safe compatibility path until the new GET integration is deployed and verified.
+**Infrastructure routing note:** The bare GET route must remain `NONE`-authorized, while `GET /locations/{locationId}/menu/{proxy+}` must use the JWT authorizer and integrate with this Lambda. The greedy path parameter must be named `proxy`; explicit routes that do not populate that key do not satisfy this dispatch contract. `POST`, `PUT`, and `DELETE` on the greedy route continue to integrate with `manage-menu`.
 
 ---
 
@@ -173,8 +173,6 @@ Creation conditionally requires both keys not to exist. Update and delete first 
 For a DynamoDB `5xx`, timeout, or transport error, a single-item operation may already have committed. The handler reconciles the result with a strongly consistent read and performs at most one idempotent retry when the previous state is still present. If the desired state is present it returns success; if another state is present it returns `409`; and if the result cannot be determined it returns a sanitized `503`. Raw AWS messages are never returned.
 
 Malformed paths, JSON, fields, or values return `400`; a missing item or unknown proxy path returns `404`; a recognized path with the wrong method returns `405` with `Allow`; generated-ID collisions, inconsistent records, and concurrent changes return `409`; and unexpected DynamoDB or transport failures return `503`. Both the bare public GET and protected greedy GET routes belong to `get-menu`.
-
-During the staged routing migration, the handler retains its previous protected GET dispatch as a temporary rollback-safe compatibility path. API Gateway should not target that compatibility path after the new `get-menu` GET integration is deployed and verified. Remove the legacy code only in a later application deployment so a route rollback cannot encounter a Lambda that has already dropped GET support.
 
 This function has no User-table permission, so it can check the caller's group but cannot enforce that a `staff_user` is assigned to the `locationId` in the path. It also has no Location-table or S3 permission, so it cannot prove that the location exists, that `imageKey` exists, or that the image belongs to that location. It must not make incidental calls to those services. Enforcing location assignment requires adding `USER_TABLE_NAME` and read-only User-table access in a separate infrastructure/specification change.
 

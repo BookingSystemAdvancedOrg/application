@@ -292,7 +292,7 @@ def test_missing_claims_returns_401_before_dispatch_or_dynamodb(
     monkeypatch,
 ):
     app, _ = app_and_table
-    event = make_event(proxy="unknown")
+    event = make_event(method="POST", proxy="unknown")
     del event["requestContext"]["authorizer"]
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
@@ -314,7 +314,7 @@ def test_malformed_claims_return_401_without_dynamodb(
     claims,
 ):
     app, _ = app_and_table
-    event = make_event()
+    event = make_event(method="POST")
     event["requestContext"]["authorizer"]["jwt"]["claims"] = claims
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
@@ -339,7 +339,7 @@ def test_missing_subject_returns_401_without_dynamodb(
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
 
-    response = app.handler(make_event(sub=sub), None)
+    response = app.handler(make_event(method="POST", sub=sub), None)
 
     assert_response(
         response,
@@ -362,7 +362,7 @@ def test_wrong_group_returns_403_without_dynamodb(
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
 
-    response = app.handler(make_event(groups=groups), None)
+    response = app.handler(make_event(method="POST", groups=groups), None)
 
     assert_response(response, 403, {"error": "forbidden"})
     table_factory.assert_not_called()
@@ -393,18 +393,27 @@ def test_authorization_happens_before_route_path_and_body_validation(
 def test_all_internal_groups_can_manage_menu(app_and_table, groups):
     app, _ = app_and_table
 
-    response = app.handler(make_event(groups=groups), None)
+    response = app.handler(
+        make_event(
+            method="POST",
+            groups=groups,
+            body=valid_body(),
+        ),
+        None,
+    )
 
-    assert_response(response, 200, {"items": []})
+    assert_response(response, 201)
 
 
 @pytest.mark.parametrize(
     ("method", "proxy", "expected_allow"),
     [
-        ("PUT", "items", "GET, POST"),
-        ("DELETE", "items", "GET, POST"),
-        ("POST", f"items/{ITEM_ID}", "GET, PUT, DELETE"),
-        ("PATCH", f"items/{ITEM_ID}", "GET, PUT, DELETE"),
+        ("GET", "items", "POST"),
+        ("PUT", "items", "POST"),
+        ("DELETE", "items", "POST"),
+        ("GET", f"items/{ITEM_ID}", "PUT, DELETE"),
+        ("POST", f"items/{ITEM_ID}", "PUT, DELETE"),
+        ("PATCH", f"items/{ITEM_ID}", "PUT, DELETE"),
     ],
 )
 def test_known_route_wrong_method_returns_405(
@@ -444,7 +453,7 @@ def test_unknown_route_returns_404_without_dynamodb(
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
 
-    response = app.handler(make_event(proxy=proxy), None)
+    response = app.handler(make_event(method="POST", proxy=proxy), None)
 
     assert_response(response, 404, {"error": "not found"})
     table_factory.assert_not_called()
@@ -468,7 +477,7 @@ def test_invalid_location_id_returns_400_without_dynamodb(
     path_parameters,
 ):
     app, _ = app_and_table
-    event = make_event()
+    event = make_event(method="POST")
     event["pathParameters"] = path_parameters
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     monkeypatch.setattr(app, "table", table_factory)
@@ -977,163 +986,6 @@ def test_same_item_id_may_exist_at_another_location(app_and_table):
     assert get_item(menu_table, location_id=OTHER_LOCATION_ID) is not None
 
 
-def test_list_returns_all_items_in_logical_shape(app_and_table):
-    app, menu_table = app_and_table
-    inactive = menu_item(
-        item_id=OTHER_ITEM_ID,
-        name="Inactive",
-        active=False,
-        internalSecret="must-not-leak",
-    )
-    active = menu_item(internalSecret="must-not-leak")
-    put_item(menu_table, inactive)
-    put_item(menu_table, active)
-    put_item(
-        menu_table,
-        menu_item(location_id=OTHER_LOCATION_ID, name="Other location"),
-    )
-
-    response = app.handler(make_event(), None)
-
-    assert_response(
-        response,
-        200,
-        {"items": [public_item(active), public_item(inactive)]},
-    )
-    raw_response = response["body"]
-    assert "PK" not in raw_response
-    assert "SK" not in raw_response
-    assert "internalSecret" not in raw_response
-    assert response_body(response)["items"][1]["active"] is False
-
-
-def test_list_queries_every_page_without_filtering_inactive(
-    app_and_table,
-    monkeypatch,
-):
-    app, _ = app_and_table
-    first = menu_item(active=True)
-    second = menu_item(item_id=OTHER_ITEM_ID, active=False)
-    last_key = {"PK": first["PK"], "SK": first["SK"]}
-    menu_table = Mock()
-    menu_table.query.side_effect = [
-        {"Items": [first], "LastEvaluatedKey": last_key},
-        {"Items": [second]},
-    ]
-    table_factory = Mock(return_value=menu_table)
-    monkeypatch.setattr(app, "table", table_factory)
-
-    response = app.handler(make_event(), None)
-
-    assert_response(
-        response,
-        200,
-        {"items": [public_item(first), public_item(second)]},
-    )
-    assert menu_table.query.call_count == 2
-    first_call, second_call = menu_table.query.call_args_list
-    assert "ExclusiveStartKey" not in first_call.kwargs
-    assert second_call.kwargs["ExclusiveStartKey"] == last_key
-    assert "FilterExpression" not in first_call.kwargs
-    assert "FilterExpression" not in second_call.kwargs
-    table_factory.assert_called_with(TABLE_NAME)
-
-
-def test_get_returns_one_logical_item_using_strong_read(
-    app_and_table,
-    monkeypatch,
-):
-    app, _ = app_and_table
-    stored = menu_item(internalSecret="must-not-leak")
-    menu_table = Mock()
-    menu_table.get_item.return_value = {"Item": stored}
-    table_factory = Mock(return_value=menu_table)
-    monkeypatch.setattr(app, "table", table_factory)
-
-    response = app.handler(
-        make_event(proxy=f"items/{ITEM_ID}"),
-        None,
-    )
-
-    assert_response(response, 200, public_item(stored))
-    menu_table.get_item.assert_called_once_with(
-        Key={
-            "PK": f"LOCATION#{LOCATION_ID}",
-            "SK": f"MENU#{ITEM_ID}",
-        },
-        ConsistentRead=True,
-    )
-    table_factory.assert_called_once_with(TABLE_NAME)
-    assert "internalSecret" not in response["body"]
-
-
-def test_get_missing_item_returns_404(app_and_table):
-    app, _ = app_and_table
-
-    response = app.handler(
-        make_event(proxy=f"items/{ITEM_ID}"),
-        None,
-    )
-
-    assert_error(response, 404)
-
-
-@pytest.mark.parametrize(
-    ("field", "invalid_value"),
-    [
-        ("active", "yes"),
-        ("price", "free"),
-        ("price", Decimal("-1")),
-        ("price", Decimal("1.234")),
-        ("category", "snacks"),
-        ("name", "   "),
-        ("imageKey", ""),
-        ("description", Decimal("123")),
-        ("createdBy", ""),
-        ("createdAt", Decimal("123")),
-        ("createdAt", "not-a-timestamp"),
-        ("updatedBy", []),
-        ("updatedAt", ""),
-        ("updatedAt", "not-a-timestamp"),
-    ],
-)
-def test_get_rejects_corrupt_stored_public_fields(
-    app_and_table,
-    field,
-    invalid_value,
-):
-    app, menu_table = app_and_table
-    corrupt = menu_item()
-    corrupt[field] = invalid_value
-    put_item(menu_table, corrupt)
-
-    response = app.handler(
-        make_event(proxy=f"items/{ITEM_ID}"),
-        None,
-    )
-
-    assert_response(
-        response,
-        409,
-        {"error": "menu item record is inconsistent"},
-    )
-
-
-def test_list_rejects_corrupt_stored_item_instead_of_returning_it(
-    app_and_table,
-):
-    app, menu_table = app_and_table
-    put_item(menu_table, menu_item(active="yes"))
-
-    response = app.handler(make_event(), None)
-
-    assert_response(
-        response,
-        409,
-        {"error": "menu item record is inconsistent"},
-    )
-
-
 @pytest.mark.parametrize("method", ["PUT", "DELETE"])
 def test_mutations_reject_corrupt_stored_item_without_changing_it(
     app_and_table,
@@ -1159,20 +1011,6 @@ def test_mutations_reject_corrupt_stored_item_without_changing_it(
         {"error": "menu item record is inconsistent"},
     )
     assert get_item(menu_table) == corrupt
-
-
-def test_direct_read_is_scoped_to_location_partition(app_and_table):
-    app, menu_table = app_and_table
-    other = menu_item(location_id=OTHER_LOCATION_ID)
-    put_item(menu_table, other)
-
-    response = app.handler(
-        make_event(proxy=f"items/{ITEM_ID}"),
-        None,
-    )
-
-    assert_error(response, 404)
-    assert get_item(menu_table, location_id=OTHER_LOCATION_ID) == other
 
 
 def test_partial_update_preserves_omitted_and_created_fields(
@@ -1426,7 +1264,7 @@ def test_concurrent_change_prevents_delete_and_preserves_winner(
     assert stored["updatedAt"] == "concurrent-time"
 
 
-@pytest.mark.parametrize("operation", ["query", "get"])
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
 @pytest.mark.parametrize(
     "aws_error",
     [
@@ -1434,24 +1272,26 @@ def test_concurrent_change_prevents_delete_and_preserves_winner(
         endpoint_error(),
     ],
 )
-def test_read_failures_return_sanitized_503(
+def test_mutation_read_failures_return_sanitized_503(
     app_and_table,
     monkeypatch,
-    operation,
+    method,
     aws_error,
 ):
     app, _ = app_and_table
     menu_table = Mock()
-    getattr(menu_table, f"{operation}_item", None)
-    if operation == "query":
-        menu_table.query.side_effect = aws_error
-        proxy = "items"
-    else:
-        menu_table.get_item.side_effect = aws_error
-        proxy = f"items/{ITEM_ID}"
+    menu_table.get_item.side_effect = aws_error
     monkeypatch.setattr(app, "table", lambda _: menu_table)
+    body = {"name": "Updated"} if method == "PUT" else NO_BODY
 
-    response = app.handler(make_event(proxy=proxy), None)
+    response = app.handler(
+        make_event(
+            method=method,
+            proxy=f"items/{ITEM_ID}",
+            body=body,
+        ),
+        None,
+    )
 
     assert_response(
         response,

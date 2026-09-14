@@ -1,12 +1,13 @@
 """manage-menu
 
 TRIGGER:
-    API Gateway -- ANY /locations/{locationId}/menu/{proxy+} -- Auth: JWT
+    API Gateway -- Auth: JWT
+    POST/PUT/DELETE /locations/{locationId}/menu/{proxy+}
 
 PURPOSE:
-    Staff-facing CRUD for menu items. Dispatches GET/POST on ``items`` and
-    GET/PUT/DELETE on ``items/{menuItemId}``. Categories are the fixed values
-    defined by the Menu data model, not separate DynamoDB resources.
+    Staff-facing menu-item writes. Dispatches POST on ``items`` and
+    PUT/DELETE on ``items/{menuItemId}``. Protected reads are handled by
+    get-menu. Categories are fixed Menu data-model values, not resources.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -32,7 +33,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from http import HTTPStatus
 
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared.auth import Unauthorized, get_claims, get_sub, require_group
@@ -250,9 +250,9 @@ def _match_route(proxy_path):
 
     segments = proxy_path.strip("/").split("/")
     if segments == ["items"]:
-        return "collection", None, ("GET", "POST")
+        return "collection", None, ("POST",)
     if len(segments) == 2 and segments[0] == "items" and segments[1]:
-        return "item", segments[1], ("GET", "PUT", "DELETE")
+        return "item", segments[1], ("PUT", "DELETE")
     return None
 
 
@@ -328,42 +328,6 @@ def _load_item(location_id, menu_item_id):
     if item is None:
         return None
     return _validate_stored_item(item, location_id, menu_item_id)
-
-
-def _list_items(location_id):
-    request = {
-        "KeyConditionExpression": (
-            Key("PK").eq(f"LOCATION#{location_id}")
-            & Key("SK").begins_with("MENU#")
-        ),
-        "ConsistentRead": True,
-    }
-    items = []
-
-    while True:
-        response = table(MENU_TABLE_NAME).query(**request)
-        if not isinstance(response, dict):
-            raise _MenuServiceFailure
-
-        page = response.get("Items")
-        if not isinstance(page, list):
-            raise _MenuServiceFailure
-
-        for item in page:
-            if not isinstance(item, dict):
-                raise _MenuServiceFailure
-            menu_item_id = item.get("menuItemId")
-            if not isinstance(menu_item_id, str) or not menu_item_id:
-                raise _MenuConflict("menu item record is inconsistent")
-            _validate_stored_item(item, location_id, menu_item_id)
-            items.append(_public_item(item))
-
-        last_key = response.get("LastEvaluatedKey")
-        if last_key is None:
-            return items
-        if not isinstance(last_key, dict) or not last_key:
-            raise _MenuServiceFailure
-        request["ExclusiveStartKey"] = last_key
 
 
 def _expected_item_condition(expected):
@@ -567,20 +531,6 @@ def _create_item(event, location_id, caller_sub):
     )
 
 
-def _get_item(location_id, menu_item_id):
-    item = _load_item(location_id, menu_item_id)
-    if item is None:
-        return _menu_error(HTTPStatus.NOT_FOUND.value, "menu item not found")
-    return _menu_response(HTTPStatus.OK.value, _public_item(item))
-
-
-def _get_items(location_id):
-    return _menu_response(
-        HTTPStatus.OK.value,
-        {"items": _list_items(location_id)},
-    )
-
-
 def _update_item(event, location_id, menu_item_id, caller_sub):
     updates = _menu_fields(event, partial=True)
     item = _load_item(location_id, menu_item_id)
@@ -664,12 +614,8 @@ def handler(event, context):
             )
         )
 
-        if route_name == "collection" and method == "GET":
-            return _get_items(location_id)
         if route_name == "collection":
             return _create_item(event, location_id, caller_sub)
-        if method == "GET":
-            return _get_item(location_id, menu_item_id)
         if method == "PUT":
             return _update_item(
                 event,

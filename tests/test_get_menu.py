@@ -884,6 +884,52 @@ def test_protected_reads_reject_inconsistent_records_with_409(
 
 
 @pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("active", "yes"),
+        ("price", "free"),
+        ("price", Decimal("-1")),
+        ("price", Decimal("1.234")),
+        ("category", "snacks"),
+        ("name", "   "),
+        ("imageKey", ""),
+        ("description", Decimal("123")),
+        ("createdBy", ""),
+        ("createdAt", Decimal("123")),
+        ("createdAt", "not-a-timestamp"),
+        ("updatedBy", []),
+        ("updatedAt", ""),
+        ("updatedAt", "not-a-timestamp"),
+    ],
+)
+def test_protected_item_rejects_each_corrupt_management_field(
+    app_and_table,
+    monkeypatch,
+    field,
+    invalid_value,
+):
+    app, _ = app_and_table
+    stored = menu_item()
+    stored[field] = invalid_value
+    menu_table = Mock()
+    menu_table.get_item.return_value = {"Item": stored}
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(
+            proxy=f"items/{ITEM_ID}",
+            groups='["staff_user"]',
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert response_body(response) == {
+        "error": "menu item record is inconsistent"
+    }
+
+
+@pytest.mark.parametrize(
     "malformed_response",
     [
         None,

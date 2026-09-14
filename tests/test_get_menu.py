@@ -18,6 +18,23 @@ LOCATION_ID = "location-id"
 OTHER_LOCATION_ID = "other-location-id"
 ITEM_ID = "item-id"
 OTHER_ITEM_ID = "other-item-id"
+CALLER_SUB = "caller-sub"
+
+MANAGEMENT_FIELDS = (
+    "menuItemId",
+    "name",
+    "description",
+    "price",
+    "category",
+    "imageKey",
+    "active",
+    "createdBy",
+    "createdAt",
+    "updatedBy",
+    "updatedAt",
+)
+
+ABSENT = object()
 
 
 def menu_item(
@@ -59,11 +76,35 @@ def public_item(item):
     }
 
 
-def make_event(*, method="GET", location_id=LOCATION_ID):
-    return {
+def management_item(item):
+    return {field: item[field] for field in MANAGEMENT_FIELDS}
+
+
+def make_event(
+    *,
+    method="GET",
+    location_id=LOCATION_ID,
+    proxy=ABSENT,
+    groups=ABSENT,
+    sub=CALLER_SUB,
+):
+    event = {
         "requestContext": {"http": {"method": method}},
         "pathParameters": {"locationId": location_id},
     }
+
+    if proxy is not ABSENT:
+        event["pathParameters"]["proxy"] = proxy
+
+    if groups is not ABSENT:
+        claims = {"cognito:groups": groups}
+        if sub is not ABSENT:
+            claims["sub"] = sub
+        event["requestContext"]["authorizer"] = {
+            "jwt": {"claims": claims}
+        }
+
+    return event
 
 
 def response_body(response):
@@ -440,6 +481,498 @@ def test_dynamodb_failures_return_sanitized_503(
     monkeypatch.setattr(app, "table", lambda _: menu_table)
 
     response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 503
+    assert response_body(response) == {"error": "menu service unavailable"}
+    assert "sensitive AWS message" not in response["body"]
+
+
+def test_bare_public_route_stays_public_when_jwt_claims_are_present(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    active_item = menu_item(internalSecret="must-not-leak")
+    inactive_item = menu_item(
+        item_id=OTHER_ITEM_ID,
+        name="Hidden item",
+        active=False,
+    )
+    menu_table.put_item(Item=active_item)
+    menu_table.put_item(Item=inactive_item)
+
+    response = app.handler(
+        make_event(groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response_body(response) == {
+        "items": [public_item(active_item)]
+    }
+    assert "active" not in response["body"]
+    assert "createdBy" not in response["body"]
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "items",
+        f"items/{ITEM_ID}",
+        None,
+        "unknown",
+    ],
+)
+def test_every_proxy_route_requires_jwt_before_reading(
+    app_and_table,
+    monkeypatch,
+    proxy,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(proxy=proxy, location_id=None),
+        None,
+    )
+
+    assert response["statusCode"] == 401
+    assert response_body(response) == {
+        "error": "no JWT claims on this request"
+    }
+    table_factory.assert_not_called()
+
+
+def test_protected_route_requires_a_jwt_subject_before_reading(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(
+            proxy="items",
+            groups='["staff_user"]',
+            sub=ABSENT,
+            location_id=None,
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 401
+    assert response_body(response) == {
+        "error": "JWT is missing a subject"
+    }
+    table_factory.assert_not_called()
+
+
+def test_protected_route_rejects_the_wrong_group_before_reading(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(
+            proxy="items",
+            groups='["customer"]',
+            location_id=None,
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    assert response_body(response) == {"error": "forbidden"}
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("groups", [None, [], {}, ""])
+def test_protected_route_rejects_missing_or_malformed_groups(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(proxy="items", groups=groups),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    assert response_body(response) == {"error": "forbidden"}
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "group",
+    ["staff_user", "owner_user", "super_user"],
+)
+def test_each_staff_group_can_list_management_items(
+    app_and_table,
+    group,
+):
+    app, _ = app_and_table
+
+    response = app.handler(
+        make_event(proxy="items", groups=json.dumps([group])),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert response_body(response) == {"items": []}
+
+
+@pytest.mark.parametrize(
+    ("location_id", "expected_body"),
+    [
+        (None, {"error": "locationId is required"}),
+        ("", {"error": "locationId is required"}),
+        ("x" * 129, {"error": "locationId is invalid"}),
+    ],
+)
+def test_protected_route_validates_location_after_auth_without_reading(
+    app_and_table,
+    monkeypatch,
+    location_id,
+    expected_body,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(
+            proxy="items",
+            groups='["staff_user"]',
+            location_id=location_id,
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert response_body(response) == expected_body
+    table_factory.assert_not_called()
+
+
+def test_protected_list_returns_active_and_inactive_management_fields(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    active_item = menu_item(internalSecret="must-not-leak")
+    inactive_item = menu_item(
+        item_id=OTHER_ITEM_ID,
+        name="Hidden item",
+        active=False,
+        internalSecret="must-not-leak",
+    )
+    other_location_item = menu_item(location_id=OTHER_LOCATION_ID)
+    for item in (active_item, inactive_item, other_location_item):
+        menu_table.put_item(Item=item)
+
+    response = app.handler(
+        make_event(proxy="items", groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    returned = response_body(response)["items"]
+    assert {
+        item["menuItemId"]: item
+        for item in returned
+    } == {
+        active_item["menuItemId"]: management_item(active_item),
+        inactive_item["menuItemId"]: management_item(inactive_item),
+    }
+    for private_field in ("PK", "SK", "internalSecret"):
+        assert private_field not in response["body"]
+
+
+def test_protected_list_uses_a_strong_partition_query_and_all_pages(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    first = menu_item(active=True)
+    second = menu_item(item_id=OTHER_ITEM_ID, active=False)
+    last_key = {"PK": first["PK"], "SK": first["SK"]}
+    menu_table = Mock()
+    menu_table.query.side_effect = [
+        {"Items": [first], "LastEvaluatedKey": last_key},
+        {"Items": [second]},
+    ]
+    table_factory = Mock(return_value=menu_table)
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(proxy="items", groups='["owner_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response_body(response) == {
+        "items": [management_item(first), management_item(second)]
+    }
+    assert menu_table.query.call_count == 2
+    first_call, second_call = menu_table.query.call_args_list
+    assert first_call.kwargs["ConsistentRead"] is True
+    assert "FilterExpression" not in first_call.kwargs
+    assert "ExclusiveStartKey" not in first_call.kwargs
+    assert second_call.kwargs["ExclusiveStartKey"] == last_key
+    table_factory.assert_called_once_with(TABLE_NAME)
+
+    expression = first_call.kwargs["KeyConditionExpression"].get_expression()
+    partition_condition, sort_condition = expression["values"]
+    assert partition_condition.get_expression()["values"][1] == (
+        f"LOCATION#{LOCATION_ID}"
+    )
+    assert sort_condition.get_expression()["values"][1] == "MENU#"
+
+
+def test_protected_item_returns_full_logical_item_using_strong_read(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    stored = menu_item(internalSecret="must-not-leak")
+    menu_table = Mock()
+    menu_table.get_item.return_value = {"Item": stored}
+    table_factory = Mock(return_value=menu_table)
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(
+            proxy=f"items/{ITEM_ID}",
+            groups='["super_user"]',
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response_body(response) == management_item(stored)
+    menu_table.get_item.assert_called_once_with(
+        Key={
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": f"MENU#{ITEM_ID}",
+        },
+        ConsistentRead=True,
+    )
+    table_factory.assert_called_once_with(TABLE_NAME)
+    for private_field in ("PK", "SK", "internalSecret"):
+        assert private_field not in response["body"]
+
+
+def test_protected_item_missing_from_location_returns_404(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(location_id=OTHER_LOCATION_ID))
+
+    response = app.handler(
+        make_event(
+            proxy=f"items/{ITEM_ID}",
+            groups='["staff_user"]',
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 404
+    assert response_body(response) == {"error": "menu item not found"}
+
+
+@pytest.mark.parametrize(
+    ("proxy", "expected_status", "expected_body"),
+    [
+        ("unknown", 404, {"error": "not found"}),
+        ("items/a/b", 404, {"error": "not found"}),
+        ("items//item-id", 404, {"error": "not found"}),
+        (
+            f"items/{'x' * 129}",
+            400,
+            {"error": "menuItemId is invalid"},
+        ),
+    ],
+)
+def test_invalid_protected_paths_do_not_read(
+    app_and_table,
+    monkeypatch,
+    proxy,
+    expected_status,
+    expected_body,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(proxy=proxy, groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == expected_status
+    assert response_body(response) == expected_body
+    table_factory.assert_not_called()
+
+
+def test_protected_non_get_method_returns_405_before_reading(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            proxy="items",
+            groups='["staff_user"]',
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 405
+    assert response["headers"]["Allow"] == "GET"
+    assert response_body(response) == {"error": "method not allowed"}
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("route", "stored"),
+    [
+        ("items", menu_item(active="yes")),
+        (
+            f"items/{ITEM_ID}",
+            menu_item(category="snacks"),
+        ),
+        (
+            f"items/{ITEM_ID}",
+            menu_item(SK="MENU#wrong"),
+        ),
+    ],
+)
+def test_protected_reads_reject_inconsistent_records_with_409(
+    app_and_table,
+    monkeypatch,
+    route,
+    stored,
+):
+    app, _ = app_and_table
+    menu_table = Mock()
+    if route == "items":
+        menu_table.query.return_value = {"Items": [stored]}
+    else:
+        menu_table.get_item.return_value = {"Item": stored}
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(proxy=route, groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert response_body(response) == {
+        "error": "menu item record is inconsistent"
+    }
+
+
+@pytest.mark.parametrize(
+    "malformed_response",
+    [
+        None,
+        [],
+        {},
+        {"Items": None},
+        {"Items": [None]},
+    ],
+)
+def test_malformed_protected_list_results_return_503(
+    app_and_table,
+    monkeypatch,
+    malformed_response,
+):
+    app, _ = app_and_table
+    menu_table = Mock()
+    menu_table.query.return_value = malformed_response
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(proxy="items", groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 503
+    assert response_body(response) == {"error": "menu service unavailable"}
+
+
+@pytest.mark.parametrize(
+    "malformed_response",
+    [
+        None,
+        [],
+        {"Item": []},
+    ],
+)
+def test_malformed_protected_item_results_return_503(
+    app_and_table,
+    monkeypatch,
+    malformed_response,
+):
+    app, _ = app_and_table
+    menu_table = Mock()
+    menu_table.get_item.return_value = malformed_response
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(
+            proxy=f"items/{ITEM_ID}",
+            groups='["staff_user"]',
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 503
+    assert response_body(response) == {"error": "menu service unavailable"}
+
+
+@pytest.mark.parametrize(
+    ("proxy", "operation"),
+    [
+        ("items", "query"),
+        (f"items/{ITEM_ID}", "get_item"),
+    ],
+)
+def test_protected_dynamodb_failures_return_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    proxy,
+    operation,
+):
+    app, _ = app_and_table
+    aws_error = ClientError(
+        {
+            "Error": {
+                "Code": "InternalServerError",
+                "Message": "sensitive AWS message",
+            }
+        },
+        operation,
+    )
+    menu_table = Mock()
+    getattr(menu_table, operation).side_effect = aws_error
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(proxy=proxy, groups='["staff_user"]'),
+        None,
+    )
 
     assert response["statusCode"] == 503
     assert response_body(response) == {"error": "menu service unavailable"}

@@ -7,9 +7,9 @@ is allowed to act on the specific locationId/resource in the path. Both of
 those checks are this module's job, called explicitly inside every
 JWT-protected handler.
 
-Do not import/use this module from a NONE-auth function (get-menu,
-get-availability, create-pending-reservation, cancel-reservation,
-manage-auth) - there is no JWT claims block on those requests at all.
+Do not call these helpers for a NONE-auth request: there is no JWT claims
+block on those requests. A mixed-auth Lambda must dispatch by its configured
+route and call these helpers only for its JWT-protected route branches.
 """
 
 import json

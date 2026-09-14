@@ -37,7 +37,7 @@ tags:
   - name: Locations
     description: Staff-facing location creation and detail retrieval.
   - name: Menu
-    description: Public menu reads and staff-facing menu-item management.
+    description: Public and protected menu reads, plus staff-facing writes.
   - name: Layout
     description: Mutable floor-layout editing, publication, and scheduled activation.
   - name: Media
@@ -964,7 +964,8 @@ paths:
         fields and internal DynamoDB keys are not exposed. An empty menu and
         an unknown location both produce an empty list because this Lambda is
         not permitted to read the Location table. Item ordering is not
-        guaranteed.
+        guaranteed. This exact route is intentionally public; protected menu
+        reads use the `/menu/items` paths below.
       security: []
       x-required-groups: []
       responses:
@@ -999,9 +1000,10 @@ paths:
       summary: List menu items for a location
       operationId: listMenuItems
       description: |
-        Returns all menu items in the location partition, including inactive
-        items. An empty list is returned when the partition has no items; this
-        Lambda cannot verify that the location itself exists.
+        Protected staff read that returns all menu items in the location
+        partition, including inactive items. An empty list is returned when
+        the partition has no items; the read Lambda cannot verify that the
+        location itself exists or that a staff caller is assigned to it.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1105,6 +1107,10 @@ paths:
         - Menu
       summary: Get a menu item
       operationId: getMenuItem
+      description: |
+        Protected staff read of one complete logical menu item. The item is
+        scoped to the location in the path and includes its active and audit
+        fields, but never its internal DynamoDB keys.
       security:
         - bearerAuth: []
       x-required-groups:

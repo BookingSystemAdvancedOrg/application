@@ -2,9 +2,12 @@
 
 ### Trigger
 API Gateway -- GET /locations/{locationId}/menu -- Auth: NONE
+API Gateway -- GET /locations/{locationId}/menu/{proxy+} -- Auth: JWT
 
 ### Purpose
-Public, unauthenticated menu read for the customer-facing site - returns the menu items for a given location.
+Read-only menu API. The exact route returns active customer-facing items;
+protected `items` and `items/{menuItemId}` routes return complete staff
+records after Cognito group validation.
 
 ### Environment variables
 | Name | Meaning |
@@ -13,7 +16,7 @@ Public, unauthenticated menu read for the customer-facing site - returns the men
 | `MENU_TABLE_NAME` | DynamoDB table to read from |
 
 ### AWS resource access
-Read-only (Scan, GetItem, Query) on the Menu table.
+Read-only GetItem and Query on the Menu table.
 
 ### Definition of Done
 - [ ] `handler(event, context)` fully implements the behavior described in this issue's Purpose (and its `LAMBDA_REFERENCE.md` section)
@@ -24,7 +27,9 @@ Read-only (Scan, GetItem, Query) on the Menu table.
 - [ ] Module docstring in `app.py` is kept accurate if the implementation ends up deviating from the original stub
 - [ ] Code reviewed and merged
 - [ ] Deployed to dev and manually verified end-to-end via its real trigger
-- [ ] Confirmed no JWT/auth check is added - this route is intentionally public
+- [ ] Confirmed the exact `/menu` route remains public and does not perform a JWT check
+- [ ] Confirmed every greedy `/menu/{proxy+}` route requires JWT claims and an allowed Cognito group
+- [ ] Internal dispatch uses the `proxy` path parameter, never authorization-header presence
 
 ### Code location
 `functions/get-menu/app.py` (this repo)

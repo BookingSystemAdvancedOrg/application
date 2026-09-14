@@ -28,7 +28,7 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 1. Read `cognito:groups` from the claims. Valid groups: `staff_user`, `owner_user`, `super_user`.
 2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` — see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
 
-**Routes that are `NONE`** (`get-menu`, `get-availability`, `create-pending-reservation`, `cancel-reservation`, `manage-auth`) are intentionally public — customers never have Cognito accounts. Don't add JWT checks to these.
+**Routes configured as `NONE`** are intentionally public — customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific: `get-menu` serves both a public exact route and JWT-protected greedy GET routes, and it dispatches between them using the presence of the `proxy` path parameter rather than an authorization header.
 
 **Reservation status state machine.** The `Reservation` table's `status` field drives most of the business logic and is what the `notification` stream filters key off of:
 
@@ -110,27 +110,47 @@ All successful and error responses include `Cache-Control: no-store`.
 ---
 
 ### 3. `get-menu`
-**Trigger:** API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
-**Purpose:** Public, unauthenticated menu read for the customer-facing site — returns the active menu items for a given location.
+**Triggers:**
+- API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
+- API Gateway — `GET /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+
+**Purpose:** Read-only menu API. The exact `/menu` route returns active customer-facing items without authentication. The greedy GET route returns full staff-facing items after JWT and Cognito-group validation.
+
+**Authorization and dispatch:** The handler chooses the route family from `event["pathParameters"]`. Absence of the `proxy` key means the public exact route; the presence of that key always enters the protected branch, including malformed or unknown proxy values. It never decides from an `Authorization` header or merely from whether JWT claims happen to be present.
+
+Protected reads require a non-empty Cognito `sub` and membership in `staff_user`, `owner_user`, or `super_user` before location/path validation or DynamoDB access. Missing or malformed direct-invocation claims return `401`; a valid caller outside those groups returns `403`. The function has no User-table access, so it cannot restrict a `staff_user` to their assigned location.
+
+**Dispatch and response contract:**
+
+| Method | Route / `proxy` path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/locations/<locationId>/menu` (no `proxy`) | `NONE` | `200` with `{"items": [...]}` containing active customer fields only |
+| `GET` | `items` | `JWT` | `200` with `{"items": [...]}` containing active and inactive staff items |
+| `GET` | `items/<menuItemId>` | `JWT` | `200` with one complete logical staff item |
+
+Every read requires a non-empty `locationId` of at most 128 characters. Collection reads use a strongly consistent Query scoped to `PK="LOCATION#<locationId>"` and `SK begins_with "MENU#"`, follow every valid DynamoDB pagination key, and do not scan. An empty partition returns `200` with `{"items": []}`; this also covers unknown locations because the function cannot read the Location table. No item ordering is promised.
+
+The public response includes exactly `menuItemId`, `name`, `description`, `price`, `category`, and `imageKey`. Only records whose `active` value is exactly `true` are returned. The response never exposes `active`, audit data, DynamoDB keys, or unexpected stored attributes.
+
+Protected collection reads include active and inactive records. Protected collection and item responses include exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal keys and unexpected attributes are omitted. Individual reads use a strongly consistent `GetItem` scoped to the requested location and return `404` when the item is absent.
+
+Invalid identifiers return `400`; unknown protected proxy paths return `404`; non-GET direct invocations return `405` with `Allow: GET`; inconsistent protected records return `409`; and malformed DynamoDB responses or unexpected DynamoDB/transport failures return a sanitized `503`. Corrupt public records also return a sanitized `503` rather than exposing partial data. All responses include `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `MENU_TABLE_NAME` | DynamoDB table to read from |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Menu table.
+**AWS resource access:** Read-only `GetItem` and `Query` on the Menu table. The function does not call Location, User, Cognito, or S3 services.
 
-The handler accepts only `GET` and requires a non-empty `locationId` of at most 128 characters. It queries `PK="LOCATION#<locationId>"` with `SK begins_with "MENU#"`, follows every DynamoDB pagination key, and returns `200` with `{"items": [...]}`. It does not scan the table or access Location, Cognito, User, or S3 resources.
-
-Only records whose `active` field is exactly `true` are returned. Each public item contains exactly `menuItemId`, `name`, `description`, `price`, `category`, and `imageKey`; `active`, audit subjects/timestamps, `PK`/`SK`, and unexpected stored attributes are not exposed. No customer-facing order is promised because the data model has no display-order attribute.
-
-An empty partition returns `200` with `{"items": []}`. This includes unknown location IDs because the function has no permission to check the Location table. Invalid paths return `400`; other methods return `405` with `Allow: GET`; malformed table results and unexpected DynamoDB or transport failures return a sanitized `503`. All responses include `Cache-Control: no-store`. No JWT or Cognito-group check is performed because the route is intentionally public.
+**Infrastructure routing note:** The bare GET route must remain `NONE`-authorized, while `GET /locations/{locationId}/menu/{proxy+}` must use the JWT authorizer and integrate with this Lambda. The greedy path parameter must be named `proxy`; explicit routes that do not populate that key do not satisfy this dispatch contract. `POST`, `PUT`, and `DELETE` on the greedy route continue to integrate with `manage-menu`. During the staged migration, `manage-menu` temporarily retains its old GET dispatch as a rollback-safe compatibility path until the new GET integration is deployed and verified.
 
 ---
 
 ### 4. `manage-menu`
-**Trigger:** API Gateway — `ANY /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
-**Purpose:** Staff-facing CRUD for menu items. The `{proxy+}` catch-all means this one function handles every configured sub-path under `/menu/...` and dispatches internally on the HTTP method and normalized `proxy` path.
+**Triggers:** API Gateway — `POST`, `PUT`, and `DELETE /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+**Purpose:** Staff-facing menu-item writes. The `{proxy+}` catch-all dispatches create, update, and delete operations from the HTTP method and normalized `proxy` path. Protected GET routes are owned by the read-only `get-menu` Lambda.
 
 **Authorization:** Every action requires a caller in `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling DynamoDB. Missing or malformed direct-invocation claims return `401`; a valid token whose caller is not in one of those groups returns `403`.
 
@@ -138,9 +158,7 @@ An empty partition returns `200` with `{"items": []}`. This includes unknown loc
 
 | Method | `proxy` path | Request | Success |
 |---|---|---|---|
-| `GET` | `items` | No body | `200` with `{"items": [...]}` including active and inactive items |
 | `POST` | `items` | Exactly `name`, `description`, `price`, `category`, `imageKey`, and `active` | `201` with the created logical item and a `Location` header |
-| `GET` | `items/<menuItemId>` | No body | `200` with the logical item |
 | `PUT` | `items/<menuItemId>` | One or more editable item fields | `200` with the updated logical item |
 | `DELETE` | `items/<menuItemId>` | No body | `204` with an empty body |
 
@@ -148,13 +166,15 @@ An empty partition returns `200` with `{"items": []}`. This includes unknown loc
 
 The handler generates `menuItemId` as a UUID and obtains all audit data from the verified request: `createdBy`/`updatedBy` are the caller's Cognito `sub`, and `createdAt`/`updatedAt` are UTC ISO8601 timestamps. On creation, both audit pairs have the same values. Updates preserve the creation audit fields and replace the update audit fields. Items are stored with `PK="LOCATION#<locationId>"` and `SK="MENU#<menuItemId>"`.
 
-The logical item returned by successful non-delete item actions contains exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal `PK`/`SK` attributes are never returned. The collection action queries only the requested location partition and the `MENU#` sort-key prefix, follows every DynamoDB pagination key, and returns both active and inactive items so staff can reactivate hidden items. All successful and error responses include `Cache-Control: no-store`.
+The logical item returned by successful create and update actions contains exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal `PK`/`SK` attributes are never returned. All successful and error responses include `Cache-Control: no-store`.
 
-Individual reads are strongly consistent. Creation conditionally requires both keys not to exist. Update and delete first load the item consistently, validate the stored logical record, and condition the write on the complete state that was loaded; a concurrent change returns `409` rather than being overwritten or deleted. A no-op update returns the existing item without changing its audit fields.
+Creation conditionally requires both keys not to exist. Update and delete first load the item consistently, validate the stored logical record, and condition the write on the complete state that was loaded; a concurrent change returns `409` rather than being overwritten or deleted. A no-op update returns the existing item without changing its audit fields.
 
 For a DynamoDB `5xx`, timeout, or transport error, a single-item operation may already have committed. The handler reconciles the result with a strongly consistent read and performs at most one idempotent retry when the previous state is still present. If the desired state is present it returns success; if another state is present it returns `409`; and if the result cannot be determined it returns a sanitized `503`. Raw AWS messages are never returned.
 
-Malformed paths, JSON, fields, or values return `400`; a missing item or unknown proxy path returns `404`; a recognized path with the wrong method returns `405` with `Allow`; generated-ID collisions, inconsistent records, and concurrent changes return `409`; and unexpected DynamoDB or transport failures return `503`. The greedy route does not match bare `/locations/<locationId>/menu`; that public read belongs to `get-menu`.
+Malformed paths, JSON, fields, or values return `400`; a missing item or unknown proxy path returns `404`; a recognized path with the wrong method returns `405` with `Allow`; generated-ID collisions, inconsistent records, and concurrent changes return `409`; and unexpected DynamoDB or transport failures return `503`. Both the bare public GET and protected greedy GET routes belong to `get-menu`.
+
+During the staged routing migration, the handler retains its previous protected GET dispatch as a temporary rollback-safe compatibility path. API Gateway should not target that compatibility path after the new `get-menu` GET integration is deployed and verified. Remove the legacy code only in a later application deployment so a route rollback cannot encounter a Lambda that has already dropped GET support.
 
 This function has no User-table permission, so it can check the caller's group but cannot enforce that a `staff_user` is assigned to the `locationId` in the path. It also has no Location-table or S3 permission, so it cannot prove that the location exists, that `imageKey` exists, or that the image belongs to that location. It must not make incidental calls to those services. Enforcing location assignment requires adding `USER_TABLE_NAME` and read-only User-table access in a separate infrastructure/specification change.
 
@@ -799,8 +819,8 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 |---|---|---|---|
 | 1 | `create-location` | API GW `POST /locations`; `PUT`/`DELETE /locations/{locationId}` | JWT |
 | 2 | `get-location` | API GW `GET /locations`; `GET /locations/{locationId}` | JWT |
-| 3 | `get-menu` | API GW `GET /locations/{locationId}/menu` | NONE |
-| 4 | `manage-menu` | API GW `ANY /locations/{locationId}/menu/{proxy+}` | JWT |
+| 3 | `get-menu` | API GW `GET /locations/{locationId}/menu`; `GET /locations/{locationId}/menu/{proxy+}` | NONE on bare route; JWT on greedy route |
+| 4 | `manage-menu` | API GW `POST`/`PUT`/`DELETE /locations/{locationId}/menu/{proxy+}` | JWT |
 | 5 | `get-availability` | API GW `GET /locations/{locationId}/availability` | NONE |
 | 6 | `create-pending-reservation` | API GW `POST /reservations` | NONE |
 | 7 | `get-reservation` | API GW `GET /reservations/{reservationId}` | JWT |

@@ -97,6 +97,13 @@ The OpenAPI file is the client-facing documentation and testing contract. It
 does not provision API Gateway: Lambda integrations, routes, CORS, and the JWT
 authorizer remain owned by the separate `infrastructure` repository.
 
+The menu route family deliberately splits reads from writes. Both
+`GET /locations/{locationId}/menu` and protected GET requests below
+`/locations/{locationId}/menu/{proxy+}` integrate with `get-menu`.
+`POST`, `PUT`, and `DELETE` requests below the greedy route integrate
+with `manage-menu`. The bare GET has no authorizer; the greedy GET route
+uses the JWT authorizer and must retain the path-parameter name `proxy`.
+
 Stop and remove the local documentation container when finished:
 
 ```powershell
@@ -116,9 +123,10 @@ request already works from Postman or PowerShell.
   the request. Checking *which* Cognito group they're in, and whether
   they're allowed to act on a specific `locationId`, is the handler's job -
   use `shared.auth.require_group()` / `shared.auth.get_sub()`.
-- `NONE`-auth routes (`get-menu`, `get-availability`,
-  `create-pending-reservation`, `cancel-reservation`, `manage-auth`) are
-  intentionally public - customers never have Cognito accounts, don't add
-  JWT checks there.
+- `NONE`-auth routes are intentionally public - customers never have
+  Cognito accounts, so don't add JWT checks to those route branches.
+  `get-menu` is mixed-auth: its exact `/menu` route is public, while its
+  `/menu/{proxy+}` GET route is JWT-protected. Dispatch that distinction
+  from the route path, never from the presence of an authorization header.
 - Never hardcode table/bucket names - always read them from env vars, since
   the same image runs unmodified against dev and prod resources.

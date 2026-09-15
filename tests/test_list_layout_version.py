@@ -95,6 +95,22 @@ def layout_element(element_id="wall-id", **overrides):
     return item
 
 
+def floor_element(
+    element_id="ground-floor",
+    *,
+    name="Ground floor",
+    level=Decimal("0"),
+    **overrides,
+):
+    return layout_element(
+        element_id,
+        type="floor",
+        name=name,
+        level=level,
+        **overrides,
+    )
+
+
 def json_ready(value):
     if isinstance(value, Decimal):
         return (
@@ -558,6 +574,10 @@ def test_missing_snapshot_field_returns_409(
     "element",
     [
         layout_element(type="decor"),
+        floor_element(name=""),
+        floor_element(level=Decimal("1.5")),
+        floor_element(floorId="ground-floor"),
+        layout_element(name="invalid-for-wall"),
         layout_element(width=Decimal("0")),
         layout_element(rotationY="zero"),
         layout_element(wallId="invalid-for-wall"),
@@ -594,6 +614,7 @@ def test_corrupt_embedded_element_returns_409(
 @pytest.mark.parametrize(
     "element",
     [
+        floor_element(level=Decimal("-1")),
         layout_element(),
         layout_element(type="door", wallId="wall-id"),
         layout_element(type="window", wallId="wall-id"),
@@ -616,6 +637,89 @@ def test_lists_each_supported_embedded_element(app_and_table, element):
     assert response_body(response)["items"][0]["elements"] == [
         json_ready(element)
     ]
+
+
+def test_lists_multi_floor_snapshot_and_preserves_relationships(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    ground_floor = floor_element()
+    upper_floor = floor_element(
+        "upper-floor",
+        name="Upper floor",
+        level=Decimal("1"),
+    )
+    ground_table = layout_element(
+        "ground-table",
+        type="table",
+        floorId="ground-floor",
+        shape="rect",
+        seats=Decimal("4"),
+        zone="main",
+    )
+    upper_wall = layout_element(
+        "upper-wall",
+        floorId="upper-floor",
+    )
+    elements = [
+        ground_floor,
+        ground_table,
+        upper_floor,
+        upper_wall,
+    ]
+    snapshot_table.put_item(
+        Item=snapshot_item(1, elements=elements)
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    assert response_body(response)["items"][0]["elements"] == (
+        json_ready(elements)
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [
+            floor_element(),
+            layout_element("unassigned-wall"),
+        ],
+        [
+            floor_element(),
+            layout_element(
+                "orphan-wall",
+                floorId="missing-floor",
+            ),
+        ],
+        [
+            layout_element("wall-used-as-floor"),
+            layout_element(
+                "child-wall",
+                floorId="wall-used-as-floor",
+            ),
+        ],
+    ],
+)
+def test_invalid_floor_relationship_returns_409(
+    app_and_table,
+    monkeypatch,
+    elements,
+):
+    app, _ = app_and_table
+    corrupt = snapshot_item(1, elements=elements)
+    query_table = Mock()
+    query_table.query.return_value = {"Items": [corrupt]}
+    monkeypatch.setattr(app, "table", lambda _name: query_table)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
 
 
 def test_duplicate_versions_return_409(app_and_table, monkeypatch):

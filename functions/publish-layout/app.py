@@ -43,7 +43,9 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
 _ALLOWED_GROUPS = ("owner_user", "super_user")
 _LIVE_ELEMENT_PREFIX = "LAYOUT#ELEMENT#"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
-_ELEMENT_TYPES = frozenset({"wall", "door", "window", "table"})
+_ELEMENT_TYPES = frozenset(
+    {"floor", "wall", "door", "window", "table"}
+)
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _GEOMETRY_FIELDS = (
     "x",
@@ -55,7 +57,9 @@ _GEOMETRY_FIELDS = (
     "rotationY",
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
-_VARIANT_FIELDS = frozenset({"shape", "seats", "zone", "wallId"})
+_VARIANT_FIELDS = frozenset(
+    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+)
 _MAX_PUBLISH_ATTEMPTS = 2
 _AMBIGUOUS_DYNAMO_CODES = {
     "InternalFailure",
@@ -217,6 +221,11 @@ def _logical_element(item, location_id):
         raise _PublishConflict("live layout element is inconsistent")
 
     allowed_variant_fields = set()
+    if element_type == "floor":
+        allowed_variant_fields.update({"name", "level"})
+    else:
+        allowed_variant_fields.add("floorId")
+
     if element_type in {"door", "window"}:
         allowed_variant_fields.add("wallId")
     elif element_type == "table":
@@ -231,6 +240,17 @@ def _logical_element(item, location_id):
             field,
             positive=field in _DIMENSION_FIELDS,
         )
+
+    if element_type == "floor":
+        fields["name"] = _required_string(item, "name")
+        fields["level"] = _canonical_number(
+            item,
+            "level",
+            integer=True,
+        )
+    else:
+        if "floorId" in item:
+            fields["floorId"] = _required_string(item, "floorId")
 
     if element_type in {"door", "window"}:
         fields["wallId"] = _required_string(item, "wallId")
@@ -273,6 +293,27 @@ def _logical_element(item, location_id):
     }
 
 
+def _validate_floor_relationships(elements):
+    floor_ids = {
+        element["elementId"]
+        for element in elements
+        if element["type"] == "floor"
+    }
+
+    for element in elements:
+        if element["type"] == "floor":
+            continue
+
+        floor_id = element.get("floorId")
+        if floor_ids:
+            if floor_id not in floor_ids:
+                raise _PublishConflict(
+                    "live layout element is inconsistent"
+                )
+        elif floor_id is not None:
+            raise _PublishConflict("live layout element is inconsistent")
+
+
 def _read_live_elements(location_id):
     live_table = table(LIVE_LAYOUT_ELEMENT_TABLE_NAME)
     items = _query_all(
@@ -285,7 +326,9 @@ def _read_live_elements(location_id):
             "ConsistentRead": True,
         },
     )
-    return [_logical_element(item, location_id) for item in items]
+    elements = [_logical_element(item, location_id) for item in items]
+    _validate_floor_relationships(elements)
+    return elements
 
 
 def _stored_version(item):

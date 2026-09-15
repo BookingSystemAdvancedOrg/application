@@ -131,6 +131,19 @@ def live_element_item(element_id="wall-id"):
     }
 
 
+def floor_element_item(
+    element_id="ground-floor",
+    *,
+    name="Ground floor",
+    level=Decimal("0"),
+):
+    return live_element_item(element_id) | {
+        "type": "floor",
+        "name": name,
+        "level": level,
+    }
+
+
 def logical_element(item):
     return {
         key: value
@@ -394,6 +407,99 @@ def test_empty_live_layout_can_be_published(app_and_tables):
     assert stored_snapshot(snapshot_table, 1)["elements"] == []
 
 
+def test_publishes_multi_floor_layout_and_preserves_relationships(
+    app_and_tables,
+):
+    app, live_table, snapshot_table = app_and_tables
+    ground_floor = floor_element_item()
+    upper_floor = floor_element_item(
+        "upper-floor",
+        name="Upper floor",
+        level=Decimal("1"),
+    )
+    ground_table = live_element_item("ground-table") | {
+        "type": "table",
+        "floorId": "ground-floor",
+        "shape": "rect",
+        "seats": Decimal("4"),
+        "zone": "main",
+    }
+    upper_wall = live_element_item("upper-wall") | {
+        "floorId": "upper-floor"
+    }
+    for item in (ground_floor, upper_floor, ground_table, upper_wall):
+        live_table.put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    expected_elements = sorted(
+        map(logical_element, (
+            ground_floor,
+            ground_table,
+            upper_floor,
+            upper_wall,
+        )),
+        key=lambda element: element["elementId"],
+    )
+    assert stored_snapshot(snapshot_table, 1)["elements"] == (
+        expected_elements
+    )
+    assert response_body(response)["elements"] == [
+        public_element(element) for element in expected_elements
+    ]
+
+
+def test_floor_without_children_can_be_published(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    floor = floor_element_item(level=Decimal("-1"))
+    live_table.put_item(Item=floor)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(floor)
+    ]
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [
+            floor_element_item(),
+            live_element_item("unassigned-wall"),
+        ],
+        [
+            floor_element_item(),
+            live_element_item("orphan-wall")
+            | {"floorId": "missing-floor"},
+        ],
+        [
+            live_element_item("wall-used-as-floor"),
+            live_element_item("child-wall")
+            | {"floorId": "wall-used-as-floor"},
+        ],
+    ],
+)
+def test_invalid_floor_relationship_returns_409_without_snapshot(
+    app_and_tables,
+    items,
+):
+    app, live_table, snapshot_table = app_and_tables
+    for item in items:
+        live_table.put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
+
+
 def test_unknown_source_attributes_are_not_published(app_and_tables):
     app, live_table, snapshot_table = app_and_tables
     source = live_element_item()
@@ -450,6 +556,7 @@ def test_inconsistent_live_element_returns_409_without_snapshot(
 @pytest.mark.parametrize(
     ("element_type", "variant_fields"),
     [
+        ("floor", {"name": "Mezzanine", "level": Decimal("2")}),
         ("door", {"wallId": "wall-id"}),
         ("window", {"wallId": "wall-id"}),
         (

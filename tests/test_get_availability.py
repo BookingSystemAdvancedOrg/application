@@ -135,6 +135,26 @@ def wall_element(element_id="wall-id"):
     }
 
 
+def floor_element(element_id="floor-ground", *, level="0", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floor",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("12"),
+        "height": Decimal("0.2"),
+        "depth": Decimal("10"),
+        "rotationY": Decimal("0"),
+        "name": "Ground floor",
+        "level": Decimal(level),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
 def activation_state(version="1", **overrides):
     item = {
         "PK": f"LOCATION#{LOCATION_ID}",
@@ -473,6 +493,59 @@ def test_builds_canonical_slots_and_active_table_capacity(
     assert captured["slots"][0]["endMinute"] == 720
 
 
+def test_multi_floor_snapshot_exposes_only_bookable_table_details(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    elements = [
+        table_element("ground-table", floorId="floor-ground"),
+        floor_element(),
+        floor_element(
+            "floor-upper",
+            level="1",
+            name="Upper floor",
+            y=Decimal("3"),
+        ),
+        wall_element("ground-wall") | {"floorId": "floor-ground"},
+        table_element(
+            "upper-table",
+            seats="6",
+            floorId="floor-upper",
+        ),
+    ]
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["tables"] == [
+        {"tableId": "ground-table", "seats": 4},
+        {"tableId": "upper-table", "seats": 6},
+    ]
+
+
+def test_empty_floor_is_valid_and_does_not_create_bookable_table(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[floor_element(level="-1")]),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["tables"] == []
+
+
 def test_location_and_snapshot_reads_are_strongly_consistent(
     app_and_tables,
     monkeypatch,
@@ -737,6 +810,66 @@ def test_inconsistent_active_snapshot_returns_409(
 ):
     app, tables = app_and_tables
     put_stage_two_records(tables, snapshot=snapshot)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), table_element("table-id")],
+        [
+            floor_element(),
+            table_element("table-id", floorId="missing-floor"),
+        ],
+        [table_element("table-id", floorId="missing-floor")],
+        [
+            floor_element(),
+            table_element("not-a-floor", floorId="floor-ground"),
+            wall_element("wall-id") | {"floorId": "not-a-floor"},
+        ],
+    ],
+)
+def test_inconsistent_floor_relationships_return_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [
+        floor_element(name=""),
+        floor_element(level="1.5"),
+        floor_element(floorId="floor-ground"),
+        floor_element(shape="rect"),
+    ],
+)
+def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[floor]),
+    )
 
     response = app.handler(make_event(), None)
 

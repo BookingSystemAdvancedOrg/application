@@ -85,8 +85,13 @@ _GEOMETRY_FIELDS = (
     "rotationY",
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
-_ELEMENT_TYPES = frozenset({"wall", "door", "window", "table"})
+_ELEMENT_TYPES = frozenset(
+    {"floor", "wall", "door", "window", "table"}
+)
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_VARIANT_FIELDS = frozenset(
+    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+)
 _MANUAL_SOURCE = "manual_block"
 _MANUAL_ID_PATTERN = re.compile(
     r"MANUAL_BLOCK#[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
@@ -414,32 +419,69 @@ def _validate_layout_element(element):
     if element_type not in _ELEMENT_TYPES:
         raise ValueError
 
+    allowed_variant_fields = set()
+    if element_type == "floor":
+        allowed_variant_fields.update({"name", "level"})
+    else:
+        allowed_variant_fields.add("floorId")
+
+    if element_type in {"door", "window"}:
+        allowed_variant_fields.add("wallId")
+    elif element_type == "table":
+        allowed_variant_fields.update({"shape", "seats", "zone"})
+    if (set(element) & _VARIANT_FIELDS) - allowed_variant_fields:
+        raise ValueError
+
     for field in _GEOMETRY_FIELDS:
         _canonical_number(
             element.get(field),
             positive=field in _DIMENSION_FIELDS,
         )
 
-    variant_fields = {"shape", "seats", "zone", "wallId"} & set(element)
+    floor_id = None
     table_details = None
+    if element_type == "floor":
+        _stored_string(element, "name")
+        _canonical_number(element.get("level"), integer=True)
+    else:
+        if "floorId" in element:
+            floor_id = _stored_string(element, "floorId")
+
     if element_type in {"door", "window"}:
-        if variant_fields != {"wallId"}:
-            raise ValueError
         _stored_string(element, "wallId")
     elif element_type == "table":
-        if variant_fields != {"shape", "seats", "zone"}:
-            raise ValueError
         if element.get("shape") not in _TABLE_SHAPES:
             raise ValueError
         seats = _positive_integer(element.get("seats"))
         _stored_string(element, "zone")
         table_details = {"tableId": element_id, "seats": seats}
-    elif variant_fields:
-        raise ValueError
 
     _stored_string(element, "updatedBy")
     _parse_utc_timestamp(element.get("updatedAt"))
-    return element_id, table_details
+    return {
+        "elementId": element_id,
+        "type": element_type,
+        **({"floorId": floor_id} if floor_id is not None else {}),
+    }, table_details
+
+
+def _validate_floor_relationships(elements):
+    floor_ids = {
+        element["elementId"]
+        for element in elements
+        if element["type"] == "floor"
+    }
+
+    for element in elements:
+        if element["type"] == "floor":
+            continue
+
+        floor_id = element.get("floorId")
+        if floor_ids:
+            if floor_id not in floor_ids:
+                raise ValueError
+        elif floor_id is not None:
+            raise ValueError
 
 
 def _validate_active_snapshot(snapshot, location_id, version, now):
@@ -481,14 +523,20 @@ def _validate_active_snapshot(snapshot, location_id, version, now):
         ):
             raise ValueError
         seen_ids = set()
+        validated_elements = []
         tables = []
         for element in elements:
-            element_id, table_details = _validate_layout_element(element)
+            validated_element, table_details = _validate_layout_element(
+                element
+            )
+            element_id = validated_element["elementId"]
             if element_id in seen_ids:
                 raise ValueError
             seen_ids.add(element_id)
+            validated_elements.append(validated_element)
             if table_details is not None:
                 tables.append(table_details)
+        _validate_floor_relationships(validated_elements)
 
         _stored_string(snapshot, "createdBy")
         _parse_utc_timestamp(snapshot.get("createdAt"))

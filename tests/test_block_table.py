@@ -201,6 +201,26 @@ def table_element(table_id=TABLE_ID, **overrides):
     return item
 
 
+def floor_element(element_id="floor-ground", *, level="0", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floor",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("12"),
+        "height": Decimal("0.2"),
+        "depth": Decimal("10"),
+        "rotationY": Decimal("0"),
+        "name": "Ground floor",
+        "level": Decimal(level),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
 def activation_state(version="1", **overrides):
     item = {
         "PK": f"LOCATION#{LOCATION_ID}",
@@ -822,6 +842,54 @@ def test_creates_manual_block_for_active_table(app_and_tables):
     )["Item"] == manual_item()
 
 
+def test_creates_manual_block_for_table_on_another_floor(app_and_tables):
+    app, tables = app_and_tables
+    elements = [
+        table_element(floorId="floor-upper"),
+        floor_element(level="-1", name="Basement"),
+        floor_element(
+            "floor-upper",
+            level="1",
+            name="Upper floor",
+            y=Decimal("3"),
+        ),
+    ]
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+
+
+def test_floor_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[floor_element(TABLE_ID, level="-1")],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
 def test_repeated_block_is_idempotent(app_and_tables):
     app, tables = app_and_tables
     put_prerequisites(tables)
@@ -953,6 +1021,90 @@ def test_table_must_exist_in_active_snapshot(app_and_tables):
     response = app.handler(make_event(), None)
 
     assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), table_element()],
+        [
+            floor_element(),
+            table_element(floorId="missing-floor"),
+        ],
+        [table_element(floorId="missing-floor")],
+        [
+            floor_element(),
+            table_element("not-a-floor", floorId="floor-ground"),
+            table_element(floorId="not-a-floor"),
+        ],
+    ],
+)
+def test_inconsistent_floor_relationships_return_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [
+        floor_element(name=""),
+        floor_element(level="1.5"),
+        floor_element(floorId="floor-ground"),
+        floor_element(shape="rect"),
+    ],
+)
+def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[floor]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_duplicate_id_across_floor_and_table_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                table_element(floorId=TABLE_ID),
+                floor_element(TABLE_ID),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 

@@ -992,7 +992,7 @@ paths:
                     description: Sourdough, mushrooms, and herbs
                     price: 125.50
                     category: starters
-                    imageKey: menu/locations/central/mushroom-toast.jpg
+                    imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '503':
@@ -1034,7 +1034,7 @@ paths:
                     description: Sourdough, mushrooms, and herbs
                     price: 125.50
                     category: starters
-                    imageKey: menu/locations/central/mushroom-toast.jpg
+                    imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
                     active: true
                     createdBy: 506a9170-a571-4dbc-9f86-5d831ee90c23
                     createdAt: '2026-08-21T10:00:00Z'
@@ -1077,7 +1077,7 @@ paths:
               description: Sourdough, mushrooms, and herbs
               price: 125.50
               category: starters
-              imageKey: menu/locations/central/mushroom-toast.jpg
+              imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
               active: true
       responses:
         '201':
@@ -1759,10 +1759,12 @@ paths:
       operationId: createMenuImageUploadUrl
       description: |
         Creates a five-minute S3 PUT URL for a new immutable, location-scoped
-        object key. After uploading with the required Content-Type header,
-        store the returned imageKey through the menu-item create or update
-        operation. The client cannot choose an S3 key or CloudFront
-        distribution.
+        object key under
+        `menu-images/locations/{locationId}/menu/{uuid}.{extension}`. After
+        uploading with the required Content-Type header, store the complete
+        returned imageKey, including its `menu-images/` prefix, through the
+        menu-item create or update operation. The client cannot choose an S3
+        key or CloudFront distribution.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1797,8 +1799,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/MenuImageUpload'
               example:
-                uploadUrl: https://menu-images.s3.eu-north-1.amazonaws.com/locations/location-id/menu/image-id.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256
-                imageKey: locations/location-id/menu/image-id.webp
+                uploadUrl: https://menu-images.s3.eu-north-1.amazonaws.com/menu-images/locations/location-id/menu/image-id.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256
+                imageKey: menu-images/locations/location-id/menu/image-id.webp
                 expiresIn: 300
                 requiredHeaders:
                   Content-Type: image/webp
@@ -2582,7 +2584,10 @@ components:
           type: string
           minLength: 1
           pattern: '.*\S.*'
-          description: S3 object key; existence is not checked by this Lambda.
+          description: |
+            For a new upload, use the complete S3 object key returned by the
+            upload-URL endpoint, including its `menu-images/` prefix. Legacy
+            keys remain accepted. Existence is not checked by this Lambda.
         active:
           type: boolean
 
@@ -2633,6 +2638,9 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          description: |
+            Stored S3 object key. New uploads include the `menu-images/`
+            prefix; legacy values are returned unchanged.
         active:
           type: boolean
         createdBy:
@@ -2669,6 +2677,9 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          description: |
+            Stored S3 object key. New uploads include the `menu-images/`
+            prefix; legacy values are returned unchanged.
 
     PublicMenuItemList:
       type: object
@@ -3315,7 +3326,12 @@ components:
           description: Presigned S3 URL used with an HTTP PUT request.
         imageKey:
           type: string
-          description: Store this key on the menu item after upload succeeds.
+          description: |
+            Complete S3 object key in the form
+            `menu-images/locations/{locationId}/menu/{uuid}.{extension}`.
+            Store this exact returned value on the menu item after the S3 PUT
+            succeeds; do not remove the `menu-images/` prefix.
+          example: menu-images/locations/location-id/menu/image-id.webp
         expiresIn:
           type: integer
           enum:

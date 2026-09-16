@@ -50,6 +50,7 @@ _CONTENT_TYPE_EXTENSIONS = {
     "image/webp": "webp",
 }
 _EXPIRES_IN_SECONDS = 300
+_OBJECT_KEY_PREFIX = "menu-images"
 _LOCATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _QUERY_FIELDS = frozenset({"locationId", "contentType"})
 _s3 = None
@@ -135,7 +136,10 @@ def _new_image_id():
 
 def _object_key(location_id, content_type):
     extension = _CONTENT_TYPE_EXTENSIONS[content_type]
-    return f"locations/{location_id}/menu/{_new_image_id()}.{extension}"
+    return (
+        f"{_OBJECT_KEY_PREFIX}/locations/{location_id}/menu/"
+        f"{_new_image_id()}.{extension}"
+    )
 
 
 def _s3_client():

@@ -498,3 +498,32 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
 
     assert active["properties"]["status"]["enum"] == ["active"]
     assert pending["properties"]["status"]["enum"] == ["pending"]
+
+
+def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
+    openapi_document,
+):
+    document, _ = openapi_document
+    operation = document["paths"]["/menu-images/presigned-url"]["get"]
+    response = operation["responses"]["200"]["content"][
+        "application/json"
+    ]
+    example = response["example"]
+
+    assert response["schema"] == {
+        "$ref": "#/components/schemas/MenuImageUpload"
+    }
+    assert example["imageKey"].startswith("menu-images/locations/")
+    assert "/menu-images/locations/" in example["uploadUrl"]
+    assert example["requiredHeaders"] == {"Content-Type": "image/webp"}
+
+    upload = document["components"]["schemas"]["MenuImageUpload"]
+    assert upload["additionalProperties"] is False
+    assert set(upload["required"]) == set(upload["properties"])
+    assert upload["properties"]["expiresIn"]["enum"] == [300]
+    assert upload["properties"]["requiredHeaders"]["properties"][
+        "Content-Type"
+    ] == {"$ref": "#/components/schemas/MenuImageContentType"}
+    assert "menu-images/locations/" in upload["properties"]["imageKey"][
+        "description"
+    ]

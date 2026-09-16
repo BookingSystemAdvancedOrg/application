@@ -322,7 +322,9 @@ def test_generates_location_scoped_presigned_put_url(
     response = app.handler(make_event(query=query), None)
 
     normalized_content_type = content_type.strip().lower()
-    image_key = f"locations/{LOCATION_ID}/menu/{IMAGE_ID}.{extension}"
+    image_key = (
+        f"menu-images/locations/{LOCATION_ID}/menu/{IMAGE_ID}.{extension}"
+    )
     assert_response(
         response,
         200,
@@ -360,8 +362,12 @@ def test_each_request_receives_a_new_immutable_image_key(
 
     first_key = response_body(first)["imageKey"]
     second_key = response_body(second)["imageKey"]
-    assert first_key == f"locations/{LOCATION_ID}/menu/first-image-id.webp"
-    assert second_key == f"locations/{LOCATION_ID}/menu/second-image-id.webp"
+    assert first_key == (
+        f"menu-images/locations/{LOCATION_ID}/menu/first-image-id.webp"
+    )
+    assert second_key == (
+        f"menu-images/locations/{LOCATION_ID}/menu/second-image-id.webp"
+    )
     assert first_key != second_key
     assert s3.generate_presigned_url.call_count == 2
 
@@ -369,7 +375,9 @@ def test_each_request_receives_a_new_immutable_image_key(
 def test_real_sigv4_presigner_binds_the_required_content_type(app_and_s3):
     app, _ = app_and_s3
     app._s3 = None
-    image_key = f"locations/{LOCATION_ID}/menu/{IMAGE_ID}.webp"
+    image_key = (
+        f"menu-images/locations/{LOCATION_ID}/menu/{IMAGE_ID}.webp"
+    )
 
     upload_url = app._presigned_put_url(image_key, "image/webp")
     parsed_url = urlsplit(upload_url)

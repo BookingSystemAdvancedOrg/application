@@ -19,12 +19,14 @@ Stores each restaurant's menu items, including the S3 key path to the item's foo
 | `description` | String |
 | `price` | Number (SEK) |
 | `category` | String (`starters`\|`mains`\|`desserts`\|`drinks`) |
-| `imageKey` | String (S3 object key) |
+| `imageKey` | String (complete S3 object key returned by `pre-signed-url`, `menu-images/locations/<locationId>/menu/<uuid>.<extension>`) |
 | `active` | Boolean |
 | `createdBy` | String |
 | `createdAt` | String (ISO8601) |
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
+
+After the direct S3 PUT succeeds, store the returned `imageKey` exactly as provided, including the leading `menu-images/` prefix. CloudFront forwards that full path to S3, so stripping or reconstructing the prefix points at a different object and produces a `404`. Legacy rows may contain older key shapes and remain readable; this change does not migrate their DynamoDB values or S3 objects.
 
 ---
 

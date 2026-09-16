@@ -107,7 +107,7 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level` and child `floorId`. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
@@ -142,25 +142,55 @@ Each location that has activated a layout also has one internal coordination ite
 
 ## Live Layout Elements
 
-Individual walls, doors, windows, and tables in a location's floor plan, CRUD'd directly during 3D editing. Staff and owner-users have full read/write access; each element is its own item for cheap, granular edits.
+Individual floors, walls, doors, windows, and tables in a location's floor plan, CRUD'd directly during 3D editing. Staff, owner-users, and super-users have full read/write access; each element is its own item for cheap, granular edits.
 
 | Attribute | Type |
 |---|---|
 | `PK` (`LOCATION#<locationId>`) | String |
 | `SK` (`LAYOUT#ELEMENT#<elementId>`) | String |
 | `elementId` | String |
-| `type` | String (`wall`\|`door`\|`window`\|`table`) |
+| `type` | String (`floor`\|`wall`\|`door`\|`window`\|`table`) |
 | `x`, `y`, `z` | Number |
-| `width`, `height`, `depth` | Number (as applicable per type) |
+| `width`, `height`, `depth` | Positive Number (required on every type) |
 | `rotationY` | Number |
+| `name` | Nonblank String, max 128 characters (floors only) |
+| `level` | Signed integer (floors only) |
+| `floorId` | Nonblank String, max 128 characters (optional on non-floor elements; references a floor `elementId`) |
 | `shape` | String (`rect`\|`round`, tables only) |
-| `seats` | Number (tables only) |
+| `seats` | Positive integer (tables only) |
 | `zone` | String (tables only) |
-| `wallId` | String (doors/windows only) |
+| `wallId` | Nonblank String, max 128 characters (doors/windows only) |
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
 
-`publish-layout` reads every item in this table for a location (`Query` on `PK`, `SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout Snapshot version's `elements` list — that's the "compile" step referenced in that table's description above.
+The live table is a mutable draft, so it may temporarily contain missing or
+dangling `floorId` relationships while the editor performs several requests.
+Deleting a floor is non-cascading: its child elements remain in the draft and
+must be moved or deleted explicitly. Floor names and levels do not have a
+uniqueness constraint. An existing child can be moved by updating `floorId`,
+but the API does not accept null or an empty string to clear it.
+
+`publish-layout` reads every item in this table for a location (`Query` on `PK`,
+`SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout
+Snapshot version's `elements` list—that's the "compile" step referenced above.
+Publication enforces the relationship boundary:
+
+- If the draft contains at least one floor, every non-floor element must have a
+  `floorId` matching a floor element in that same location-wide draft.
+- If the draft contains no floors, non-floor elements must omit `floorId`; this
+  preserves legacy flat layouts.
+- A floor may have no child elements. Floors themselves never have `floorId`.
+
+Invalid relationships prevent publication; they do not mutate or repair the
+draft. Publication does not verify that `wallId` identifies a wall, require a
+door/window wall to be on the same floor, enforce geometry containment, or
+apply deletion cascades.
+
+Availability and manual block creation validate the complete active snapshot
+before using its tables. Floor elements are never bookable. Availability
+considers tables across all floors but returns only each table's `tableId` and
+`seats`; manual occupancy keys and block responses likewise remain table-ID
+based.
 
 ---
 

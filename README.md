@@ -1,7 +1,7 @@
 # application
 
-Python Lambda backend for the reservation platform. Each of the 20 functions
-in `functions/` is built and deployed as its own container image, on its own
+Python Lambda backend for the reservation platform. Each function in
+`functions/` is built and deployed as its own container image, on its own
 ECR repository, defined in the separate `infrastructure` repo.
 
 ## What to read first
@@ -103,6 +103,23 @@ The menu route family deliberately splits reads from writes. Both
 `POST`, `PUT`, and `DELETE` requests below the greedy route integrate
 with `manage-menu`. The bare GET has no authorizer; the greedy GET route
 uses the JWT authorizer and must retain the path-parameter name `proxy`.
+
+## Multi-floor layout workflow
+
+The layout editor stores floors and their contents as elements in one mutable
+draft per location. When the user adds a floor, create an element with
+`type: "floor"`, retain the returned `elementId`, and send that value as
+`floorId` on each wall, door, window, or table placed on that floor. To render
+one canvas, list the location's layout elements and filter non-floor elements
+by the selected floor's `elementId`.
+
+Publishing and activation are location-wide: one version contains every floor
+and all of their elements, and the whole version is activated together. Legacy
+flat drafts with no floor elements and no `floorId` values remain valid. Draft
+editing is intentionally non-cascading, so deleting a floor does not delete its
+children; move or delete those children before publishing again. Availability
+uses tables from every floor but intentionally returns only `tableId` and
+`seats` for each available table.
 
 Stop and remove the local documentation container when finished:
 

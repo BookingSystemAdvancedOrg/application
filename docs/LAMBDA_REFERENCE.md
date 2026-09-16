@@ -211,10 +211,14 @@ timezone offset transition, are omitted without failing the rest of the day.
 
 When candidate slots exist, the handler reads the layout activation state,
 the referenced current Published Layout Snapshot, and the activation state
-again to detect a concurrent cutover. Only validated `table` elements are
-exposed, as `tableId` plus `seats`; layout geometry and audit fields remain
-internal. A location with no active layout, an active layout with no tables,
-or a closed day returns `200` with an empty `slots` list.
+again to detect a concurrent cutover. It accepts both legacy flat snapshots
+and multi-floor snapshots, and validates the same floor-reference invariant
+as publication. Floors and `floorId` values are used only to validate snapshot
+integrity; validated `table` elements from every floor are exposed as
+`tableId` plus `seats`, so the public response shape is unchanged. Layout
+geometry, floor metadata, and audit fields remain internal. A corrupt floor
+relationship returns `409`. A location with no active layout, an active layout
+with no tables, or a closed day returns `200` with an empty `slots` list.
 
 One paginated, strongly consistent Slot Occupancy query reads every hold for
 the requested location/date. Both reservation and `manual_block` rows exclude
@@ -358,14 +362,18 @@ the end time from `bookingDurationHours`. The slot must be in the future,
 start on the location's booking grid, remain inside one business-hours
 interval, and map to one unambiguous real interval in the location's IANA
 timezone. Slots at ambiguous/nonexistent local times or crossing a daylight
-saving transition are rejected. The requested table must be present as a
-`table` element in the currently active Published Layout Snapshot.
+saving transition are rejected. The requested `tableId` must identify a
+`table` element in the currently active Published Layout Snapshot. The
+handler accepts both legacy flat and multi-floor snapshots and validates the
+complete floor relationship before using the requested table. A floor's
+`elementId` cannot be used as a table ID, and corrupt floor relationships
+return `409`.
 
 `blocked: true` conditionally writes a Slot Occupancy row. A new hold returns
 `201`; an already-identical manual hold returns `200`. Both responses contain
 `locationId`, `tableId`, `date`, `startTime`, the derived `endTime`, and
-`blocked: true`. A reservation or overlapping hold returns `409` and is left
-unchanged.
+`blocked: true`; no floor field is added to the occupancy record or response.
+A reservation or overlapping hold returns `409` and is left unchanged.
 
 `blocked: false` looks up a manual hold by location, date, start time, and
 table rather than re-deriving its old end time. This permits cleanup after the
@@ -409,11 +417,11 @@ the same DynamoDB transaction.
 
 ## Floor Layout
 
-There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. Only one snapshot version is "active" at a time; `get-availability`, `create-pending-reservation`, and block creation in `block-table` use that active version to determine which tables exist.
+There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. `get-availability`, `create-pending-reservation`, and block creation in `block-table` use that active version to determine which tables exist.
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
-**Purpose:** Staff-facing CRUD for wall, door, window, and table elements in the mutable live/draft layout. The `{proxy+}`/`ANY` route dispatches internally in the same way as `manage-menu`.
+**Purpose:** Staff-facing CRUD for floor, wall, door, window, and table elements in the mutable live/draft layout. The `{proxy+}`/`ANY` route dispatches internally in the same way as `manage-menu`.
 
 **Authorization:** Every action requires `staff_user`, `owner_user`, or `super_user` through `shared.auth.require_group()`. Authentication and group membership are checked before request-body parsing or DynamoDB access. Missing or malformed direct-invocation claims return `401`; an authenticated caller outside the allowed groups receives `403`.
 
@@ -427,9 +435,9 @@ There are two layout tables with distinct roles: **Live Layout Element** is the 
 | `PUT` | `items/<elementId>` | One or more editable fields; `type` is immutable | `200` with the resulting logical element |
 | `DELETE` | `items/<elementId>` | No body | `204` with an empty body |
 
-The supported `type` values are exactly `wall`, `door`, `window`, and `table`; `decor` is not part of the current data model and is rejected. Every created element requires finite JSON-number values for `x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`. Coordinates and rotation may be signed or zero, while all three dimensions must be greater than zero. A `table` additionally requires `shape` (`rect` or `round`), a positive integer `seats`, and a non-empty `zone`. A `door` or `window` additionally requires a non-empty `wallId`. Variant fields that do not apply to the selected type, unknown fields, and server-controlled fields are rejected. Identifiers, `zone`, and `wallId` are bounded to 128 characters.
+The supported `type` values are exactly `floor`, `wall`, `door`, `window`, and `table`; `decor` is not part of the current data model and is rejected. Every created element requires finite JSON-number values for `x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`. Coordinates and rotation may be signed or zero, while all three dimensions must be greater than zero. A `floor` additionally requires a non-empty `name` and an integral `level`; `level` is signed, so basement, ground, and upper levels can be represented with negative, zero, and positive values. Floor names and levels need not be unique. A floor cannot contain `floorId`. Any non-floor element may contain a non-empty `floorId` referring to the `elementId` of its floor. The frontend creates a floor first, retains its returned `elementId`, and submits that value as `floorId` on elements drawn on the floor's canvas. A `table` additionally requires `shape` (`rect` or `round`), a positive integer `seats`, and a non-empty `zone`. A `door` or `window` additionally requires a non-empty `wallId`. Variant fields that do not apply to the selected type, unknown fields, and server-controlled fields are rejected. Identifiers, `name`, `zone`, `floorId`, and `wallId` are bounded to 128 characters.
 
-`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
+`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. It can rename or renumber a floor and move a non-floor element by replacing `floorId`; null or an empty string cannot clear an existing `floorId`. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
 
 The handler generates `elementId` as a UUID. It stores `updatedBy` from the verified JWT `sub` and `updatedAt` as a UTC ISO8601 timestamp on creation and each effective update. Records use `PK="LOCATION#<locationId>"` and `SK="LAYOUT#ELEMENT#<elementId>"`. Public responses contain only `elementId`, the applicable layout fields, `updatedBy`, and `updatedAt`; DynamoDB keys and unexpected stored attributes are not exposed.
 
@@ -437,7 +445,7 @@ Collection reads query only the requested location partition and the `LAYOUT#ELE
 
 Malformed paths, JSON, fields, or values return `400`; missing elements and unknown proxy paths return `404`; a recognized path with the wrong method returns `405` with `Allow`; collisions, inconsistent records, and concurrent changes return `409`; and sanitized dependency failures return `503`. All responses include `Cache-Control: no-store`.
 
-The function has no User-table or Location-table permission. It therefore cannot verify that a location exists or that a `staff_user` is assigned to the requested location. `wallId` is shape-validated but the current specification does not define parent-wall existence checks, geometry containment, or delete cascades, so this Lambda does not invent those rules or access another service to enforce them.
+The function has no User-table or Location-table permission. It therefore cannot verify that a location exists or that a `staff_user` is assigned to the requested location. Draft CRUD deliberately does not check that a submitted `floorId` currently identifies a floor, and deleting a floor does not cascade to its children; the complete floor relationship is checked when the draft is published. `wallId` is validated only as a bounded non-empty string; the current specification does not define parent-wall existence checks, geometry-containment rules, or delete cascades, so this Lambda does not invent them or access another service to enforce them.
 
 **Environment variables:**
 | Name | Meaning |
@@ -455,7 +463,9 @@ The function has no User-table or Location-table permission. It therefore cannot
 
 **Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
 
-The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical wall, door, window, or table using the same type-specific constraints as `manage-layout-element`. Internal keys and unexpected stored attributes are not copied. Inconsistent source records return `409` rather than producing a corrupt snapshot. An empty draft is publishable; because this Lambda has no Location-table permission, that can also represent an unknown location.
+The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical floor, wall, door, window, or table using the same type-specific field constraints as `manage-layout-element`. Floor records preserve `name` and signed integral `level`; non-floor records preserve `floorId` when present. Internal keys and unexpected stored attributes are not copied.
+
+Publication then validates the complete floor relationship. A legacy flat draft with no floor records is valid only when all non-floor elements omit `floorId`. If at least one floor record exists, every non-floor element must have a `floorId` that identifies a floor element in the same draft. A floor may have no child elements, so creating and publishing an empty floor is valid. A dangling `floorId`, a `floorId` that identifies a non-floor element, or a mixture of floor records and unassigned non-floor elements returns `409` rather than producing a corrupt snapshot. This check does not add parent-wall existence or geometric-containment rules. An entirely empty draft is also publishable; because this Lambda has no Location-table permission, that can represent an unknown location.
 
 The next version is the numeric maximum across every existing `LAYOUT#v<N>` snapshot plus one; it is not based on lexical sort-key order. Existing snapshot keys and `version` attributes must agree. The new item uses `PK="LOCATION#<locationId>"`, `SK="LAYOUT#v<N>"`, and contains:
 
@@ -489,7 +499,7 @@ Malformed paths return `400`; missing/malformed direct-invocation claims return 
 
 The handler strongly consistently queries every page under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#v"`. It returns `200` with `{"items": [...]}` containing complete logical snapshots sorted by numeric `version` from newest to oldest. An empty partition returns `{"items": []}`; this also covers an unknown location because the function has no Location-table permission.
 
-Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded wall, door, window, and table records are checked with the same type-specific constraints as the live-layout model. `validPositions` remains an empty list until a position-compilation rule is defined.
+Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded floor, wall, door, window, and table records are checked with the same type-specific field constraints as the live-layout model. Floor responses preserve `name` and signed integral `level`, and non-floor responses preserve `floorId` when stored. The handler also rechecks the publication invariant: a legacy flat snapshot has no floors and no `floorId` values, while a multi-floor snapshot requires every non-floor element to reference a floor in that snapshot. Corrupt relationships return `409`. `validPositions` remains an empty list until a position-compilation rule is defined.
 
 Lifecycle timestamps are nullable and may describe a published, active, pending, or retired snapshot. During a scheduled replacement, the outgoing snapshot remains the sole `isCurrent=true` record and has `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`; the pending target remains `isCurrent=false` with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. The separate coordination item at `SK="LAYOUT#ACTIVATION"` is excluded by the `SK begins_with "LAYOUT#v"` query and is never returned. DynamoDB keys and unexpected stored attributes are also not returned.
 
@@ -507,7 +517,7 @@ Malformed paths return `400`; a recognized request with the wrong method returns
 
 ### 14. `activate-layout-version`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-**Purpose:** Activates one published snapshot while preserving exactly one current version. The first activation for a location is immediate. Replacing an existing current version is scheduled for `date(now + 4 weeks) at 01:00 UTC`; the old version remains current until `expire-layout-version` performs the cutover.
+**Purpose:** Activates one complete published snapshot while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first activation for a location is immediate. Replacing an existing current version is scheduled for `date(now + 4 weeks) at 01:00 UTC`; the old version remains current until `expire-layout-version` performs the cutover.
 
 **Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path validation or AWS access. The only accepted method is `POST`, and the request has no body. `locationId` must be non-empty and at most 128 characters. `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
 

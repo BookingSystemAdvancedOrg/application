@@ -20,9 +20,9 @@ AWS RESOURCE ACCESS:
 NOTES:
     Current IAM does not include Location or User tables, so this function
     cannot verify location existence or a staff user's location assignment.
-    ``floorId`` and ``wallId`` are stored and shape-validated, but
-    relationship/cascade and geometry-containment rules are enforced when a
-    draft is published rather than during granular editing.
+    ``floorId`` and ``wallId`` are stored as validated bounded strings during
+    granular editing. Publishing validates floor relationships; wall-parent
+    existence, cascades, and geometry-containment are not currently enforced.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """

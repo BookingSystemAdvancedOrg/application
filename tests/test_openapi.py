@@ -200,6 +200,7 @@ def test_get_availability_contract_matches_handler(openapi_document):
     }
     assert table["properties"]["seats"]["type"] == "integer"
     assert table["properties"]["seats"]["minimum"] == 1
+    assert set(table["properties"]) == {"tableId", "seats"}
 
 
 def test_block_table_contract_matches_handler(openapi_document):
@@ -272,6 +273,79 @@ def test_block_table_contract_matches_handler(openapi_document):
     assert table_id["in"] == "path"
     assert table_id["required"] is True
     assert table_id["schema"]["maxLength"] == 128
+
+
+def test_multi_floor_layout_contract_matches_handlers(openapi_document):
+    document, _ = openapi_document
+    schemas = document["components"]["schemas"]
+    create = schemas["LayoutElementCreateRequest"]
+
+    expected_create_schemas = {
+        element_type: (
+            f"#/components/schemas/Layout{element_type.title()}"
+            "CreateRequest"
+        )
+        for element_type in ("floor", "wall", "door", "window", "table")
+    }
+    assert {item["$ref"] for item in create["oneOf"]} == set(
+        expected_create_schemas.values()
+    )
+    assert create["discriminator"] == {
+        "propertyName": "type",
+        "mapping": expected_create_schemas,
+    }
+
+    floor = schemas["LayoutFloorCreateRequest"]
+    assert floor["additionalProperties"] is False
+    assert set(floor["required"]) == set(floor["properties"])
+    assert floor["properties"]["type"]["enum"] == ["floor"]
+    assert floor["properties"]["name"]["allOf"] == [
+        {"$ref": "#/components/schemas/LayoutBoundedString"}
+    ]
+    assert floor["properties"]["level"]["type"] == "integer"
+    assert "minimum" not in floor["properties"]["level"]
+    assert "floorId" not in floor["properties"]
+
+    for element_type in ("Wall", "Door", "Window", "Table"):
+        schema = schemas[f"Layout{element_type}CreateRequest"]
+        assert "floorId" in schema["properties"]
+        assert "floorId" not in schema["required"]
+        assert schema["properties"]["floorId"]["allOf"] == [
+            {"$ref": "#/components/schemas/LayoutBoundedString"}
+        ]
+        assert "name" not in schema["properties"]
+        assert "level" not in schema["properties"]
+
+    update = schemas["LayoutElementUpdateRequest"]
+    assert update["additionalProperties"] is False
+    assert update["minProperties"] == 1
+    assert "type" not in update["properties"]
+    assert {"name", "level", "floorId"}.issubset(update["properties"])
+    assert update["properties"]["level"]["type"] == "integer"
+
+    element = schemas["LayoutElement"]
+    assert element["properties"]["type"]["enum"] == [
+        "floor",
+        "wall",
+        "door",
+        "window",
+        "table",
+    ]
+    assert {"name", "level", "floorId"}.issubset(element["properties"])
+    assert not {"name", "level", "floorId"}.intersection(
+        element["required"]
+    )
+
+    media_type = document["paths"][
+        "/locations/{locationId}/layout-elements/items"
+    ]["post"]["requestBody"]["content"]["application/json"]
+    assert set(media_type["examples"]) == {"floor", "tableOnFloor"}
+    floor_example = media_type["examples"]["floor"]["value"]
+    table_example = media_type["examples"]["tableOnFloor"]["value"]
+    assert floor_example["type"] == "floor"
+    assert {"name", "level"}.issubset(floor_example)
+    assert table_example["type"] == "table"
+    assert table_example["floorId"] == "floor-ground"
 
 
 def test_publish_layout_contract_matches_handler(openapi_document):

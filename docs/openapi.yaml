@@ -785,6 +785,11 @@ paths:
         tables and their seat counts. Reservation and manual holds are both
         excluded by interval overlap, so older-duration holds remain safe.
 
+        A multi-floor active snapshot is validated as one unit. Floor elements
+        are not bookable and are omitted; tables from every floor participate,
+        while each returned table intentionally remains only `tableId` and
+        `seats`. Legacy flat snapshots remain supported.
+
         Past dates are rejected. On the current local date, a slot must start
         strictly after the request time. Daylight-saving-unsafe intervals are
         omitted. A closed day, missing active layout, layout without tables,
@@ -871,7 +876,9 @@ paths:
         `blocked: false` removes only a manual hold and succeeds when it is
         already absent; it never deletes a reservation. Removal does not
         require the table to remain in the active layout and still locates a
-        hold created under an older booking duration.
+        hold created under an older booking duration. A table can belong to
+        any floor in a valid multi-floor snapshot; a floor element itself is
+        not a valid table target.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1223,9 +1230,11 @@ paths:
       summary: List draft layout elements
       operationId: listLayoutElements
       description: |
-        Returns every wall, door, window, and table in the location's mutable
-        layout partition. An empty list can also mean that the location does
-        not exist because this Lambda has no Location-table access.
+        Returns every floor, wall, door, window, and table in the location's
+        mutable layout partition. A multi-floor layout is one location-wide
+        collection: non-floor elements use `floorId` to identify their floor.
+        An empty list can also mean that the location does not exist because
+        this Lambda has no Location-table access.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1259,9 +1268,10 @@ paths:
       operationId: createLayoutElement
       description: |
         Creates one complete type-discriminated element. The API generates
-        `elementId`, `updatedBy`, and `updatedAt`. `wallId` is stored for doors
-        and windows, but parent existence and geometric containment are not
-        checked by this Lambda.
+        `elementId`, `updatedBy`, and `updatedAt`. A floor requires `name` and
+        signed integer `level`; a non-floor element may include `floorId`.
+        `floorId` and door/window `wallId` references are stored but parent
+        existence and geometric containment are not checked by this Lambda.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1274,18 +1284,35 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LayoutElementCreateRequest'
-            example:
-              type: table
-              x: 3.5
-              y: 0
-              z: -2
-              width: 1.4
-              height: 0.75
-              depth: 0.9
-              rotationY: 90
-              shape: rect
-              seats: 4
-              zone: dining-room
+            examples:
+              floor:
+                summary: Create a floor and retain its returned elementId
+                value:
+                  type: floor
+                  x: 0
+                  y: 0
+                  z: 0
+                  width: 20
+                  height: 3
+                  depth: 14
+                  rotationY: 0
+                  name: Ground floor
+                  level: 0
+              tableOnFloor:
+                summary: Create a table on an existing floor
+                value:
+                  type: table
+                  x: 3.5
+                  y: 0
+                  z: -2
+                  width: 1.4
+                  height: 0.75
+                  depth: 0.9
+                  rotationY: 90
+                  floorId: floor-ground
+                  shape: rect
+                  seats: 4
+                  zone: dining-room
       responses:
         '201':
           description: Layout element created successfully.
@@ -1357,8 +1384,9 @@ paths:
       description: |
         Strict partial update of one or more editable fields. `type` is
         immutable. The submitted fields are merged with the stored element and
-        the complete resulting type-specific object is validated. A no-op
-        preserves the existing audit fields.
+        the complete resulting type-specific object is validated. This can
+        rename or renumber a floor and can move a non-floor element by changing
+        its `floorId`. A no-op preserves the existing audit fields.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1402,8 +1430,10 @@ paths:
       summary: Delete a draft layout element
       operationId: deleteLayoutElement
       description: |
-        Deletes only the requested record. No relationship cascade is defined
-        for doors or windows that reference a wall.
+        Deletes only the requested record. There is no cascade for children of
+        a floor or for doors/windows that reference a wall. Publishing rejects
+        a multi-floor draft whose remaining non-floor elements do not reference
+        a floor in that same draft.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1441,9 +1471,13 @@ paths:
         Copies every validated element in the location's mutable layout draft
         into a new snapshot whose compiled content is immutable. The API
         allocates the next numeric version and generates its label; the request
-        has no body. An empty
-        draft is a valid snapshot because this Lambda cannot distinguish it
-        from an unknown location without Location-table access.
+        has no body. Floors and their `floorId`-linked elements are stored in
+        one location-wide snapshot. When any floor exists, every non-floor
+        element must reference a floor in that same draft; invalid or missing
+        references return `409`. A legacy flat draft remains valid only when it
+        contains neither floors nor `floorId` fields. An empty draft is also a
+        valid snapshot because this Lambda cannot distinguish it from an
+        unknown location without Location-table access.
 
         Publishing does not activate the new version or modify any older
         version. `isCurrent` is therefore `false`, both effective-date fields
@@ -1480,6 +1514,19 @@ paths:
                 effectiveTo: null
                 expiresAt: '2026-09-28T10:00:00Z'
                 elements:
+                  - elementId: floor-ground
+                    type: floor
+                    x: 0
+                    y: 0
+                    z: 0
+                    width: 20
+                    height: 3
+                    depth: 14
+                    rotationY: 0
+                    name: Ground floor
+                    level: 0
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:50:00Z'
                   - elementId: 9befdbd3-45ba-4240-965c-a01b8c981fd3
                     type: table
                     x: 3.5
@@ -1489,6 +1536,7 @@ paths:
                     height: 0.75
                     depth: 0.9
                     rotationY: 90
+                    floorId: floor-ground
                     shape: rect
                     seats: 4
                     zone: dining-room
@@ -1539,8 +1587,9 @@ paths:
         Returns every published layout snapshot for the requested location,
         ordered by numeric version from newest to oldest. Each item contains
         the complete logical snapshot so a staff client can inspect it before
-        choosing a version to activate. DynamoDB keys and internal scheduler
-        metadata are never returned.
+        choosing a version to activate. A multi-floor version contains its
+        floors and all `floorId`-linked elements in that one snapshot. DynamoDB
+        keys and internal scheduler metadata are never returned.
 
         The Lambda follows every DynamoDB query page. An unknown location, or
         a location with no published snapshots, returns `200` with an empty
@@ -1629,7 +1678,8 @@ paths:
       summary: Activate a published layout version
       operationId: activateLayoutVersion
       description: |
-        Activates the requested published snapshot. If the location has no
+        Activates the requested location-wide published snapshot, including
+        every floor and linked element in that version. If the location has no
         current version, activation is immediate. Otherwise, the replacement
         is scheduled for 01:00 UTC on the date four weeks from the request.
 
@@ -2661,6 +2711,48 @@ components:
       maxLength: 128
       pattern: '.*\S.*'
 
+    LayoutFloorCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - name
+        - level
+      properties:
+        type:
+          type: string
+          enum:
+            - floor
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        name:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Human-readable floor name. The API permits duplicate names.
+        level:
+          type: integer
+          description: Signed floor order; zero and negative levels are valid.
+
     LayoutWallCreateRequest:
       type: object
       additionalProperties: false
@@ -2692,6 +2784,12 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
 
     LayoutDoorCreateRequest:
       type: object
@@ -2725,6 +2823,12 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
         wallId:
           allOf:
             - $ref: '#/components/schemas/LayoutBoundedString'
@@ -2764,6 +2868,12 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
         wallId:
           allOf:
             - $ref: '#/components/schemas/LayoutBoundedString'
@@ -2805,6 +2915,12 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
         shape:
           type: string
           enum:
@@ -2818,6 +2934,7 @@ components:
 
     LayoutElementCreateRequest:
       oneOf:
+        - $ref: '#/components/schemas/LayoutFloorCreateRequest'
         - $ref: '#/components/schemas/LayoutWallCreateRequest'
         - $ref: '#/components/schemas/LayoutDoorCreateRequest'
         - $ref: '#/components/schemas/LayoutWindowCreateRequest'
@@ -2825,13 +2942,15 @@ components:
       discriminator:
         propertyName: type
         mapping:
+          floor: '#/components/schemas/LayoutFloorCreateRequest'
           wall: '#/components/schemas/LayoutWallCreateRequest'
           door: '#/components/schemas/LayoutDoorCreateRequest'
           window: '#/components/schemas/LayoutWindowCreateRequest'
           table: '#/components/schemas/LayoutTableCreateRequest'
       description: |
-        Complete type-specific layout element. `decor` is not supported by
-        the current data model.
+        Complete type-specific layout element. Floors and their children are
+        edited in one location-wide draft. `decor` is not supported by the
+        current data model.
 
     LayoutElementUpdateRequest:
       type: object
@@ -2839,9 +2958,12 @@ components:
       minProperties: 1
       description: |
         Strict partial update. `type` is deliberately absent because it is
-        immutable. `shape`, `seats`, and `zone` apply only to a stored table;
-        `wallId` applies only to a stored door or window. The Lambda validates
-        the merged complete element and rejects inapplicable fields.
+        immutable. `name` and `level` apply only to a stored floor; `floorId`
+        applies only to non-floor elements; `shape`, `seats`, and `zone` apply
+        only to a stored table; `wallId` applies only to a stored door or
+        window. The Lambda validates the merged complete element and rejects
+        inapplicable fields. A supplied `floorId` must be nonblank and cannot
+        be cleared with null or an empty string.
       properties:
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
@@ -2857,6 +2979,17 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        name:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: Applies only to a stored floor.
+        level:
+          type: integer
+          description: Signed integer that applies only to a stored floor.
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: Applies only to a stored non-floor element.
         shape:
           type: string
           enum:
@@ -2886,9 +3019,12 @@ components:
         - updatedBy
         - updatedAt
       description: |
-        Logical layout record. A table also contains `shape`, `seats`, and
-        `zone`; a door or window also contains `wallId`; a wall has no variant
-        fields. Internal DynamoDB keys are never returned.
+        Logical layout record. A floor contains `name` and signed integer
+        `level`. A non-floor element may contain `floorId`; a table also
+        contains `shape`, `seats`, and `zone`; a door or window also contains
+        `wallId`. Published multi-floor snapshots require every non-floor
+        element to reference a floor in that same snapshot. Internal DynamoDB
+        keys are never returned.
       properties:
         elementId:
           type: string
@@ -2897,6 +3033,7 @@ components:
         type:
           type: string
           enum:
+            - floor
             - wall
             - door
             - window
@@ -2915,6 +3052,14 @@ components:
           $ref: '#/components/schemas/LayoutDimension'
         rotationY:
           $ref: '#/components/schemas/LayoutCoordinate'
+        name:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        level:
+          type: integer
+          description: Signed floor order; present only on a floor element.
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present only on a non-floor element assigned to a floor.
         shape:
           type: string
           enum:
@@ -2966,7 +3111,8 @@ components:
         Newly compiled version whose layout content is immutable. DynamoDB
         `PK` and `SK` are internal and are never returned. A publish operation
         always creates an inactive version and does not alter older snapshots;
-        later activation may update lifecycle metadata.
+        later activation may update lifecycle metadata. All floors and linked
+        elements for the location are compiled into this one snapshot.
       properties:
         version:
           type: integer
@@ -3038,7 +3184,8 @@ components:
         DynamoDB keys, scheduler metadata, and unexpected stored attributes
         are internal and are never returned. Unlike the publish response,
         this schema also represents versions whose lifecycle metadata was
-        changed by activation.
+        changed by activation. A multi-floor layout remains one complete
+        location-wide snapshot.
       properties:
         version:
           type: integer

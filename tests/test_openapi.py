@@ -132,6 +132,69 @@ def test_openapi_security_matches_public_and_protected_routes(openapi_document):
             assert operation["x-required-groups"] == expected_groups
 
 
+def test_location_contact_contract_matches_handlers(openapi_document):
+    document, _ = openapi_document
+    schemas = document["components"]["schemas"]
+    create_schema = schemas["LocationCreateRequest"]
+    update_schema = schemas["LocationUpdateRequest"]
+    location_schema = schemas["Location"]
+
+    assert set(create_schema["required"]) == {
+        "name",
+        "address",
+        "email",
+        "phoneNumber",
+        "timezone",
+        "businessHours",
+        "bookingDurationHours",
+        "gracePeriodHours",
+    }
+    assert create_schema["properties"]["email"] == {
+        "$ref": "#/components/schemas/UserEmail",
+    }
+    assert create_schema["properties"]["phoneNumber"] == {
+        "$ref": "#/components/schemas/UserPhone",
+    }
+
+    assert update_schema["minProperties"] == 1
+    assert "required" not in update_schema
+    assert update_schema["properties"]["email"] == {
+        "$ref": "#/components/schemas/UserEmail",
+    }
+    assert update_schema["properties"]["phoneNumber"] == {
+        "$ref": "#/components/schemas/UserPhone",
+    }
+
+    assert {"email", "phoneNumber"}.issubset(
+        location_schema["properties"]
+    )
+    assert "email" not in location_schema["required"]
+    assert "phoneNumber" not in location_schema["required"]
+    assert location_schema["properties"]["email"]["allOf"] == [
+        {"$ref": "#/components/schemas/UserEmail"}
+    ]
+    assert location_schema["properties"]["phoneNumber"]["allOf"] == [
+        {"$ref": "#/components/schemas/UserPhone"}
+    ]
+    assert schemas["UserEmail"]["maxLength"] == 320
+    assert schemas["UserPhone"]["pattern"] == "^\\+[1-9]\\d{7,14}$"
+
+    create_example = document["paths"]["/locations"]["post"][
+        "requestBody"
+    ]["content"]["application/json"]["example"]
+    update_example = document["paths"]["/locations/{locationId}"]["put"][
+        "requestBody"
+    ]["content"]["application/json"]["example"]
+    assert create_example["email"] == "bookings@centralbistro.se"
+    assert create_example["phoneNumber"] == "+46812345678"
+    assert update_example["email"] == "bookings@centralbistro.se"
+    assert update_example["phoneNumber"] == "+46812345678"
+
+    assert schemas["LocationList"]["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/Location",
+    }
+
+
 def test_get_availability_contract_matches_handler(openapi_document):
     document, _ = openapi_document
     path = document["paths"]["/locations/{locationId}/availability"]

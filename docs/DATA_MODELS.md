@@ -237,6 +237,8 @@ Directory of all restaurant locations, created by an owner or super-admin when o
 | `locationId` | String |
 | `name` | String |
 | `address` | String |
+| `email` | String |
+| `phoneNumber` | String (E.164) |
 | `timezone` | String (IANA timezone, e.g. `Europe/Stockholm`) |
 | `businessHours` | Map (lowercase weekday to a list of `{opensAt, closesAt}` maps) |
 | `bookingDurationHours` | Number |
@@ -247,6 +249,8 @@ Directory of all restaurant locations, created by an owner or super-admin when o
 | `updatedAt` | String (ISO8601) |
 
 `PK` is the fixed literal string `PLATFORM` for every item in this table — every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
+
+New records require a valid contact `email` of at most 320 characters and an E.164 `phoneNumber`, for example `+46812345678`. Existing records created before contact details were introduced may omit both fields and remain readable. A legacy record's first contact update supplies both fields; storing only one is inconsistent.
 
 New records initialize `updatedBy`/`updatedAt` to the same values as `createdBy`/`createdAt`. An effective partial update changes `updatedBy`/`updatedAt`; an idempotent no-op preserves them. Legacy records created before update auditing may omit these two fields and remain readable.
 

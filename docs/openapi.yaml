@@ -585,11 +585,11 @@ paths:
       summary: Create a restaurant location
       operationId: createLocation
       description: |
-        Creates a location with weekly business hours and its booking policy.
-        All seven weekdays must be present, though a closed day may use an
-        empty interval list. Intervals are sorted before storage and must not
-        overlap. The caller and current time initialize both the creation and
-        update audit fields.
+        Creates a location with contact details, weekly business hours, and
+        its booking policy. All seven weekdays must be present, though a
+        closed day may use an empty interval list. Intervals are sorted before
+        storage and must not overlap. The caller and current time initialize
+        both the creation and update audit fields.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -604,6 +604,8 @@ paths:
             example:
               name: Central Bistro
               address: Main Street 1, Stockholm
+              email: bookings@centralbistro.se
+              phoneNumber: '+46812345678'
               timezone: Europe/Stockholm
               businessHours:
                 monday:
@@ -700,6 +702,8 @@ paths:
         all seven weekdays. Server-controlled identifiers and audit fields
         cannot be changed. An effective change sets `updatedBy` and
         `updatedAt`; an idempotent no-op preserves the existing audit fields.
+        On a legacy record with no contact fields, `email` and `phoneNumber`
+        must be introduced together.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -713,6 +717,8 @@ paths:
               $ref: '#/components/schemas/LocationUpdateRequest'
             example:
               name: Central Bistro and Bar
+              email: bookings@centralbistro.se
+              phoneNumber: '+46812345678'
               gracePeriodHours: 0.5
       responses:
         '200':
@@ -2308,6 +2314,8 @@ components:
       required:
         - name
         - address
+        - email
+        - phoneNumber
         - timezone
         - businessHours
         - bookingDurationHours
@@ -2317,6 +2325,10 @@ components:
           $ref: '#/components/schemas/NonBlankString'
         address:
           $ref: '#/components/schemas/NonBlankString'
+        email:
+          $ref: '#/components/schemas/UserEmail'
+        phoneNumber:
+          $ref: '#/components/schemas/UserPhone'
         timezone:
           allOf:
             - $ref: '#/components/schemas/NonBlankString'
@@ -2343,11 +2355,18 @@ components:
       description: |
         Partial location update. At least one editable field is required.
         If `businessHours` is present, it must contain all seven weekdays.
+        Existing records created before location contact details may omit both
+        contact fields. The first contact update to such a record must provide
+        both `email` and `phoneNumber`.
       properties:
         name:
           $ref: '#/components/schemas/NonBlankString'
         address:
           $ref: '#/components/schemas/NonBlankString'
+        email:
+          $ref: '#/components/schemas/UserEmail'
+        phoneNumber:
+          $ref: '#/components/schemas/UserPhone'
         timezone:
           allOf:
             - $ref: '#/components/schemas/NonBlankString'
@@ -2387,6 +2406,18 @@ components:
           type: string
         address:
           type: string
+        email:
+          allOf:
+            - $ref: '#/components/schemas/UserEmail'
+          description: |
+            Location contact email. Optional only on legacy records created
+            before location contact details were introduced.
+        phoneNumber:
+          allOf:
+            - $ref: '#/components/schemas/UserPhone'
+          description: |
+            Location contact phone number in E.164 format. Optional only on
+            legacy records created before contact details were introduced.
         timezone:
           type: string
         businessHours:

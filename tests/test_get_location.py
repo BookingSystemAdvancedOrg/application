@@ -27,6 +27,7 @@ def location_item(
     *,
     location_id=LOCATION_ID,
     include_updated=False,
+    include_contacts=True,
     **overrides,
 ):
     item = {
@@ -35,6 +36,8 @@ def location_item(
         "locationId": location_id,
         "name": "Södermalm",
         "address": "Götgatan 1, Stockholm",
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
         "timezone": "Europe/Stockholm",
         "businessHours": {
             "monday": [{"opensAt": "09:00", "closesAt": "17:00"}],
@@ -57,6 +60,9 @@ def location_item(
                 "updatedAt": "2026-08-21T10:00:00Z",
             }
         )
+    if not include_contacts:
+        del item["email"]
+        del item["phoneNumber"]
     item.update(overrides)
     return item
 
@@ -321,6 +327,21 @@ def test_returns_full_logical_location_without_internal_keys(app_and_table):
     assert "SK" not in body
     assert body["bookingDurationHours"] == 2
     assert body["gracePeriodHours"] == 0.5
+    assert body["email"] == "bookings@sodermalm.example"
+    assert body["phoneNumber"] == "+46812345678"
+
+
+def test_reads_legacy_location_without_contact_fields(app_and_table):
+    app, location_table = app_and_table
+    item = location_item(include_contacts=False)
+    location_table.put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+    body = json.loads(response["body"])
+
+    assert response["statusCode"] == 200
+    assert "email" not in body
+    assert "phoneNumber" not in body
 
 
 def test_uses_one_strongly_consistent_get_item(
@@ -550,6 +571,8 @@ def test_list_rejects_a_repeated_last_evaluated_key(
         ("SK", "LOCATION#wrong"),
         ("locationId", "wrong"),
         ("timezone", "Not/AZone"),
+        ("email", "invalid"),
+        ("phoneNumber", "0701234567"),
         ("createdAt", "not-a-time"),
         ("updatedBy", None),
     ],
@@ -571,6 +594,20 @@ def test_inconsistent_location_in_list_returns_409(
         make_event(groups='["super_user"]', location_id=_UNSET),
         None,
     )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+
+
+def test_location_with_only_one_contact_field_returns_409(app_and_table):
+    app, location_table = app_and_table
+    corrupt = location_item()
+    del corrupt["phoneNumber"]
+    location_table.put_item(Item=corrupt)
+
+    response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 409
     assert json.loads(response["body"]) == {

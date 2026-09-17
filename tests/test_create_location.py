@@ -36,6 +36,8 @@ def valid_body():
     return {
         "name": "Södermalm",
         "address": "Götgatan 1, Stockholm",
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
         "timezone": "Europe/Stockholm",
         "businessHours": {
             day: []
@@ -46,8 +48,16 @@ def valid_body():
     }
 
 
-def location_item(*, location_id="location-id", include_updated=True):
+def location_item(
+    *,
+    location_id="location-id",
+    include_updated=True,
+    include_contacts=True,
+):
     body = valid_body()
+    if not include_contacts:
+        del body["email"]
+        del body["phoneNumber"]
     item = {
         "PK": "PLATFORM",
         "SK": f"LOCATION#{location_id}",
@@ -81,6 +91,9 @@ def public_location(item):
         "createdAt",
     )
     result = {field: item[field] for field in fields}
+    for field in ("email", "phoneNumber"):
+        if field in item:
+            result[field] = item[field]
     if "updatedBy" in item and "updatedAt" in item:
         result.update(
             updatedBy=item["updatedBy"],
@@ -321,6 +334,15 @@ def test_rejects_invalid_base64_body(app_and_table):
         ("name", "   ", "name is required"),
         ("address", None, "address is required"),
         ("address", 123, "address is required"),
+        ("email", None, "email is required"),
+        ("email", "invalid", "email must be valid"),
+        ("email", f"{'a' * 310}@example.com", "email must be valid"),
+        ("phoneNumber", None, "phoneNumber is required"),
+        (
+            "phoneNumber",
+            "0701234567",
+            "phoneNumber must use E.164 format",
+        ),
         ("timezone", None, "timezone is required"),
         (
             "timezone",
@@ -343,6 +365,21 @@ def test_rejects_invalid_string_fields(
 
     assert response["statusCode"] == 400
     assert json.loads(response["body"]) == {"error": expected_error}
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize("field", ["email", "phoneNumber"])
+def test_create_requires_location_contact_fields(app_and_table, field):
+    app, location_table = app_and_table
+    body = valid_body()
+    del body[field]
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": f"{field} is required",
+    }
     assert table_items(location_table) == []
 
 
@@ -508,6 +545,8 @@ def test_creates_expected_location_item(app_and_table, monkeypatch):
     monkeypatch.setattr(app, "_new_location_id", lambda: "location-id")
     monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-20T10:00:00Z")
     body = valid_body()
+    body["email"] = "  bookings@sodermalm.example  "
+    body["phoneNumber"] = "  +46812345678  "
     body["businessHours"]["monday"] = [
         {"opensAt": "13:00", "closesAt": "17:00"},
         {"opensAt": "09:00", "closesAt": "12:00"},
@@ -522,6 +561,8 @@ def test_creates_expected_location_item(app_and_table, monkeypatch):
         "locationId": "location-id",
         "name": "Södermalm",
         "address": "Götgatan 1, Stockholm",
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
         "timezone": "Europe/Stockholm",
         "businessHours": {
             **{day: [] for day in WEEKDAYS},
@@ -763,6 +804,117 @@ def test_partial_update_preserves_creation_fields_and_sets_update_audit(
     assert stored["updatedAt"] == "2026-08-22T10:00:00Z"
 
 
+@pytest.mark.parametrize(
+    ("field", "submitted", "expected"),
+    [
+        ("email", "  contact@example.com  ", "contact@example.com"),
+        ("phoneNumber", "  +46701234567  ", "+46701234567"),
+    ],
+)
+def test_partial_update_changes_location_contact_field(
+    app_and_table,
+    monkeypatch,
+    field,
+    submitted,
+    expected,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {field: submitted},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored[field] == expected
+    assert json.loads(response["body"])[field] == expected
+
+
+def test_legacy_location_can_be_updated_without_contact_fields(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item(include_contacts=False)
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Legacy location"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    body = json.loads(response["body"])
+    assert response["statusCode"] == 200
+    assert stored["name"] == "Legacy location"
+    assert "email" not in stored
+    assert "phoneNumber" not in stored
+    assert "email" not in body
+    assert "phoneNumber" not in body
+
+
+def test_legacy_location_requires_both_contacts_when_backfilled(
+    app_and_table,
+):
+    app, location_table = app_and_table
+    original = location_item(include_contacts=False)
+    put_location(location_table, original)
+
+    response = app.handler(
+        make_event(
+            {"email": "contact@example.com"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": "phoneNumber is required",
+    }
+    assert get_location(location_table) == original
+
+
+def test_legacy_location_accepts_both_contacts_when_backfilled(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    put_location(location_table, location_item(include_contacts=False))
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {
+                "email": "contact@example.com",
+                "phoneNumber": "+46701234567",
+            },
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored["email"] == "contact@example.com"
+    assert stored["phoneNumber"] == "+46701234567"
+
+
 def test_update_accepts_a_legacy_record_and_adds_update_audit(
     app_and_table,
     monkeypatch,
@@ -858,6 +1010,39 @@ def test_inconsistent_stored_location_returns_409_without_mutation(
     app, location_table = app_and_table
     corrupt = location_item()
     del corrupt["createdAt"]
+    put_location(location_table, corrupt)
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+    assert get_location(location_table) == corrupt
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("email", "invalid"),
+        ("phoneNumber", "0701234567"),
+    ],
+)
+def test_invalid_stored_contact_returns_409_without_mutation(
+    app_and_table,
+    field,
+    value,
+):
+    app, location_table = app_and_table
+    corrupt = location_item()
+    corrupt[field] = value
     put_location(location_table, corrupt)
 
     response = app.handler(

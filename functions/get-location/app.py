@@ -58,7 +58,10 @@ _PUBLIC_REQUIRED_FIELDS = (
     "createdAt",
 )
 _OPTIONAL_AUDIT_FIELDS = ("updatedBy", "updatedAt")
+_OPTIONAL_CONTACT_FIELDS = ("email", "phoneNumber")
 _TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_NUMBER_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
 class _LocationConflict(Exception):
@@ -117,6 +120,32 @@ def _required_string(source, field):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} is required")
     return value.strip()
+
+
+def _required_email(source):
+    value = _required_string(source, "email")
+    if len(value) > 320 or not _EMAIL_PATTERN.fullmatch(value):
+        raise ValueError("email is invalid")
+    return value
+
+
+def _required_phone_number(source):
+    value = _required_string(source, "phoneNumber")
+    if not _PHONE_NUMBER_PATTERN.fullmatch(value):
+        raise ValueError("phoneNumber is invalid")
+    return value
+
+
+def _validate_contact_fields(source):
+    present = {
+        field for field in _OPTIONAL_CONTACT_FIELDS if field in source
+    }
+    if not present:
+        return
+    if present != set(_OPTIONAL_CONTACT_FIELDS):
+        raise ValueError("location contact fields are incomplete")
+    _required_email(source)
+    _required_phone_number(source)
 
 
 def _canonical_number(value, field):
@@ -215,6 +244,10 @@ def _location_key(location_id):
 
 def _public_location(item):
     public = {field: item[field] for field in _PUBLIC_REQUIRED_FIELDS}
+    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
+        public.update(
+            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
+        )
     if all(field in item for field in _OPTIONAL_AUDIT_FIELDS):
         public.update(
             {field: item[field] for field in _OPTIONAL_AUDIT_FIELDS}
@@ -242,6 +275,7 @@ def _validate_stored_location(item, location_id):
     try:
         _required_string(item, "name")
         _required_string(item, "address")
+        _validate_contact_fields(item)
         _valid_timezone(item)
         _required_business_hours(item)
         _required_number(item, "bookingDurationHours", allow_zero=False)

@@ -52,6 +52,8 @@ _WEEKDAYS = (
 _EDITABLE_FIELDS = {
     "name",
     "address",
+    "email",
+    "phoneNumber",
     "timezone",
     "businessHours",
     "bookingDurationHours",
@@ -69,7 +71,10 @@ _PUBLIC_REQUIRED_FIELDS = (
     "createdAt",
 )
 _OPTIONAL_AUDIT_FIELDS = ("updatedBy", "updatedAt")
+_OPTIONAL_CONTACT_FIELDS = ("email", "phoneNumber")
 _TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_NUMBER_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")
 _AMBIGUOUS_DYNAMO_CODES = {
     "InternalFailure",
     "InternalServerError",
@@ -160,6 +165,39 @@ def _required_string(source, field):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} is required")
     return value.strip()
+
+
+def _required_email(source):
+    value = _required_string(source, "email")
+    if len(value) > 320 or not _EMAIL_PATTERN.fullmatch(value):
+        raise ValueError("email must be valid")
+    return value
+
+
+def _required_phone_number(source):
+    value = _required_string(source, "phoneNumber")
+    if not _PHONE_NUMBER_PATTERN.fullmatch(value):
+        raise ValueError("phoneNumber must use E.164 format")
+    return value
+
+
+def _validated_contact_fields(source, *, required):
+    present = {
+        field for field in _OPTIONAL_CONTACT_FIELDS if field in source
+    }
+    if not required and not present:
+        return {}
+
+    missing = [
+        field for field in _OPTIONAL_CONTACT_FIELDS if field not in source
+    ]
+    if missing:
+        raise ValueError(f"{missing[0]} is required")
+
+    return {
+        "email": _required_email(source),
+        "phoneNumber": _required_phone_number(source),
+    }
 
 
 def _required_timezone(source):
@@ -266,10 +304,11 @@ def _required_business_hours(source):
     return normalized
 
 
-def _validated_location_fields(source):
+def _validated_location_fields(source, *, require_contacts=False):
     return {
         "name": _required_string(source, "name"),
         "address": _required_string(source, "address"),
+        **_validated_contact_fields(source, required=require_contacts),
         "timezone": _required_timezone(source),
         "businessHours": _required_business_hours(source),
         "bookingDurationHours": _required_number(
@@ -344,6 +383,10 @@ def _valid_utc_timestamp(source, field):
 
 def _public_location(item):
     public = {field: item[field] for field in _PUBLIC_REQUIRED_FIELDS}
+    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
+        public.update(
+            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
+        )
     if all(field in item for field in _OPTIONAL_AUDIT_FIELDS):
         public.update(
             {field: item[field] for field in _OPTIONAL_AUDIT_FIELDS}
@@ -413,7 +456,10 @@ def _expected_location_condition(expected):
         names[name_key] = field
         values[value_key] = expected[field]
 
-    for field in sorted(set(_OPTIONAL_AUDIT_FIELDS) - expected_fields):
+    optional_fields = set(
+        _OPTIONAL_AUDIT_FIELDS + _OPTIONAL_CONTACT_FIELDS
+    )
+    for field in sorted(optional_fields - expected_fields):
         index = len(names)
         name_key = f"#expected{index}"
         clauses.append(f"attribute_not_exists({name_key})")
@@ -566,7 +612,8 @@ def _delete_existing_location(location_id, expected):
 
 def _create_location(event, caller_sub):
     fields = _validated_location_fields(
-        _request_body(event, partial=False)
+        _request_body(event, partial=False),
+        require_contacts=True,
     )
     location_id = _new_location_id()
     timestamp = _utc_now()
@@ -596,6 +643,7 @@ def _update_location(event, location_id, caller_sub):
     candidate = {
         field: item[field]
         for field in _EDITABLE_FIELDS
+        if field in item
     }
     candidate.update(updates)
     fields = _validated_location_fields(candidate)

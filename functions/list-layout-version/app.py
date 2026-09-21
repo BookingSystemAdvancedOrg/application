@@ -2,33 +2,41 @@
 
 TRIGGER:
     API Gateway -- GET /locations/{locationId}/layout/versions -- Auth: JWT
+    API Gateway -- DELETE
+    /locations/{locationId}/layout/versions/{versionId} -- Auth: JWT
     API Gateway -- GET /locations/{locationId}/layout/active -- Auth: NONE
 
 PURPOSE:
-    Lists the published layout snapshots for one location so an authorized
-    internal user can inspect versions before selecting one to activate. The
-    public active-layout route returns only customer-facing floor metadata and
-    renderable elements, and deliberately performs no JWT validation.
+    Lists or archives published layout snapshots for one location. Archiving
+    is owner/super-user only, preserves the immutable snapshot history, and
+    rejects the current or pending version. The public active-layout route
+    returns only customer-facing floor metadata and renderable elements, and
+    deliberately performs no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
-    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- DynamoDB table to read
+    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- DynamoDB table to read/update
 
 AWS RESOURCE ACCESS:
-    Read-only on Published Layout Snapshot.
+    Strongly consistent reads and TransactWriteItems on Published Layout
+    Snapshot only.
 
 Full details: docs/LAMBDA_REFERENCE.md #13.
 """
 
+import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from http import HTTPStatus
 
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -38,11 +46,30 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
 ]
 
 _ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
+_ARCHIVE_ALLOWED_GROUPS = ("owner_user", "super_user")
 _PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
+_DELETE_VERSION_ROUTE = (
+    "DELETE /locations/{locationId}/layout/versions/{versionId}"
+)
 _ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
 _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
+_MAX_VERSION_DIGITS = 38
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
+_PENDING_STATE_FIELDS = frozenset(
+    {
+        "pendingVersion",
+        "pendingStatus",
+        "activationToken",
+        "cutoverAt",
+        "scheduleName",
+        "scheduleArn",
+    }
+)
+_SCHEDULING = "scheduling"
+_SCHEDULED = "scheduled"
+_SCHEDULE_GROUP = "default"
+_SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
 )
@@ -84,6 +111,7 @@ _CUSTOMER_ELEMENT_FIELDS = (
     "zone",
     "wallId",
 )
+_SERIALIZER = TypeSerializer()
 
 
 class _SnapshotConflict(Exception):
@@ -107,6 +135,14 @@ def _version_response(status_code, body, *, headers=None):
 
 def _version_error(status_code, message):
     return _version_response(status_code, {"error": message})
+
+
+def _empty_response(status_code):
+    return {
+        "statusCode": status_code,
+        "headers": {"Cache-Control": "no-store"},
+        "body": "",
+    }
 
 
 def _request_method(event):
@@ -142,13 +178,32 @@ def _location_id(event):
     return value
 
 
-def _required_string(source, field):
+def _version_id(event):
+    path_parameters = event.get("pathParameters")
+    if not isinstance(path_parameters, dict):
+        raise ValueError("versionId is required")
+
+    value = path_parameters.get("versionId")
+    if not isinstance(value, str) or not value:
+        raise ValueError("versionId is required")
+    if (
+        value != value.strip()
+        or len(value) > _MAX_VERSION_DIGITS
+        or not value.isascii()
+        or not value.isdigit()
+        or value[0] == "0"
+    ):
+        raise ValueError("versionId must be a positive integer")
+    return int(value)
+
+
+def _required_string(source, field, *, max_length=128):
     value = source.get(field)
     if not isinstance(value, str) or not value.strip():
         raise ValueError
 
     stripped = value.strip()
-    if value != stripped or len(stripped) > 128:
+    if value != stripped or len(stripped) > max_length:
         raise ValueError
     return stripped
 
@@ -200,6 +255,10 @@ def _utc_timestamp(source, field, *, nullable=False):
 
 def _utc_now():
     return datetime.now(timezone.utc)
+
+
+def _isoformat(value):
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _archive_metadata(item):
@@ -510,6 +569,471 @@ def _validate_activation_state(state, location_id):
     return int(current_version)
 
 
+def _activation_token(
+    location_id,
+    current_version,
+    pending_version,
+    revision,
+    cutover_at,
+):
+    identity = json.dumps(
+        {
+            "environment": ENVIRONMENT,
+            "snapshotTable": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "locationId": location_id,
+            "currentVersion": current_version,
+            "pendingVersion": pending_version,
+            "revision": revision,
+            "cutoverAt": cutover_at,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _archive_activation_state_details(state, location_id):
+    if (
+        state.get("PK") != f"LOCATION#{location_id}"
+        or state.get("SK") != _ACTIVATION_STATE_SK
+        or state.get("recordType") != _ACTIVATION_STATE_TYPE
+    ):
+        raise _SnapshotConflict("layout activation state is inconsistent")
+
+    try:
+        current_version = int(
+            _canonical_number(
+                state,
+                "currentVersion",
+                positive=True,
+                integer=True,
+            )
+        )
+        revision = int(
+            _canonical_number(
+                state,
+                "revision",
+                positive=True,
+                integer=True,
+            )
+        )
+        _required_string(state, "updatedBy")
+        _utc_timestamp(state, "updatedAt")
+    except (OverflowError, TypeError, ValueError):
+        raise _SnapshotConflict(
+            "layout activation state is inconsistent"
+        ) from None
+
+    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    if not present_pending_fields:
+        return {
+            "item": state,
+            "currentVersion": current_version,
+            "revision": revision,
+            "pending": None,
+        }
+
+    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    if not required_pending_fields.issubset(state):
+        raise _SnapshotConflict("layout activation state is inconsistent")
+
+    try:
+        pending_version = int(
+            _canonical_number(
+                state,
+                "pendingVersion",
+                positive=True,
+                integer=True,
+            )
+        )
+        if pending_version == current_version:
+            raise ValueError
+
+        pending_status = _required_string(state, "pendingStatus")
+        if pending_status not in {_SCHEDULING, _SCHEDULED}:
+            raise ValueError
+
+        activation_token = _required_string(state, "activationToken")
+        if len(activation_token) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in activation_token
+        ):
+            raise ValueError
+
+        cutover_at = _utc_timestamp(state, "cutoverAt")
+        parsed_cutover = datetime.fromisoformat(
+            cutover_at.replace("Z", "+00:00")
+        )
+        if (
+            parsed_cutover.hour != 1
+            or parsed_cutover.minute != 0
+            or parsed_cutover.second != 0
+            or parsed_cutover.microsecond != 0
+        ):
+            raise ValueError
+
+        token_revision = (
+            revision if pending_status == _SCHEDULING else revision - 1
+        )
+        if token_revision <= 0 or activation_token != _activation_token(
+            location_id,
+            current_version,
+            pending_version,
+            token_revision,
+            cutover_at,
+        ):
+            raise ValueError
+
+        schedule_name = _required_string(state, "scheduleName")
+        suffix_length = 64 - len(_SCHEDULE_NAME_PREFIX)
+        if schedule_name != (
+            f"{_SCHEDULE_NAME_PREFIX}"
+            f"{activation_token[:suffix_length]}"
+        ):
+            raise ValueError
+
+        schedule_arn = None
+        if "scheduleArn" in state:
+            schedule_arn = _required_string(
+                state,
+                "scheduleArn",
+                max_length=2048,
+            )
+            if (
+                ":scheduler:" not in schedule_arn
+                or not schedule_arn.endswith(
+                    f":schedule/{_SCHEDULE_GROUP}/{schedule_name}"
+                )
+            ):
+                raise ValueError
+        if (pending_status == _SCHEDULED) != (schedule_arn is not None):
+            raise ValueError
+    except (OverflowError, TypeError, ValueError):
+        raise _SnapshotConflict(
+            "layout activation state is inconsistent"
+        ) from None
+
+    return {
+        "item": state,
+        "currentVersion": current_version,
+        "revision": revision,
+        "pending": {
+            "version": pending_version,
+            "status": pending_status,
+            "activationToken": activation_token,
+            "cutoverAt": cutover_at,
+            "scheduleName": schedule_name,
+            "scheduleArn": schedule_arn,
+        },
+    }
+
+
+def _typed_map(values):
+    return {
+        key: _SERIALIZER.serialize(value)
+        for key, value in values.items()
+    }
+
+
+def _archive_state_condition(location_id, state_details):
+    key = _typed_map(_activation_state_key(location_id))
+    if state_details is None:
+        return {
+            "ConditionCheck": {
+                "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+                "Key": key,
+                "ConditionExpression": (
+                    "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+                ),
+            }
+        }
+
+    state = state_details["item"]
+    names = {
+        "#recordType": "recordType",
+        "#currentVersion": "currentVersion",
+        "#revision": "revision",
+        "#updatedBy": "updatedBy",
+        "#updatedAt": "updatedAt",
+    }
+    raw_values = {
+        ":recordType": state["recordType"],
+        ":currentVersion": state["currentVersion"],
+        ":revision": state["revision"],
+        ":stateUpdatedBy": state["updatedBy"],
+        ":stateUpdatedAt": state["updatedAt"],
+    }
+    conditions = [
+        "attribute_exists(PK)",
+        "attribute_exists(SK)",
+        "#recordType = :recordType",
+        "#currentVersion = :currentVersion",
+        "#revision = :revision",
+        "#updatedBy = :stateUpdatedBy",
+        "#updatedAt = :stateUpdatedAt",
+    ]
+
+    pending = state_details["pending"]
+    for field in sorted(_PENDING_STATE_FIELDS):
+        name = f"#{field}"
+        names[name] = field
+        if field == "scheduleArn" and (
+            pending is None or pending["scheduleArn"] is None
+        ):
+            conditions.append(f"attribute_not_exists({name})")
+            continue
+        if pending is None:
+            conditions.append(f"attribute_not_exists({name})")
+            continue
+
+        value_name = f":state{field[0].upper()}{field[1:]}"
+        raw_values[value_name] = state[field]
+        conditions.append(f"{name} = {value_name}")
+
+    return {
+        "ConditionCheck": {
+            "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "Key": key,
+            "ConditionExpression": " AND ".join(conditions),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": _typed_map(raw_values),
+        }
+    }
+
+
+def _archive_snapshot_update(snapshot, caller_sub, timestamp):
+    names = {
+        "#version": "version",
+        "#isCurrent": "isCurrent",
+        "#effectiveFrom": "effectiveFrom",
+        "#effectiveTo": "effectiveTo",
+        "#expiresAt": "expiresAt",
+        "#updatedBy": "updatedBy",
+        "#updatedAt": "updatedAt",
+        "#archivedBy": "archivedBy",
+        "#archivedAt": "archivedAt",
+    }
+    values = _typed_map(
+        {
+            ":version": snapshot["version"],
+            ":notCurrent": False,
+            ":expectedEffectiveFrom": snapshot["effectiveFrom"],
+            ":expectedEffectiveTo": snapshot["effectiveTo"],
+            ":expectedExpiresAt": snapshot["expiresAt"],
+            ":expectedUpdatedBy": snapshot["updatedBy"],
+            ":expectedUpdatedAt": snapshot["updatedAt"],
+            ":archivedBy": caller_sub,
+            ":archivedAt": timestamp,
+        }
+    )
+    return {
+        "Update": {
+            "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "Key": _typed_map(
+                {"PK": snapshot["PK"], "SK": snapshot["SK"]}
+            ),
+            "UpdateExpression": (
+                "SET #archivedBy = :archivedBy, "
+                "#archivedAt = :archivedAt, "
+                "#updatedBy = :archivedBy, "
+                "#updatedAt = :archivedAt"
+            ),
+            "ConditionExpression": (
+                "attribute_exists(PK) AND attribute_exists(SK) "
+                "AND #version = :version "
+                "AND #isCurrent = :notCurrent "
+                "AND #effectiveFrom = :expectedEffectiveFrom "
+                "AND #effectiveTo = :expectedEffectiveTo "
+                "AND #expiresAt = :expectedExpiresAt "
+                "AND #updatedBy = :expectedUpdatedBy "
+                "AND #updatedAt = :expectedUpdatedAt "
+                "AND attribute_not_exists(#archivedBy) "
+                "AND attribute_not_exists(#archivedAt)"
+            ),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+    }
+
+
+def _read_archive_context(snapshot_table, location_id, version):
+    snapshot = _read_snapshot_item(
+        snapshot_table,
+        {
+            "PK": f"LOCATION#{location_id}",
+            "SK": f"{_SNAPSHOT_PREFIX}{version}",
+        },
+    )
+    if snapshot is None:
+        return None
+
+    _public_snapshot(snapshot, location_id)
+    state = _read_snapshot_item(
+        snapshot_table,
+        _activation_state_key(location_id),
+    )
+    state_details = (
+        None
+        if state is None
+        else _archive_activation_state_details(state, location_id)
+    )
+
+    if snapshot["isCurrent"] or (
+        state_details is not None
+        and state_details["currentVersion"] == version
+    ):
+        raise _SnapshotConflict(
+            "current layout version cannot be archived"
+        )
+
+    pending = None if state_details is None else state_details["pending"]
+    if pending is not None and pending["version"] == version:
+        raise _SnapshotConflict(
+            "pending layout version cannot be archived"
+        )
+
+    return {
+        "snapshot": snapshot,
+        "state": state_details,
+        "archived": _archive_metadata(snapshot) is not None,
+    }
+
+
+def _is_concurrent_change(exc):
+    if not isinstance(exc, ClientError):
+        return False
+
+    error_code = exc.response.get("Error", {}).get("Code")
+    if error_code == "ConditionalCheckFailedException":
+        return True
+    if error_code != "TransactionCanceledException":
+        return False
+
+    reasons = exc.response.get("CancellationReasons")
+    if not isinstance(reasons, list) or not reasons:
+        return False
+
+    reason_codes = []
+    for reason in reasons:
+        if not isinstance(reason, dict):
+            return False
+        reason_code = reason.get("Code")
+        if reason_code in {None, "None"}:
+            continue
+        reason_codes.append(reason_code)
+
+    return bool(reason_codes) and all(
+        reason_code in {"ConditionalCheckFailed", "TransactionConflict"}
+        for reason_code in reason_codes
+    )
+
+
+def _is_transaction_canceled(exc):
+    return (
+        isinstance(exc, ClientError)
+        and exc.response.get("Error", {}).get("Code")
+        == "TransactionCanceledException"
+    )
+
+
+def _archive_context_changed(before, after):
+    if after is None:
+        return True
+
+    before_state = before["state"]
+    after_state = after["state"]
+    return before["snapshot"] != after["snapshot"] or (
+        None if before_state is None else before_state["item"]
+    ) != (None if after_state is None else after_state["item"])
+
+
+def _is_ambiguous_write_failure(exc):
+    if isinstance(exc, BotoCoreError):
+        return True
+    if not isinstance(exc, ClientError):
+        return False
+
+    status_code = exc.response.get("ResponseMetadata", {}).get(
+        "HTTPStatusCode"
+    )
+    error_code = exc.response.get("Error", {}).get("Code")
+    return (
+        isinstance(status_code, int)
+        and status_code >= 500
+        or error_code
+        in {
+            "InternalServerError",
+            "RequestTimeout",
+            "RequestTimeoutException",
+            "ServiceUnavailable",
+        }
+    )
+
+
+def _archive_version(location_id, version, caller_sub):
+    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
+    timestamp = _isoformat(_utc_now())
+
+    for attempt in range(2):
+        context = _read_archive_context(
+            snapshot_table,
+            location_id,
+            version,
+        )
+        if context is None:
+            return _version_error(
+                HTTPStatus.NOT_FOUND.value,
+                "layout version not found",
+            )
+        if context["archived"]:
+            return _empty_response(HTTPStatus.NO_CONTENT.value)
+
+        transaction = [
+            _archive_snapshot_update(
+                context["snapshot"],
+                caller_sub,
+                timestamp,
+            ),
+            _archive_state_condition(location_id, context["state"]),
+        ]
+        try:
+            dynamodb_client().transact_write_items(
+                TransactItems=transaction,
+            )
+            return _empty_response(HTTPStatus.NO_CONTENT.value)
+        except (BotoCoreError, ClientError) as exc:
+            try:
+                reconciled = _read_archive_context(
+                    snapshot_table,
+                    location_id,
+                    version,
+                )
+            except (BotoCoreError, ClientError, _SnapshotServiceFailure):
+                raise exc
+
+            if reconciled is not None and reconciled["archived"]:
+                return _empty_response(HTTPStatus.NO_CONTENT.value)
+            concurrent = _is_concurrent_change(exc) or (
+                _is_transaction_canceled(exc)
+                and _archive_context_changed(context, reconciled)
+            )
+            ambiguous = _is_ambiguous_write_failure(exc)
+            if (
+                attempt == 0
+                and reconciled is not None
+                and (concurrent or ambiguous)
+            ):
+                continue
+            if concurrent:
+                raise _SnapshotConflict(
+                    "layout version changed; retry request"
+                ) from exc
+            raise
+
+    raise _SnapshotConflict("layout version changed; retry request")
+
+
 def _validated_active_snapshot(snapshot, location_id, version, now):
     public_snapshot = _public_snapshot(snapshot, location_id)
     try:
@@ -653,16 +1177,46 @@ def handler(event, context):
 
     try:
         get_claims(event)
-        get_sub(event)
+        caller_sub = get_sub(event).strip()
     except Unauthorized as exc:
         return _version_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
+
+    route_key = _route_key(event)
+    method = _request_method(event)
+    if route_key == _DELETE_VERSION_ROUTE:
+        try:
+            require_group(event, *_ARCHIVE_ALLOWED_GROUPS)
+        except Unauthorized:
+            return _version_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+
+        if method != "DELETE":
+            return _version_response(
+                HTTPStatus.METHOD_NOT_ALLOWED.value,
+                {"error": "method not allowed"},
+                headers={"Allow": "DELETE"},
+            )
+
+        try:
+            location_id = _location_id(event)
+            version = _version_id(event)
+        except ValueError as exc:
+            return _version_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+
+        try:
+            return _archive_version(location_id, version, caller_sub)
+        except _SnapshotConflict as exc:
+            return _version_error(HTTPStatus.CONFLICT.value, str(exc))
+        except (BotoCoreError, ClientError, _SnapshotServiceFailure):
+            return _version_error(
+                HTTPStatus.SERVICE_UNAVAILABLE.value,
+                "layout version service unavailable",
+            )
 
     try:
         require_group(event, *_ALLOWED_GROUPS)
     except Unauthorized:
         return _version_error(HTTPStatus.FORBIDDEN.value, "forbidden")
 
-    method = _request_method(event)
     if method != "GET":
         return _version_response(
             HTTPStatus.METHOD_NOT_ALLOWED.value,

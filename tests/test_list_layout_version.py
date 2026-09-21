@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from datetime import datetime, timezone
@@ -24,6 +25,9 @@ LOCATION_ID = "location-id"
 OTHER_LOCATION_ID = "other-location-id"
 CALLER_SUB = "caller-sub"
 PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
+ARCHIVE_ROUTE = (
+    "DELETE /locations/{locationId}/layout/versions/{versionId}"
+)
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
 
@@ -61,6 +65,26 @@ def make_public_event(
         "requestContext": {"http": {"method": method}},
         "pathParameters": {"locationId": location_id},
     }
+
+
+def make_archive_event(
+    *,
+    method="DELETE",
+    location_id=LOCATION_ID,
+    version_id="1",
+    groups='["owner_user"]',
+    sub=CALLER_SUB,
+    route_key=ARCHIVE_ROUTE,
+):
+    event = make_event(
+        method=method,
+        location_id=location_id,
+        groups=groups,
+        sub=sub,
+    )
+    event["routeKey"] = route_key
+    event["pathParameters"]["versionId"] = version_id
+    return event
 
 
 def snapshot_item(
@@ -141,6 +165,62 @@ def activation_state(version=1, **overrides):
     return item
 
 
+def pending_activation_state(
+    *,
+    current_version=1,
+    pending_version=2,
+    revision=3,
+    cutover_at="2026-10-05T01:00:00Z",
+):
+    operation_revision = revision - 1
+    identity = json.dumps(
+        {
+            "environment": "dev",
+            "snapshotTable": TABLE_NAME,
+            "locationId": LOCATION_ID,
+            "currentVersion": current_version,
+            "pendingVersion": pending_version,
+            "revision": operation_revision,
+            "cutoverAt": cutover_at,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    token = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    schedule_name = f"expire-layout-version-{token[:42]}"
+    return activation_state(
+        current_version,
+        revision=Decimal(str(revision)),
+        pendingVersion=Decimal(str(pending_version)),
+        pendingStatus="scheduled",
+        activationToken=token,
+        cutoverAt=cutover_at,
+        scheduleName=schedule_name,
+        scheduleArn=(
+            "arn:aws:scheduler:eu-north-1:123456789012:"
+            f"schedule/default/{schedule_name}"
+        ),
+    )
+
+
+def mismatched_pending_activation_state():
+    state = pending_activation_state()
+    token = "f" * 64
+    schedule_name = f"expire-layout-version-{token[:42]}"
+    state.update(
+        {
+            "activationToken": token,
+            "scheduleName": schedule_name,
+            "scheduleArn": (
+                "arn:aws:scheduler:eu-north-1:123456789012:"
+                f"schedule/default/{schedule_name}"
+            ),
+        }
+    )
+    return state
+
+
 def public_active_element(item):
     common_fields = {
         "elementId",
@@ -208,14 +288,27 @@ def assert_response(response, status_code, body=None):
         assert response_body(response) == body
 
 
-def client_error(code="AccessDeniedException"):
-    return ClientError(
-        {
-            "Error": {"Code": code, "Message": "sensitive AWS message"},
-            "ResponseMetadata": {"HTTPStatusCode": 400},
-        },
-        "Query",
-    )
+def assert_empty_response(response, status_code=204):
+    assert response == {
+        "statusCode": status_code,
+        "headers": {"Cache-Control": "no-store"},
+        "body": "",
+    }
+
+
+def client_error(
+    code="AccessDeniedException",
+    *,
+    operation="Query",
+    cancellation_reasons=None,
+):
+    response = {
+        "Error": {"Code": code, "Message": "sensitive AWS message"},
+        "ResponseMetadata": {"HTTPStatusCode": 400},
+    }
+    if cancellation_reasons is not None:
+        response["CancellationReasons"] = cancellation_reasons
+    return ClientError(response, operation)
 
 
 @pytest.fixture
@@ -833,6 +926,848 @@ def test_public_active_dependency_failure_returns_sanitized_503(
         {"error": "active layout service unavailable"},
     )
     assert "sensitive" not in response["body"]
+
+
+def test_archive_authenticates_before_validating_path_or_reading_dynamodb(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    event = make_archive_event(location_id=None, version_id=None)
+    del event["requestContext"]["authorizer"]
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "no JWT claims on this request"},
+    )
+    table_factory.assert_not_called()
+
+
+def test_archive_requires_subject_before_validating_path_or_reading_dynamodb(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    event = make_archive_event(
+        location_id=None,
+        version_id=None,
+        sub=" ",
+    )
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("groups", ['["staff_user"]', '["customer"]'])
+def test_archive_requires_owner_or_super_user_before_validating_path(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_archive_event(
+            location_id=None,
+            version_id=None,
+            groups=groups,
+        ),
+        None,
+    )
+
+    assert_response(response, 403, {"error": "forbidden"})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH"])
+def test_archive_exact_route_rejects_wrong_method_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+    method,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_archive_event(method=method), None)
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "DELETE"
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "route_key",
+    [
+        "",
+        "DELETE /locations/{locationId}/layout/versions",
+        "DELETE /locations/{locationId}/layout/versions/{versionId}/",
+        "POST /locations/{locationId}/layout/versions/{versionId}",
+    ],
+)
+def test_only_exact_archive_route_dispatches_delete(
+    app_and_table,
+    route_key,
+):
+    app, snapshot_table = app_and_table
+    original = snapshot_item(1)
+    snapshot_table.put_item(Item=original)
+
+    response = app.handler(
+        make_archive_event(route_key=route_key),
+        None,
+    )
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "GET"
+    assert snapshot_table.get_item(
+        Key={"PK": original["PK"], "SK": original["SK"]}
+    )["Item"] == original
+
+
+@pytest.mark.parametrize("location_id", [None, "", "   ", "x" * 129])
+def test_archive_rejects_invalid_location_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+    location_id,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_archive_event(location_id=location_id),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("version_id", [None, "", 1])
+def test_archive_requires_string_version_id_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+    version_id,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_archive_event(version_id=version_id),
+        None,
+    )
+
+    assert_response(response, 400, {"error": "versionId is required"})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "version_id",
+    [
+        " ",
+        "0",
+        "-1",
+        "+1",
+        "01",
+        "1.0",
+        " 1",
+        "1 ",
+        "\u0661",
+        "9" * 39,
+    ],
+)
+def test_archive_rejects_noncanonical_version_id_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+    version_id,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_archive_event(version_id=version_id),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "versionId must be a positive integer"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("group", ["owner_user", "super_user"])
+def test_archive_marks_inactive_snapshot_and_preserves_history(
+    app_and_table,
+    monkeypatch,
+    group,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2)
+    for item in (current, target, activation_state(1)):
+        snapshot_table.put_item(Item=item)
+
+    response = app.handler(
+        make_archive_event(
+            version_id="2",
+            groups=f'["{group}"]',
+        ),
+        None,
+    )
+
+    assert_empty_response(response)
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]},
+        ConsistentRead=True,
+    )["Item"]
+    assert stored == {
+        **target,
+        "archivedAt": "2026-09-08T12:00:00Z",
+        "archivedBy": CALLER_SUB,
+        "updatedAt": "2026-09-08T12:00:00Z",
+        "updatedBy": CALLER_SUB,
+    }
+    assert snapshot_table.get_item(
+        Key={"PK": current["PK"], "SK": current["SK"]},
+        ConsistentRead=True,
+    )["Item"] == current
+    assert snapshot_table.get_item(
+        Key={
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": "LAYOUT#ACTIVATION",
+        },
+        ConsistentRead=True,
+    )["Item"] == activation_state(1)
+
+
+def test_repeated_archive_is_idempotent_and_preserves_original_audit(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    archived = snapshot_item(
+        1,
+        archivedAt="2026-09-07T09:00:00Z",
+        archivedBy="original-owner",
+        updatedAt="2026-09-07T09:00:00Z",
+        updatedBy="original-owner",
+    )
+    snapshot_table.put_item(Item=archived)
+
+    response = app.handler(
+        make_archive_event(sub="different-owner"),
+        None,
+    )
+
+    assert_empty_response(response)
+    assert snapshot_table.get_item(
+        Key={"PK": archived["PK"], "SK": archived["SK"]},
+        ConsistentRead=True,
+    )["Item"] == archived
+
+
+def test_archive_missing_snapshot_returns_404(app_and_table):
+    app, _ = app_and_table
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(response, 404, {"error": "layout version not found"})
+
+
+def test_archive_accepts_maximum_length_canonical_version_id(
+    app_and_table,
+):
+    app, _ = app_and_table
+
+    response = app.handler(
+        make_archive_event(version_id="9" * 38),
+        None,
+    )
+
+    assert_response(response, 404, {"error": "layout version not found"})
+
+
+def test_archive_inactive_snapshot_without_activation_state(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_empty_response(response)
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]},
+        ConsistentRead=True,
+    )["Item"]
+    assert stored["archivedAt"] == "2026-09-08T12:00:00Z"
+    assert stored["archivedBy"] == CALLER_SUB
+
+
+def test_current_layout_version_cannot_be_archived(app_and_table):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    state = activation_state(1)
+    snapshot_table.put_item(Item=current)
+    snapshot_table.put_item(Item=state)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "current layout version cannot be archived"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": current["PK"], "SK": current["SK"]}
+    )["Item"] == current
+    assert snapshot_table.get_item(
+        Key={"PK": state["PK"], "SK": state["SK"]}
+    )["Item"] == state
+
+
+def test_pending_layout_version_cannot_be_archived(app_and_table):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    pending = snapshot_item(
+        2,
+        effectiveFrom="2026-10-05T01:00:00Z",
+    )
+    state = pending_activation_state()
+    for item in (current, pending, state):
+        snapshot_table.put_item(Item=item)
+
+    response = app.handler(make_archive_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "pending layout version cannot be archived"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": pending["PK"], "SK": pending["SK"]}
+    )["Item"] == pending
+    assert snapshot_table.get_item(
+        Key={"PK": state["PK"], "SK": state["SK"]}
+    )["Item"] == state
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        activation_state(revision=Decimal("0")),
+        activation_state(pendingVersion=Decimal("2")),
+        activation_state(updatedAt="not-a-time"),
+        mismatched_pending_activation_state(),
+    ],
+)
+def test_corrupt_activation_state_prevents_archive(
+    app_and_table,
+    state,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(2)
+    snapshot_table.put_item(Item=target)
+    snapshot_table.put_item(Item=state)
+
+    response = app.handler(make_archive_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"] == target
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        snapshot_item(1, isCurrent="false"),
+        snapshot_item(1, archivedAt="2026-09-07T09:00:00Z"),
+        snapshot_item(1, archivedBy="owner-sub"),
+    ],
+)
+def test_corrupt_snapshot_prevents_archive(app_and_table, snapshot):
+    app, snapshot_table = app_and_table
+    snapshot_table.put_item(Item=snapshot)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": snapshot["PK"], "SK": snapshot["SK"]}
+    )["Item"] == snapshot
+
+
+def test_archived_pending_snapshot_is_not_treated_as_safe_idempotency(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    archived_pending = snapshot_item(
+        2,
+        effectiveFrom="2026-10-05T01:00:00Z",
+        archivedAt="2026-09-08T11:00:00Z",
+        archivedBy="original-owner",
+    )
+    state = pending_activation_state()
+    for item in (current, archived_pending, state):
+        snapshot_table.put_item(Item=item)
+
+    response = app.handler(make_archive_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "pending layout version cannot be archived"},
+    )
+    assert snapshot_table.get_item(
+        Key={
+            "PK": archived_pending["PK"],
+            "SK": archived_pending["SK"],
+        }
+    )["Item"] == archived_pending
+
+
+def test_archive_uses_strong_reads_and_one_guarded_transaction(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    get_item_spy = Mock(wraps=snapshot_table.get_item)
+    monkeypatch.setattr(snapshot_table, "get_item", get_item_spy)
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+    real_client = app.dynamodb_client()
+    transaction_client = Mock(wraps=real_client)
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_empty_response(response)
+    assert get_item_spy.call_count == 2
+    assert all(
+        call.kwargs.get("ConsistentRead") is True
+        for call in get_item_spy.call_args_list
+    )
+    transaction_client.transact_write_items.assert_called_once()
+    transaction = transaction_client.transact_write_items.call_args.kwargs[
+        "TransactItems"
+    ]
+    assert len(transaction) == 2
+    update = next(item["Update"] for item in transaction if "Update" in item)
+    state_check = next(
+        item["ConditionCheck"]
+        for item in transaction
+        if "ConditionCheck" in item
+    )
+    assert update["TableName"] == TABLE_NAME
+    assert "attribute_not_exists(#archivedAt)" in update[
+        "ConditionExpression"
+    ]
+    assert "attribute_not_exists(#archivedBy)" in update[
+        "ConditionExpression"
+    ]
+    assert "#isCurrent = :notCurrent" in update["ConditionExpression"]
+    assert state_check["TableName"] == TABLE_NAME
+    assert state_check["ConditionExpression"] == (
+        "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+    )
+
+
+def test_concurrent_activation_prevents_archive(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    real_client = app.dynamodb_client()
+
+    def activate_then_write(**request):
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression=(
+                "SET #isCurrent = :current, "
+                "effectiveFrom = :effectiveFrom, "
+                "expiresAt = :expiresAt"
+            ),
+            ExpressionAttributeNames={"#isCurrent": "isCurrent"},
+            ExpressionAttributeValues={
+                ":current": True,
+                ":effectiveFrom": "2026-09-08T11:30:00Z",
+                ":expiresAt": None,
+            },
+        )
+        snapshot_table.put_item(Item=activation_state(1))
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = activate_then_write
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "current layout version cannot be archived"},
+    )
+    transaction_client.transact_write_items.assert_called_once()
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored["isCurrent"] is True
+    assert "archivedAt" not in stored
+    assert "archivedBy" not in stored
+
+
+def test_concurrent_pending_reservation_prevents_archive(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(
+        2,
+        effectiveFrom="2026-10-05T01:00:00Z",
+    )
+    original_state = activation_state(1)
+    for item in (current, target, original_state):
+        snapshot_table.put_item(Item=item)
+    real_client = app.dynamodb_client()
+
+    def reserve_pending_then_write(**request):
+        snapshot_table.put_item(Item=pending_activation_state())
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        reserve_pending_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "pending layout version cannot be archived"},
+    )
+    transaction_client.transact_write_items.assert_called_once()
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert "archivedAt" not in stored
+    assert "archivedBy" not in stored
+
+
+def test_concurrent_archive_is_reconciled_as_idempotent_success(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    real_client = app.dynamodb_client()
+
+    def archive_then_write(**request):
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression=(
+                "SET archivedAt = :archivedAt, "
+                "archivedBy = :archivedBy, "
+                "updatedAt = :archivedAt, "
+                "updatedBy = :archivedBy"
+            ),
+            ExpressionAttributeValues={
+                ":archivedAt": "2026-09-08T11:30:00Z",
+                ":archivedBy": "concurrent-owner",
+            },
+        )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = archive_then_write
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_empty_response(response)
+    transaction_client.transact_write_items.assert_called_once()
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored["archivedAt"] == "2026-09-08T11:30:00Z"
+    assert stored["archivedBy"] == "concurrent-owner"
+
+
+def test_persistent_concurrent_snapshot_changes_return_409_without_archive(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    real_client = app.dynamodb_client()
+    transaction_calls = 0
+
+    def change_snapshot_then_write(**request):
+        nonlocal transaction_calls
+        transaction_calls += 1
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression=(
+                "SET expiresAt = :expiresAt, "
+                "updatedAt = :updatedAt"
+            ),
+            ExpressionAttributeValues={
+                ":expiresAt": (
+                    f"2026-12-0{transaction_calls}T10:00:00Z"
+                ),
+                ":updatedAt": (
+                    f"2026-09-08T11:3{transaction_calls}:00Z"
+                ),
+            },
+        )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        change_snapshot_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout version changed; retry request"},
+    )
+    assert transaction_client.transact_write_items.call_count == 2
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert "archivedAt" not in stored
+    assert "archivedBy" not in stored
+
+
+def test_cancellation_without_reasons_retries_visible_concurrent_change(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    real_client = app.dynamodb_client()
+    transaction_calls = 0
+
+    def change_then_cancel_once(**request):
+        nonlocal transaction_calls
+        transaction_calls += 1
+        if transaction_calls == 1:
+            snapshot_table.update_item(
+                Key={"PK": target["PK"], "SK": target["SK"]},
+                UpdateExpression=(
+                    "SET expiresAt = :expiresAt, "
+                    "updatedAt = :updatedAt"
+                ),
+                ExpressionAttributeValues={
+                    ":expiresAt": "2026-12-01T10:00:00Z",
+                    ":updatedAt": "2026-09-08T11:31:00Z",
+                },
+            )
+            raise client_error(
+                "TransactionCanceledException",
+                operation="TransactWriteItems",
+            )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        change_then_cancel_once
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_empty_response(response)
+    assert transaction_client.transact_write_items.call_count == 2
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored["expiresAt"] == "2026-12-01T10:00:00Z"
+    assert stored["archivedBy"] == CALLER_SUB
+
+
+def test_committed_archive_timeout_is_reconciled_as_success(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    real_client = app.dynamodb_client()
+
+    def commit_then_timeout(**request):
+        real_client.transact_write_items(**request)
+        raise EndpointConnectionError(
+            endpoint_url="https://dynamodb.eu-north-1.amazonaws.com"
+        )
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = commit_then_timeout
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_empty_response(response)
+    transaction_client.transact_write_items.assert_called_once()
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored["archivedBy"] == CALLER_SUB
+
+
+def test_uncommitted_archive_timeout_retries_once_then_returns_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        EndpointConnectionError(
+            endpoint_url="https://dynamodb.eu-north-1.amazonaws.com"
+        )
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "layout version service unavailable"},
+    )
+    assert transaction_client.transact_write_items.call_count == 2
+    stored = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored == target
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        client_error(
+            "AccessDeniedException",
+            operation="TransactWriteItems",
+        ),
+        client_error(
+            "TransactionCanceledException",
+            operation="TransactWriteItems",
+            cancellation_reasons=[
+                {"Code": "ProvisionedThroughputExceeded"},
+                {"Code": "None"},
+            ],
+        ),
+    ],
+)
+def test_archive_transaction_failure_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    failure,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(1)
+    snapshot_table.put_item(Item=target)
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = failure
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "layout version service unavailable"},
+    )
+    assert "sensitive" not in response["body"]
+    transaction_client.transact_write_items.assert_called_once()
+    assert snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"] == target
+
+
+@pytest.mark.parametrize(
+    "read_result",
+    [
+        None,
+        {"Item": []},
+        client_error(),
+        EndpointConnectionError(
+            endpoint_url="https://dynamodb.eu-north-1.amazonaws.com"
+        ),
+    ],
+)
+def test_archive_read_failure_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    read_result,
+):
+    app, _ = app_and_table
+    snapshot_table = Mock()
+    if isinstance(read_result, BaseException):
+        snapshot_table.get_item.side_effect = read_result
+    else:
+        snapshot_table.get_item.return_value = read_result
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+    transaction_factory = Mock(
+        side_effect=AssertionError("must not transact")
+    )
+    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
+
+    response = app.handler(make_archive_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "layout version service unavailable"},
+    )
+    assert "sensitive" not in response["body"]
+    transaction_factory.assert_not_called()
 
 
 def test_missing_claims_returns_401_before_dynamodb(

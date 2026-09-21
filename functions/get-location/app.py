@@ -3,10 +3,13 @@
 TRIGGER:
     API Gateway -- GET /locations -- Auth: JWT
     API Gateway -- GET /locations/{locationId} -- Auth: JWT
+    API Gateway -- GET /locations/{locationId}/public-info -- Auth: NONE
 
 PURPOSE:
     Lists restaurant locations for owner_user/super_user callers and returns
     full detail for one location to staff_user/owner_user/super_user callers.
+    The public-info route returns only customer-facing contact, timezone, and
+    opening-hours fields and deliberately performs no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -37,6 +40,7 @@ LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
 
 _ITEM_GROUPS = ("staff_user", "owner_user", "super_user")
 _LIST_GROUPS = ("owner_user", "super_user")
+_PUBLIC_INFO_ROUTE = "GET /locations/{locationId}/public-info"
 _WEEKDAYS = (
     "monday",
     "tuesday",
@@ -59,6 +63,13 @@ _PUBLIC_REQUIRED_FIELDS = (
 )
 _OPTIONAL_AUDIT_FIELDS = ("updatedBy", "updatedAt")
 _OPTIONAL_CONTACT_FIELDS = ("email", "phoneNumber")
+_CUSTOMER_LOCATION_FIELDS = (
+    "locationId",
+    "name",
+    "address",
+    "timezone",
+    "businessHours",
+)
 _TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PHONE_NUMBER_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")
@@ -96,6 +107,11 @@ def _request_method(event):
         return ""
     method = http.get("method")
     return method.upper() if isinstance(method, str) else ""
+
+
+def _route_key(event):
+    route_key = event.get("routeKey")
+    return route_key if isinstance(route_key, str) else ""
 
 
 def _has_item_route(event):
@@ -255,6 +271,15 @@ def _public_location(item):
     return public
 
 
+def _customer_location(item):
+    public = {field: item[field] for field in _CUSTOMER_LOCATION_FIELDS}
+    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
+        public.update(
+            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
+        )
+    return public
+
+
 def _validate_stored_location(item, location_id):
     expected_key = _location_key(location_id)
     if (
@@ -348,6 +373,24 @@ def _list_locations():
         request["ExclusiveStartKey"] = last_key
 
 
+def _read_location_response(event, *, customer_facing):
+    location_id = _location_id(event)
+    item = _read_location(location_id)
+    if item is None:
+        return _location_error(
+            HTTPStatus.NOT_FOUND.value,
+            "location not found",
+        )
+    return _location_response(
+        HTTPStatus.OK.value,
+        (
+            _customer_location(item)
+            if customer_facing
+            else _public_location(item)
+        ),
+    )
+
+
 def handler(event, context):
     if _request_method(event) != "GET":
         return _location_response(
@@ -355,6 +398,19 @@ def handler(event, context):
             {"error": "method not allowed"},
             headers={"Allow": "GET"},
         )
+
+    if _route_key(event) == _PUBLIC_INFO_ROUTE:
+        try:
+            return _read_location_response(event, customer_facing=True)
+        except ValueError as exc:
+            return _location_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+        except _LocationConflict as exc:
+            return _location_error(HTTPStatus.CONFLICT.value, str(exc))
+        except (BotoCoreError, ClientError, _LocationServiceFailure):
+            return _location_error(
+                HTTPStatus.SERVICE_UNAVAILABLE.value,
+                "location service unavailable",
+            )
 
     try:
         get_claims(event)
@@ -375,17 +431,7 @@ def handler(event, context):
                 {"items": _list_locations()},
             )
 
-        location_id = _location_id(event)
-        item = _read_location(location_id)
-        if item is None:
-            return _location_error(
-                HTTPStatus.NOT_FOUND.value,
-                "location not found",
-            )
-        return _location_response(
-            HTTPStatus.OK.value,
-            _public_location(item),
-        )
+        return _read_location_response(event, customer_facing=False)
     except ValueError as exc:
         return _location_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _LocationConflict as exc:

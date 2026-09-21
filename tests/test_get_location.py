@@ -87,6 +87,7 @@ def make_event(
     method="GET",
     groups='["staff_user"]',
     location_id=LOCATION_ID,
+    route_key=None,
     sub="caller-sub",
 ):
     event = {
@@ -104,7 +105,16 @@ def make_event(
     }
     if location_id is not _UNSET:
         event["pathParameters"] = {"locationId": location_id}
+    if route_key is not None:
+        event["routeKey"] = route_key
     return event
+
+
+def public_info_event(**overrides):
+    return make_event(
+        route_key="GET /locations/{locationId}/public-info",
+        **overrides,
+    )
 
 
 @pytest.fixture
@@ -164,6 +174,111 @@ def test_missing_claims_returns_401_before_reading(
         "error": "no JWT claims on this request",
     }
     table_factory.assert_not_called()
+
+
+def test_public_info_requires_no_jwt_claims(app_and_table):
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item(include_updated=True))
+    event = public_info_event()
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 200
+
+
+def test_public_info_ignores_malformed_claims(app_and_table):
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item())
+    event = public_info_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = None
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 200
+
+
+def test_public_info_returns_only_customer_safe_fields(app_and_table):
+    app, location_table = app_and_table
+    item = location_item(include_updated=True)
+    item["unexpectedSecret"] = "must-not-leak"
+    location_table.put_item(Item=item)
+    event = public_info_event()
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {
+        "locationId": LOCATION_ID,
+        "name": item["name"],
+        "address": item["address"],
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
+        "timezone": "Europe/Stockholm",
+        "businessHours": item["businessHours"],
+    }
+
+
+def test_public_info_omits_missing_legacy_contacts(app_and_table):
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item(include_contacts=False))
+    event = public_info_event()
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+    body = json.loads(response["body"])
+
+    assert response["statusCode"] == 200
+    assert "email" not in body
+    assert "phoneNumber" not in body
+
+
+def test_public_info_missing_location_returns_404_without_claims(
+    app_and_table,
+):
+    app, _ = app_and_table
+    event = public_info_event()
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    assert json.loads(response["body"]) == {
+        "error": "location not found",
+    }
+
+
+def test_public_info_validates_path_before_reading(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    event = public_info_event(location_id=" ")
+    del event["requestContext"]["authorizer"]
+    table_factory = Mock(side_effect=AssertionError("must not read"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": "locationId is required",
+    }
+    table_factory.assert_not_called()
+
+
+def test_only_top_level_route_key_selects_the_public_branch(app_and_table):
+    app, _ = app_and_table
+    event = make_event()
+    event["requestContext"]["routeKey"] = (
+        "GET /locations/{locationId}/public-info"
+    )
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 401
 
 
 @pytest.mark.parametrize("claims", [None, [], "invalid"])

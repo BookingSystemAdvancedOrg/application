@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
@@ -22,6 +23,8 @@ TABLE_NAME = "test-published-layout-snapshot"
 LOCATION_ID = "location-id"
 OTHER_LOCATION_ID = "other-location-id"
 CALLER_SUB = "caller-sub"
+PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
+NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
 
 def make_event(
@@ -43,6 +46,19 @@ def make_event(
                 }
             },
         },
+        "pathParameters": {"locationId": location_id},
+    }
+
+
+def make_public_event(
+    *,
+    method="GET",
+    location_id=LOCATION_ID,
+    route_key=PUBLIC_ACTIVE_ROUTE,
+):
+    return {
+        "routeKey": route_key,
+        "requestContext": {"http": {"method": method}},
         "pathParameters": {"locationId": location_id},
     }
 
@@ -108,6 +124,51 @@ def floor_element(
         name=name,
         level=level,
         **overrides,
+    )
+
+
+def activation_state(version=1, **overrides):
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": "LAYOUT#ACTIVATION",
+        "recordType": "layoutActivationState",
+        "currentVersion": Decimal(str(version)),
+        "revision": Decimal("1"),
+        "updatedBy": "publisher-sub",
+        "updatedAt": "2026-09-01T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def public_active_element(item):
+    common_fields = {
+        "elementId",
+        "type",
+        "floorId",
+        "x",
+        "y",
+        "z",
+        "width",
+        "height",
+        "depth",
+        "rotationY",
+    }
+    variant_fields = {
+        "door": {"wallId"},
+        "window": {"wallId"},
+        "table": {"shape", "seats", "zone"},
+    }
+    allowed_fields = common_fields | variant_fields.get(
+        item["type"],
+        set(),
+    )
+    return json_ready(
+        {
+            field: value
+            for field, value in item.items()
+            if field in allowed_fields
+        }
     )
 
 
@@ -197,6 +258,556 @@ def app_and_table(monkeypatch):
 
         shared_dynamo._resource = None
         shared_dynamo._client = None
+
+
+def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    ground_floor = floor_element(
+        internalFloorValue="hidden",
+    )
+    upper_floor = floor_element(
+        "upper-floor",
+        name="Upper floor",
+        level=Decimal("1"),
+    )
+    wall = layout_element(
+        "wall-id",
+        floorId="ground-floor",
+        internalElementValue="hidden",
+    )
+    door = layout_element(
+        "door-id",
+        type="door",
+        floorId="ground-floor",
+        wallId="wall-id",
+    )
+    window = layout_element(
+        "window-id",
+        type="window",
+        floorId="ground-floor",
+        wallId="wall-id",
+    )
+    table_element = layout_element(
+        "table-id",
+        type="table",
+        floorId="upper-floor",
+        shape="round",
+        seats=Decimal("4"),
+        zone="window",
+    )
+    elements = [
+        ground_floor,
+        wall,
+        upper_floor,
+        door,
+        window,
+        table_element,
+    ]
+    snapshot_table.put_item(Item=activation_state(3))
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            3,
+            is_current=True,
+            elements=elements,
+            internalOnly="hidden",
+            scheduleArn="hidden",
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "floors": [
+                {
+                    "floorId": "ground-floor",
+                    "name": "Ground floor",
+                    "level": 0,
+                },
+                {
+                    "floorId": "upper-floor",
+                    "name": "Upper floor",
+                    "level": 1,
+                },
+            ],
+            "elements": [
+                public_active_element(element)
+                for element in [wall, door, window, table_element]
+            ],
+        },
+    )
+    body = response_body(response)
+    serialized = json.dumps(body)
+    for private_field in (
+        "PK",
+        "SK",
+        "version",
+        "label",
+        "isCurrent",
+        "effectiveFrom",
+        "effectiveTo",
+        "expiresAt",
+        "validPositions",
+        "createdBy",
+        "createdAt",
+        "updatedBy",
+        "updatedAt",
+        "internalOnly",
+        "scheduleArn",
+        "internalFloorValue",
+        "internalElementValue",
+    ):
+        assert private_field not in serialized
+
+
+def test_public_active_layout_supports_legacy_flat_snapshot(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    wall = layout_element("legacy-wall")
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[wall])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {"floors": [], "elements": [public_active_element(wall)]},
+    )
+
+
+def test_public_active_layout_supports_empty_snapshot(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(response, 200, {"floors": [], "elements": []})
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        make_public_event(
+            route_key="GET /locations/{locationId}/layout/active/",
+        ),
+        {
+            "requestContext": {
+                "routeKey": PUBLIC_ACTIVE_ROUTE,
+                "http": {"method": "GET"},
+            },
+            "pathParameters": {"locationId": LOCATION_ID},
+        },
+    ],
+)
+def test_only_exact_top_level_route_key_bypasses_authentication(
+    app_and_table,
+    monkeypatch,
+    event,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "no JWT claims on this request"},
+    )
+    table_factory.assert_not_called()
+
+
+def test_public_active_wrong_method_returns_405_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_public_event(method="POST"), None)
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "GET"
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("location_id", [None, "", "   ", "x" * 129])
+def test_public_active_invalid_location_returns_400_before_dynamodb(
+    app_and_table,
+    monkeypatch,
+    location_id,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_public_event(location_id=location_id),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    table_factory.assert_not_called()
+
+
+def test_public_active_missing_activation_state_returns_404(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(response, 404, {"error": "active layout not found"})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PK", "LOCATION#wrong"),
+        ("SK", "LAYOUT#wrong"),
+        ("recordType", "wrong"),
+        ("currentVersion", None),
+        ("currentVersion", Decimal("0")),
+        ("currentVersion", Decimal("1.5")),
+        ("currentVersion", True),
+        ("revision", Decimal("0")),
+        ("revision", Decimal("1.5")),
+        ("updatedBy", ""),
+        ("updatedAt", "not-a-time"),
+    ],
+)
+def test_public_active_corrupt_activation_state_returns_409(
+    app_and_table,
+    monkeypatch,
+    field,
+    value,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    corrupt = activation_state()
+    corrupt[field] = value
+    snapshot_table = Mock()
+    snapshot_table.get_item.return_value = {"Item": corrupt}
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_public_active_missing_referenced_snapshot_returns_409(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        snapshot_item(1, is_current=False),
+        snapshot_item(
+            1,
+            is_current=True,
+            effectiveFrom="2026-09-09T12:00:00Z",
+        ),
+        snapshot_item(
+            1,
+            is_current=True,
+            effectiveTo="2026-09-08T12:00:00Z",
+        ),
+        snapshot_item(
+            1,
+            is_current=True,
+            expiresAt="2026-09-08T12:00:00Z",
+        ),
+        snapshot_item(1, is_current=True, label=""),
+        snapshot_item(1, is_current=True, validPositions=[{}]),
+    ],
+)
+def test_public_active_inconsistent_snapshot_returns_409(
+    app_and_table,
+    monkeypatch,
+    snapshot,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(Item=snapshot)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_public_active_uses_state_pointer_not_pending_snapshot(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    current_wall = layout_element("current-wall")
+    pending_wall = layout_element("pending-wall")
+    snapshot_table.put_item(Item=activation_state(1))
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            elements=[current_wall],
+        )
+    )
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            2,
+            is_current=False,
+            effectiveFrom="2026-10-01T10:00:00Z",
+            elements=[pending_wall],
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "floors": [],
+            "elements": [public_active_element(current_wall)],
+        },
+    )
+
+
+def test_public_active_reads_state_and_snapshot_strongly_consistently(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    state = activation_state()
+    snapshot = snapshot_item(1, is_current=True)
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state},
+        {"Item": snapshot},
+        {"Item": state},
+    ]
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(response, 200, {"floors": [], "elements": []})
+    assert snapshot_table.get_item.call_count == 3
+    expected_keys = [
+        {
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": "LAYOUT#ACTIVATION",
+        },
+        {
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": "LAYOUT#v1",
+        },
+        {
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": "LAYOUT#ACTIVATION",
+        },
+    ]
+    for call, expected_key in zip(
+        snapshot_table.get_item.call_args_list,
+        expected_keys,
+    ):
+        assert call.kwargs == {
+            "Key": expected_key,
+            "ConsistentRead": True,
+        }
+
+
+def test_public_active_retries_once_when_state_version_changes(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    state_one = activation_state(1)
+    state_two = activation_state(2, revision=Decimal("2"))
+    stale_snapshot = snapshot_item(
+        1,
+        is_current=True,
+        elements=[layout_element("stale-wall")],
+    )
+    current_wall = layout_element("current-wall")
+    current_snapshot = snapshot_item(
+        2,
+        is_current=True,
+        elements=[current_wall],
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": stale_snapshot},
+        {"Item": state_two},
+        {"Item": state_two},
+        {"Item": current_snapshot},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "floors": [],
+            "elements": [public_active_element(current_wall)],
+        },
+    )
+    assert snapshot_table.get_item.call_count == 6
+
+
+def test_public_active_rejects_persistent_state_version_race(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    state_one = activation_state(1)
+    state_two = activation_state(2, revision=Decimal("2"))
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": snapshot_item(1, is_current=True)},
+        {"Item": state_two},
+        {"Item": state_two},
+        {"Item": snapshot_item(2, is_current=True)},
+        {"Item": state_one},
+    ]
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "active layout changed; retry request"},
+    )
+    assert snapshot_table.get_item.call_count == 6
+
+
+@pytest.mark.parametrize(
+    "get_response",
+    [None, {"Item": []}],
+)
+def test_public_active_malformed_state_read_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    get_response,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table = Mock()
+    snapshot_table.get_item.return_value = get_response
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "active layout service unavailable"},
+    )
+
+
+def test_public_active_malformed_snapshot_read_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": activation_state()},
+        {"Item": []},
+    ]
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "active layout service unavailable"},
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        client_error(),
+        EndpointConnectionError(
+            endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+        ),
+    ],
+)
+def test_public_active_dependency_failure_returns_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    failure,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = failure
+    monkeypatch.setattr(app, "table", lambda _name: snapshot_table)
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "active layout service unavailable"},
+    )
+    assert "sensitive" not in response["body"]
 
 
 def test_missing_claims_returns_401_before_dynamodb(

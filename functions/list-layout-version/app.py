@@ -2,10 +2,13 @@
 
 TRIGGER:
     API Gateway -- GET /locations/{locationId}/layout/versions -- Auth: JWT
+    API Gateway -- GET /locations/{locationId}/layout/active -- Auth: NONE
 
 PURPOSE:
     Lists the published layout snapshots for one location so an authorized
-    internal user can inspect versions before selecting one to activate.
+    internal user can inspect versions before selecting one to activate. The
+    public active-layout route returns only customer-facing floor metadata and
+    renderable elements, and deliberately performs no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -35,6 +38,9 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
 ]
 
 _ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
+_PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
+_ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
+_ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
 _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
@@ -66,6 +72,16 @@ _PUBLIC_SNAPSHOT_FIELDS = (
     "createdAt",
     "updatedBy",
     "updatedAt",
+)
+_CUSTOMER_ELEMENT_FIELDS = (
+    "elementId",
+    "type",
+    *_GEOMETRY_FIELDS,
+    "floorId",
+    "shape",
+    "seats",
+    "zone",
+    "wallId",
 )
 
 
@@ -103,6 +119,11 @@ def _request_method(event):
 
     method = http.get("method")
     return method.upper() if isinstance(method, str) else ""
+
+
+def _route_key(event):
+    route_key = event.get("routeKey")
+    return route_key if isinstance(route_key, str) else ""
 
 
 def _location_id(event):
@@ -174,6 +195,10 @@ def _utc_timestamp(source, field, *, nullable=False):
     if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         raise ValueError
     return value
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
 
 
 def _public_element(item):
@@ -415,7 +440,193 @@ def _list_versions(location_id):
     )
 
 
+def _activation_state_key(location_id):
+    return {
+        "PK": f"LOCATION#{location_id}",
+        "SK": _ACTIVATION_STATE_SK,
+    }
+
+
+def _read_snapshot_item(snapshot_table, key):
+    response = snapshot_table.get_item(Key=key, ConsistentRead=True)
+    if not isinstance(response, dict):
+        raise _SnapshotServiceFailure
+
+    item = response.get("Item")
+    if item is not None and not isinstance(item, dict):
+        raise _SnapshotServiceFailure
+    return item
+
+
+def _validate_activation_state(state, location_id):
+    if (
+        state.get("PK") != f"LOCATION#{location_id}"
+        or state.get("SK") != _ACTIVATION_STATE_SK
+        or state.get("recordType") != _ACTIVATION_STATE_TYPE
+    ):
+        raise _SnapshotConflict("layout activation state is inconsistent")
+
+    try:
+        current_version = _canonical_number(
+            state,
+            "currentVersion",
+            positive=True,
+            integer=True,
+        )
+        _canonical_number(
+            state,
+            "revision",
+            positive=True,
+            integer=True,
+        )
+        _required_string(state, "updatedBy")
+        _utc_timestamp(state, "updatedAt")
+    except (OverflowError, TypeError, ValueError):
+        raise _SnapshotConflict(
+            "layout activation state is inconsistent"
+        ) from None
+    return int(current_version)
+
+
+def _validated_active_snapshot(snapshot, location_id, version, now):
+    public_snapshot = _public_snapshot(snapshot, location_id)
+    try:
+        effective_from = datetime.fromisoformat(
+            public_snapshot["effectiveFrom"].replace("Z", "+00:00")
+        )
+        effective_to = public_snapshot["effectiveTo"]
+        if effective_to is not None:
+            effective_to = datetime.fromisoformat(
+                effective_to.replace("Z", "+00:00")
+            )
+        expires_at = public_snapshot["expiresAt"]
+        if expires_at is not None:
+            expires_at = datetime.fromisoformat(
+                expires_at.replace("Z", "+00:00")
+            )
+
+        if (
+            public_snapshot["version"] != version
+            or public_snapshot["isCurrent"] is not True
+            or effective_from > now
+            or effective_to is not None
+            and effective_to <= now
+            or expires_at is not None
+            and expires_at <= now
+        ):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        raise _SnapshotConflict(
+            "published layout record is inconsistent"
+        ) from None
+    return public_snapshot
+
+
+def _read_active_snapshot(location_id, now):
+    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
+    state_key = _activation_state_key(location_id)
+
+    for attempt in range(2):
+        state = _read_snapshot_item(snapshot_table, state_key)
+        if state is None:
+            return None
+        version = _validate_activation_state(state, location_id)
+
+        snapshot = _read_snapshot_item(
+            snapshot_table,
+            {
+                "PK": f"LOCATION#{location_id}",
+                "SK": f"{_SNAPSHOT_PREFIX}{version}",
+            },
+        )
+        if snapshot is None:
+            raise _SnapshotConflict(
+                "published layout record is inconsistent"
+            )
+
+        confirmed_state = _read_snapshot_item(snapshot_table, state_key)
+        if confirmed_state is None:
+            raise _SnapshotConflict(
+                "layout activation state is inconsistent"
+            )
+        confirmed_version = _validate_activation_state(
+            confirmed_state,
+            location_id,
+        )
+        if confirmed_version != version:
+            if attempt == 0:
+                continue
+            raise _SnapshotConflict("active layout changed; retry request")
+
+        return _validated_active_snapshot(
+            snapshot,
+            location_id,
+            version,
+            now,
+        )
+
+    raise _SnapshotConflict("active layout changed; retry request")
+
+
+def _customer_layout(snapshot):
+    floors = []
+    elements = []
+    for element in snapshot["elements"]:
+        if element["type"] == "floor":
+            floors.append(
+                {
+                    "floorId": element["elementId"],
+                    "name": element["name"],
+                    "level": element["level"],
+                }
+            )
+            continue
+
+        elements.append(
+            {
+                field: element[field]
+                for field in _CUSTOMER_ELEMENT_FIELDS
+                if field in element
+            }
+        )
+    return {"floors": floors, "elements": elements}
+
+
+def _get_active_layout(event):
+    if _request_method(event) != "GET":
+        return _version_response(
+            HTTPStatus.METHOD_NOT_ALLOWED.value,
+            {"error": "method not allowed"},
+            headers={"Allow": "GET"},
+        )
+
+    try:
+        location_id = _location_id(event)
+        snapshot = _read_active_snapshot(location_id, _utc_now())
+        if snapshot is None:
+            return _version_error(
+                HTTPStatus.NOT_FOUND.value,
+                "active layout not found",
+            )
+        return _version_response(
+            HTTPStatus.OK.value,
+            _customer_layout(snapshot),
+        )
+    except ValueError as exc:
+        return _version_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except _SnapshotConflict as exc:
+        return _version_error(HTTPStatus.CONFLICT.value, str(exc))
+    except (BotoCoreError, ClientError, _SnapshotServiceFailure):
+        return _version_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "active layout service unavailable",
+        )
+
+
 def handler(event, context):
+    if _route_key(event) == _PUBLIC_ACTIVE_ROUTE:
+        return _get_active_layout(event)
+
     try:
         get_claims(event)
         get_sub(event)

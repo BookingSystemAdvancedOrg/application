@@ -32,6 +32,9 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/layout/publish": frozenset({"post"}),
     "/locations/{locationId}/layout/active": frozenset({"get"}),
     "/locations/{locationId}/layout/versions": frozenset({"get"}),
+    "/locations/{locationId}/layout/versions/{versionId}": frozenset(
+        {"delete"}
+    ),
     "/locations/{locationId}/layout/versions/{versionId}/activate": (
         frozenset({"post"})
     ),
@@ -705,6 +708,14 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert operation["responses"]["503"] == {
         "$ref": "#/components/responses/LayoutActivationServiceUnavailable"
     }
+    activation_conflict = document["components"]["responses"][
+        "LayoutActivationConflict"
+    ]
+    assert activation_conflict["content"]["application/json"][
+        "examples"
+    ]["archived"]["value"] == {
+        "error": "archived layout version cannot be activated"
+    }
 
     version_parameter = document["components"]["parameters"][
         "LayoutVersionId"
@@ -729,6 +740,57 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
 
     assert active["properties"]["status"]["enum"] == ["active"]
     assert pending["properties"]["status"]["enum"] == ["pending"]
+
+
+def test_archive_layout_version_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    path_item = document["paths"][
+        "/locations/{locationId}/layout/versions/{versionId}"
+    ]
+    operation = path_item["delete"]
+
+    assert path_item["parameters"] == [
+        {"$ref": "#/components/parameters/LayoutLocationId"},
+        {"$ref": "#/components/parameters/LayoutVersionId"},
+    ]
+    assert "requestBody" not in operation
+    assert operation["operationId"] == "archiveLayoutVersion"
+    assert operation["security"] == BEARER_SECURITY
+    assert operation["x-required-groups"] == ADMIN_GROUPS
+    description = operation["description"].lower()
+    assert "soft-archives" in description
+    assert "current or pending" in description
+    assert set(operation["responses"]) == {
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert "content" not in operation["responses"]["204"]
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/LayoutVersionNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/LayoutVersionArchiveConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/LayoutVersionServiceUnavailable"
+    }
+
+    conflict = document["components"]["responses"][
+        "LayoutVersionArchiveConflict"
+    ]
+    examples = conflict["content"]["application/json"]["examples"]
+    assert examples["current"]["value"] == {
+        "error": "current layout version cannot be archived"
+    }
+    assert examples["pending"]["value"] == {
+        "error": "pending layout version cannot be archived"
+    }
 
 
 def test_menu_image_upload_contract_uses_cloudfront_key_prefix(

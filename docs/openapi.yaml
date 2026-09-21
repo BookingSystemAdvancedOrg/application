@@ -1753,12 +1753,13 @@ paths:
       summary: List published layout versions
       operationId: listLayoutVersions
       description: |
-        Returns every published layout snapshot for the requested location,
-        ordered by numeric version from newest to oldest. Each item contains
-        the complete logical snapshot so a staff client can inspect it before
-        choosing a version to activate. A multi-floor version contains its
-        floors and all `floorId`-linked elements in that one snapshot. DynamoDB
-        keys and internal scheduler metadata are never returned.
+        Returns every unarchived published layout snapshot for the requested
+        location, ordered by numeric version from newest to oldest. Each item
+        contains the complete logical snapshot so a staff client can inspect
+        it before choosing a version to activate. A multi-floor version
+        contains its floors and all `floorId`-linked elements in that one
+        snapshot. Soft-archived versions, DynamoDB keys, archive audit fields,
+        and internal scheduler metadata are never returned.
 
         The Lambda follows every DynamoDB query page. An unknown location, or
         a location with no published snapshots, returns `200` with an empty
@@ -1837,6 +1838,66 @@ paths:
         '503':
           $ref: '#/components/responses/LayoutVersionServiceUnavailable'
 
+  /locations/{locationId}/layout/versions/{versionId}:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+      - $ref: '#/components/parameters/LayoutVersionId'
+    delete:
+      tags:
+        - Layout
+      summary: Archive a published layout version
+      operationId: archiveLayoutVersion
+      description: |
+        Soft-archives an inactive published layout version. The immutable
+        snapshot remains in storage for history and version numbering, but it
+        is omitted from version lists and can no longer be activated. Repeating
+        the request for an already archived version is an idempotent success.
+
+        The current or pending layout version cannot be archived and returns
+        `409`. A concurrent activation or snapshot change also returns `409`
+        without partially updating state. The request has no body, and a
+        successful response has no body.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: The version was archived or was already archived. The response body is empty.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LayoutVersionNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than DELETE.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - DELETE
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/LayoutVersionArchiveConflict'
+        '503':
+          $ref: '#/components/responses/LayoutVersionServiceUnavailable'
+
   /locations/{locationId}/layout/versions/{versionId}/activate:
     parameters:
       - $ref: '#/components/parameters/LayoutLocationId'
@@ -1856,7 +1917,8 @@ paths:
         is pending with a future `effectiveFrom`, while the current version has
         `effectiveTo` and `expiresAt` equal to `cutoverAt`. Repeating the active
         or pending request is idempotent. Requesting another version while a
-        cutover is pending returns `409`. The request has no body.
+        cutover is pending returns `409`. Archived versions cannot be activated
+        and also return `409`. The request has no body.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -4227,8 +4289,8 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: active layout service unavailable
-    LayoutActivationConflict:
-      description: The activation state is inconsistent, pending, or changed concurrently.
+    LayoutVersionArchiveConflict:
+      description: The version is current, pending, inconsistent, or changed concurrently.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4237,6 +4299,40 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           examples:
+            current:
+              summary: The requested version is currently active.
+              value:
+                error: current layout version cannot be archived
+            pending:
+              summary: The requested version is awaiting activation.
+              value:
+                error: pending layout version cannot be archived
+            snapshot:
+              summary: The published snapshot is malformed.
+              value:
+                error: published layout record is inconsistent
+            state:
+              summary: The stored activation state is malformed.
+              value:
+                error: layout activation state is inconsistent
+            concurrent:
+              summary: Protected state changed during the archive request.
+              value:
+                error: layout version changed; retry request
+    LayoutActivationConflict:
+      description: The version is archived, or activation state is inconsistent, pending, or changed concurrently.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            archived:
+              summary: The requested version was archived.
+              value:
+                error: archived layout version cannot be activated
             pending:
               summary: Another target is already pending.
               value:

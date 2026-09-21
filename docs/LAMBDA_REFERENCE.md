@@ -8,14 +8,13 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 
 ## Conventions that apply across all functions
 
-**Trigger types.** Every function is invoked one of four ways:
+**Trigger types.** Every function is invoked one of three ways:
 
 | Trigger | Functions | Event shape |
 |---|---|---|
-| API Gateway (HTTP API v2, Lambda proxy integration) | 17 functions | API Gateway v2 payload — see below |
+| API Gateway (HTTP API v2, Lambda proxy integration) | 18 functions | API Gateway v2 payload — see below |
 | DynamoDB Stream | `notification` | Stream record batch — see its section |
 | EventBridge Scheduler (one-time) | `no-show-check`, `expire-layout-version` | Plain JSON dict, whatever was passed as `Input` when the schedule was created |
-| Lambda Function URL (public, no API Gateway) | `stripe-webhook` | Same payload shape as API Gateway v2, but no `authorizer` block |
 
 **API Gateway event shape.** For all API-Gateway-triggered functions, regardless of route method, the Lambda always receives an API Gateway v2 (HTTP API) proxy event:
 - `event["requestContext"]["http"]["method"]` / `event["requestContext"]["http"]["path"]`
@@ -47,7 +46,7 @@ pending → reserved → arrived
 
 **Logging.** Every function can write to its own CloudWatch log group — not listed per-function below since it's not relevant to application logic.
 
-**Known gap — Stripe keys not yet wired.** `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_API_VERSION` exist as root Terraform variables (dev/prod values already in GitHub Secrets) but are **not yet added to any Lambda's environment block**. `stripe-webhook`, `create-pending-reservation`, and possibly `no-show-check` will need some subset of these once you start implementing Stripe calls. Flag this to whoever owns the infra repo before you get there — don't assume the env var will just appear.
+**Stripe configuration status.** Infrastructure now injects `STRIPE_SECRET_KEY` into `create-pending-reservation` and `cancel-reservation`, and injects the Terraform-created endpoint secret as `STRIPE_WEBHOOK_SECRET` into `stripe-webhook`. Those application handlers are still implementation stubs and do not consume the values yet. `no-show-check` still needs `STRIPE_SECRET_KEY` added before its off-session charge logic can be implemented. A Stripe publishable key belongs in frontend configuration rather than being returned as a Lambda secret.
 
 ---
 
@@ -278,7 +277,7 @@ service.
 
 ### 6. `create-pending-reservation`
 **Trigger:** API Gateway — `POST /reservations` — Auth: `NONE`
-**Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the front-end can collect card details — see the Stripe keys gap noted above; you'll need `STRIPE_SECRET_KEY` added here to call Stripe, and likely want to return `STRIPE_PUBLISHABLE_KEY` in the response for the front-end to confirm the SetupIntent client-side.
+**Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the frontend can confirm it with Stripe.js. Infrastructure supplies the server-side `STRIPE_SECRET_KEY`; the publishable key should come from frontend environment configuration.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -288,6 +287,7 @@ service.
 | `SLOT_OCCUPANCY_TABLE_NAME` | Write the new hold here |
 | `RESERVATION_TABLE_NAME` | Write the new `pending` reservation here |
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Check for existing unpaid debt by phone number before allowing the booking |
+| `STRIPE_SECRET_KEY` | Create the card-on-file SetupIntent server-side |
 
 **AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables.
 
@@ -715,7 +715,7 @@ The function has no Location-table access, so it validates the shape of an assig
 ## Payments & Background Jobs
 
 ### 18. `stripe-webhook`
-**Trigger:** **Lambda Function URL** — public HTTPS endpoint called directly by Stripe, **not** API Gateway, **not** JWT-protected. Auth/trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET` (see the Stripe keys gap above — this env var still needs to be added). Event payload shape is the same as API Gateway v2 (`event["body"]` is the raw JSON Stripe sends, `event["headers"]["stripe-signature"]`), but there is no `requestContext.authorizer` block since there's no Cognito involved.
+**Trigger:** API Gateway — `POST /webhooks/stripe/reservation` — Auth: `NONE`. Stripe calls this route directly. Trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET`; the absence of Cognito authentication does not make an unverified payload trustworthy. API Gateway delivers its HTTP API v2 proxy event with the raw JSON in `event["body"]` and the signature in `event["headers"]["stripe-signature"]`.
 **Purpose:** Receives Stripe webhook events. The two events you need to handle at minimum:
 - `setup_intent.succeeded` — the customer's card-on-file setup for a pending reservation completed. Transition the matching Reservation from `pending` → `reserved` (this is what fires the booking-confirmed notification, see `notification` below), then create a one-time EventBridge Scheduler schedule targeting `no-show-check` for that reservation's no-show check time.
 - Any event related to an off-session charge outcome you trigger elsewhere (e.g. from `no-show-check`) — used to reconcile final reservation/payment state if you're not handling that synchronously.
@@ -729,8 +729,9 @@ The function has no Location-table access, so it validates the shape of an assig
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Full access — write debt records here if a charge triggered from this function fails |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as the `RoleArn` — this is the role EventBridge Scheduler assumes to invoke `no-show-check` on your behalf |
 | `NO_SHOW_CHECK_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
+| `STRIPE_WEBHOOK_SECRET` | Verify the reservation endpoint's `Stripe-Signature`; supplied from the Terraform-managed Stripe endpoint |
 
-*(Still needed once you implement Stripe API calls here: `STRIPE_SECRET_KEY` to call Stripe, `STRIPE_WEBHOOK_SECRET` to verify the signature — not yet in this function's Terraform env block, see gap note at top.)*
+The handler must reject missing or invalid signatures before parsing or acting on the event. This requirement applies even though API Gateway intentionally uses `NONE` auth for Stripe compatibility.
 
 **AWS resource access:** Read-only on Location; full `dynamodb:*` on Reservation and Payment Delinquency. `scheduler:CreateSchedule` (scoped to schedule names matching `no-show-check-*` in the `default` group) and `iam:PassRole` on the scheduler invoke role.
 
@@ -856,7 +857,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
 | 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |
-| 18 | `stripe-webhook` | Lambda Function URL (public, Stripe-signed) | Stripe signature, not JWT |
+| 18 | `stripe-webhook` | API GW `POST /webhooks/stripe/reservation` | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |
 | 21 | `pre-signed-url` | API GW `GET /menu-images/presigned-url` | JWT |

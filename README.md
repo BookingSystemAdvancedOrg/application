@@ -9,7 +9,7 @@ ECR repository, defined in the separate `infrastructure` repo.
 **`docs/LAMBDA_REFERENCE.md`** is the single source of truth for what every
 function should do, which AWS resources it can access, what environment
 variables it has, and how it's invoked (API Gateway route, DynamoDB Stream,
-EventBridge Scheduler, or Function URL). You should be able to implement any
+or EventBridge Scheduler). You should be able to implement any
 function from that document alone, without needing to read the Terraform in
 the `infrastructure` repo.
 

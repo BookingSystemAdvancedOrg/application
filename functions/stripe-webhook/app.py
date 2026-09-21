@@ -1,9 +1,9 @@
 """stripe-webhook
 
 TRIGGER:
-    Lambda Function URL - public HTTPS endpoint called directly by Stripe,
-    NOT API Gateway, NOT JWT-protected. Trust comes from verifying the
-    Stripe-Signature header against STRIPE_WEBHOOK_SECRET.
+    API Gateway -- POST /webhooks/stripe/reservation -- Auth: NONE.
+    Trust comes from verifying the Stripe-Signature header against
+    STRIPE_WEBHOOK_SECRET inside this handler.
 
 PURPOSE:
     Receives Stripe webhook events. Minimum to handle: setup_intent.succeeded
@@ -19,6 +19,7 @@ ENV_VARS:
     PAYMENT_DELINQUENCY_TABLE_NAME -- Full access - write debt records if a charge triggered here fails
     SCHEDULER_INVOKE_ROLE_ARN -- RoleArn to pass to scheduler.create_schedule() - the role EventBridge Scheduler assumes to invoke no-show-check
     NO_SHOW_CHECK_FUNCTION_ARN -- Target Lambda ARN for the schedule's Target.Arn
+    STRIPE_WEBHOOK_SECRET -- Verify the reservation webhook signature
 
 AWS RESOURCE ACCESS:
     Read-only on Location; full dynamodb:* on Reservation and Payment
@@ -27,10 +28,10 @@ AWS RESOURCE ACCESS:
     role.
 
 NOTES:
-    STILL NEEDED, not yet wired into Terraform: STRIPE_SECRET_KEY (call
-    Stripe), STRIPE_WEBHOOK_SECRET (verify signature) - flag to the infra
-    owner. See LAMBDA_REFERENCE.md for the exact scheduler.create_schedule()
-    call to make once setup_intent.succeeded fires.
+    STRIPE_WEBHOOK_SECRET is supplied by Terraform from the Stripe endpoint.
+    Signature verification must happen before parsing or trusting the body.
+    See LAMBDA_REFERENCE.md for the exact scheduler.create_schedule() call to
+    make once setup_intent.succeeded fires.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -44,6 +45,7 @@ RESERVATION_TABLE_NAME = os.environ["RESERVATION_TABLE_NAME"]
 PAYMENT_DELINQUENCY_TABLE_NAME = os.environ["PAYMENT_DELINQUENCY_TABLE_NAME"]
 SCHEDULER_INVOKE_ROLE_ARN = os.environ["SCHEDULER_INVOKE_ROLE_ARN"]
 NO_SHOW_CHECK_FUNCTION_ARN = os.environ["NO_SHOW_CHECK_FUNCTION_ARN"]
+STRIPE_WEBHOOK_SECRET = os.environ["STRIPE_WEBHOOK_SECRET"]
 
 
 def handler(event, context):

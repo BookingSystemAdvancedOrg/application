@@ -581,6 +581,31 @@ def test_public_active_inconsistent_snapshot_returns_409(
     )
 
 
+def test_public_active_rejects_archived_snapshot(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            archivedAt="2026-09-08T11:00:00Z",
+            archivedBy="owner-sub",
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
 def test_public_active_uses_state_pointer_not_pending_snapshot(
     app_and_table,
     monkeypatch,
@@ -934,6 +959,70 @@ def test_lists_only_requested_location_newest_version_first(app_and_table):
     assert all(
         "PK" not in item and "SK" not in item
         for item in response_body(response)["items"]
+    )
+
+
+def test_list_omits_archived_snapshots(app_and_table):
+    app, snapshot_table = app_and_table
+    visible = snapshot_item(1)
+    archived = snapshot_item(
+        2,
+        archivedAt="2026-09-08T11:00:00Z",
+        archivedBy="owner-sub",
+    )
+    snapshot_table.put_item(Item=visible)
+    snapshot_table.put_item(Item=archived)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"items": [public_snapshot(visible)]})
+    assert "archivedAt" not in response["body"]
+    assert "archivedBy" not in response["body"]
+
+
+def test_list_keeps_legacy_snapshot_without_archive_metadata(app_and_table):
+    app, snapshot_table = app_and_table
+    legacy = snapshot_item(1)
+    assert "archivedAt" not in legacy
+    assert "archivedBy" not in legacy
+    snapshot_table.put_item(Item=legacy)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"items": [public_snapshot(legacy)]})
+
+
+@pytest.mark.parametrize(
+    "archive_metadata",
+    [
+        {"archivedAt": "2026-09-08T11:00:00Z"},
+        {"archivedBy": "owner-sub"},
+        {"archivedAt": None, "archivedBy": "owner-sub"},
+        {"archivedAt": "not-a-time", "archivedBy": "owner-sub"},
+        {
+            "archivedAt": "2026-09-08T13:00:00+02:00",
+            "archivedBy": "owner-sub",
+        },
+        {"archivedAt": "2026-09-08T11:00:00Z", "archivedBy": ""},
+    ],
+)
+def test_corrupt_archive_metadata_returns_409(
+    app_and_table,
+    monkeypatch,
+    archive_metadata,
+):
+    app, _ = app_and_table
+    corrupt = snapshot_item(1, **archive_metadata)
+    query_table = Mock()
+    query_table.query.return_value = {"Items": [corrupt]}
+    monkeypatch.setattr(app, "table", lambda _name: query_table)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
     )
 
 

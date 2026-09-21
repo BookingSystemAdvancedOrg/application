@@ -72,6 +72,7 @@ _PENDING_FIELDS = frozenset(
     }
 )
 _PENDING_FIELDS_WITHOUT_ARN = _PENDING_FIELDS - {"scheduleArn"}
+_ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "PK",
@@ -155,6 +156,32 @@ def _parse_utc_timestamp(value, field, *, nullable=False):
     ):
         raise ValueError(f"{field} is invalid")
     return parsed
+
+
+def _archive_metadata(snapshot):
+    present_fields = set(snapshot) & _ARCHIVE_FIELDS
+    if not present_fields:
+        return None
+    if present_fields != _ARCHIVE_FIELDS:
+        raise _CutoverConflict(
+            "published layout record is inconsistent"
+        )
+
+    try:
+        return {
+            "archivedBy": _required_string(
+                snapshot.get("archivedBy"),
+                "archivedBy",
+            ),
+            "archivedAt": _parse_utc_timestamp(
+                snapshot.get("archivedAt"),
+                "archivedAt",
+            ),
+        }
+    except ValueError as exc:
+        raise _CutoverConflict(
+            "published layout record is inconsistent"
+        ) from exc
 
 
 def _version_from_sort_key(value, field):
@@ -434,6 +461,7 @@ def _validate_snapshot(snapshot, details, *, target):
         _parse_utc_timestamp(snapshot.get("createdAt"), "createdAt")
         _required_string(snapshot.get("updatedBy"), "updatedBy")
         _parse_utc_timestamp(snapshot.get("updatedAt"), "updatedAt")
+        _archive_metadata(snapshot)
     except ValueError as exc:
         raise _CutoverConflict(
             "published layout record is inconsistent"
@@ -444,7 +472,9 @@ def _validate_snapshot(snapshot, details, *, target):
 def _validate_pending_lifecycle(outgoing, target, state_details, details):
     pending = state_details["pending"]
     if (
-        state_details["currentVersion"] != details["outgoingVersion"]
+        _archive_metadata(outgoing) is not None
+        or _archive_metadata(target) is not None
+        or state_details["currentVersion"] != details["outgoingVersion"]
         or pending["version"] != details["targetVersion"]
         or outgoing["isCurrent"] is not True
         or target["isCurrent"] is not False
@@ -502,6 +532,8 @@ def _snapshot_update(
         "#expiresAt": "expiresAt",
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
+        "#archivedAt": "archivedAt",
+        "#archivedBy": "archivedBy",
     }
     values = _typed_map(
         {
@@ -538,7 +570,9 @@ def _snapshot_update(
                 "AND #isCurrent = :expectedCurrent "
                 "AND #effectiveFrom = :expectedEffectiveFrom "
                 "AND #effectiveTo = :expectedEffectiveTo "
-                "AND #expiresAt = :expectedExpiresAt"
+                "AND #expiresAt = :expectedExpiresAt "
+                "AND attribute_not_exists(#archivedAt) "
+                "AND attribute_not_exists(#archivedBy)"
             ),
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": values,

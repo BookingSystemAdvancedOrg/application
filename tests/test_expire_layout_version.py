@@ -736,6 +736,101 @@ def test_snapshot_or_lifecycle_corruption_fails_without_transaction(
     transaction_client.assert_not_called()
 
 
+@pytest.mark.parametrize("record", ["outgoing", "target"])
+def test_archived_snapshot_makes_cutover_state_inconsistent(
+    app_and_table,
+    monkeypatch,
+    record,
+):
+    app, snapshot_table = app_and_table
+    outgoing = outgoing_snapshot()
+    target = target_snapshot()
+    state = pending_state(app)
+    selected = outgoing if record == "outgoing" else target
+    selected.update(
+        {
+            "archivedAt": "2026-09-08T11:00:00Z",
+            "archivedBy": "archiver-sub",
+        }
+    )
+    originals = [copy.deepcopy(item) for item in (outgoing, target, state)]
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    transaction_client = Mock(
+        side_effect=AssertionError("must not write DynamoDB")
+    )
+    monkeypatch.setattr(app, "dynamodb_client", transaction_client)
+
+    with pytest.raises(
+        app._CutoverConflict,
+        match="layout cutover state is inconsistent",
+    ):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.assert_not_called()
+    for original in originals:
+        stored = snapshot_table.get_item(
+            Key={"PK": original["PK"], "SK": original["SK"]}
+        )["Item"]
+        assert stored == original
+
+
+@pytest.mark.parametrize("record", ["outgoing", "target"])
+@pytest.mark.parametrize(
+    "archive_metadata",
+    [
+        {"archivedAt": "2026-09-08T11:00:00Z"},
+        {"archivedBy": "archiver-sub"},
+        {
+            "archivedAt": None,
+            "archivedBy": "archiver-sub",
+        },
+        {
+            "archivedAt": "2026-09-08T13:00:00+02:00",
+            "archivedBy": "archiver-sub",
+        },
+        {
+            "archivedAt": " 2026-09-08T11:00:00Z",
+            "archivedBy": "archiver-sub",
+        },
+        {
+            "archivedAt": "2026-09-08T11:00:00Z",
+            "archivedBy": " archiver-sub",
+        },
+        {
+            "archivedAt": "2026-09-08T11:00:00Z",
+            "archivedBy": "a" * 129,
+        },
+    ],
+)
+def test_malformed_archive_metadata_fails_without_transaction(
+    app_and_table,
+    monkeypatch,
+    record,
+    archive_metadata,
+):
+    app, snapshot_table = app_and_table
+    outgoing = outgoing_snapshot()
+    target = target_snapshot()
+    state = pending_state(app)
+    selected = outgoing if record == "outgoing" else target
+    selected.update(archive_metadata)
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    transaction_client = Mock(
+        side_effect=AssertionError("must not write DynamoDB")
+    )
+    monkeypatch.setattr(app, "dynamodb_client", transaction_client)
+
+    with pytest.raises(
+        app._CutoverConflict,
+        match="published layout record is inconsistent",
+    ):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "response",
     [None, [], {"Item": []}],
@@ -799,6 +894,8 @@ def test_transaction_conditions_bind_the_complete_transition(
             "expiresAt",
             "updatedBy",
             "updatedAt",
+            "archivedAt",
+            "archivedBy",
         }
         for field in (
             "#version",
@@ -808,6 +905,12 @@ def test_transaction_conditions_bind_the_complete_transition(
             "#expiresAt",
         ):
             assert field in update["ConditionExpression"]
+        assert "attribute_not_exists(#archivedAt)" in update[
+            "ConditionExpression"
+        ]
+        assert "attribute_not_exists(#archivedBy)" in update[
+            "ConditionExpression"
+        ]
         for field in (
             "#isCurrent",
             "#effectiveFrom",
@@ -867,6 +970,54 @@ def test_transaction_conditions_bind_the_complete_transition(
             "ConditionExpression"
         ]
         assert ":scheduleArn" not in state_update["ExpressionAttributeValues"]
+
+
+def test_concurrent_archive_prevents_cutover(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    outgoing, target, state = put_ready_cutover(snapshot_table, app)
+    original_outgoing = copy.deepcopy(outgoing)
+    original_state = copy.deepcopy(state)
+    real_client = app.dynamodb_client()
+
+    def archive_target_then_write(**kwargs):
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression=(
+                "SET archivedAt = :archivedAt, archivedBy = :archivedBy"
+            ),
+            ExpressionAttributeValues={
+                ":archivedAt": "2026-09-08T11:00:00Z",
+                ":archivedBy": "archiver-sub",
+            },
+        )
+        return real_client.transact_write_items(**kwargs)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        archive_target_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    with pytest.raises(ClientError):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.transact_write_items.assert_called_once()
+    stored_outgoing = snapshot_table.get_item(
+        Key={"PK": outgoing["PK"], "SK": outgoing["SK"]}
+    )["Item"]
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_outgoing == original_outgoing
+    assert stored_target["isCurrent"] is False
+    assert stored_target["effectiveFrom"] == target["effectiveFrom"]
+    assert stored_target["archivedAt"] == "2026-09-08T11:00:00Z"
+    assert stored_target["archivedBy"] == "archiver-sub"
+    assert stored_state == original_state
 
 
 @pytest.mark.parametrize(

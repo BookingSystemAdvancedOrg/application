@@ -42,6 +42,7 @@ _PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
 _ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
 _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
+_ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
 _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
 )
@@ -201,6 +202,24 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+def _archive_metadata(item):
+    present_fields = set(item) & _ARCHIVE_FIELDS
+    if not present_fields:
+        return None
+    if present_fields != _ARCHIVE_FIELDS:
+        raise _SnapshotConflict("published layout record is inconsistent")
+
+    try:
+        return {
+            "archivedBy": _required_string(item, "archivedBy"),
+            "archivedAt": _utc_timestamp(item, "archivedAt"),
+        }
+    except (OverflowError, TypeError, ValueError):
+        raise _SnapshotConflict(
+            "published layout record is inconsistent"
+        ) from None
+
+
 def _public_element(item):
     if not isinstance(item, dict):
         raise _SnapshotConflict("published layout record is inconsistent")
@@ -324,6 +343,7 @@ def _public_snapshot(item, location_id):
         raise _SnapshotConflict("published layout record is inconsistent")
 
     version = _stored_version(item, location_id)
+    _archive_metadata(item)
     try:
         label = _required_string(item, "label")
         if not isinstance(item.get("isCurrent"), bool):
@@ -404,6 +424,7 @@ def _list_versions(location_id):
         "ConsistentRead": True,
     }
     snapshots = []
+    stored_versions = []
     seen_last_keys = []
 
     while True:
@@ -414,9 +435,11 @@ def _list_versions(location_id):
         page = response.get("Items")
         if not isinstance(page, list):
             raise _SnapshotServiceFailure
-        snapshots.extend(
-            _public_snapshot(item, location_id) for item in page
-        )
+        for item in page:
+            snapshot = _public_snapshot(item, location_id)
+            stored_versions.append(snapshot["version"])
+            if _archive_metadata(item) is None:
+                snapshots.append(snapshot)
 
         last_key = response.get("LastEvaluatedKey")
         if last_key is None:
@@ -430,8 +453,7 @@ def _list_versions(location_id):
         seen_last_keys.append(last_key)
         request["ExclusiveStartKey"] = last_key
 
-    versions = [snapshot["version"] for snapshot in snapshots]
-    if len(versions) != len(set(versions)):
+    if len(stored_versions) != len(set(stored_versions)):
         raise _SnapshotConflict("published layout record is inconsistent")
     snapshots.sort(key=lambda item: item["version"], reverse=True)
     return _version_response(
@@ -491,6 +513,8 @@ def _validate_activation_state(state, location_id):
 def _validated_active_snapshot(snapshot, location_id, version, now):
     public_snapshot = _public_snapshot(snapshot, location_id)
     try:
+        if _archive_metadata(snapshot) is not None:
+            raise ValueError
         effective_from = datetime.fromisoformat(
             public_snapshot["effectiveFrom"].replace("Z", "+00:00")
         )

@@ -489,6 +489,87 @@ def test_unknown_version_returns_404_without_state(app_and_table):
     assert "Item" not in snapshot_table.get_item(Key=state_key())
 
 
+def test_archived_version_cannot_be_activated(app_and_table):
+    app, snapshot_table = app_and_table
+    archived = snapshot_item(
+        archivedAt="2026-09-07T10:00:00Z",
+        archivedBy="archiver-sub",
+    )
+    snapshot_table.put_item(Item=archived)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "archived layout version cannot be activated"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": archived["PK"], "SK": archived["SK"]}
+    )["Item"] == archived
+    assert "Item" not in snapshot_table.get_item(Key=state_key())
+
+
+def test_archived_replacement_cannot_be_scheduled(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    archived = snapshot_item(
+        2,
+        archivedAt="2026-09-07T10:00:00Z",
+        archivedBy="archiver-sub",
+    )
+    for item in (current, archived, activation_state()):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "archived layout version cannot be activated"},
+    )
+    scheduler_factory.assert_not_called()
+    assert snapshot_table.get_item(Key=state_key())["Item"] == (
+        activation_state()
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": archived["PK"], "SK": archived["SK"]}
+    )["Item"] == archived
+
+
+def test_valid_archived_history_does_not_break_active_version_read(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    archived = snapshot_item(
+        2,
+        archivedAt="2026-09-07T10:00:00Z",
+        archivedBy="a" * 128,
+    )
+    for item in (current, archived, activation_state()):
+        snapshot_table.put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "status": "active",
+            "version": 1,
+            "effectiveFrom": current["effectiveFrom"],
+        },
+    )
+
+
 def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
@@ -1191,6 +1272,103 @@ def test_current_snapshot_without_effective_from_returns_409(
     )
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"archivedAt": "2026-09-07T10:00:00Z"},
+        {"archivedBy": "archiver-sub"},
+        {
+            "archivedAt": "2026-09-07T10:00:00+02:00",
+            "archivedBy": "archiver-sub",
+        },
+        {
+            "archivedAt": " 2026-09-07T10:00:00Z",
+            "archivedBy": "archiver-sub",
+        },
+        {
+            "archivedAt": "2026-09-07T10:00:00Z",
+            "archivedBy": " archiver-sub",
+        },
+        {
+            "archivedAt": "2026-09-07T10:00:00Z",
+            "archivedBy": "a" * 129,
+        },
+    ],
+)
+def test_invalid_archive_metadata_returns_409(
+    app_and_table,
+    overrides,
+):
+    app, snapshot_table = app_and_table
+    snapshot_table.put_item(Item=snapshot_item(**overrides))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert "Item" not in snapshot_table.get_item(Key=state_key())
+
+
+def test_archived_current_snapshot_makes_activation_state_inconsistent(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(
+        is_current=True,
+        archivedAt="2026-09-07T10:00:00Z",
+        archivedBy="archiver-sub",
+    )
+    snapshot_table.put_item(Item=current)
+    snapshot_table.put_item(Item=activation_state())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_archived_pending_snapshot_makes_activation_state_inconsistent(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T01:00:00Z"
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        effectiveFrom=cutover_at,
+        expiresAt=None,
+        archivedAt="2026-09-07T10:00:00Z",
+        archivedBy="archiver-sub",
+    )
+    for item in (current, target, pending_activation_state(app)):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    scheduler_factory.assert_not_called()
+
+
 def test_snapshot_query_and_state_read_are_strongly_consistent(
     app_and_table,
     monkeypatch,
@@ -1881,6 +2059,70 @@ def test_stale_target_condition_prevents_partial_state_write(
     )["Item"]
     assert stored["isCurrent"] is False
     assert stored["effectiveFrom"] is None
+
+
+def test_target_condition_requires_archive_fields_to_be_absent(app_and_table):
+    app, _ = app_and_table
+
+    condition = app._target_condition(snapshot_item())
+
+    assert "attribute_not_exists(#archivedAt)" in condition[
+        "ConditionExpression"
+    ]
+    assert "attribute_not_exists(#archivedBy)" in condition[
+        "ConditionExpression"
+    ]
+    assert condition["ExpressionAttributeNames"]["#archivedAt"] == (
+        "archivedAt"
+    )
+    assert condition["ExpressionAttributeNames"]["#archivedBy"] == (
+        "archivedBy"
+    )
+
+
+def test_concurrent_archive_prevents_partial_activation_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    original = snapshot_item()
+    snapshot_table.put_item(Item=original)
+    real_client = app.dynamodb_client()
+
+    def archive_target_then_write(**kwargs):
+        snapshot_table.update_item(
+            Key={"PK": original["PK"], "SK": original["SK"]},
+            UpdateExpression=(
+                "SET archivedAt = :archivedAt, archivedBy = :archivedBy"
+            ),
+            ExpressionAttributeValues={
+                ":archivedAt": "2026-09-07T10:00:00Z",
+                ":archivedBy": "archiver-sub",
+            },
+        )
+        return real_client.transact_write_items(**kwargs)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        archive_target_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation changed; retry request"},
+    )
+    assert "Item" not in snapshot_table.get_item(Key=state_key())
+    stored = snapshot_table.get_item(
+        Key={"PK": original["PK"], "SK": original["SK"]}
+    )["Item"]
+    assert stored["isCurrent"] is False
+    assert stored["effectiveFrom"] is None
+    assert stored["archivedAt"] == "2026-09-07T10:00:00Z"
+    assert stored["archivedBy"] == "archiver-sub"
 
 
 @pytest.mark.parametrize(

@@ -83,6 +83,7 @@ _PENDING_STATE_FIELDS = frozenset(
         "scheduleArn",
     }
 )
+_ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
 _SERIALIZER = TypeSerializer()
 _scheduler = None
 
@@ -184,6 +185,26 @@ def _utc_timestamp(source, field, *, nullable=False):
     return value
 
 
+def _archive_metadata(item):
+    present_fields = set(item) & _ARCHIVE_FIELDS
+    if not present_fields:
+        return None
+    if present_fields != _ARCHIVE_FIELDS:
+        raise _ActivationConflict(
+            "published layout record is inconsistent"
+        )
+
+    try:
+        return {
+            "archivedBy": _required_string(item, "archivedBy"),
+            "archivedAt": _utc_timestamp(item, "archivedAt"),
+        }
+    except (OverflowError, TypeError, ValueError):
+        raise _ActivationConflict(
+            "published layout record is inconsistent"
+        ) from None
+
+
 def _positive_integer(value):
     if (
         isinstance(value, bool)
@@ -242,10 +263,13 @@ def _validate_snapshot(item, location_id):
         _utc_timestamp(item, "createdAt")
         _required_string(item, "updatedBy")
         _utc_timestamp(item, "updatedAt")
+        archive_metadata = _archive_metadata(item)
     except (OverflowError, TypeError, ValueError):
         raise _ActivationConflict(
             "published layout record is inconsistent"
         ) from None
+    if archive_metadata is not None and item["isCurrent"]:
+        raise _ActivationConflict("layout activation state is inconsistent")
     return version
 
 
@@ -462,7 +486,9 @@ def _target_condition(target):
             "AND #isCurrent = :expectedCurrent "
             "AND #effectiveFrom = :expectedEffectiveFrom "
             "AND #effectiveTo = :expectedEffectiveTo "
-            "AND #expiresAt = :expectedExpiresAt"
+            "AND #expiresAt = :expectedExpiresAt "
+            "AND attribute_not_exists(#archivedAt) "
+            "AND attribute_not_exists(#archivedBy)"
         ),
         "ExpressionAttributeNames": {
             "#version": "version",
@@ -470,6 +496,8 @@ def _target_condition(target):
             "#effectiveFrom": "effectiveFrom",
             "#effectiveTo": "effectiveTo",
             "#expiresAt": "expiresAt",
+            "#archivedAt": "archivedAt",
+            "#archivedBy": "archivedBy",
         },
         "ExpressionAttributeValues": _typed_map(
             {
@@ -1242,7 +1270,8 @@ def _active_response(version, effective_from):
 def _validate_scheduled_lifecycle(current, target, pending):
     cutover_at = pending["cutoverAt"]
     if (
-        current["effectiveTo"] != cutover_at
+        _archive_metadata(target) is not None
+        or current["effectiveTo"] != cutover_at
         or current["expiresAt"] != cutover_at
         or target["isCurrent"]
         or target["effectiveFrom"] != cutover_at
@@ -1340,6 +1369,8 @@ def _resume_pending_activation(
     pending = state_details["pending"]
     target = by_version.get(pending["version"])
     if target is None:
+        raise _ActivationConflict("layout activation state is inconsistent")
+    if _archive_metadata(target) is not None:
         raise _ActivationConflict("layout activation state is inconsistent")
     if requested_version != pending["version"]:
         raise _ActivationConflict("another layout activation is pending")
@@ -1471,6 +1502,10 @@ def _activate_version(location_id, version, caller_sub):
                 HTTPStatus.NOT_FOUND.value,
                 "layout version not found",
             )
+        if _archive_metadata(target) is not None:
+            raise _ActivationConflict(
+                "archived layout version cannot be activated"
+            )
         if state_details["currentVersion"] == version:
             return _active_response(version, target["effectiveFrom"])
         return _start_pending_activation(
@@ -1486,6 +1521,10 @@ def _activate_version(location_id, version, caller_sub):
         return _activation_error(
             HTTPStatus.NOT_FOUND.value,
             "layout version not found",
+        )
+    if _archive_metadata(target) is not None:
+        raise _ActivationConflict(
+            "archived layout version cannot be activated"
         )
 
     if current:

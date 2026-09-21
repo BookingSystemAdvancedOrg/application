@@ -35,11 +35,11 @@ tags:
   - name: Users
     description: Owner and super-user management of internal users.
   - name: Locations
-    description: Staff-facing location creation and detail retrieval.
+    description: Public location details and staff-facing location management.
   - name: Menu
     description: Public and protected menu reads, plus staff-facing writes.
   - name: Layout
-    description: Mutable floor-layout editing, publication, and scheduled activation.
+    description: Public active layouts, editing, publication, and scheduled activation.
   - name: Media
     description: Authenticated direct-upload capabilities for menu images.
 
@@ -772,6 +772,85 @@ paths:
           $ref: '#/components/responses/NoStoreForbidden'
         '404':
           $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/LocationServiceUnavailable'
+
+  /locations/{locationId}/public-info:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Locations
+      summary: Get public location information
+      operationId: getPublicLocationInfo
+      description: |
+        Returns only the location fields needed by the customer-facing site.
+        Contact fields are omitted together on legacy location records that
+        predate them. Booking policy, audit metadata, DynamoDB keys, and any
+        unexpected stored attributes are never returned. This route is
+        intentionally public and does not inspect JWT claims.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: Customer-facing location information.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicLocationInfo'
+              example:
+                locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
+                name: Central Bistro
+                address: Main Street 1, Stockholm
+                email: bookings@centralbistro.se
+                phoneNumber: '+46812345678'
+                timezone: Europe/Stockholm
+                businessHours:
+                  monday:
+                    - opensAt: '11:00'
+                      closesAt: '22:00'
+                  tuesday:
+                    - opensAt: '11:00'
+                      closesAt: '22:00'
+                  wednesday:
+                    - opensAt: '11:00'
+                      closesAt: '22:00'
+                  thursday:
+                    - opensAt: '11:00'
+                      closesAt: '22:00'
+                  friday:
+                    - opensAt: '11:00'
+                      closesAt: '23:00'
+                  saturday:
+                    - opensAt: '12:00'
+                      closesAt: '23:00'
+                  sunday: []
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than GET.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - GET
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
         '409':
           $ref: '#/components/responses/NoStoreConflict'
         '503':
@@ -1580,6 +1659,90 @@ paths:
           $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/LayoutPublishingServiceUnavailable'
+
+  /locations/{locationId}/layout/active:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+    get:
+      tags:
+        - Layout
+      summary: Get the public active layout
+      operationId: getPublicActiveLayout
+      description: |
+        Resolves the location's authoritative activation state and returns
+        only the currently effective published snapshot. Floor records are
+        reduced to identifiers, names, and levels; renderable non-floor
+        elements are returned separately. Version lifecycle data, audit
+        metadata, valid-position data, DynamoDB keys, and unexpected stored
+        attributes are never returned. A legacy flat layout has an empty
+        `floors` array and elements without `floorId`. This route is
+        intentionally public and does not inspect JWT claims.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The active customer-facing floor layout.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicActiveLayout'
+              example:
+                floors:
+                  - floorId: floor-ground
+                    name: Ground floor
+                    level: 0
+                elements:
+                  - elementId: wall-north
+                    type: wall
+                    x: 0
+                    y: 0
+                    z: 0
+                    width: 10
+                    height: 3
+                    depth: 0.2
+                    rotationY: 0
+                    floorId: floor-ground
+                  - elementId: table-window
+                    type: table
+                    x: 2
+                    y: 0
+                    z: 3
+                    width: 1.2
+                    height: 0.75
+                    depth: 0.8
+                    rotationY: 0
+                    floorId: floor-ground
+                    shape: rect
+                    seats: 4
+                    zone: main
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '404':
+          $ref: '#/components/responses/ActiveLayoutNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than GET.
+          headers:
+            Allow:
+              description: Method accepted by this handler.
+              schema:
+                type: string
+                enum:
+                  - GET
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/ActiveLayoutConflict'
+        '503':
+          $ref: '#/components/responses/ActiveLayoutServiceUnavailable'
 
   /locations/{locationId}/layout/versions:
     parameters:
@@ -2443,6 +2606,41 @@ components:
             Creation or last effective-update time. Optional only for legacy
             records created before update auditing.
 
+    PublicLocationInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - locationId
+        - name
+        - address
+        - timezone
+        - businessHours
+      description: |
+        Customer-facing location fields. `email` and `phoneNumber` are either
+        both present or both absent; they are absent only on legacy records
+        created before contact details were introduced. Internal booking
+        policy and audit fields are deliberately excluded.
+      properties:
+        locationId:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        email:
+          allOf:
+            - $ref: '#/components/schemas/UserEmail'
+          description: Optional legacy-safe location contact email.
+        phoneNumber:
+          allOf:
+            - $ref: '#/components/schemas/UserPhone'
+          description: Optional legacy-safe contact number in E.164 format.
+        timezone:
+          type: string
+          description: Valid IANA timezone name.
+        businessHours:
+          $ref: '#/components/schemas/BusinessHours'
+
     LocationList:
       type: object
       additionalProperties: false
@@ -3133,6 +3331,244 @@ components:
           items:
             $ref: '#/components/schemas/LayoutElement'
 
+    PublicLayoutFloor:
+      type: object
+      additionalProperties: false
+      required:
+        - floorId
+        - name
+        - level
+      description: |
+        Customer-facing floor metadata. Floor geometry and audit fields are
+        deliberately excluded from the public active-layout response.
+      properties:
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        name:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        level:
+          type: integer
+          description: Signed floor order.
+
+    PublicLayoutWall:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - wall
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
+
+    PublicLayoutDoor:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - door
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+
+    PublicLayoutWindow:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - window
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+
+    PublicLayoutTable:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - shape
+        - seats
+        - zone
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - table
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
+        shape:
+          type: string
+          enum:
+            - rect
+            - round
+        seats:
+          type: integer
+          minimum: 1
+        zone:
+          $ref: '#/components/schemas/LayoutBoundedString'
+
+    PublicLayoutElement:
+      oneOf:
+        - $ref: '#/components/schemas/PublicLayoutWall'
+        - $ref: '#/components/schemas/PublicLayoutDoor'
+        - $ref: '#/components/schemas/PublicLayoutWindow'
+        - $ref: '#/components/schemas/PublicLayoutTable'
+      discriminator:
+        propertyName: type
+        mapping:
+          wall: '#/components/schemas/PublicLayoutWall'
+          door: '#/components/schemas/PublicLayoutDoor'
+          window: '#/components/schemas/PublicLayoutWindow'
+          table: '#/components/schemas/PublicLayoutTable'
+      description: |
+        Renderable customer-facing element. Audit data is excluded. `floorId`
+        is present on every element in a multi-floor snapshot and absent from
+        every element in a legacy flat layout.
+
+    PublicActiveLayout:
+      type: object
+      additionalProperties: false
+      required:
+        - floors
+        - elements
+      properties:
+        floors:
+          type: array
+          description: Floor metadata in stored snapshot order.
+          items:
+            $ref: '#/components/schemas/PublicLayoutFloor'
+        elements:
+          type: array
+          description: Renderable non-floor elements in stored snapshot order.
+          items:
+            $ref: '#/components/schemas/PublicLayoutElement'
+
     PublishedLayoutSnapshot:
       type: object
       additionalProperties: false
@@ -3750,6 +4186,47 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout version not found
+    ActiveLayoutNotFound:
+      description: The location has no active published layout.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: active layout not found
+    ActiveLayoutConflict:
+      description: The active layout state or referenced snapshot is inconsistent.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            state:
+              value:
+                error: layout activation state is inconsistent
+            snapshot:
+              value:
+                error: published layout record is inconsistent
+            concurrent:
+              value:
+                error: active layout changed; retry request
+    ActiveLayoutServiceUnavailable:
+      description: The active layout could not be read safely from DynamoDB.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: active layout service unavailable
     LayoutActivationConflict:
       description: The activation state is inconsistent, pending, or changed concurrently.
       headers:

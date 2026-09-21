@@ -15,6 +15,7 @@ EXPECTED_OPERATIONS = {
     "/auth/refresh": frozenset({"post"}),
     "/locations": frozenset({"get", "post"}),
     "/locations/{locationId}": frozenset({"get", "put", "delete"}),
+    "/locations/{locationId}/public-info": frozenset({"get"}),
     "/locations/{locationId}/availability": frozenset({"get"}),
     "/locations/{locationId}/tables/{tableId}/block": frozenset({"post"}),
     "/locations/{locationId}/menu": frozenset({"get"}),
@@ -29,6 +30,7 @@ EXPECTED_OPERATIONS = {
         {"get", "put", "delete"}
     ),
     "/locations/{locationId}/layout/publish": frozenset({"post"}),
+    "/locations/{locationId}/layout/active": frozenset({"get"}),
     "/locations/{locationId}/layout/versions": frozenset({"get"}),
     "/locations/{locationId}/layout/versions/{versionId}/activate": (
         frozenset({"post"})
@@ -46,8 +48,10 @@ PUBLIC_OPERATIONS = frozenset(
         ("/auth/login", "post"),
         ("/auth/challenge", "post"),
         ("/auth/refresh", "post"),
+        ("/locations/{locationId}/public-info", "get"),
         ("/locations/{locationId}/availability", "get"),
         ("/locations/{locationId}/menu", "get"),
+        ("/locations/{locationId}/layout/active", "get"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]
@@ -193,6 +197,170 @@ def test_location_contact_contract_matches_handlers(openapi_document):
     assert schemas["LocationList"]["properties"]["items"]["items"] == {
         "$ref": "#/components/schemas/Location",
     }
+
+
+def test_public_location_info_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    path = document["paths"]["/locations/{locationId}/public-info"]
+    operation = path["get"]
+
+    assert path["parameters"] == [
+        {"$ref": "#/components/parameters/LocationId"}
+    ]
+    assert operation["operationId"] == "getPublicLocationInfo"
+    assert operation["security"] == []
+    assert operation["x-required-groups"] == []
+    assert "requestBody" not in operation
+    assert set(operation["responses"]) == {
+        "200",
+        "400",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/PublicLocationInfo"
+    }
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/LocationNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/NoStoreConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/LocationServiceUnavailable"
+    }
+    assert operation["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["GET"]
+
+    public_info = document["components"]["schemas"][
+        "PublicLocationInfo"
+    ]
+    assert public_info["additionalProperties"] is False
+    assert set(public_info["required"]) == {
+        "locationId",
+        "name",
+        "address",
+        "timezone",
+        "businessHours",
+    }
+    assert set(public_info["properties"]) == {
+        "locationId",
+        "name",
+        "address",
+        "email",
+        "phoneNumber",
+        "timezone",
+        "businessHours",
+    }
+    assert {
+        "bookingDurationHours",
+        "gracePeriodHours",
+        "createdBy",
+        "createdAt",
+        "updatedBy",
+        "updatedAt",
+    }.isdisjoint(public_info["properties"])
+
+
+def test_public_active_layout_contract_matches_handler(openapi_document):
+    document, _ = openapi_document
+    path = document["paths"]["/locations/{locationId}/layout/active"]
+    operation = path["get"]
+
+    assert path["parameters"] == [
+        {"$ref": "#/components/parameters/LayoutLocationId"}
+    ]
+    assert operation["operationId"] == "getPublicActiveLayout"
+    assert operation["security"] == []
+    assert operation["x-required-groups"] == []
+    assert "requestBody" not in operation
+    assert set(operation["responses"]) == {
+        "200",
+        "400",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/PublicActiveLayout"
+    }
+    assert operation["responses"]["404"] == {
+        "$ref": "#/components/responses/ActiveLayoutNotFound"
+    }
+    assert operation["responses"]["409"] == {
+        "$ref": "#/components/responses/ActiveLayoutConflict"
+    }
+    assert operation["responses"]["503"] == {
+        "$ref": "#/components/responses/ActiveLayoutServiceUnavailable"
+    }
+    assert operation["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["GET"]
+
+    schemas = document["components"]["schemas"]
+    active_layout = schemas["PublicActiveLayout"]
+    assert active_layout["additionalProperties"] is False
+    assert set(active_layout["required"]) == {"floors", "elements"}
+    assert active_layout["properties"]["floors"]["items"] == {
+        "$ref": "#/components/schemas/PublicLayoutFloor"
+    }
+    assert active_layout["properties"]["elements"]["items"] == {
+        "$ref": "#/components/schemas/PublicLayoutElement"
+    }
+
+    floor = schemas["PublicLayoutFloor"]
+    assert floor["additionalProperties"] is False
+    assert set(floor["required"]) == set(floor["properties"])
+    assert set(floor["properties"]) == {"floorId", "name", "level"}
+
+    element_union = schemas["PublicLayoutElement"]
+    expected_variants = {
+        element_type: (
+            f"#/components/schemas/PublicLayout{element_type.title()}"
+        )
+        for element_type in ("wall", "door", "window", "table")
+    }
+    assert {item["$ref"] for item in element_union["oneOf"]} == set(
+        expected_variants.values()
+    )
+    assert element_union["discriminator"] == {
+        "propertyName": "type",
+        "mapping": expected_variants,
+    }
+
+    common_fields = {
+        "elementId",
+        "type",
+        "x",
+        "y",
+        "z",
+        "width",
+        "height",
+        "depth",
+        "rotationY",
+    }
+    expected_fields = {
+        "Wall": common_fields | {"floorId"},
+        "Door": common_fields | {"floorId", "wallId"},
+        "Window": common_fields | {"floorId", "wallId"},
+        "Table": common_fields | {"floorId", "shape", "seats", "zone"},
+    }
+    for element_type, fields in expected_fields.items():
+        schema = schemas[f"PublicLayout{element_type}"]
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]) == fields
+        assert set(schema["required"]) == fields - {"floorId"}
+        assert {"updatedBy", "updatedAt"}.isdisjoint(
+            schema["properties"]
+        )
 
 
 def test_get_availability_contract_matches_handler(openapi_document):

@@ -97,6 +97,22 @@ The OpenAPI file is the client-facing documentation and testing contract. It
 does not provision API Gateway: Lambda integrations, routes, CORS, and the JWT
 authorizer remain owned by the separate `infrastructure` repository.
 
+### Public customer reads
+
+`GET /locations/{locationId}/public-info` and
+`GET /locations/{locationId}/layout/active` are public (`NONE` auth) customer
+routes. The first returns only `locationId`, `name`, `address`, `timezone`,
+`businessHours`, and—when present as a valid pair—`email` and `phoneNumber`.
+It never exposes booking policy, audit fields, DynamoDB keys, or unexpected
+stored attributes.
+
+The active-layout route returns `{"floors": [...], "elements": [...]}`. Each
+floor contains only `floorId`, `name`, and `level`; renderable non-floor
+elements contain their validated geometry, optional `floorId`, and applicable
+table, door, or window fields. It never exposes snapshot versions, lifecycle
+timestamps, audit data, DynamoDB keys, or the activation-state item. Both exact
+routes must remain unauthenticated in API Gateway.
+
 The menu route family deliberately splits reads from writes. Both
 `GET /locations/{locationId}/menu` and protected GET requests below
 `/locations/{locationId}/menu/{proxy+}` integrate with `get-menu`.
@@ -121,6 +137,11 @@ children; move or delete those children before publishing again. Availability
 uses tables from every floor but intentionally returns only `tableId` and
 `seats` for each available table.
 
+The public active-layout read separates published floor records into `floors`
+and returns walls, doors, windows, and tables in `elements`. A client selects a
+floor by `floorId` and filters `elements` by that value. Legacy flat layouts
+return an empty `floors` array and elements without `floorId`.
+
 Stop and remove the local documentation container when finished:
 
 ```powershell
@@ -142,8 +163,9 @@ request already works from Postman or PowerShell.
   use `shared.auth.require_group()` / `shared.auth.get_sub()`.
 - `NONE`-auth routes are intentionally public - customers never have
   Cognito accounts, so don't add JWT checks to those route branches.
-  `get-menu` is mixed-auth: its exact `/menu` route is public, while its
-  `/menu/{proxy+}` GET route is JWT-protected. Dispatch that distinction
-  from the route path, never from the presence of an authorization header.
+  Authorization is route-specific: `get-menu`, `get-location`, and
+  `list-layout-version` each serve public and protected routes. Dispatch only
+  from the documented route identity (`routeKey` or path parameter), never
+  from the presence of an authorization header or JWT claims.
 - Never hardcode table/bucket names - always read them from env vars, since
   the same image runs unmodified against dev and prod resources.

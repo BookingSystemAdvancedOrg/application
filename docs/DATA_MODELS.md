@@ -118,6 +118,8 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 - At cutover, `expire-layout-version` atomically changes the old snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and advances the activation-state record. If the state is still `scheduling` because Scheduler creation succeeded but lifecycle staging failed, that same transaction first applies the planned lifecycle boundary. `effectiveTo` is therefore the planned/actual end of a serving interval; `expiresAt` is the booking cutoff for the current serving snapshot and is null when no cutoff is pending.
 - `get-availability`, `create-pending-reservation`, and block creation in `block-table` may use a snapshot only when `isCurrent=true`, `effectiveFrom` is not later than the current time, and each non-null `effectiveTo` or `expiresAt` is later than the current time. A future pending replacement is never bookable merely because its `effectiveFrom` is populated. Unblocking skips layout validation so an old manual hold remains removable after a layout change.
 
+The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy flat and empty active snapshots remain representable.
+
 ### Layout Activation State
 
 Each location that has activated a layout also has one internal coordination item in the Published Layout Snapshot table. Its sort key does not use the `LAYOUT#v` prefix, so snapshot-list and version-allocation queries exclude it.
@@ -138,7 +140,7 @@ Each location that has activated a layout also has one internal coordination ite
 | `scheduleName` | String, pending activation only |
 | `scheduleArn` | String, `scheduled` phase only |
 
-`pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and `scheduleName` form one transition and must never be partially populated. `scheduling` is a durable intent created before the external Scheduler call; it has no `scheduleArn` and does not alter either snapshot's serving lifecycle. `scheduled` means the one-time schedule exists, `scheduleArn` is present, and the old/replacement lifecycle timestamps have been atomically staged. The cutover worker accepts either complete phase: `scheduled` is the normal path, while a due `scheduling` event recovers the narrow case where schedule creation succeeded but final staging did not. The activation token binds the state, schedule, and worker event so a stale or retried schedule cannot apply a different activation. On success, the worker increments `revision`, moves `currentVersion`, and removes all six pending fields. Scheduler metadata and this coordination record are internal and are never returned by the version-list API.
+`pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and `scheduleName` form one transition and must never be partially populated. `scheduling` is a durable intent created before the external Scheduler call; it has no `scheduleArn` and does not alter either snapshot's serving lifecycle. `scheduled` means the one-time schedule exists, `scheduleArn` is present, and the old/replacement lifecycle timestamps have been atomically staged. The cutover worker accepts either complete phase: `scheduled` is the normal path, while a due `scheduling` event recovers the narrow case where schedule creation succeeded but final staging did not. The activation token binds the state, schedule, and worker event so a stale or retried schedule cannot apply a different activation. On success, the worker increments `revision`, moves `currentVersion`, and removes all six pending fields. Scheduler metadata and the coordination record are internal. The public active-layout API reads only the pointer and integrity fields needed to resolve the snapshot; it never returns the state item or pending-transition metadata.
 
 ---
 
@@ -193,6 +195,10 @@ before using its tables. Floor elements are never bookable. Availability
 considers tables across all floors but returns only each table's `tableId` and
 `seats`; manual occupancy keys and block responses likewise remain table-ID
 based.
+
+The public `/locations/{locationId}/layout/active` route reads only the
+Published Layout Snapshot table. It never reads this mutable live table, so
+customers cannot see unpublished editor changes.
 
 ---
 
@@ -251,6 +257,12 @@ Directory of all restaurant locations, created by an owner or super-admin when o
 `PK` is the fixed literal string `PLATFORM` for every item in this table — every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
 
 New records require a valid contact `email` of at most 320 characters and an E.164 `phoneNumber`, for example `+46812345678`. Existing records created before contact details were introduced may omit both fields and remain readable. A legacy record's first contact update supplies both fields; storing only one is inconsistent.
+
+The public-info API exposes only `locationId`, `name`, `address`, `timezone`,
+and `businessHours`, plus `email` and `phoneNumber` when both exist. It
+deliberately excludes `bookingDurationHours`, `gracePeriodHours`, audit fields,
+DynamoDB keys, and unknown stored attributes. Protected location APIs continue
+to return the complete logical record.
 
 New records initialize `updatedBy`/`updatedAt` to the same values as `createdBy`/`createdAt`. An effective partial update changes `updatedBy`/`updatedAt`; an idempotent no-op preserves them. Legacy records created before update auditing may omit these two fields and remain readable.
 

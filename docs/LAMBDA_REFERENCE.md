@@ -28,7 +28,7 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 1. Read `cognito:groups` from the claims. Valid groups: `staff_user`, `owner_user`, `super_user`.
 2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` — see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
 
-**Routes configured as `NONE`** are intentionally public — customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific: `get-menu` serves both a public exact route and JWT-protected greedy GET routes, and it dispatches between them using the presence of the `proxy` path parameter rather than an authorization header.
+**Routes configured as `NONE`** are intentionally public — customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific. Mixed-auth Lambdas select their public branch only from the documented route identity: `get-location` and `list-layout-version` require an exact top-level API Gateway `routeKey`, while `get-menu` uses its documented `proxy` path-parameter contract. Never infer public access from an authorization header or from whether JWT claims happen to be present.
 
 **Reservation status state machine.** The `Reservation` table's `status` field drives most of the business logic and is what the `notification` stream filters key off of:
 
@@ -86,14 +86,19 @@ All successful and error responses include `Cache-Control: no-store`.
 ---
 
 ### 2. `get-location`
-**Triggers:** API Gateway — `GET /locations` and `GET /locations/{locationId}` — Auth: `JWT`
-**Purpose:** Returns the complete location directory or full detail for one location. Both reads are JWT-gated staff APIs, not part of the public menu or booking flow.
+**Triggers:**
+- API Gateway — `GET /locations` and `GET /locations/{locationId}` — Auth: `JWT`
+- API Gateway — `GET /locations/{locationId}/public-info` — Auth: `NONE`
+
+**Purpose:** Returns the protected location directory or full detail for one location, plus a safe public location projection for the customer site.
 
 `GET /locations` is restricted to `owner_user`/`super_user`. It queries `PK="PLATFORM"` with `SK begins_with "LOCATION#"`, uses strongly consistent reads, follows every DynamoDB pagination key, and returns `200` with `{"items": [...]}`. An empty directory returns `{"items": []}` and item ordering is not guaranteed.
 
 `GET /locations/<locationId>` allows callers in `staff_user`, `owner_user`, or `super_user`. It performs one strongly consistent `GetItem` using `PK="PLATFORM"` and `SK="LOCATION#<locationId>"`, returning the logical location or `404` when it does not exist. Both actions omit internal `PK`/`SK` attributes and return stored `email` and `phoneNumber` contact details. New records contain both contact fields and `updatedBy`/`updatedAt`; the contact pair and audit pair may be absent on their respective legacy records.
 
-Stored records are checked for the expected key, identifier, and public shape before they are returned. Inconsistent records return `409`; malformed location IDs return `400`; recognized routes with the wrong method return `405` with `Allow`; malformed DynamoDB responses and unexpected DynamoDB or transport failures return a sanitized `503`. This function has no User-table environment variable or permission, so it authorizes by Cognito group only; it cannot restrict a `staff_user` item read to their assigned location.
+The exact `GET /locations/<locationId>/public-info` route is public and is selected only when the top-level API Gateway `routeKey` is `GET /locations/{locationId}/public-info`; this branch does not inspect JWT claims. It performs the same strongly consistent item read and returns exactly `locationId`, `name`, `address`, `timezone`, and `businessHours`, plus `email` and `phoneNumber` when the stored legacy-compatible contact pair is present. It omits booking-duration and grace-period policy, creation/update audit fields, DynamoDB keys, and unexpected stored attributes.
+
+Stored records are checked for the expected key, identifier, and complete logical shape before either projection is returned. A missing item returns `404`; an inconsistent record returns `409`; malformed location IDs return `400`; recognized routes with the wrong method return `405` with `Allow: GET`; and malformed DynamoDB responses or unexpected DynamoDB/transport failures return a sanitized `503`. Authentication failures (`401`) and group failures (`403`) apply only to the protected routes. This function has no User-table environment variable or permission, so it authorizes protected requests by Cognito group only; it cannot restrict a `staff_user` item read to their assigned location.
 
 All successful and error responses include `Cache-Control: no-store`.
 
@@ -105,7 +110,7 @@ All successful and error responses include `Cache-Control: no-store`.
 
 **AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Location table.
 
-**Infrastructure routing note:** API Gateway needs explicit `GET /locations`, `POST /locations`, and method-specific `GET`, `PUT`, and `DELETE /locations/{locationId}` routes. The two `GET` routes integrate with `get-location`; `POST`, `PUT`, and `DELETE` integrate with `create-location`. Route-scoped Lambda invoke permissions must cover the new method/path ARNs. The `create-location` execution role needs full Location-table access for its writes; `get-location` remains read-only. Every route in this family keeps the JWT authorizer, and CORS must allow `GET`, `POST`, `PUT`, and `DELETE` where applicable.
+**Infrastructure routing note:** API Gateway needs explicit `GET /locations`, `POST /locations`, method-specific `GET`, `PUT`, and `DELETE /locations/{locationId}`, and `GET /locations/{locationId}/public-info` routes. All three `GET` routes integrate with `get-location`; `POST`, `PUT`, and `DELETE` integrate with `create-location`. The public-info route uses `NONE` auth; the directory/detail routes retain the JWT authorizer. Route-scoped Lambda invoke permissions must cover every method/path ARN. The `create-location` execution role needs full Location-table access for its writes; `get-location` remains read-only. CORS must allow `GET`, `POST`, `PUT`, and `DELETE` where applicable.
 
 ---
 
@@ -492,10 +497,13 @@ Malformed paths return `400`; missing/malformed direct-invocation claims return 
 ---
 
 ### 13. `list-layout-version`
-**Trigger:** API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
-**Purpose:** Lists past published layout versions for a location (for staff to browse/pick a version to activate).
+**Triggers:**
+- API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
+- API Gateway — `GET /locations/{locationId}/layout/active` — Auth: `NONE`
 
-**Authorization and request:** The caller must have a valid Cognito subject and belong to `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before DynamoDB access. Missing or malformed direct-invocation claims return `401`; a valid caller outside those groups receives `403`. The only accepted method is `GET`, the request has no body, and `locationId` must be a non-empty path value of at most 128 characters. This Lambda has no User-table permission, so it authorizes by group only and cannot restrict a staff caller to an assigned location.
+**Purpose:** Lists complete published versions for authorized staff and returns a safe projection of the active version for the public customer site.
+
+**Authorization and request:** Only the exact top-level API Gateway `routeKey` `GET /locations/{locationId}/layout/active` selects the public branch, which performs no JWT validation. Every other invocation remains in the protected versions branch and requires a valid Cognito subject plus membership in `staff_user`, `owner_user`, or `super_user` before DynamoDB access. Missing or malformed direct-invocation claims return `401`; a valid caller outside those groups receives `403`. Both routes accept only `GET`, have no request body, and require a non-empty `locationId` of at most 128 characters. This Lambda has no User-table permission, so protected access is group-only and cannot restrict a staff caller to an assigned location.
 
 The handler strongly consistently queries every page under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#v"`. It returns `200` with `{"items": [...]}` containing complete logical snapshots sorted by numeric `version` from newest to oldest. An empty partition returns `{"items": []}`; this also covers an unknown location because the function has no Location-table permission.
 
@@ -503,7 +511,11 @@ Every snapshot must have a positive integral `version` matching its canonical `L
 
 Lifecycle timestamps are nullable and may describe a published, active, pending, or retired snapshot. During a scheduled replacement, the outgoing snapshot remains the sole `isCurrent=true` record and has `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`; the pending target remains `isCurrent=false` with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. The separate coordination item at `SK="LAYOUT#ACTIVATION"` is excluded by the `SK begins_with "LAYOUT#v"` query and is never returned. DynamoDB keys and unexpected stored attributes are also not returned.
 
-Malformed paths return `400`; a recognized request with the wrong method returns `405` with `Allow: GET`; inconsistent or duplicate snapshot content returns `409`; and malformed pagination/results or unexpected DynamoDB and transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
+The public branch treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It strongly consistently reads the activation state, reads the `LAYOUT#v<currentVersion>` snapshot it names, and then reads the state again. If the current version changed, it retries the complete sequence once; another change returns `409`. A future pending version is never selected. The resolved snapshot must match the state pointer, have `isCurrent=true`, have `effectiveFrom` no later than now, and have every non-null `effectiveTo` or `expiresAt` later than now.
+
+A successful public response is `{"floors": [...], "elements": [...]}`. Floor records become exactly `floorId` (their element ID), `name`, and `level`. Non-floor records retain `elementId`, `type`, geometry (`x`, `y`, `z`, `width`, `height`, `depth`, `rotationY`), optional `floorId`, and their applicable table (`shape`, `seats`, `zone`) or door/window (`wallId`) fields. The response omits element audit fields, snapshot version/label/lifecycle/audit fields, `validPositions`, DynamoDB keys, unexpected attributes, and activation metadata. An empty active snapshot returns two empty arrays; a legacy flat snapshot returns `floors: []` and elements without `floorId`.
+
+Malformed paths return `400`, and a recognized request with the wrong method returns `405` with `Allow: GET`. The public route returns `404` with `active layout not found` when no activation state exists. Inconsistent activation state, snapshot content/lifecycle, duplicate content, or a repeated pointer race returns `409`. Malformed DynamoDB results and unexpected DynamoDB or transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
 
 **Environment variables:**
 | Name | Meaning |
@@ -511,7 +523,9 @@ Malformed paths return `400`; a recognized request with the wrong method returns
 | `ENVIRONMENT` | `dev` or `prod` |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read from |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Published Layout Snapshot. The implementation only calls `Query` and accesses no other table or AWS service.
+**AWS resource access:** Read-only (`GetItem`, `Query`) on Published Layout Snapshot. The protected listing calls `Query`; the public resolver calls strongly consistent `GetItem` for state/snapshot/state. It accesses no other table or AWS service.
+
+**Infrastructure routing note:** API Gateway must expose the explicit `GET /locations/{locationId}/layout/active` route with `NONE` auth, integrate it with `list-layout-version`, and grant the matching route-scoped Lambda invoke permission. The versions route remains JWT-protected. CORS must allow the customer frontend origin to call the public route.
 
 ---
 
@@ -826,7 +840,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | # | Function | Trigger | Auth |
 |---|---|---|---|
 | 1 | `create-location` | API GW `POST /locations`; `PUT`/`DELETE /locations/{locationId}` | JWT |
-| 2 | `get-location` | API GW `GET /locations`; `GET /locations/{locationId}` | JWT |
+| 2 | `get-location` | API GW `GET /locations`; `GET /locations/{locationId}`; `GET /locations/{locationId}/public-info` | JWT on directory/detail; NONE on public-info |
 | 3 | `get-menu` | API GW `GET /locations/{locationId}/menu`; `GET /locations/{locationId}/menu/{proxy+}` | NONE on bare route; JWT on greedy route |
 | 4 | `manage-menu` | API GW `POST`/`PUT`/`DELETE /locations/{locationId}/menu/{proxy+}` | JWT |
 | 5 | `get-availability` | API GW `GET /locations/{locationId}/availability` | NONE |
@@ -837,7 +851,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 10 | `block-table` | API GW `POST /locations/{locationId}/tables/{tableId}/block` | JWT |
 | 11 | `manage-layout-element` | API GW `ANY /locations/{locationId}/layout-elements/{proxy+}` | JWT |
 | 12 | `publish-layout` | API GW `POST /locations/{locationId}/layout/publish` | JWT |
-| 13 | `list-layout-version` | API GW `GET /locations/{locationId}/layout/versions` | JWT |
+| 13 | `list-layout-version` | API GW `GET /locations/{locationId}/layout/versions`; `GET /locations/{locationId}/layout/active` | JWT on versions; NONE on active |
 | 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |

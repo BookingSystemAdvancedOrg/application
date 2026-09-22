@@ -201,6 +201,45 @@ def table_element(table_id=TABLE_ID, **overrides):
     return item
 
 
+def wall_element(element_id="wall-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "wall",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("4"),
+        "height": Decimal("3"),
+        "depth": Decimal("0.2"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def door_element(element_id="door-id", *, kind=_UNSET, **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "door",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("0.9"),
+        "height": Decimal("2.1"),
+        "depth": Decimal("0.1"),
+        "rotationY": Decimal("0"),
+        "wallId": "wall-id",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    if kind is not _UNSET:
+        item["kind"] = kind
+    item.update(overrides)
+    return item
+
+
 def floor_element(element_id="floor-ground", *, level="0", **overrides):
     item = {
         "elementId": element_id,
@@ -873,6 +912,76 @@ def test_creates_manual_block_for_table_on_another_floor(app_and_tables):
             "blocked": True,
         },
     )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [_UNSET, "entrance", "kitchen"],
+    ids=["legacy-without-kind", "entrance", "kitchen"],
+)
+def test_door_kind_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+    kind,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                wall_element(),
+                door_element(kind=kind),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        door_element(kind="service"),
+        door_element(kind=None),
+        wall_element(kind="entrance"),
+    ],
+    ids=["unknown-door-kind", "non-string-door-kind", "kind-on-wall"],
+)
+def test_invalid_door_kind_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element, table_element()]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
 def test_floor_with_requested_id_is_not_a_table(app_and_tables):

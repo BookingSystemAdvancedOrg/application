@@ -135,6 +135,27 @@ def wall_element(element_id="wall-id"):
     }
 
 
+def door_element(element_id="door-id", *, kind=_UNSET, **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "door",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("0.9"),
+        "height": Decimal("2.1"),
+        "depth": Decimal("0.1"),
+        "rotationY": Decimal("0"),
+        "wallId": "wall-id",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    if kind is not _UNSET:
+        item["kind"] = kind
+    item.update(overrides)
+    return item
+
+
 def floor_element(element_id="floor-ground", *, level="0", **overrides):
     item = {
         "elementId": element_id,
@@ -527,6 +548,67 @@ def test_multi_floor_snapshot_exposes_only_bookable_table_details(
         {"tableId": "ground-table", "seats": 4},
         {"tableId": "upper-table", "seats": 6},
     ]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [_UNSET, "entrance", "kitchen"],
+    ids=["legacy-without-kind", "entrance", "kitchen"],
+)
+def test_door_kind_does_not_affect_active_table_availability(
+    app_and_tables,
+    monkeypatch,
+    kind,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                wall_element(),
+                door_element(kind=kind),
+                table_element("bookable-table", seats="6"),
+            ],
+        ),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "bookable-table", "seats": 6}
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        door_element(kind="service"),
+        door_element(kind=None),
+        wall_element() | {"kind": "entrance"},
+    ],
+    ids=["unknown-door-kind", "non-string-door-kind", "kind-on-wall"],
+)
+def test_invalid_door_kind_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[element, table_element("bookable-table")],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
 
 
 def test_empty_floor_is_valid_and_does_not_create_bookable_table(

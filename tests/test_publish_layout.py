@@ -589,6 +589,80 @@ def test_publishes_supported_element_variants(
     ]
 
 
+@pytest.mark.parametrize("kind", ["entrance", "kitchen"])
+def test_publishes_door_kind_in_response_and_snapshot(
+    app_and_tables,
+    kind,
+):
+    app, live_table, snapshot_table = app_and_tables
+    source = live_element_item(f"{kind}-door") | {
+        "type": "door",
+        "wallId": "wall-id",
+        "kind": kind,
+    }
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert response_body(response)["elements"] == [public_element(source)]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(source)
+    ]
+
+
+def test_publishes_legacy_door_without_kind(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    source = live_element_item("legacy-door") | {
+        "type": "door",
+        "wallId": "wall-id",
+    }
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert "kind" not in response_body(response)["elements"][0]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(source)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        live_element_item("invalid-kind-door")
+        | {
+            "type": "door",
+            "wallId": "wall-id",
+            "kind": "service",
+        },
+        live_element_item("non-string-kind-door")
+        | {
+            "type": "door",
+            "wallId": "wall-id",
+            "kind": 1,
+        },
+        live_element_item("wall-with-kind") | {"kind": "entrance"},
+    ],
+)
+def test_invalid_door_kind_returns_409_without_snapshot(
+    app_and_tables,
+    source,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
+
+
 @pytest.mark.parametrize(
     ("sort_key", "version"),
     [

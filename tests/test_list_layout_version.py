@@ -235,7 +235,7 @@ def public_active_element(item):
         "rotationY",
     }
     variant_fields = {
-        "door": {"wallId"},
+        "door": {"wallId", "kind"},
         "window": {"wallId"},
         "table": {"shape", "seats", "zone"},
     }
@@ -494,6 +494,99 @@ def test_public_active_layout_supports_empty_snapshot(
     response = app.handler(make_public_event(), None)
 
     assert_response(response, 200, {"floors": [], "elements": []})
+
+
+@pytest.mark.parametrize("kind", ["entrance", "kitchen"])
+def test_public_active_layout_returns_door_kind(
+    app_and_table,
+    monkeypatch,
+    kind,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    door = layout_element(
+        f"{kind}-door",
+        type="door",
+        wallId="wall-id",
+        kind=kind,
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[door])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {"floors": [], "elements": [public_active_element(door)]},
+    )
+
+
+def test_public_active_layout_supports_legacy_door_without_kind(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    door = layout_element(
+        "legacy-door",
+        type="door",
+        wallId="wall-id",
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[door])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {"floors": [], "elements": [public_active_element(door)]},
+    )
+    assert "kind" not in response_body(response)["elements"][0]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        layout_element(
+            "invalid-kind-door",
+            type="door",
+            wallId="wall-id",
+            kind="service",
+        ),
+        layout_element(
+            "non-string-kind-door",
+            type="door",
+            wallId="wall-id",
+            kind=1,
+        ),
+        layout_element("wall-with-kind", kind="entrance"),
+    ],
+)
+def test_public_active_layout_rejects_invalid_door_kind(
+    app_and_table,
+    monkeypatch,
+    element,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[element])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -2218,6 +2311,17 @@ def test_missing_snapshot_field_returns_409(
         layout_element(wallId="invalid-for-wall"),
         layout_element(type="door"),
         layout_element(
+            type="door",
+            wallId="wall-id",
+            kind="service",
+        ),
+        layout_element(
+            type="door",
+            wallId="wall-id",
+            kind=1,
+        ),
+        layout_element(kind="entrance"),
+        layout_element(
             type="table",
             shape="round",
             seats=Decimal("2.5"),
@@ -2272,6 +2376,42 @@ def test_lists_each_supported_embedded_element(app_and_table, element):
     assert response_body(response)["items"][0]["elements"] == [
         json_ready(element)
     ]
+
+
+@pytest.mark.parametrize("kind", ["entrance", "kitchen"])
+def test_lists_door_kind_for_staff(app_and_table, kind):
+    app, snapshot_table = app_and_table
+    door = layout_element(
+        f"{kind}-door",
+        type="door",
+        wallId="wall-id",
+        kind=kind,
+    )
+    snapshot_table.put_item(Item=snapshot_item(1, elements=[door]))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    assert response_body(response)["items"][0]["elements"] == [
+        json_ready(door)
+    ]
+
+
+def test_lists_legacy_door_without_kind_for_staff(app_and_table):
+    app, snapshot_table = app_and_table
+    door = layout_element(
+        "legacy-door",
+        type="door",
+        wallId="wall-id",
+    )
+    snapshot_table.put_item(Item=snapshot_item(1, elements=[door]))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    returned_door = response_body(response)["items"][0]["elements"][0]
+    assert returned_door == json_ready(door)
+    assert "kind" not in returned_door
 
 
 def test_lists_multi_floor_snapshot_and_preserves_relationships(

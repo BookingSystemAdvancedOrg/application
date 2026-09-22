@@ -6,7 +6,8 @@ TRIGGER:
 PURPOSE:
     Copies a location's mutable layout elements into a new immutable
     Published Layout Snapshot version. Publishing does not activate the
-    version or change any existing snapshot.
+    version or change any existing snapshot. Optional door purposes are
+    validated and preserved in the snapshot as ``kind``.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -47,6 +48,7 @@ _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_DOOR_KINDS = frozenset({"entrance", "kitchen"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -58,7 +60,16 @@ _GEOMETRY_FIELDS = (
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
 _VARIANT_FIELDS = frozenset(
-    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+    {
+        "name",
+        "level",
+        "floorId",
+        "shape",
+        "seats",
+        "zone",
+        "wallId",
+        "kind",
+    }
 )
 _MAX_PUBLISH_ATTEMPTS = 2
 _AMBIGUOUS_DYNAMO_CODES = {
@@ -228,6 +239,8 @@ def _logical_element(item, location_id):
 
     if element_type in {"door", "window"}:
         allowed_variant_fields.add("wallId")
+        if element_type == "door":
+            allowed_variant_fields.add("kind")
     elif element_type == "table":
         allowed_variant_fields.update({"shape", "seats", "zone"})
     if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
@@ -254,6 +267,13 @@ def _logical_element(item, location_id):
 
     if element_type in {"door", "window"}:
         fields["wallId"] = _required_string(item, "wallId")
+        if element_type == "door" and "kind" in item:
+            kind = item.get("kind")
+            if not isinstance(kind, str) or kind not in _DOOR_KINDS:
+                raise _PublishConflict(
+                    "live layout element is inconsistent"
+                )
+            fields["kind"] = kind
     elif element_type == "table":
         shape = item.get("shape")
         if not isinstance(shape, str) or shape not in _TABLE_SHAPES:

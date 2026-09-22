@@ -10,8 +10,9 @@ PURPOSE:
     Lists or archives published layout snapshots for one location. Archiving
     is owner/super-user only, preserves the immutable snapshot history, and
     rejects the current or pending version. The public active-layout route
-    returns only customer-facing floor metadata and renderable elements, and
-    deliberately performs no JWT validation.
+    returns only customer-facing floor metadata and renderable elements,
+    including an optional persisted door ``kind``, and deliberately performs
+    no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -74,6 +75,7 @@ _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_DOOR_KINDS = frozenset({"entrance", "kitchen"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -85,7 +87,16 @@ _GEOMETRY_FIELDS = (
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
 _VARIANT_FIELDS = frozenset(
-    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+    {
+        "name",
+        "level",
+        "floorId",
+        "shape",
+        "seats",
+        "zone",
+        "wallId",
+        "kind",
+    }
 )
 _PUBLIC_SNAPSHOT_FIELDS = (
     "version",
@@ -110,6 +121,7 @@ _CUSTOMER_ELEMENT_FIELDS = (
     "seats",
     "zone",
     "wallId",
+    "kind",
 )
 _SERIALIZER = TypeSerializer()
 
@@ -300,6 +312,8 @@ def _public_element(item):
 
         if element_type in {"door", "window"}:
             allowed_variant_fields.add("wallId")
+            if element_type == "door":
+                allowed_variant_fields.add("kind")
         elif element_type == "table":
             allowed_variant_fields.update({"shape", "seats", "zone"})
         if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
@@ -325,6 +339,11 @@ def _public_element(item):
 
         if element_type in {"door", "window"}:
             fields["wallId"] = _required_string(item, "wallId")
+            if element_type == "door" and "kind" in item:
+                kind = item.get("kind")
+                if not isinstance(kind, str) or kind not in _DOOR_KINDS:
+                    raise ValueError
+                fields["kind"] = kind
         elif element_type == "table":
             if item.get("shape") not in _TABLE_SHAPES:
                 raise ValueError

@@ -115,8 +115,18 @@ _ELEMENT_TYPES = frozenset(
     {"floor", "wall", "door", "window", "table"}
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_DOOR_KINDS = frozenset({"entrance", "kitchen"})
 _VARIANT_FIELDS = frozenset(
-    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+    {
+        "name",
+        "level",
+        "floorId",
+        "shape",
+        "seats",
+        "zone",
+        "wallId",
+        "kind",
+    }
 )
 _AMBIGUOUS_DYNAMO_CODES = {
     "InternalFailure",
@@ -470,6 +480,8 @@ def _validate_layout_element(element):
 
     if element_type in {"door", "window"}:
         allowed_variant_fields.add("wallId")
+        if element_type == "door":
+            allowed_variant_fields.add("kind")
     elif element_type == "table":
         allowed_variant_fields.update({"shape", "seats", "zone"})
     if (set(element) & _VARIANT_FIELDS) - allowed_variant_fields:
@@ -490,6 +502,10 @@ def _validate_layout_element(element):
 
     if element_type in {"door", "window"}:
         _stored_string(element, "wallId")
+        if element_type == "door" and "kind" in element:
+            kind = element.get("kind")
+            if not isinstance(kind, str) or kind not in _DOOR_KINDS:
+                raise ValueError
     elif element_type == "table":
         if element.get("shape") not in _TABLE_SHAPES:
             raise ValueError

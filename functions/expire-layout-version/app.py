@@ -352,12 +352,7 @@ def _validate_state(state, details):
             raise ValueError("activationToken is invalid")
         cutover_at = state.get("cutoverAt")
         parsed_cutover = _parse_utc_timestamp(cutover_at, "cutoverAt")
-        if (
-            parsed_cutover.hour != 1
-            or parsed_cutover.minute != 0
-            or parsed_cutover.second != 0
-            or parsed_cutover.microsecond != 0
-        ):
+        if parsed_cutover.second != 0 or parsed_cutover.microsecond != 0:
             raise ValueError("cutoverAt is invalid")
         schedule_name = _required_string(
             state.get("scheduleName"),

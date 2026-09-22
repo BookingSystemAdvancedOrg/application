@@ -860,7 +860,7 @@ def test_repeat_of_scheduled_activation_is_idempotent(
     monkeypatch,
 ):
     app, snapshot_table = app_and_table
-    cutover_at = "2026-10-05T01:00:00Z"
+    cutover_at = "2026-10-05T14:37:00Z"
     current = snapshot_item(
         1,
         is_current=True,
@@ -875,7 +875,7 @@ def test_repeat_of_scheduled_activation_is_idempotent(
     )
     snapshot_table.put_item(Item=current)
     snapshot_table.put_item(Item=target)
-    state = pending_activation_state(app)
+    state = pending_activation_state(app, cutover_at=cutover_at)
     snapshot_table.put_item(Item=state)
     pending = app._validate_state(state, LOCATION_ID)["pending"]
     schedule_request = app._schedule_request(current, target, pending)
@@ -1506,7 +1506,6 @@ def test_invalid_activation_state_returns_409(
         ("pendingStatus", "unknown", False),
         ("activationToken", "g" * 64, False),
         ("cutoverAt", "2026-10-05T01:00:00+02:00", False),
-        ("cutoverAt", "2026-10-05T02:00:00Z", False),
         ("scheduleName", "unsafe#schedule", False),
         ("scheduleArn", "not-an-arn", False),
         ("scheduleArn", None, True),
@@ -1534,6 +1533,44 @@ def test_invalid_pending_state_returns_409(
         state.pop(field)
     else:
         state[field] = value
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    scheduler_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "cutover_at",
+    [
+        "2026-10-05T14:37:01Z",
+        "2026-10-05T14:37:00.123000Z",
+    ],
+)
+def test_pending_cutover_requires_whole_utc_minute(
+    app_and_table,
+    monkeypatch,
+    cutover_at,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(2, effectiveFrom=cutover_at, expiresAt=None)
+    state = pending_activation_state(app, cutover_at=cutover_at)
     for item in (current, target, state):
         snapshot_table.put_item(Item=item)
     scheduler_factory = Mock(

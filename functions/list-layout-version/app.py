@@ -684,12 +684,7 @@ def _archive_activation_state_details(state, location_id):
         parsed_cutover = datetime.fromisoformat(
             cutover_at.replace("Z", "+00:00")
         )
-        if (
-            parsed_cutover.hour != 1
-            or parsed_cutover.minute != 0
-            or parsed_cutover.second != 0
-            or parsed_cutover.microsecond != 0
-        ):
+        if parsed_cutover.second != 0 or parsed_cutover.microsecond != 0:
             raise ValueError
 
         token_revision = (

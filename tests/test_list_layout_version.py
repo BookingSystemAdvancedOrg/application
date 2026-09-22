@@ -1342,12 +1342,13 @@ def test_current_layout_version_cannot_be_archived(app_and_table):
 
 def test_pending_layout_version_cannot_be_archived(app_and_table):
     app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T14:37:00Z"
     current = snapshot_item(1, is_current=True)
     pending = snapshot_item(
         2,
-        effectiveFrom="2026-10-05T01:00:00Z",
+        effectiveFrom=cutover_at,
     )
-    state = pending_activation_state()
+    state = pending_activation_state(cutover_at=cutover_at)
     for item in (current, pending, state):
         snapshot_table.put_item(Item=item)
 
@@ -1361,6 +1362,38 @@ def test_pending_layout_version_cannot_be_archived(app_and_table):
     assert snapshot_table.get_item(
         Key={"PK": pending["PK"], "SK": pending["SK"]}
     )["Item"] == pending
+    assert snapshot_table.get_item(
+        Key={"PK": state["PK"], "SK": state["SK"]}
+    )["Item"] == state
+
+
+@pytest.mark.parametrize(
+    "cutover_at",
+    [
+        "2026-10-05T14:37:01Z",
+        "2026-10-05T14:37:00.000001Z",
+    ],
+)
+def test_pending_cutover_requires_whole_utc_minute(
+    app_and_table,
+    cutover_at,
+):
+    app, snapshot_table = app_and_table
+    target = snapshot_item(2, effectiveFrom=cutover_at)
+    state = pending_activation_state(cutover_at=cutover_at)
+    snapshot_table.put_item(Item=target)
+    snapshot_table.put_item(Item=state)
+
+    response = app.handler(make_archive_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"] == target
     assert snapshot_table.get_item(
         Key={"PK": state["PK"], "SK": state["SK"]}
     )["Item"] == state

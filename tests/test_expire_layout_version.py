@@ -29,8 +29,8 @@ ACTIVATE_APP_PATH = (
 TABLE_NAME = "test-published-layout-snapshot"
 LOCATION_ID = "location-id"
 CALLER_SUB = "caller-sub"
-CUTOVER_AT = "2026-10-05T01:00:00Z"
-NOW = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
+CUTOVER_AT = "2026-10-05T14:37:00Z"
+NOW = datetime(2026, 10, 5, 14, 37, tzinfo=timezone.utc)
 
 
 def snapshot_item(version, *, is_current, **overrides):
@@ -602,7 +602,8 @@ def test_worker_clock_must_be_an_aware_datetime(
         "partial-pending-fields",
         "bad-status",
         "bad-token",
-        "wrong-cutover-hour",
+        "cutover-with-seconds",
+        "fractional-cutover",
         "non-utc-cutover",
         "bad-schedule-name",
         "missing-schedule-arn",
@@ -640,11 +641,14 @@ def test_invalid_matching_activation_state_fails_without_transaction(
         state["pendingStatus"] = "running"
     elif case == "bad-token":
         state["activationToken"] = "g" * 64
-    elif case == "wrong-cutover-hour":
-        state = pending_state(app, cutover_at="2026-10-05T02:00:00Z")
+    elif case == "cutover-with-seconds":
+        state = pending_state(app, cutover_at="2026-10-05T14:37:01Z")
+        event = event_for_state(state)
+    elif case == "fractional-cutover":
+        state = pending_state(app, cutover_at="2026-10-05T14:37:00.1Z")
         event = event_for_state(state)
     elif case == "non-utc-cutover":
-        state = pending_state(app, cutover_at="2026-10-05T01:00:00+02:00")
+        state = pending_state(app, cutover_at="2026-10-05T14:37:00+02:00")
         event = event_for_state(state)
     elif case == "bad-schedule-name":
         state["scheduleName"] = "expire-layout-version-wrong"

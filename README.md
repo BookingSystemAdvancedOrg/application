@@ -109,9 +109,11 @@ stored attributes.
 The active-layout route returns `{"floors": [...], "elements": [...]}`. Each
 floor contains only `floorId`, `name`, and `level`; renderable non-floor
 elements contain their validated geometry, optional `floorId`, and applicable
-table, door, or window fields. It never exposes snapshot versions, lifecycle
-timestamps, audit data, DynamoDB keys, or the activation-state item. Both exact
-routes must remain unauthenticated in API Gateway.
+table, door, or window fields. A door may include the persisted `kind` value
+`entrance` or `kitchen`; its absence means the door is legacy/unspecified. It
+never exposes snapshot versions, lifecycle timestamps, audit data, DynamoDB
+keys, or the activation-state item. Both exact routes must remain
+unauthenticated in API Gateway.
 
 The menu route family deliberately splits reads from writes. Both
 `GET /locations/{locationId}/menu` and protected GET requests below
@@ -139,8 +141,12 @@ uses tables from every floor but intentionally returns only `tableId` and
 
 The public active-layout read separates published floor records into `floors`
 and returns walls, doors, windows, and tables in `elements`. A client selects a
-floor by `floorId` and filters `elements` by that value. Legacy flat layouts
-return an empty `floors` array and elements without `floorId`.
+floor by `floorId` and filters `elements` by that value. Door `kind`, when
+present, is preserved through publication and returned to both staff version
+reads and this public response so clients can distinguish an `entrance` from a
+`kitchen` door. Existing doors without `kind` remain valid and should be
+rendered as an unspecified door. Legacy flat layouts return an empty `floors`
+array and elements without `floorId`.
 
 Stop and remove the local documentation container when finished:
 

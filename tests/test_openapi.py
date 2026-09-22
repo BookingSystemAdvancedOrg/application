@@ -352,7 +352,7 @@ def test_public_active_layout_contract_matches_handler(openapi_document):
     }
     expected_fields = {
         "Wall": common_fields | {"floorId"},
-        "Door": common_fields | {"floorId", "wallId"},
+        "Door": common_fields | {"floorId", "wallId", "kind"},
         "Window": common_fields | {"floorId", "wallId"},
         "Table": common_fields | {"floorId", "shape", "seats", "zone"},
     }
@@ -360,10 +360,14 @@ def test_public_active_layout_contract_matches_handler(openapi_document):
         schema = schemas[f"PublicLayout{element_type}"]
         assert schema["additionalProperties"] is False
         assert set(schema["properties"]) == fields
-        assert set(schema["required"]) == fields - {"floorId"}
+        assert set(schema["required"]) == fields - {"floorId", "kind"}
         assert {"updatedBy", "updatedAt"}.isdisjoint(
             schema["properties"]
         )
+
+    public_door_kind = schemas["PublicLayoutDoor"]["properties"]["kind"]
+    assert public_door_kind["type"] == "string"
+    assert public_door_kind["enum"] == ["entrance", "kitchen"]
 
 
 def test_get_availability_contract_matches_handler(openapi_document):
@@ -550,12 +554,33 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
         assert "name" not in schema["properties"]
         assert "level" not in schema["properties"]
 
+    door_create = schemas["LayoutDoorCreateRequest"]
+    assert "kind" in door_create["properties"]
+    assert "kind" not in door_create["required"]
+    assert door_create["properties"]["kind"]["type"] == "string"
+    assert door_create["properties"]["kind"]["enum"] == [
+        "entrance",
+        "kitchen",
+    ]
+    for element_type in ("Wall", "Window", "Table"):
+        assert "kind" not in schemas[
+            f"Layout{element_type}CreateRequest"
+        ]["properties"]
+
     update = schemas["LayoutElementUpdateRequest"]
     assert update["additionalProperties"] is False
     assert update["minProperties"] == 1
     assert "type" not in update["properties"]
-    assert {"name", "level", "floorId"}.issubset(update["properties"])
+    assert {"name", "level", "floorId", "kind"}.issubset(
+        update["properties"]
+    )
     assert update["properties"]["level"]["type"] == "integer"
+    assert update["properties"]["kind"]["type"] == "string"
+    assert update["properties"]["kind"]["enum"] == [
+        "entrance",
+        "kitchen",
+    ]
+    assert "kind" not in update.get("required", [])
 
     element = schemas["LayoutElement"]
     assert element["properties"]["type"]["enum"] == [
@@ -565,8 +590,15 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
         "window",
         "table",
     ]
-    assert {"name", "level", "floorId"}.issubset(element["properties"])
-    assert not {"name", "level", "floorId"}.intersection(
+    assert {"name", "level", "floorId", "kind"}.issubset(
+        element["properties"]
+    )
+    assert element["properties"]["kind"]["type"] == "string"
+    assert element["properties"]["kind"]["enum"] == [
+        "entrance",
+        "kitchen",
+    ]
+    assert not {"name", "level", "floorId", "kind"}.intersection(
         element["required"]
     )
 

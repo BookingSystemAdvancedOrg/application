@@ -3137,6 +3137,15 @@ components:
           description: |
             Referenced wall identifier. This Lambda does not verify that the
             wall exists or that the door lies within it.
+        kind:
+          type: string
+          enum:
+            - entrance
+            - kitchen
+          description: |
+            Optional door classification. `entrance` identifies a customer
+            entrance and `kitchen` identifies a kitchen/service entrance.
+            This field applies only to doors; legacy doors may omit it.
 
     LayoutWindowCreateRequest:
       type: object
@@ -3263,9 +3272,10 @@ components:
         immutable. `name` and `level` apply only to a stored floor; `floorId`
         applies only to non-floor elements; `shape`, `seats`, and `zone` apply
         only to a stored table; `wallId` applies only to a stored door or
-        window. The Lambda validates the merged complete element and rejects
-        inapplicable fields. A supplied `floorId` must be nonblank and cannot
-        be cleared with null or an empty string.
+        window; `kind` applies only to a stored door. The Lambda validates the
+        merged complete element and rejects inapplicable fields. A supplied
+        `floorId` must be nonblank and cannot be cleared with null or an empty
+        string.
       properties:
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
@@ -3304,6 +3314,14 @@ components:
           $ref: '#/components/schemas/LayoutBoundedString'
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
+        kind:
+          type: string
+          enum:
+            - entrance
+            - kitchen
+          description: |
+            Optional classification that applies only to a stored door.
+            Legacy doors may omit it.
 
     LayoutElement:
       type: object
@@ -3324,9 +3342,9 @@ components:
         Logical layout record. A floor contains `name` and signed integer
         `level`. A non-floor element may contain `floorId`; a table also
         contains `shape`, `seats`, and `zone`; a door or window also contains
-        `wallId`. Published multi-floor snapshots require every non-floor
-        element to reference a floor in that same snapshot. Internal DynamoDB
-        keys are never returned.
+        `wallId`; a door may also contain `kind`. Published multi-floor
+        snapshots require every non-floor element to reference a floor in that
+        same snapshot. Internal DynamoDB keys are never returned.
       properties:
         elementId:
           type: string
@@ -3374,6 +3392,14 @@ components:
           $ref: '#/components/schemas/LayoutBoundedString'
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
+        kind:
+          type: string
+          enum:
+            - entrance
+            - kitchen
+          description: |
+            Optional door classification. Present only on a door and absent
+            from legacy doors that have not been classified.
         updatedBy:
           type: string
           minLength: 1
@@ -3496,6 +3522,13 @@ components:
             layout.
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
+        kind:
+          type: string
+          enum:
+            - entrance
+            - kitchen
+          description: |
+            Optional door classification. Legacy doors may omit it.
 
     PublicLayoutWindow:
       type: object

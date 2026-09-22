@@ -111,7 +111,7 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `archivedBy` | String, archived snapshots only |
 | `archivedAt` | String (ISO8601), archived snapshots only |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level` and child `floorId`. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, and an optional door `kind`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
@@ -124,7 +124,7 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 
 Only an inactive version that is neither `LAYOUT#ACTIVATION.currentVersion` nor `pendingVersion` may be archived. A current or pending version is rejected, and an archived version cannot later be selected for activation. Valid archived snapshots are omitted from the protected version list and can never be returned by the public active-layout route. If activation state incorrectly points to an archived snapshot, readers and transition workers treat that as inconsistent state rather than serving or activating it. Repeating archive for an already valid archived version is an idempotent no-op.
 
-The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy flat and empty active snapshots remain representable.
+The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`, including a door's optional persisted `kind`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy doors without `kind`, plus legacy flat and empty active snapshots, remain representable.
 
 ### Layout Activation State
 
@@ -170,6 +170,7 @@ Individual floors, walls, doors, windows, and tables in a location's floor plan,
 | `seats` | Positive integer (tables only) |
 | `zone` | String (tables only) |
 | `wallId` | Nonblank String, max 128 characters (doors/windows only) |
+| `kind` | String (`entrance`\|`kitchen`, optional on doors only) |
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
 
@@ -180,9 +181,17 @@ must be moved or deleted explicitly. Floor names and levels do not have a
 uniqueness constraint. An existing child can be moved by updating `floorId`,
 but the API does not accept null or an empty string to clear it.
 
+A door may persist `kind="entrance"` or `kind="kitchen"`. The field is
+optional for backward compatibility: its absence means legacy/unspecified,
+not either enum value. It may be added or changed by a partial update, but it
+cannot be set to null, cleared with an empty string, or stored on another
+element type.
+
 `publish-layout` reads every item in this table for a location (`Query` on `PK`,
 `SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout
 Snapshot version's `elements` list—that's the "compile" step referenced above.
+The compile step preserves a valid door `kind`; staff version reads and the
+public active-layout projection return it unchanged when present.
 Publication enforces the relationship boundary:
 
 - If the draft contains at least one floor, every non-floor element must have a

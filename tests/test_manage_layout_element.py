@@ -112,6 +112,8 @@ def public_element(item):
 
     if item["type"] in {"door", "window"}:
         fields.append("wallId")
+        if item["type"] == "door" and "kind" in item:
+            fields.append("kind")
     elif item["type"] == "table":
         fields.extend(["shape", "seats", "zone"])
     fields.extend(["updatedBy", "updatedAt"])
@@ -443,6 +445,99 @@ def test_create_each_supported_element_type(app_and_table, element_type):
     assert stored["SK"] == f"LAYOUT#ELEMENT#{ELEMENT_ID}"
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == UPDATED_AT
+
+
+@pytest.mark.parametrize("kind", ["entrance", "kitchen"])
+def test_create_get_and_list_persist_optional_door_kind(
+    app_and_table,
+    kind,
+):
+    app, layout_table = app_and_table
+
+    create_response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("door", kind=kind),
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    expected = public_element(stored)
+    assert stored["kind"] == kind
+    assert_response(create_response, 201, expected)
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+
+    assert_response(get_response, 200, expected)
+    assert_response(list_response, 200, {"items": [expected]})
+
+
+def test_legacy_stored_door_without_kind_remains_readable(app_and_table):
+    app, layout_table = app_and_table
+    legacy = element_item(element_type="door")
+    put_item(layout_table, legacy)
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+
+    expected = public_element(legacy)
+    assert "kind" not in expected
+    assert_response(get_response, 200, expected)
+    assert_response(list_response, 200, {"items": [expected]})
+
+
+@pytest.mark.parametrize("kind", [None, "", "front", "Entrance", 123, []])
+def test_create_rejects_invalid_door_kind(app_and_table, kind):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("door", kind=kind),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "kind must be entrance or kitchen"},
+    )
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize(
+    "element_type",
+    ["floor", "wall", "window", "table"],
+)
+def test_create_rejects_door_kind_for_other_element_types(
+    app_and_table,
+    element_type,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(element_type, kind="entrance"),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for {element_type}: kind"},
+    )
+    assert table_items(layout_table) == []
 
 
 @pytest.mark.parametrize("element_type", ["wall", "door", "window", "table"])
@@ -931,6 +1026,147 @@ def test_partial_update_merges_and_replaces_audit_fields(
     assert stored["updatedAt"] == NEXT_UPDATED_AT
 
 
+@pytest.mark.parametrize(
+    ("original_kind", "new_kind"),
+    [(None, "entrance"), ("entrance", "kitchen")],
+)
+def test_partial_update_can_add_or_change_door_kind(
+    app_and_table,
+    monkeypatch,
+    original_kind,
+    new_kind,
+):
+    app, layout_table = app_and_table
+    original = element_item(
+        element_type="door",
+        updated_by="previous-sub",
+        **({} if original_kind is None else {"kind": original_kind}),
+    )
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"kind": new_kind},
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(response, 200, public_element(stored))
+    assert stored["kind"] == new_kind
+    assert stored["updatedBy"] == CALLER_SUB
+    assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+def test_unrelated_update_keeps_legacy_door_kind_optional(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="door")
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"x": 25.5},
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(response, 200, public_element(stored))
+    assert stored["x"] == Decimal("25.5")
+    assert "kind" not in stored
+    assert stored["updatedBy"] == CALLER_SUB
+    assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+@pytest.mark.parametrize("kind", [None, "", "front", "Entrance", 123, []])
+def test_invalid_door_kind_update_does_not_change_item(
+    app_and_table,
+    kind,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="door", kind="entrance")
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"kind": kind},
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "kind must be entrance or kitchen"},
+    )
+    assert get_item(layout_table) == original
+
+
+@pytest.mark.parametrize(
+    "element_type",
+    ["floor", "wall", "window", "table"],
+)
+def test_update_rejects_door_kind_for_other_element_types(
+    app_and_table,
+    element_type,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type=element_type)
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"kind": "entrance"},
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for {element_type}: kind"},
+    )
+    assert get_item(layout_table) == original
+
+
+def test_unchanged_door_kind_preserves_audit_and_skips_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="door", kind="entrance")
+    put_item(layout_table, original)
+    table_spy = Mock(wraps=layout_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"kind": "entrance"},
+        ),
+        None,
+    )
+
+    assert_response(response, 200, public_element(original))
+    table_spy.put_item.assert_not_called()
+    assert get_item(layout_table) == original
+
+
 def test_partial_update_can_move_an_element_to_another_floor(
     app_and_table,
     monkeypatch,
@@ -1069,6 +1305,36 @@ def test_inconsistent_stored_element_returns_409(
     app, _ = app_and_table
     corrupt = element_item()
     corrupt[field] = value
+    layout_table = Mock()
+    layout_table.get_item.return_value = {"Item": corrupt}
+    monkeypatch.setattr(app, "table", lambda _: layout_table)
+
+    response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout element record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        element_item(element_type="door", kind="front"),
+        element_item(element_type="wall", kind="entrance"),
+    ],
+    ids=["invalid-door-kind", "kind-on-wall"],
+)
+def test_inconsistent_stored_kind_returns_409(
+    app_and_table,
+    monkeypatch,
+    corrupt,
+):
+    app, _ = app_and_table
     layout_table = Mock()
     layout_table.get_item.return_value = {"Item": corrupt}
     monkeypatch.setattr(app, "table", lambda _: layout_table)

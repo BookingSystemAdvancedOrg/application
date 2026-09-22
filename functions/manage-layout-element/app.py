@@ -6,9 +6,11 @@ TRIGGER:
 
 PURPOSE:
     Staff-facing CRUD for floor, wall, door, window, and table elements in a
-    location's mutable multi-floor layout draft. Non-floor elements may refer
-    to a floor element through ``floorId``. Dispatches GET/POST on ``items``
-    and GET/PUT/DELETE on ``items/{elementId}``.
+    location's mutable multi-floor layout draft. Doors may identify their
+    persisted purpose as ``entrance`` or ``kitchen`` through ``kind``.
+    Non-floor elements may refer to a floor element through ``floorId``.
+    Dispatches GET/POST on ``items`` and GET/PUT/DELETE on
+    ``items/{elementId}``.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -51,6 +53,7 @@ LIVE_LAYOUT_ELEMENT_TABLE_NAME = os.environ[
 _ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
 _ELEMENT_TYPES = frozenset({"floor", "wall", "door", "window", "table"})
 _TABLE_SHAPES = frozenset({"rect", "round"})
+_DOOR_KINDS = frozenset({"entrance", "kitchen"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -62,7 +65,16 @@ _GEOMETRY_FIELDS = (
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
 _VARIANT_FIELDS = frozenset(
-    {"name", "level", "floorId", "shape", "seats", "zone", "wallId"}
+    {
+        "name",
+        "level",
+        "floorId",
+        "shape",
+        "seats",
+        "zone",
+        "wallId",
+        "kind",
+    }
 )
 _LAYOUT_FIELDS = frozenset(
     {"type", *_GEOMETRY_FIELDS, *_VARIANT_FIELDS}
@@ -220,6 +232,13 @@ def _table_shape(source):
     return value
 
 
+def _door_kind(source):
+    value = _present(source, "kind")
+    if not isinstance(value, str) or value not in _DOOR_KINDS:
+        raise ValueError("kind must be entrance or kitchen")
+    return value
+
+
 def _validated_layout_fields(source):
     element_type = _element_type(source)
     allowed_variant_fields = set()
@@ -230,6 +249,8 @@ def _validated_layout_fields(source):
 
     if element_type in {"door", "window"}:
         allowed_variant_fields.add("wallId")
+        if element_type == "door":
+            allowed_variant_fields.add("kind")
     elif element_type == "table":
         allowed_variant_fields.update({"shape", "seats", "zone"})
 
@@ -259,6 +280,8 @@ def _validated_layout_fields(source):
 
     if element_type in {"door", "window"}:
         fields["wallId"] = _nonempty_string(source, "wallId")
+        if element_type == "door" and "kind" in source:
+            fields["kind"] = _door_kind(source)
     elif element_type == "table":
         fields["shape"] = _table_shape(source)
         fields["seats"] = _number(

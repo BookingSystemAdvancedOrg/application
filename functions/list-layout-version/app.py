@@ -11,8 +11,8 @@ PURPOSE:
     is owner/super-user only, preserves the immutable snapshot history, and
     rejects the current or pending version. The public active-layout route
     returns only customer-facing floor metadata and renderable elements,
-    including an optional persisted door ``kind``, and deliberately performs
-    no JWT validation.
+    including cash registers and an optional persisted door ``kind``, and
+    deliberately performs no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -72,7 +72,7 @@ _SCHEDULED = "scheduled"
 _SCHEDULE_GROUP = "default"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _ELEMENT_TYPES = frozenset(
-    {"floor", "wall", "door", "window", "table"}
+    {"floor", "wall", "door", "window", "table", "cashRegister"}
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})

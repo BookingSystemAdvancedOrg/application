@@ -176,6 +176,24 @@ def floor_element(element_id="floor-ground", *, level="0", **overrides):
     return item
 
 
+def cash_register_element(element_id="cash-register", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "cashRegister",
+        "x": Decimal("2"),
+        "y": Decimal("0"),
+        "z": Decimal("3"),
+        "width": Decimal("1.5"),
+        "height": Decimal("1"),
+        "depth": Decimal("0.7"),
+        "rotationY": Decimal("90"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
 def activation_state(version="1", **overrides):
     item = {
         "PK": f"LOCATION#{LOCATION_ID}",
@@ -579,6 +597,124 @@ def test_door_kind_does_not_affect_active_table_availability(
     assert captured["tables"] == [
         {"tableId": "bookable-table", "seats": 6}
     ]
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [
+            cash_register_element(),
+            table_element("bookable-table", seats="6"),
+        ],
+        [
+            floor_element(),
+            cash_register_element(floorId="floor-ground"),
+            table_element(
+                "bookable-table",
+                seats="6",
+                floorId="floor-ground",
+            ),
+        ],
+    ],
+    ids=["legacy-layout", "floor-scoped-layout"],
+)
+def test_cash_register_does_not_affect_active_table_availability(
+    app_and_tables,
+    monkeypatch,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "bookable-table", "seats": 6}
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        cash_register_element(name="Front register"),
+        cash_register_element(level=Decimal("0")),
+        cash_register_element(shape="rect"),
+        cash_register_element(seats=Decimal("1")),
+        cash_register_element(zone="front"),
+        cash_register_element(wallId="wall-id"),
+        cash_register_element(kind="entrance"),
+        cash_register_element(width=Decimal("0")),
+        cash_register_element(type="cashregister"),
+    ],
+    ids=[
+        "name",
+        "level",
+        "shape",
+        "seats",
+        "zone",
+        "wall-id",
+        "kind",
+        "invalid-geometry",
+        "wrong-type-casing",
+    ],
+)
+def test_invalid_cash_register_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), cash_register_element()],
+        [
+            floor_element(),
+            cash_register_element(floorId="missing-floor"),
+        ],
+        [cash_register_element(floorId="missing-floor")],
+    ],
+    ids=[
+        "missing-floor-id",
+        "unknown-floor-id",
+        "floor-id-without-floors",
+    ],
+)
+def test_invalid_cash_register_floor_relationship_returns_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
 
 
 @pytest.mark.parametrize(

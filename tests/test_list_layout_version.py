@@ -392,6 +392,11 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
         seats=Decimal("4"),
         zone="window",
     )
+    cash_register = layout_element(
+        "cash-register-id",
+        type="cashRegister",
+        floorId="upper-floor",
+    )
     elements = [
         ground_floor,
         wall,
@@ -399,6 +404,7 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
         door,
         window,
         table_element,
+        cash_register,
     ]
     snapshot_table.put_item(Item=activation_state(3))
     snapshot_table.put_item(
@@ -431,7 +437,13 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
             ],
             "elements": [
                 public_active_element(element)
-                for element in [wall, door, window, table_element]
+                for element in [
+                    wall,
+                    door,
+                    window,
+                    table_element,
+                    cash_register,
+                ]
             ],
         },
     )
@@ -578,6 +590,49 @@ def test_public_active_layout_rejects_invalid_door_kind(
     snapshot_table.put_item(Item=activation_state())
     snapshot_table.put_item(
         Item=snapshot_item(1, is_current=True, elements=[element])
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "Register one"),
+        ("level", Decimal("0")),
+        ("shape", "rect"),
+        ("seats", Decimal("1")),
+        ("zone", "checkout"),
+        ("wallId", "wall-id"),
+        ("kind", "entrance"),
+    ],
+)
+def test_public_active_layout_rejects_cash_register_variant_fields(
+    app_and_table,
+    monkeypatch,
+    field,
+    value,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    cash_register = layout_element(
+        "cash-register-id",
+        type="cashRegister",
+        **{field: value},
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            elements=[cash_register],
+        )
     )
 
     response = app.handler(make_public_event(), None)
@@ -2360,6 +2415,14 @@ def test_missing_snapshot_field_returns_409(
             seats=Decimal("2.5"),
             zone="patio",
         ),
+        layout_element(type="cashregister"),
+        layout_element(type="cashRegister", shape="rect"),
+        layout_element(type="cashRegister", seats=Decimal("1")),
+        layout_element(type="cashRegister", zone="checkout"),
+        layout_element(type="cashRegister", wallId="wall-id"),
+        layout_element(type="cashRegister", kind="entrance"),
+        layout_element(type="cashRegister", name="Register one"),
+        layout_element(type="cashRegister", level=Decimal("0")),
         layout_element(updatedAt="not-a-time"),
     ],
 )
@@ -2390,6 +2453,7 @@ def test_corrupt_embedded_element_returns_409(
         layout_element(),
         layout_element(type="door", wallId="wall-id"),
         layout_element(type="window", wallId="wall-id"),
+        layout_element(type="cashRegister"),
         layout_element(
             type="table",
             shape="round",
@@ -2498,6 +2562,14 @@ def test_lists_multi_floor_snapshot_and_preserves_relationships(
             floor_element(),
             layout_element(
                 "orphan-wall",
+                floorId="missing-floor",
+            ),
+        ],
+        [
+            floor_element(),
+            layout_element(
+                "orphan-cash-register",
+                type="cashRegister",
                 floorId="missing-floor",
             ),
         ],

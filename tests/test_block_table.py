@@ -201,6 +201,24 @@ def table_element(table_id=TABLE_ID, **overrides):
     return item
 
 
+def cash_register_element(element_id="cash-register-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "cashRegister",
+        "x": Decimal("2"),
+        "y": Decimal("0"),
+        "z": Decimal("1"),
+        "width": Decimal("1.5"),
+        "height": Decimal("1"),
+        "depth": Decimal("0.8"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
 def wall_element(element_id="wall-id", **overrides):
     item = {
         "elementId": element_id,
@@ -914,6 +932,121 @@ def test_creates_manual_block_for_table_on_another_floor(app_and_tables):
     )
 
 
+def test_cash_register_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                floor_element(),
+                cash_register_element(floorId="floor-ground"),
+                table_element(floorId="floor-ground"),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+def test_cash_register_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[cash_register_element(TABLE_ID)],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        cash_register_element(type="cashregister"),
+        cash_register_element(shape="rect"),
+        cash_register_element(seats=Decimal("1")),
+        cash_register_element(zone="checkout"),
+        cash_register_element(wallId="wall-id"),
+        cash_register_element(kind="entrance"),
+        cash_register_element(name="Register one"),
+        cash_register_element(level=Decimal("0")),
+    ],
+    ids=[
+        "wrong-type-casing",
+        "table-shape",
+        "table-seats",
+        "table-zone",
+        "wall-reference",
+        "door-kind",
+        "floor-name",
+        "floor-level",
+    ],
+)
+def test_invalid_cash_register_variant_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element, table_element()]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_invalid_cash_register_geometry_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                cash_register_element(width=Decimal("0")),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
 @pytest.mark.parametrize(
     "kind",
     [_UNSET, "entrance", "kitchen"],
@@ -1141,7 +1274,13 @@ def test_table_must_exist_in_active_snapshot(app_and_tables):
             floor_element(),
             table_element(floorId="missing-floor"),
         ],
+        [
+            floor_element(),
+            cash_register_element(floorId="missing-floor"),
+            table_element(floorId="floor-ground"),
+        ],
         [table_element(floorId="missing-floor")],
+        [cash_register_element(floorId="missing-floor"), table_element()],
         [
             floor_element(),
             table_element("not-a-floor", floorId="floor-ground"),

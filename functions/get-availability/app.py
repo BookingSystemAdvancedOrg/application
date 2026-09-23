@@ -86,7 +86,7 @@ _GEOMETRY_FIELDS = (
 )
 _DIMENSION_FIELDS = frozenset({"width", "height", "depth"})
 _ELEMENT_TYPES = frozenset(
-    {"floor", "wall", "door", "window", "table"}
+    {"floor", "wall", "door", "window", "table", "cashRegister"}
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})

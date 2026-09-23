@@ -221,11 +221,13 @@ as publication. Floors and `floorId` values are used only to validate snapshot
 integrity; validated `table` elements from every floor are exposed as
 `tableId` plus `seats`, so the public response shape is unchanged. Layout
 geometry, floor metadata, cash-register elements, and audit fields remain
-internal. A `cashRegister` is a renderable fixture rather than a bookable
-table, so it is validated as part of the snapshot but ignored when availability
-is compiled. A corrupt floor relationship returns `409`. A location with no
-active layout, an active layout with no tables, or a closed day returns `200`
-with an empty `slots` list.
+internal. A table's optional display `label` is validated as snapshot content
+but is not returned by availability; `tableId` continues to be the table
+element's `elementId`. A `cashRegister` is a renderable fixture rather than a
+bookable table, so it is validated as part of the snapshot but ignored when
+availability is compiled. A corrupt floor relationship returns `409`. A
+location with no active layout, an active layout with no tables, or a closed
+day returns `200` with an empty `slots` list.
 
 One paginated, strongly consistent Slot Occupancy query reads every hold for
 the requested location/date. Both reservation and `manual_block` rows exclude
@@ -377,6 +379,10 @@ complete floor relationship before using the requested table. A floor's
 `elementId` or a cash register's `elementId` cannot be used as a table ID, and
 corrupt floor relationships return `409`.
 
+The path's `tableId` is always the target table element's `elementId`, never
+its optional display `label`. Labels therefore do not change Slot Occupancy
+keys, block request bodies, or block responses.
+
 `blocked: true` conditionally writes a Slot Occupancy row. A new hold returns
 `201`; an already-identical manual hold returns `200`. Both responses contain
 `locationId`, `tableId`, `date`, `startTime`, the derived `endTime`, and
@@ -425,7 +431,7 @@ the same DynamoDB transaction.
 
 ## Floor Layout
 
-There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. Cash registers follow this same draft → publish → activate → public-read lifecycle; they require no separate route, table, or IAM permission. `get-availability`, `create-pending-reservation`, and block creation in `block-table` use the active version to determine which table elements exist and do not treat cash registers as tables.
+There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. Cash registers and optional table labels follow this same draft → publish → activate → public-read lifecycle; they require no separate route, table, environment variable, or IAM permission. `get-availability`, `create-pending-reservation`, and block creation in `block-table` use the active version to determine which table elements exist. They do not treat cash registers as tables, and table identity remains the element's `elementId` rather than its display label.
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
@@ -445,7 +451,16 @@ There are two layout tables with distinct roles: **Live Layout Element** is the 
 
 The supported `type` values are exactly `floor`, `wall`, `door`, `window`, `table`, and `cashRegister`; casing is significant, and `decor` is not part of the current data model. Every created element requires finite JSON-number values for `x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`. Coordinates and rotation may be signed or zero, while all three dimensions must be greater than zero. A `floor` additionally requires a non-empty `name` and an integral `level`; `level` is signed, so basement, ground, and upper levels can be represented with negative, zero, and positive values. Floor names and levels need not be unique. A floor cannot contain `floorId`. Any non-floor element may contain a non-empty `floorId` referring to the `elementId` of its floor. The frontend creates a floor first, retains its returned `elementId`, and submits that value as `floorId` on elements drawn on the floor's canvas. A `table` additionally requires `shape` (`rect` or `round`), a positive integer `seats`, and a non-empty `zone`. A `door` or `window` additionally requires a non-empty `wallId`. A door may also contain optional `kind`, whose only accepted values are `entrance` and `kitchen`; `kind` is rejected on every other element type. A missing door `kind` is valid for backward compatibility and means legacy/unspecified rather than either enum value. A `cashRegister` has no additional type-specific fields: it contains the common geometry and may contain `floorId`, but cannot contain `name`, `level`, `shape`, `seats`, `zone`, `wallId`, or `kind`. Variant fields that do not apply to the selected type, unknown fields, and server-controlled fields are rejected. Identifiers, `name`, `zone`, `floorId`, and `wallId` are bounded to 128 characters.
 
-`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. It can rename or renumber a floor, move a non-floor element (including a cash register) by replacing `floorId`, and add or change a door's `kind`; null or an empty string cannot clear an existing `floorId` or `kind`. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
+A `table` may also contain optional `label`. The handler trims surrounding
+whitespace and requires the resulting value to be nonblank and at most 128
+characters; internal spaces, casing, and Unicode are preserved. The backend
+does not generate labels or require them to be unique. The frontend should send
+this field in the table create/update payload and render the returned value
+instead of deriving a label such as `T${index + 1}` from list position. A
+table's `elementId` remains its stable identity. Legacy tables without `label`
+remain valid, and `label` is rejected on every non-table element type.
+
+`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. It can rename or renumber a floor, move a non-floor element (including a cash register) by replacing `floorId`, add or change a door's `kind`, and add or change a table's `label`; null, an empty string, or whitespace cannot clear an existing `floorId`, `kind`, or `label`. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
 
 The handler generates `elementId` as a UUID. It stores `updatedBy` from the verified JWT `sub` and `updatedAt` as a UTC ISO8601 timestamp on creation and each effective update. Records use `PK="LOCATION#<locationId>"` and `SK="LAYOUT#ELEMENT#<elementId>"`. Public responses contain only `elementId`, the applicable layout fields, `updatedBy`, and `updatedAt`; DynamoDB keys and unexpected stored attributes are not exposed.
 
@@ -461,7 +476,7 @@ The function has no User-table or Location-table permission. It therefore cannot
 | `ENVIRONMENT` | `dev` or `prod` |
 | `LIVE_LAYOUT_ELEMENT_TABLE_NAME` | DynamoDB table to read/write |
 
-**AWS resource access:** Full `dynamodb:*` on the Live Layout Element table. Cash-register CRUD uses this existing access and adds no AWS resource.
+**AWS resource access:** Full `dynamodb:*` on the Live Layout Element table. Cash-register CRUD and optional table labels use this existing access and add no AWS resource.
 
 ---
 
@@ -471,13 +486,13 @@ The function has no User-table or Location-table permission. It therefore cannot
 
 **Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
 
-The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical floor, wall, door, window, table, or `cashRegister` using the same type-specific field constraints as `manage-layout-element`. Floor records preserve `name` and signed integral `level`; non-floor records preserve `floorId` when present; cash registers preserve their common geometry without extra variant fields; and doors preserve optional `kind` (`entrance` or `kitchen`). Legacy doors without `kind` remain valid and publish without that field. Internal keys and unexpected stored attributes are not copied.
+The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical floor, wall, door, window, table, or `cashRegister` using the same type-specific field constraints as `manage-layout-element`. Floor records preserve `name` and signed integral `level`; non-floor records preserve `floorId` when present; cash registers preserve their common geometry without extra variant fields; doors preserve optional `kind` (`entrance` or `kitchen`); and tables preserve optional `label` after canonical trimming. Legacy doors without `kind` and legacy tables without `label` remain valid and publish without those fields. Internal keys and unexpected stored attributes are not copied.
 
 Publication then validates the complete floor relationship. A legacy flat draft with no floor records is valid only when all non-floor elements omit `floorId`. If at least one floor record exists, every non-floor element must have a `floorId` that identifies a floor element in the same draft. A floor may have no child elements, so creating and publishing an empty floor is valid. A dangling `floorId`, a `floorId` that identifies a non-floor element, or a mixture of floor records and unassigned non-floor elements returns `409` rather than producing a corrupt snapshot. This check does not add parent-wall existence or geometric-containment rules. An entirely empty draft is also publishable; because this Lambda has no Location-table permission, that can represent an unknown location.
 
 The next version is the numeric maximum across every existing `LAYOUT#v<N>` snapshot plus one; it is not based on lexical sort-key order. Existing snapshot keys and `version` attributes must agree. The new item uses `PK="LOCATION#<locationId>"`, `SK="LAYOUT#v<N>"`, and contains:
 
-- `version = N` and generated `label = "Version N"`
+- `version = N` and generated top-level snapshot `label = "Version N"` (distinct from an optional `label` nested in a table element)
 - `isCurrent = false`, `effectiveFrom = null`, and `effectiveTo = null`
 - `expiresAt = publication time + 4 weeks`
 - the sanitized logical records in `elements`
@@ -513,13 +528,19 @@ The list branch strongly consistently queries every page under `PK="LOCATION#<lo
 
 Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded floor, wall, door, window, table, and `cashRegister` records are checked with the same type-specific field constraints as the live-layout model. Floor responses preserve `name` and signed integral `level`, non-floor responses preserve `floorId` when stored, cash-register responses preserve common geometry, and door responses preserve optional `kind` (`entrance` or `kitchen`). A missing door `kind` remains valid and means legacy/unspecified. The handler also rechecks the publication invariant: a legacy flat snapshot has no floors and no `floorId` values, while a multi-floor snapshot requires every non-floor element to reference a floor in that snapshot. Corrupt relationships return `409`. `validPositions` remains an empty list until a position-compilation rule is defined.
 
+A table response preserves its optional nested `label`; absence remains valid
+for legacy snapshots. This element field is separate from the snapshot's
+required top-level version `label`. Table labels are validated as trimmed,
+nonblank strings of at most 128 characters, but are neither generated nor
+required to be unique.
+
 Lifecycle timestamps are nullable and may describe a published, active, pending, or retired snapshot. During a scheduled replacement, the outgoing snapshot remains the sole `isCurrent=true` record and has `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`; the pending target remains `isCurrent=false` with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. The separate coordination item at `SK="LAYOUT#ACTIVATION"` is excluded by the `SK begins_with "LAYOUT#v"` query and is never returned. DynamoDB keys and unexpected stored attributes are also not returned.
 
 The delete branch strongly consistently reads the requested snapshot and optional activation-state item. It rejects a version that is current according to either the snapshot or activation state, and rejects the pending target of a scheduled replacement. An eligible version is soft-archived in one DynamoDB transaction: the snapshot receives `archivedBy` and `archivedAt`, its `updatedBy` and `updatedAt` are changed to the same caller/time, and a condition check proves the activation state has not changed since it was read. The snapshot content and key remain intact, so historical version numbers are never reused. A successful archive returns `204` with an empty body. Repeating DELETE for an already valid archived version is idempotent and also returns `204`. Conditional or ambiguous write outcomes are reconciled through strongly consistent reads and one bounded retry; an unresolved concurrent change returns `409` rather than risking an active-version archive.
 
 The public branch treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It strongly consistently reads the activation state, reads the `LAYOUT#v<currentVersion>` snapshot it names, and then reads the state again. If the current version changed, it retries the complete sequence once; another change returns `409`. A future pending version is never selected. The resolved snapshot must match the state pointer, must not be archived, must have `isCurrent=true`, must have `effectiveFrom` no later than now, and must have every non-null `effectiveTo` or `expiresAt` later than now.
 
-A successful public response is `{"floors": [...], "elements": [...]}`. Floor records become exactly `floorId` (their element ID), `name`, and `level`. Non-floor records retain `elementId`, `type`, geometry (`x`, `y`, `z`, `width`, `height`, `depth`, `rotationY`), optional `floorId`, and their applicable table (`shape`, `seats`, `zone`) or door/window (`wallId`) fields. Cash registers appear in `elements` with common geometry and optional `floorId`, without type-specific fields. A door also retains its optional `kind` (`entrance` or `kitchen`) so the customer renderer can distinguish the two purposes; legacy/unspecified doors simply omit it. The response omits element audit fields, snapshot version/label/lifecycle/audit fields, `validPositions`, DynamoDB keys, unexpected attributes, and activation metadata. An empty active snapshot returns two empty arrays; a legacy flat snapshot returns `floors: []` and elements without `floorId`.
+A successful public response is `{"floors": [...], "elements": [...]}`. Floor records become exactly `floorId` (their element ID), `name`, and `level`. Non-floor records retain `elementId`, `type`, geometry (`x`, `y`, `z`, `width`, `height`, `depth`, `rotationY`), optional `floorId`, and their applicable table (`shape`, `seats`, `zone`, and optional `label`) or door/window (`wallId`) fields. Cash registers appear in `elements` with common geometry and optional `floorId`, without type-specific fields. A door also retains its optional `kind` (`entrance` or `kitchen`) so the customer renderer can distinguish the two purposes; legacy/unspecified doors simply omit it. A legacy table similarly omits `label`. The response omits element audit fields, snapshot version/top-level label/lifecycle/audit fields, `validPositions`, DynamoDB keys, unexpected attributes, and activation metadata. An empty active snapshot returns two empty arrays; a legacy flat snapshot returns `floors: []` and elements without `floorId`.
 
 Malformed paths return `400`. A recognized request with the wrong method returns `405` with `Allow: GET` for a read route or `Allow: DELETE` for the archive route. The public route returns `404` with `active layout not found` when no activation state exists; DELETE returns `404` when its version does not exist. Inconsistent activation state, malformed or partial archive metadata, snapshot content/lifecycle, duplicate content, a current/pending archive attempt, or an unresolved concurrent change returns `409`. Malformed DynamoDB results and unexpected DynamoDB or transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
 

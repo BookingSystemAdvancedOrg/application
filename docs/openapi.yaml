@@ -1318,8 +1318,10 @@ paths:
         Returns every floor, wall, door, window, table, and cash register in
         the location's mutable layout partition. A multi-floor layout is one
         location-wide collection: non-floor elements use `floorId` to identify
-        their floor. An empty list can also mean that the location does not
-        exist because this Lambda has no Location-table access.
+        their floor. A table may include an optional staff-assigned display
+        `label`; clients must continue to use `elementId` as its stable
+        identity. An empty list can also mean that the location does not exist
+        because this Lambda has no Location-table access.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1336,6 +1338,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LayoutElementList'
+              example:
+                items:
+                  - elementId: 9befdbd3-45ba-4240-965c-a01b8c981fd3
+                    type: table
+                    x: 3.5
+                    y: 0
+                    z: -2
+                    width: 1.4
+                    height: 0.75
+                    depth: 0.9
+                    rotationY: 90
+                    floorId: floor-ground
+                    shape: rect
+                    seats: 4
+                    zone: dining-room
+                    label: Window 4
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:55:00Z'
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -1355,6 +1375,9 @@ paths:
         Creates one complete type-discriminated element. The API generates
         `elementId`, `updatedBy`, and `updatedAt`. A floor requires `name` and
         signed integer `level`; a non-floor element may include `floorId`.
+        A table may include an optional display `label`. Leading and trailing
+        whitespace is removed, labels need not be unique, and `elementId`
+        remains the stable identity used by other APIs.
         `floorId` and door/window `wallId` references are stored but parent
         existence and geometric containment are not checked by this Lambda.
       security:
@@ -1398,6 +1421,7 @@ paths:
                   shape: rect
                   seats: 4
                   zone: dining-room
+                  label: Window 4
               cashRegisterOnFloor:
                 summary: Create a cash register on an existing floor
                 value:
@@ -1483,7 +1507,9 @@ paths:
         immutable. The submitted fields are merged with the stored element and
         the complete resulting type-specific object is validated. This can
         rename or renumber a floor and can move a non-floor element by changing
-        its `floorId`. A no-op preserves the existing audit fields.
+        its `floorId`. It can also assign or replace a table's display `label`;
+        whitespace is trimmed and an existing label cannot be cleared. A no-op
+        preserves the existing audit fields.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1499,6 +1525,7 @@ paths:
             example:
               x: 4.25
               rotationY: 135
+              label: Window 4
       responses:
         '200':
           description: Layout element updated, or already in the requested state.
@@ -1574,7 +1601,10 @@ paths:
         references return `409`. A legacy flat draft remains valid only when it
         contains neither floors nor `floorId` fields. An empty draft is also a
         valid snapshot because this Lambda cannot distinguish it from an
-        unknown location without Location-table access.
+        unknown location without Location-table access. Optional table display
+        labels are preserved after surrounding-whitespace trimming in the
+        immutable snapshot; they are not required to be unique and do not
+        replace `elementId` as identity.
 
         Publishing does not activate the new version or modify any older
         version. `isCurrent` is therefore `false`, both effective-date fields
@@ -1637,6 +1667,7 @@ paths:
                     shape: rect
                     seats: 4
                     zone: dining-room
+                    label: Window 4
                     updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
                     updatedAt: '2026-08-31T09:55:00Z'
                   - elementId: register-front
@@ -1698,8 +1729,10 @@ paths:
         reduced to identifiers, names, and levels; renderable non-floor
         elements are returned separately. Version lifecycle data, audit
         metadata, valid-position data, DynamoDB keys, and unexpected stored
-        attributes are never returned. A legacy flat layout has an empty
-        `floors` array and elements without `floorId`. This route is
+        attributes are never returned. Optional table display labels are
+        returned for customer presentation, while `elementId` remains the
+        stable identity for booking and blocking. A legacy flat layout has an
+        empty `floors` array and elements without `floorId`. This route is
         intentionally public and does not inspect JWT claims.
       security: []
       x-required-groups: []
@@ -1742,6 +1775,7 @@ paths:
                     shape: rect
                     seats: 4
                     zone: main
+                    label: Window 4
                   - elementId: register-front
                     type: cashRegister
                     x: 8
@@ -1792,8 +1826,10 @@ paths:
         contains the complete logical snapshot so a staff client can inspect
         it before choosing a version to activate. A multi-floor version
         contains its floors and all `floorId`-linked elements in that one
-        snapshot. Soft-archived versions, DynamoDB keys, archive audit fields,
-        and internal scheduler metadata are never returned.
+        snapshot. Optional table `label` values are display-only metadata;
+        table identity remains `elementId`. Soft-archived versions, DynamoDB
+        keys, archive audit fields, and internal scheduler metadata are never
+        returned.
 
         The Lambda follows every DynamoDB query page. An unknown location, or
         a location with no published snapshots, returns `200` with an empty
@@ -3314,6 +3350,10 @@ components:
         - shape
         - seats
         - zone
+      description: |
+        Bookable table geometry and capacity. `label` is optional display text
+        for staff and customers; surrounding whitespace is removed, duplicate
+        labels are allowed, and `elementId` remains the stable table identity.
       properties:
         type:
           type: string
@@ -3349,6 +3389,12 @@ components:
           minimum: 1
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional display label. The stored value is trimmed and is not
+            required to be unique within a floor or location.
 
     LayoutCashRegisterCreateRequest:
       type: object
@@ -3423,11 +3469,13 @@ components:
         Strict partial update. `type` is deliberately absent because it is
         immutable. `name` and `level` apply only to a stored floor; `floorId`
         applies only to non-floor elements; `shape`, `seats`, and `zone` apply
-        only to a stored table; `wallId` applies only to a stored door or
-        window; `kind` applies only to a stored door. The Lambda validates the
-        merged complete element and rejects inapplicable fields. A supplied
-        `floorId` must be nonblank and cannot be cleared with null or an empty
-        string.
+        only to a stored table; optional `label` also applies only to a stored
+        table and is trimmed when supplied; `wallId` applies only to a stored
+        door or window; `kind` applies only to a stored door. The Lambda
+        validates the merged complete element and rejects inapplicable fields.
+        A supplied `floorId` must be nonblank and cannot be cleared with null
+        or an empty string. A supplied table `label` is subject to the same
+        nonblank rule and cannot be used to clear an existing label.
       properties:
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
@@ -3464,6 +3512,13 @@ components:
           minimum: 1
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional table-only display label. The stored value is trimmed,
+            duplicate labels are allowed, and table identity remains
+            `elementId`.
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
         kind:
@@ -3493,11 +3548,13 @@ components:
       description: |
         Logical layout record. A floor contains `name` and signed integer
         `level`. A non-floor element may contain `floorId`; a table also
-        contains `shape`, `seats`, and `zone`; a door or window also contains
-        `wallId`; a door may also contain `kind`; a `cashRegister` has only
-        common geometry and optional `floorId`. Published multi-floor snapshots
-        require every non-floor element to reference a floor in that same
-        snapshot. Internal DynamoDB keys are never returned.
+        contains `shape`, `seats`, and `zone` and may contain a display-only
+        `label`; a door or window also contains `wallId`; a door may also
+        contain `kind`; a `cashRegister` has only common geometry and optional
+        `floorId`. Published multi-floor snapshots require every non-floor
+        element to reference a floor in that same snapshot. Table labels need
+        not be unique and never replace `elementId` as the stable identity.
+        Internal DynamoDB keys are never returned.
       properties:
         elementId:
           type: string
@@ -3544,6 +3601,11 @@ components:
           minimum: 1
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional table-only display label. Legacy tables may omit it.
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
         kind:
@@ -3744,6 +3806,9 @@ components:
         - shape
         - seats
         - zone
+      description: |
+        Customer-facing bookable table. `label` is optional display text and
+        may be duplicated; consumers must use `elementId` for table identity.
       properties:
         elementId:
           $ref: '#/components/schemas/LayoutBoundedString'
@@ -3781,6 +3846,10 @@ components:
           minimum: 1
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: Optional display label. Legacy tables may omit it.
 
     PublicLayoutCashRegister:
       type: object

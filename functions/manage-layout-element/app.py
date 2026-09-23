@@ -5,10 +5,11 @@ TRIGGER:
     Auth: JWT
 
 PURPOSE:
-    Staff-facing CRUD for floor, wall, door, window, and table elements in a
-    location's mutable multi-floor layout draft. Doors may identify their
-    persisted purpose as ``entrance`` or ``kitchen`` through ``kind``.
-    Non-floor elements may refer to a floor element through ``floorId``.
+    Staff-facing CRUD for floor, wall, door, window, table, and cash-register
+    elements in a location's mutable multi-floor layout draft. Doors may
+    identify their persisted purpose as ``entrance`` or ``kitchen`` through
+    ``kind``. Non-floor elements may refer to a floor element through
+    ``floorId``.
     Dispatches GET/POST on ``items`` and GET/PUT/DELETE on
     ``items/{elementId}``.
 
@@ -51,7 +52,9 @@ LIVE_LAYOUT_ELEMENT_TABLE_NAME = os.environ[
 ]
 
 _ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
-_ELEMENT_TYPES = frozenset({"floor", "wall", "door", "window", "table"})
+_ELEMENT_TYPES = frozenset(
+    {"floor", "wall", "door", "window", "table", "cashRegister"}
+)
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})
 _GEOMETRY_FIELDS = (
@@ -221,7 +224,9 @@ def _number(source, field, *, positive=False, integer=False):
 def _element_type(source):
     value = _present(source, "type")
     if not isinstance(value, str) or value not in _ELEMENT_TYPES:
-        raise ValueError("type must be floor, wall, door, window, or table")
+        raise ValueError(
+            "type must be floor, wall, door, window, table, or cashRegister"
+        )
     return value
 
 

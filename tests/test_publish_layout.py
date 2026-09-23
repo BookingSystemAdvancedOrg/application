@@ -144,6 +144,10 @@ def floor_element_item(
     }
 
 
+def cash_register_element_item(element_id="cash-register-id"):
+    return live_element_item(element_id) | {"type": "cashRegister"}
+
+
 def logical_element(item):
     return {
         key: value
@@ -587,6 +591,101 @@ def test_publishes_supported_element_variants(
     assert stored_snapshot(snapshot_table, 1)["elements"] == [
         logical_element(source)
     ]
+
+
+def test_publishes_legacy_cash_register_unchanged(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    source = cash_register_element_item()
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert response_body(response)["elements"] == [public_element(source)]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(source)
+    ]
+
+
+def test_publishes_multi_floor_cash_register_unchanged(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    floor = floor_element_item()
+    source = cash_register_element_item() | {"floorId": "ground-floor"}
+    live_table.put_item(Item=floor)
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    expected = sorted(
+        [logical_element(floor), logical_element(source)],
+        key=lambda element: element["elementId"],
+    )
+    assert stored_snapshot(snapshot_table, 1)["elements"] == expected
+    assert response_body(response)["elements"] == [
+        public_element(element) for element in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        cash_register_element_item() | {"type": "cashregister"},
+        cash_register_element_item() | {"type": "CashRegister"},
+        cash_register_element_item() | {"width": Decimal("0")},
+        cash_register_element_item() | {"height": None},
+        cash_register_element_item() | {"rotationY": "zero"},
+        cash_register_element_item() | {"shape": "rect"},
+        cash_register_element_item() | {"seats": Decimal("4")},
+        cash_register_element_item() | {"zone": "main"},
+        cash_register_element_item() | {"wallId": "wall-id"},
+        cash_register_element_item() | {"kind": "entrance"},
+        cash_register_element_item() | {"name": "Till"},
+        cash_register_element_item() | {"level": Decimal("0")},
+        cash_register_element_item() | {"updatedBy": " "},
+        cash_register_element_item() | {"updatedAt": "not-a-date"},
+    ],
+)
+def test_invalid_cash_register_returns_409_without_snapshot(
+    app_and_tables,
+    source,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "floor_fields",
+    [{}, {"floorId": "missing-floor"}, {"floorId": "wall-id"}],
+)
+def test_multi_floor_cash_register_requires_valid_floor_id(
+    app_and_tables,
+    floor_fields,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=floor_element_item())
+    live_table.put_item(Item=live_element_item())
+    live_table.put_item(
+        Item=cash_register_element_item() | floor_fields
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
 
 
 @pytest.mark.parametrize("kind", ["entrance", "kitchen"])

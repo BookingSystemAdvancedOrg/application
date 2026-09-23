@@ -426,7 +426,7 @@ def test_oversized_path_values_are_rejected(app_and_table):
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "door", "window", "table"],
+    ["floor", "wall", "door", "window", "table", "cashRegister"],
 )
 def test_create_each_supported_element_type(app_and_table, element_type):
     app, layout_table = app_and_table
@@ -445,6 +445,125 @@ def test_create_each_supported_element_type(app_and_table, element_type):
     assert stored["SK"] == f"LAYOUT#ELEMENT#{ELEMENT_ID}"
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == UPDATED_AT
+
+
+def test_create_get_and_list_cash_register_with_optional_floor(
+    app_and_table,
+):
+    app, layout_table = app_and_table
+
+    create_response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(
+                "cashRegister",
+                floorId=f"  {FLOOR_ID}  ",
+            ),
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    expected = public_element(stored)
+    assert_response(create_response, 201, expected)
+    assert stored["type"] == "cashRegister"
+    assert stored["floorId"] == FLOOR_ID
+    assert not (
+        {"name", "level", "wallId", "kind", "shape", "seats", "zone"}
+        & stored.keys()
+    )
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+
+    assert_response(get_response, 200, expected)
+    assert_response(list_response, 200, {"items": [expected]})
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["x", "y", "z", "width", "height", "depth", "rotationY"],
+)
+def test_cash_register_requires_all_common_geometry(
+    app_and_table,
+    field,
+):
+    app, layout_table = app_and_table
+    body = valid_body("cashRegister")
+    del body[field]
+
+    response = app.handler(make_event(method="POST", body=body), None)
+
+    assert_response(response, 400, {"error": f"{field} is required"})
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("x", None, "x must be a number"),
+        ("rotationY", True, "rotationY must be a number"),
+        ("width", 0, "width must be greater than zero"),
+        ("height", -1, "height must be greater than zero"),
+        ("depth", -0.1, "depth must be greater than zero"),
+    ],
+)
+def test_cash_register_validates_common_geometry(
+    app_and_table,
+    field,
+    value,
+    message,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("cashRegister", **{field: value}),
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": message})
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "Register one"),
+        ("level", 0),
+        ("wallId", "wall-id"),
+        ("kind", "entrance"),
+        ("shape", "rect"),
+        ("seats", 1),
+        ("zone", "main"),
+    ],
+)
+def test_cash_register_rejects_other_type_specific_fields(
+    app_and_table,
+    field,
+    value,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("cashRegister", **{field: value}),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for cashRegister: {field}"},
+    )
+    assert table_items(layout_table) == []
 
 
 @pytest.mark.parametrize("kind", ["entrance", "kitchen"])
@@ -516,7 +635,7 @@ def test_create_rejects_invalid_door_kind(app_and_table, kind):
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "window", "table"],
+    ["floor", "wall", "window", "table", "cashRegister"],
 )
 def test_create_rejects_door_kind_for_other_element_types(
     app_and_table,
@@ -540,7 +659,10 @@ def test_create_rejects_door_kind_for_other_element_types(
     assert table_items(layout_table) == []
 
 
-@pytest.mark.parametrize("element_type", ["wall", "door", "window", "table"])
+@pytest.mark.parametrize(
+    "element_type",
+    ["wall", "door", "window", "table", "cashRegister"],
+)
 def test_non_floor_element_can_reference_a_floor(app_and_table, element_type):
     app, layout_table = app_and_table
 
@@ -570,7 +692,10 @@ def test_legacy_flat_element_remains_supported(app_and_table):
     assert "floorId" not in get_item(layout_table)
 
 
-@pytest.mark.parametrize("element_type", [None, "", "decor", "TABLE", 123])
+@pytest.mark.parametrize(
+    "element_type",
+    [None, "", "decor", "TABLE", "CashRegister", "cashregister", 123],
+)
 def test_rejects_unsupported_element_types(app_and_table, element_type):
     app, layout_table = app_and_table
 
@@ -904,6 +1029,7 @@ def test_list_returns_all_types_for_only_requested_location(app_and_table):
         element_item(element_type="door", element_id="b"),
         element_item(element_type="window", element_id="c"),
         element_item(element_type="table", element_id="d"),
+        element_item(element_type="cashRegister", element_id="e"),
     ]
     for item in elements:
         put_item(layout_table, item)
@@ -1026,6 +1152,83 @@ def test_partial_update_merges_and_replaces_audit_fields(
     assert stored["updatedAt"] == NEXT_UPDATED_AT
 
 
+def test_partial_update_changes_cash_register_geometry_and_floor(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(
+        element_type="cashRegister",
+        floorId=FLOOR_ID,
+        updated_by="previous-sub",
+    )
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"x": 25.5, "floorId": " second-floor "},
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(response, 200, public_element(stored))
+    assert stored["type"] == "cashRegister"
+    assert stored["x"] == Decimal("25.5")
+    assert stored["floorId"] == "second-floor"
+    assert stored["updatedBy"] == CALLER_SUB
+    assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+def test_noop_cash_register_update_preserves_audit_and_skips_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(
+        element_type="cashRegister",
+        floorId=FLOOR_ID,
+    )
+    put_item(layout_table, original)
+    table_spy = Mock(wraps=layout_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"x": 1.0, "floorId": FLOOR_ID},
+        ),
+        None,
+    )
+
+    assert_response(response, 200, public_element(original))
+    table_spy.put_item.assert_not_called()
+    assert get_item(layout_table) == original
+
+
+def test_cash_register_type_is_immutable(app_and_table):
+    app, layout_table = app_and_table
+    original = element_item(element_type="cashRegister")
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"type": "table"},
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": "type cannot be changed"})
+    assert get_item(layout_table) == original
+
+
 @pytest.mark.parametrize(
     ("original_kind", "new_kind"),
     [(None, "entrance"), ("entrance", "kitchen")],
@@ -1115,7 +1318,7 @@ def test_invalid_door_kind_update_does_not_change_item(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "window", "table"],
+    ["floor", "wall", "window", "table", "cashRegister"],
 )
 def test_update_rejects_door_kind_for_other_element_types(
     app_and_table,
@@ -1282,6 +1485,20 @@ def test_delete_removes_only_requested_element(app_and_table):
     assert response["body"] == ""
     assert get_item(layout_table) is None
     assert get_item(layout_table, element_id=OTHER_ELEMENT_ID) == other
+
+
+def test_delete_cash_register(app_and_table):
+    app, layout_table = app_and_table
+    original = element_item(element_type="cashRegister")
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+
+    assert_response(response, 204)
+    assert get_item(layout_table) is None
 
 
 @pytest.mark.parametrize(

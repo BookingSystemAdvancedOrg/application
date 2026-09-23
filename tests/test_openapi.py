@@ -326,10 +326,13 @@ def test_public_active_layout_contract_matches_handler(openapi_document):
 
     element_union = schemas["PublicLayoutElement"]
     expected_variants = {
-        element_type: (
-            f"#/components/schemas/PublicLayout{element_type.title()}"
-        )
-        for element_type in ("wall", "door", "window", "table")
+        "wall": "#/components/schemas/PublicLayoutWall",
+        "door": "#/components/schemas/PublicLayoutDoor",
+        "window": "#/components/schemas/PublicLayoutWindow",
+        "table": "#/components/schemas/PublicLayoutTable",
+        "cashRegister": (
+            "#/components/schemas/PublicLayoutCashRegister"
+        ),
     }
     assert {item["$ref"] for item in element_union["oneOf"]} == set(
         expected_variants.values()
@@ -355,6 +358,7 @@ def test_public_active_layout_contract_matches_handler(openapi_document):
         "Door": common_fields | {"floorId", "wallId", "kind"},
         "Window": common_fields | {"floorId", "wallId"},
         "Table": common_fields | {"floorId", "shape", "seats", "zone"},
+        "CashRegister": common_fields | {"floorId"},
     }
     for element_type, fields in expected_fields.items():
         schema = schemas[f"PublicLayout{element_type}"]
@@ -368,6 +372,33 @@ def test_public_active_layout_contract_matches_handler(openapi_document):
     public_door_kind = schemas["PublicLayoutDoor"]["properties"]["kind"]
     assert public_door_kind["type"] == "string"
     assert public_door_kind["enum"] == ["entrance", "kitchen"]
+
+    cash_register = schemas["PublicLayoutCashRegister"]
+    assert cash_register["properties"]["type"]["enum"] == [
+        "cashRegister"
+    ]
+    assert {
+        "name",
+        "level",
+        "wallId",
+        "kind",
+        "shape",
+        "seats",
+        "zone",
+        "updatedBy",
+        "updatedAt",
+    }.isdisjoint(cash_register["properties"])
+
+    public_example = operation["responses"]["200"]["content"][
+        "application/json"
+    ]["example"]
+    example_cash_register = next(
+        item
+        for item in public_example["elements"]
+        if item["type"] == "cashRegister"
+    )
+    assert set(example_cash_register) == common_fields | {"floorId"}
+    assert example_cash_register["floorId"] == "floor-ground"
 
 
 def test_get_availability_contract_matches_handler(openapi_document):
@@ -519,11 +550,14 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
     create = schemas["LayoutElementCreateRequest"]
 
     expected_create_schemas = {
-        element_type: (
-            f"#/components/schemas/Layout{element_type.title()}"
-            "CreateRequest"
-        )
-        for element_type in ("floor", "wall", "door", "window", "table")
+        "floor": "#/components/schemas/LayoutFloorCreateRequest",
+        "wall": "#/components/schemas/LayoutWallCreateRequest",
+        "door": "#/components/schemas/LayoutDoorCreateRequest",
+        "window": "#/components/schemas/LayoutWindowCreateRequest",
+        "table": "#/components/schemas/LayoutTableCreateRequest",
+        "cashRegister": (
+            "#/components/schemas/LayoutCashRegisterCreateRequest"
+        ),
     }
     assert {item["$ref"] for item in create["oneOf"]} == set(
         expected_create_schemas.values()
@@ -544,7 +578,13 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
     assert "minimum" not in floor["properties"]["level"]
     assert "floorId" not in floor["properties"]
 
-    for element_type in ("Wall", "Door", "Window", "Table"):
+    for element_type in (
+        "Wall",
+        "Door",
+        "Window",
+        "Table",
+        "CashRegister",
+    ):
         schema = schemas[f"Layout{element_type}CreateRequest"]
         assert "floorId" in schema["properties"]
         assert "floorId" not in schema["required"]
@@ -562,10 +602,39 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
         "entrance",
         "kitchen",
     ]
-    for element_type in ("Wall", "Window", "Table"):
+    for element_type in ("Wall", "Window", "Table", "CashRegister"):
         assert "kind" not in schemas[
             f"Layout{element_type}CreateRequest"
         ]["properties"]
+
+    cash_register_create = schemas["LayoutCashRegisterCreateRequest"]
+    common_create_fields = {
+        "type",
+        "x",
+        "y",
+        "z",
+        "width",
+        "height",
+        "depth",
+        "rotationY",
+    }
+    assert cash_register_create["additionalProperties"] is False
+    assert set(cash_register_create["properties"]) == (
+        common_create_fields | {"floorId"}
+    )
+    assert set(cash_register_create["required"]) == common_create_fields
+    assert cash_register_create["properties"]["type"]["enum"] == [
+        "cashRegister"
+    ]
+    assert {
+        "name",
+        "level",
+        "wallId",
+        "kind",
+        "shape",
+        "seats",
+        "zone",
+    }.isdisjoint(cash_register_create["properties"])
 
     update = schemas["LayoutElementUpdateRequest"]
     assert update["additionalProperties"] is False
@@ -589,6 +658,7 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
         "door",
         "window",
         "table",
+        "cashRegister",
     ]
     assert {"name", "level", "floorId", "kind"}.issubset(
         element["properties"]
@@ -605,13 +675,25 @@ def test_multi_floor_layout_contract_matches_handlers(openapi_document):
     media_type = document["paths"][
         "/locations/{locationId}/layout-elements/items"
     ]["post"]["requestBody"]["content"]["application/json"]
-    assert set(media_type["examples"]) == {"floor", "tableOnFloor"}
+    assert set(media_type["examples"]) == {
+        "floor",
+        "tableOnFloor",
+        "cashRegisterOnFloor",
+    }
     floor_example = media_type["examples"]["floor"]["value"]
     table_example = media_type["examples"]["tableOnFloor"]["value"]
+    cash_register_example = media_type["examples"][
+        "cashRegisterOnFloor"
+    ]["value"]
     assert floor_example["type"] == "floor"
     assert {"name", "level"}.issubset(floor_example)
     assert table_example["type"] == "table"
     assert table_example["floorId"] == "floor-ground"
+    assert cash_register_example["type"] == "cashRegister"
+    assert cash_register_example["floorId"] == "floor-ground"
+    assert set(cash_register_example) == (
+        common_create_fields | {"floorId"}
+    )
 
 
 def test_publish_layout_contract_matches_handler(openapi_document):
@@ -639,6 +721,30 @@ def test_publish_layout_contract_matches_handler(openapi_document):
         "$ref": "#/components/schemas/PublishedLayoutSnapshot"
     }
     assert "Location" in operation["responses"]["201"]["headers"]
+
+    publish_example = operation["responses"]["201"]["content"][
+        "application/json"
+    ]["example"]
+    example_cash_register = next(
+        element
+        for element in publish_example["elements"]
+        if element["type"] == "cashRegister"
+    )
+    assert set(example_cash_register) == {
+        "elementId",
+        "type",
+        "x",
+        "y",
+        "z",
+        "width",
+        "height",
+        "depth",
+        "rotationY",
+        "floorId",
+        "updatedBy",
+        "updatedAt",
+    }
+    assert example_cash_register["floorId"] == "floor-ground"
 
     snapshot = document["components"]["schemas"][
         "PublishedLayoutSnapshot"

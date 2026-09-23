@@ -111,7 +111,7 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `archivedBy` | String, archived snapshots only |
 | `archivedAt` | String (ISO8601), archived snapshots only |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, and an optional door `kind`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, cash-register geometry, and an optional door `kind`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
@@ -125,7 +125,7 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 
 Only an inactive version that is neither `LAYOUT#ACTIVATION.currentVersion` nor `pendingVersion` may be archived. A current or pending version is rejected, and an archived version cannot later be selected for activation. Valid archived snapshots are omitted from the protected version list and can never be returned by the public active-layout route. If activation state incorrectly points to an archived snapshot, readers and transition workers treat that as inconsistent state rather than serving or activating it. Repeating archive for an already valid archived version is an idempotent no-op.
 
-The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`, including a door's optional persisted `kind`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy doors without `kind`, plus legacy flat and empty active snapshots, remain representable.
+The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`, including cash registers and a door's optional persisted `kind`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy doors without `kind`, plus legacy flat and empty active snapshots, remain representable.
 
 ### Layout Activation State
 
@@ -153,14 +153,14 @@ Each location that has activated a layout also has one internal coordination ite
 
 ## Live Layout Elements
 
-Individual floors, walls, doors, windows, and tables in a location's floor plan, CRUD'd directly during 3D editing. Staff, owner-users, and super-users have full read/write access; each element is its own item for cheap, granular edits.
+Individual floors, walls, doors, windows, tables, and cash registers in a location's floor plan, CRUD'd directly during 3D editing. Staff, owner-users, and super-users have full read/write access; each element is its own item for cheap, granular edits.
 
 | Attribute | Type |
 |---|---|
 | `PK` (`LOCATION#<locationId>`) | String |
 | `SK` (`LAYOUT#ELEMENT#<elementId>`) | String |
 | `elementId` | String |
-| `type` | String (`floor`\|`wall`\|`door`\|`window`\|`table`) |
+| `type` | String (`floor`\|`wall`\|`door`\|`window`\|`table`\|`cashRegister`) |
 | `x`, `y`, `z` | Number |
 | `width`, `height`, `depth` | Positive Number (required on every type) |
 | `rotationY` | Number |
@@ -188,11 +188,16 @@ not either enum value. It may be added or changed by a partial update, but it
 cannot be set to null, cleared with an empty string, or stored on another
 element type.
 
+A cash register uses exactly `type="cashRegister"` and the shared geometry
+fields. Like every non-floor element, it may have a `floorId`; it has no
+cash-register-specific fields and cannot carry floor, table, door, or window
+variant fields. The casing is part of the stored contract.
+
 `publish-layout` reads every item in this table for a location (`Query` on `PK`,
 `SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout
 Snapshot version's `elements` list—that's the "compile" step referenced above.
-The compile step preserves a valid door `kind`; staff version reads and the
-public active-layout projection return it unchanged when present.
+The compile step preserves a valid door `kind` and each cash register; staff
+version reads and the public active-layout projection return them unchanged.
 Publication enforces the relationship boundary:
 
 - If the draft contains at least one floor, every non-floor element must have a
@@ -207,14 +212,19 @@ door/window wall to be on the same floor, enforce geometry containment, or
 apply deletion cascades.
 
 Availability and manual block creation validate the complete active snapshot
-before using its tables. Floor elements are never bookable. Availability
-considers tables across all floors but returns only each table's `tableId` and
-`seats`; manual occupancy keys and block responses likewise remain table-ID
-based.
+before using its tables. Floor and cash-register elements are never bookable.
+Availability ignores cash registers and considers tables across all floors,
+returning only each table's `tableId` and `seats`; a cash-register ID cannot be
+used as a `tableId` by block creation. Manual occupancy keys and block responses
+remain table-ID based.
 
 The public `/locations/{locationId}/layout/active` route reads only the
 Published Layout Snapshot table. It never reads this mutable live table, so
 customers cannot see unpublished editor changes.
+
+Cash registers use the same Live Layout Element and Published Layout Snapshot
+tables, routes, environment variables, and IAM permissions as the existing
+layout types; this type adds no separate resource.
 
 ---
 

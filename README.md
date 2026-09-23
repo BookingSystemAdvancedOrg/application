@@ -109,11 +109,12 @@ stored attributes.
 The active-layout route returns `{"floors": [...], "elements": [...]}`. Each
 floor contains only `floorId`, `name`, and `level`; renderable non-floor
 elements contain their validated geometry, optional `floorId`, and applicable
-table, door, or window fields. A door may include the persisted `kind` value
-`entrance` or `kitchen`; its absence means the door is legacy/unspecified. It
-never exposes snapshot versions, lifecycle timestamps, audit data, DynamoDB
-keys, or the activation-state item. Both exact routes must remain
-unauthenticated in API Gateway.
+table, door, or window fields. A `cashRegister` has the common geometry and
+optional `floorId`, with no additional type-specific fields. A door may include
+the persisted `kind` value `entrance` or `kitchen`; its absence means the door
+is legacy/unspecified. It never exposes snapshot versions, lifecycle
+timestamps, audit data, DynamoDB keys, or the activation-state item. Both exact
+routes must remain unauthenticated in API Gateway.
 
 The menu route family deliberately splits reads from writes. Both
 `GET /locations/{locationId}/menu` and protected GET requests below
@@ -127,9 +128,11 @@ uses the JWT authorizer and must retain the path-parameter name `proxy`.
 The layout editor stores floors and their contents as elements in one mutable
 draft per location. When the user adds a floor, create an element with
 `type: "floor"`, retain the returned `elementId`, and send that value as
-`floorId` on each wall, door, window, or table placed on that floor. To render
-one canvas, list the location's layout elements and filter non-floor elements
-by the selected floor's `elementId`.
+`floorId` on each wall, door, window, table, or `cashRegister` placed on that
+floor. A cash register uses exactly `type: "cashRegister"` (including casing),
+the common geometry fields, and an optional `floorId`; it has no extra variant
+fields. To render one canvas, list the location's layout elements and filter
+non-floor elements by the selected floor's `elementId`.
 
 Publishing and activation are location-wide: one version contains every floor
 and all of their elements, and the whole version is activated together. Legacy
@@ -137,16 +140,22 @@ flat drafts with no floor elements and no `floorId` values remain valid. Draft
 editing is intentionally non-cascading, so deleting a floor does not delete its
 children; move or delete those children before publishing again. Availability
 uses tables from every floor but intentionally returns only `tableId` and
-`seats` for each available table.
+`seats` for each available table. Cash registers are renderable fixtures, not
+bookable tables: availability ignores them and the table-block endpoint cannot
+target their IDs.
 
 The public active-layout read separates published floor records into `floors`
-and returns walls, doors, windows, and tables in `elements`. A client selects a
-floor by `floorId` and filters `elements` by that value. Door `kind`, when
-present, is preserved through publication and returned to both staff version
-reads and this public response so clients can distinguish an `entrance` from a
-`kitchen` door. Existing doors without `kind` remain valid and should be
-rendered as an unspecified door. Legacy flat layouts return an empty `floors`
-array and elements without `floorId`.
+and returns walls, doors, windows, tables, and cash registers in `elements`. A
+client selects a floor by `floorId` and filters `elements` by that value. Door
+`kind`, when present, is preserved through publication and returned to both
+staff version reads and this public response so clients can distinguish an
+`entrance` from a `kitchen` door. Existing doors without `kind` remain valid and
+should be rendered as an unspecified door. Legacy flat layouts return an empty
+`floors` array and elements without `floorId`.
+
+Cash-register support reuses the protected layout-element CRUD, the existing
+publish/activate workflow, and the public active-layout read. It adds no API
+route, DynamoDB table, environment variable, or IAM permission.
 
 Stop and remove the local documentation container when finished:
 

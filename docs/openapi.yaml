@@ -1315,11 +1315,11 @@ paths:
       summary: List draft layout elements
       operationId: listLayoutElements
       description: |
-        Returns every floor, wall, door, window, and table in the location's
-        mutable layout partition. A multi-floor layout is one location-wide
-        collection: non-floor elements use `floorId` to identify their floor.
-        An empty list can also mean that the location does not exist because
-        this Lambda has no Location-table access.
+        Returns every floor, wall, door, window, table, and cash register in
+        the location's mutable layout partition. A multi-floor layout is one
+        location-wide collection: non-floor elements use `floorId` to identify
+        their floor. An empty list can also mean that the location does not
+        exist because this Lambda has no Location-table access.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1398,6 +1398,18 @@ paths:
                   shape: rect
                   seats: 4
                   zone: dining-room
+              cashRegisterOnFloor:
+                summary: Create a cash register on an existing floor
+                value:
+                  type: cashRegister
+                  x: 8
+                  y: 0
+                  z: -4
+                  width: 1.8
+                  height: 1.1
+                  depth: 0.8
+                  rotationY: 0
+                  floorId: floor-ground
       responses:
         '201':
           description: Layout element created successfully.
@@ -1627,6 +1639,18 @@ paths:
                     zone: dining-room
                     updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
                     updatedAt: '2026-08-31T09:55:00Z'
+                  - elementId: register-front
+                    type: cashRegister
+                    x: 8
+                    y: 0
+                    z: -4
+                    width: 1.8
+                    height: 1.1
+                    depth: 0.8
+                    rotationY: 0
+                    floorId: floor-ground
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:57:00Z'
                 validPositions: []
                 createdBy: 24824908-70e9-4d9b-934d-76953bca16b7
                 createdAt: '2026-08-31T10:00:00Z'
@@ -1718,6 +1742,16 @@ paths:
                     shape: rect
                     seats: 4
                     zone: main
+                  - elementId: register-front
+                    type: cashRegister
+                    x: 8
+                    y: 0
+                    z: -4
+                    width: 1.8
+                    height: 1.1
+                    depth: 0.8
+                    rotationY: 0
+                    floorId: floor-ground
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '404':
@@ -3316,6 +3350,48 @@ components:
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
 
+    LayoutCashRegisterCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      description: |
+        A restaurant cash register or service counter. It uses only the
+        common layout geometry and may be assigned to a floor; table, wall,
+        door, and floor-specific fields are not accepted.
+      properties:
+        type:
+          type: string
+          enum:
+            - cashRegister
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
+
     LayoutElementCreateRequest:
       oneOf:
         - $ref: '#/components/schemas/LayoutFloorCreateRequest'
@@ -3323,6 +3399,7 @@ components:
         - $ref: '#/components/schemas/LayoutDoorCreateRequest'
         - $ref: '#/components/schemas/LayoutWindowCreateRequest'
         - $ref: '#/components/schemas/LayoutTableCreateRequest'
+        - $ref: '#/components/schemas/LayoutCashRegisterCreateRequest'
       discriminator:
         propertyName: type
         mapping:
@@ -3331,10 +3408,12 @@ components:
           door: '#/components/schemas/LayoutDoorCreateRequest'
           window: '#/components/schemas/LayoutWindowCreateRequest'
           table: '#/components/schemas/LayoutTableCreateRequest'
+          cashRegister: '#/components/schemas/LayoutCashRegisterCreateRequest'
       description: |
         Complete type-specific layout element. Floors and their children are
-        edited in one location-wide draft. `decor` is not supported by the
-        current data model.
+        edited in one location-wide draft. `cashRegister` represents a cash
+        register or service counter with common geometry and optional
+        `floorId`. `decor` is not supported by the current data model.
 
     LayoutElementUpdateRequest:
       type: object
@@ -3415,9 +3494,10 @@ components:
         Logical layout record. A floor contains `name` and signed integer
         `level`. A non-floor element may contain `floorId`; a table also
         contains `shape`, `seats`, and `zone`; a door or window also contains
-        `wallId`; a door may also contain `kind`. Published multi-floor
-        snapshots require every non-floor element to reference a floor in that
-        same snapshot. Internal DynamoDB keys are never returned.
+        `wallId`; a door may also contain `kind`; a `cashRegister` has only
+        common geometry and optional `floorId`. Published multi-floor snapshots
+        require every non-floor element to reference a floor in that same
+        snapshot. Internal DynamoDB keys are never returned.
       properties:
         elementId:
           type: string
@@ -3431,6 +3511,7 @@ components:
             - door
             - window
             - table
+            - cashRegister
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
         y:
@@ -3701,12 +3782,57 @@ components:
         zone:
           $ref: '#/components/schemas/LayoutBoundedString'
 
+    PublicLayoutCashRegister:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      description: |
+        Customer-facing cash register or service counter. Audit data and
+        fields belonging to other layout element types are excluded.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - cashRegister
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
+
     PublicLayoutElement:
       oneOf:
         - $ref: '#/components/schemas/PublicLayoutWall'
         - $ref: '#/components/schemas/PublicLayoutDoor'
         - $ref: '#/components/schemas/PublicLayoutWindow'
         - $ref: '#/components/schemas/PublicLayoutTable'
+        - $ref: '#/components/schemas/PublicLayoutCashRegister'
       discriminator:
         propertyName: type
         mapping:
@@ -3714,10 +3840,12 @@ components:
           door: '#/components/schemas/PublicLayoutDoor'
           window: '#/components/schemas/PublicLayoutWindow'
           table: '#/components/schemas/PublicLayoutTable'
+          cashRegister: '#/components/schemas/PublicLayoutCashRegister'
       description: |
         Renderable customer-facing element. Audit data is excluded. `floorId`
         is present on every element in a multi-floor snapshot and absent from
-        every element in a legacy flat layout.
+        every element in a legacy flat layout. `cashRegister` identifies a
+        restaurant cash register or service counter.
 
     PublicActiveLayout:
       type: object

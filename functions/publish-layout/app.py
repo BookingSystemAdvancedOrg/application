@@ -6,8 +6,9 @@ TRIGGER:
 PURPOSE:
     Copies a location's mutable layout elements into a new immutable
     Published Layout Snapshot version. Publishing does not activate the
-    version or change any existing snapshot. Optional door purposes and
-    cash-register elements are validated and preserved in the snapshot.
+    version or change any existing snapshot. Optional door purposes,
+    table labels, and cash-register elements are validated and preserved
+    in the snapshot.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -67,6 +68,7 @@ _VARIANT_FIELDS = frozenset(
         "shape",
         "seats",
         "zone",
+        "label",
         "wallId",
         "kind",
     }
@@ -242,7 +244,9 @@ def _logical_element(item, location_id):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update({"shape", "seats", "zone"})
+        allowed_variant_fields.update(
+            {"shape", "seats", "zone", "label"}
+        )
     if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
         raise _PublishConflict("live layout element is inconsistent")
 
@@ -290,6 +294,8 @@ def _logical_element(item, location_id):
                 "zone": _required_string(item, "zone"),
             }
         )
+        if "label" in item:
+            fields["label"] = _required_string(item, "label")
 
     updated_by = _required_string(item, "updatedBy")
     updated_at = _required_string(item, "updatedAt")

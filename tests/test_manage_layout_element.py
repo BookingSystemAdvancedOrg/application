@@ -116,6 +116,8 @@ def public_element(item):
             fields.append("kind")
     elif item["type"] == "table":
         fields.extend(["shape", "seats", "zone"])
+        if "label" in item:
+            fields.append("label")
     fields.extend(["updatedBy", "updatedAt"])
     result = {field: item[field] for field in fields}
     for field, value in result.items():
@@ -445,6 +447,75 @@ def test_create_each_supported_element_type(app_and_table, element_type):
     assert stored["SK"] == f"LAYOUT#ELEMENT#{ELEMENT_ID}"
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == UPDATED_AT
+
+
+def test_create_get_and_list_preserve_trimmed_optional_table_label(
+    app_and_table,
+):
+    app, layout_table = app_and_table
+
+    create_response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("table", label="  BORD Å   sju  "),
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    expected = public_element(stored)
+    assert stored["label"] == "BORD Å   sju"
+    assert_response(create_response, 201, expected)
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+
+    assert_response(get_response, 200, expected)
+    assert_response(list_response, 200, {"items": [expected]})
+
+
+def test_legacy_table_without_label_remains_readable(app_and_table):
+    app, layout_table = app_and_table
+    legacy = element_item(element_type="table")
+    put_item(layout_table, legacy)
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+
+    assert_response(get_response, 200, public_element(legacy))
+    assert_response(list_response, 200, {"items": [public_element(legacy)]})
+    assert "label" not in response_body(get_response)
+
+
+def test_duplicate_table_labels_are_allowed(app_and_table):
+    app, layout_table = app_and_table
+    existing = element_item(
+        element_type="table",
+        element_id=OTHER_ELEMENT_ID,
+        label="Patio 4",
+    )
+    put_item(layout_table, existing)
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("table", label="Patio 4"),
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 201
+    assert get_item(layout_table)["label"] == "Patio 4"
+    assert (
+        get_item(layout_table, element_id=OTHER_ELEMENT_ID)["label"]
+        == "Patio 4"
+    )
 
 
 def test_create_get_and_list_cash_register_with_optional_floor(
@@ -983,6 +1054,61 @@ def test_floor_level_rejects_non_integers(app_and_table, level):
     assert table_items(layout_table) == []
 
 
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        (None, "label is required"),
+        ("", "label is required"),
+        ("   ", "label is required"),
+        (123, "label is required"),
+        ("x" * 129, "label is invalid"),
+    ],
+)
+def test_create_rejects_invalid_optional_table_label(
+    app_and_table,
+    label,
+    message,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("table", label=label),
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": message})
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize(
+    "element_type",
+    ["floor", "wall", "door", "window", "cashRegister"],
+)
+def test_create_rejects_table_label_for_other_element_types(
+    app_and_table,
+    element_type,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(element_type, label="T-1"),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for {element_type}: label"},
+    )
+    assert table_items(layout_table) == []
+
+
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_nonfinite_json_numbers_are_rejected(app_and_table, literal):
     app, layout_table = app_and_table
@@ -1150,6 +1276,148 @@ def test_partial_update_merges_and_replaces_audit_fields(
     assert stored["zone"] == original["zone"]
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+@pytest.mark.parametrize(
+    ("original_label", "request_label", "expected_label"),
+    [
+        (None, "  Table Ä  12  ", "Table Ä  12"),
+        ("T-1", "Chef's TABLE", "Chef's TABLE"),
+    ],
+)
+def test_partial_update_can_add_or_change_table_label(
+    app_and_table,
+    monkeypatch,
+    original_label,
+    request_label,
+    expected_label,
+):
+    app, layout_table = app_and_table
+    original = element_item(
+        element_type="table",
+        updated_by="previous-sub",
+        **({} if original_label is None else {"label": original_label}),
+    )
+    put_item(layout_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"label": request_label},
+        ),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(response, 200, public_element(stored))
+    assert stored["label"] == expected_label
+    assert stored["updatedBy"] == CALLER_SUB
+    assert stored["updatedAt"] == NEXT_UPDATED_AT
+
+
+def test_noop_trimmed_table_label_update_preserves_audit_and_skips_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="table", label="T-1")
+    put_item(layout_table, original)
+    table_spy = Mock(wraps=layout_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"label": "  T-1  "},
+        ),
+        None,
+    )
+
+    assert_response(response, 200, public_element(original))
+    table_spy.put_item.assert_not_called()
+    assert get_item(layout_table) == original
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        (None, "label is required"),
+        ("", "label is required"),
+        ("   ", "label is required"),
+        ("x" * 129, "label is invalid"),
+    ],
+)
+def test_table_label_cannot_be_cleared_or_made_invalid(
+    app_and_table,
+    label,
+    message,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type="table", label="T-1")
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"label": label},
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": message})
+    assert get_item(layout_table) == original
+
+
+@pytest.mark.parametrize(
+    "element_type",
+    ["floor", "wall", "door", "window", "cashRegister"],
+)
+def test_update_rejects_table_label_for_other_element_types(
+    app_and_table,
+    element_type,
+):
+    app, layout_table = app_and_table
+    original = element_item(element_type=element_type)
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"label": "T-1"},
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for {element_type}: label"},
+    )
+    assert get_item(layout_table) == original
+
+
+def test_labelled_table_type_is_immutable(app_and_table):
+    app, layout_table = app_and_table
+    original = element_item(element_type="table", label="T-1")
+    put_item(layout_table, original)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"type": "wall"},
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": "type cannot be changed"})
+    assert get_item(layout_table) == original
 
 
 def test_partial_update_changes_cash_register_geometry_and_floor(
@@ -1547,6 +1815,55 @@ def test_inconsistent_stored_element_returns_409(
     ids=["invalid-door-kind", "kind-on-wall"],
 )
 def test_inconsistent_stored_kind_returns_409(
+    app_and_table,
+    monkeypatch,
+    corrupt,
+):
+    app, _ = app_and_table
+    layout_table = Mock()
+    layout_table.get_item.return_value = {"Item": corrupt}
+    monkeypatch.setattr(app, "table", lambda _: layout_table)
+
+    response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout element record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        element_item(element_type="table", label=1),
+        element_item(element_type="table", label=""),
+        element_item(element_type="table", label="   "),
+        element_item(element_type="table", label="x" * 129),
+        element_item(element_type="table", label=" T-1 "),
+        element_item(element_type="floor", label="T-1"),
+        element_item(element_type="wall", label="T-1"),
+        element_item(element_type="door", label="T-1"),
+        element_item(element_type="window", label="T-1"),
+        element_item(element_type="cashRegister", label="T-1"),
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "oversize",
+        "untrimmed",
+        "floor",
+        "wall",
+        "door",
+        "window",
+        "cash-register",
+    ],
+)
+def test_inconsistent_stored_table_label_returns_409(
     app_and_table,
     monkeypatch,
     corrupt,

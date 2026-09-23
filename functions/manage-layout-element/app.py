@@ -8,8 +8,9 @@ PURPOSE:
     Staff-facing CRUD for floor, wall, door, window, table, and cash-register
     elements in a location's mutable multi-floor layout draft. Doors may
     identify their persisted purpose as ``entrance`` or ``kitchen`` through
-    ``kind``. Non-floor elements may refer to a floor element through
-    ``floorId``.
+    ``kind``. Tables may carry an optional, staff-assigned ``label`` that is
+    persisted exactly after trimming surrounding whitespace. Non-floor
+    elements may refer to a floor element through ``floorId``.
     Dispatches GET/POST on ``items`` and GET/PUT/DELETE on
     ``items/{elementId}``.
 
@@ -75,6 +76,7 @@ _VARIANT_FIELDS = frozenset(
         "shape",
         "seats",
         "zone",
+        "label",
         "wallId",
         "kind",
     }
@@ -257,7 +259,7 @@ def _validated_layout_fields(source):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update({"shape", "seats", "zone"})
+        allowed_variant_fields.update({"shape", "seats", "zone", "label"})
 
     invalid_fields = sorted(
         (set(source) & _VARIANT_FIELDS) - allowed_variant_fields
@@ -296,6 +298,8 @@ def _validated_layout_fields(source):
             integer=True,
         )
         fields["zone"] = _nonempty_string(source, "zone")
+        if "label" in source:
+            fields["label"] = _nonempty_string(source, "label")
     return fields
 
 
@@ -363,6 +367,8 @@ def _public_element(item):
 
     try:
         fields = _validated_layout_fields(item)
+        if "label" in fields and item["label"] != fields["label"]:
+            raise ValueError
         updated_by = _nonempty_string(item, "updatedBy")
         updated_at = _nonempty_string(item, "updatedAt")
         parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))

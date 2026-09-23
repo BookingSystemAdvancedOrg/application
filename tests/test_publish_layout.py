@@ -148,6 +148,16 @@ def cash_register_element_item(element_id="cash-register-id"):
     return live_element_item(element_id) | {"type": "cashRegister"}
 
 
+def table_element_item(element_id="table-id", **variant_fields):
+    return live_element_item(element_id) | {
+        "type": "table",
+        "shape": "rect",
+        "seats": Decimal("4"),
+        "zone": "main",
+        **variant_fields,
+    }
+
+
 def logical_element(item):
     return {
         key: value
@@ -348,7 +358,7 @@ def test_live_layout_query_follows_all_pages(
     monkeypatch,
 ):
     app, _, _ = app_and_tables
-    first = live_element_item("first-wall")
+    first = table_element_item("first-table", label="T-1")
     second = live_element_item("second-wall")
     last_key = {"PK": first["PK"], "SK": first["SK"]}
     query_table = Mock()
@@ -452,6 +462,132 @@ def test_publishes_multi_floor_layout_and_preserves_relationships(
     assert response_body(response)["elements"] == [
         public_element(element) for element in expected_elements
     ]
+
+
+@pytest.mark.parametrize(
+    ("source_label", "published_label"),
+    [
+        ("Patio 4", "Patio 4"),
+        ("  Patio 4  ", "Patio 4"),
+        ("x" * 128, "x" * 128),
+    ],
+)
+def test_publishes_optional_table_label_canonically(
+    app_and_tables,
+    source_label,
+    published_label,
+):
+    app, live_table, snapshot_table = app_and_tables
+    source = table_element_item(label=source_label)
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    expected = logical_element(source) | {"label": published_label}
+    assert response_body(response)["elements"] == [
+        public_element(expected)
+    ]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [expected]
+
+
+def test_publishes_legacy_table_without_label(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    source = table_element_item()
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert "label" not in response_body(response)["elements"][0]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(source)
+    ]
+
+
+def test_multi_floor_tables_may_share_the_same_label(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    ground_floor = floor_element_item()
+    upper_floor = floor_element_item(
+        "upper-floor",
+        name="Upper floor",
+        level=Decimal("1"),
+    )
+    ground_table = table_element_item(
+        "ground-table",
+        floorId="ground-floor",
+        label="Table 1",
+    )
+    upper_table = table_element_item(
+        "upper-table",
+        floorId="upper-floor",
+        label="Table 1",
+    )
+    sources = (ground_floor, ground_table, upper_floor, upper_table)
+    for source in sources:
+        live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    expected = sorted(
+        map(logical_element, sources),
+        key=lambda element: element["elementId"],
+    )
+    assert response_body(response)["elements"] == [
+        public_element(element) for element in expected
+    ]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == expected
+
+
+@pytest.mark.parametrize(
+    "label",
+    [None, 1, True, [], {}, "", "   ", "x" * 129],
+)
+def test_invalid_table_label_returns_409_without_snapshot(
+    app_and_tables,
+    label,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=table_element_item(label=label))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        live_element_item() | {"label": "W-1"},
+        floor_element_item() | {"label": "Ground"},
+        live_element_item("door-id")
+        | {"type": "door", "wallId": "wall-id", "label": "D-1"},
+        live_element_item("window-id")
+        | {"type": "window", "wallId": "wall-id", "label": "W-1"},
+        cash_register_element_item() | {"label": "Register 1"},
+    ],
+)
+def test_non_table_label_returns_409_without_snapshot(
+    app_and_tables,
+    source,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
 
 
 def test_floor_without_children_can_be_published(app_and_tables):

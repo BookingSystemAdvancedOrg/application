@@ -1909,21 +1909,55 @@ paths:
       operationId: activateLayoutVersion
       description: |
         Activates the requested location-wide published snapshot, including
-        every floor and linked element in that version. If the location has no
-        current version, activation is immediate. Otherwise, the replacement
-        is scheduled for 01:00 UTC on the date four weeks from the request.
+        every floor and linked element in that version. The request body is
+        optional. Omitting it, sending a zero-length body, or sending `{}` uses
+        the legacy behavior: a first activation is immediate, while replacing
+        a current version is scheduled for 01:00 UTC on the date four weeks
+        from the request.
+
+        Set `effectiveFrom` to a timezone-aware ISO 8601 timestamp to control
+        the transition. A timestamp at or before the server's captured request
+        time replaces the current version immediately; the response reports
+        the server time actually used. A future timestamp schedules the exact
+        instant after normalization to UTC. Future values must use whole-minute
+        precision and be at least 60 seconds after the captured request time.
+        A future activation requires an existing current version.
 
         Until cutover, exactly one snapshot remains current. The replacement
         is pending with a future `effectiveFrom`, while the current version has
         `effectiveTo` and `expiresAt` equal to `cutoverAt`. Repeating the active
-        or pending request is idempotent. Requesting another version while a
-        cutover is pending returns `409`. Archived versions cannot be activated
-        and also return `409`. The request has no body.
+        request is idempotent. A missing-body or `{}` retry for the same pending
+        target resumes that transition. An explicit future retry is idempotent
+        only when its normalized timestamp exactly matches the pending cutoff.
+        An immediate request, a different timestamp, or another target while a
+        cutover is pending returns `409`; an overdue pending cutoff also returns
+        `409`. Archived versions cannot be activated and also return `409`.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
         - super_user
+      requestBody:
+        required: false
+        description: |
+          Optional activation timing. An omitted or zero-length body has the
+          same meaning as the empty JSON object.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LayoutActivationRequest'
+            examples:
+              legacyDefault:
+                summary: Preserve the default activation timing
+                value: {}
+              immediate:
+                summary: Activate immediately when this is now or in the past
+                value:
+                  effectiveFrom: '2026-09-23T12:00:00+02:00'
+              scheduled:
+                summary: Schedule an exact future UTC-minute cutover
+                value:
+                  effectiveFrom: '2026-10-21T10:00:00Z'
       responses:
         '200':
           description: The requested version is now active or was already active.
@@ -1934,10 +1968,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LayoutActivationActive'
-              example:
-                status: active
-                version: 1
-                effectiveFrom: '2026-09-07T10:30:00Z'
+              examples:
+                activated:
+                  summary: First activation or immediate replacement
+                  value:
+                    status: active
+                    version: 2
+                    effectiveFrom: '2026-09-23T10:00:30Z'
+                alreadyActive:
+                  summary: The requested version was already active
+                  value:
+                    status: active
+                    version: 1
+                    effectiveFrom: '2026-09-07T10:30:00Z'
         '202':
           description: The replacement has been scheduled and remains pending.
           headers:
@@ -1947,13 +1990,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LayoutActivationPending'
-              example:
-                status: pending
-                version: 2
-                currentVersion: 1
-                cutoverAt: '2026-10-05T01:00:00Z'
+              examples:
+                legacyDefault:
+                  summary: Default four-week replacement
+                  value:
+                    status: pending
+                    version: 2
+                    currentVersion: 1
+                    cutoverAt: '2026-10-21T01:00:00Z'
+                customCutover:
+                  summary: Exact caller-selected future cutover
+                  value:
+                    status: pending
+                    version: 3
+                    currentVersion: 1
+                    cutoverAt: '2026-10-21T10:00:00Z'
         '400':
-          $ref: '#/components/responses/NoStoreBadRequest'
+          description: The path, optional body, or activation timestamp is invalid.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidJson:
+                  value:
+                    error: request body must be valid JSON
+                invalidTimestamp:
+                  value:
+                    error: effectiveFrom must be a timezone-aware ISO 8601 timestamp
+                futurePrecision:
+                  value:
+                    error: future effectiveFrom must use whole-minute precision
+                minimumLead:
+                  value:
+                    error: future effectiveFrom must be at least 60 seconds from now
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
@@ -3823,6 +3896,25 @@ components:
           items:
             $ref: '#/components/schemas/PublishedLayoutVersion'
 
+    LayoutActivationRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Optional activation timing. With no `effectiveFrom` property, the
+        handler preserves its default first-activation or four-week
+        replacement behavior.
+      properties:
+        effectiveFrom:
+          type: string
+          format: date-time
+          minLength: 1
+          maxLength: 64
+          description: |
+            Timezone-aware ISO 8601 timestamp. A value at or before the
+            captured server time requests immediate activation. A future value
+            must be on a whole minute and at least 60 seconds ahead; it is
+            normalized to UTC before being persisted and returned.
+
     LayoutActivationActive:
       type: object
       additionalProperties: false
@@ -4353,7 +4445,7 @@ components:
               value:
                 error: layout version changed; retry request
     LayoutActivationConflict:
-      description: The version is archived, or activation state is inconsistent, pending, or changed concurrently.
+      description: The activation conflicts with an archived version, missing current version, pending transition, inconsistent state, or concurrent change.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4367,9 +4459,17 @@ components:
               value:
                 error: archived layout version cannot be activated
             pending:
-              summary: Another target is already pending.
+              summary: The request does not exactly resume the pending transition.
               value:
                 error: another layout activation is pending
+            overdue:
+              summary: The pending transition has reached or passed its cutoff.
+              value:
+                error: layout activation cutover is overdue
+            futureWithoutCurrent:
+              summary: An exact future cutover cannot be the first activation.
+              value:
+                error: future activation requires a current layout version
             state:
               summary: Stored state and snapshots disagree.
               value:
@@ -4391,8 +4491,10 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error: layout activation service unavailable
+          examples:
+            unavailable:
+              value:
+                error: layout activation service unavailable
     LayoutVersionServiceUnavailable:
       description: The snapshot table is unavailable or returned an unusable result.
       headers:

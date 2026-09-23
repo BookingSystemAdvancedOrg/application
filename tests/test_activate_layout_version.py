@@ -883,7 +883,10 @@ def test_empty_optional_body_preserves_legacy_cutover(
     scheduler = successful_scheduler()
     monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
-    response = app.handler(make_event(version_id="2"), None)
+    response = app.handler(
+        make_event(version_id="2", body=body),
+        None,
+    )
 
     assert_response(
         response,

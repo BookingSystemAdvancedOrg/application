@@ -700,7 +700,6 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
         "/locations/{locationId}/layout/versions/{versionId}/activate"
     ]["post"]
 
-    assert "requestBody" not in operation
     assert operation["operationId"] == "activateLayoutVersion"
     assert operation["security"] == BEARER_SECURITY
     assert operation["x-required-groups"] == ADMIN_GROUPS
@@ -710,6 +709,49 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
         {"$ref": "#/components/parameters/LayoutLocationId"},
         {"$ref": "#/components/parameters/LayoutVersionId"},
     ]
+
+    request_body = operation["requestBody"]
+    assert request_body["required"] is False
+    request_media = request_body["content"]["application/json"]
+    assert request_media["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationRequest"
+    }
+    assert set(request_media["examples"]) == {
+        "legacyDefault",
+        "immediate",
+        "scheduled",
+    }
+    assert request_media["examples"]["legacyDefault"]["value"] == {}
+    assert request_media["examples"]["immediate"]["value"] == {
+        "effectiveFrom": "2026-09-23T12:00:00+02:00"
+    }
+    assert request_media["examples"]["scheduled"]["value"] == {
+        "effectiveFrom": "2026-10-21T10:00:00Z"
+    }
+
+    activation_request = document["components"]["schemas"][
+        "LayoutActivationRequest"
+    ]
+    assert activation_request["type"] == "object"
+    assert activation_request["additionalProperties"] is False
+    assert "required" not in activation_request
+    assert set(activation_request["properties"]) == {"effectiveFrom"}
+    effective_from = activation_request["properties"]["effectiveFrom"]
+    assert effective_from["type"] == "string"
+    assert effective_from["format"] == "date-time"
+    assert effective_from["minLength"] == 1
+    assert effective_from["maxLength"] == 64
+
+    description = operation["description"]
+    assert "zero-length body" in description
+    assert "01:00 UTC" in description
+    assert "four weeks" in description
+    assert "at or before" in description
+    assert "whole-minute" in description
+    assert "at least 60 seconds" in description
+    assert "normalized timestamp exactly matches" in description
+    assert "overdue pending cutoff" in description
+
     assert set(operation["responses"]) == {
         "200",
         "202",
@@ -731,6 +773,37 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     ]["schema"] == {
         "$ref": "#/components/schemas/LayoutActivationPending"
     }
+    active_examples = operation["responses"]["200"]["content"][
+        "application/json"
+    ]["examples"]
+    assert set(active_examples) == {"activated", "alreadyActive"}
+    assert active_examples["activated"]["value"]["status"] == "active"
+
+    pending_examples = operation["responses"]["202"]["content"][
+        "application/json"
+    ]["examples"]
+    assert set(pending_examples) == {"legacyDefault", "customCutover"}
+    assert pending_examples["legacyDefault"]["value"]["cutoverAt"].endswith(
+        "T01:00:00Z"
+    )
+    assert pending_examples["customCutover"]["value"] == {
+        "status": "pending",
+        "version": 3,
+        "currentVersion": 1,
+        "cutoverAt": "2026-10-21T10:00:00Z",
+    }
+
+    bad_request_examples = operation["responses"]["400"]["content"][
+        "application/json"
+    ]["examples"]
+    assert {
+        example["value"]["error"] for example in bad_request_examples.values()
+    } == {
+        "request body must be valid JSON",
+        "effectiveFrom must be a timezone-aware ISO 8601 timestamp",
+        "future effectiveFrom must use whole-minute precision",
+        "future effectiveFrom must be at least 60 seconds from now",
+    }
     assert operation["responses"]["404"] == {
         "$ref": "#/components/responses/LayoutVersionNotFound"
     }
@@ -748,6 +821,25 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     ]["archived"]["value"] == {
         "error": "archived layout version cannot be activated"
     }
+    conflict_examples = activation_conflict["content"]["application/json"][
+        "examples"
+    ]
+    assert conflict_examples["pending"]["value"] == {
+        "error": "another layout activation is pending"
+    }
+    assert conflict_examples["overdue"]["value"] == {
+        "error": "layout activation cutover is overdue"
+    }
+    assert conflict_examples["futureWithoutCurrent"]["value"] == {
+        "error": "future activation requires a current layout version"
+    }
+
+    service_unavailable = document["components"]["responses"][
+        "LayoutActivationServiceUnavailable"
+    ]
+    assert service_unavailable["content"]["application/json"]["examples"][
+        "unavailable"
+    ]["value"] == {"error": "layout activation service unavailable"}
 
     version_parameter = document["components"]["parameters"][
         "LayoutVersionId"

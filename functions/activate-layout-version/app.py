@@ -5,9 +5,10 @@ TRIGGER:
     /locations/{locationId}/layout/versions/{versionId}/activate -- Auth: JWT
 
 PURPOSE:
-    Activates a published layout snapshot. The first activation is immediate.
-    Later activations use a pending cutover so exactly one snapshot remains
-    current until the scheduled cutover completes.
+    Activates a published layout snapshot. An optional ``effectiveFrom``
+    request timestamp can replace the current version immediately or schedule
+    an exact future UTC-minute cutover. Omitting it preserves the default
+    activation behavior.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -22,6 +23,8 @@ AWS RESOURCE ACCESS:
 Full details: docs/LAMBDA_REFERENCE.md #14.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -57,6 +60,8 @@ _SCHEDULE_GROUP = "default"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
+_ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom"})
+_MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "version",
@@ -94,6 +99,10 @@ class _ActivationConflict(Exception):
 
 class _ActivationServiceFailure(Exception):
     """An AWS dependency returned an unusable result."""
+
+
+class _ActivationRequestError(Exception):
+    """A valid request body cannot start the requested transition."""
 
 
 def _activation_response(status_code, body, *, headers=None):
@@ -154,6 +163,99 @@ def _version_id(path_parameters):
     ):
         raise ValueError("versionId must be a positive integer")
     return int(value)
+
+
+def _reject_json_constant(_value):
+    raise ValueError
+
+
+def _optional_json_body(event):
+    raw_body = event.get("body")
+    if raw_body is None or raw_body == "":
+        return {}
+    if not isinstance(raw_body, str):
+        raise ValueError("request body must be a JSON object")
+
+    if event.get("isBase64Encoded") is True:
+        try:
+            raw_body = base64.b64decode(
+                raw_body,
+                validate=True,
+            ).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            raise ValueError(
+                "request body must be valid base64"
+            ) from None
+
+    try:
+        body = json.loads(
+            raw_body,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError):
+        raise ValueError("request body must be valid JSON") from None
+    if not isinstance(body, dict):
+        raise ValueError("request body must be a JSON object")
+    return body
+
+
+def _activation_timing(event, now):
+    body = _optional_json_body(event)
+    unsupported = sorted(set(body) - _ACTIVATION_REQUEST_FIELDS)
+    if unsupported:
+        raise ValueError(f"unsupported fields: {', '.join(unsupported)}")
+    if "effectiveFrom" not in body:
+        return {"mode": "default"}
+
+    value = body.get("effectiveFrom")
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 64
+    ):
+        raise ValueError(
+            "effectiveFrom must be a timezone-aware ISO 8601 timestamp"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (OverflowError, ValueError):
+        raise ValueError(
+            "effectiveFrom must be a timezone-aware ISO 8601 timestamp"
+        ) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(
+            "effectiveFrom must be a timezone-aware ISO 8601 timestamp"
+        )
+    if (
+        not isinstance(now, datetime)
+        or now.tzinfo is None
+        or now.utcoffset() is None
+    ):
+        raise _ActivationServiceFailure
+
+    try:
+        requested_at = parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        raise ValueError(
+            "effectiveFrom must be a timezone-aware ISO 8601 timestamp"
+        ) from None
+    now = now.astimezone(timezone.utc)
+    canonical = _isoformat(requested_at)
+    if requested_at <= now:
+        return {
+            "mode": "immediate",
+            "effectiveFrom": canonical,
+        }
+    if requested_at.second != 0 or requested_at.microsecond != 0:
+        raise ValueError(
+            "future effectiveFrom must use whole-minute precision"
+        )
+    return {
+        "mode": "future",
+        "effectiveFrom": canonical,
+        "hasMinimumLead": requested_at - now >= _MINIMUM_SCHEDULE_LEAD,
+    }
 
 
 def _utc_now():
@@ -668,12 +770,13 @@ def _reserve_pending_activation(
     target,
     caller_sub,
     now,
+    requested_cutover_at,
 ):
     current_version = state_details["currentVersion"]
     pending_version = _snapshot_version(target, location_id)
     next_revision = state_details["revision"] + 1
     timestamp = _isoformat(now)
-    cutover_at = _isoformat(_cutover_time(now))
+    cutover_at = requested_cutover_at
     activation_token = _activation_token(
         location_id,
         current_version,
@@ -815,7 +918,7 @@ def _renew_stale_pending_activation(
 
     next_revision = state_details["revision"] + 1
     timestamp = _isoformat(now)
-    cutover_at = _isoformat(_cutover_time(now))
+    cutover_at = previous["cutoverAt"]
     activation_token = _activation_token(
         location_id,
         state_details["currentVersion"],
@@ -1141,6 +1244,205 @@ def _snapshot_lifecycle_update(
     }
 
 
+def _snapshot_condition_is_unchanged(actual, expected):
+    if actual is None:
+        return False
+    condition_fields = (
+        "PK",
+        "SK",
+        "version",
+        "isCurrent",
+        "effectiveFrom",
+        "effectiveTo",
+        "expiresAt",
+    )
+    return all(
+        actual.get(field) == expected.get(field)
+        for field in condition_fields
+    ) and _archive_metadata(actual) == _archive_metadata(expected)
+
+
+def _reconcile_immediate_replacement(
+    location_id,
+    state_details,
+    expected_current,
+    expected_target,
+):
+    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
+    snapshots = _query_snapshots(snapshot_table, location_id)
+    by_version = {
+        _snapshot_version(snapshot, location_id): snapshot
+        for snapshot in snapshots
+    }
+    state = _read_state(snapshot_table, location_id)
+    actual_state_details = (
+        None if state is None else _validate_state(state, location_id)
+    )
+    current = [snapshot for snapshot in snapshots if snapshot["isCurrent"]]
+    if len(current) > 1:
+        raise _ActivationConflict
+
+    target_version = _snapshot_version(expected_target, location_id)
+    actual_target = by_version.get(target_version)
+    if (
+        actual_state_details is not None
+        and actual_state_details["currentVersion"] == target_version
+        and actual_state_details["pending"] is None
+        and len(current) == 1
+        and actual_target is not None
+        and _snapshot_version(current[0], location_id) == target_version
+        and _archive_metadata(actual_target) is None
+    ):
+        _validate_steady_current(actual_target)
+        return actual_target["effectiveFrom"]
+
+    state_is_unchanged = (
+        state is None
+        if state_details is None
+        else actual_state_details == state_details
+    )
+    expected_current_version = _snapshot_version(
+        expected_current,
+        location_id,
+    )
+    if (
+        state_is_unchanged
+        and _snapshot_condition_is_unchanged(
+            by_version.get(expected_current_version),
+            expected_current,
+        )
+        and _snapshot_condition_is_unchanged(
+            actual_target,
+            expected_target,
+        )
+    ):
+        return None
+    raise _ActivationConflict
+
+
+def _replace_current_immediately(
+    location_id,
+    state_details,
+    current,
+    target,
+    caller_sub,
+    now,
+):
+    timestamp = _isoformat(now.astimezone(timezone.utc))
+    target_version = _snapshot_version(target, location_id)
+    if state_details is None:
+        state_operation = _put_state_operation(
+            _state_item(
+                location_id,
+                target_version,
+                caller_sub,
+                timestamp,
+            )
+        )
+    else:
+        next_revision = state_details["revision"] + 1
+        names = {
+            "#recordType": "recordType",
+            "#currentVersion": "currentVersion",
+            "#revision": "revision",
+            "#pendingVersion": "pendingVersion",
+            "#pendingStatus": "pendingStatus",
+            "#activationToken": "activationToken",
+            "#cutoverAt": "cutoverAt",
+            "#scheduleName": "scheduleName",
+            "#scheduleArn": "scheduleArn",
+            "#updatedBy": "updatedBy",
+            "#updatedAt": "updatedAt",
+        }
+        values = _typed_map(
+            {
+                ":recordType": _ACTIVATION_STATE_TYPE,
+                ":expectedCurrentVersion": state_details[
+                    "currentVersion"
+                ],
+                ":nextCurrentVersion": target_version,
+                ":expectedRevision": state_details["revision"],
+                ":nextRevision": next_revision,
+                ":callerSub": caller_sub,
+                ":timestamp": timestamp,
+            }
+        )
+        state_operation = {
+            "Update": {
+                "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+                "Key": _typed_map(_state_key(location_id)),
+                "UpdateExpression": (
+                    "SET #currentVersion = :nextCurrentVersion, "
+                    "#revision = :nextRevision, "
+                    "#updatedBy = :callerSub, "
+                    "#updatedAt = :timestamp"
+                ),
+                "ConditionExpression": (
+                    "attribute_exists(PK) AND attribute_exists(SK) "
+                    "AND #recordType = :recordType "
+                    "AND #currentVersion = :expectedCurrentVersion "
+                    "AND #revision = :expectedRevision "
+                    "AND attribute_not_exists(#pendingVersion) "
+                    "AND attribute_not_exists(#pendingStatus) "
+                    "AND attribute_not_exists(#activationToken) "
+                    "AND attribute_not_exists(#cutoverAt) "
+                    "AND attribute_not_exists(#scheduleName) "
+                    "AND attribute_not_exists(#scheduleArn)"
+                ),
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        }
+    try:
+        dynamodb_client().transact_write_items(
+            TransactItems=[
+                state_operation,
+                _snapshot_lifecycle_update(
+                    current,
+                    is_current=False,
+                    effective_from=current["effectiveFrom"],
+                    effective_to=timestamp,
+                    expires_at=timestamp,
+                    caller_sub=caller_sub,
+                    timestamp=timestamp,
+                ),
+                _snapshot_lifecycle_update(
+                    target,
+                    is_current=True,
+                    effective_from=timestamp,
+                    effective_to=None,
+                    expires_at=None,
+                    caller_sub=caller_sub,
+                    timestamp=timestamp,
+                ),
+            ]
+        )
+    except (BotoCoreError, ClientError) as exc:
+        if isinstance(exc, ClientError) and (
+            exc.response.get("Error", {}).get("Code")
+            != "TransactionCanceledException"
+            or exc.response.get("CancellationReasons")
+        ):
+            raise
+        try:
+            committed_effective_from = _reconcile_immediate_replacement(
+                location_id,
+                state_details,
+                current,
+                target,
+            )
+        except _ActivationConflict:
+            raise _ActivationConflict(
+                "layout activation changed; retry request"
+            ) from None
+        except (BotoCoreError, ClientError, _ActivationServiceFailure):
+            raise exc
+        if committed_effective_from is None:
+            raise
+        return committed_effective_from
+    return timestamp
+
+
 def _finalize_pending_activation(
     location_id,
     state_details,
@@ -1360,6 +1662,8 @@ def _resume_pending_activation(
     by_version,
     current,
     caller_sub,
+    timing,
+    now,
 ):
     pending = state_details["pending"]
     target = by_version.get(pending["version"])
@@ -1369,18 +1673,31 @@ def _resume_pending_activation(
         raise _ActivationConflict("layout activation state is inconsistent")
     if requested_version != pending["version"]:
         raise _ActivationConflict("another layout activation is pending")
+    if timing["mode"] == "immediate":
+        raise _ActivationConflict("another layout activation is pending")
+    if timing["mode"] == "future":
+        pending_cutover = _isoformat(
+            datetime.fromisoformat(
+                pending["cutoverAt"].replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+        )
+        if timing["effectiveFrom"] != pending_cutover:
+            raise _ActivationConflict(
+                "another layout activation is pending"
+            )
 
     if pending["status"] == _SCHEDULED:
         _validate_scheduled_lifecycle(current, target, pending)
     else:
         _validate_steady_current(current)
 
-    now = _utc_now()
     cutover = datetime.fromisoformat(
         pending["cutoverAt"].replace("Z", "+00:00")
     )
-    needs_renewal = cutover <= now.astimezone(timezone.utc)
-    if pending["status"] == _SCHEDULED and not needs_renewal:
+    if cutover <= now.astimezone(timezone.utc):
+        raise _ActivationConflict("layout activation cutover is overdue")
+
+    if pending["status"] == _SCHEDULED:
         schedule_arn = _get_existing_cutover_schedule(
             current,
             target,
@@ -1393,9 +1710,6 @@ def _resume_pending_activation(
                 state_details["currentVersion"],
                 pending,
             )
-        needs_renewal = True
-
-    if needs_renewal:
         pending, revision, current, target = (
             _renew_stale_pending_activation(
                 location_id,
@@ -1430,6 +1744,8 @@ def _start_pending_activation(
     current,
     target,
     caller_sub,
+    now,
+    cutover_at,
 ):
     _validate_steady_current(current)
     pending, revision = _reserve_pending_activation(
@@ -1438,7 +1754,8 @@ def _start_pending_activation(
         current,
         target,
         caller_sub,
-        _utc_now(),
+        now,
+        cutover_at,
     )
     reserved_state_details = {
         "currentVersion": state_details["currentVersion"],
@@ -1458,7 +1775,19 @@ def _start_pending_activation(
     return _pending_response(state_details["currentVersion"], pending)
 
 
-def _activate_version(location_id, version, caller_sub):
+def _new_transition_cutover(timing, now):
+    if timing["mode"] == "default":
+        return _isoformat(_cutover_time(now))
+    if timing["mode"] != "future":
+        raise _ActivationServiceFailure
+    if not timing["hasMinimumLead"]:
+        raise _ActivationRequestError(
+            "future effectiveFrom must be at least 60 seconds from now"
+        )
+    return timing["effectiveFrom"]
+
+
+def _activate_version(location_id, version, caller_sub, timing, now):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     snapshots = _query_snapshots(snapshot_table, location_id)
     by_version = {
@@ -1487,6 +1816,8 @@ def _activate_version(location_id, version, caller_sub):
                 by_version,
                 current[0],
                 caller_sub,
+                timing,
+                now,
             )
 
         _validate_steady_current(current[0])
@@ -1503,12 +1834,25 @@ def _activate_version(location_id, version, caller_sub):
             )
         if state_details["currentVersion"] == version:
             return _active_response(version, target["effectiveFrom"])
+        if timing["mode"] == "immediate":
+            effective_from = _replace_current_immediately(
+                location_id,
+                state_details,
+                current[0],
+                target,
+                caller_sub,
+                now,
+            )
+            return _active_response(version, effective_from)
+        cutover_at = _new_transition_cutover(timing, now)
         return _start_pending_activation(
             location_id,
             state_details,
             current[0],
             target,
             caller_sub,
+            now,
+            cutover_at,
         )
 
     target = by_version.get(version)
@@ -1524,11 +1868,25 @@ def _activate_version(location_id, version, caller_sub):
 
     if current:
         current_version = _snapshot_version(current[0], location_id)
+        if current_version != version and timing["mode"] == "immediate":
+            effective_from = _replace_current_immediately(
+                location_id,
+                None,
+                current[0],
+                target,
+                caller_sub,
+                now,
+            )
+            return _active_response(version, effective_from)
+
+        cutover_at = None
+        if current_version != version:
+            cutover_at = _new_transition_cutover(timing, now)
         effective_from, normalized_current = _bootstrap_state(
             location_id,
             current[0],
             caller_sub,
-            _utc_now(),
+            now,
         )
         if current_version == version:
             return _active_response(version, effective_from)
@@ -1542,13 +1900,20 @@ def _activate_version(location_id, version, caller_sub):
             normalized_current,
             target,
             caller_sub,
+            now,
+            cutover_at,
         )
 
+    if timing["mode"] == "future":
+        _new_transition_cutover(timing, now)
+        raise _ActivationConflict(
+            "future activation requires a current layout version"
+        )
     effective_from = _activate_immediately(
         location_id,
         target,
         caller_sub,
-        _utc_now(),
+        now,
     )
     return _active_response(version, effective_from)
 
@@ -1608,8 +1973,27 @@ def handler(event, context):
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
 
+    now = _utc_now()
     try:
-        return _activate_version(location_id, version, caller_sub)
+        timing = _activation_timing(event, now)
+    except ValueError as exc:
+        return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except _ActivationServiceFailure:
+        return _activation_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout activation service unavailable",
+        )
+
+    try:
+        return _activate_version(
+            location_id,
+            version,
+            caller_sub,
+            timing,
+            now,
+        )
+    except _ActivationRequestError as exc:
+        return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _ActivationConflict as exc:
         return _activation_error(HTTPStatus.CONFLICT.value, str(exc))
     except (BotoCoreError, ClientError, _ActivationServiceFailure) as exc:

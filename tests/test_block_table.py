@@ -899,6 +899,74 @@ def test_creates_manual_block_for_active_table(app_and_tables):
     )["Item"] == manual_item()
 
 
+def test_table_label_does_not_change_block_response_or_record(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[table_element(label="T-12")]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        table_element(label=1),
+        table_element(label=""),
+        table_element(label="   "),
+        table_element(label="x" * 129),
+        table_element(label=" T-1 "),
+        wall_element(label="W-1"),
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "too-long",
+        "untrimmed",
+        "non-table",
+    ],
+)
+def test_invalid_table_label_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
 def test_creates_manual_block_for_table_on_another_floor(app_and_tables):
     app, tables = app_and_tables
     elements = [

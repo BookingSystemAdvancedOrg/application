@@ -568,6 +568,65 @@ def test_multi_floor_snapshot_exposes_only_bookable_table_details(
     ]
 
 
+def test_table_label_does_not_change_availability_response_shape(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[table_element("labelled-table", label="T-12")]
+        ),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "labelled-table", "seats": 4}
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        table_element(label=1),
+        table_element(label=""),
+        table_element(label="   "),
+        table_element(label="x" * 129),
+        table_element(label=" T-1 "),
+        wall_element() | {"label": "W-1"},
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "too-long",
+        "untrimmed",
+        "non-table",
+    ],
+)
+def test_invalid_table_label_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
 @pytest.mark.parametrize(
     "kind",
     [_UNSET, "entrance", "kitchen"],

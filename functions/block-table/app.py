@@ -124,6 +124,7 @@ _VARIANT_FIELDS = frozenset(
         "shape",
         "seats",
         "zone",
+        "label",
         "wallId",
         "kind",
     }
@@ -483,7 +484,7 @@ def _validate_layout_element(element):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update({"shape", "seats", "zone"})
+        allowed_variant_fields.update({"shape", "seats", "zone", "label"})
     if (set(element) & _VARIANT_FIELDS) - allowed_variant_fields:
         raise ValueError
 
@@ -511,6 +512,8 @@ def _validate_layout_element(element):
             raise ValueError
         _canonical_number(element.get("seats"), positive=True, integer=True)
         _stored_string(element, "zone")
+        if "label" in element:
+            _stored_string(element, "label")
 
     _stored_string(element, "updatedBy")
     _parse_utc_timestamp(element.get("updatedAt"))

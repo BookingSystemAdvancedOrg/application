@@ -11,8 +11,9 @@ PURPOSE:
     is owner/super-user only, preserves the immutable snapshot history, and
     rejects the current or pending version. The public active-layout route
     returns only customer-facing floor metadata and renderable elements,
-    including cash registers and an optional persisted door ``kind``, and
-    deliberately performs no JWT validation.
+    including cash registers, optional table ``label`` values, and an
+    optional persisted door ``kind``, and deliberately performs no JWT
+    validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -94,6 +95,7 @@ _VARIANT_FIELDS = frozenset(
         "shape",
         "seats",
         "zone",
+        "label",
         "wallId",
         "kind",
     }
@@ -120,6 +122,7 @@ _CUSTOMER_ELEMENT_FIELDS = (
     "shape",
     "seats",
     "zone",
+    "label",
     "wallId",
     "kind",
 )
@@ -315,7 +318,9 @@ def _public_element(item):
             if element_type == "door":
                 allowed_variant_fields.add("kind")
         elif element_type == "table":
-            allowed_variant_fields.update({"shape", "seats", "zone"})
+            allowed_variant_fields.update(
+                {"shape", "seats", "zone", "label"}
+            )
         if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
             raise ValueError
 
@@ -359,6 +364,8 @@ def _public_element(item):
                     "zone": _required_string(item, "zone"),
                 }
             )
+            if "label" in item:
+                fields["label"] = _required_string(item, "label")
 
         fields["updatedBy"] = _required_string(item, "updatedBy")
         fields["updatedAt"] = _utc_timestamp(item, "updatedAt")

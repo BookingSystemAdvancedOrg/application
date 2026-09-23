@@ -237,7 +237,7 @@ def public_active_element(item):
     variant_fields = {
         "door": {"wallId", "kind"},
         "window": {"wallId"},
-        "table": {"shape", "seats", "zone"},
+        "table": {"shape", "seats", "zone", "label"},
     }
     allowed_fields = common_fields | variant_fields.get(
         item["type"],
@@ -391,6 +391,7 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
         shape="round",
         seats=Decimal("4"),
         zone="window",
+        label="T-12",
     )
     cash_register = layout_element(
         "cash-register-id",
@@ -448,12 +449,12 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
         },
     )
     body = response_body(response)
+    assert "label" not in body
     serialized = json.dumps(body)
     for private_field in (
         "PK",
         "SK",
         "version",
-        "label",
         "isCurrent",
         "effectiveFrom",
         "effectiveTo",
@@ -633,6 +634,81 @@ def test_public_active_layout_rejects_cash_register_variant_fields(
             is_current=True,
             elements=[cash_register],
         )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        layout_element(
+            "table-with-non-string-label",
+            type="table",
+            shape="rect",
+            seats=Decimal("4"),
+            zone="main",
+            label=1,
+        ),
+        layout_element(
+            "table-with-empty-label",
+            type="table",
+            shape="rect",
+            seats=Decimal("4"),
+            zone="main",
+            label="",
+        ),
+        layout_element(
+            "table-with-whitespace-label",
+            type="table",
+            shape="rect",
+            seats=Decimal("4"),
+            zone="main",
+            label="   ",
+        ),
+        layout_element(
+            "table-with-long-label",
+            type="table",
+            shape="rect",
+            seats=Decimal("4"),
+            zone="main",
+            label="x" * 129,
+        ),
+        layout_element(
+            "table-with-untrimmed-label",
+            type="table",
+            shape="rect",
+            seats=Decimal("4"),
+            zone="main",
+            label=" T-1 ",
+        ),
+        layout_element("wall-with-label", label="W-1"),
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "too-long",
+        "untrimmed",
+        "non-table",
+    ],
+)
+def test_public_active_layout_rejects_invalid_table_label(
+    app_and_table,
+    monkeypatch,
+    element,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(1, is_current=True, elements=[element])
     )
 
     response = app.handler(make_public_event(), None)
@@ -2509,6 +2585,26 @@ def test_lists_legacy_door_without_kind_for_staff(app_and_table):
     returned_door = response_body(response)["items"][0]["elements"][0]
     assert returned_door == json_ready(door)
     assert "kind" not in returned_door
+
+
+def test_lists_optional_table_label_for_staff(app_and_table):
+    app, snapshot_table = app_and_table
+    table = layout_element(
+        "table-id",
+        type="table",
+        shape="round",
+        seats=Decimal("4"),
+        zone="patio",
+        label="Patio 4",
+    )
+    snapshot_table.put_item(Item=snapshot_item(1, elements=[table]))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    assert response_body(response)["items"][0]["elements"] == [
+        json_ready(table)
+    ]
 
 
 def test_lists_multi_floor_snapshot_and_preserves_relationships(

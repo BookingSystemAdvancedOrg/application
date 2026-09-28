@@ -155,6 +155,13 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
   `isCurrent=true` record and receives `effectiveTo=cutoverAt` and
   `expiresAt=cutoverAt`. The target remains `isCurrent=false`, but receives
   `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`.
+- Scheduling saves the target's exact prior lifecycle in
+  `pendingTargetPreviousLifecycle`. Moving a `scheduled` transition first
+  restores that lifecycle, rotates the transition token/name, and then stages
+  the new boundary; moving a `scheduling` transition condition-checks its
+  already-unstaged snapshots. Cancelling reopens the current lifecycle and
+  restores the target only from `scheduled`; a `scheduling` cancellation needs
+  no lifecycle writes because staging has not happened yet.
 - At cutover, `expire-layout-version` revalidates the target's immutable
   `createdAt` and environment-specific delay, then atomically changes the old
   snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and
@@ -177,6 +184,13 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
   legacy snapshot with `isCurrent=true` but no state item is not inferred as
   active; calling `activate-layout-version` for that current version
   bootstraps the state machine before those readers can use it.
+
+Pending-management currently has no Reservation or Slot Occupancy access. If
+a pending layout has already been advertised inside the 21-day booking
+horizon, cancelling or moving it can invalidate stored layout-version/table
+assumptions for affected bookings. A reservation-impact rule must therefore be
+defined before production enables late changes; this model does not silently
+migrate those records.
 
 **Archive fields:** `archivedBy` and `archivedAt` are optional as a pair: both are absent on an ordinary snapshot, and both must be present and valid on an archived snapshot. A partial or malformed pair is inconsistent data. Archiving is a soft-delete operation and never removes the DynamoDB row or compiled content. It sets `archivedBy` to the owner's/super-user's Cognito subject and `archivedAt` to the archive time, and sets `updatedBy`/`updatedAt` to the same values. The snapshot's version remains allocated permanently, preserving reservation references and historical continuity; publishing therefore cannot reuse an archived version number.
 
@@ -203,17 +217,23 @@ Each location that has activated a layout also has one internal coordination ite
 | `cutoverAt` | String (ISO8601 UTC whole minute), pending activation only |
 | `scheduleName` | String, pending activation only |
 | `scheduleArn` | String, `scheduled` phase only |
+| `pendingTargetPreviousLifecycle` | Map with exactly nullable `effectiveFrom`, `effectiveTo`, and `expiresAt`, new pending activations |
 
 `pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and
 `scheduleName` form one transition and must never be partially populated.
-`scheduleArn` must be absent in `scheduling` and present in `scheduled`. A
-default `cutoverAt` is the whole-minute ceiling of
+`scheduleArn` must be absent in `scheduling` and present in `scheduled`.
+New transitions also store `pendingTargetPreviousLifecycle`; its three values
+are the target snapshot's exact pre-staging lifecycle, including nulls, and
+remain unchanged when the cutoff is moved. A default `cutoverAt` is the
+whole-minute ceiling of
 `max(target.createdAt + environment delay, server now + 60 seconds)`; an
 explicit cutoff is the caller's exact valid UTC-normalized future minute. A
 matching retry may resume the same target with no explicit time or with an
 explicit time equal to that stored instant. It preserves the stored cutoff
-rather than recomputing it; an immediate request, a different instant, or a
-different target cannot replace an existing transition.
+rather than recomputing it. The version-specific POST route cannot replace an
+existing transition with an immediate request, different instant, or target.
+The dedicated PUT route can move the same target to another valid future
+instant; changing target is DELETE followed by a new POST activation.
 
 `scheduling` is a durable intent created before the external Scheduler call;
 it has no `scheduleArn` and does not alter either snapshot's serving
@@ -226,16 +246,36 @@ schedule, recovery changes the revision/token/name and recreates it while
 preserving the exact stored `cutoverAt`. An at-or-past-due pending transition
 is treated as a conflict and is not moved to a later cutoff.
 
+A changed-cutoff reschedule reserves a new `scheduling` transition atomically.
+For an already `scheduled` transition, that reservation also restores the
+old/current and target lifecycle values before creating the replacement
+schedule. Finalizing the replacement stages the new boundary, after which
+deletion of the old schedule is best effort. An equal-cutoff request resumes or
+verifies the existing transition without rotating it. Cancellation atomically
+removes the pending fields;
+for `scheduled`, it performs the same lifecycle restoration, while for
+`scheduling` it condition-checks unchanged snapshots. No pending transition is
+an idempotent cancellation success. Due/overdue or changing state fails closed.
+In every case, the old token is made non-authoritative before external cleanup,
+so a stale worker invocation cannot commit.
+
 The cutover worker accepts either complete phase: `scheduled` is the normal
 path, while a due `scheduling` event recovers the narrow case where schedule
 creation succeeded but lifecycle staging failed and the already-created event
 reaches the worker. The activation token binds the state, schedule, and worker
 event so a stale or retried schedule cannot apply a different activation. On
 success, the worker increments `revision`, moves `currentVersion`, and removes
-all six pending fields. Scheduler metadata and the coordination record are
+all pending fields. Scheduler metadata and the coordination record are
 internal. The public active-layout API reads only the pointer and integrity
 fields needed to resolve the current snapshot; it never returns the state item
 or pending-transition metadata.
+
+An orphan `pendingTargetPreviousLifecycle` with no core pending fields is
+ignored. For compatibility, a legacy `scheduling` transition without the map
+can derive it from the still-unstaged target when rescheduled, and cancellation
+leaves its snapshots unchanged. A legacy `scheduled` transition without the
+map can still cut over normally, but PUT/DELETE management returns `409`
+because the target's earlier lifecycle is no longer knowable.
 
 ---
 

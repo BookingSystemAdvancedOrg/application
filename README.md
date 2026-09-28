@@ -167,9 +167,15 @@ Publishing alone leaves the snapshot inactive. The first activation is
 immediate. A replacement cannot take effect before the target snapshot's
 `createdAt` plus five minutes in `dev` or 28 days in `prod`; a default request
 activates immediately when eligible, otherwise at the earliest safe whole UTC
-minute. Legacy flat drafts with no floor elements and no `floorId` values
-remain valid. Draft editing is intentionally non-cascading, so deleting a
-floor does not delete its children; move or delete those children before
+minute. Owners and super-users can move the same pending target with
+`PUT /locations/{locationId}/layout/pending-activation` and the required body
+`{"effectiveFrom":"<future whole-minute ISO 8601 timestamp>"}`. Normal success
+is `202`. `DELETE` on the same route cancels a still-future transition and is
+idempotent with an empty `204`; due/overdue or unsafe state returns `409`. To
+choose another version, cancel first and then call the existing version
+activation POST. Legacy flat drafts with no floor elements and no `floorId`
+values remain valid. Draft editing is intentionally non-cascading, so deleting
+a floor does not delete its children; move or delete those children before
 publishing again. A draft `floorArea` may omit `floorId` while it is being
 edited, but once a draft contains floor storeys, publication requires it (and
 every other non-floor element) to reference a valid floor in that same draft.
@@ -188,6 +194,13 @@ and floor areas are renderable elements, not bookable tables: availability
 ignores them and the table-block endpoint cannot target their IDs. An optional
 cash-register label does not change that rule. The block route continues to
 receive the table's `elementId` as `tableId`, never its label.
+
+Pending-layout management does not currently inspect reservations or slot
+occupancy. Once the pending layout is visible inside the 21-day booking
+horizon, moving or cancelling it can invalidate a booking's stored layout
+version/table assumptions. Do not expose late changes in production until the
+team chooses a policy such as forbidding them inside the horizon or migrating
+affected reservations explicitly.
 
 The public active-layout read separates published floor records into `floors`
 and returns floor areas, walls, doors, windows, tables, and cash registers in
@@ -214,6 +227,16 @@ contains its own snapshot validator: update `list-layout-version`,
 newly written `floorArea` elements and cash-register labels even if a rollout
 stops partway through. An atomic deployment of all five images is also safe.
 
+For pending-activation management, deploy compatible layout readers and
+`expire-layout-version` before `activate-layout-version`. Check for legacy
+`scheduled` state records without `pendingTargetPreviousLifecycle` and let
+them finish or remediate them deliberately before enabling the controls.
+Infrastructure must route the exact JWT-protected
+`PUT /locations/{locationId}/layout/pending-activation` and
+`DELETE /locations/{locationId}/layout/pending-activation` operations to the
+existing activation Lambda and add route-scoped invoke permissions. No new
+Lambda, table, environment variable, or execution-role permission is required.
+
 Stop and remove the local documentation container when finished:
 
 ```powershell
@@ -222,7 +245,9 @@ docker compose down
 
 Swagger's requests originate in the browser. The selected API must allow
 `http://localhost:8081` in its API Gateway CORS configuration even if the same
-request already works from Postman or PowerShell.
+request already works from Postman or PowerShell. Admin origins must allow
+`PUT`, `DELETE`, `Authorization`, and `Content-Type`; CORS preflight must not
+require JWT authorization.
 
 ## Conventions (see docs/LAMBDA_REFERENCE.md for the full version)
 

@@ -38,6 +38,9 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/layout/versions/{versionId}/activate": (
         frozenset({"post"})
     ),
+    "/locations/{locationId}/layout/pending-activation": frozenset(
+        {"put", "delete"}
+    ),
     "/menu-images/presigned-url": frozenset({"get"}),
     "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
@@ -1415,6 +1418,151 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
 
     assert active["properties"]["status"]["enum"] == ["active"]
     assert pending["properties"]["status"]["enum"] == ["pending"]
+
+
+def test_pending_layout_activation_contract_matches_handler(
+    openapi_document,
+):
+    document, _ = openapi_document
+    path = document["paths"][
+        "/locations/{locationId}/layout/pending-activation"
+    ]
+    assert path["parameters"] == [
+        {"$ref": "#/components/parameters/LayoutLocationId"}
+    ]
+
+    reschedule = path["put"]
+    assert reschedule["operationId"] == "reschedulePendingLayoutActivation"
+    assert reschedule["security"] == BEARER_SECURITY
+    assert reschedule["x-required-groups"] == ADMIN_GROUPS
+    request_body = reschedule["requestBody"]
+    assert request_body["required"] is True
+    request_media = request_body["content"]["application/json"]
+    assert request_media["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationRescheduleRequest"
+    }
+    assert request_media["example"] == {
+        "effectiveFrom": "2026-10-28T10:00:00Z"
+    }
+
+    request_schema = document["components"]["schemas"][
+        "LayoutActivationRescheduleRequest"
+    ]
+    assert request_schema["type"] == "object"
+    assert request_schema["additionalProperties"] is False
+    assert request_schema["required"] == ["effectiveFrom"]
+    assert set(request_schema["properties"]) == {"effectiveFrom"}
+    effective_from = request_schema["properties"]["effectiveFrom"]
+    assert effective_from["type"] == "string"
+    assert effective_from["format"] == "date-time"
+    assert effective_from["minLength"] == 1
+    assert effective_from["maxLength"] == 64
+
+    reschedule_description = " ".join(
+        reschedule["description"].split()
+    )
+    assert "existing pending activation" in reschedule_description
+    assert "whole UTC minute" in reschedule_description
+    assert "at least 60 seconds" in reschedule_description
+    assert "replacement eligibility" in reschedule_description
+    assert "same normalized instant" in reschedule_description
+    assert "old schedule" in reschedule_description
+    assert set(reschedule["responses"]) == {
+        "200",
+        "202",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "409",
+        "503",
+    }
+    assert reschedule["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationActive"
+    }
+    assert reschedule["responses"]["202"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/LayoutActivationPending"
+    }
+    assert reschedule["responses"]["404"] == {
+        "$ref": "#/components/responses/PendingLayoutActivationNotFound"
+    }
+    assert reschedule["responses"]["409"] == {
+        "$ref": "#/components/responses/PendingLayoutActivationConflict"
+    }
+    assert reschedule["responses"]["503"] == {
+        "$ref": "#/components/responses/LayoutActivationServiceUnavailable"
+    }
+    assert reschedule["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["PUT"]
+    bad_request_examples = reschedule["responses"]["400"]["content"][
+        "application/json"
+    ]["examples"]
+    assert {
+        example["value"]["error"] for example in bad_request_examples.values()
+    } == {
+        "effectiveFrom is required",
+        "request body must be valid JSON",
+        "request body must be a JSON object",
+        "effectiveFrom must be a timezone-aware ISO 8601 timestamp",
+        "effectiveFrom must be in the future",
+        "future effectiveFrom must use whole-minute precision",
+        "future effectiveFrom must be at least 60 seconds from now",
+    }
+
+    cancel = path["delete"]
+    assert cancel["operationId"] == "cancelPendingLayoutActivation"
+    assert cancel["security"] == BEARER_SECURITY
+    assert cancel["x-required-groups"] == ADMIN_GROUPS
+    assert "requestBody" not in cancel
+    cancel_description = " ".join(cancel["description"].split())
+    assert "idempotent" in cancel_description
+    assert "restores" in cancel_description
+    assert "original lifecycle" in cancel_description
+    assert "obsolete schedule" in cancel_description
+    assert set(cancel["responses"]) == {
+        "204",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "503",
+    }
+    assert "content" not in cancel["responses"]["204"]
+    assert cancel["responses"]["409"] == {
+        "$ref": "#/components/responses/PendingLayoutActivationConflict"
+    }
+    assert cancel["responses"]["503"] == {
+        "$ref": "#/components/responses/LayoutActivationServiceUnavailable"
+    }
+    assert cancel["responses"]["405"]["headers"]["Allow"][
+        "schema"
+    ]["enum"] == ["DELETE"]
+
+    not_found = document["components"]["responses"][
+        "PendingLayoutActivationNotFound"
+    ]
+    assert not_found["content"]["application/json"]["example"] == {
+        "error": "pending layout activation not found"
+    }
+    conflict_examples = document["components"]["responses"][
+        "PendingLayoutActivationConflict"
+    ]["content"]["application/json"]["examples"]
+    assert {
+        example["value"]["error"] for example in conflict_examples.values()
+    } == {
+        "layout activation cutover is overdue",
+        "layout version cannot activate before 2026-10-21T10:01:00Z",
+        "layout activation state is inconsistent",
+        "published layout record is inconsistent",
+        "layout activation changed; retry request",
+    }
 
 
 def test_archive_layout_version_contract_matches_handler(openapi_document):

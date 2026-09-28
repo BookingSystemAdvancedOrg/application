@@ -2120,7 +2120,9 @@ paths:
         An immediate request, a different timestamp, or another target while a
         cutover is pending returns `409`; an overdue pending cutoff also returns
         `409`. These pending-retry rules do not recompute or move the stored
-        cutoff. At execution time, the scheduled worker revalidates the
+        cutoff. Use the dedicated pending-activation PUT to move the same
+        target's cutoff, or DELETE followed by a new activation POST to choose
+        another target. At execution time, the scheduled worker revalidates the
         target's publication time and environment-specific replacement delay
         before committing the cutover. Archived versions cannot be activated
         and also return `409`.
@@ -2244,6 +2246,192 @@ paths:
                 error: method not allowed
         '409':
           $ref: '#/components/responses/LayoutActivationConflict'
+        '503':
+          $ref: '#/components/responses/LayoutActivationServiceUnavailable'
+
+  /locations/{locationId}/layout/pending-activation:
+    parameters:
+      - $ref: '#/components/parameters/LayoutLocationId'
+    put:
+      tags:
+        - Layout
+      summary: Reschedule the pending layout activation
+      operationId: reschedulePendingLayoutActivation
+      description: |
+        Moves the cutoff of the location's existing pending activation without
+        changing its target version. The required `effectiveFrom` value is
+        normalized to UTC and must be a future whole UTC minute, at least 60
+        seconds after the captured server time, and at or after the target's
+        environment-specific replacement eligibility boundary. A request for
+        the same normalized instant is idempotent and may resume an incomplete
+        scheduling attempt without reapplying the current lead-time check.
+
+        For a changed cutoff, the handler first atomically rotates the
+        activation token. If the prior phase is `scheduled`, it restores both
+        snapshots to their original lifecycle; a prior `scheduling` phase
+        instead condition-checks the unchanged snapshots. It then creates and
+        stages the replacement schedule before making a best-effort deletion
+        of the old schedule. Every worker checks
+        the authoritative token, so an obsolete schedule that cannot be
+        deleted cannot perform a cutover. A legacy staged transition that does
+        not contain its target's original lifecycle fails closed with `409`.
+        A missing pending activation returns `404`, and an existing cutoff at
+        or before server time returns `409` rather than being moved.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      requestBody:
+        required: true
+        description: Exact future cutoff for the existing pending activation.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LayoutActivationRescheduleRequest'
+            example:
+              effectiveFrom: '2026-10-28T10:00:00Z'
+      responses:
+        '200':
+          description: >-
+            The scheduled worker completed the exact requested transition
+            during request reconciliation, so the target is already active.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutActivationActive'
+              example:
+                status: active
+                version: 2
+                effectiveFrom: '2026-10-28T10:00:00Z'
+        '202':
+          description: The replacement remains pending at the requested cutoff.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LayoutActivationPending'
+              example:
+                status: pending
+                version: 2
+                currentVersion: 1
+                cutoverAt: '2026-10-28T10:00:00Z'
+        '400':
+          description: The path, required body, or requested cutoff is invalid.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingTimestamp:
+                  value:
+                    error: effectiveFrom is required
+                invalidJson:
+                  value:
+                    error: request body must be valid JSON
+                invalidShape:
+                  value:
+                    error: request body must be a JSON object
+                invalidTimestamp:
+                  value:
+                    error: effectiveFrom must be a timezone-aware ISO 8601 timestamp
+                notFuture:
+                  value:
+                    error: effectiveFrom must be in the future
+                futurePrecision:
+                  value:
+                    error: future effectiveFrom must use whole-minute precision
+                minimumLead:
+                  value:
+                    error: future effectiveFrom must be at least 60 seconds from now
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/PendingLayoutActivationNotFound'
+        '405':
+          description: The Lambda was invoked with a method other than PUT.
+          headers:
+            Allow:
+              description: Method accepted by this handler route.
+              schema:
+                type: string
+                enum:
+                  - PUT
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/PendingLayoutActivationConflict'
+        '503':
+          $ref: '#/components/responses/LayoutActivationServiceUnavailable'
+    delete:
+      tags:
+        - Layout
+      summary: Cancel the pending layout activation
+      operationId: cancelPendingLayoutActivation
+      description: |
+        Cancels a still-future pending transition. One conditional DynamoDB
+        transaction clears the pending state, keeps the current snapshot
+        active without an end time, and restores the target's exact original
+        lifecycle when scheduling had already staged a cutoff. The obsolete
+        schedule is deleted afterward on a best-effort basis; its now-stale
+        token prevents it from mutating state if deletion fails.
+
+        The operation is idempotent: a location with no activation state or no
+        pending transition also returns `204`. An at-or-past-due transition,
+        corrupt or changing state, or a legacy scheduled transition without
+        the saved original lifecycle returns `409` and is not cancelled.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+        - super_user
+      responses:
+        '204':
+          description: The pending activation is absent or has been cancelled.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '405':
+          description: The Lambda was invoked with a method other than DELETE.
+          headers:
+            Allow:
+              description: Method accepted by this handler route.
+              schema:
+                type: string
+                enum:
+                  - DELETE
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: method not allowed
+        '409':
+          $ref: '#/components/responses/PendingLayoutActivationConflict'
         '503':
           $ref: '#/components/responses/LayoutActivationServiceUnavailable'
 
@@ -4659,6 +4847,28 @@ components:
             replacement eligibility; it is normalized to UTC before being
             persisted and returned.
 
+    LayoutActivationRescheduleRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - effectiveFrom
+      description: |
+        Required timing for moving an existing pending activation. The value
+        cannot request immediate activation and cannot change the pending
+        target version.
+      properties:
+        effectiveFrom:
+          type: string
+          format: date-time
+          minLength: 1
+          maxLength: 64
+          description: |
+            Timezone-aware ISO 8601 timestamp for the new cutoff. It must be a
+            future whole minute, normally at least 60 seconds ahead, and at or
+            after the target snapshot's replacement eligibility. An exact
+            retry of the already-stored UTC instant remains idempotent even if
+            it is now inside the ordinary scheduler lead window.
+
     LayoutActivationActive:
       type: object
       additionalProperties: false
@@ -5149,6 +5359,17 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout version not found
+    PendingLayoutActivationNotFound:
+      description: The location has no pending layout activation to reschedule.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: pending layout activation not found
     ActiveLayoutNotFound:
       description: The location has no active published layout.
       headers:
@@ -5265,8 +5486,43 @@ components:
               summary: A concurrent request won the conditional write.
               value:
                 error: layout activation changed; retry request
+    PendingLayoutActivationConflict:
+      description: |
+        The pending transition is overdue, cannot be safely restored or moved,
+        violates replacement eligibility, or changed concurrently. The
+        eligibility example applies only to PUT.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            overdue:
+              summary: The pending transition reached or passed its cutoff.
+              value:
+                error: layout activation cutover is overdue
+            tooEarly:
+              summary: The requested cutoff precedes target eligibility.
+              value:
+                error: layout version cannot activate before 2026-10-21T10:01:00Z
+            state:
+              summary: State cannot be restored or is otherwise inconsistent.
+              value:
+                error: layout activation state is inconsistent
+            snapshot:
+              summary: A referenced published snapshot is malformed.
+              value:
+                error: published layout record is inconsistent
+            concurrent:
+              summary: Another activation operation won the conditional write.
+              value:
+                error: layout activation changed; retry request
     LayoutActivationServiceUnavailable:
-      description: DynamoDB or EventBridge Scheduler could not complete activation safely.
+      description: >-
+        Configuration, DynamoDB, or EventBridge Scheduler could not complete
+        activation safely.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'

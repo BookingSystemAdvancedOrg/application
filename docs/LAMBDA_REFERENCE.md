@@ -627,12 +627,17 @@ Malformed paths return `400`. A recognized request with the wrong method returns
 ---
 
 ### 14. `activate-layout-version`
-**Trigger:** API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-**Purpose:** Activates one complete published snapshot while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, or request an immediate replacement only after eligibility. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+**Triggers:**
 
-**Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. The only accepted method is `POST`. `locationId` must be non-empty and at most 128 characters. `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
+- API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
+- API Gateway — `PUT /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
+- API Gateway — `DELETE /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
 
-The body is optional. An omitted body, an API Gateway `null` body, an empty
+**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+
+**Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. Dispatch uses the exact API Gateway route and method: `POST` activates a selected version, `PUT` reschedules the singleton pending activation, and `DELETE` cancels it. `locationId` must be non-empty and at most 128 characters. On `POST`, `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
+
+The `POST` body is optional. An omitted body, an API Gateway `null` body, an empty
 string, or `{}` selects the default timing. For a replacement, define
 `eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev` or
 28 days in `prod`. The default activates immediately when server now is at or
@@ -660,7 +665,7 @@ When no activation is pending, repeating a request for the current version is id
 
 **Scheduled replacement:** With no `effectiveFrom` and a target that is not yet eligible, `cutoverAt` is the whole-minute ceiling of `max(eligibleAt, now + 60 seconds)`. With an explicit future `effectiveFrom`, `cutoverAt` is that exact UTC-normalized whole minute, provided it satisfies both the scheduler lead and eligibility boundaries. The operation is a recoverable two-phase saga because DynamoDB and EventBridge Scheduler cannot share one transaction:
 
-1. A conditional DynamoDB transaction increments the state revision and records a durable `scheduling` intent containing `pendingVersion`, `activationToken`, `cutoverAt`, and a deterministic `scheduleName`. Neither snapshot's serving lifecycle changes yet.
+1. A conditional DynamoDB transaction increments the state revision and records a durable `scheduling` intent containing `pendingVersion`, `activationToken`, `cutoverAt`, a deterministic `scheduleName`, and `pendingTargetPreviousLifecycle`, which preserves the target's exact three lifecycle values before staging. Neither snapshot's serving lifecycle changes yet.
 2. Create a one-time EventBridge schedule in the `default` group. Its name is `expire-layout-version-` followed by the first 42 characters of the activation token, so it is IAM-compatible and never exceeds Scheduler's 64-character limit.
 3. A second conditional DynamoDB transaction changes the intent to `scheduled`, stores `scheduleArn`, gives the outgoing current snapshot `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`, and gives the pending target `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. Both `isCurrent` values remain unchanged: old is `true`, target is `false`.
 4. At cutover, `expire-layout-version` atomically retires the old snapshot, activates the target, advances the state, and clears all pending fields.
@@ -671,9 +676,23 @@ A successfully staged or already-staged replacement returns `202`:
 {"status":"pending","version":2,"currentVersion":1,"cutoverAt":"2026-10-21T10:01:00Z"}
 ```
 
-Only one target may be pending. A bodyless/empty request for that same target resumes it, as does an explicit future request whose UTC-normalized instant exactly equals the stored `cutoverAt`. A retry preserves that stored cutoff and does not recompute it from the current time or policy. An explicit immediate request or a different future instant cannot retime/replace the pending transition and returns `409` with `another layout activation is pending`; requesting a different target returns the same conflict. A matching retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If the expected schedule is missing while `cutoverAt` is still future, recovery deletes the validated stored name when present, renews the transition token/name, and recreates the schedule at the **same exact stored cutoff**; it never moves a custom or default cutoff. `ResourceNotFoundException` during recovery deletion is an expected no-op. Recovery never reschedules a pending transition whose stored cutoff is at or before server now; a bodyless/empty retry returns `409` with `layout activation cutover is overdue`. An ambiguous final DynamoDB result is reconciled through strongly consistent reads before any error is returned.
+Only one target may be pending. A bodyless/empty `POST` for that same target resumes it, as does an explicit future `POST` whose UTC-normalized instant exactly equals the stored `cutoverAt`. A retry preserves that stored cutoff and does not recompute it from the current time or policy. An explicit immediate `POST`, a different future instant, or a different target cannot replace the pending transition and returns `409` with `another layout activation is pending`; moving the cutoff belongs to the dedicated `PUT` route below. A matching retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If the expected schedule is missing while `cutoverAt` is still future, recovery deletes the validated stored name when present, renews the transition token/name, and recreates the schedule at the **same exact stored cutoff**. `ResourceNotFoundException` during recovery deletion is an expected no-op. Recovery never resumes a pending transition whose stored cutoff is at or before server now; it returns `409` with `layout activation cutover is overdue`. Ambiguous DynamoDB results are reconciled through bounded, strongly consistent state-snapshot-state reads before an error is returned.
 
-Malformed paths, malformed/unsupported bodies, invalid timestamps, sub-minute future timestamps, and insufficient lead time for a new future transition return `400`; therefore a future first-activation request with insufficient lead also returns `400`. Missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a missing version returns `404`; and a wrong method returns `405` with `Allow: POST`. An otherwise-valid future first activation, a replacement request before target eligibility, a pending retime/immediate request, an overdue transition, or conflicting/corrupt state returns `409`; sanitized DynamoDB/Scheduler/configuration failures return `503`. Scheduled success returns `202` with `status="pending"`; first/immediate/idempotently active success returns `200` with `status="active"`. Every response includes `Cache-Control: no-store`.
+**Reschedule pending activation:** `PUT /locations/{locationId}/layout/pending-activation` takes exactly one required field:
+
+```json
+{"effectiveFrom":"2026-10-28T10:00:00Z"}
+```
+
+The value must be a future, timezone-aware ISO 8601 whole minute. For a changed cutoff it must be at least 60 seconds after the captured server time and no earlier than the whole-minute replacement-eligibility boundary. A semantically equal timestamp with another offset is normalized to the same UTC instant and is an idempotent retry, even if the existing cutoff is now inside the ordinary 60-second lead window. Omitting `effectiveFrom`, requesting immediate activation, or adding fields returns `400`. No pending transition returns `404` with `pending layout activation not found`; an overdue transition returns `409` and cannot be moved.
+
+Rescheduling retains the same pending target. For a changed cutoff, one conditional transaction rotates the revision/token/name and makes the previous schedule stale. If the prior phase is `scheduled`, it also restores the current snapshot to an open-ended lifecycle and the target's exact lifecycle from before the original scheduling attempt; a prior `scheduling` phase instead condition-checks the already-unstaged snapshots. The handler then creates the new schedule and atomically stages the new boundary before deleting the old schedule on a best-effort basis. An equal-cutoff PUT only resumes or verifies the existing transition and does not rotate it. A stale old schedule cannot mutate state because the worker validates the token. A dependency failure after reservation leaves a durable `scheduling` intent that an exact retry can finish. Normal or idempotent pending success returns `202` with the standard pending response. If reconciliation proves the worker completed this exact transition concurrently, it returns `200` with the active response instead of reporting a false failure.
+
+**Cancel pending activation:** `DELETE /locations/{locationId}/layout/pending-activation` does not read a request body. A conditional transaction clears every pending field and increments the revision. For `scheduled`, it also reopens the current snapshot and restores the inactive target's exact pre-scheduling lifecycle; for `scheduling`, it condition-checks the unchanged snapshots without rewriting them. Scheduler deletion happens only after DynamoDB is authoritative and is best effort; a missing schedule or cleanup failure does not undo cancellation because its token is stale. Cancellation is idempotent: no state item or no pending transition returns `204` without AWS Scheduler access. A due/overdue transition or a worker/finalizer race returns `409` rather than claiming cancellation.
+
+The `pendingTargetPreviousLifecycle` state field makes exact restoration possible. A legacy `scheduling` record without it can capture the still-unstaged target lifecycle while being rescheduled, and cancellation leaves its snapshots unchanged. A legacy `scheduled` record without it fails closed with `409` for both `PUT` and `DELETE`; its already-overwritten target lifecycle cannot be reconstructed safely.
+
+Malformed paths, malformed/unsupported `POST` or `PUT` bodies, invalid timestamps, sub-minute future timestamps, and insufficient lead time for a new or changed future transition return `400`; therefore a future first-activation request with insufficient lead also returns `400`. `DELETE` ignores any supplied body. Missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`. A missing activation target, missing pending transition on `PUT`, or wrong method returns `404`/`405` as appropriate; `Allow` is route-specific (`POST`, `PUT`, or `DELETE`). Otherwise-valid requests that are too early, overdue, concurrent, legacy-unsafe, or inconsistent return `409`; sanitized DynamoDB/Scheduler/configuration failures return `503`. Scheduled or rescheduled success returns `202` with `status="pending"`; cancellation returns an empty `204`; first/immediate/idempotently active success and a proven concurrent cutover return `200` with `status="active"`. Every response produced by the Lambda includes `Cache-Control: no-store`.
 
 **Environment variables:**
 | Name | Meaning |
@@ -684,6 +703,32 @@ Malformed paths, malformed/unsupported bodies, invalid timestamps, sub-minute fu
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. Scheduler `CreateSchedule`, `GetSchedule`, and `DeleteSchedule`, scoped to names matching `expire-layout-version-*` in the `default` group, plus `iam:PassRole` on the scheduler invoke role. It accesses no other table or AWS service.
+
+The pending-management routes do not inspect Reservation or Slot Occupancy.
+Once availability begins advertising the pending layout inside the 21-day
+booking horizon, cancelling, retiming, or replacing it can make an existing
+booking's stored layout-version/table assumptions stale. Production must
+define a separate reservation-impact policy before exposing late changes;
+possible policies include forbidding changes inside the booking horizon or
+adding reservation-aware migration. This Lambda's current resource contract
+does not authorize the latter.
+
+**Infrastructure and rollout:** API Gateway must add the exact JWT-protected
+`PUT` and `DELETE /locations/{locationId}/layout/pending-activation` routes,
+integrate both with this same Lambda, and grant route-scoped invoke permission.
+HTTP API CORS must allow `PUT`, `DELETE`, `Authorization`, and `Content-Type`
+for the admin/Swagger origins; preflight remains unauthenticated. No new
+Lambda, table, environment variable, or execution-role permission is needed.
+
+Before enabling the controls, inspect activation-state items for a legacy
+`pendingStatus="scheduled"` transition without
+`pendingTargetPreviousLifecycle`. Let each such transition finish or remediate
+it deliberately; do not invent rollback values. Deploy compatible readers and
+the cutover worker before the updated `activate-layout-version`, then expose
+the new routes and frontend controls. To choose another pending version, call
+DELETE successfully and then call the existing POST activation route for the
+new version; that two-request change is intentionally not presented as one
+atomic operation.
 
 **Downstream schedule contract:**
 
@@ -735,6 +780,13 @@ The actual input is serialized compactly with sorted keys. The schedule name mus
 3. move `currentVersion` to the target, increment `revision`, update audit metadata, and remove every pending field from the state item.
 
 The normal `scheduled` phase requires the lifecycle timestamps to have already been staged by `activate-layout-version`. A due `scheduling` phase is also recoverable: it means Scheduler creation succeeded but the final DynamoDB staging transaction did not complete, so this worker applies the same lifecycle boundary while completing the cutover. The deterministic activation token binds environment, table, location, versions, revision, and cutoff to the event. Transaction conditions bind the stored phase, old/current version, target version, lifecycle timestamps, schedule metadata, audit version, and token to the values that were strongly read.
+
+`pendingTargetPreviousLifecycle` is rollback metadata for the HTTP management
+routes, not an input to the final active lifecycle. The worker removes it with
+all other pending fields. A legacy `scheduled` transition without that backup
+can still complete its already-staged cutover, but the HTTP `PUT` and `DELETE`
+routes reject it because they cannot safely reconstruct the inactive target's
+earlier lifecycle.
 
 Before writing, the worker independently revalidates that `cutoverAt` is not
 earlier than the target snapshot's `createdAt` plus five minutes in `dev` or
@@ -973,7 +1025,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 11 | `manage-layout-element` | API GW `ANY /locations/{locationId}/layout-elements/{proxy+}` | JWT |
 | 12 | `publish-layout` | API GW `POST /locations/{locationId}/layout/publish` | JWT |
 | 13 | `list-layout-version` | API GW `GET /locations/{locationId}/layout/versions`; `DELETE /locations/{locationId}/layout/versions/{versionId}`; `GET /locations/{locationId}/layout/active` | JWT on versions/archive; NONE on active |
-| 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
+| 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate`; `PUT`/`DELETE /locations/{locationId}/layout/pending-activation` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
 | 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |

@@ -5,11 +5,13 @@ TRIGGER:
 
 PURPOSE:
     Publicly returns bookable local-time slots and their currently available
-    tables for one location and ``?date=YYYY-MM-DD``. The implementation
-    cross-references business hours, the active published layout, and both
-    reservation and manual Slot Occupancy holds. Slot starts are limited to
-    the next 21 days. This route intentionally has no JWT check because
-    customers do not have Cognito accounts.
+    tables for one location and ``?date=YYYY-MM-DD``. Each slot includes the
+    layout version effective at that instant, including across a scheduled
+    current-to-pending layout cutover. The implementation cross-references
+    business hours, published layouts, and both reservation and manual Slot
+    Occupancy holds. Slot starts are limited to the next 21 days. This route
+    intentionally has no JWT check because customers do not have Cognito
+    accounts.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -24,6 +26,8 @@ AWS RESOURCE ACCESS:
 Full details: docs/LAMBDA_REFERENCE.md
 """
 
+import hashlib
+import json
 import os
 import re
 from datetime import date, datetime, time, timedelta, timezone
@@ -58,6 +62,25 @@ _WEEKDAYS = (
 )
 _ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
 _ACTIVATION_STATE_TYPE = "layoutActivationState"
+_SCHEDULE_NAME_PREFIX = "expire-layout-version-"
+_SCHEDULE_GROUP = "default"
+_SCHEDULING = "scheduling"
+_SCHEDULED = "scheduled"
+_PENDING_STATE_FIELDS = frozenset(
+    {
+        "pendingVersion",
+        "pendingStatus",
+        "activationToken",
+        "cutoverAt",
+        "scheduleName",
+        "scheduleArn",
+    }
+)
+_ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
+_REPLACEMENT_DELAYS = {
+    "dev": timedelta(minutes=5),
+    "prod": timedelta(days=28),
+}
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "PK",
@@ -383,6 +406,8 @@ def _candidate_slots(details, location, now):
                         "endTime": _clock_time(end_minute),
                         "startMinute": start_minute,
                         "endMinute": end_minute,
+                        "startUtc": start_utc,
+                        "endUtc": end_utc,
                     }
                 )
             start_minute += duration
@@ -410,6 +435,35 @@ def _read_snapshot_item(snapshot_table, key):
     return item
 
 
+def _schedule_name(activation_token):
+    suffix_length = 64 - len(_SCHEDULE_NAME_PREFIX)
+    return f"{_SCHEDULE_NAME_PREFIX}{activation_token[:suffix_length]}"
+
+
+def _activation_token(
+    location_id,
+    current_version,
+    pending_version,
+    revision,
+    cutover_at,
+):
+    identity = json.dumps(
+        {
+            "environment": ENVIRONMENT,
+            "snapshotTable": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "locationId": location_id,
+            "currentVersion": current_version,
+            "pendingVersion": pending_version,
+            "revision": revision,
+            "cutoverAt": cutover_at,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def _validate_activation_state(state, location_id):
     if (
         state.get("PK") != f"LOCATION#{location_id}"
@@ -421,14 +475,111 @@ def _validate_activation_state(state, location_id):
         )
     try:
         current_version = _positive_integer(state.get("currentVersion"))
-        _positive_integer(state.get("revision"))
-        _stored_string(state, "updatedBy")
-        _parse_utc_timestamp(state.get("updatedAt"))
+        revision = _positive_integer(state.get("revision"))
+        updated_by = _stored_string(state, "updatedBy")
+        updated_at = state.get("updatedAt")
+        _parse_utc_timestamp(updated_at)
     except (ArithmeticError, TypeError, ValueError):
         raise _AvailabilityConflict(
             "layout activation state is inconsistent"
         ) from None
-    return current_version
+
+    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    if not present_pending_fields:
+        return {
+            "currentVersion": current_version,
+            "revision": revision,
+            "updatedBy": updated_by,
+            "updatedAt": updated_at,
+            "pending": None,
+        }
+
+    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    if not required_pending_fields.issubset(state):
+        raise _AvailabilityConflict(
+            "layout activation state is inconsistent"
+        )
+    if ENVIRONMENT not in _REPLACEMENT_DELAYS:
+        raise _AvailabilityServiceFailure
+
+    try:
+        pending_version = _positive_integer(state.get("pendingVersion"))
+        if pending_version == current_version:
+            raise ValueError
+
+        pending_status = _stored_string(state, "pendingStatus")
+        if pending_status not in {_SCHEDULING, _SCHEDULED}:
+            raise ValueError
+
+        activation_token = _stored_string(state, "activationToken")
+        if len(activation_token) != 64 or any(
+            value not in "0123456789abcdef" for value in activation_token
+        ):
+            raise ValueError
+
+        cutover_at = state.get("cutoverAt")
+        parsed_cutover = _parse_utc_timestamp(cutover_at)
+        if parsed_cutover.second != 0 or parsed_cutover.microsecond != 0:
+            raise ValueError
+
+        operation_revision = (
+            revision if pending_status == _SCHEDULING else revision - 1
+        )
+        if operation_revision <= 0 or activation_token != _activation_token(
+            location_id,
+            current_version,
+            pending_version,
+            operation_revision,
+            cutover_at,
+        ):
+            raise ValueError
+
+        schedule_name = _stored_string(
+            state,
+            "scheduleName",
+            max_length=64,
+        )
+        if schedule_name != _schedule_name(activation_token):
+            raise ValueError
+
+        schedule_arn = None
+        if "scheduleArn" in state:
+            schedule_arn = _stored_string(
+                state,
+                "scheduleArn",
+                max_length=2048,
+            )
+        if pending_status == _SCHEDULING:
+            if "scheduleArn" in state:
+                raise ValueError
+        elif (
+            schedule_arn is None
+            or ":scheduler:" not in schedule_arn
+            or not schedule_arn.endswith(
+                f":schedule/{_SCHEDULE_GROUP}/{schedule_name}"
+            )
+        ):
+            raise ValueError
+    except (ArithmeticError, TypeError, ValueError):
+        raise _AvailabilityConflict(
+            "layout activation state is inconsistent"
+        ) from None
+
+    return {
+        "currentVersion": current_version,
+        "revision": revision,
+        "updatedBy": updated_by,
+        "updatedAt": updated_at,
+        "pending": {
+            "version": pending_version,
+            "status": pending_status,
+            "activationToken": activation_token,
+            "cutoverAt": cutover_at,
+            "parsedCutover": parsed_cutover,
+            "scheduleName": schedule_name,
+            "scheduleArn": schedule_arn,
+        },
+    }
 
 
 def _validate_layout_element(element):
@@ -513,8 +664,11 @@ def _validate_floor_relationships(elements):
             raise ValueError
 
 
-def _validate_active_snapshot(snapshot, location_id, version, now):
-    if not _SNAPSHOT_REQUIRED_FIELDS.issubset(snapshot):
+def _validate_layout_snapshot(snapshot, location_id, version):
+    if (
+        not isinstance(snapshot, dict)
+        or not _SNAPSHOT_REQUIRED_FIELDS.issubset(snapshot)
+    ):
         raise _AvailabilityConflict("published layout record is inconsistent")
     try:
         stored_version = _positive_integer(snapshot.get("version"))
@@ -522,12 +676,17 @@ def _validate_active_snapshot(snapshot, location_id, version, now):
             stored_version != version
             or snapshot.get("PK") != f"LOCATION#{location_id}"
             or snapshot.get("SK") != f"LAYOUT#v{version}"
-            or snapshot.get("isCurrent") is not True
+            or not isinstance(snapshot.get("isCurrent"), bool)
         ):
             raise ValueError
 
         _stored_string(snapshot, "label")
-        effective_from = _parse_utc_timestamp(snapshot.get("effectiveFrom"))
+        effective_from = _parse_utc_timestamp(
+            snapshot.get("effectiveFrom"),
+            nullable=True,
+        )
+        if snapshot["isCurrent"] and effective_from is None:
+            raise ValueError
         effective_to = _parse_utc_timestamp(
             snapshot.get("effectiveTo"),
             nullable=True,
@@ -536,15 +695,6 @@ def _validate_active_snapshot(snapshot, location_id, version, now):
             snapshot.get("expiresAt"),
             nullable=True,
         )
-        if (
-            effective_from > now
-            or effective_to is not None
-            and effective_to <= now
-            or expires_at is not None
-            and expires_at <= now
-        ):
-            raise ValueError
-
         elements = snapshot.get("elements")
         if (
             not isinstance(elements, list)
@@ -568,63 +718,245 @@ def _validate_active_snapshot(snapshot, location_id, version, now):
         _validate_floor_relationships(validated_elements)
 
         _stored_string(snapshot, "createdBy")
-        _parse_utc_timestamp(snapshot.get("createdAt"))
+        created_at = _parse_utc_timestamp(snapshot.get("createdAt"))
         _stored_string(snapshot, "updatedBy")
         _parse_utc_timestamp(snapshot.get("updatedAt"))
+
+        present_archive_fields = set(snapshot) & _ARCHIVE_FIELDS
+        if present_archive_fields and present_archive_fields != _ARCHIVE_FIELDS:
+            raise ValueError
+        archived = bool(present_archive_fields)
+        if archived:
+            _stored_string(snapshot, "archivedBy")
+            _parse_utc_timestamp(snapshot.get("archivedAt"))
     except (ArithmeticError, TypeError, ValueError):
         raise _AvailabilityConflict(
             "published layout record is inconsistent"
         ) from None
 
-    return sorted(tables, key=lambda item: item["tableId"])
+    return {
+        "isCurrent": snapshot["isCurrent"],
+        "effectiveFrom": effective_from,
+        "effectiveFromValue": snapshot.get("effectiveFrom"),
+        "effectiveTo": effective_to,
+        "effectiveToValue": snapshot.get("effectiveTo"),
+        "expiresAt": expires_at,
+        "expiresAtValue": snapshot.get("expiresAt"),
+        "createdAt": created_at,
+        "archived": archived,
+        "tables": sorted(tables, key=lambda item: item["tableId"]),
+    }
 
 
-def _active_tables(location_id, now):
+def _validate_current_snapshot(snapshot, location_id, state, now):
+    details = _validate_layout_snapshot(
+        snapshot,
+        location_id,
+        state["currentVersion"],
+    )
+    pending = state["pending"]
+    inconsistent_lifecycle = (
+        details["isCurrent"] is not True
+        or details["archived"]
+        or details["effectiveFrom"] > now
+    )
+    if pending is None or pending["status"] == _SCHEDULING:
+        inconsistent_lifecycle = inconsistent_lifecycle or (
+            details["effectiveTo"] is not None
+            or details["expiresAt"] is not None
+        )
+    else:
+        inconsistent_lifecycle = inconsistent_lifecycle or (
+            details["effectiveToValue"] != pending["cutoverAt"]
+            or details["expiresAtValue"] != pending["cutoverAt"]
+        )
+    if inconsistent_lifecycle:
+        raise _AvailabilityConflict(
+            "published layout record is inconsistent"
+        )
+    return details["tables"]
+
+
+def _validate_pending_snapshot(snapshot, location_id, state):
+    pending = state["pending"]
+    details = _validate_layout_snapshot(
+        snapshot,
+        location_id,
+        pending["version"],
+    )
+    try:
+        eligible_at = details["createdAt"] + _REPLACEMENT_DELAYS[ENVIRONMENT]
+    except KeyError:
+        raise _AvailabilityServiceFailure from None
+    except OverflowError:
+        raise _AvailabilityConflict(
+            "published layout record is inconsistent"
+        ) from None
+    if (
+        details["isCurrent"] is not False
+        or details["archived"]
+        or details["effectiveFromValue"] != pending["cutoverAt"]
+        or details["effectiveTo"] is not None
+        or details["expiresAt"] is not None
+        or pending["parsedCutover"] < eligible_at
+    ):
+        raise _AvailabilityConflict(
+            "published layout record is inconsistent"
+        )
+    return details["tables"]
+
+
+def _slot_layout(slot, version, tables):
+    return {
+        **slot,
+        "layoutVersion": version,
+        "tables": tables,
+    }
+
+
+def _layout_slots(location_id, slots, now):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     for attempt in range(2):
-        state = _read_snapshot_item(
+        stored_state = _read_snapshot_item(
             snapshot_table,
             _activation_state_key(location_id),
         )
-        if state is None:
-            return []
-        version = _validate_activation_state(state, location_id)
-        snapshot = _read_snapshot_item(
-            snapshot_table,
-            {
-                "PK": f"LOCATION#{location_id}",
-                "SK": f"LAYOUT#v{version}",
-            },
-        )
-        if snapshot is None:
-            raise _AvailabilityConflict(
-                "published layout record is inconsistent"
+        if stored_state is None:
+            confirmed_state = _read_snapshot_item(
+                snapshot_table,
+                _activation_state_key(location_id),
             )
-
-        confirmed_state = _read_snapshot_item(
-            snapshot_table,
-            _activation_state_key(location_id),
-        )
-        if confirmed_state is None:
-            raise _AvailabilityConflict(
-                "layout activation state is inconsistent"
-            )
-        confirmed_version = _validate_activation_state(
-            confirmed_state,
-            location_id,
-        )
-        if confirmed_version != version:
+            if confirmed_state is None:
+                return (
+                    [_slot_layout(slot, None, []) for slot in slots],
+                    [],
+                )
             if attempt == 0:
                 continue
             raise _AvailabilityConflict("active layout changed; retry request")
 
-        return _validate_active_snapshot(
-            snapshot,
+        state = _validate_activation_state(stored_state, location_id)
+        current_snapshot = _read_snapshot_item(
+            snapshot_table,
+            {
+                "PK": f"LOCATION#{location_id}",
+                "SK": f"LAYOUT#v{state['currentVersion']}",
+            },
+        )
+
+        pending = state["pending"]
+        pending_snapshot = None
+        if pending is not None and pending["status"] == _SCHEDULED:
+            cutover = pending["parsedCutover"]
+            if any(slot["startUtc"] >= cutover for slot in slots):
+                pending_snapshot = _read_snapshot_item(
+                    snapshot_table,
+                    {
+                        "PK": f"LOCATION#{location_id}",
+                        "SK": f"LAYOUT#v{pending['version']}",
+                    },
+                )
+
+        stored_confirmation = _read_snapshot_item(
+            snapshot_table,
+            _activation_state_key(location_id),
+        )
+        confirmed_state = (
+            _validate_activation_state(stored_confirmation, location_id)
+            if stored_confirmation is not None
+            else None
+        )
+        if confirmed_state != state:
+            if attempt == 0:
+                continue
+            raise _AvailabilityConflict("active layout changed; retry request")
+
+        if (
+            pending is not None
+            and pending["status"] == _SCHEDULED
+            and pending["parsedCutover"] <= now
+        ):
+            raise _AvailabilityConflict(
+                "layout activation cutover is overdue; retry request"
+            )
+
+        if current_snapshot is None:
+            raise _AvailabilityConflict(
+                "published layout record is inconsistent"
+            )
+        current_tables = _validate_current_snapshot(
+            current_snapshot,
             location_id,
-            version,
+            state,
             now,
         )
+
+        pending_tables = None
+        if pending_snapshot is not None:
+            pending_tables = _validate_pending_snapshot(
+                pending_snapshot,
+                location_id,
+                state,
+            )
+
+        if pending is not None and pending["status"] == _SCHEDULING:
+            cutover = pending["parsedCutover"]
+            if any(slot["endUtc"] > cutover for slot in slots):
+                raise _AvailabilityConflict(
+                    "layout activation is still being scheduled; retry request"
+                )
+
+        resolved_slots = []
+        for slot in slots:
+            if pending is None or pending["status"] == _SCHEDULING:
+                resolved_slots.append(
+                    _slot_layout(
+                        slot,
+                        state["currentVersion"],
+                        current_tables,
+                    )
+                )
+                continue
+
+            cutover = pending["parsedCutover"]
+            if slot["endUtc"] <= cutover:
+                resolved_slots.append(
+                    _slot_layout(
+                        slot,
+                        state["currentVersion"],
+                        current_tables,
+                    )
+                )
+            elif slot["startUtc"] >= cutover:
+                resolved_slots.append(
+                    _slot_layout(
+                        slot,
+                        pending["version"],
+                        pending_tables,
+                    )
+                )
+
+        tables_by_id = {}
+        for slot in resolved_slots:
+            for table_details in slot["tables"]:
+                tables_by_id.setdefault(
+                    table_details["tableId"],
+                    table_details,
+                )
+        return (
+            resolved_slots,
+            [tables_by_id[key] for key in sorted(tables_by_id)],
+        )
     raise _AvailabilityConflict("active layout changed; retry request")
+
+
+def _active_tables(location_id, now):
+    probe = {
+        "startUtc": now,
+        "endUtc": now,
+    }
+    _, tables = _layout_slots(location_id, [probe], now)
+    return tables
 
 
 def _valid_occupancy_last_key(last_key, partition_key, prefix):
@@ -764,7 +1096,7 @@ def _public_availability(context, occupancies):
     public_slots = []
     for slot in context["slots"]:
         available_tables = []
-        for table_details in context["tables"]:
+        for table_details in slot["tables"]:
             intervals = occupied_by_table[table_details["tableId"]]
             occupied = any(
                 _intervals_overlap(
@@ -783,6 +1115,7 @@ def _public_availability(context, occupancies):
                 {
                     "startTime": slot["startTime"],
                     "endTime": slot["endTime"],
+                    "layoutVersion": slot["layoutVersion"],
                     "tables": available_tables,
                 }
             )
@@ -883,9 +1216,14 @@ def _handle_availability(details):
     now = _utc_now()
     slots = _candidate_slots(details, location, now)
     now = now.astimezone(timezone.utc)
-    active_tables = (
-        _active_tables(details["locationId"], now) if slots else []
-    )
+    if slots:
+        slots, active_tables = _layout_slots(
+            details["locationId"],
+            slots,
+            now,
+        )
+    else:
+        active_tables = []
     return _availability_from_occupancy(
         {
             "locationId": details["locationId"],

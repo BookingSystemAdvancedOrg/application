@@ -208,6 +208,44 @@ def activation_state(version="1", **overrides):
     return item
 
 
+def pending_activation_state(
+    app,
+    *,
+    current_version=1,
+    pending_version=2,
+    status="scheduled",
+    cutover_at="2026-09-20T14:00:00Z",
+    operation_revision=2,
+):
+    token = app._activation_token(
+        LOCATION_ID,
+        current_version,
+        pending_version,
+        operation_revision,
+        cutover_at,
+    )
+    overrides = {
+        "revision": Decimal(
+            str(
+                operation_revision + 1
+                if status == "scheduled"
+                else operation_revision
+            )
+        ),
+        "pendingVersion": Decimal(str(pending_version)),
+        "pendingStatus": status,
+        "activationToken": token,
+        "cutoverAt": cutover_at,
+        "scheduleName": app._schedule_name(token),
+    }
+    if status == "scheduled":
+        overrides["scheduleArn"] = (
+            "arn:aws:scheduler:eu-north-1:123456789012:"
+            f"schedule/default/{overrides['scheduleName']}"
+        )
+    return activation_state(str(current_version), **overrides)
+
+
 def snapshot_item(version="1", *, elements=None, **overrides):
     if elements is None:
         elements = [
@@ -273,6 +311,38 @@ def put_stage_two_records(tables, *, location=None, state=None, snapshot=None):
         tables["snapshot"].put_item(Item=state or activation_state())
     if snapshot is not False:
         tables["snapshot"].put_item(Item=snapshot or snapshot_item())
+
+
+def put_scheduled_layout_transition(
+    app,
+    tables,
+    *,
+    cutover_at="2026-09-20T14:00:00Z",
+    current_elements=None,
+    pending_elements=None,
+):
+    state = pending_activation_state(app, cutover_at=cutover_at)
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            elements=current_elements or [
+                table_element("current-table", seats="2")
+            ],
+            effectiveTo=cutover_at,
+            expiresAt=cutover_at,
+        )
+    )
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=pending_elements or [
+                table_element("pending-table", seats="6")
+            ],
+            isCurrent=False,
+            effectiveFrom=cutover_at,
+        )
+    )
 
 
 def response_body(response):
@@ -530,6 +600,22 @@ def test_builds_canonical_slots_and_active_table_capacity(
     ]
     assert captured["slots"][0]["startMinute"] == 600
     assert captured["slots"][0]["endMinute"] == 720
+    assert captured["slots"][0]["startUtc"] == datetime(
+        2026,
+        9,
+        20,
+        8,
+        0,
+        tzinfo=timezone.utc,
+    )
+    assert captured["slots"][0]["endUtc"] == datetime(
+        2026,
+        9,
+        20,
+        10,
+        0,
+        tzinfo=timezone.utc,
+    )
 
 
 def test_multi_floor_snapshot_exposes_only_bookable_table_details(
@@ -1310,6 +1396,397 @@ def test_active_layout_read_rejects_persistent_version_race(
         app._active_tables(LOCATION_ID, NOW)
 
 
+def test_scheduled_cutover_resolves_each_slot_to_effective_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert [
+        (
+            slot["startTime"],
+            slot["layoutVersion"],
+            slot["tables"],
+        )
+        for slot in response_body(response)["slots"]
+    ] == [
+        ("10:00", 1, [{"tableId": "current-table", "seats": 2}]),
+        ("12:00", 1, [{"tableId": "current-table", "seats": 2}]),
+        ("14:00", 1, [{"tableId": "current-table", "seats": 2}]),
+        ("16:00", 2, [{"tableId": "pending-table", "seats": 6}]),
+        ("18:00", 2, [{"tableId": "pending-table", "seats": 6}]),
+        ("20:00", 2, [{"tableId": "pending-table", "seats": 6}]),
+    ]
+
+
+def test_same_table_id_preserves_capacity_from_each_effective_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element("shared-table", seats="2")],
+        pending_elements=[table_element("shared-table", seats="8")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = {
+        slot["startTime"]: slot for slot in response_body(response)["slots"]
+    }
+    assert slots["14:00"]["layoutVersion"] == 1
+    assert slots["14:00"]["tables"] == [
+        {"tableId": "shared-table", "seats": 2}
+    ]
+    assert slots["16:00"]["layoutVersion"] == 2
+    assert slots["16:00"]["tables"] == [
+        {"tableId": "shared-table", "seats": 8}
+    ]
+
+
+def test_slot_straddling_scheduled_cutover_is_omitted(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T13:00:00Z",
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = response_body(response)["slots"]
+    assert [slot["startTime"] for slot in slots] == [
+        "10:00",
+        "12:00",
+        "16:00",
+        "18:00",
+        "20:00",
+    ]
+    assert [slot["layoutVersion"] for slot in slots] == [1, 1, 2, 2, 2]
+
+
+def test_scheduling_transition_conflicts_when_slot_reaches_future_side(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(
+        Item=pending_activation_state(app, status="scheduling")
+    )
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {
+            "error": (
+                "layout activation is still being scheduled; retry request"
+            )
+        },
+    )
+
+
+def test_scheduling_transition_serves_slots_wholly_before_cutover(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(
+        Item=pending_activation_state(
+            app,
+            status="scheduling",
+            cutover_at="2026-09-21T08:00:00Z",
+        )
+    )
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert {
+        slot["layoutVersion"] for slot in response_body(response)["slots"]
+    } == {1}
+
+
+def test_layout_read_retries_when_pending_identity_changes(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T16:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_one,
+                expiresAt=cutover_one,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "2",
+                elements=[table_element("superseded-table")],
+                isCurrent=False,
+                effectiveFrom=cutover_one,
+            )
+        },
+        {"Item": state_two},
+        {"Item": state_two},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_two,
+                expiresAt=cutover_two,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "3",
+                elements=[table_element("final-table", seats="8")],
+                isCurrent=False,
+                effectiveFrom=cutover_two,
+            )
+        },
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
+    }
+
+    resolved, _ = app._layout_slots(LOCATION_ID, [slot], NOW)
+
+    assert resolved[0]["layoutVersion"] == 3
+    assert resolved[0]["tables"] == [
+        {"tableId": "final-table", "seats": 8}
+    ]
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_layout_read_rejects_persistent_pending_identity_race(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T16:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    current_one = snapshot_item(
+        effectiveTo=cutover_one,
+        expiresAt=cutover_one,
+    )
+    target_one = snapshot_item(
+        "2",
+        isCurrent=False,
+        effectiveFrom=cutover_one,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": current_one},
+        {"Item": target_one},
+        {"Item": state_two},
+        {"Item": state_one},
+        {"Item": current_one},
+        {"Item": target_one},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
+    }
+
+    with pytest.raises(
+        app._AvailabilityConflict,
+        match="active layout changed; retry request",
+    ):
+        app._layout_slots(LOCATION_ID, [slot], NOW)
+
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_malformed_pending_target_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom=None,
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_current_snapshot_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            archivedBy="owner-sub",
+            archivedAt="2026-09-02T10:00:00Z",
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_incomplete_pending_activation_state_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    state.pop("scheduleArn")
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_invalid_environment_with_pending_state_returns_503(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    monkeypatch.setattr(app, "ENVIRONMENT", "staging")
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+
+
+def test_pending_target_before_replacement_delay_returns_409(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom="2026-09-20T14:00:00Z",
+            createdAt="2026-09-20T13:58:00Z",
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_pending_target_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom="2026-09-20T14:00:00Z",
+            archivedBy="owner-sub",
+            archivedAt="2026-09-10T10:00:00Z",
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_overdue_scheduled_cutover_returns_409(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    cutover_at = "2026-09-20T14:00:00Z"
+    put_scheduled_layout_transition(app, tables, cutover_at=cutover_at)
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 9, 20, 14, 0, tzinfo=timezone.utc),
+    )
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-20"}),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation cutover is overdue; retry request"},
+    )
+
+
 def test_snapshot_dependency_failure_is_sanitized(
     app_and_tables,
     monkeypatch,
@@ -1395,6 +1872,7 @@ def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
                 {
                     "startTime": start,
                     "endTime": end,
+                    "layoutVersion": 1,
                     "tables": [
                         {"tableId": "table-a", "seats": 2},
                         {"tableId": "table-b", "seats": 4},
@@ -1411,6 +1889,65 @@ def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
             ],
         },
     )
+    assert all(
+        "startUtc" not in slot and "endUtc" not in slot
+        for slot in response_body(response)["slots"]
+    )
+
+
+def test_occupancy_is_filtered_against_each_slots_layout(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(
+            "current-table",
+            start_time="10:00",
+            end_time="12:00",
+        )
+    )
+    tables["occupancy"].put_item(
+        Item=occupancy_item(
+            "pending-table",
+            start_time="18:00",
+            end_time="20:00",
+        )
+    )
+    occupancy = Mock(wraps=tables["occupancy"])
+    real_table = app.table
+
+    def table_factory(name):
+        if name == OCCUPANCY_TABLE_NAME:
+            return occupancy
+        return real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = response_body(response)["slots"]
+    assert "10:00" not in {slot["startTime"] for slot in slots}
+    assert "18:00" not in {slot["startTime"] for slot in slots}
+    assert next(
+        slot for slot in slots if slot["startTime"] == "12:00"
+    ) == {
+        "startTime": "12:00",
+        "endTime": "14:00",
+        "layoutVersion": 1,
+        "tables": [{"tableId": "current-table", "seats": 2}],
+    }
+    assert next(
+        slot for slot in slots if slot["startTime"] == "16:00"
+    ) == {
+        "startTime": "16:00",
+        "endTime": "18:00",
+        "layoutVersion": 2,
+        "tables": [{"tableId": "pending-table", "seats": 6}],
+    }
+    occupancy.query.assert_called_once()
 
 
 @pytest.mark.parametrize("manual", [False, True])

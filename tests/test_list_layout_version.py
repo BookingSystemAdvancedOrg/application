@@ -238,6 +238,7 @@ def public_active_element(item):
         "door": {"wallId", "kind"},
         "window": {"wallId"},
         "table": {"shape", "seats", "zone", "label"},
+        "cashRegister": {"label"},
     }
     allowed_fields = common_fields | variant_fields.get(
         item["type"],
@@ -397,6 +398,7 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
         "cash-register-id",
         type="cashRegister",
         floorId="upper-floor",
+        label="Register 1",
     )
     elements = [
         ground_floor,
@@ -450,6 +452,7 @@ def test_public_active_layout_needs_no_jwt_and_returns_safe_multifloor_view(
     )
     body = response_body(response)
     assert "label" not in body
+    assert body["elements"][-1]["label"] == "Register 1"
     serialized = json.dumps(body)
     for private_field in (
         "PK",
@@ -653,7 +656,7 @@ def test_public_active_layout_rejects_invalid_door_kind(
         ("kind", "entrance"),
     ],
 )
-def test_public_active_layout_rejects_cash_register_variant_fields(
+def test_public_active_layout_rejects_cash_register_non_label_variants(
     app_and_table,
     monkeypatch,
     field,
@@ -682,6 +685,70 @@ def test_public_active_layout_rejects_cash_register_variant_fields(
         409,
         {"error": "published layout record is inconsistent"},
     )
+
+
+@pytest.mark.parametrize(
+    "label",
+    [1, "", "   ", "x" * 129, " Register 1 "],
+    ids=["non-string", "empty", "whitespace", "too-long", "untrimmed"],
+)
+def test_public_active_layout_rejects_invalid_cash_register_label(
+    app_and_table,
+    monkeypatch,
+    label,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    cash_register = layout_element(
+        "cash-register-id",
+        type="cashRegister",
+        label=label,
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            elements=[cash_register],
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_public_active_layout_supports_legacy_cash_register_without_label(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    cash_register = layout_element(
+        "legacy-cash-register",
+        type="cashRegister",
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            elements=[cash_register],
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {"floors": [], "elements": [public_active_element(cash_register)]},
+    )
+    assert "label" not in response_body(response)["elements"][0]
 
 
 @pytest.mark.parametrize(
@@ -2643,6 +2710,25 @@ def test_lists_optional_table_label_for_staff(app_and_table):
     assert_response(response, 200)
     assert response_body(response)["items"][0]["elements"] == [
         json_ready(table)
+    ]
+
+
+def test_lists_optional_cash_register_label_for_staff(app_and_table):
+    app, snapshot_table = app_and_table
+    cash_register = layout_element(
+        "cash-register-id",
+        type="cashRegister",
+        label="R" * 128,
+    )
+    snapshot_table.put_item(
+        Item=snapshot_item(1, elements=[cash_register])
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    assert response_body(response)["items"][0]["elements"] == [
+        json_ready(cash_register)
     ]
 
 

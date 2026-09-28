@@ -6,9 +6,9 @@ TRIGGER:
 PURPOSE:
     Copies a location's mutable layout elements into a new immutable
     Published Layout Snapshot version. Publishing does not activate the
-    version or change any existing snapshot. Optional door purposes,
-    table labels, and cash-register and floor-area elements are validated
-    and preserved in the snapshot.
+    version or change any existing snapshot. Cash-register and floor-area
+    elements, optional door purposes, and optional labels on tables and
+    cash registers are validated and preserved in the snapshot.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -58,6 +58,7 @@ _ELEMENT_TYPES = frozenset(
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})
+_LABELLED_ELEMENT_TYPES = frozenset({"table", "cashRegister"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -252,9 +253,9 @@ def _logical_element(item, location_id):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update(
-            {"shape", "seats", "zone", "label"}
-        )
+        allowed_variant_fields.update({"shape", "seats", "zone"})
+    if element_type in _LABELLED_ELEMENT_TYPES:
+        allowed_variant_fields.add("label")
     if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
         raise _PublishConflict("live layout element is inconsistent")
 
@@ -302,8 +303,9 @@ def _logical_element(item, location_id):
                 "zone": _required_string(item, "zone"),
             }
         )
-        if "label" in item:
-            fields["label"] = _required_string(item, "label")
+
+    if element_type in _LABELLED_ELEMENT_TYPES and "label" in item:
+        fields["label"] = _required_string(item, "label")
 
     updated_by = _required_string(item, "updatedBy")
     updated_at = _required_string(item, "updatedAt")

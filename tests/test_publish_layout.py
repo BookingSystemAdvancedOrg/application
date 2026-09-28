@@ -144,8 +144,11 @@ def floor_element_item(
     }
 
 
-def cash_register_element_item(element_id="cash-register-id"):
-    return live_element_item(element_id) | {"type": "cashRegister"}
+def cash_register_element_item(element_id="cash-register-id", **variant_fields):
+    return live_element_item(element_id) | {
+        "type": "cashRegister",
+        **variant_fields,
+    }
 
 
 def floor_area_element_item(element_id="floor-area-id"):
@@ -476,13 +479,21 @@ def test_publishes_multi_floor_layout_and_preserves_relationships(
         ("x" * 128, "x" * 128),
     ],
 )
-def test_publishes_optional_table_label_canonically(
+@pytest.mark.parametrize(
+    "element_factory",
+    [
+        pytest.param(table_element_item, id="table"),
+        pytest.param(cash_register_element_item, id="cash-register"),
+    ],
+)
+def test_publishes_optional_element_label_canonically(
     app_and_tables,
     source_label,
     published_label,
+    element_factory,
 ):
     app, live_table, snapshot_table = app_and_tables
-    source = table_element_item(label=source_label)
+    source = element_factory(label=source_label)
     live_table.put_item(Item=source)
 
     response = app.handler(make_event(), None)
@@ -495,9 +506,19 @@ def test_publishes_optional_table_label_canonically(
     assert stored_snapshot(snapshot_table, 1)["elements"] == [expected]
 
 
-def test_publishes_legacy_table_without_label(app_and_tables):
+@pytest.mark.parametrize(
+    "element_factory",
+    [
+        pytest.param(table_element_item, id="table"),
+        pytest.param(cash_register_element_item, id="cash-register"),
+    ],
+)
+def test_publishes_legacy_element_without_label(
+    app_and_tables,
+    element_factory,
+):
     app, live_table, snapshot_table = app_and_tables
-    source = table_element_item()
+    source = element_factory()
     live_table.put_item(Item=source)
 
     response = app.handler(make_event(), None)
@@ -548,12 +569,20 @@ def test_multi_floor_tables_may_share_the_same_label(app_and_tables):
     "label",
     [None, 1, True, [], {}, "", "   ", "x" * 129],
 )
-def test_invalid_table_label_returns_409_without_snapshot(
+@pytest.mark.parametrize(
+    "element_factory",
+    [
+        pytest.param(table_element_item, id="table"),
+        pytest.param(cash_register_element_item, id="cash-register"),
+    ],
+)
+def test_invalid_element_label_returns_409_without_snapshot(
     app_and_tables,
     label,
+    element_factory,
 ):
     app, live_table, snapshot_table = app_and_tables
-    live_table.put_item(Item=table_element_item(label=label))
+    live_table.put_item(Item=element_factory(label=label))
 
     response = app.handler(make_event(), None)
 
@@ -574,10 +603,9 @@ def test_invalid_table_label_returns_409_without_snapshot(
         | {"type": "door", "wallId": "wall-id", "label": "D-1"},
         live_element_item("window-id")
         | {"type": "window", "wallId": "wall-id", "label": "W-1"},
-        cash_register_element_item() | {"label": "Register 1"},
     ],
 )
-def test_non_table_label_returns_409_without_snapshot(
+def test_unsupported_element_label_returns_409_without_snapshot(
     app_and_tables,
     source,
 ):
@@ -728,20 +756,6 @@ def test_publishes_supported_element_variants(
     response = app.handler(make_event(), None)
 
     assert_response(response, 201)
-    assert stored_snapshot(snapshot_table, 1)["elements"] == [
-        logical_element(source)
-    ]
-
-
-def test_publishes_legacy_cash_register_unchanged(app_and_tables):
-    app, live_table, snapshot_table = app_and_tables
-    source = cash_register_element_item()
-    live_table.put_item(Item=source)
-
-    response = app.handler(make_event(), None)
-
-    assert_response(response, 201)
-    assert response_body(response)["elements"] == [public_element(source)]
     assert stored_snapshot(snapshot_table, 1)["elements"] == [
         logical_element(source)
     ]

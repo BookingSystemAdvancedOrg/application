@@ -1563,7 +1563,10 @@ def test_cash_register_does_not_affect_blocking_an_active_table(
         snapshot=snapshot_item(
             elements=[
                 floor_element(),
-                cash_register_element(floorId="floor-ground"),
+                cash_register_element(
+                    floorId="floor-ground",
+                    label="Front register",
+                ),
                 table_element(floorId="floor-ground"),
             ],
         ),
@@ -1716,6 +1719,11 @@ def test_invalid_floor_area_geometry_returns_409(app_and_tables):
         cash_register_element(kind="entrance"),
         cash_register_element(name="Register one"),
         cash_register_element(level=Decimal("0")),
+        cash_register_element(label=1),
+        cash_register_element(label=""),
+        cash_register_element(label="   "),
+        cash_register_element(label="x" * 129),
+        cash_register_element(label=" Front register "),
     ],
     ids=[
         "wrong-type-casing",
@@ -1726,6 +1734,11 @@ def test_invalid_floor_area_geometry_returns_409(app_and_tables):
         "door-kind",
         "floor-name",
         "floor-level",
+        "label-non-string",
+        "label-empty",
+        "label-whitespace",
+        "label-too-long",
+        "label-untrimmed",
     ],
 )
 def test_invalid_cash_register_variant_returns_409(

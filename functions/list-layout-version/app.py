@@ -11,9 +11,9 @@ PURPOSE:
     is owner/super-user only, preserves the immutable snapshot history, and
     rejects the current or pending version. The public active-layout route
     returns only customer-facing floor metadata and renderable elements,
-    including floor areas, cash registers, optional table ``label`` values,
-    and an optional persisted door ``kind``, and deliberately performs no
-    JWT validation.
+    including floor areas, cash registers, optional table and cash-register
+    ``label`` values, and an optional persisted door ``kind``, and
+    deliberately performs no JWT validation.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -85,6 +85,7 @@ _ELEMENT_TYPES = frozenset(
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})
+_LABELLED_ELEMENT_TYPES = frozenset({"table", "cashRegister"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -326,9 +327,9 @@ def _public_element(item):
             if element_type == "door":
                 allowed_variant_fields.add("kind")
         elif element_type == "table":
-            allowed_variant_fields.update(
-                {"shape", "seats", "zone", "label"}
-            )
+            allowed_variant_fields.update({"shape", "seats", "zone"})
+        if element_type in _LABELLED_ELEMENT_TYPES:
+            allowed_variant_fields.add("label")
         if (set(item) & _VARIANT_FIELDS) - allowed_variant_fields:
             raise ValueError
 
@@ -372,8 +373,9 @@ def _public_element(item):
                     "zone": _required_string(item, "zone"),
                 }
             )
-            if "label" in item:
-                fields["label"] = _required_string(item, "label")
+
+        if element_type in _LABELLED_ELEMENT_TYPES and "label" in item:
+            fields["label"] = _required_string(item, "label")
 
         fields["updatedBy"] = _required_string(item, "updatedBy")
         fields["updatedAt"] = _utc_timestamp(item, "updatedAt")

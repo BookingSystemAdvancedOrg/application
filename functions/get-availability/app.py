@@ -122,6 +122,7 @@ _ELEMENT_TYPES = frozenset(
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})
+_LABELLED_ELEMENT_TYPES = frozenset({"table", "cashRegister"})
 _VARIANT_FIELDS = frozenset(
     {
         "name",
@@ -610,7 +611,9 @@ def _validate_layout_element(element):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update({"shape", "seats", "zone", "label"})
+        allowed_variant_fields.update({"shape", "seats", "zone"})
+    if element_type in _LABELLED_ELEMENT_TYPES:
+        allowed_variant_fields.add("label")
     if (set(element) & _VARIANT_FIELDS) - allowed_variant_fields:
         raise ValueError
 
@@ -640,9 +643,10 @@ def _validate_layout_element(element):
             raise ValueError
         seats = _positive_integer(element.get("seats"))
         _stored_string(element, "zone")
-        if "label" in element:
-            _stored_string(element, "label")
         table_details = {"tableId": element_id, "seats": seats}
+
+    if element_type in _LABELLED_ELEMENT_TYPES and "label" in element:
+        _stored_string(element, "label")
 
     _stored_string(element, "updatedBy")
     _parse_utc_timestamp(element.get("updatedAt"))

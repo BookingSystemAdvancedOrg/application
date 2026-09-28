@@ -1,14 +1,17 @@
 """activate-layout-version
 
-TRIGGER:
+TRIGGERS:
     API Gateway -- POST
     /locations/{locationId}/layout/versions/{versionId}/activate -- Auth: JWT
+    API Gateway -- DELETE
+    /locations/{locationId}/layout/pending-activation -- Auth: JWT
 
 PURPOSE:
-    Activates a published layout snapshot. The first layout activates
-    immediately. A replacement cannot activate until five minutes after it
-    was published in dev or 28 days after publication in prod. An optional
-    ``effectiveFrom`` can select a later whole-UTC-minute cutover.
+    Activates a published layout snapshot or cancels a pending activation.
+    The first layout activates immediately. A replacement cannot activate
+    until five minutes after it was published in dev or 28 days after
+    publication in prod. An optional ``effectiveFrom`` can select a later
+    whole-UTC-minute cutover.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -27,6 +30,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -52,6 +56,12 @@ EXPIRE_LAYOUT_VERSION_FUNCTION_ARN = os.environ[
 ]
 
 _ALLOWED_GROUPS = ("owner_user", "super_user")
+_ACTIVATE_ROUTE_KEY = (
+    "POST /locations/{locationId}/layout/versions/{versionId}/activate"
+)
+_CANCEL_ROUTE_KEY = (
+    "DELETE /locations/{locationId}/layout/pending-activation"
+)
 _SNAPSHOT_PREFIX = "LAYOUT#v"
 _ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
 _ACTIVATION_STATE_TYPE = "layoutActivationState"
@@ -102,6 +112,7 @@ _PENDING_STATE_FIELDS = frozenset(
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
 _SERIALIZER = TypeSerializer()
 _scheduler = None
+_LOGGER = logging.getLogger(__name__)
 
 
 class _ActivationConflict(Exception):
@@ -131,6 +142,14 @@ def _activation_error(status_code, message):
     return _activation_response(status_code, {"error": message})
 
 
+def _empty_response(status_code):
+    return {
+        "statusCode": status_code,
+        "headers": {"Cache-Control": "no-store"},
+        "body": "",
+    }
+
+
 def _request_method(event):
     if not isinstance(event, dict):
         return ""
@@ -142,6 +161,13 @@ def _request_method(event):
         return ""
     method = http.get("method")
     return method.upper() if isinstance(method, str) else ""
+
+
+def _route_key(event):
+    if not isinstance(event, dict):
+        return ""
+    route_key = event.get("routeKey")
+    return route_key if isinstance(route_key, str) else ""
 
 
 def _path_parameters(event):
@@ -1904,6 +1930,323 @@ def _start_pending_activation(
     return _pending_response(state_details["currentVersion"], pending)
 
 
+def _cancel_state_operation(
+    location_id,
+    state,
+    state_details,
+    caller_sub,
+    timestamp,
+):
+    pending = state_details["pending"]
+    next_revision = state_details["revision"] + 1
+    names = {
+        "#recordType": "recordType",
+        "#currentVersion": "currentVersion",
+        "#revision": "revision",
+        "#pendingVersion": "pendingVersion",
+        "#pendingStatus": "pendingStatus",
+        "#activationToken": "activationToken",
+        "#cutoverAt": "cutoverAt",
+        "#scheduleName": "scheduleName",
+        "#scheduleArn": "scheduleArn",
+        "#targetPreviousLifecycle": (
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE
+        ),
+        "#updatedBy": "updatedBy",
+        "#updatedAt": "updatedAt",
+    }
+    raw_values = {
+        ":recordType": _ACTIVATION_STATE_TYPE,
+        ":currentVersion": state_details["currentVersion"],
+        ":expectedRevision": state_details["revision"],
+        ":nextRevision": next_revision,
+        ":pendingVersion": pending["version"],
+        ":pendingStatus": pending["status"],
+        ":activationToken": pending["activationToken"],
+        ":cutoverAt": pending["cutoverAt"],
+        ":scheduleName": pending["scheduleName"],
+        ":expectedUpdatedBy": state["updatedBy"],
+        ":expectedUpdatedAt": state["updatedAt"],
+        ":callerSub": caller_sub,
+        ":timestamp": timestamp,
+    }
+    schedule_arn_condition = "attribute_not_exists(#scheduleArn)"
+    if pending["scheduleArn"] is not None:
+        raw_values[":scheduleArn"] = pending["scheduleArn"]
+        schedule_arn_condition = "#scheduleArn = :scheduleArn"
+    previous_lifecycle_condition = (
+        "attribute_not_exists(#targetPreviousLifecycle)"
+    )
+    if pending["targetPreviousLifecycle"] is not None:
+        raw_values[":targetPreviousLifecycle"] = pending[
+            "targetPreviousLifecycle"
+        ]
+        previous_lifecycle_condition = (
+            "#targetPreviousLifecycle = :targetPreviousLifecycle"
+        )
+
+    return {
+        "Update": {
+            "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "Key": _typed_map(_state_key(location_id)),
+            "UpdateExpression": (
+                "SET #revision = :nextRevision, "
+                "#updatedBy = :callerSub, "
+                "#updatedAt = :timestamp "
+                "REMOVE #pendingVersion, #pendingStatus, "
+                "#activationToken, #cutoverAt, #scheduleName, "
+                "#scheduleArn, #targetPreviousLifecycle"
+            ),
+            "ConditionExpression": (
+                "attribute_exists(PK) AND attribute_exists(SK) "
+                "AND #recordType = :recordType "
+                "AND #currentVersion = :currentVersion "
+                "AND #revision = :expectedRevision "
+                "AND #pendingVersion = :pendingVersion "
+                "AND #pendingStatus = :pendingStatus "
+                "AND #activationToken = :activationToken "
+                "AND #cutoverAt = :cutoverAt "
+                "AND #scheduleName = :scheduleName "
+                f"AND {schedule_arn_condition} "
+                f"AND {previous_lifecycle_condition} "
+                "AND #updatedBy = :expectedUpdatedBy "
+                "AND #updatedAt = :expectedUpdatedAt"
+            ),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": _typed_map(raw_values),
+        }
+    }
+
+
+def _read_cancelled_activation(
+    location_id,
+    expected_state_details,
+    expected_current,
+    expected_target,
+    expected_target_lifecycle,
+):
+    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
+    state = _read_state(snapshot_table, location_id)
+    if state is None:
+        raise _ActivationConflict
+    state_details = _validate_state(state, location_id)
+    snapshots = _query_snapshots(snapshot_table, location_id)
+    by_version = {
+        _snapshot_version(snapshot, location_id): snapshot
+        for snapshot in snapshots
+    }
+    current = [snapshot for snapshot in snapshots if snapshot["isCurrent"]]
+    expected_pending = expected_state_details["pending"]
+    actual_target = by_version.get(expected_pending["version"])
+
+    if (
+        state_details["pending"] is None
+        and state_details["currentVersion"]
+        == expected_state_details["currentVersion"]
+        and len(current) == 1
+        and _snapshot_version(current[0], location_id)
+        == expected_state_details["currentVersion"]
+        and actual_target is not None
+        and not actual_target["isCurrent"]
+        and _archive_metadata(actual_target) is None
+        and _snapshot_lifecycle(actual_target)
+        == expected_target_lifecycle
+    ):
+        _validate_steady_current(current[0])
+        return True
+
+    expected_current_version = _snapshot_version(
+        expected_current,
+        location_id,
+    )
+    if (
+        state_details == expected_state_details
+        and _snapshot_condition_is_unchanged(
+            by_version.get(expected_current_version),
+            expected_current,
+        )
+        and _snapshot_condition_is_unchanged(
+            actual_target,
+            expected_target,
+        )
+    ):
+        return False
+    raise _ActivationConflict
+
+
+def _cancel_pending_activation(location_id, caller_sub, now):
+    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
+    state = _read_state(snapshot_table, location_id)
+    if state is None:
+        return _empty_response(HTTPStatus.NO_CONTENT.value)
+
+    state_details = _validate_state(state, location_id)
+    pending = state_details["pending"]
+    if pending is None:
+        return _empty_response(HTTPStatus.NO_CONTENT.value)
+    if (
+        pending["status"] == _SCHEDULED
+        and pending["targetPreviousLifecycle"] is None
+    ):
+        raise _ActivationConflict(
+            "layout activation state is inconsistent"
+        )
+
+    snapshots = _query_snapshots(snapshot_table, location_id)
+    by_version = {
+        _snapshot_version(snapshot, location_id): snapshot
+        for snapshot in snapshots
+    }
+    current = [snapshot for snapshot in snapshots if snapshot["isCurrent"]]
+    target = by_version.get(pending["version"])
+    if (
+        len(current) != 1
+        or _snapshot_version(current[0], location_id)
+        != state_details["currentVersion"]
+        or target is None
+        or target["isCurrent"]
+        or _archive_metadata(target) is not None
+    ):
+        raise _ActivationConflict(
+            "layout activation state is inconsistent"
+        )
+
+    if pending["status"] == _SCHEDULED:
+        _validate_scheduled_lifecycle(current[0], target, pending)
+    else:
+        _validate_steady_current(current[0])
+        if (
+            pending["targetPreviousLifecycle"] is not None
+            and _snapshot_lifecycle(target)
+            != pending["targetPreviousLifecycle"]
+        ):
+            raise _ActivationConflict(
+                "layout activation state is inconsistent"
+            )
+
+    cutover = datetime.fromisoformat(
+        pending["cutoverAt"].replace("Z", "+00:00")
+    )
+    if cutover <= now.astimezone(timezone.utc):
+        raise _ActivationConflict(
+            "layout activation cutover is overdue"
+        )
+
+    timestamp = _isoformat(now.astimezone(timezone.utc))
+    if pending["status"] == _SCHEDULED:
+        snapshot_operations = [
+            _snapshot_lifecycle_update(
+                current[0],
+                is_current=True,
+                effective_from=current[0]["effectiveFrom"],
+                effective_to=None,
+                expires_at=None,
+                caller_sub=caller_sub,
+                timestamp=timestamp,
+            ),
+            _snapshot_lifecycle_update(
+                target,
+                is_current=False,
+                effective_from=pending[
+                    "targetPreviousLifecycle"
+                ]["effectiveFrom"],
+                effective_to=pending[
+                    "targetPreviousLifecycle"
+                ]["effectiveTo"],
+                expires_at=pending[
+                    "targetPreviousLifecycle"
+                ]["expiresAt"],
+                caller_sub=caller_sub,
+                timestamp=timestamp,
+            ),
+        ]
+    else:
+        current_condition = _target_condition(current[0])
+        target_condition = _target_condition(target)
+        snapshot_operations = [
+            {
+                "ConditionCheck": {
+                    "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+                    "Key": _typed_map(
+                        {"PK": current[0]["PK"], "SK": current[0]["SK"]}
+                    ),
+                    **current_condition,
+                }
+            },
+            {
+                "ConditionCheck": {
+                    "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+                    "Key": _typed_map(
+                        {"PK": target["PK"], "SK": target["SK"]}
+                    ),
+                    **target_condition,
+                }
+            },
+        ]
+
+    transaction = [
+        _cancel_state_operation(
+            location_id,
+            state,
+            state_details,
+            caller_sub,
+            timestamp,
+        ),
+        *snapshot_operations,
+    ]
+    expected_target_lifecycle = (
+        pending["targetPreviousLifecycle"]
+        if pending["status"] == _SCHEDULED
+        else _snapshot_lifecycle(target)
+    )
+    for attempt in range(2):
+        try:
+            dynamodb_client().transact_write_items(
+                TransactItems=transaction
+            )
+            break
+        except (BotoCoreError, ClientError) as exc:
+            try:
+                committed = _read_cancelled_activation(
+                    location_id,
+                    state_details,
+                    current[0],
+                    target,
+                    expected_target_lifecycle,
+                )
+            except _ActivationConflict:
+                raise _ActivationConflict(
+                    "layout activation changed; retry request"
+                ) from None
+            except (
+                BotoCoreError,
+                ClientError,
+                _ActivationServiceFailure,
+            ):
+                raise exc
+            if committed:
+                break
+            if _is_concurrent_change(exc):
+                raise _ActivationConflict(
+                    "layout activation changed; retry request"
+                ) from None
+            if attempt == 1:
+                raise exc
+
+    try:
+        _delete_schedule_for_recovery(pending)
+    except (BotoCoreError, ClientError):
+        # DynamoDB is authoritative. A schedule that cannot be cleaned up is
+        # harmless: expire-layout-version revalidates the pending token and
+        # treats this invocation as stale before making any write.
+        _LOGGER.warning(
+            "cancelled layout activation schedule could not be deleted",
+            exc_info=True,
+        )
+
+    return _empty_response(HTTPStatus.NO_CONTENT.value)
+
+
 def _replacement_transition(timing, target, now):
     eligible_at = _replacement_eligibility(target)
     now = now.astimezone(timezone.utc)
@@ -2115,6 +2458,23 @@ def _is_concurrent_change(exc):
     )
 
 
+def _request_operation(event):
+    route_key = _route_key(event)
+    if route_key == _ACTIVATE_ROUTE_KEY:
+        return "activate"
+    if route_key == _CANCEL_ROUTE_KEY:
+        return "cancel"
+    if route_key:
+        return None
+
+    path_parameters = event.get("pathParameters")
+    if isinstance(path_parameters, dict) and "versionId" in path_parameters:
+        return "activate"
+    if _request_method(event) == "DELETE":
+        return "cancel"
+    return "activate"
+
+
 def handler(event, context):
     try:
         get_claims(event)
@@ -2127,19 +2487,49 @@ def handler(event, context):
     except Unauthorized:
         return _activation_error(HTTPStatus.FORBIDDEN.value, "forbidden")
 
-    if _request_method(event) != "POST":
+    operation = _request_operation(event)
+    allowed_method = {
+        "activate": "POST",
+        "cancel": "DELETE",
+    }.get(operation)
+    if allowed_method is None or _request_method(event) != allowed_method:
         return _activation_response(
             HTTPStatus.METHOD_NOT_ALLOWED.value,
             {"error": "method not allowed"},
-            headers={"Allow": "POST"},
+            headers={"Allow": allowed_method or "POST, DELETE"},
         )
 
     try:
         path_parameters = _path_parameters(event)
         location_id = _location_id(path_parameters)
-        version = _version_id(path_parameters)
+        version = (
+            _version_id(path_parameters)
+            if operation == "activate"
+            else None
+        )
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+
+    if operation == "cancel":
+        try:
+            _replacement_delay()
+            return _cancel_pending_activation(
+                location_id,
+                caller_sub,
+                _utc_now(),
+            )
+        except _ActivationConflict as exc:
+            return _activation_error(HTTPStatus.CONFLICT.value, str(exc))
+        except (BotoCoreError, ClientError, _ActivationServiceFailure) as exc:
+            if _is_concurrent_change(exc):
+                return _activation_error(
+                    HTTPStatus.CONFLICT.value,
+                    "layout activation changed; retry request",
+                )
+            return _activation_error(
+                HTTPStatus.SERVICE_UNAVAILABLE.value,
+                "layout activation service unavailable",
+            )
 
     now = _utc_now()
     try:

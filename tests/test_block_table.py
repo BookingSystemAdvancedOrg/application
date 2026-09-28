@@ -219,6 +219,24 @@ def cash_register_element(element_id="cash-register-id", **overrides):
     return item
 
 
+def floor_area_element(element_id="floor-area-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floorArea",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("4"),
+        "height": Decimal("0.1"),
+        "depth": Decimal("3"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
 def wall_element(element_id="wall-id", **overrides):
     item = {
         "elementId": element_id,
@@ -1587,6 +1605,107 @@ def test_cash_register_with_requested_id_is_not_a_table(app_and_tables):
 
 
 @pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_area_element(), table_element()],
+        [
+            floor_element(),
+            floor_area_element(floorId="floor-ground"),
+            table_element(floorId="floor-ground"),
+        ],
+    ],
+    ids=["without-floor-id", "with-floor-id"],
+)
+def test_floor_area_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+def test_floor_area_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[floor_area_element(TABLE_ID)]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "variant_field",
+    [
+        {"shape": "rect"},
+        {"seats": Decimal("4")},
+        {"zone": "main"},
+        {"label": "Dining area"},
+        {"wallId": "wall-id"},
+        {"kind": "entrance"},
+        {"name": "Dining area"},
+        {"level": Decimal("0")},
+    ],
+)
+def test_floor_area_rejects_type_specific_fields(
+    app_and_tables,
+    variant_field,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[floor_area_element(**variant_field), table_element()],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_invalid_floor_area_geometry_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                floor_area_element(width=Decimal("0")),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
     "element",
     [
         cash_register_element(type="cashregister"),
@@ -1970,6 +2089,12 @@ def test_table_must_exist_in_active_snapshot(app_and_tables):
         ],
         [table_element(floorId="missing-floor")],
         [cash_register_element(floorId="missing-floor"), table_element()],
+        [
+            floor_element(),
+            floor_area_element(),
+            table_element(floorId="floor-ground"),
+        ],
+        [floor_area_element(floorId="missing-floor"), table_element()],
         [
             floor_element(),
             table_element("not-a-floor", floorId="floor-ground"),

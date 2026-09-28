@@ -67,6 +67,7 @@ Per-table availability marker for a specific date and time slot. Written atomica
 | `reservationId` | String |
 | `ttl` | Number (Unix epoch) |
 | `source` | String (`manual_block`, manual holds only) |
+| `layoutVersion` | Number (positive integer; new manual holds only; optional on legacy manual holds) |
 | `createdBy` | String (Cognito `sub`, manual holds only) |
 | `createdAt` | String (ISO8601, manual holds only) |
 
@@ -75,22 +76,44 @@ and `tableId` are all embedded in it, not stored as separate attributes. A
 manual hold created by `block-table` uses
 `reservationId = MANUAL_BLOCK#<UUIDv4>`, `source = manual_block`, and creation
 audit fields; ordinary reservation holds do not need those manual-only
-attributes. Its `ttl` is the derived slot-end instant in UTC.
+attributes. Its `ttl` is the derived slot-end instant in UTC. Every new manual
+hold also stores the positive published `layoutVersion` selected for the
+slot's complete interval. This is internal creation-time provenance, not
+client request or public response data, and it does not assert that the same
+version will remain effective forever. Existing manual rows may omit the
+field, and reservation occupancy rows do not use it. An idempotent repeat
+preserves the existing valid row and version, including legacy absence or a
+different positive version, rather than backfilling or rewriting it.
 
 `block-table` writes with an attribute-not-exists condition and deletes only
-when the stored manual ID, source, TTL, and audit values still match. It never
-overwrites or deletes a reservation. A consistent query over the location/date
-prefix detects already-stored overlapping intervals, including holds created
-under an older booking duration. Different time ranges produce different sort
-keys, however, so the current key alone cannot serialize simultaneous
-cross-key overlapping writes; add a transactional canonical guard item if
-that stronger invariant becomes necessary.
+when the stored manual ID, source, TTL, audit values, and provenance state
+still match. For a versioned row the delete requires exact `layoutVersion`
+equality; for a legacy row it requires the field to remain absent. A present
+version must be a positive integer, while absence remains valid and removable.
+It never overwrites or deletes a reservation. A consistent query over the
+location/date prefix detects already-stored overlapping intervals, including
+holds created under an older booking duration. Different time ranges produce
+different sort keys, however, so the current key alone cannot serialize
+simultaneous cross-key overlapping writes; add a transactional canonical
+guard item if that stronger invariant becomes necessary.
 
 ---
 
 ## Published Layout Snapshot
 
-Compiled, versioned snapshot of the layout that customers read and reservations reference. Uses SCD Type 2 — every version is retained with an effective date range, so privileged users can list or reactivate non-archived old versions without changing their compiled content. The snapshot's top-level `label` is its generated version name (`Version <N>`); it is distinct from an optional `label` nested inside an individual table element. The `version`, top-level `label`, `elements`, `validPositions`, and creation audit fields are immutable after publication. Activation may update only `isCurrent`, `effectiveFrom`, `effectiveTo`, `expiresAt`, and the update audit fields; soft archive adds the paired archive fields and also updates the update audit fields. Before the first activation a location has no current snapshot; afterward, the activation state machine keeps exactly one snapshot current, including while a replacement is pending.
+Compiled, versioned snapshot of the layout that customers read and
+reservations or manual holds may reference. Uses SCD Type 2 — every version is
+retained with an effective date range, so privileged users can list or
+reactivate non-archived old versions without changing their compiled content.
+The snapshot's top-level `label` is its generated version name (`Version <N>`);
+it is distinct from an optional `label` nested inside an individual table
+element. The `version`, top-level `label`, `elements`, `validPositions`, and
+creation audit fields are immutable after publication. Activation may update
+only `isCurrent`, `effectiveFrom`, `effectiveTo`, `expiresAt`, and the update
+audit fields; soft archive adds the paired archive fields and also updates the
+update audit fields. Before the first activation a location has no current
+snapshot; afterward, the activation state machine keeps exactly one snapshot
+current, including while a replacement is pending.
 
 | Attribute | Type |
 |---|---|
@@ -112,15 +135,47 @@ Compiled, versioned snapshot of the layout that customers read and reservations 
 | `archivedBy` | String, archived snapshots only |
 | `archivedAt` | String (ISO8601), archived snapshots only |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus four weeks. That value is a pre-activation safety deadline, not immutable content; activation replaces it as described below. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, cash-register geometry, an optional door `kind`, and each table's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus 28 days. That value is a pre-activation safety deadline, not the replacement activation cutoff and not immutable content; activation replaces it as described below. Immutable `createdAt` is the publication timestamp used to calculate replacement eligibility. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, cash-register geometry, an optional door `kind`, and each table's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
 - The first activation is immediate when the request omits `effectiveFrom` or supplies an instant at or before server now: the selected snapshot gets `isCurrent=true`, `effectiveFrom=server now`, `effectiveTo=null`, and `expiresAt=null`. A future first activation is not represented by this model and is rejected.
-- Replacing a current snapshot without `effectiveFrom` retains the default cutoff at `date(server UTC now + 4 weeks) at 01:00 UTC`. An explicit future `effectiveFrom` instead supplies the exact cutoff after normalization from its timezone-aware ISO 8601 offset to UTC; new future transitions require a whole-minute cutoff at least 60 seconds ahead. Before either scheduled cutoff, the old snapshot remains the only `isCurrent=true` record and receives `effectiveTo=cutover` and `expiresAt=cutover`. The replacement remains `isCurrent=false`, but receives `effectiveFrom=cutover`, `effectiveTo=null`, and `expiresAt=null`.
-- Replacing a current snapshot with an explicit `effectiveFrom` at or before server now is atomic and does not create a pending state or schedule. The activation-state pointer, outgoing snapshot, and target snapshot change in one transaction: the outgoing snapshot gets `isCurrent=false` and `effectiveTo=expiresAt=server now`, while the target gets `isCurrent=true`, `effectiveFrom=server now`, and null end/expiry fields.
-- At cutover, `expire-layout-version` atomically changes the old snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and advances the activation-state record. If the state is still `scheduling` because Scheduler creation succeeded but lifecycle staging failed, that same transaction first applies the planned lifecycle boundary. `effectiveTo` is therefore the planned/actual end of a serving interval; `expiresAt` is the booking cutoff for the current serving snapshot and is null when no cutoff is pending.
-- `get-availability`, `create-pending-reservation`, and block creation in `block-table` may use a snapshot only when `isCurrent=true`, `effectiveFrom` is not later than the current time, and each non-null `effectiveTo` or `expiresAt` is later than the current time. A future pending replacement is never bookable merely because its `effectiveFrom` is populated. Unblocking skips layout validation so an old manual hold remains removable after a layout change.
+- A replacement is eligible at the target snapshot's `createdAt` plus five
+  minutes in `dev` or 28 days in `prod`. Without `effectiveFrom`, an eligible
+  target replaces immediately; otherwise `cutoverAt` is the whole-minute
+  ceiling of `max(eligibleAt, server now + 60 seconds)`.
+- An explicit future `effectiveFrom` supplies the exact cutoff after
+  normalization from its timezone-aware ISO 8601 offset to UTC. A new future
+  transition must use a whole minute, be at least 60 seconds ahead, and be no
+  earlier than the whole-minute ceiling of `eligibleAt`. An explicit instant
+  at or before server now requests an atomic immediate replacement, but only
+  after eligibility; it cannot bypass the publication delay.
+- Before a scheduled cutoff, the old snapshot remains the only
+  `isCurrent=true` record and receives `effectiveTo=cutoverAt` and
+  `expiresAt=cutoverAt`. The target remains `isCurrent=false`, but receives
+  `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`.
+- At cutover, `expire-layout-version` revalidates the target's immutable
+  `createdAt` and environment-specific delay, then atomically changes the old
+  snapshot to `isCurrent=false`, the replacement to `isCurrent=true`, and
+  advances the activation-state record. If state is still `scheduling`
+  because Scheduler creation succeeded but lifecycle staging failed, that
+  transaction first applies the planned lifecycle boundary. `effectiveTo` is
+  the planned/actual end of a serving interval; `expiresAt` is the booking
+  cutoff for the current serving snapshot and is null when none is pending.
+- Slot-aware readers resolve a valid `scheduled` transition by interval:
+  `slotEndUtc <= cutoverAt` uses the current snapshot and
+  `slotStartUtc >= cutoverAt` uses the pending snapshot even though it is not
+  yet current. Availability omits a slot crossing the cutoff; block creation
+  returns `409`. During `scheduling`, only a slot ending at or before the
+  cutoff can use the current snapshot. Later-reaching slots, due/overdue
+  scheduled state, inconsistent state, and unresolved state races fail
+  closed. The public active-layout route remains current-only.
+- Unblocking skips every activation and snapshot read so an old or legacy
+  manual hold remains removable after a layout change.
+- Slot-aware and public readers treat `LAYOUT#ACTIVATION` as authoritative. A
+  legacy snapshot with `isCurrent=true` but no state item is not inferred as
+  active; calling `activate-layout-version` for that current version
+  bootstraps the state machine before those readers can use it.
 
 **Archive fields:** `archivedBy` and `archivedAt` are optional as a pair: both are absent on an ordinary snapshot, and both must be present and valid on an archived snapshot. A partial or malformed pair is inconsistent data. Archiving is a soft-delete operation and never removes the DynamoDB row or compiled content. It sets `archivedBy` to the owner's/super-user's Cognito subject and `archivedAt` to the archive time, and sets `updatedBy`/`updatedAt` to the same values. The snapshot's version remains allocated permanently, preserving reservation references and historical continuity; publishing therefore cannot reuse an archived version number.
 
@@ -148,7 +203,38 @@ Each location that has activated a layout also has one internal coordination ite
 | `scheduleName` | String, pending activation only |
 | `scheduleArn` | String, `scheduled` phase only |
 
-`pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and `scheduleName` form one transition and must never be partially populated. `cutoverAt` is either the default UTC cutoff or the caller's exact UTC-normalized future minute. A matching retry may resume the same target with no explicit time or with an explicit time equal to that stored instant; an immediate request, a different instant, or a different target cannot replace an existing transition. `scheduling` is a durable intent created before the external Scheduler call; it has no `scheduleArn` and does not alter either snapshot's serving lifecycle. `scheduled` means the one-time schedule exists, `scheduleArn` is present, and the old/replacement lifecycle timestamps have been atomically staged. If a still-future scheduled transition has lost its external schedule, recovery changes the revision/token/name and recreates it while preserving the exact stored `cutoverAt`. An at-or-past-due pending transition is treated as a conflict and is not moved to a later cutoff. The cutover worker accepts either complete phase: `scheduled` is the normal path, while a due `scheduling` event recovers the narrow case where schedule creation succeeded but lifecycle staging failed and the already-created event reaches the worker. The activation token binds the state, schedule, and worker event so a stale or retried schedule cannot apply a different activation. On success, the worker increments `revision`, moves `currentVersion`, and removes all six pending fields. Scheduler metadata and the coordination record are internal. The public active-layout API reads only the pointer and integrity fields needed to resolve the snapshot; it never returns the state item or pending-transition metadata.
+`pendingVersion`, `pendingStatus`, `activationToken`, `cutoverAt`, and
+`scheduleName` form one transition and must never be partially populated.
+`scheduleArn` must be absent in `scheduling` and present in `scheduled`. A
+default `cutoverAt` is the whole-minute ceiling of
+`max(target.createdAt + environment delay, server now + 60 seconds)`; an
+explicit cutoff is the caller's exact valid UTC-normalized future minute. A
+matching retry may resume the same target with no explicit time or with an
+explicit time equal to that stored instant. It preserves the stored cutoff
+rather than recomputing it; an immediate request, a different instant, or a
+different target cannot replace an existing transition.
+
+`scheduling` is a durable intent created before the external Scheduler call;
+it has no `scheduleArn` and does not alter either snapshot's serving
+lifecycle. Slot-aware readers may use only its current side through
+`cutoverAt`. `scheduled` means the one-time schedule exists, `scheduleArn` is
+present, and the old/replacement lifecycle timestamps have been atomically
+staged; slot-aware readers may then select either snapshot using the interval
+boundary. If a still-future scheduled transition has lost its external
+schedule, recovery changes the revision/token/name and recreates it while
+preserving the exact stored `cutoverAt`. An at-or-past-due pending transition
+is treated as a conflict and is not moved to a later cutoff.
+
+The cutover worker accepts either complete phase: `scheduled` is the normal
+path, while a due `scheduling` event recovers the narrow case where schedule
+creation succeeded but lifecycle staging failed and the already-created event
+reaches the worker. The activation token binds the state, schedule, and worker
+event so a stale or retried schedule cannot apply a different activation. On
+success, the worker increments `revision`, moves `currentVersion`, and removes
+all six pending fields. Scheduler metadata and the coordination record are
+internal. The public active-layout API reads only the pointer and integrity
+fields needed to resolve the current snapshot; it never returns the state item
+or pending-transition metadata.
 
 ---
 
@@ -222,13 +308,17 @@ draft. Publication does not verify that `wallId` identifies a wall, require a
 door/window wall to be on the same floor, enforce geometry containment, or
 apply deletion cascades.
 
-Availability and manual block creation validate the complete active snapshot
-before using its tables. Floor and cash-register elements are never bookable.
-Availability ignores cash registers and considers tables across all floors,
-returning only each table's `tableId` and `seats`; an optional label is
-validated but does not change that response. A cash-register ID cannot be used
-as a `tableId` by block creation. Manual occupancy keys and block responses
-remain based on the table's `elementId`, not its display label.
+Availability and manual block creation validate the complete slot-effective
+published snapshot before using its tables. That may be the scheduled pending
+snapshot for a slot wholly at or after its cutover. Floor and cash-register
+elements are never bookable. Availability ignores cash registers and
+considers tables across all floors. Each slot identifies its
+`layoutVersion`, while each nested table remains only `tableId` and `seats`;
+an optional label is validated but does not change that table object. A
+cash-register ID cannot be used as a `tableId` by block creation. Manual
+occupancy keys and public block request/response data remain based on the
+table's `elementId`, not its display label; stored manual provenance remains
+internal.
 
 The public `/locations/{locationId}/layout/active` route reads only the
 Published Layout Snapshot table. It never reads this mutable live table, so

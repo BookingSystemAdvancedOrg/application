@@ -202,9 +202,13 @@ customers do not have Cognito accounts.
 **Request:** `GET /locations/{locationId}/availability?date=YYYY-MM-DD`.
 `locationId` must be nonblank, at most 128 characters, and may not contain
 `#`. `date` is the only accepted query parameter and must be a real calendar
-date in canonical form. Past dates return `400`. For the location's current
-local date, only slots whose start instant is strictly in the future are
-returned.
+date in canonical form. Past dates return `400`. Returned slot starts satisfy
+the exact elapsed-time bound `now < slotStartUtc <= now + 21 days`. For the
+location's current local date, only slots whose start instant is strictly in
+the future are returned. The local date containing the upper UTC boundary is
+valid, but later slots on that partial cutoff date are filtered out. A local
+date wholly beyond that 504-hour cutoff returns `400` with
+`date must not be more than 21 days ahead`.
 
 The handler strongly consistently reads the Location record and derives a
 canonical slot grid from each same-day business-hours interval. The booking
@@ -213,20 +217,38 @@ each interval has its own grid anchored at its opening time. Slots with an
 ambiguous or nonexistent local endpoint, or whose real duration crosses a
 timezone offset transition, are omitted without failing the rest of the day.
 
-When candidate slots exist, the handler reads the layout activation state,
-the referenced current Published Layout Snapshot, and the activation state
-again to detect a concurrent cutover. It accepts both legacy flat snapshots
-and multi-floor snapshots, and validates the same floor-reference invariant
-as publication. Floors and `floorId` values are used only to validate snapshot
-integrity; validated `table` elements from every floor are exposed as
-`tableId` plus `seats`, so the public response shape is unchanged. Layout
-geometry, floor metadata, cash-register elements, and audit fields remain
-internal. A table's optional display `label` is validated as snapshot content
-but is not returned by availability; `tableId` continues to be the table
-element's `elementId`. A `cashRegister` is a renderable fixture rather than a
-bookable table, so it is validated as part of the snapshot but ignored when
-availability is compiled. A corrupt floor relationship returns `409`. A
-location with no active layout, an active layout with no tables, or a closed
+When candidate slots exist, the handler strongly consistently reads layout
+activation state, the relevant current and scheduled-pending Published Layout
+Snapshots, and activation state again. It retries that complete sequence once
+if the state changes, so a response is never assembled across two transition
+states. With a valid `scheduled` replacement, a slot whose end instant is at
+or before `cutoverAt` uses the current version; a slot whose start instant is
+at or after `cutoverAt` uses the pending version. A slot crossing the boundary
+is omitted because no one version is effective for its whole interval. During
+the intermediate `scheduling` phase, only slots ending at or before the stored
+cutover can use the current version; a request containing relevant later slots
+returns `409`. An overdue scheduled cutover, inconsistent transition, or a
+second concurrent state change also returns `409` rather than exposing
+uncertain availability.
+
+If the activation-state item is absent on both reads, availability does not
+guess from a legacy snapshot that merely has `isCurrent=true`; it returns an
+empty `slots` list. Calling `activate-layout-version` for that legacy current
+version bootstraps the authoritative state item.
+
+The handler accepts both legacy flat snapshots and multi-floor snapshots and
+validates the same floor-reference invariant as publication. Floors and
+`floorId` values are used only to validate snapshot integrity. Every returned
+slot contains the positive `layoutVersion` effective for its complete
+interval. Validated `table` elements from that version are exposed as
+`tableId` plus `seats`, so each nested table object's shape remains unchanged.
+Layout geometry, floor metadata, cash-register elements, and audit fields
+remain internal. A table's optional display `label` is validated as snapshot
+content but is not returned by availability; `tableId` continues to be the
+table element's `elementId`. A `cashRegister` is a renderable fixture rather
+than a bookable table, so it is validated as part of the snapshot but ignored
+when availability is compiled. A corrupt floor relationship returns `409`. A
+location with no active layout, a relevant layout with no tables, or a closed
 day returns `200` with an empty `slots` list.
 
 One paginated, strongly consistent Slot Occupancy query reads every hold for
@@ -245,6 +267,7 @@ time order and tables in `tableId` order:
     {
       "startTime": "18:00",
       "endTime": "20:00",
+      "layoutVersion": 2,
       "tables": [
         {"tableId": "table-4", "seats": 4}
       ]
@@ -253,24 +276,28 @@ time order and tables in `tableId` order:
 }
 ```
 
-All responses use `Cache-Control: no-store`. Invalid input returns `400`, an
-unknown location returns `404`, inconsistent stored location/layout/occupancy
-state or a repeatedly changing active layout returns `409`, and dependency
-failures return a sanitized `503`. A non-GET direct invocation returns `405`
-with `Allow: GET`.
+All responses use `Cache-Control: no-store`. Invalid input, including a local
+date wholly beyond the 21-day horizon, returns `400`; an unknown location
+returns `404`; inconsistent stored location/layout/occupancy state,
+unresolvable scheduling or overdue activation state, or a repeatedly changing
+activation state returns `409`; and dependency failures return a sanitized
+`503`. Invalid environment configuration while resolving pending state also
+returns that sanitized `503`. A non-GET direct invocation returns `405` with
+`Allow: GET`.
 
 Availability is advisory: an occupancy write can occur after this read.
-`create-pending-reservation` must validate again and conditionally acquire
-every requested table; clients must handle a booking-time conflict.
+`create-pending-reservation` must validate the advertised layout version,
+table, time horizon, and occupancy again and conditionally acquire every
+requested table; clients must handle a booking-time conflict.
 
 **Environment variables:**
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
-| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Active tables and seat counts |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Activation state and current/pending published tables and seat counts |
 
 **AWS resource access:** Read-only on Location, Slot Occupancy, and Published
 Layout Snapshot tables. The implementation calls strongly consistent
@@ -373,48 +400,69 @@ start on the location's booking grid, remain inside one business-hours
 interval, and map to one unambiguous real interval in the location's IANA
 timezone. Slots at ambiguous/nonexistent local times or crossing a daylight
 saving transition are rejected. The requested `tableId` must identify a
-`table` element in the currently active Published Layout Snapshot. The
-handler accepts both legacy flat and multi-floor snapshots and validates the
-complete floor relationship before using the requested table. A floor's
-`elementId` or a cash register's `elementId` cannot be used as a table ID, and
-corrupt floor relationships return `409`.
+`table` element in the Published Layout Snapshot effective for the slot's
+complete interval. For a valid scheduled replacement, a slot ending at or
+before `cutoverAt` uses the current version and a slot starting at or after it
+uses the pending version. A slot crossing the cutover returns `409`. While an
+activation is still in `scheduling`, only slots ending at or before its
+cutover can use the current version; later slots return `409`. An overdue
+cutover, inconsistent lifecycle, or repeatedly changing activation state also
+returns `409`. The handler accepts both legacy flat and multi-floor snapshots
+and validates the complete floor relationship before using the requested
+table. A floor's `elementId` or a cash register's `elementId` cannot be used as
+a table ID, and corrupt floor relationships return `409`.
+
+Block creation also treats a missing activation-state item as no resolvable
+layout and returns table `404`; it never guesses from a legacy snapshot with
+`isCurrent=true`. Activating that legacy current version first bootstraps the
+authoritative state.
 
 The path's `tableId` is always the target table element's `elementId`, never
 its optional display `label`. Labels therefore do not change Slot Occupancy
 keys, block request bodies, or block responses.
 
 `blocked: true` conditionally writes a Slot Occupancy row. A new hold returns
-`201`; an already-identical manual hold returns `200`. Both responses contain
-`locationId`, `tableId`, `date`, `startTime`, the derived `endTime`, and
-`blocked: true`; no floor field is added to the occupancy record or response.
-A reservation or overlapping hold returns `409` and is left unchanged.
+`201` and stores the selected positive `layoutVersion` as internal
+creation-time provenance. An already-identical manual hold returns `200`
+without replacing or backfilling valid provenance, including a legacy hold
+without that field. Both responses contain exactly `locationId`, `tableId`,
+`date`, `startTime`, the derived `endTime`, and `blocked: true`;
+`layoutVersion` is neither accepted in the request nor returned, and no floor
+field is added. A reservation or overlapping hold returns `409` and is left
+unchanged.
 
 `blocked: false` looks up a manual hold by location, date, start time, and
-table rather than re-deriving its old end time. This permits cleanup after the
-booking duration or active layout has changed. Removing an existing manual
-hold and requesting removal when none exists both return `204` with an empty
-body. A reservation at that identity returns `409` and is never deleted.
+table rather than re-deriving its old end time. It performs no activation or
+snapshot read. This permits cleanup after the booking duration or published
+layout has changed and keeps legacy rows without `layoutVersion` removable.
+The conditional delete binds the stored provenance value when present, or its
+continued absence for a legacy row. Removing an existing manual hold and
+requesting removal when none exists both return `204` with an empty body. A
+reservation at that identity returns `409` and is never deleted.
 
 Every Lambda response uses `Cache-Control: no-store`. Invalid requests or
-slots return `400`; missing locations or active tables return `404`; invalid
-stored state and occupancy/concurrency conflicts return `409`; dependency
-failures return a sanitized `503`. Non-POST direct invocations return `405`
-with `Allow: POST`.
+slots return `400`; a missing location or a table absent from the published
+layout effective for the requested slot returns `404`; cutover-crossing slots,
+scheduling or overdue transitions, activation races, invalid stored state, and
+occupancy/concurrency conflicts return `409`; dependency or environment
+configuration failures return a sanitized `503`. Non-POST direct invocations
+return `405` with `Allow: POST`.
 
 **Environment variables:**
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `USER_TABLE_NAME` | Caller role, status, and assigned location |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Where the manual block is written/deleted |
-| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Active layout and table validation |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Slot-effective current/pending layout and table validation |
 
 **AWS resource access:** Read-only on Location, User, and Published Layout
 Snapshot tables; full `dynamodb:*` on Slot Occupancy. The implementation uses
-strongly consistent reads, conditional writes/deletes, and bounded
-read-after-error reconciliation for ambiguous DynamoDB outcomes.
+strongly consistent activation-state and snapshot reads, conditional
+writes/deletes, and bounded read-after-error reconciliation for ambiguous
+DynamoDB outcomes.
 
 **Established authorization pattern (reuse this elsewhere):** before authorizing the block, do a single `GetItem` on the User table with `PK = USER#<sub>` (where `sub` comes from the verified JWT claims) to confirm the caller's role and which location they're assigned to. This is the reference pattern for any route that needs "is this staff member allowed to act on this specific location," since that assignment lives in the User table, not in the JWT itself.
 
@@ -431,7 +479,7 @@ the same DynamoDB transaction.
 
 ## Floor Layout
 
-There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. Cash registers and optional table labels follow this same draft → publish → activate → public-read lifecycle; they require no separate route, table, environment variable, or IAM permission. `get-availability`, `create-pending-reservation`, and block creation in `block-table` use the active version to determine which table elements exist. They do not treat cash registers as tables, and table identity remains the element's `elementId` rather than its display label.
+There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. Cash registers and optional table labels follow this same draft → publish → activate → public-read lifecycle; they require no separate route, table, environment variable, or IAM permission. `get-availability` and block creation in `block-table` resolve the published version effective for each slot interval, including a valid scheduled pending version; the public active-layout route continues to expose only the current version. `create-pending-reservation` must enforce that same slot-effective version when implemented. None of these flows treats cash registers as tables, and table identity remains the element's `elementId` rather than its display label.
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
@@ -494,10 +542,13 @@ The next version is the numeric maximum across every existing `LAYOUT#v<N>` snap
 
 - `version = N` and generated top-level snapshot `label = "Version N"` (distinct from an optional `label` nested in a table element)
 - `isCurrent = false`, `effectiveFrom = null`, and `effectiveTo = null`
-- `expiresAt = publication time + 4 weeks`
+- `expiresAt = publication time + 28 days` as the inactive snapshot's initial
+  safety deadline, not as its replacement activation cutoff
 - the sanitized logical records in `elements`
 - `validPositions = []` because the current model defines no position-compilation rule
-- `createdBy`, `updatedBy` from the JWT subject and identical UTC creation/update timestamps
+- `createdBy`, `updatedBy` from the JWT subject and identical UTC
+  creation/update timestamps; immutable `createdAt` is the publication time
+  from which replacement eligibility is calculated
 
 Creation uses a conditional put so an existing version is never overwritten. If another publisher takes the selected version concurrently, the handler re-reads the numeric maximum and retries once; another collision returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. A successful response is `201` with the logical snapshot (never `PK`/`SK`), `Cache-Control: no-store`, and `Location: /locations/<locationId>/layout/versions/<N>`. The `Location` value identifies the version even though the current API exposes versions through the collection/list and activation routes rather than a dedicated single-version GET.
 
@@ -558,17 +609,23 @@ Malformed paths return `400`. A recognized request with the wrong method returns
 
 ### 14. `activate-layout-version`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-**Purpose:** Activates one complete published snapshot while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The caller may retain the default delayed replacement, request an exact future cutover, or request an immediate replacement. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+**Purpose:** Activates one complete published snapshot while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, or request an immediate replacement only after eligibility. The old version remains current until `expire-layout-version` performs any scheduled cutover.
 
 **Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. The only accepted method is `POST`. `locationId` must be non-empty and at most 128 characters. `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
 
-The body is optional. An omitted body, an API Gateway `null` body, an empty string, or `{}` preserves the legacy behavior: a replacement is scheduled for `date(server UTC now + 4 weeks) at 01:00 UTC`. Otherwise the body must be a JSON object containing only `effectiveFrom`:
+The body is optional. An omitted body, an API Gateway `null` body, an empty
+string, or `{}` selects the default timing. For a replacement, define
+`eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev` or
+28 days in `prod`. The default activates immediately when server now is at or
+after `eligibleAt`; otherwise it schedules the earliest whole UTC minute at or
+after both `eligibleAt` and `now + 60 seconds`. Otherwise the body must be a
+JSON object containing only `effectiveFrom`:
 
 ```json
 {"effectiveFrom":"2026-10-05T16:37:00+02:00"}
 ```
 
-`effectiveFrom` must be a non-empty, timezone-aware ISO 8601 string; the literal `"now"`, a naive timestamp, extra fields, JSON `null`, and non-object JSON are invalid. Base64-encoded API Gateway bodies are decoded before JSON validation. The requested instant is normalized to UTC. If it is at or before the single server time captured for the request, the operation is immediate and uses that server time as the actual `effectiveFrom`. A future value starts a new scheduled transition only when it has whole-minute precision and is at least 60 seconds after the captured server time. The minimum lead check does not invalidate an idempotent retry of an already-pending transition at the same exact instant.
+`effectiveFrom` must be a non-empty, timezone-aware ISO 8601 string; the literal `"now"`, a naive timestamp, extra fields, JSON `null`, and non-object JSON are invalid. Base64-encoded API Gateway bodies are decoded before JSON validation. The requested instant is normalized to UTC. If it is at or before the single server time captured for the request, it requests immediate replacement and uses that server time as the actual `effectiveFrom`, but it cannot bypass `eligibleAt`; a too-early request returns `409` with `layout version cannot activate before <timestamp>`. A future value starts a new scheduled transition only when it has whole-minute precision, is at least 60 seconds after the captured server time, and is at or after the whole-minute ceiling of `eligibleAt`. The minimum lead and eligibility checks do not retime an idempotent retry of an already-pending transition at the same exact stored instant.
 
 The handler strongly consistently reads every published snapshot and the internal `LAYOUT#ACTIVATION` state item. More than one current snapshot, malformed records, archived current/pending snapshots, or disagreement between the state and snapshots returns `409`; the handler never guesses which record should win. A valid archived inactive snapshot cannot be reactivated and returns `409` with `archived layout version cannot be activated`.
 
@@ -578,11 +635,11 @@ The handler strongly consistently reads every published snapshot and the interna
 {"status":"active","version":1,"effectiveFrom":"2026-09-07T10:30:00Z"}
 ```
 
-Repeating a request for the current version is idempotent and returns the same response without creating a schedule. For a legacy current snapshot with no state item, an idempotent/default/future request normalizes the snapshot and bootstraps the state machine; an immediate replacement instead creates state already pointing at the target in the same atomic transaction that swaps the snapshots.
+When no activation is pending, repeating a request for the current version is idempotent and returns the same response without creating a schedule. While a transition is pending, only a matching retry for its target is resumable; requesting the current version instead returns the pending-transition conflict. For a legacy current snapshot with no state item, requesting that current version normalizes the snapshot and bootstraps the state machine regardless of body timing. A request for a different version applies the replacement eligibility policy; an eligible immediate replacement creates state already pointing at the target in the same atomic transaction that swaps the snapshots.
 
-**Immediate replacement:** When an explicit `effectiveFrom` is at or before server now, the replacement does not use Scheduler. One conditional DynamoDB transaction advances or creates the activation-state record, retires the outgoing snapshot with `isCurrent=false` and `effectiveTo=expiresAt=server now`, and activates the target with `isCurrent=true`, `effectiveFrom=server now`, and null end/expiry fields. The requested past/current timestamp is therefore a mode selector, not a historical lifecycle boundary. The operation returns `200` with the active response shape above. Ambiguous DynamoDB outcomes are reconciled with strongly consistent reads; a proven concurrent change returns `409`, while an unresolved dependency failure returns the sanitized `503` response.
+**Immediate replacement:** Once the target has reached `eligibleAt`, a default request or an explicit `effectiveFrom` at or before server now replaces it without Scheduler. One conditional DynamoDB transaction advances or creates the activation-state record, retires the outgoing snapshot with `isCurrent=false` and `effectiveTo=expiresAt=server now`, and activates the target with `isCurrent=true`, `effectiveFrom=server now`, and null end/expiry fields. An explicit past/current timestamp is therefore a mode selector, not a historical lifecycle boundary. Before eligibility that request returns `409` without writing. The operation returns `200` with the active response shape above. Ambiguous DynamoDB outcomes are reconciled with strongly consistent reads; a proven concurrent change returns `409`, while an unresolved dependency failure returns the sanitized `503` response.
 
-**Scheduled replacement:** With no `effectiveFrom`, `cutoverAt` is the default UTC `date(now + 4 weeks) at 01:00`. With an explicit future `effectiveFrom`, `cutoverAt` is that exact instant after UTC normalization. The operation is a recoverable two-phase saga because DynamoDB and EventBridge Scheduler cannot share one transaction:
+**Scheduled replacement:** With no `effectiveFrom` and a target that is not yet eligible, `cutoverAt` is the whole-minute ceiling of `max(eligibleAt, now + 60 seconds)`. With an explicit future `effectiveFrom`, `cutoverAt` is that exact UTC-normalized whole minute, provided it satisfies both the scheduler lead and eligibility boundaries. The operation is a recoverable two-phase saga because DynamoDB and EventBridge Scheduler cannot share one transaction:
 
 1. A conditional DynamoDB transaction increments the state revision and records a durable `scheduling` intent containing `pendingVersion`, `activationToken`, `cutoverAt`, and a deterministic `scheduleName`. Neither snapshot's serving lifecycle changes yet.
 2. Create a one-time EventBridge schedule in the `default` group. Its name is `expire-layout-version-` followed by the first 42 characters of the activation token, so it is IAM-compatible and never exceeds Scheduler's 64-character limit.
@@ -592,17 +649,17 @@ Repeating a request for the current version is idempotent and returns the same r
 A successfully staged or already-staged replacement returns `202`:
 
 ```json
-{"status":"pending","version":2,"currentVersion":1,"cutoverAt":"2026-10-05T01:00:00Z"}
+{"status":"pending","version":2,"currentVersion":1,"cutoverAt":"2026-10-21T10:01:00Z"}
 ```
 
-Only one target may be pending. A bodyless/empty request for that same target resumes it, as does an explicit future request whose UTC-normalized instant exactly equals the stored `cutoverAt`. An explicit immediate request or a different future instant cannot retime/replace the pending transition and returns `409` with `another layout activation is pending`; requesting a different target returns the same conflict. A matching retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If the expected schedule is missing while `cutoverAt` is still future, recovery deletes the validated stored name when present, renews the transition token/name, and recreates the schedule at the **same exact stored cutoff**; it never moves a custom or default cutoff. `ResourceNotFoundException` during recovery deletion is an expected no-op. Recovery never reschedules a pending transition whose stored cutoff is at or before server now; a bodyless/empty retry returns `409` with `layout activation cutover is overdue`. An ambiguous final DynamoDB result is reconciled through strongly consistent reads before any error is returned.
+Only one target may be pending. A bodyless/empty request for that same target resumes it, as does an explicit future request whose UTC-normalized instant exactly equals the stored `cutoverAt`. A retry preserves that stored cutoff and does not recompute it from the current time or policy. An explicit immediate request or a different future instant cannot retime/replace the pending transition and returns `409` with `another layout activation is pending`; requesting a different target returns the same conflict. A matching retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If the expected schedule is missing while `cutoverAt` is still future, recovery deletes the validated stored name when present, renews the transition token/name, and recreates the schedule at the **same exact stored cutoff**; it never moves a custom or default cutoff. `ResourceNotFoundException` during recovery deletion is an expected no-op. Recovery never reschedules a pending transition whose stored cutoff is at or before server now; a bodyless/empty retry returns `409` with `layout activation cutover is overdue`. An ambiguous final DynamoDB result is reconciled through strongly consistent reads before any error is returned.
 
-Malformed paths, malformed/unsupported bodies, invalid timestamps, sub-minute future timestamps, and insufficient lead time for a new future transition return `400`; missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a missing version returns `404`; a wrong method returns `405` with `Allow: POST`; first-activation future requests, pending retime/immediate requests, overdue transitions, and conflicting or corrupt state return `409`; and sanitized DynamoDB/Scheduler failures return `503`. Scheduled success returns `202` with `status="pending"`; first/immediate/idempotently active success returns `200` with `status="active"`. Every response includes `Cache-Control: no-store`.
+Malformed paths, malformed/unsupported bodies, invalid timestamps, sub-minute future timestamps, and insufficient lead time for a new future transition return `400`; therefore a future first-activation request with insufficient lead also returns `400`. Missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a missing version returns `404`; and a wrong method returns `405` with `Allow: POST`. An otherwise-valid future first activation, a replacement request before target eligibility, a pending retime/immediate request, an overdue transition, or conflicting/corrupt state returns `409`; sanitized DynamoDB/Scheduler/configuration failures return `503`. Scheduled success returns `202` with `status="pending"`; first/immediate/idempotently active success returns `200` with `status="active"`. Every response includes `Cache-Control: no-store`.
 
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read/update |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` — the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
@@ -660,6 +717,13 @@ The actual input is serialized compactly with sorted keys. The schedule name mus
 
 The normal `scheduled` phase requires the lifecycle timestamps to have already been staged by `activate-layout-version`. A due `scheduling` phase is also recoverable: it means Scheduler creation succeeded but the final DynamoDB staging transaction did not complete, so this worker applies the same lifecycle boundary while completing the cutover. The deterministic activation token binds environment, table, location, versions, revision, and cutoff to the event. Transaction conditions bind the stored phase, old/current version, target version, lifecycle timestamps, schedule metadata, audit version, and token to the values that were strongly read.
 
+Before writing, the worker independently revalidates that `cutoverAt` is not
+earlier than the target snapshot's `createdAt` plus five minutes in `dev` or
+28 days in `prod`. The transaction also binds each snapshot's immutable
+`createdAt` to the value that was read, so a concurrent or corrupt timestamp
+cannot bypass the policy. An invalid environment or a transition violating
+that delay raises for retry and does not activate the target.
+
 The worker must not complete the transition before the stored `cutoverAt`; late delivery is allowed, but the effective interval boundary remains the stored cutoff. Snapshot audit fields use the activation state's `updatedBy` and the worker execution time as `updatedAt`. Invalid event shapes and matching early, missing-snapshot, or corrupt transitions raise instead of being acknowledged.
 
 A missing state item, a state item with no pending transition, or a different authoritative token is a confirmed stale/orphaned invocation and returns `None` without writing. After any matching-path validation, conditional, transport, or ambiguous transaction failure, the worker strongly rereads state: it returns `None` only if that read proves the transition was completed or superseded; otherwise the original error propagates. EventBridge Scheduler invokes Lambda asynchronously, so a handler error is retried by Lambda's asynchronous invocation handling after Scheduler has delivered the event. Infrastructure should configure an on-failure destination or Lambda dead-letter queue for events that exhaust those retries; Scheduler retry/DLQ settings separately cover failures to deliver the event to Lambda. The worker must never retire a different current version or activate a superseded target. This atomic three-item cutover is required for the exactly-one-current invariant.
@@ -667,7 +731,7 @@ A missing state item, a state item with no pending transition, or a different au
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own — this function is the schedule's *target*, not the one creating/deleting schedules.

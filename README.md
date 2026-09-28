@@ -145,16 +145,29 @@ identity for edits, reservations, and blocks. Existing tables without `label`
 remain valid and may use a frontend fallback until staff assigns one.
 
 Publishing and activation are location-wide: one version contains every floor
-and all of their elements, and the whole version is activated together. Legacy
-flat drafts with no floor elements and no `floorId` values remain valid. Draft
-editing is intentionally non-cascading, so deleting a floor does not delete its
-children; move or delete those children before publishing again. Availability
-uses tables from every floor but intentionally returns only `tableId` and
-`seats` for each available table; adding a display label does not change that
-response. Cash registers are renderable fixtures, not bookable tables:
-availability ignores them and the table-block endpoint cannot target their
-IDs. The block route continues to receive the table's `elementId` as
-`tableId`, never its label.
+and all of their elements, and the whole version is activated together.
+Publishing alone leaves the snapshot inactive. The first activation is
+immediate. A replacement cannot take effect before the target snapshot's
+`createdAt` plus five minutes in `dev` or 28 days in `prod`; a default request
+activates immediately when eligible, otherwise at the earliest safe whole UTC
+minute. Legacy flat drafts with no floor elements and no `floorId` values
+remain valid. Draft editing is intentionally non-cascading, so deleting a
+floor does not delete its children; move or delete those children before
+publishing again.
+
+Availability returns only slot starts satisfying
+`now < slotStartUtc <= now + 21 days`. Every slot includes the published
+`layoutVersion` effective for its whole interval, while each available table
+still contains only `tableId` and `seats`; adding a display label does not
+change the table object. At a scheduled cutover, slots ending at or before it
+use the current version, slots starting at or after it use the pending version,
+and crossing slots are omitted. Block creation follows the same boundary but
+rejects a crossing slot with `409`. It stores the selected version only as
+internal occupancy provenance and does not add `layoutVersion` to the block
+request or response. Unblocking does not resolve layout state. Cash registers
+are renderable fixtures, not bookable tables: availability ignores them and
+the table-block endpoint cannot target their IDs. The block route continues to
+receive the table's `elementId` as `tableId`, never its label.
 
 The public active-layout read separates published floor records into `floors`
 and returns walls, doors, windows, tables, and cash registers in `elements`. A

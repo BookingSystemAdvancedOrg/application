@@ -60,6 +60,12 @@ _SCHEDULE_GROUP = "default"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
+_PENDING_TARGET_PREVIOUS_LIFECYCLE = (
+    "pendingTargetPreviousLifecycle"
+)
+_LIFECYCLE_FIELDS = frozenset(
+    {"effectiveFrom", "effectiveTo", "expiresAt"}
+)
 _ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom"})
 _MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
 _REPLACEMENT_DELAYS = {
@@ -90,6 +96,7 @@ _PENDING_STATE_FIELDS = frozenset(
         "cutoverAt",
         "scheduleName",
         "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
     }
 )
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
@@ -456,6 +463,30 @@ def _read_state(snapshot_table, location_id):
     return item
 
 
+def _snapshot_lifecycle(snapshot):
+    return {
+        field: snapshot[field]
+        for field in _LIFECYCLE_FIELDS
+    }
+
+
+def _pending_target_previous_lifecycle(state):
+    if _PENDING_TARGET_PREVIOUS_LIFECYCLE not in state:
+        return None
+
+    lifecycle = state.get(_PENDING_TARGET_PREVIOUS_LIFECYCLE)
+    if (
+        not isinstance(lifecycle, dict)
+        or set(lifecycle) != _LIFECYCLE_FIELDS
+    ):
+        raise ValueError
+
+    return {
+        field: _utc_timestamp(lifecycle, field, nullable=True)
+        for field in _LIFECYCLE_FIELDS
+    }
+
+
 def _schedule_name(activation_token):
     suffix_length = 64 - len(_SCHEDULE_NAME_PREFIX)
     return f"{_SCHEDULE_NAME_PREFIX}{activation_token[:suffix_length]}"
@@ -478,7 +509,10 @@ def _validate_state(state, location_id):
             "layout activation state is inconsistent"
         ) from None
 
-    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    present_pending_fields = set(state) & (
+        _PENDING_STATE_FIELDS
+        - {_PENDING_TARGET_PREVIOUS_LIFECYCLE}
+    )
     if not present_pending_fields:
         return {
             "currentVersion": current_version,
@@ -486,7 +520,10 @@ def _validate_state(state, location_id):
             "pending": None,
         }
 
-    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    required_pending_fields = _PENDING_STATE_FIELDS - {
+        "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
+    }
     if not required_pending_fields.issubset(state):
         raise _ActivationConflict("layout activation state is inconsistent")
 
@@ -545,6 +582,10 @@ def _validate_state(state, location_id):
 
         if (pending_status == _SCHEDULED) != (schedule_arn is not None):
             raise ValueError
+
+        target_previous_lifecycle = (
+            _pending_target_previous_lifecycle(state)
+        )
     except (OverflowError, TypeError, ValueError):
         raise _ActivationConflict(
             "layout activation state is inconsistent"
@@ -560,6 +601,7 @@ def _validate_state(state, location_id):
             "cutoverAt": cutover_at,
             "scheduleName": schedule_name,
             "scheduleArn": schedule_arn,
+            "targetPreviousLifecycle": target_previous_lifecycle,
         },
     }
 
@@ -813,6 +855,7 @@ def _reserve_pending_activation(
         cutover_at,
     )
     schedule_name = _schedule_name(activation_token)
+    target_previous_lifecycle = _snapshot_lifecycle(target)
 
     names = {
         "#recordType": "recordType",
@@ -824,6 +867,9 @@ def _reserve_pending_activation(
         "#cutoverAt": "cutoverAt",
         "#scheduleName": "scheduleName",
         "#scheduleArn": "scheduleArn",
+        "#targetPreviousLifecycle": (
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE
+        ),
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
     }
@@ -838,6 +884,7 @@ def _reserve_pending_activation(
             ":activationToken": activation_token,
             ":cutoverAt": cutover_at,
             ":scheduleName": schedule_name,
+            ":targetPreviousLifecycle": target_previous_lifecycle,
             ":callerSub": caller_sub,
             ":timestamp": timestamp,
         }
@@ -856,6 +903,8 @@ def _reserve_pending_activation(
                         "#activationToken = :activationToken, "
                         "#cutoverAt = :cutoverAt, "
                         "#scheduleName = :scheduleName, "
+                        "#targetPreviousLifecycle = "
+                        ":targetPreviousLifecycle, "
                         "#revision = :nextRevision, "
                         "#updatedBy = :callerSub, "
                         "#updatedAt = :timestamp"
@@ -903,6 +952,7 @@ def _reserve_pending_activation(
         "cutoverAt": cutover_at,
         "scheduleName": schedule_name,
         "scheduleArn": None,
+        "targetPreviousLifecycle": target_previous_lifecycle,
     }, next_revision
 
 
@@ -965,6 +1015,9 @@ def _renew_stale_pending_activation(
         "#cutoverAt": "cutoverAt",
         "#scheduleName": "scheduleName",
         "#scheduleArn": "scheduleArn",
+        "#targetPreviousLifecycle": (
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE
+        ),
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
     }
@@ -989,6 +1042,16 @@ def _renew_stale_pending_activation(
     if previous["scheduleArn"] is not None:
         raw_values[":expectedArn"] = previous["scheduleArn"]
         schedule_arn_condition = "#scheduleArn = :expectedArn"
+    previous_lifecycle_condition = (
+        "attribute_not_exists(#targetPreviousLifecycle)"
+    )
+    if previous["targetPreviousLifecycle"] is not None:
+        raw_values[":targetPreviousLifecycle"] = previous[
+            "targetPreviousLifecycle"
+        ]
+        previous_lifecycle_condition = (
+            "#targetPreviousLifecycle = :targetPreviousLifecycle"
+        )
 
     state_update = {
         "Update": {
@@ -1014,7 +1077,8 @@ def _renew_stale_pending_activation(
                 "AND #activationToken = :expectedToken "
                 "AND #cutoverAt = :expectedCutover "
                 "AND #scheduleName = :expectedName "
-                f"AND {schedule_arn_condition}"
+                f"AND {schedule_arn_condition} "
+                f"AND {previous_lifecycle_condition}"
             ),
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": _typed_map(raw_values),
@@ -1024,6 +1088,13 @@ def _renew_stale_pending_activation(
     renewed_current = current
     renewed_target = target
     if previous["status"] == _SCHEDULED:
+        target_previous_lifecycle = previous[
+            "targetPreviousLifecycle"
+        ] or {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
         renewed_current = {
             **current,
             "isCurrent": True,
@@ -1035,9 +1106,7 @@ def _renew_stale_pending_activation(
         renewed_target = {
             **target,
             "isCurrent": False,
-            "effectiveFrom": None,
-            "effectiveTo": None,
-            "expiresAt": None,
+            **target_previous_lifecycle,
             "updatedBy": caller_sub,
             "updatedAt": timestamp,
         }
@@ -1054,9 +1123,9 @@ def _renew_stale_pending_activation(
             _snapshot_lifecycle_update(
                 target,
                 is_current=False,
-                effective_from=None,
-                effective_to=None,
-                expires_at=None,
+                effective_from=target_previous_lifecycle["effectiveFrom"],
+                effective_to=target_previous_lifecycle["effectiveTo"],
+                expires_at=target_previous_lifecycle["expiresAt"],
                 caller_sub=caller_sub,
                 timestamp=timestamp,
             ),
@@ -1096,6 +1165,9 @@ def _renew_stale_pending_activation(
             "cutoverAt": cutover_at,
             "scheduleName": schedule_name,
             "scheduleArn": None,
+            "targetPreviousLifecycle": previous[
+                "targetPreviousLifecycle"
+            ],
         },
         next_revision,
         renewed_current,
@@ -1198,6 +1270,15 @@ def _get_existing_cutover_schedule(current, target, pending):
 
 
 def _create_cutover_schedule(current, target, pending):
+    target_previous_lifecycle = pending["targetPreviousLifecycle"]
+    if (
+        target_previous_lifecycle is not None
+        and _snapshot_lifecycle(target) != target_previous_lifecycle
+    ):
+        raise _ActivationConflict(
+            "layout activation state is inconsistent"
+        )
+
     request = _schedule_request(current, target, pending)
     scheduler = _get_scheduler_client()
     try:
@@ -1380,6 +1461,9 @@ def _replace_current_immediately(
             "#cutoverAt": "cutoverAt",
             "#scheduleName": "scheduleName",
             "#scheduleArn": "scheduleArn",
+            "#targetPreviousLifecycle": (
+                _PENDING_TARGET_PREVIOUS_LIFECYCLE
+            ),
             "#updatedBy": "updatedBy",
             "#updatedAt": "updatedAt",
         }
@@ -1404,7 +1488,8 @@ def _replace_current_immediately(
                     "SET #currentVersion = :nextCurrentVersion, "
                     "#revision = :nextRevision, "
                     "#updatedBy = :callerSub, "
-                    "#updatedAt = :timestamp"
+                    "#updatedAt = :timestamp "
+                    "REMOVE #targetPreviousLifecycle"
                 ),
                 "ConditionExpression": (
                     "attribute_exists(PK) AND attribute_exists(SK) "
@@ -1494,26 +1579,38 @@ def _finalize_pending_activation(
         "#cutoverAt": "cutoverAt",
         "#scheduleName": "scheduleName",
         "#scheduleArn": "scheduleArn",
+        "#targetPreviousLifecycle": (
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE
+        ),
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
     }
-    values = _typed_map(
-        {
-            ":recordType": _ACTIVATION_STATE_TYPE,
-            ":currentVersion": state_details["currentVersion"],
-            ":expectedRevision": state_details["revision"],
-            ":nextRevision": next_revision,
-            ":pendingVersion": pending["version"],
-            ":scheduling": _SCHEDULING,
-            ":scheduled": _SCHEDULED,
-            ":activationToken": pending["activationToken"],
-            ":cutoverAt": pending["cutoverAt"],
-            ":scheduleName": pending["scheduleName"],
-            ":scheduleArn": schedule_arn,
-            ":callerSub": caller_sub,
-            ":timestamp": timestamp,
-        }
+    raw_values = {
+        ":recordType": _ACTIVATION_STATE_TYPE,
+        ":currentVersion": state_details["currentVersion"],
+        ":expectedRevision": state_details["revision"],
+        ":nextRevision": next_revision,
+        ":pendingVersion": pending["version"],
+        ":scheduling": _SCHEDULING,
+        ":scheduled": _SCHEDULED,
+        ":activationToken": pending["activationToken"],
+        ":cutoverAt": pending["cutoverAt"],
+        ":scheduleName": pending["scheduleName"],
+        ":scheduleArn": schedule_arn,
+        ":callerSub": caller_sub,
+        ":timestamp": timestamp,
+    }
+    previous_lifecycle_condition = (
+        "attribute_not_exists(#targetPreviousLifecycle)"
     )
+    if pending["targetPreviousLifecycle"] is not None:
+        raw_values[":targetPreviousLifecycle"] = pending[
+            "targetPreviousLifecycle"
+        ]
+        previous_lifecycle_condition = (
+            "#targetPreviousLifecycle = :targetPreviousLifecycle"
+        )
+    values = _typed_map(raw_values)
     dynamodb_client().transact_write_items(
         TransactItems=[
             {
@@ -1537,7 +1634,8 @@ def _finalize_pending_activation(
                         "AND #activationToken = :activationToken "
                         "AND #cutoverAt = :cutoverAt "
                         "AND #scheduleName = :scheduleName "
-                        "AND attribute_not_exists(#scheduleArn)"
+                        "AND attribute_not_exists(#scheduleArn) "
+                        f"AND {previous_lifecycle_condition}"
                     ),
                     "ExpressionAttributeNames": names,
                     "ExpressionAttributeValues": values,
@@ -1630,6 +1728,8 @@ def _read_committed_finalization(location_id, expected_pending):
         or pending["version"] != expected_pending["version"]
         or pending["activationToken"]
         != expected_pending["activationToken"]
+        or pending["targetPreviousLifecycle"]
+        != expected_pending["targetPreviousLifecycle"]
     ):
         return None
 

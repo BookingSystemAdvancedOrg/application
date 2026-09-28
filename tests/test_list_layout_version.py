@@ -171,6 +171,7 @@ def pending_activation_state(
     pending_version=2,
     revision=3,
     cutover_at="2026-10-05T01:00:00Z",
+    include_previous_lifecycle=True,
 ):
     operation_revision = revision - 1
     identity = json.dumps(
@@ -189,7 +190,7 @@ def pending_activation_state(
     )
     token = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     schedule_name = f"expire-layout-version-{token[:42]}"
-    return activation_state(
+    state = activation_state(
         current_version,
         revision=Decimal(str(revision)),
         pendingVersion=Decimal(str(pending_version)),
@@ -202,6 +203,13 @@ def pending_activation_state(
             f"schedule/default/{schedule_name}"
         ),
     )
+    if include_previous_lifecycle:
+        state["pendingTargetPreviousLifecycle"] = {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    return state
 
 
 def mismatched_pending_activation_state():
@@ -219,6 +227,115 @@ def mismatched_pending_activation_state():
         }
     )
     return state
+
+
+def test_archive_state_accepts_and_binds_previous_target_lifecycle(
+    app_and_table,
+):
+    app, _ = app_and_table
+    lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    state = pending_activation_state()
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    details = app._archive_activation_state_details(state, LOCATION_ID)
+    condition = app._archive_state_condition(LOCATION_ID, details)[
+        "ConditionCheck"
+    ]
+
+    assert details["pending"]["targetPreviousLifecycle"] == lifecycle
+    assert (
+        "#pendingTargetPreviousLifecycle = "
+        ":statePendingTargetPreviousLifecycle"
+        in condition["ConditionExpression"]
+    )
+    assert condition["ExpressionAttributeValues"][
+        ":statePendingTargetPreviousLifecycle"
+    ] == app._SERIALIZER.serialize(lifecycle)
+
+
+def test_archive_state_accepts_legacy_pending_without_lifecycle_backup(
+    app_and_table,
+):
+    app, _ = app_and_table
+    state = pending_activation_state(
+        include_previous_lifecycle=False,
+    )
+
+    details = app._archive_activation_state_details(state, LOCATION_ID)
+    condition = app._archive_state_condition(LOCATION_ID, details)[
+        "ConditionCheck"
+    ]
+
+    assert details["pending"]["targetPreviousLifecycle"] is None
+    assert (
+        "attribute_not_exists(#pendingTargetPreviousLifecycle)"
+        in condition["ConditionExpression"]
+    )
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    [
+        None,
+        [],
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-10-05T03:00:00+02:00",
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+    ],
+)
+def test_invalid_previous_target_lifecycle_prevents_archive(
+    app_and_table,
+    lifecycle,
+):
+    app, _ = app_and_table
+    state = pending_activation_state()
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    with pytest.raises(
+        app._SnapshotConflict,
+        match="layout activation state is inconsistent",
+    ):
+        app._archive_activation_state_details(state, LOCATION_ID)
+
+
+def test_orphan_previous_lifecycle_from_old_worker_is_ignored(
+    app_and_table,
+):
+    app, _ = app_and_table
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    )
+
+    details = app._archive_activation_state_details(state, LOCATION_ID)
+    condition = app._archive_state_condition(LOCATION_ID, details)[
+        "ConditionCheck"
+    ]
+
+    assert details["pending"] is None
+    assert "pendingTargetPreviousLifecycle" not in condition[
+        "ExpressionAttributeNames"
+    ].values()
 
 
 def public_active_element(item):

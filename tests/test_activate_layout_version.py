@@ -159,6 +159,8 @@ def pending_activation_state(
     status="scheduled",
     cutover_at="2026-10-05T01:00:00Z",
     operation_revision=2,
+    previous_lifecycle=None,
+    include_previous_lifecycle=True,
 ):
     token = app._activation_token(
         location_id,
@@ -181,6 +183,16 @@ def pending_activation_state(
         "cutoverAt": cutover_at,
         "scheduleName": app._schedule_name(token),
     }
+    if include_previous_lifecycle:
+        overrides["pendingTargetPreviousLifecycle"] = (
+            previous_lifecycle
+            if previous_lifecycle is not None
+            else {
+                "effectiveFrom": None,
+                "effectiveTo": None,
+                "expiresAt": "2026-10-05T10:00:00Z",
+            }
+        )
     if status == "scheduled":
         overrides["scheduleArn"] = schedule_arn(overrides["scheduleName"])
     return activation_state(
@@ -869,6 +881,170 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
                 sort_keys=True,
             ),
         },
+    }
+
+
+def test_scheduled_reactivation_preserves_previous_target_lifecycle(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    previous_lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00.500000Z",
+        "effectiveTo": "2026-06-01T01:00:00+00:00",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(
+        2,
+        createdAt="2026-09-07T10:26:00Z",
+        **previous_lifecycle,
+    )
+    for item in (current, target, activation_state()):
+        snapshot_table.put_item(Item=item)
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(response, 202)
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["pendingTargetPreviousLifecycle"] == (
+        previous_lifecycle
+    )
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored_target["effectiveFrom"] == "2026-09-07T10:31:00Z"
+    assert stored_target["effectiveTo"] is None
+    assert stored_target["expiresAt"] is None
+
+
+@pytest.mark.parametrize(
+    "previous_lifecycle",
+    [
+        None,
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+        {
+            "effectiveFrom": [],
+            "effectiveTo": None,
+            "expiresAt": None,
+        },
+        {
+            "effectiveFrom": "2026-05-01T03:00:00+02:00",
+            "effectiveTo": None,
+            "expiresAt": None,
+        },
+    ],
+)
+def test_invalid_pending_target_previous_lifecycle_returns_409(
+    app_and_table,
+    monkeypatch,
+    previous_lifecycle,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T01:00:00Z"
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        effectiveFrom=cutover_at,
+        expiresAt=None,
+    )
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = previous_lifecycle
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    scheduler_factory.assert_not_called()
+
+
+def test_orphan_previous_lifecycle_from_old_worker_is_ignored(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    )
+    for item in (current, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "status": "active",
+            "version": 1,
+            "effectiveFrom": current["effectiveFrom"],
+        },
+    )
+    scheduler_factory.assert_not_called()
+
+
+def test_new_schedule_replaces_orphan_lifecycle_from_old_worker(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": "2020-01-01T00:00:00Z",
+            "effectiveTo": "2020-02-01T00:00:00Z",
+            "expiresAt": "2020-02-01T00:00:00Z",
+        }
+    )
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(response, 202)
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["pendingTargetPreviousLifecycle"] == {
+        "effectiveFrom": target["effectiveFrom"],
+        "effectiveTo": target["effectiveTo"],
+        "expiresAt": target["expiresAt"],
     }
 
 
@@ -1991,6 +2167,106 @@ def test_missing_future_schedule_is_renewed_immediately(
     )
 
 
+def test_missing_schedule_recovery_restores_previous_target_lifecycle(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T01:00:00Z"
+    previous_lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        effectiveFrom=cutover_at,
+        effectiveTo=None,
+        expiresAt=None,
+    )
+    state = pending_activation_state(
+        app,
+        previous_lifecycle=previous_lifecycle,
+    )
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    not_found = client_error(
+        "ResourceNotFoundException",
+        operation="GetSchedule",
+        status_code=404,
+    )
+    scheduler = Mock()
+    scheduler.get_schedule.side_effect = not_found
+    scheduler.delete_schedule.side_effect = not_found
+    scheduler.create_schedule.side_effect = EndpointConnectionError(
+        endpoint_url="https://scheduler.eu-north-1.amazonaws.com",
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "layout activation service unavailable"},
+    )
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["pendingStatus"] == "scheduling"
+    assert stored_state["pendingTargetPreviousLifecycle"] == (
+        previous_lifecycle
+    )
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert {
+        field: stored_target[field]
+        for field in ("effectiveFrom", "effectiveTo", "expiresAt")
+    } == previous_lifecycle
+
+
+def test_legacy_scheduled_activation_without_lifecycle_backup_can_resume(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T01:00:00Z"
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        effectiveFrom=cutover_at,
+        expiresAt=None,
+    )
+    state = pending_activation_state(
+        app,
+        include_previous_lifecycle=False,
+    )
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    pending = app._validate_state(state, LOCATION_ID)["pending"]
+    schedule_request = app._schedule_request(current, target, pending)
+    scheduler = Mock()
+    scheduler.get_schedule.return_value = existing_schedule_response(
+        schedule_request
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(response, 202)
+    assert snapshot_table.get_item(Key=state_key())["Item"] == state
+
+
 def test_disabled_future_schedule_returns_503_without_changes(
     app_and_table,
     monkeypatch,
@@ -2056,6 +2332,39 @@ def test_unfinished_pending_activation_is_resumed(
     assert snapshot_table.get_item(
         Key={"PK": target["PK"], "SK": target["SK"]}
     )["Item"]["isCurrent"] is False
+
+
+def test_scheduling_backup_must_match_unstaged_target_lifecycle(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2)
+    state = pending_activation_state(
+        app,
+        status="scheduling",
+        previous_lifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-10-06T10:00:00Z",
+        },
+    )
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+    scheduler_factory.assert_not_called()
 
 
 def test_overdue_scheduling_intent_returns_409_without_changes(
@@ -3008,6 +3317,103 @@ def test_committed_finalize_timeout_is_reconciled_as_success(
             cutover_at="2026-09-07T10:31:00Z",
         )
     )
+
+
+def test_finalize_reconciliation_binds_previous_target_lifecycle(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T01:00:00Z"
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        effectiveFrom=cutover_at,
+        expiresAt=None,
+    )
+    state = pending_activation_state(app)
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    expected_pending = app._validate_state(state, LOCATION_ID)["pending"]
+    expected_pending = {
+        **expected_pending,
+        "targetPreviousLifecycle": {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-10-06T10:00:00Z",
+        },
+    }
+
+    assert app._read_committed_finalization(
+        LOCATION_ID,
+        expected_pending,
+    ) is None
+
+
+def test_concurrent_lifecycle_backup_change_blocks_finalization(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
+    initial_state = activation_state()
+    for item in (current, target, initial_state):
+        snapshot_table.put_item(Item=item)
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+    real_client = app.dynamodb_client()
+    transaction_calls = 0
+    changed_lifecycle = {
+        "effectiveFrom": None,
+        "effectiveTo": None,
+        "expiresAt": "2026-10-06T10:00:00Z",
+    }
+
+    def change_backup_before_finalization(**request):
+        nonlocal transaction_calls
+        transaction_calls += 1
+        if transaction_calls == 2:
+            snapshot_table.update_item(
+                Key=state_key(),
+                UpdateExpression=(
+                    "SET pendingTargetPreviousLifecycle = :lifecycle"
+                ),
+                ExpressionAttributeValues={
+                    ":lifecycle": changed_lifecycle
+                },
+            )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        change_backup_before_finalization
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation changed; retry request"},
+    )
+    scheduler.create_schedule.assert_called_once()
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["pendingStatus"] == "scheduling"
+    assert stored_state["pendingTargetPreviousLifecycle"] == (
+        changed_lifecycle
+    )
+    assert snapshot_table.get_item(
+        Key={"PK": current["PK"], "SK": current["SK"]}
+    )["Item"] == current
+    assert snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"] == target
 
 
 @pytest.mark.parametrize(

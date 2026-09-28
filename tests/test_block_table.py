@@ -318,6 +318,7 @@ def pending_activation_state(
     status="scheduled",
     cutover_at="2026-09-20T14:00:00Z",
     operation_revision=2,
+    include_previous_lifecycle=True,
 ):
     token = app._activation_token(
         LOCATION_ID,
@@ -340,12 +341,104 @@ def pending_activation_state(
         "cutoverAt": cutover_at,
         "scheduleName": app._schedule_name(token),
     }
+    if include_previous_lifecycle:
+        overrides["pendingTargetPreviousLifecycle"] = {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
     if status == "scheduled":
         overrides["scheduleArn"] = (
             "arn:aws:scheduler:eu-north-1:123456789012:"
             f"schedule/default/{overrides['scheduleName']}"
         )
     return activation_state(str(current_version), **overrides)
+
+
+def test_activation_state_accepts_pending_target_previous_lifecycle(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] == lifecycle
+
+
+def test_activation_state_accepts_legacy_pending_without_lifecycle_backup(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(
+        app,
+        include_previous_lifecycle=False,
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] is None
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    [
+        None,
+        [],
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-09-20T16:00:00+02:00",
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+    ],
+)
+def test_invalid_pending_target_previous_lifecycle_is_inconsistent(
+    app_and_tables,
+    lifecycle,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    with pytest.raises(
+        app._BlockConflict,
+        match="layout activation state is inconsistent",
+    ):
+        app._validate_activation_state(state, LOCATION_ID)
+
+
+def test_orphan_previous_lifecycle_from_old_worker_is_ignored(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"] is None
 
 
 def snapshot_item(version="1", *, elements=None, **overrides):

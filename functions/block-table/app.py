@@ -89,6 +89,12 @@ _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULE_GROUP = "default"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
+_PENDING_TARGET_PREVIOUS_LIFECYCLE = (
+    "pendingTargetPreviousLifecycle"
+)
+_LIFECYCLE_FIELDS = frozenset(
+    {"effectiveFrom", "effectiveTo", "expiresAt"}
+)
 _PENDING_STATE_FIELDS = frozenset(
     {
         "pendingVersion",
@@ -97,6 +103,7 @@ _PENDING_STATE_FIELDS = frozenset(
         "cutoverAt",
         "scheduleName",
         "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
     }
 )
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
@@ -507,6 +514,21 @@ def _activation_token(
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def _pending_target_previous_lifecycle(state):
+    if _PENDING_TARGET_PREVIOUS_LIFECYCLE not in state:
+        return None
+
+    lifecycle = state.get(_PENDING_TARGET_PREVIOUS_LIFECYCLE)
+    if (
+        not isinstance(lifecycle, dict)
+        or set(lifecycle) != _LIFECYCLE_FIELDS
+    ):
+        raise ValueError
+    for field in _LIFECYCLE_FIELDS:
+        _parse_utc_timestamp(lifecycle.get(field), nullable=True)
+    return lifecycle
+
+
 def _validate_activation_state(state, location_id):
     if (
         state.get("PK") != f"LOCATION#{location_id}"
@@ -525,7 +547,10 @@ def _validate_activation_state(state, location_id):
             "layout activation state is inconsistent"
         ) from None
 
-    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    present_pending_fields = set(state) & (
+        _PENDING_STATE_FIELDS
+        - {_PENDING_TARGET_PREVIOUS_LIFECYCLE}
+    )
     if not present_pending_fields:
         return {
             "currentVersion": current_version,
@@ -535,7 +560,10 @@ def _validate_activation_state(state, location_id):
             "pending": None,
         }
 
-    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    required_pending_fields = _PENDING_STATE_FIELDS - {
+        "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
+    }
     if not required_pending_fields.issubset(state):
         raise _BlockConflict("layout activation state is inconsistent")
     if ENVIRONMENT not in _REPLACEMENT_DELAYS:
@@ -599,6 +627,9 @@ def _validate_activation_state(state, location_id):
             )
         ):
             raise ValueError
+        target_previous_lifecycle = (
+            _pending_target_previous_lifecycle(state)
+        )
     except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict(
             "layout activation state is inconsistent"
@@ -617,6 +648,7 @@ def _validate_activation_state(state, location_id):
             "parsedCutover": parsed_cutover,
             "scheduleName": schedule_name,
             "scheduleArn": schedule_arn,
+            "targetPreviousLifecycle": target_previous_lifecycle,
         },
     }
 

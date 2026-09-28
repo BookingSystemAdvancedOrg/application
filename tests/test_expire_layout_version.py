@@ -98,6 +98,8 @@ def pending_state(
     operation_revision=2,
     status="scheduled",
     cutover_at=CUTOVER_AT,
+    previous_lifecycle=None,
+    include_previous_lifecycle=True,
 ):
     token = app._activation_token(
         LOCATION_ID,
@@ -126,6 +128,16 @@ def pending_state(
         "cutoverAt": cutover_at,
         "scheduleName": name,
     }
+    if include_previous_lifecycle:
+        state["pendingTargetPreviousLifecycle"] = (
+            previous_lifecycle
+            if previous_lifecycle is not None
+            else {
+                "effectiveFrom": None,
+                "effectiveTo": None,
+                "expiresAt": None,
+            }
+        )
     if status == "scheduled":
         state["scheduleArn"] = schedule_arn(name)
     return state
@@ -165,7 +177,15 @@ def put_scheduling_cutover(snapshot_table, app):
         effectiveTo="2026-06-01T01:00:00Z",
         expiresAt="2026-06-01T01:00:00Z",
     )
-    state = pending_state(app, status="scheduling")
+    state = pending_state(
+        app,
+        status="scheduling",
+        previous_lifecycle={
+            "effectiveFrom": target["effectiveFrom"],
+            "effectiveTo": target["effectiveTo"],
+            "expiresAt": target["expiresAt"],
+        },
+    )
     for item in (outgoing, target, state):
         snapshot_table.put_item(Item=item)
     return outgoing, target, state
@@ -1083,6 +1103,7 @@ def test_transaction_conditions_bind_the_complete_transition(
         "cutoverAt",
         "scheduleName",
         "scheduleArn",
+        "pendingTargetPreviousLifecycle",
         "updatedBy",
         "updatedAt",
     }
@@ -1096,6 +1117,7 @@ def test_transaction_conditions_bind_the_complete_transition(
         "#cutoverAt",
         "#scheduleName",
         "#scheduleArn",
+        "#targetPreviousLifecycle",
         "#updatedBy",
         "#updatedAt",
     ):
@@ -1108,7 +1130,17 @@ def test_transaction_conditions_bind_the_complete_transition(
         "#cutoverAt",
         "#scheduleName",
         "#scheduleArn",
+        "#targetPreviousLifecycle",
     }
+    assert (
+        "#targetPreviousLifecycle = :targetPreviousLifecycle"
+        in state_update["ConditionExpression"]
+    )
+    assert state_update["ExpressionAttributeValues"][
+        ":targetPreviousLifecycle"
+    ] == app._SERIALIZER.serialize(
+        state["pendingTargetPreviousLifecycle"]
+    )
     if phase == "scheduled":
         assert "#scheduleArn = :scheduleArn" in state_update[
             "ConditionExpression"
@@ -1121,6 +1153,125 @@ def test_transaction_conditions_bind_the_complete_transition(
             "ConditionExpression"
         ]
         assert ":scheduleArn" not in state_update["ExpressionAttributeValues"]
+
+
+@pytest.mark.parametrize(
+    "previous_lifecycle",
+    [
+        None,
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": [],
+            "expiresAt": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-10-05T16:37:00+02:00",
+        },
+    ],
+)
+def test_invalid_pending_target_previous_lifecycle_fails_cutover(
+    app_and_table,
+    monkeypatch,
+    previous_lifecycle,
+):
+    app, snapshot_table = app_and_table
+    _, _, state = put_ready_cutover(snapshot_table, app)
+    state["pendingTargetPreviousLifecycle"] = previous_lifecycle
+    snapshot_table.put_item(Item=state)
+    transaction_client = Mock()
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    with pytest.raises(
+        app._CutoverConflict,
+        match="layout activation state is inconsistent",
+    ):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.transact_write_items.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["scheduling", "scheduled"])
+def test_legacy_pending_state_without_lifecycle_backup_completes(
+    app_and_table,
+    phase,
+):
+    app, snapshot_table = app_and_table
+    if phase == "scheduled":
+        _, _, state = put_ready_cutover(snapshot_table, app)
+    else:
+        _, _, state = put_scheduling_cutover(snapshot_table, app)
+    state.pop("pendingTargetPreviousLifecycle")
+    snapshot_table.put_item(Item=state)
+
+    assert app.handler(event_for_state(state), None) is None
+
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert "pendingTargetPreviousLifecycle" not in stored_state
+    assert "pendingVersion" not in stored_state
+
+
+def test_cutover_removes_non_null_historical_lifecycle_backup(
+    app_and_table,
+):
+    app, snapshot_table = app_and_table
+    outgoing = outgoing_snapshot()
+    target = target_snapshot()
+    historical_lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    state = pending_state(
+        app,
+        previous_lifecycle=historical_lifecycle,
+    )
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+
+    assert app.handler(event_for_state(state), None) is None
+
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert "pendingTargetPreviousLifecycle" not in stored_state
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored_target["isCurrent"] is True
+    assert stored_target["effectiveFrom"] == CUTOVER_AT
+
+
+def test_scheduling_lifecycle_backup_must_match_target_snapshot(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    _, _, state = put_scheduling_cutover(snapshot_table, app)
+    state["pendingTargetPreviousLifecycle"]["expiresAt"] = (
+        "2026-06-02T01:00:00Z"
+    )
+    snapshot_table.put_item(Item=state)
+    transaction_client = Mock()
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    with pytest.raises(
+        app._CutoverConflict,
+        match="layout cutover state is inconsistent",
+    ):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.transact_write_items.assert_not_called()
 
 
 def test_concurrent_archive_prevents_cutover(

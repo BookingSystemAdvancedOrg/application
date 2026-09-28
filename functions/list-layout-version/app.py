@@ -58,6 +58,12 @@ _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
 _MAX_VERSION_DIGITS = 38
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
+_PENDING_TARGET_PREVIOUS_LIFECYCLE = (
+    "pendingTargetPreviousLifecycle"
+)
+_LIFECYCLE_FIELDS = frozenset(
+    {"effectiveFrom", "effectiveTo", "expiresAt"}
+)
 _PENDING_STATE_FIELDS = frozenset(
     {
         "pendingVersion",
@@ -66,6 +72,7 @@ _PENDING_STATE_FIELDS = frozenset(
         "cutoverAt",
         "scheduleName",
         "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
     }
 )
 _SCHEDULING = "scheduling"
@@ -629,6 +636,22 @@ def _activation_token(
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def _pending_target_previous_lifecycle(state):
+    if _PENDING_TARGET_PREVIOUS_LIFECYCLE not in state:
+        return None
+
+    lifecycle = state.get(_PENDING_TARGET_PREVIOUS_LIFECYCLE)
+    if (
+        not isinstance(lifecycle, dict)
+        or set(lifecycle) != _LIFECYCLE_FIELDS
+    ):
+        raise ValueError
+    return {
+        field: _utc_timestamp(lifecycle, field, nullable=True)
+        for field in _LIFECYCLE_FIELDS
+    }
+
+
 def _archive_activation_state_details(state, location_id):
     if (
         state.get("PK") != f"LOCATION#{location_id}"
@@ -661,7 +684,10 @@ def _archive_activation_state_details(state, location_id):
             "layout activation state is inconsistent"
         ) from None
 
-    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    present_pending_fields = set(state) & (
+        _PENDING_STATE_FIELDS
+        - {_PENDING_TARGET_PREVIOUS_LIFECYCLE}
+    )
     if not present_pending_fields:
         return {
             "item": state,
@@ -670,7 +696,10 @@ def _archive_activation_state_details(state, location_id):
             "pending": None,
         }
 
-    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    required_pending_fields = _PENDING_STATE_FIELDS - {
+        "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
+    }
     if not required_pending_fields.issubset(state):
         raise _SnapshotConflict("layout activation state is inconsistent")
 
@@ -740,6 +769,9 @@ def _archive_activation_state_details(state, location_id):
                 raise ValueError
         if (pending_status == _SCHEDULED) != (schedule_arn is not None):
             raise ValueError
+        target_previous_lifecycle = (
+            _pending_target_previous_lifecycle(state)
+        )
     except (OverflowError, TypeError, ValueError):
         raise _SnapshotConflict(
             "layout activation state is inconsistent"
@@ -756,6 +788,7 @@ def _archive_activation_state_details(state, location_id):
             "cutoverAt": cutover_at,
             "scheduleName": schedule_name,
             "scheduleArn": schedule_arn,
+            "targetPreviousLifecycle": target_previous_lifecycle,
         },
     }
 
@@ -807,11 +840,23 @@ def _archive_state_condition(location_id, state_details):
 
     pending = state_details["pending"]
     for field in sorted(_PENDING_STATE_FIELDS):
+        if (
+            field == _PENDING_TARGET_PREVIOUS_LIFECYCLE
+            and pending is None
+        ):
+            continue
         name = f"#{field}"
         names[name] = field
-        if field == "scheduleArn" and (
-            pending is None or pending["scheduleArn"] is None
-        ):
+        optional_value = None
+        if pending is not None:
+            if field == "scheduleArn":
+                optional_value = pending["scheduleArn"]
+            elif field == _PENDING_TARGET_PREVIOUS_LIFECYCLE:
+                optional_value = pending["targetPreviousLifecycle"]
+        if field in {
+            "scheduleArn",
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE,
+        } and optional_value is None:
             conditions.append(f"attribute_not_exists({name})")
             continue
         if pending is None:

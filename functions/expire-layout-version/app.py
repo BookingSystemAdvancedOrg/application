@@ -50,6 +50,12 @@ _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
+_PENDING_TARGET_PREVIOUS_LIFECYCLE = (
+    "pendingTargetPreviousLifecycle"
+)
+_LIFECYCLE_FIELDS = frozenset(
+    {"effectiveFrom", "effectiveTo", "expiresAt"}
+)
 _MAX_VERSION_DIGITS = 38
 _MAX_DYNAMODB_INTEGER = int("9" * _MAX_VERSION_DIGITS)
 _VERSION_SK_PATTERN = re.compile(r"LAYOUT#v([1-9][0-9]{0,37})\Z")
@@ -75,9 +81,13 @@ _PENDING_FIELDS = frozenset(
         "cutoverAt",
         "scheduleName",
         "scheduleArn",
+        _PENDING_TARGET_PREVIOUS_LIFECYCLE,
     }
 )
-_PENDING_FIELDS_WITHOUT_ARN = _PENDING_FIELDS - {"scheduleArn"}
+_PENDING_FIELDS_WITHOUT_ARN = _PENDING_FIELDS - {
+    "scheduleArn",
+    _PENDING_TARGET_PREVIOUS_LIFECYCLE,
+}
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
@@ -292,6 +302,26 @@ def _read_item(snapshot_table, key):
     return item
 
 
+def _pending_target_previous_lifecycle(state):
+    if _PENDING_TARGET_PREVIOUS_LIFECYCLE not in state:
+        return None
+
+    lifecycle = state.get(_PENDING_TARGET_PREVIOUS_LIFECYCLE)
+    if (
+        not isinstance(lifecycle, dict)
+        or set(lifecycle) != _LIFECYCLE_FIELDS
+    ):
+        raise ValueError("pending target lifecycle is invalid")
+
+    for field in _LIFECYCLE_FIELDS:
+        _parse_utc_timestamp(
+            lifecycle.get(field),
+            field,
+            nullable=True,
+        )
+    return lifecycle
+
+
 def _state_key(details):
     return {
         "PK": details["PK"],
@@ -322,7 +352,10 @@ def _validate_state(state, details):
             "layout activation state is inconsistent"
         ) from exc
 
-    present_pending_fields = set(state) & _PENDING_FIELDS
+    present_pending_fields = set(state) & (
+        _PENDING_FIELDS
+        - {_PENDING_TARGET_PREVIOUS_LIFECYCLE}
+    )
     if not present_pending_fields:
         return {
             "item": state,
@@ -388,6 +421,9 @@ def _validate_state(state, details):
                 raise ValueError("scheduleArn is invalid")
         elif not _valid_schedule_arn(schedule_arn, schedule_name):
             raise ValueError("scheduleArn is invalid")
+        target_previous_lifecycle = (
+            _pending_target_previous_lifecycle(state)
+        )
     except ValueError as exc:
         raise _CutoverConflict(
             "layout activation state is inconsistent"
@@ -406,6 +442,7 @@ def _validate_state(state, details):
             "parsedCutover": parsed_cutover,
             "scheduleName": schedule_name,
             "scheduleArn": schedule_arn,
+            "targetPreviousLifecycle": target_previous_lifecycle,
         },
     }
 
@@ -491,8 +528,25 @@ def _validate_pending_lifecycle(outgoing, target, state_details, details):
             or target["expiresAt"] is not None
         ):
             raise _CutoverConflict("layout cutover state is inconsistent")
-    elif outgoing["effectiveTo"] is not None or outgoing["expiresAt"] is not None:
-        raise _CutoverConflict("layout cutover state is inconsistent")
+    else:
+        target_previous_lifecycle = pending[
+            "targetPreviousLifecycle"
+        ]
+        if (
+            outgoing["effectiveTo"] is not None
+            or outgoing["expiresAt"] is not None
+            or (
+                target_previous_lifecycle is not None
+                and {
+                    field: target[field]
+                    for field in _LIFECYCLE_FIELDS
+                }
+                != target_previous_lifecycle
+            )
+        ):
+            raise _CutoverConflict(
+                "layout cutover state is inconsistent"
+            )
 
     return (
         {
@@ -620,6 +674,9 @@ def _state_update(state_details, details, updated_at):
         "#cutoverAt": "cutoverAt",
         "#scheduleName": "scheduleName",
         "#scheduleArn": "scheduleArn",
+        "#targetPreviousLifecycle": (
+            _PENDING_TARGET_PREVIOUS_LIFECYCLE
+        ),
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
     }
@@ -642,6 +699,16 @@ def _state_update(state_details, details, updated_at):
     if pending["scheduleArn"] is not None:
         raw_values[":scheduleArn"] = pending["scheduleArn"]
         schedule_arn_condition = "#scheduleArn = :scheduleArn"
+    previous_lifecycle_condition = (
+        "attribute_not_exists(#targetPreviousLifecycle)"
+    )
+    if pending["targetPreviousLifecycle"] is not None:
+        raw_values[":targetPreviousLifecycle"] = pending[
+            "targetPreviousLifecycle"
+        ]
+        previous_lifecycle_condition = (
+            "#targetPreviousLifecycle = :targetPreviousLifecycle"
+        )
     values = _typed_map(raw_values)
     return {
         "Update": {
@@ -654,6 +721,7 @@ def _state_update(state_details, details, updated_at):
                 "#updatedAt = :updatedAt "
                 "REMOVE #pendingVersion, #pendingStatus, "
                 "#activationToken, #cutoverAt, #scheduleName, #scheduleArn"
+                ", #targetPreviousLifecycle"
             ),
             "ConditionExpression": (
                 "attribute_exists(PK) AND attribute_exists(SK) "
@@ -666,6 +734,7 @@ def _state_update(state_details, details, updated_at):
                 "AND #cutoverAt = :cutoverAt "
                 "AND #scheduleName = :scheduleName "
                 f"AND {schedule_arn_condition} "
+                f"AND {previous_lifecycle_condition} "
                 "AND #updatedBy = :updatedBy "
                 "AND #updatedAt = :expectedUpdatedAt"
             ),

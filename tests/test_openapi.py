@@ -436,6 +436,18 @@ def test_get_availability_contract_matches_handler(openapi_document):
     assert operation["security"] == []
     assert operation["x-required-groups"] == []
     assert "requestBody" not in operation
+    description = operation["description"]
+    assert "now < slotStartUtc <= now + 21 days" in description
+    assert "partial cutoff date" in description
+    assert "slotEndUtc <= cutoverAt" in description
+    assert "slotStartUtc >= cutoverAt" in description
+    assert "straddles the cutover" in description
+    assert "still being scheduled" in description
+    assert "overdue" in description
+    assert "return `409`" in description
+    assert "local date wholly beyond the 504-hour cutoff" in description
+    assert "date must not be more than 21 days ahead" in description
+    assert "conditionally revalidated when booking" in description
     assert operation["parameters"] == [
         {
             "name": "date",
@@ -476,6 +488,11 @@ def test_get_availability_contract_matches_handler(openapi_document):
         "schema"
     ]["enum"] == ["GET"]
 
+    example = operation["responses"]["200"]["content"][
+        "application/json"
+    ]["example"]
+    assert example["slots"][0]["layoutVersion"] == 2
+
     availability = document["components"]["schemas"]["Availability"]
     slot = document["components"]["schemas"]["AvailabilitySlot"]
     table = document["components"]["schemas"]["AvailabilityTable"]
@@ -490,9 +507,45 @@ def test_get_availability_contract_matches_handler(openapi_document):
     assert slot["properties"]["tables"]["items"] == {
         "$ref": "#/components/schemas/AvailabilityTable"
     }
+    tables_description = slot["properties"]["tables"]["description"]
+    assert "this slot's `layoutVersion`" in tables_description
+    assert "seat capacity can differ" in tables_description
+    assert set(slot["required"]) == {
+        "startTime",
+        "endTime",
+        "layoutVersion",
+        "tables",
+    }
+    assert slot["properties"]["layoutVersion"] == {
+        "type": "integer",
+        "minimum": 1,
+        "description": (
+            "Published layout version effective for the whole slot."
+        ),
+    }
     assert table["properties"]["seats"]["type"] == "integer"
     assert table["properties"]["seats"]["minimum"] == 1
     assert set(table["properties"]) == {"tableId", "seats"}
+
+    conflict_examples = document["components"]["responses"][
+        "AvailabilityConflict"
+    ]["content"]["application/json"]["examples"]
+    conflict = document["components"]["responses"][
+        "AvailabilityConflict"
+    ]
+    assert "activation transition" in conflict["description"]
+    assert "inconsistent or changing" in conflict["description"]
+    assert conflict_examples["activationState"]["value"] == {
+        "error": "layout activation state is inconsistent"
+    }
+    assert conflict_examples["schedulingActivation"]["value"] == {
+        "error": (
+            "layout activation is still being scheduled; retry request"
+        )
+    }
+    assert conflict_examples["overdueActivation"]["value"] == {
+        "error": "layout activation cutover is overdue; retry request"
+    }
 
 
 def test_block_table_contract_matches_handler(openapi_document):
@@ -891,11 +944,11 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
         "$ref": "#/components/schemas/LayoutActivationRequest"
     }
     assert set(request_media["examples"]) == {
-        "legacyDefault",
+        "defaultTiming",
         "immediate",
         "scheduled",
     }
-    assert request_media["examples"]["legacyDefault"]["value"] == {}
+    assert request_media["examples"]["defaultTiming"]["value"] == {}
     assert request_media["examples"]["immediate"]["value"] == {
         "effectiveFrom": "2026-09-23T12:00:00+02:00"
     }
@@ -915,16 +968,32 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert effective_from["format"] == "date-time"
     assert effective_from["minLength"] == 1
     assert effective_from["maxLength"] == 64
+    assert "five-minute dev" in activation_request["description"]
+    assert "28-day prod" in activation_request["description"]
+    effective_description = " ".join(
+        effective_from["description"].split()
+    )
+    assert "cannot bypass" in effective_description
+    assert "at or after replacement eligibility" in effective_description
 
     description = operation["description"]
     assert "zero-length body" in description
-    assert "01:00 UTC" in description
-    assert "four weeks" in description
+    assert "first activation is immediate" in description
+    assert "`createdAt` plus five minutes" in description
+    assert "28 days" in description
+    assert "earliest safe whole UTC" in description
     assert "at or before" in description
+    assert "only once" in description
+    assert "must not precede the eligibility boundary" in description
     assert "whole-minute" in description
     assert "at least 60 seconds" in description
     assert "normalized timestamp exactly matches" in description
     assert "overdue pending cutoff" in description
+    assert "do not recompute or move the stored" in description
+    assert "scheduled worker revalidates" in description
+    assert "publication time" in description
+    assert "01:00 UTC" not in description
+    assert "four weeks" not in description
 
     assert set(operation["responses"]) == {
         "200",
@@ -956,10 +1025,16 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     pending_examples = operation["responses"]["202"]["content"][
         "application/json"
     ]["examples"]
-    assert set(pending_examples) == {"legacyDefault", "customCutover"}
-    assert pending_examples["legacyDefault"]["value"]["cutoverAt"].endswith(
-        "T01:00:00Z"
-    )
+    assert set(pending_examples) == {
+        "defaultReplacement",
+        "customCutover",
+    }
+    assert pending_examples["defaultReplacement"]["value"] == {
+        "status": "pending",
+        "version": 2,
+        "currentVersion": 1,
+        "cutoverAt": "2026-10-21T10:01:00Z",
+    }
     assert pending_examples["customCutover"]["value"] == {
         "status": "pending",
         "version": 3,
@@ -1006,6 +1081,12 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     }
     assert conflict_examples["futureWithoutCurrent"]["value"] == {
         "error": "future activation requires a current layout version"
+    }
+    assert conflict_examples["tooEarly"]["value"] == {
+        "error": (
+            "layout version cannot activate before "
+            "2026-10-21T10:01:00Z"
+        )
     }
 
     service_unavailable = document["components"]["responses"][

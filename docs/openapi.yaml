@@ -866,20 +866,34 @@ paths:
       operationId: getAvailability
       description: |
         Publicly returns future canonical slots for one local calendar date.
-        Each returned slot contains only currently unoccupied active-layout
-        tables and their seat counts. Reservation and manual holds are both
-        excluded by interval overlap, so older-duration holds remain safe.
+        Slot starts are bounded by exact elapsed UTC time:
+        `now < slotStartUtc <= now + 21 days`. The local calendar date that
+        contains the upper boundary remains valid, but any later slots on that
+        partial cutoff date are filtered out. Reservation and manual holds are
+        both excluded by interval overlap, so older-duration holds remain safe.
 
-        A multi-floor active snapshot is validated as one unit. Floor elements
-        are not bookable and are omitted; tables from every floor participate,
-        while each returned table intentionally remains only `tableId` and
-        `seats`. Legacy flat snapshots remain supported.
+        Every returned slot identifies its `layoutVersion` and contains tables
+        from the published layout effective for the slot's whole interval. A
+        multi-floor snapshot is validated as one unit. Floor elements are not
+        bookable and are omitted; tables from every floor participate, while
+        each returned table intentionally remains only `tableId` and `seats`.
+        Legacy flat snapshots remain supported.
+
+        During a scheduled layout transition, a slot uses the current version
+        when `slotEndUtc <= cutoverAt` and the pending version when
+        `slotStartUtc >= cutoverAt`. A slot that straddles the cutover is
+        omitted. A relevant transition that is still being scheduled, is
+        overdue, changes concurrently, or has inconsistent stored state can
+        return `409` rather than expose uncertain availability.
 
         Past dates are rejected. On the current local date, a slot must start
         strictly after the request time. Daylight-saving-unsafe intervals are
-        omitted. A closed day, missing active layout, layout without tables,
-        or fully occupied day returns an empty `slots` array. Availability is
-        advisory and must be conditionally revalidated when booking.
+        omitted. A local date wholly beyond the 504-hour cutoff returns `400`
+        with `date must not be more than 21 days ahead`; the cutoff date itself
+        remains partially queryable as described above. A closed day, missing
+        active layout, layout without tables, or fully occupied day returns an
+        empty `slots` array. Availability is advisory; its layout version,
+        table, and occupancy must be conditionally revalidated when booking.
       security: []
       x-required-groups: []
       parameters:
@@ -909,6 +923,7 @@ paths:
                 slots:
                   - startTime: '18:00'
                     endTime: '20:00'
+                    layoutVersion: 2
                     tables:
                       - tableId: table-4
                         seats: 4
@@ -1981,17 +1996,21 @@ paths:
         Activates the requested location-wide published snapshot, including
         every floor and linked element in that version. The request body is
         optional. Omitting it, sending a zero-length body, or sending `{}` uses
-        the legacy behavior: a first activation is immediate, while replacing
-        a current version is scheduled for 01:00 UTC on the date four weeks
-        from the request.
+        the default timing. A first activation is immediate. A replacement is
+        not eligible until the target snapshot's `createdAt` plus five minutes
+        in `dev` or 28 days in `prod`. If already eligible, the replacement is
+        immediate; otherwise it is scheduled for the earliest safe whole UTC
+        minute at or after both eligibility and the 60-second scheduler lead.
 
         Set `effectiveFrom` to a timezone-aware ISO 8601 timestamp to control
         the transition. A timestamp at or before the server's captured request
-        time replaces the current version immediately; the response reports
-        the server time actually used. A future timestamp schedules the exact
-        instant after normalization to UTC. Future values must use whole-minute
-        precision and be at least 60 seconds after the captured request time.
-        A future activation requires an existing current version.
+        time requests immediate replacement, which succeeds only once the
+        target is eligible; the response reports the server time actually
+        used. A future timestamp schedules the exact instant after
+        normalization to UTC and must not precede the eligibility boundary.
+        Future values must use whole-minute precision and be at least 60 seconds
+        after the captured request time. A future activation requires an
+        existing current version.
 
         Until cutover, exactly one snapshot remains current. The replacement
         is pending with a future `effectiveFrom`, while the current version has
@@ -2001,7 +2020,11 @@ paths:
         only when its normalized timestamp exactly matches the pending cutoff.
         An immediate request, a different timestamp, or another target while a
         cutover is pending returns `409`; an overdue pending cutoff also returns
-        `409`. Archived versions cannot be activated and also return `409`.
+        `409`. These pending-retry rules do not recompute or move the stored
+        cutoff. At execution time, the scheduled worker revalidates the
+        target's publication time and environment-specific replacement delay
+        before committing the cutover. Archived versions cannot be activated
+        and also return `409`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2017,15 +2040,15 @@ paths:
             schema:
               $ref: '#/components/schemas/LayoutActivationRequest'
             examples:
-              legacyDefault:
-                summary: Preserve the default activation timing
+              defaultTiming:
+                summary: Use the environment-specific default timing
                 value: {}
               immediate:
-                summary: Activate immediately when this is now or in the past
+                summary: Request immediate activation when already eligible
                 value:
                   effectiveFrom: '2026-09-23T12:00:00+02:00'
               scheduled:
-                summary: Schedule an exact future UTC-minute cutover
+                summary: Schedule an eligible future UTC-minute cutover
                 value:
                   effectiveFrom: '2026-10-21T10:00:00Z'
       responses:
@@ -2061,13 +2084,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/LayoutActivationPending'
               examples:
-                legacyDefault:
-                  summary: Default four-week replacement
+                defaultReplacement:
+                  summary: Default production replacement at the earliest safe minute
                   value:
                     status: pending
                     version: 2
                     currentVersion: 1
-                    cutoverAt: '2026-10-21T01:00:00Z'
+                    cutoverAt: '2026-10-21T10:01:00Z'
                 customCutover:
                   summary: Exact caller-selected future cutover
                   value:
@@ -2880,6 +2903,7 @@ components:
       required:
         - startTime
         - endTime
+        - layoutVersion
         - tables
       properties:
         startTime:
@@ -2888,10 +2912,17 @@ components:
         endTime:
           type: string
           pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        layoutVersion:
+          type: integer
+          minimum: 1
+          description: Published layout version effective for the whole slot.
         tables:
           type: array
           minItems: 1
-          description: Available tables ordered by tableId.
+          description: |
+            Available tables from this slot's `layoutVersion`, ordered by
+            tableId. A shared tableId's published seat capacity can differ
+            between layout versions.
           items:
             $ref: '#/components/schemas/AvailabilityTable'
 
@@ -4098,8 +4129,9 @@ components:
       additionalProperties: false
       description: |
         Optional activation timing. With no `effectiveFrom` property, the
-        handler preserves its default first-activation or four-week
-        replacement behavior.
+        handler immediately performs a first activation. A replacement is
+        immediate when eligible, or scheduled for the earliest safe whole
+        minute after its five-minute dev or 28-day prod publication delay.
       properties:
         effectiveFrom:
           type: string
@@ -4108,9 +4140,11 @@ components:
           maxLength: 64
           description: |
             Timezone-aware ISO 8601 timestamp. A value at or before the
-            captured server time requests immediate activation. A future value
-            must be on a whole minute and at least 60 seconds ahead; it is
-            normalized to UTC before being persisted and returned.
+            captured server time requests immediate activation and cannot
+            bypass the replacement eligibility boundary. A future value must
+            be on a whole minute, at least 60 seconds ahead, and at or after
+            replacement eligibility; it is normalized to UTC before being
+            persisted and returned.
 
     LayoutActivationActive:
       type: object
@@ -4421,7 +4455,9 @@ components:
             error: location service unavailable
 
     AvailabilityConflict:
-      description: Stored location, layout, or occupancy state is inconsistent.
+      description: |
+        Availability cannot be resolved safely because location, layout,
+        activation transition, or occupancy state is inconsistent or changing.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4436,12 +4472,21 @@ components:
             layout:
               value:
                 error: published layout record is inconsistent
+            activationState:
+              value:
+                error: layout activation state is inconsistent
             occupancy:
               value:
                 error: slot occupancy record is inconsistent
             concurrentActivation:
               value:
                 error: active layout changed; retry request
+            schedulingActivation:
+              value:
+                error: layout activation is still being scheduled; retry request
+            overdueActivation:
+              value:
+                error: layout activation cutover is overdue; retry request
     AvailabilityServiceUnavailable:
       description: A required DynamoDB read could not be completed safely.
       headers:
@@ -4642,7 +4687,10 @@ components:
               value:
                 error: layout version changed; retry request
     LayoutActivationConflict:
-      description: The activation conflicts with an archived version, missing current version, pending transition, inconsistent state, or concurrent change.
+      description: |
+        The activation is too early or conflicts with an archived version,
+        missing current version, pending transition, inconsistent state, or
+        concurrent change.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4667,6 +4715,10 @@ components:
               summary: An exact future cutover cannot be the first activation.
               value:
                 error: future activation requires a current layout version
+            tooEarly:
+              summary: The requested replacement precedes its eligibility boundary.
+              value:
+                error: layout version cannot activate before 2026-10-21T10:01:00Z
             state:
               summary: Stored state and snapshots disagree.
               value:

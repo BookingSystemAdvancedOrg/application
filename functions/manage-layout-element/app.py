@@ -8,8 +8,10 @@ PURPOSE:
     Staff-facing CRUD for floor, floor-area, wall, door, window, table, and
     cash-register elements in a location's mutable multi-floor layout draft.
     Doors may identify their persisted purpose as ``entrance`` or ``kitchen``
-    through ``kind``. Tables may carry an optional, staff-assigned ``label``
-    that is persisted exactly after trimming surrounding whitespace.
+    through ``kind``. Tables and cash registers may carry an optional,
+    staff-assigned ``label`` that is persisted exactly after trimming
+    surrounding whitespace. Labels need not be unique, and legacy records
+    without one remain valid.
     Non-floor elements may refer to a floor element through ``floorId``.
     Dispatches GET/POST on ``items`` and GET/PUT/DELETE on
     ``items/{elementId}``.
@@ -66,6 +68,7 @@ _ELEMENT_TYPES = frozenset(
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})
+_LABELLED_ELEMENT_TYPES = frozenset({"table", "cashRegister"})
 _GEOMETRY_FIELDS = (
     "x",
     "y",
@@ -268,7 +271,10 @@ def _validated_layout_fields(source):
         if element_type == "door":
             allowed_variant_fields.add("kind")
     elif element_type == "table":
-        allowed_variant_fields.update({"shape", "seats", "zone", "label"})
+        allowed_variant_fields.update({"shape", "seats", "zone"})
+
+    if element_type in _LABELLED_ELEMENT_TYPES:
+        allowed_variant_fields.add("label")
 
     invalid_fields = sorted(
         (set(source) & _VARIANT_FIELDS) - allowed_variant_fields
@@ -307,8 +313,8 @@ def _validated_layout_fields(source):
             integer=True,
         )
         fields["zone"] = _nonempty_string(source, "zone")
-        if "label" in source:
-            fields["label"] = _nonempty_string(source, "label")
+    if element_type in _LABELLED_ELEMENT_TYPES and "label" in source:
+        fields["label"] = _nonempty_string(source, "label")
     return fields
 
 

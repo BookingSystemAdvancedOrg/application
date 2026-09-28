@@ -116,8 +116,8 @@ def public_element(item):
             fields.append("kind")
     elif item["type"] == "table":
         fields.extend(["shape", "seats", "zone"])
-        if "label" in item:
-            fields.append("label")
+    if item["type"] in {"table", "cashRegister"} and "label" in item:
+        fields.append("label")
     fields.extend(["updatedBy", "updatedAt"])
     result = {field: item[field] for field in fields}
     for field, value in result.items():
@@ -584,15 +584,17 @@ def test_floor_area_rejects_other_type_specific_fields(
     assert table_items(layout_table) == []
 
 
-def test_create_get_and_list_preserve_trimmed_optional_table_label(
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_create_get_and_list_preserve_trimmed_optional_label(
     app_and_table,
+    element_type,
 ):
     app, layout_table = app_and_table
 
     create_response = app.handler(
         make_event(
             method="POST",
-            body=valid_body("table", label="  BORD Å   sju  "),
+            body=valid_body(element_type, label="  BORD Å   sju  "),
         ),
         None,
     )
@@ -612,9 +614,13 @@ def test_create_get_and_list_preserve_trimmed_optional_table_label(
     assert_response(list_response, 200, {"items": [expected]})
 
 
-def test_legacy_table_without_label_remains_readable(app_and_table):
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_legacy_labelled_element_without_label_remains_readable(
+    app_and_table,
+    element_type,
+):
     app, layout_table = app_and_table
-    legacy = element_item(element_type="table")
+    legacy = element_item(element_type=element_type)
     put_item(layout_table, legacy)
 
     get_response = app.handler(
@@ -628,10 +634,11 @@ def test_legacy_table_without_label_remains_readable(app_and_table):
     assert "label" not in response_body(get_response)
 
 
-def test_duplicate_table_labels_are_allowed(app_and_table):
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_duplicate_labels_are_allowed(app_and_table, element_type):
     app, layout_table = app_and_table
     existing = element_item(
-        element_type="table",
+        element_type=element_type,
         element_id=OTHER_ELEMENT_ID,
         label="Patio 4",
     )
@@ -640,7 +647,7 @@ def test_duplicate_table_labels_are_allowed(app_and_table):
     response = app.handler(
         make_event(
             method="POST",
-            body=valid_body("table", label="Patio 4"),
+            body=valid_body(element_type, label="Patio 4"),
         ),
         None,
     )
@@ -1199,8 +1206,10 @@ def test_floor_level_rejects_non_integers(app_and_table, level):
         ("x" * 129, "label is invalid"),
     ],
 )
-def test_create_rejects_invalid_optional_table_label(
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_create_rejects_invalid_optional_label(
     app_and_table,
+    element_type,
     label,
     message,
 ):
@@ -1209,7 +1218,7 @@ def test_create_rejects_invalid_optional_table_label(
     response = app.handler(
         make_event(
             method="POST",
-            body=valid_body("table", label=label),
+            body=valid_body(element_type, label=label),
         ),
         None,
     )
@@ -1220,9 +1229,9 @@ def test_create_rejects_invalid_optional_table_label(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "floorArea", "wall", "door", "window", "cashRegister"],
+    ["floor", "floorArea", "wall", "door", "window"],
 )
-def test_create_rejects_table_label_for_other_element_types(
+def test_create_rejects_label_for_unsupported_element_types(
     app_and_table,
     element_type,
 ):
@@ -1421,16 +1430,18 @@ def test_partial_update_merges_and_replaces_audit_fields(
         ("T-1", "Chef's TABLE", "Chef's TABLE"),
     ],
 )
-def test_partial_update_can_add_or_change_table_label(
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_partial_update_can_add_or_change_label(
     app_and_table,
     monkeypatch,
+    element_type,
     original_label,
     request_label,
     expected_label,
 ):
     app, layout_table = app_and_table
     original = element_item(
-        element_type="table",
+        element_type=element_type,
         updated_by="previous-sub",
         **({} if original_label is None else {"label": original_label}),
     )
@@ -1453,12 +1464,14 @@ def test_partial_update_can_add_or_change_table_label(
     assert stored["updatedAt"] == NEXT_UPDATED_AT
 
 
-def test_noop_trimmed_table_label_update_preserves_audit_and_skips_write(
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_noop_trimmed_label_update_preserves_audit_and_skips_write(
     app_and_table,
     monkeypatch,
+    element_type,
 ):
     app, layout_table = app_and_table
-    original = element_item(element_type="table", label="T-1")
+    original = element_item(element_type=element_type, label="T-1")
     put_item(layout_table, original)
     table_spy = Mock(wraps=layout_table)
     monkeypatch.setattr(app, "table", lambda _: table_spy)
@@ -1487,13 +1500,15 @@ def test_noop_trimmed_table_label_update_preserves_audit_and_skips_write(
         ("x" * 129, "label is invalid"),
     ],
 )
-def test_table_label_cannot_be_cleared_or_made_invalid(
+@pytest.mark.parametrize("element_type", ["table", "cashRegister"])
+def test_label_cannot_be_cleared_or_made_invalid(
     app_and_table,
+    element_type,
     label,
     message,
 ):
     app, layout_table = app_and_table
-    original = element_item(element_type="table", label="T-1")
+    original = element_item(element_type=element_type, label="T-1")
     put_item(layout_table, original)
 
     response = app.handler(
@@ -1511,9 +1526,9 @@ def test_table_label_cannot_be_cleared_or_made_invalid(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "floorArea", "wall", "door", "window", "cashRegister"],
+    ["floor", "floorArea", "wall", "door", "window"],
 )
-def test_update_rejects_table_label_for_other_element_types(
+def test_update_rejects_label_for_unsupported_element_types(
     app_and_table,
     element_type,
 ):
@@ -1980,28 +1995,36 @@ def test_inconsistent_stored_kind_returns_409(
         element_item(element_type="table", label="   "),
         element_item(element_type="table", label="x" * 129),
         element_item(element_type="table", label=" T-1 "),
+        element_item(element_type="cashRegister", label=1),
+        element_item(element_type="cashRegister", label=""),
+        element_item(element_type="cashRegister", label="   "),
+        element_item(element_type="cashRegister", label="x" * 129),
+        element_item(element_type="cashRegister", label=" Register 1 "),
         element_item(element_type="floor", label="T-1"),
         element_item(element_type="wall", label="T-1"),
         element_item(element_type="door", label="T-1"),
         element_item(element_type="window", label="T-1"),
         element_item(element_type="floorArea", label="T-1"),
-        element_item(element_type="cashRegister", label="T-1"),
     ],
     ids=[
-        "non-string",
-        "empty",
-        "whitespace",
-        "oversize",
-        "untrimmed",
+        "table-non-string",
+        "table-empty",
+        "table-whitespace",
+        "table-oversize",
+        "table-untrimmed",
+        "cash-register-non-string",
+        "cash-register-empty",
+        "cash-register-whitespace",
+        "cash-register-oversize",
+        "cash-register-untrimmed",
         "floor",
         "wall",
         "door",
         "window",
         "floor-area",
-        "cash-register",
     ],
 )
-def test_inconsistent_stored_table_label_returns_409(
+def test_inconsistent_stored_label_returns_409(
     app_and_table,
     monkeypatch,
     corrupt,

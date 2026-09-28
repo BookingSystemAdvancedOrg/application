@@ -949,6 +949,91 @@ def test_today_includes_only_slots_strictly_after_now(
     ]
 
 
+def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-29"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert [slot["startTime"] for slot in captured["slots"]] == [
+        "10:00",
+        "12:00",
+        "14:00",
+    ]
+
+
+def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    location = Mock(wraps=tables["location"])
+    snapshot = Mock()
+    real_table = app.table
+
+    def table_factory(name):
+        if name == LOCATION_TABLE_NAME:
+            return location
+        if name == SNAPSHOT_TABLE_NAME:
+            return snapshot
+        return real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-30"}),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "date must not be more than 21 days ahead"},
+    )
+    location.get_item.assert_called_once()
+    snapshot.get_item.assert_not_called()
+
+
+def test_horizon_uses_location_date_but_exact_utc_elapsed_time(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        location=location_item(
+            duration="1",
+            hours=business_hours("00:00", "18:00"),
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": "2026-10-25"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert captured["slots"][-1]["startTime"] == "13:00"
+    assert "14:00" not in {
+        slot["startTime"] for slot in captured["slots"]
+    }
+
+
 def test_fractional_hour_duration_uses_exact_minute_grid(
     app_and_tables,
     monkeypatch,
@@ -975,11 +1060,24 @@ def test_fractional_hour_duration_uses_exact_minute_grid(
     ]
 
 
-@pytest.mark.parametrize("date_value", ["2027-03-28", "2026-10-25"])
+@pytest.mark.parametrize(
+    ("date_value", "now"),
+    [
+        (
+            "2027-03-28",
+            datetime(2027, 3, 27, 12, 0, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-10-25",
+            datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc),
+        ),
+    ],
+)
 def test_dst_unsafe_intervals_are_omitted_without_failing_day(
     app_and_tables,
     monkeypatch,
     date_value,
+    now,
 ):
     app, tables = app_and_tables
     put_stage_two_records(
@@ -989,6 +1087,7 @@ def test_dst_unsafe_intervals_are_omitted_without_failing_day(
             hours=business_hours("00:00", "06:00"),
         ),
     )
+    monkeypatch.setattr(app, "_utc_now", lambda: now)
     captured = successful_occupancy_boundary(app, monkeypatch)
 
     response = app.handler(

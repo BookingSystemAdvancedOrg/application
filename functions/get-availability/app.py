@@ -7,8 +7,9 @@ PURPOSE:
     Publicly returns bookable local-time slots and their currently available
     tables for one location and ``?date=YYYY-MM-DD``. The implementation
     cross-references business hours, the active published layout, and both
-    reservation and manual Slot Occupancy holds. This route intentionally has
-    no JWT check because customers do not have Cognito accounts.
+    reservation and manual Slot Occupancy holds. Slot starts are limited to
+    the next 21 days. This route intentionally has no JWT check because
+    customers do not have Cognito accounts.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -108,6 +109,7 @@ _MANUAL_ID_PATTERN = re.compile(
     r"MANUAL_BLOCK#[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
+_BOOKING_HORIZON = timedelta(days=21)
 
 
 class _AvailabilityServiceFailure(Exception):
@@ -330,10 +332,15 @@ def _candidate_slots(details, location, now):
     ):
         raise _AvailabilityServiceFailure
     now = now.astimezone(timezone.utc)
+    latest_start = now + _BOOKING_HORIZON
     requested_date = date.fromisoformat(details["date"])
     local_today = now.astimezone(location["timezone"]).date()
     if requested_date < local_today:
         raise ValueError("date must not be in the past")
+    if requested_date > latest_start.astimezone(
+        location["timezone"]
+    ).date():
+        raise ValueError("date must not be more than 21 days ahead")
 
     duration = location["durationMinutes"]
     expected_duration = timedelta(minutes=duration)
@@ -366,7 +373,10 @@ def _candidate_slots(details, location, now):
                 start_minute += duration
                 continue
 
-            if end_utc - start_utc == expected_duration and start_utc > now:
+            if (
+                end_utc - start_utc == expected_duration
+                and now < start_utc <= latest_start
+            ):
                 slots.append(
                     {
                         "startTime": _clock_time(start_minute),

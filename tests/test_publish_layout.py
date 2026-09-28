@@ -148,6 +148,10 @@ def cash_register_element_item(element_id="cash-register-id"):
     return live_element_item(element_id) | {"type": "cashRegister"}
 
 
+def floor_area_element_item(element_id="floor-area-id"):
+    return live_element_item(element_id) | {"type": "floorArea"}
+
+
 def table_element_item(element_id="table-id", **variant_fields):
     return live_element_item(element_id) | {
         "type": "table",
@@ -761,6 +765,96 @@ def test_publishes_multi_floor_cash_register_unchanged(app_and_tables):
     assert response_body(response)["elements"] == [
         public_element(element) for element in expected
     ]
+
+
+def test_publishes_legacy_floor_area_unchanged(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    source = floor_area_element_item()
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    assert response_body(response)["elements"] == [public_element(source)]
+    assert stored_snapshot(snapshot_table, 1)["elements"] == [
+        logical_element(source)
+    ]
+
+
+def test_publishes_multi_floor_floor_area_unchanged(app_and_tables):
+    app, live_table, snapshot_table = app_and_tables
+    floor = floor_element_item()
+    source = floor_area_element_item() | {"floorId": "ground-floor"}
+    live_table.put_item(Item=floor)
+    live_table.put_item(Item=source)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 201)
+    expected = sorted(
+        [logical_element(floor), logical_element(source)],
+        key=lambda element: element["elementId"],
+    )
+    assert stored_snapshot(snapshot_table, 1)["elements"] == expected
+    assert response_body(response)["elements"] == [
+        public_element(element) for element in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    "type_specific_fields",
+    [
+        {"shape": "rect"},
+        {"seats": Decimal("4")},
+        {"zone": "main"},
+        {"label": "Dining area"},
+        {"wallId": "wall-id"},
+        {"kind": "entrance"},
+        {"name": "Dining area"},
+        {"level": Decimal("0")},
+    ],
+)
+def test_floor_area_rejects_type_specific_fields(
+    app_and_tables,
+    type_specific_fields,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(
+        Item=floor_area_element_item() | type_specific_fields
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "floor_fields",
+    [{}, {"floorId": "missing-floor"}, {"floorId": "wall-id"}],
+)
+def test_multi_floor_floor_area_requires_valid_floor_id(
+    app_and_tables,
+    floor_fields,
+):
+    app, live_table, snapshot_table = app_and_tables
+    live_table.put_item(Item=floor_element_item())
+    live_table.put_item(
+        Item=floor_area_element_item() | floor_fields
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "live layout element is inconsistent"},
+    )
+    assert snapshot_table.scan()["Items"] == []
 
 
 @pytest.mark.parametrize(

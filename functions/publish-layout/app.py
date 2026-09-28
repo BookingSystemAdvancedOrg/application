@@ -7,8 +7,8 @@ PURPOSE:
     Copies a location's mutable layout elements into a new immutable
     Published Layout Snapshot version. Publishing does not activate the
     version or change any existing snapshot. Optional door purposes,
-    table labels, and cash-register elements are validated and preserved
-    in the snapshot.
+    table labels, and cash-register and floor-area elements are validated
+    and preserved in the snapshot.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -46,7 +46,15 @@ _ALLOWED_GROUPS = ("owner_user", "super_user")
 _LIVE_ELEMENT_PREFIX = "LAYOUT#ELEMENT#"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
 _ELEMENT_TYPES = frozenset(
-    {"cashRegister", "floor", "wall", "door", "window", "table"}
+    {
+        "cashRegister",
+        "door",
+        "floor",
+        "floorArea",
+        "table",
+        "wall",
+        "window",
+    }
 )
 _TABLE_SHAPES = frozenset({"rect", "round"})
 _DOOR_KINDS = frozenset({"entrance", "kitchen"})

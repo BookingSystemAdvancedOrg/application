@@ -509,6 +509,45 @@ def test_public_active_layout_supports_empty_snapshot(
     assert_response(response, 200, {"floors": [], "elements": []})
 
 
+def test_public_active_layout_returns_floor_area_as_element(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    floor = floor_element()
+    floor_area = layout_element(
+        "dining-area",
+        type="floorArea",
+        floorId="ground-floor",
+    )
+    snapshot_table.put_item(Item=activation_state())
+    snapshot_table.put_item(
+        Item=snapshot_item(
+            1,
+            is_current=True,
+            elements=[floor, floor_area],
+        )
+    )
+
+    response = app.handler(make_public_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "floors": [
+                {
+                    "floorId": "ground-floor",
+                    "name": "Ground floor",
+                    "level": 0,
+                }
+            ],
+            "elements": [public_active_element(floor_area)],
+        },
+    )
+
+
 @pytest.mark.parametrize("kind", ["entrance", "kitchen"])
 def test_public_active_layout_returns_door_kind(
     app_and_table,
@@ -2607,6 +2646,64 @@ def test_lists_optional_table_label_for_staff(app_and_table):
     ]
 
 
+def test_lists_floor_area_for_staff(app_and_table):
+    app, snapshot_table = app_and_table
+    floor = floor_element()
+    floor_area = layout_element(
+        "dining-area",
+        type="floorArea",
+        floorId="ground-floor",
+    )
+    elements = [floor, floor_area]
+    snapshot_table.put_item(Item=snapshot_item(1, elements=elements))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200)
+    assert response_body(response)["items"][0]["elements"] == (
+        json_ready(elements)
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "Dining area"),
+        ("level", Decimal("0")),
+        ("shape", "rect"),
+        ("seats", Decimal("4")),
+        ("zone", "main"),
+        ("label", "Dining"),
+        ("wallId", "wall-id"),
+        ("kind", "entrance"),
+    ],
+)
+def test_floor_area_rejects_variant_fields_for_staff(
+    app_and_table,
+    monkeypatch,
+    field,
+    value,
+):
+    app, _ = app_and_table
+    floor_area = layout_element(
+        "dining-area",
+        type="floorArea",
+        **{field: value},
+    )
+    corrupt = snapshot_item(1, elements=[floor_area])
+    query_table = Mock()
+    query_table.query.return_value = {"Items": [corrupt]}
+    monkeypatch.setattr(app, "table", lambda _name: query_table)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
 def test_lists_multi_floor_snapshot_and_preserves_relationships(
     app_and_table,
 ):
@@ -2666,6 +2763,21 @@ def test_lists_multi_floor_snapshot_and_preserves_relationships(
             layout_element(
                 "orphan-cash-register",
                 type="cashRegister",
+                floorId="missing-floor",
+            ),
+        ],
+        [
+            floor_element(),
+            layout_element(
+                "unassigned-floor-area",
+                type="floorArea",
+            ),
+        ],
+        [
+            floor_element(),
+            layout_element(
+                "orphan-floor-area",
+                type="floorArea",
                 floorId="missing-floor",
             ),
         ],

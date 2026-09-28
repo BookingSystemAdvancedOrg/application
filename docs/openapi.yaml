@@ -967,18 +967,31 @@ paths:
         The client supplies a local date and start time; the handler derives
         `endTime` from the location's booking duration. Creating a block
         requires a future slot aligned to one business-hours interval and a
-        table in the currently active published layout. Ambiguous,
-        nonexistent, and UTC-offset-transition-crossing local intervals are
-        rejected.
+        table in the published layout effective for the slot's whole
+        interval. When a replacement layout has a scheduled cutover, a slot
+        ending at or before the cutover uses the current layout and a slot
+        starting at or after the cutover uses the replacement. A slot that
+        crosses the cutover is rejected with `409`. Ambiguous, nonexistent,
+        and UTC-offset-transition-crossing local intervals are rejected.
+
+        Creating a block reads layout activation state consistently before
+        the hold is written. While an activation is still being scheduled,
+        only slots ending at or before its cutover can use the current layout;
+        later slots return `409`. Overdue cutovers, inconsistent snapshots,
+        and activation-state races also fail safely with `409`. New holds
+        record the selected layout version internally as creation-time
+        provenance; `layoutVersion` is intentionally not accepted in this
+        request or returned in the public response.
 
         `blocked: true` creates a manual occupancy hold without overwriting a
         reservation. Repeating it for the same manual hold is idempotent.
         `blocked: false` removes only a manual hold and succeeds when it is
         already absent; it never deletes a reservation. Removal does not
-        require the table to remain in the active layout and still locates a
-        hold created under an older booking duration. A table can belong to
-        any floor in a valid multi-floor snapshot; a floor element itself is
-        not a valid table target.
+        resolve activation or layout state, does not require the table to
+        remain in a published layout, and still locates a hold created under
+        an older booking duration. A table can belong to any floor in a valid
+        multi-floor snapshot; a floor element itself is not a valid table
+        target.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2264,7 +2277,9 @@ components:
       name: tableId
       in: path
       required: true
-      description: Table-element identifier in the active published layout.
+      description: >-
+        Table identifier. When creating a block, it must be a table element in
+        the published layout effective for the requested slot.
       schema:
         type: string
         minLength: 1
@@ -4500,7 +4515,9 @@ components:
             error: availability service unavailable
 
     BlockTargetNotFound:
-      description: The location does not exist or the table is not in the active layout.
+      description: >-
+        The location does not exist or, when creating a block, the table is
+        not in the published layout effective for the requested slot.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4516,7 +4533,9 @@ components:
               value:
                 error: table not found
     TableBlockConflict:
-      description: A hold conflicts, protected state changed, or stored state is inconsistent.
+      description: >-
+        A hold conflicts, an activation transition cannot be resolved safely,
+        protected state changed, or stored state is inconsistent.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -4534,11 +4553,28 @@ components:
             layoutChanged:
               value:
                 error: active layout changed; retry request
+            activationState:
+              value:
+                error: layout activation state is inconsistent
+            schedulingActivation:
+              value:
+                error: layout activation is still being scheduled; retry request
+            overdueActivation:
+              value:
+                error: layout activation cutover is overdue; retry request
+            cutoverCrossing:
+              value:
+                error: requested slot crosses a layout activation cutover
+            layout:
+              value:
+                error: published layout record is inconsistent
             slotChanged:
               value:
                 error: slot changed; retry request
     BlockTableServiceUnavailable:
-      description: A required DynamoDB operation could not be completed safely.
+      description: >-
+        Required storage or environment configuration could not be used
+        safely.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'

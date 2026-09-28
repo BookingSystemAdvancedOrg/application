@@ -566,6 +566,15 @@ def test_block_table_contract_matches_handler(openapi_document):
     assert operation["requestBody"]["content"]["application/json"][
         "schema"
     ] == {"$ref": "#/components/schemas/TableBlockRequest"}
+    description = " ".join(operation["description"].split())
+    assert "effective for the slot's whole interval" in description
+    assert "ending at or before the cutover" in description
+    assert "starting at or after the cutover" in description
+    assert "crosses the cutover is rejected with `409`" in description
+    assert "only slots ending at or before its cutover" in description
+    assert "Removal does not resolve activation or layout state" in description
+    assert "creation-time provenance" in description
+    assert "not accepted in this request or returned" in description
     assert set(operation["responses"]) == {
         "200",
         "201",
@@ -599,6 +608,7 @@ def test_block_table_contract_matches_handler(openapi_document):
     request = document["components"]["schemas"]["TableBlockRequest"]
     assert request["additionalProperties"] is False
     assert set(request["required"]) == set(request["properties"])
+    assert set(request["properties"]) == {"date", "startTime", "blocked"}
     assert request["properties"]["date"]["format"] == "date"
     assert request["properties"]["startTime"]["pattern"] == (
         "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
@@ -611,6 +621,14 @@ def test_block_table_contract_matches_handler(openapi_document):
     result = document["components"]["schemas"]["TableBlock"]
     assert result["additionalProperties"] is False
     assert set(result["required"]) == set(result["properties"])
+    assert set(result["properties"]) == {
+        "locationId",
+        "tableId",
+        "date",
+        "startTime",
+        "endTime",
+        "blocked",
+    }
     assert result["properties"]["blocked"]["enum"] == [True]
 
     table_id = document["components"]["parameters"]["BlockTableId"]
@@ -618,6 +636,40 @@ def test_block_table_contract_matches_handler(openapi_document):
     assert table_id["in"] == "path"
     assert table_id["required"] is True
     assert table_id["schema"]["maxLength"] == 128
+    assert "When creating a block" in table_id["description"]
+    assert "effective for the requested slot" in table_id["description"]
+
+    not_found = document["components"]["responses"][
+        "BlockTargetNotFound"
+    ]
+    assert "when creating a block" in not_found["description"]
+    assert "effective for the requested slot" in not_found["description"]
+
+    conflict = document["components"]["responses"]["TableBlockConflict"]
+    assert "activation transition" in conflict["description"]
+    conflict_examples = conflict["content"]["application/json"]["examples"]
+    assert conflict_examples["activationState"]["value"] == {
+        "error": "layout activation state is inconsistent"
+    }
+    assert conflict_examples["schedulingActivation"]["value"] == {
+        "error": (
+            "layout activation is still being scheduled; retry request"
+        )
+    }
+    assert conflict_examples["overdueActivation"]["value"] == {
+        "error": "layout activation cutover is overdue; retry request"
+    }
+    assert conflict_examples["cutoverCrossing"]["value"] == {
+        "error": "requested slot crosses a layout activation cutover"
+    }
+    assert conflict_examples["layout"]["value"] == {
+        "error": "published layout record is inconsistent"
+    }
+
+    service_unavailable = document["components"]["responses"][
+        "BlockTableServiceUnavailable"
+    ]
+    assert "environment configuration" in service_unavailable["description"]
 
 
 def test_multi_floor_layout_contract_matches_handlers(openapi_document):

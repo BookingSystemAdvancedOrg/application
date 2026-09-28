@@ -428,7 +428,15 @@ def test_oversized_path_values_are_rejected(app_and_table):
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "door", "window", "table", "cashRegister"],
+    [
+        "floor",
+        "floorArea",
+        "wall",
+        "door",
+        "window",
+        "table",
+        "cashRegister",
+    ],
 )
 def test_create_each_supported_element_type(app_and_table, element_type):
     app, layout_table = app_and_table
@@ -447,6 +455,133 @@ def test_create_each_supported_element_type(app_and_table, element_type):
     assert stored["SK"] == f"LAYOUT#ELEMENT#{ELEMENT_ID}"
     assert stored["updatedBy"] == CALLER_SUB
     assert stored["updatedAt"] == UPDATED_AT
+
+
+def test_floor_area_crud_preserves_canonical_geometry_and_floor(
+    app_and_table,
+    monkeypatch,
+):
+    app, layout_table = app_and_table
+    create_body = valid_body(
+        "floorArea",
+        x=2,
+        y=0,
+        z=3,
+        width=4,
+        height=0.05,
+        depth=5,
+        rotationY=0,
+        floorId=f"  {FLOOR_ID}  ",
+    )
+
+    create_response = app.handler(
+        make_event(method="POST", body=create_body),
+        None,
+    )
+
+    stored = get_item(layout_table)
+    assert_response(create_response, 201, public_element(stored))
+    assert stored["type"] == "floorArea"
+    assert stored["x"] == Decimal("2")
+    assert stored["y"] == Decimal("0")
+    assert stored["z"] == Decimal("3")
+    assert stored["width"] == Decimal("4")
+    assert stored["height"] == Decimal("0.05")
+    assert stored["depth"] == Decimal("5")
+    assert stored["rotationY"] == Decimal("0")
+    assert stored["floorId"] == FLOOR_ID
+
+    get_response = app.handler(
+        make_event(proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    list_response = app.handler(make_event(), None)
+    assert_response(get_response, 200, public_element(stored))
+    assert_response(list_response, 200, {"items": [public_element(stored)]})
+
+    monkeypatch.setattr(app, "_utc_now", lambda: NEXT_UPDATED_AT)
+    update_response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ELEMENT_ID}",
+            body={"z": 6.5, "width": 8},
+        ),
+        None,
+    )
+    updated = get_item(layout_table)
+    assert_response(update_response, 200, public_element(updated))
+    assert updated["z"] == Decimal("6.5")
+    assert updated["width"] == Decimal("8")
+    assert updated["updatedAt"] == NEXT_UPDATED_AT
+
+    delete_response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ELEMENT_ID}"),
+        None,
+    )
+    assert_response(delete_response, 204)
+    assert get_item(layout_table) is None
+
+
+def test_floor_area_requires_explicit_positive_height(app_and_table):
+    app, layout_table = app_and_table
+    body = valid_body("floorArea")
+    del body["height"]
+
+    missing_response = app.handler(
+        make_event(method="POST", body=body),
+        None,
+    )
+    zero_response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("floorArea", height=0),
+        ),
+        None,
+    )
+
+    assert_response(missing_response, 400, {"error": "height is required"})
+    assert_response(
+        zero_response,
+        400,
+        {"error": "height must be greater than zero"},
+    )
+    assert table_items(layout_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "Ground floor"),
+        ("level", 0),
+        ("wallId", "wall-id"),
+        ("kind", "entrance"),
+        ("shape", "rect"),
+        ("seats", 1),
+        ("zone", "main"),
+        ("label", "Area one"),
+    ],
+)
+def test_floor_area_rejects_other_type_specific_fields(
+    app_and_table,
+    field,
+    value,
+):
+    app, layout_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body("floorArea", **{field: value}),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": f"fields not valid for floorArea: {field}"},
+    )
+    assert table_items(layout_table) == []
 
 
 def test_create_get_and_list_preserve_trimmed_optional_table_label(
@@ -706,7 +841,7 @@ def test_create_rejects_invalid_door_kind(app_and_table, kind):
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "window", "table", "cashRegister"],
+    ["floor", "floorArea", "wall", "window", "table", "cashRegister"],
 )
 def test_create_rejects_door_kind_for_other_element_types(
     app_and_table,
@@ -732,7 +867,7 @@ def test_create_rejects_door_kind_for_other_element_types(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["wall", "door", "window", "table", "cashRegister"],
+    ["floorArea", "wall", "door", "window", "table", "cashRegister"],
 )
 def test_non_floor_element_can_reference_a_floor(app_and_table, element_type):
     app, layout_table = app_and_table
@@ -1085,7 +1220,7 @@ def test_create_rejects_invalid_optional_table_label(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "door", "window", "cashRegister"],
+    ["floor", "floorArea", "wall", "door", "window", "cashRegister"],
 )
 def test_create_rejects_table_label_for_other_element_types(
     app_and_table,
@@ -1156,6 +1291,7 @@ def test_list_returns_all_types_for_only_requested_location(app_and_table):
         element_item(element_type="window", element_id="c"),
         element_item(element_type="table", element_id="d"),
         element_item(element_type="cashRegister", element_id="e"),
+        element_item(element_type="floorArea", element_id="ground"),
     ]
     for item in elements:
         put_item(layout_table, item)
@@ -1375,7 +1511,7 @@ def test_table_label_cannot_be_cleared_or_made_invalid(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "door", "window", "cashRegister"],
+    ["floor", "floorArea", "wall", "door", "window", "cashRegister"],
 )
 def test_update_rejects_table_label_for_other_element_types(
     app_and_table,
@@ -1586,7 +1722,7 @@ def test_invalid_door_kind_update_does_not_change_item(
 
 @pytest.mark.parametrize(
     "element_type",
-    ["floor", "wall", "window", "table", "cashRegister"],
+    ["floor", "floorArea", "wall", "window", "table", "cashRegister"],
 )
 def test_update_rejects_door_kind_for_other_element_types(
     app_and_table,
@@ -1848,6 +1984,7 @@ def test_inconsistent_stored_kind_returns_409(
         element_item(element_type="wall", label="T-1"),
         element_item(element_type="door", label="T-1"),
         element_item(element_type="window", label="T-1"),
+        element_item(element_type="floorArea", label="T-1"),
         element_item(element_type="cashRegister", label="T-1"),
     ],
     ids=[
@@ -1860,6 +1997,7 @@ def test_inconsistent_stored_kind_returns_409(
         "wall",
         "door",
         "window",
+        "floor-area",
         "cash-register",
     ],
 )

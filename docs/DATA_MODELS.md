@@ -106,9 +106,10 @@ reservations or manual holds may reference. Uses SCD Type 2 — every version is
 retained with an effective date range, so privileged users can list or
 reactivate non-archived old versions without changing their compiled content.
 The snapshot's top-level `label` is its generated version name (`Version <N>`);
-it is distinct from an optional `label` nested inside an individual table
-element. The `version`, top-level `label`, `elements`, `validPositions`, and
-creation audit fields are immutable after publication. Activation may update
+it is distinct from an optional `label` nested inside an individual table or
+cash-register element. The `version`, top-level `label`, `elements`,
+`validPositions`, and creation audit fields are immutable after publication.
+Activation may update
 only `isCurrent`, `effectiveFrom`, `effectiveTo`, `expiresAt`, and the update
 audit fields; soft archive adds the paired archive fields and also updates the
 update audit fields. Before the first activation a location has no current
@@ -126,7 +127,7 @@ current, including while a replacement is pending.
 | `effectiveTo` | String (ISO8601) or Null |
 | `expiresAt` | String (ISO8601) or Null |
 | `elements` | List (Map) |
-| `elements[].label` | Nonblank trimmed String, max 128 characters (optional on table maps only) |
+| `elements[].label` | Nonblank trimmed String, max 128 characters (optional on table and cash-register maps only) |
 | `validPositions` | List (Map) |
 | `createdBy` | String |
 | `createdAt` | String (ISO8601) |
@@ -135,7 +136,7 @@ current, including while a replacement is pending.
 | `archivedBy` | String, archived snapshots only |
 | `archivedAt` | String (ISO8601), archived snapshots only |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus 28 days. That value is a pre-activation safety deadline, not the replacement activation cutoff and not immutable content; activation replaces it as described below. Immutable `createdAt` is the publication timestamp used to calculate replacement eligibility. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, cash-register geometry, an optional door `kind`, and each table's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus 28 days. That value is a pre-activation safety deadline, not the replacement activation cutoff and not immutable content; activation replaces it as described below. Immutable `createdAt` is the publication timestamp used to calculate replacement eligibility. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, floor-area and cash-register geometry, an optional door `kind`, and each table's or cash register's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table or cash register without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
@@ -181,7 +182,7 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 
 Only an inactive version that is neither `LAYOUT#ACTIVATION.currentVersion` nor `pendingVersion` may be archived. A current or pending version is rejected, and an archived version cannot later be selected for activation. Valid archived snapshots are omitted from the protected version list and can never be returned by the public active-layout route. If activation state incorrectly points to an archived snapshot, readers and transition workers treat that as inconsistent state rather than serving or activating it. Repeating archive for an already valid archived version is an idempotent no-op.
 
-The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`, including cash registers, a door's optional persisted `kind`, and a table's optional persisted `label`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy tables without `label`, legacy doors without `kind`, plus legacy flat and empty active snapshots, remain representable.
+The public active-layout read also treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It performs strongly consistent state → snapshot → state reads and retries once if the pointer changes, preventing a response assembled across a cutover. It validates the same active lifecycle and archive rules and never serves the future pending snapshot. Its customer projection separates floor records into `floors` (`floorId`, `name`, `level`) and returns safe non-floor geometry in `elements`, including `floorArea` and `cashRegister` elements, a door's optional persisted `kind`, and a table's or cash register's optional persisted `label`; snapshot version, lifecycle, audit, DynamoDB, and activation-state metadata are omitted. Legacy tables and cash registers without `label`, legacy doors without `kind`, plus legacy flat and empty active snapshots, remain representable.
 
 ### Layout Activation State
 
@@ -240,14 +241,14 @@ or pending-transition metadata.
 
 ## Live Layout Elements
 
-Individual floors, walls, doors, windows, tables, and cash registers in a location's floor plan, CRUD'd directly during 3D editing. Staff, owner-users, and super-users have full read/write access; each element is its own item for cheap, granular edits.
+Individual floor storeys, floor areas, walls, doors, windows, tables, and cash registers in a location's floor plan, CRUD'd directly during 3D editing. Staff, owner-users, and super-users have full read/write access; each element is its own item for cheap, granular edits.
 
 | Attribute | Type |
 |---|---|
 | `PK` (`LOCATION#<locationId>`) | String |
 | `SK` (`LAYOUT#ELEMENT#<elementId>`) | String |
 | `elementId` | String |
-| `type` | String (`floor`\|`wall`\|`door`\|`window`\|`table`\|`cashRegister`) |
+| `type` | String (`floor`\|`floorArea`\|`wall`\|`door`\|`window`\|`table`\|`cashRegister`) |
 | `x`, `y`, `z` | Number |
 | `width`, `height`, `depth` | Positive Number (required on every type) |
 | `rotationY` | Number |
@@ -257,7 +258,7 @@ Individual floors, walls, doors, windows, tables, and cash registers in a locati
 | `shape` | String (`rect`\|`round`, tables only) |
 | `seats` | Positive integer (tables only) |
 | `zone` | String (tables only) |
-| `label` | Nonblank trimmed String, max 128 characters (optional on tables only) |
+| `label` | Nonblank trimmed String, max 128 characters (optional on tables and cash registers only) |
 | `wallId` | Nonblank String, max 128 characters (doors/windows only) |
 | `kind` | String (`entrance`\|`kitchen`, optional on doors only) |
 | `updatedBy` | String |
@@ -270,6 +271,20 @@ must be moved or deleted explicitly. Floor names and levels do not have a
 uniqueness constraint. An existing child can be moved by updating `floorId`,
 but the API does not accept null or an empty string to clear it.
 
+Every element type uses the canonical backend 3D geometry fields `x`, `y`,
+`z`, `width`, `height`, `depth`, and `rotationY`; dimensions are positive
+numbers. A `floor` is the storey record with `name` and `level`. By contrast,
+a `floorArea` is a renderable, non-bookable area within a storey. It uses
+exactly `type="floorArea"`, the common geometry, and an optional draft
+`floorId`, with no floor-area-specific variant fields.
+
+When the frontend adapts a 2D canvas `floorArea`, 50 canvas units equal one
+metre. Backend `x` is `canvas x / 50`, backend `z` is `canvas y / 50`, `width`
+is `canvas w / 50`, and `depth` is `canvas h / 50`; backend `y` and `rotationY`
+are both `0`. The frontend owns and sends an explicit positive `height`. The
+backend does not infer it, and the contract intentionally specifies no
+required numeric height default.
+
 A door may persist `kind="entrance"` or `kind="kitchen"`. The field is
 optional for backward compatibility: its absence means legacy/unspecified,
 not either enum value. It may be added or changed by a partial update, but it
@@ -277,28 +292,33 @@ cannot be set to null, cleared with an empty string, or stored on another
 element type.
 
 A cash register uses exactly `type="cashRegister"` and the shared geometry
-fields. Like every non-floor element, it may have a `floorId`; it has no
-cash-register-specific fields and cannot carry floor, table, door, or window
-variant fields. The casing is part of the stored contract.
+fields. Like every non-floor element, it may have a `floorId`; apart from the
+optional `label` described below, it has no cash-register-specific fields and
+cannot carry floor, table, door, or window variant fields. The casing is part
+of the stored contract.
 
-A table may carry an optional staff-assigned `label`. Input is trimmed at its
-edges and must remain nonblank and at most 128 characters; internal spaces,
-casing, and Unicode are preserved. Labels are display values, are not generated
-by the backend, and have no uniqueness constraint, including across floors.
-The table's `elementId` remains its identity. A label may be added or changed
-through partial update but cannot be cleared with null, an empty string, or
-whitespace. Existing table records without `label` remain valid.
+A table or cash register may carry an optional staff-assigned `label` with the
+same behavior. Input is trimmed at its edges and must remain nonblank and at
+most 128 characters; internal spaces, casing, and Unicode are preserved.
+Labels are display values, are not generated by the backend, and have no
+uniqueness constraint, including across floors. The element's `elementId`
+remains its identity. A label may be added or changed through partial update
+but cannot be cleared with null, an empty string, or whitespace. Existing
+table and cash-register records without `label` remain valid. Label metadata
+does not make a cash register bookable.
 
 `publish-layout` reads every item in this table for a location (`Query` on `PK`,
 `SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout
 Snapshot version's `elements` list—that's the "compile" step referenced above.
-The compile step preserves a valid door `kind`, each cash register, and each
-table's optional `label`; staff version reads and the public active-layout
-projection return those values unchanged after label canonicalization.
+The compile step preserves every `floorArea` and `cashRegister`, their
+canonical geometry, a valid door `kind`, and each table's or cash register's
+optional `label`; staff version reads and the public active-layout projection
+return those values unchanged after label canonicalization.
 Publication enforces the relationship boundary:
 
-- If the draft contains at least one floor, every non-floor element must have a
-  `floorId` matching a floor element in that same location-wide draft.
+- If the draft contains at least one floor (the modern multi-floor form), every
+  non-floor element, including each `floorArea`, must have a `floorId` matching
+  a floor element in that same location-wide draft.
 - If the draft contains no floors, non-floor elements must omit `floorId`; this
   preserves legacy flat layouts.
 - A floor may have no child elements. Floors themselves never have `floorId`.
@@ -310,25 +330,27 @@ apply deletion cascades.
 
 Availability and manual block creation validate the complete slot-effective
 published snapshot before using its tables. That may be the scheduled pending
-snapshot for a slot wholly at or after its cutover. Floor and cash-register
-elements are never bookable. Availability ignores cash registers and
-considers tables across all floors. Each slot identifies its
+snapshot for a slot wholly at or after its cutover. `floor`, `floorArea`, and
+`cashRegister` elements are never bookable. Availability ignores all three
+types and considers tables across all floors. Each slot identifies its
 `layoutVersion`, while each nested table remains only `tableId` and `seats`;
 an optional label is validated but does not change that table object. A
-cash-register ID cannot be used as a `tableId` by block creation. Manual
-occupancy keys and public block request/response data remain based on the
-table's `elementId`, not its display label; stored manual provenance remains
-internal.
+`floor`, `floorArea`, or `cashRegister` ID cannot be used as a `tableId` by
+block creation.
+Manual occupancy keys and public block request/response data remain based on
+the table's `elementId`, not its display label; stored manual provenance
+remains internal.
 
 The public `/locations/{locationId}/layout/active` route reads only the
 Published Layout Snapshot table. It never reads this mutable live table, so
 customers cannot see unpublished editor changes.
 
-Cash registers use the same Live Layout Element and Published Layout Snapshot
-tables, routes, environment variables, and IAM permissions as the existing
-layout types; this type adds no separate resource.
-Optional table labels use this same layout lifecycle and likewise add no route,
-table, environment variable, or IAM permission.
+`floorArea` and `cashRegister` elements use the same Live Layout Element and
+Published Layout Snapshot tables, routes, environment variables, and IAM
+permissions as the existing layout types; neither type adds a separate
+resource. Optional table and cash-register labels use this same layout
+lifecycle and likewise add no route, table, environment variable, or IAM
+permission.
 
 ---
 

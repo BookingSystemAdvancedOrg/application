@@ -109,10 +109,13 @@ stored attributes.
 The active-layout route returns `{"floors": [...], "elements": [...]}`. Each
 floor contains only `floorId`, `name`, and `level`; renderable non-floor
 elements contain their validated geometry, optional `floorId`, and applicable
-table, door, or window fields. A table may include its optional persisted
-`label`. A `cashRegister` has the common geometry and optional `floorId`, with
-no additional type-specific fields. A door may include the persisted `kind`
-value `entrance` or `kitchen`; its absence means the door is legacy/unspecified.
+table, cash-register, door, or window fields. A table or `cashRegister` may
+include its optional persisted `label`. A `floorArea` is a renderable,
+non-bookable element distinct from the `floor` storey record; it has the common
+geometry and optional `floorId`, with no additional type-specific fields. A
+`cashRegister` has the same common geometry and optional `floorId`. A door may
+include the persisted `kind` value `entrance` or `kitchen`; its absence means
+the door is legacy/unspecified.
 It never exposes snapshot versions, lifecycle timestamps, audit data, DynamoDB
 keys, or the activation-state item. Both exact routes must remain
 unauthenticated in API Gateway.
@@ -129,20 +132,34 @@ uses the JWT authorizer and must retain the path-parameter name `proxy`.
 The layout editor stores floors and their contents as elements in one mutable
 draft per location. When the user adds a floor, create an element with
 `type: "floor"`, retain the returned `elementId`, and send that value as
-`floorId` on each wall, door, window, table, or `cashRegister` placed on that
-floor. A cash register uses exactly `type: "cashRegister"` (including casing),
-the common geometry fields, and an optional `floorId`; it has no extra variant
-fields. To render one canvas, list the location's layout elements and filter
-non-floor elements by the selected floor's `elementId`.
+`floorId` on each `floorArea`, wall, door, window, table, or `cashRegister`
+placed on that floor. A floor area uses exactly `type: "floorArea"` (including
+casing). It is the renderable area within a storey, not the `floor` storey
+record itself, and is never bookable. It uses the common canonical 3D geometry
+fields (`x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`) plus an
+optional `floorId`, with no extra variant fields. Width, height, and depth must
+be positive. A cash register similarly uses exactly `type: "cashRegister"`,
+the common geometry fields, and an optional `floorId`. To render one canvas,
+list the location's layout elements and filter non-floor elements by the
+selected floor's `elementId`.
 
-A table may also carry a staff-assigned `label`, for example `"Patio 4"`. The
-frontend sends that field in the table create/update payload and renders the
-returned value instead of deriving a position-dependent label such
-as `T${index + 1}`. Surrounding whitespace is trimmed; the remaining value must
-be nonblank and at most 128 characters. Labels are not generated and need not
-be unique, including across floors. The table's `elementId` remains its stable
-identity for edits, reservations, and blocks. Existing tables without `label`
-remain valid and may use a frontend fallback until staff assigns one.
+For a `floorArea` created from the 2D editor, the frontend adapter uses 50
+canvas units per metre. It sends `canvas x / 50` as backend `x`, `canvas y / 50`
+as backend `z`, `canvas w / 50` as `width`, and `canvas h / 50` as `depth`; it
+sends backend `y = 0` and `rotationY = 0`. The frontend also owns and sends an
+explicit positive `height`. The backend does not infer one, and this contract
+does not prescribe a numeric height default.
+
+A table or cash register may also carry a staff-assigned `label`, for example
+`"Patio 4"` or `"Front till"`. The frontend sends that field in the element's
+create/update payload and renders the returned value instead of deriving a
+position-dependent label such as `T${index + 1}`. Surrounding whitespace is
+trimmed; the remaining value must be nonblank and at most 128 characters.
+Labels are not generated and need not be unique, including across floors. The
+element's `elementId` remains its stable identity. Existing tables and cash
+registers without `label` remain valid and may use a frontend fallback until
+staff assigns one. Cash-register label metadata does not turn the fixture into
+a bookable table.
 
 Publishing and activation are location-wide: one version contains every floor
 and all of their elements, and the whole version is activated together.
@@ -153,7 +170,9 @@ activates immediately when eligible, otherwise at the earliest safe whole UTC
 minute. Legacy flat drafts with no floor elements and no `floorId` values
 remain valid. Draft editing is intentionally non-cascading, so deleting a
 floor does not delete its children; move or delete those children before
-publishing again.
+publishing again. A draft `floorArea` may omit `floorId` while it is being
+edited, but once a draft contains floor storeys, publication requires it (and
+every other non-floor element) to reference a valid floor in that same draft.
 
 Availability returns only slot starts satisfying
 `now < slotStartUtc <= now + 21 days`. Every slot includes the published
@@ -165,26 +184,35 @@ and crossing slots are omitted. Block creation follows the same boundary but
 rejects a crossing slot with `409`. It stores the selected version only as
 internal occupancy provenance and does not add `layoutVersion` to the block
 request or response. Unblocking does not resolve layout state. Cash registers
-are renderable fixtures, not bookable tables: availability ignores them and
-the table-block endpoint cannot target their IDs. The block route continues to
+and floor areas are renderable elements, not bookable tables: availability
+ignores them and the table-block endpoint cannot target their IDs. An optional
+cash-register label does not change that rule. The block route continues to
 receive the table's `elementId` as `tableId`, never its label.
 
 The public active-layout read separates published floor records into `floors`
-and returns walls, doors, windows, tables, and cash registers in `elements`. A
-client selects a floor by `floorId` and filters `elements` by that value. Door
-`kind`, when present, is preserved through publication and returned to both
-staff version reads and this public response so clients can distinguish an
-`entrance` from a `kitchen` door. Existing doors without `kind` remain valid and
-should be rendered as an unspecified door. A table's optional `label` follows
-the same draft -> publish -> activate -> protected/public-read lifecycle and is
-returned unchanged after its initial trimming. Legacy flat layouts return an
-empty `floors` array and elements without `floorId`.
+and returns floor areas, walls, doors, windows, tables, and cash registers in
+`elements`. A client selects a floor by `floorId` and filters `elements` by that
+value. A `floorArea` and its canonical geometry are preserved through
+publication and returned to both staff version reads and this public response.
+Door `kind`, when present, follows the same lifecycle so clients can
+distinguish an `entrance` from a `kitchen` door. Existing doors without `kind`
+remain valid and should be rendered as an unspecified door. A table's or cash
+register's optional `label` is likewise returned unchanged after its initial
+trimming. Legacy flat layouts return an empty `floors` array and elements
+without `floorId`.
 
-Cash-register support reuses the protected layout-element CRUD, the existing
-publish/activate workflow, and the public active-layout read. It adds no API
-route, DynamoDB table, environment variable, or IAM permission.
-Table-label support reuses those same resources and likewise requires no new
-route, table, environment variable, or IAM permission.
+Floor-area and cash-register support reuse the protected layout-element CRUD,
+the existing publish/activate workflow, and the public active-layout read.
+They add no API route, DynamoDB table, environment variable, or IAM permission.
+Optional table and cash-register labels reuse those same resources and
+likewise require no new route, table, environment variable, or IAM permission.
+
+Deploy this additive contract in compatibility order because each Lambda image
+contains its own snapshot validator: update `list-layout-version`,
+`get-availability`, and `block-table` first, then `publish-layout`, and finally
+`manage-layout-element`. That keeps every deployed reader able to understand
+newly written `floorArea` elements and cash-register labels even if a rollout
+stops partway through. An atomic deployment of all five images is also safe.
 
 Stop and remove the local documentation container when finished:
 

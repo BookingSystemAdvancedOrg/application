@@ -874,10 +874,12 @@ paths:
 
         Every returned slot identifies its `layoutVersion` and contains tables
         from the published layout effective for the slot's whole interval. A
-        multi-floor snapshot is validated as one unit. Floor elements are not
-        bookable and are omitted; tables from every floor participate, while
-        each returned table intentionally remains only `tableId` and `seats`.
-        Legacy flat snapshots remain supported.
+        multi-floor snapshot is validated as one unit. Floor, floor-area, and
+        cash-register elements are not bookable and are omitted; tables from
+        every floor participate, while each returned table intentionally
+        remains only `tableId` and `seats`. Optional labels on tables and cash
+        registers are validated snapshot metadata but are not returned by
+        availability. Legacy flat snapshots remain supported.
 
         During a scheduled layout transition, a slot uses the current version
         when `slotEndUtc <= cutoverAt` and the pending version when
@@ -990,8 +992,9 @@ paths:
         resolve activation or layout state, does not require the table to
         remain in a published layout, and still locates a hold created under
         an older booking duration. A table can belong to any floor in a valid
-        multi-floor snapshot; a floor element itself is not a valid table
-        target.
+        multi-floor snapshot. Floor, `floorArea`, and `cashRegister` elements
+        are not valid table targets, and an optional display label never
+        replaces the table's `elementId` in this route.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1343,13 +1346,14 @@ paths:
       summary: List draft layout elements
       operationId: listLayoutElements
       description: |
-        Returns every floor, wall, door, window, table, and cash register in
-        the location's mutable layout partition. A multi-floor layout is one
-        location-wide collection: non-floor elements use `floorId` to identify
-        their floor. A table may include an optional staff-assigned display
-        `label`; clients must continue to use `elementId` as its stable
-        identity. An empty list can also mean that the location does not exist
-        because this Lambda has no Location-table access.
+        Returns every floor, floor area, wall, door, window, table, and cash
+        register in the location's mutable layout partition. A multi-floor
+        layout is one location-wide collection: non-floor elements use
+        `floorId` to identify their floor. A table or cash register may include
+        an optional staff-assigned display `label`; clients must continue to
+        use `elementId` as its stable identity. An empty list can also mean
+        that the location does not exist because this Lambda has no
+        Location-table access.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1384,6 +1388,31 @@ paths:
                     label: Window 4
                     updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
                     updatedAt: '2026-08-31T09:55:00Z'
+                  - elementId: dining-area
+                    type: floorArea
+                    x: 2
+                    y: 0
+                    z: 3
+                    width: 4
+                    height: 0.05
+                    depth: 5
+                    rotationY: 0
+                    floorId: floor-ground
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:56:00Z'
+                  - elementId: register-front
+                    type: cashRegister
+                    x: 8
+                    y: 0
+                    z: -4
+                    width: 1.8
+                    height: 1.1
+                    depth: 0.8
+                    rotationY: 0
+                    floorId: floor-ground
+                    label: Front register
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:57:00Z'
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -1403,9 +1432,17 @@ paths:
         Creates one complete type-discriminated element. The API generates
         `elementId`, `updatedBy`, and `updatedAt`. A floor requires `name` and
         signed integer `level`; a non-floor element may include `floorId`.
-        A table may include an optional display `label`. Leading and trailing
+        A `floorArea` has only the common geometry and optional `floorId`; it
+        does not accept any other type-specific field. A table or cash register
+        may include an optional display `label`. Leading and trailing
         whitespace is removed, labels need not be unique, and `elementId`
         remains the stable identity used by other APIs.
+
+        Geometry uses metres as the canonical API unit. For a floor-area
+        canvas using 50 canvas units per metre, the frontend maps canvas `x / 50` to
+        `x`, canvas `y / 50` to `z`, `w / 50` to `width`, and `h / 50` to
+        `depth`; it sends `y: 0`, `rotationY: 0`, and an explicit positive
+        `height`.
         `floorId` and door/window `wallId` references are stored but parent
         existence and geometric containment are not checked by this Lambda.
       security:
@@ -1450,6 +1487,18 @@ paths:
                   seats: 4
                   zone: dining-room
                   label: Window 4
+              floorAreaOnFloor:
+                summary: Create a floor area from a canvas scaled at 50 canvas units per metre
+                value:
+                  type: floorArea
+                  x: 2
+                  y: 0
+                  z: 3
+                  width: 4
+                  height: 0.05
+                  depth: 5
+                  rotationY: 0
+                  floorId: floor-ground
               cashRegisterOnFloor:
                 summary: Create a cash register on an existing floor
                 value:
@@ -1462,6 +1511,7 @@ paths:
                   depth: 0.8
                   rotationY: 0
                   floorId: floor-ground
+                  label: Front register
       responses:
         '201':
           description: Layout element created successfully.
@@ -1535,9 +1585,10 @@ paths:
         immutable. The submitted fields are merged with the stored element and
         the complete resulting type-specific object is validated. This can
         rename or renumber a floor and can move a non-floor element by changing
-        its `floorId`. It can also assign or replace a table's display `label`;
-        whitespace is trimmed and an existing label cannot be cleared. A no-op
-        preserves the existing audit fields.
+        its `floorId`. A stored `floorArea` accepts updates only to common
+        geometry or `floorId`. It can also assign or replace a table or cash
+        register display `label`; whitespace is trimmed and an existing label
+        cannot be cleared. A no-op preserves the existing audit fields.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -1550,10 +1601,18 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LayoutElementUpdateRequest'
-            example:
-              x: 4.25
-              rotationY: 135
-              label: Window 4
+            examples:
+              floorAreaGeometry:
+                summary: Update common geometry on a stored floor area
+                value:
+                  z: 4
+                  width: 5
+                  height: 0.05
+                  depth: 6
+              cashRegisterLabel:
+                summary: Assign or replace a stored cash-register label
+                value:
+                  label: Front register
       responses:
         '200':
           description: Layout element updated, or already in the requested state.
@@ -1629,10 +1688,11 @@ paths:
         references return `409`. A legacy flat draft remains valid only when it
         contains neither floors nor `floorId` fields. An empty draft is also a
         valid snapshot because this Lambda cannot distinguish it from an
-        unknown location without Location-table access. Optional table display
-        labels are preserved after surrounding-whitespace trimming in the
-        immutable snapshot; they are not required to be unique and do not
-        replace `elementId` as identity.
+        unknown location without Location-table access. Floor-area elements
+        preserve their common geometry and optional `floorId`. Optional table
+        and cash-register display labels are preserved after
+        surrounding-whitespace trimming in the immutable snapshot; they are
+        not required to be unique and do not replace `elementId` as identity.
 
         Publishing does not activate the new version or modify any older
         version. `isCurrent` is therefore `false`, both effective-date fields
@@ -1698,6 +1758,18 @@ paths:
                     label: Window 4
                     updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
                     updatedAt: '2026-08-31T09:55:00Z'
+                  - elementId: dining-area
+                    type: floorArea
+                    x: 2
+                    y: 0
+                    z: 3
+                    width: 4
+                    height: 0.05
+                    depth: 5
+                    rotationY: 0
+                    floorId: floor-ground
+                    updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
+                    updatedAt: '2026-08-31T09:56:00Z'
                   - elementId: register-front
                     type: cashRegister
                     x: 8
@@ -1708,6 +1780,7 @@ paths:
                     depth: 0.8
                     rotationY: 0
                     floorId: floor-ground
+                    label: Front register
                     updatedBy: 24824908-70e9-4d9b-934d-76953bca16b7
                     updatedAt: '2026-08-31T09:57:00Z'
                 validPositions: []
@@ -1757,10 +1830,11 @@ paths:
         reduced to identifiers, names, and levels; renderable non-floor
         elements are returned separately. Version lifecycle data, audit
         metadata, valid-position data, DynamoDB keys, and unexpected stored
-        attributes are never returned. Optional table display labels are
-        returned for customer presentation, while `elementId` remains the
-        stable identity for booking and blocking. A legacy flat layout has an
-        empty `floors` array and elements without `floorId`. This route is
+        attributes are never returned. Floor areas are returned as renderable
+        elements. Optional table and cash-register display labels are returned
+        for customer presentation, while `elementId` remains the stable
+        identity for booking and blocking. A legacy flat layout has an empty
+        `floors` array and elements without `floorId`. This route is
         intentionally public and does not inspect JWT claims.
       security: []
       x-required-groups: []
@@ -1804,6 +1878,16 @@ paths:
                     seats: 4
                     zone: main
                     label: Window 4
+                  - elementId: dining-area
+                    type: floorArea
+                    x: 2
+                    y: 0
+                    z: 3
+                    width: 4
+                    height: 0.05
+                    depth: 5
+                    rotationY: 0
+                    floorId: floor-ground
                   - elementId: register-front
                     type: cashRegister
                     x: 8
@@ -1814,6 +1898,7 @@ paths:
                     depth: 0.8
                     rotationY: 0
                     floorId: floor-ground
+                    label: Front register
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '404':
@@ -1854,9 +1939,10 @@ paths:
         contains the complete logical snapshot so a staff client can inspect
         it before choosing a version to activate. A multi-floor version
         contains its floors and all `floorId`-linked elements in that one
-        snapshot. Optional table `label` values are display-only metadata;
-        table identity remains `elementId`. Soft-archived versions, DynamoDB
-        keys, archive audit fields, and internal scheduler metadata are never
+        snapshot. Floor areas and optional table or cash-register `label`
+        values are preserved; labels are display-only metadata and element
+        identity remains `elementId`. Soft-archived versions, DynamoDB keys,
+        archive audit fields, and internal scheduler metadata are never
         returned.
 
         The Lambda follows every DynamoDB query page. An unknown location, or
@@ -3186,15 +3272,15 @@ components:
     LayoutCoordinate:
       type: number
       description: |
-        Finite signed coordinate or rotation value. DynamoDB storage also
-        limits the normalized value to 38 significant digits and an adjusted
-        exponent from -130 through 125.
+        Finite signed coordinate in metres or rotation value in degrees.
+        DynamoDB storage also limits the normalized value to 38 significant
+        digits and an adjusted exponent from -130 through 125.
 
     LayoutDimension:
       type: number
       minimum: 0
       exclusiveMinimum: true
-      description: Finite dimension greater than zero.
+      description: Finite dimension in metres greater than zero.
 
     LayoutBoundedString:
       type: string
@@ -3243,6 +3329,48 @@ components:
         level:
           type: integer
           description: Signed floor order; zero and negative levels are valid.
+
+    LayoutFloorAreaCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      description: |
+        Renderable floor-area geometry in canonical metres. It may be assigned
+        to a floor but accepts no other type-specific fields. `height` must be
+        sent explicitly and, like every layout dimension, must be positive.
+      properties:
+        type:
+          type: string
+          enum:
+            - floorArea
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional while editing. When the draft contains floors,
+            publication requires this to reference a floor in the same draft.
 
     LayoutWallCreateRequest:
       type: object
@@ -3455,9 +3583,10 @@ components:
         - depth
         - rotationY
       description: |
-        A restaurant cash register or service counter. It uses only the
-        common layout geometry and may be assigned to a floor; table, wall,
-        door, and floor-specific fields are not accepted.
+        A restaurant cash register or service counter. It uses the common
+        layout geometry, may be assigned to a floor, and may have an optional
+        display `label`; table, wall, door, and floor-specific fields are not
+        accepted.
       properties:
         type:
           type: string
@@ -3483,10 +3612,17 @@ components:
           description: |
             Optional while editing. When the draft contains floors,
             publication requires this to reference a floor in the same draft.
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional display label. The stored value is trimmed and is not
+            required to be unique within a floor or location.
 
     LayoutElementCreateRequest:
       oneOf:
         - $ref: '#/components/schemas/LayoutFloorCreateRequest'
+        - $ref: '#/components/schemas/LayoutFloorAreaCreateRequest'
         - $ref: '#/components/schemas/LayoutWallCreateRequest'
         - $ref: '#/components/schemas/LayoutDoorCreateRequest'
         - $ref: '#/components/schemas/LayoutWindowCreateRequest'
@@ -3496,6 +3632,7 @@ components:
         propertyName: type
         mapping:
           floor: '#/components/schemas/LayoutFloorCreateRequest'
+          floorArea: '#/components/schemas/LayoutFloorAreaCreateRequest'
           wall: '#/components/schemas/LayoutWallCreateRequest'
           door: '#/components/schemas/LayoutDoorCreateRequest'
           window: '#/components/schemas/LayoutWindowCreateRequest'
@@ -3503,9 +3640,10 @@ components:
           cashRegister: '#/components/schemas/LayoutCashRegisterCreateRequest'
       description: |
         Complete type-specific layout element. Floors and their children are
-        edited in one location-wide draft. `cashRegister` represents a cash
-        register or service counter with common geometry and optional
-        `floorId`. `decor` is not supported by the current data model.
+        edited in one location-wide draft. `floorArea` has common geometry and
+        optional `floorId` with no other variant fields. `cashRegister` has
+        common geometry, optional `floorId`, and an optional display `label`.
+        `decor` is not supported by the current data model.
 
     LayoutElementUpdateRequest:
       type: object
@@ -3514,14 +3652,15 @@ components:
       description: |
         Strict partial update. `type` is deliberately absent because it is
         immutable. `name` and `level` apply only to a stored floor; `floorId`
-        applies only to non-floor elements; `shape`, `seats`, and `zone` apply
-        only to a stored table; optional `label` also applies only to a stored
-        table and is trimmed when supplied; `wallId` applies only to a stored
-        door or window; `kind` applies only to a stored door. The Lambda
+        applies only to non-floor elements. A stored `floorArea` accepts only
+        common geometry and `floorId`. `shape`, `seats`, and `zone` apply only
+        to a stored table; optional `label` applies only to a stored table or
+        cash register and is trimmed when supplied; `wallId` applies only to a
+        stored door or window; `kind` applies only to a stored door. The Lambda
         validates the merged complete element and rejects inapplicable fields.
         A supplied `floorId` must be nonblank and cannot be cleared with null
-        or an empty string. A supplied table `label` is subject to the same
-        nonblank rule and cannot be used to clear an existing label.
+        or an empty string. A supplied label is subject to the same nonblank
+        rule and cannot be used to clear an existing label.
       properties:
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
@@ -3562,9 +3701,9 @@ components:
           allOf:
             - $ref: '#/components/schemas/LayoutBoundedString'
           description: |
-            Optional table-only display label. The stored value is trimmed,
-            duplicate labels are allowed, and table identity remains
-            `elementId`.
+            Optional table or cash-register display label. The stored value is
+            trimmed, duplicate labels are allowed, and element identity
+            remains `elementId`.
         wallId:
           $ref: '#/components/schemas/LayoutBoundedString'
         kind:
@@ -3576,7 +3715,7 @@ components:
             Optional classification that applies only to a stored door.
             Legacy doors may omit it.
 
-    LayoutElement:
+    LayoutFloor:
       type: object
       additionalProperties: false
       required:
@@ -3589,32 +3728,20 @@ components:
         - height
         - depth
         - rotationY
+        - name
+        - level
         - updatedBy
         - updatedAt
       description: |
-        Logical layout record. A floor contains `name` and signed integer
-        `level`. A non-floor element may contain `floorId`; a table also
-        contains `shape`, `seats`, and `zone` and may contain a display-only
-        `label`; a door or window also contains `wallId`; a door may also
-        contain `kind`; a `cashRegister` has only common geometry and optional
-        `floorId`. Published multi-floor snapshots require every non-floor
-        element to reference a floor in that same snapshot. Table labels need
-        not be unique and never replace `elementId` as the stable identity.
-        Internal DynamoDB keys are never returned.
+        Protected floor result with required geometry, metadata, and audit
+        fields. Internal DynamoDB keys are never returned.
       properties:
         elementId:
-          type: string
-          minLength: 1
-          maxLength: 128
+          $ref: '#/components/schemas/LayoutBoundedString'
         type:
           type: string
           enum:
             - floor
-            - wall
-            - door
-            - window
-            - table
-            - cashRegister
         x:
           $ref: '#/components/schemas/LayoutCoordinate'
         y:
@@ -3633,10 +3760,262 @@ components:
           $ref: '#/components/schemas/LayoutBoundedString'
         level:
           type: integer
-          description: Signed floor order; present only on a floor element.
+          description: Signed floor order.
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutFloorArea:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected floor-area result with common geometry, optional `floorId`,
+        and audit fields. No other type-specific fields are exposed.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - floorArea
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
         floorId:
           $ref: '#/components/schemas/LayoutBoundedString'
-          description: Present only on a non-floor element assigned to a floor.
+          description: Present when the element is assigned to a floor.
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutWall:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected wall result with common geometry, optional `floorId`, and
+        audit fields.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - wall
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present when the element is assigned to a floor.
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutDoor:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected door result. `wallId` is required, `floorId` remains
+        optional for legacy flat layouts, and legacy doors may omit `kind`.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - door
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present when the element is assigned to a floor.
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        kind:
+          type: string
+          enum:
+            - entrance
+            - kitchen
+          description: Optional door classification; legacy doors may omit it.
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutWindow:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - wallId
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected window result with required `wallId`, optional `floorId`,
+        and audit fields.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - window
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present when the element is assigned to a floor.
+        wallId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutTable:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - shape
+        - seats
+        - zone
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected bookable-table result. `floorId` and the display-only
+        `label` are optional; `elementId` remains the stable identity.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - table
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present when the element is assigned to a floor.
         shape:
           type: string
           enum:
@@ -3651,24 +4030,91 @@ components:
           allOf:
             - $ref: '#/components/schemas/LayoutBoundedString'
           description: |
-            Optional table-only display label. Legacy tables may omit it.
-        wallId:
-          $ref: '#/components/schemas/LayoutBoundedString'
-        kind:
-          type: string
-          enum:
-            - entrance
-            - kitchen
-          description: |
-            Optional door classification. Present only on a door and absent
-            from legacy doors that have not been classified.
+            Optional display label. Legacy tables may omit it.
         updatedBy:
-          type: string
-          minLength: 1
-          maxLength: 128
+          $ref: '#/components/schemas/LayoutBoundedString'
         updatedAt:
           type: string
           format: date-time
+
+    LayoutCashRegister:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+        - updatedBy
+        - updatedAt
+      description: |
+        Protected cash-register or service-counter result. `floorId` and the
+        display-only `label` are optional.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - cashRegister
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+          description: Present when the element is assigned to a floor.
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Optional display label. Legacy cash registers may omit it.
+        updatedBy:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        updatedAt:
+          type: string
+          format: date-time
+
+    LayoutElement:
+      oneOf:
+        - $ref: '#/components/schemas/LayoutFloor'
+        - $ref: '#/components/schemas/LayoutFloorArea'
+        - $ref: '#/components/schemas/LayoutWall'
+        - $ref: '#/components/schemas/LayoutDoor'
+        - $ref: '#/components/schemas/LayoutWindow'
+        - $ref: '#/components/schemas/LayoutTable'
+        - $ref: '#/components/schemas/LayoutCashRegister'
+      discriminator:
+        propertyName: type
+        mapping:
+          floor: '#/components/schemas/LayoutFloor'
+          floorArea: '#/components/schemas/LayoutFloorArea'
+          wall: '#/components/schemas/LayoutWall'
+          door: '#/components/schemas/LayoutDoor'
+          window: '#/components/schemas/LayoutWindow'
+          table: '#/components/schemas/LayoutTable'
+          cashRegister: '#/components/schemas/LayoutCashRegister'
+      description: |
+        Exact protected layout result selected by `type`. Every variant is
+        closed to fields from other element types and includes its audit data.
+        Published multi-floor snapshots require every non-floor element to
+        reference a floor in that same snapshot. Internal DynamoDB keys are
+        never returned.
 
     LayoutElementList:
       type: object
@@ -3699,6 +4145,50 @@ components:
         level:
           type: integer
           description: Signed floor order.
+
+    PublicLayoutFloorArea:
+      type: object
+      additionalProperties: false
+      required:
+        - elementId
+        - type
+        - x
+        - y
+        - z
+        - width
+        - height
+        - depth
+        - rotationY
+      description: |
+        Customer-facing floor-area geometry with optional `floorId`. Audit
+        data and every other type-specific field are excluded.
+      properties:
+        elementId:
+          $ref: '#/components/schemas/LayoutBoundedString'
+        type:
+          type: string
+          enum:
+            - floorArea
+        x:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        y:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        z:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        width:
+          $ref: '#/components/schemas/LayoutDimension'
+        height:
+          $ref: '#/components/schemas/LayoutDimension'
+        depth:
+          $ref: '#/components/schemas/LayoutDimension'
+        rotationY:
+          $ref: '#/components/schemas/LayoutCoordinate'
+        floorId:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: |
+            Present for a multi-floor snapshot and absent for a legacy flat
+            layout.
 
     PublicLayoutWall:
       type: object
@@ -3912,7 +4402,8 @@ components:
         - rotationY
       description: |
         Customer-facing cash register or service counter. Audit data and
-        fields belonging to other layout element types are excluded.
+        fields belonging to other layout element types are excluded. `label`
+        is optional display text and may be duplicated.
       properties:
         elementId:
           $ref: '#/components/schemas/LayoutBoundedString'
@@ -3940,9 +4431,14 @@ components:
           description: |
             Present for a multi-floor snapshot and absent for a legacy flat
             layout.
+        label:
+          allOf:
+            - $ref: '#/components/schemas/LayoutBoundedString'
+          description: Optional display label. Legacy cash registers may omit it.
 
     PublicLayoutElement:
       oneOf:
+        - $ref: '#/components/schemas/PublicLayoutFloorArea'
         - $ref: '#/components/schemas/PublicLayoutWall'
         - $ref: '#/components/schemas/PublicLayoutDoor'
         - $ref: '#/components/schemas/PublicLayoutWindow'
@@ -3951,6 +4447,7 @@ components:
       discriminator:
         propertyName: type
         mapping:
+          floorArea: '#/components/schemas/PublicLayoutFloorArea'
           wall: '#/components/schemas/PublicLayoutWall'
           door: '#/components/schemas/PublicLayoutDoor'
           window: '#/components/schemas/PublicLayoutWindow'
@@ -3959,8 +4456,9 @@ components:
       description: |
         Renderable customer-facing element. Audit data is excluded. `floorId`
         is present on every element in a multi-floor snapshot and absent from
-        every element in a legacy flat layout. `cashRegister` identifies a
-        restaurant cash register or service counter.
+        every element in a legacy flat layout. `floorArea` contains only common
+        geometry and optional `floorId`; `cashRegister` identifies a restaurant
+        cash register or service counter and may include a display `label`.
 
     PublicActiveLayout:
       type: object

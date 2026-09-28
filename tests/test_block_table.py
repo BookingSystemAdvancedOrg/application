@@ -292,6 +292,44 @@ def activation_state(version="1", **overrides):
     return item
 
 
+def pending_activation_state(
+    app,
+    *,
+    current_version=1,
+    pending_version=2,
+    status="scheduled",
+    cutover_at="2026-09-20T14:00:00Z",
+    operation_revision=2,
+):
+    token = app._activation_token(
+        LOCATION_ID,
+        current_version,
+        pending_version,
+        operation_revision,
+        cutover_at,
+    )
+    overrides = {
+        "revision": Decimal(
+            str(
+                operation_revision + 1
+                if status == "scheduled"
+                else operation_revision
+            )
+        ),
+        "pendingVersion": Decimal(str(pending_version)),
+        "pendingStatus": status,
+        "activationToken": token,
+        "cutoverAt": cutover_at,
+        "scheduleName": app._schedule_name(token),
+    }
+    if status == "scheduled":
+        overrides["scheduleArn"] = (
+            "arn:aws:scheduler:eu-north-1:123456789012:"
+            f"schedule/default/{overrides['scheduleName']}"
+        )
+    return activation_state(str(current_version), **overrides)
+
+
 def snapshot_item(version="1", *, elements=None, **overrides):
     if elements is None:
         elements = [table_element()]
@@ -336,6 +374,7 @@ def manual_item(**overrides):
         **slot_key(),
         "reservationId": MANUAL_ID,
         "source": "manual_block",
+        "layoutVersion": Decimal("1"),
         "ttl": Decimal(str(int(end.timestamp()))),
         "createdBy": CALLER_SUB,
         "createdAt": "2026-09-08T12:00:00Z",
@@ -366,6 +405,42 @@ def put_prerequisites(
     put_user(tables["user"], user)
     tables["snapshot"].put_item(Item=state or activation_state())
     tables["snapshot"].put_item(Item=snapshot or snapshot_item())
+
+
+def put_scheduled_layout_transition(
+    app,
+    tables,
+    *,
+    cutover_at="2026-09-20T14:00:00Z",
+    current_elements=None,
+    pending_elements=None,
+    status="scheduled",
+):
+    state = pending_activation_state(
+        app,
+        status=status,
+        cutover_at=cutover_at,
+    )
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            elements=current_elements or [table_element("current-table")],
+            effectiveTo=cutover_at if status == "scheduled" else None,
+            expiresAt=cutover_at if status == "scheduled" else None,
+        )
+    )
+    if status == "scheduled":
+        tables["snapshot"].put_item(
+            Item=snapshot_item(
+                "2",
+                elements=pending_elements
+                or [table_element("pending-table")],
+                isCurrent=False,
+                effectiveFrom=cutover_at,
+            )
+        )
 
 
 def response_body(response):
@@ -899,6 +974,467 @@ def test_creates_manual_block_for_active_table(app_and_tables):
     )["Item"] == manual_item()
 
 
+def test_block_before_scheduled_cutover_uses_current_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T18:00:00Z",
+        current_elements=[table_element()],
+        pending_elements=[table_element("pending-table")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("1"))
+
+
+def test_block_after_scheduled_cutover_uses_pending_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element("current-table")],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("2"))
+
+
+def test_slot_starting_at_cutover_uses_pending_layout(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T16:00:00Z",
+        current_elements=[table_element("current-table")],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("2"))
+
+
+def test_table_must_exist_in_layout_effective_for_slot(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element()],
+        pending_elements=[table_element("pending-table")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_slot_crossing_scheduled_cutover_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T17:00:00Z",
+        current_elements=[table_element()],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "requested slot crosses a layout activation cutover"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_scheduling_transition_allows_slot_wholly_before_cutover(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        status="scheduling",
+        cutover_at="2026-09-20T18:00:00Z",
+        current_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("1"))
+
+
+def test_scheduling_transition_rejects_slot_reaching_future_side(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        status="scheduling",
+        cutover_at="2026-09-20T17:00:00Z",
+        current_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {
+            "error": (
+                "layout activation is still being scheduled; retry request"
+            )
+        },
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_overdue_scheduled_cutover_returns_409(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    cutover_at = "2026-09-20T14:00:00Z"
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at=cutover_at,
+        pending_elements=[table_element()],
+    )
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 9, 20, 14, 0, tzinfo=timezone.utc),
+    )
+
+    response = app.handler(
+        make_event(body=valid_body(startTime="18:00")),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation cutover is overdue; retry request"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_incomplete_pending_activation_state_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    state.pop("scheduleArn")
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_invalid_environment_with_pending_state_returns_503(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    monkeypatch.setattr(app, "ENVIRONMENT", "staging")
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+
+
+def test_prod_pending_target_must_observe_28_day_delay(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    monkeypatch.setattr(app, "ENVIRONMENT", "prod")
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_missing_pending_snapshot_for_future_slot_returns_409(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    tables["snapshot"].delete_item(
+        Key={"PK": f"LOCATION#{LOCATION_ID}", "SK": "LAYOUT#v2"}
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_current_snapshot_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            archivedBy="owner-sub",
+            archivedAt="2026-09-02T10:00:00Z",
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_snapshot_reads_are_strongly_consistent(app_and_tables):
+    app, _ = app_and_tables
+    snapshot_table = Mock()
+    snapshot_table.get_item.return_value = {}
+    key = {"PK": f"LOCATION#{LOCATION_ID}", "SK": "LAYOUT#v1"}
+
+    assert app._read_snapshot_item(snapshot_table, key) is None
+
+    snapshot_table.get_item.assert_called_once_with(
+        Key=key,
+        ConsistentRead=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"effectiveFrom": None},
+        {
+            "archivedBy": "owner-sub",
+            "archivedAt": "2026-09-10T10:00:00Z",
+        },
+        {"createdAt": "2026-09-20T13:58:00Z"},
+    ],
+    ids=["missing-effective-from", "archived", "before-delay"],
+)
+def test_invalid_pending_snapshot_returns_409(
+    app_and_tables,
+    overrides,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element()],
+            isCurrent=False,
+            **(
+                {"effectiveFrom": "2026-09-20T14:00:00Z"}
+                | overrides
+            ),
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_layout_read_retries_when_pending_identity_changes(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T15:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_one,
+                expiresAt=cutover_one,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "2",
+                isCurrent=False,
+                effectiveFrom=cutover_one,
+            )
+        },
+        {"Item": state_two},
+        {"Item": state_two},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_two,
+                expiresAt=cutover_two,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "3",
+                elements=[table_element()],
+                isCurrent=False,
+                effectiveFrom=cutover_two,
+            )
+        },
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+    }
+
+    version = app._effective_table_layout(
+        LOCATION_ID,
+        TABLE_ID,
+        slot,
+        NOW,
+    )
+
+    assert version == 3
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_layout_read_rejects_persistent_pending_identity_race(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T15:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    current = snapshot_item(
+        effectiveTo=cutover_one,
+        expiresAt=cutover_one,
+    )
+    target = snapshot_item(
+        "2",
+        isCurrent=False,
+        effectiveFrom=cutover_one,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": current},
+        {"Item": target},
+        {"Item": state_two},
+        {"Item": state_one},
+        {"Item": current},
+        {"Item": target},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+    }
+
+    with pytest.raises(
+        app._BlockConflict,
+        match="active layout changed; retry request",
+    ):
+        app._effective_table_layout(
+            LOCATION_ID,
+            TABLE_ID,
+            slot,
+            NOW,
+        )
+
+    assert snapshot_table.get_item.call_count == 8
+
+
 def test_table_label_does_not_change_block_response_or_record(
     app_and_tables,
 ):
@@ -1224,6 +1760,57 @@ def test_repeated_block_is_idempotent(app_and_tables):
     assert items == [manual_item()]
 
 
+@pytest.mark.parametrize(
+    "stored_layout_version",
+    [_UNSET, Decimal("99")],
+    ids=["legacy", "different-positive-version"],
+)
+def test_idempotent_block_is_layout_version_agnostic(
+    app_and_tables,
+    stored_layout_version,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    existing = manual_item()
+    if stored_layout_version is _UNSET:
+        existing.pop("layoutVersion")
+    else:
+        existing["layoutVersion"] = stored_layout_version
+    tables["occupancy"].put_item(Item=existing)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == existing
+
+
+def test_invalid_stored_layout_version_is_not_idempotent(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    corrupt = manual_item(layoutVersion=Decimal("0"))
+    tables["occupancy"].put_item(Item=corrupt)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot occupancy record is inconsistent"},
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == corrupt
+
+
 def test_unblocks_existing_manual_hold(app_and_tables):
     app, tables = app_and_tables
     tables["location"].put_item(Item=location_item())
@@ -1238,6 +1825,40 @@ def test_unblocks_existing_manual_hold(app_and_tables):
     assert_response(response, 204, None)
     assert "Content-Type" not in response["headers"]
     assert "Item" not in tables["occupancy"].get_item(Key=slot_key())
+
+
+def test_unblocks_legacy_manual_hold_without_layout_version(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    legacy = manual_item()
+    legacy.pop("layoutVersion")
+    tables["occupancy"].put_item(Item=legacy)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert "Item" not in tables["occupancy"].get_item(Key=slot_key())
+
+
+def test_delete_condition_tracks_optional_layout_version(app_and_tables):
+    app, _ = app_and_tables
+    versioned = app._expected_manual_condition(manual_item())
+    legacy_item = manual_item()
+    legacy_item.pop("layoutVersion")
+    legacy = app._expected_manual_condition(legacy_item)
+
+    assert "#layoutVersion = :layoutVersion" in versioned[
+        "ConditionExpression"
+    ]
+    assert versioned["ExpressionAttributeValues"][":layoutVersion"] == 1
+    assert "attribute_not_exists(#layoutVersion)" in legacy[
+        "ConditionExpression"
+    ]
+    assert ":layoutVersion" not in legacy["ExpressionAttributeValues"]
 
 
 def test_unblock_is_idempotent_when_hold_is_absent(app_and_tables):
@@ -1731,6 +2352,44 @@ def test_conditional_delete_race_preserves_replacement_reservation(
         409,
         {"error": "slot is occupied by a reservation"},
     )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
+
+
+@pytest.mark.parametrize(
+    ("initial_version", "replacement_version"),
+    [(_UNSET, Decimal("1")), (Decimal("1"), Decimal("2"))],
+    ids=["legacy-gains-version", "version-changes"],
+)
+def test_conditional_delete_race_preserves_layout_version_change(
+    app_and_tables,
+    monkeypatch,
+    initial_version,
+    replacement_version,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    initial = manual_item()
+    if initial_version is _UNSET:
+        initial.pop("layoutVersion")
+    else:
+        initial["layoutVersion"] = initial_version
+    tables["occupancy"].put_item(Item=initial)
+    replacement = {**initial, "layoutVersion": replacement_version}
+    original_delete = app._delete_manual_item
+
+    def change_version_then_delete(item):
+        tables["occupancy"].put_item(Item=replacement)
+        original_delete(item)
+
+    monkeypatch.setattr(app, "_delete_manual_item", change_version_then_delete)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 409, {"error": "slot changed; retry request"})
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
 
 

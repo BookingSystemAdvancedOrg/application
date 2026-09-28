@@ -8,15 +8,17 @@ PURPOSE:
     Lets authorized staff create or remove one manual hold for a canonical
     booking slot. The exact request body is ``date``, ``startTime``, and the
     desired ``blocked`` boolean. The slot end is derived from the location's
-    booking duration. A manual hold must never overwrite or delete a real
-    reservation hold.
+    booking duration. Creation validates the table against the published
+    layout effective for the complete slot and records that layout version.
+    A manual hold must never overwrite or delete a real reservation hold.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     LOCATION_TABLE_NAME -- Location timezone, hours, and booking duration
     USER_TABLE_NAME -- Caller role, status, and assigned location
     SLOT_OCCUPANCY_TABLE_NAME -- Manual hold storage
-    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- Active layout/table validation
+    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- Slot-effective layout/table
+        validation
 
 AWS RESOURCE ACCESS:
     Read-only on Location, User, and Published Layout Snapshot; full
@@ -27,6 +29,7 @@ Full details: docs/LAMBDA_REFERENCE.md
 
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -82,6 +85,25 @@ _WEEKDAYS = (
 )
 _ACTIVATION_STATE_SK = "LAYOUT#ACTIVATION"
 _ACTIVATION_STATE_TYPE = "layoutActivationState"
+_SCHEDULE_NAME_PREFIX = "expire-layout-version-"
+_SCHEDULE_GROUP = "default"
+_SCHEDULING = "scheduling"
+_SCHEDULED = "scheduled"
+_PENDING_STATE_FIELDS = frozenset(
+    {
+        "pendingVersion",
+        "pendingStatus",
+        "activationToken",
+        "cutoverAt",
+        "scheduleName",
+        "scheduleArn",
+    }
+)
+_ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
+_REPLACEMENT_DELAYS = {
+    "dev": timedelta(minutes=5),
+    "prod": timedelta(days=28),
+}
 _MANUAL_SOURCE = "manual_block"
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
@@ -421,6 +443,8 @@ def _slot_details(request_details, location, now):
         "endTime": end_time,
         "tableId": table_id,
         "ttl": int(end_utc.timestamp()),
+        "startUtc": start_utc,
+        "endUtc": end_utc,
     }
 
 
@@ -445,6 +469,35 @@ def _read_snapshot_item(snapshot_table, key):
     return item
 
 
+def _schedule_name(activation_token):
+    suffix_length = 64 - len(_SCHEDULE_NAME_PREFIX)
+    return f"{_SCHEDULE_NAME_PREFIX}{activation_token[:suffix_length]}"
+
+
+def _activation_token(
+    location_id,
+    current_version,
+    pending_version,
+    revision,
+    cutover_at,
+):
+    identity = json.dumps(
+        {
+            "environment": ENVIRONMENT,
+            "snapshotTable": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
+            "locationId": location_id,
+            "currentVersion": current_version,
+            "pendingVersion": pending_version,
+            "revision": revision,
+            "cutoverAt": cutover_at,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def _validate_activation_state(state, location_id):
     if (
         state.get("PK") != f"LOCATION#{location_id}"
@@ -454,14 +507,109 @@ def _validate_activation_state(state, location_id):
         raise _BlockConflict("layout activation state is inconsistent")
     try:
         current_version = _positive_integer(state.get("currentVersion"))
-        _positive_integer(state.get("revision"))
-        _stored_string(state, "updatedBy")
-        _parse_utc_timestamp(state.get("updatedAt"))
+        revision = _positive_integer(state.get("revision"))
+        updated_by = _stored_string(state, "updatedBy")
+        updated_at = state.get("updatedAt")
+        _parse_utc_timestamp(updated_at)
     except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict(
             "layout activation state is inconsistent"
         ) from None
-    return current_version
+
+    present_pending_fields = set(state) & _PENDING_STATE_FIELDS
+    if not present_pending_fields:
+        return {
+            "currentVersion": current_version,
+            "revision": revision,
+            "updatedBy": updated_by,
+            "updatedAt": updated_at,
+            "pending": None,
+        }
+
+    required_pending_fields = _PENDING_STATE_FIELDS - {"scheduleArn"}
+    if not required_pending_fields.issubset(state):
+        raise _BlockConflict("layout activation state is inconsistent")
+    if ENVIRONMENT not in _REPLACEMENT_DELAYS:
+        raise _BlockServiceFailure
+
+    try:
+        pending_version = _positive_integer(state.get("pendingVersion"))
+        if pending_version == current_version:
+            raise ValueError
+
+        pending_status = _stored_string(state, "pendingStatus")
+        if pending_status not in {_SCHEDULING, _SCHEDULED}:
+            raise ValueError
+
+        activation_token = _stored_string(state, "activationToken")
+        if len(activation_token) != 64 or any(
+            value not in "0123456789abcdef" for value in activation_token
+        ):
+            raise ValueError
+
+        cutover_at = state.get("cutoverAt")
+        parsed_cutover = _parse_utc_timestamp(cutover_at)
+        if parsed_cutover.second != 0 or parsed_cutover.microsecond != 0:
+            raise ValueError
+
+        operation_revision = (
+            revision if pending_status == _SCHEDULING else revision - 1
+        )
+        if operation_revision <= 0 or activation_token != _activation_token(
+            location_id,
+            current_version,
+            pending_version,
+            operation_revision,
+            cutover_at,
+        ):
+            raise ValueError
+
+        schedule_name = _stored_string(
+            state,
+            "scheduleName",
+            max_length=64,
+        )
+        if schedule_name != _schedule_name(activation_token):
+            raise ValueError
+
+        schedule_arn = None
+        if "scheduleArn" in state:
+            schedule_arn = _stored_string(
+                state,
+                "scheduleArn",
+                max_length=2048,
+            )
+        if pending_status == _SCHEDULING:
+            if "scheduleArn" in state:
+                raise ValueError
+        elif (
+            schedule_arn is None
+            or ":scheduler:" not in schedule_arn
+            or not schedule_arn.endswith(
+                f":schedule/{_SCHEDULE_GROUP}/{schedule_name}"
+            )
+        ):
+            raise ValueError
+    except (ArithmeticError, TypeError, ValueError):
+        raise _BlockConflict(
+            "layout activation state is inconsistent"
+        ) from None
+
+    return {
+        "currentVersion": current_version,
+        "revision": revision,
+        "updatedBy": updated_by,
+        "updatedAt": updated_at,
+        "pending": {
+            "version": pending_version,
+            "status": pending_status,
+            "activationToken": activation_token,
+            "cutoverAt": cutover_at,
+            "parsedCutover": parsed_cutover,
+            "scheduleName": schedule_name,
+            "scheduleArn": schedule_arn,
+        },
+    }
 
 
 def _validate_layout_element(element):
@@ -543,27 +691,29 @@ def _validate_floor_relationships(elements):
             raise ValueError
 
 
-def _validate_active_snapshot(
-    snapshot,
-    location_id,
-    current_version,
-    table_id,
-    now,
-):
-    if not _SNAPSHOT_REQUIRED_FIELDS.issubset(snapshot):
+def _validate_layout_snapshot(snapshot, location_id, version):
+    if (
+        not isinstance(snapshot, dict)
+        or not _SNAPSHOT_REQUIRED_FIELDS.issubset(snapshot)
+    ):
         raise _BlockConflict("published layout record is inconsistent")
     try:
-        version = _positive_integer(snapshot.get("version"))
+        stored_version = _positive_integer(snapshot.get("version"))
         if (
-            version != current_version
+            stored_version != version
             or snapshot.get("PK") != f"LOCATION#{location_id}"
             or snapshot.get("SK") != f"LAYOUT#v{version}"
-            or snapshot.get("isCurrent") is not True
+            or not isinstance(snapshot.get("isCurrent"), bool)
         ):
             raise ValueError
 
         _stored_string(snapshot, "label")
-        effective_from = _parse_utc_timestamp(snapshot.get("effectiveFrom"))
+        effective_from = _parse_utc_timestamp(
+            snapshot.get("effectiveFrom"),
+            nullable=True,
+        )
+        if snapshot["isCurrent"] and effective_from is None:
+            raise ValueError
         effective_to = _parse_utc_timestamp(
             snapshot.get("effectiveTo"),
             nullable=True,
@@ -572,21 +722,13 @@ def _validate_active_snapshot(
             snapshot.get("expiresAt"),
             nullable=True,
         )
-        if (
-            effective_from > now
-            or effective_to is not None
-            and effective_to <= now
-            or expires_at is not None
-            and expires_at <= now
-        ):
-            raise ValueError
 
         elements = snapshot.get("elements")
         if not isinstance(elements, list) or snapshot.get("validPositions") != []:
             raise ValueError
         seen_ids = set()
-        requested_type = None
         validated_elements = []
+        table_ids = set()
         for element in elements:
             validated_element = _validate_layout_element(element)
             element_id = validated_element["elementId"]
@@ -594,62 +736,209 @@ def _validate_active_snapshot(
                 raise ValueError
             seen_ids.add(element_id)
             validated_elements.append(validated_element)
-            if element_id == table_id:
-                requested_type = validated_element["type"]
+            if validated_element["type"] == "table":
+                table_ids.add(element_id)
         _validate_floor_relationships(validated_elements)
 
         _stored_string(snapshot, "createdBy")
-        _parse_utc_timestamp(snapshot.get("createdAt"))
+        created_at = _parse_utc_timestamp(snapshot.get("createdAt"))
         _stored_string(snapshot, "updatedBy")
         _parse_utc_timestamp(snapshot.get("updatedAt"))
+
+        present_archive_fields = set(snapshot) & _ARCHIVE_FIELDS
+        if present_archive_fields and present_archive_fields != _ARCHIVE_FIELDS:
+            raise ValueError
+        archived = bool(present_archive_fields)
+        if archived:
+            _stored_string(snapshot, "archivedBy")
+            _parse_utc_timestamp(snapshot.get("archivedAt"))
     except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict(
             "published layout record is inconsistent"
         ) from None
-    return requested_type == "table"
+
+    return {
+        "isCurrent": snapshot["isCurrent"],
+        "effectiveFrom": effective_from,
+        "effectiveFromValue": snapshot.get("effectiveFrom"),
+        "effectiveTo": effective_to,
+        "effectiveToValue": snapshot.get("effectiveTo"),
+        "expiresAt": expires_at,
+        "expiresAtValue": snapshot.get("expiresAt"),
+        "createdAt": created_at,
+        "archived": archived,
+        "tableIds": table_ids,
+    }
 
 
-def _active_table_exists(location_id, table_id, now):
+def _validate_current_snapshot(snapshot, location_id, state, now):
+    details = _validate_layout_snapshot(
+        snapshot,
+        location_id,
+        state["currentVersion"],
+    )
+    pending = state["pending"]
+    inconsistent_lifecycle = (
+        details["isCurrent"] is not True
+        or details["archived"]
+        or details["effectiveFrom"] > now
+    )
+    if pending is None or pending["status"] == _SCHEDULING:
+        inconsistent_lifecycle = inconsistent_lifecycle or (
+            details["effectiveTo"] is not None
+            or details["expiresAt"] is not None
+        )
+    else:
+        inconsistent_lifecycle = inconsistent_lifecycle or (
+            details["effectiveToValue"] != pending["cutoverAt"]
+            or details["expiresAtValue"] != pending["cutoverAt"]
+        )
+    if inconsistent_lifecycle:
+        raise _BlockConflict("published layout record is inconsistent")
+    return details
+
+
+def _validate_pending_snapshot(snapshot, location_id, state):
+    pending = state["pending"]
+    details = _validate_layout_snapshot(
+        snapshot,
+        location_id,
+        pending["version"],
+    )
+    try:
+        eligible_at = details["createdAt"] + _REPLACEMENT_DELAYS[ENVIRONMENT]
+    except KeyError:
+        raise _BlockServiceFailure from None
+    except OverflowError:
+        raise _BlockConflict(
+            "published layout record is inconsistent"
+        ) from None
+    if (
+        details["isCurrent"] is not False
+        or details["archived"]
+        or details["effectiveFromValue"] != pending["cutoverAt"]
+        or details["effectiveTo"] is not None
+        or details["expiresAt"] is not None
+        or pending["parsedCutover"] < eligible_at
+    ):
+        raise _BlockConflict("published layout record is inconsistent")
+    return details
+
+
+def _effective_table_layout(location_id, table_id, slot, now):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     for attempt in range(2):
-        state = _read_snapshot_item(
+        stored_state = _read_snapshot_item(
             snapshot_table,
             _activation_state_key(location_id),
         )
-        if state is None:
-            return False
-        current_version = _validate_activation_state(state, location_id)
-        snapshot = _read_snapshot_item(
-            snapshot_table,
-            {
-                "PK": f"LOCATION#{location_id}",
-                "SK": f"LAYOUT#v{current_version}",
-            },
-        )
-        if snapshot is None:
-            raise _BlockConflict("published layout record is inconsistent")
-
-        confirmed_state = _read_snapshot_item(
-            snapshot_table,
-            _activation_state_key(location_id),
-        )
-        if confirmed_state is None:
-            raise _BlockConflict("layout activation state is inconsistent")
-        confirmed_version = _validate_activation_state(
-            confirmed_state,
-            location_id,
-        )
-        if confirmed_version != current_version:
+        if stored_state is None:
+            confirmed_state = _read_snapshot_item(
+                snapshot_table,
+                _activation_state_key(location_id),
+            )
+            if confirmed_state is None:
+                return None
             if attempt == 0:
                 continue
             raise _BlockConflict("active layout changed; retry request")
 
-        return _validate_active_snapshot(
-            snapshot,
+        state = _validate_activation_state(stored_state, location_id)
+        current_snapshot = _read_snapshot_item(
+            snapshot_table,
+            {
+                "PK": f"LOCATION#{location_id}",
+                "SK": f"LAYOUT#v{state['currentVersion']}",
+            },
+        )
+
+        pending = state["pending"]
+        pending_snapshot = None
+        if (
+            pending is not None
+            and pending["status"] == _SCHEDULED
+            and slot["startUtc"] >= pending["parsedCutover"]
+        ):
+            pending_snapshot = _read_snapshot_item(
+                snapshot_table,
+                {
+                    "PK": f"LOCATION#{location_id}",
+                    "SK": f"LAYOUT#v{pending['version']}",
+                },
+            )
+
+        stored_confirmation = _read_snapshot_item(
+            snapshot_table,
+            _activation_state_key(location_id),
+        )
+        confirmed_state = (
+            _validate_activation_state(stored_confirmation, location_id)
+            if stored_confirmation is not None
+            else None
+        )
+        if confirmed_state != state:
+            if attempt == 0:
+                continue
+            raise _BlockConflict("active layout changed; retry request")
+
+        if (
+            pending is not None
+            and pending["status"] == _SCHEDULED
+            and pending["parsedCutover"] <= now
+        ):
+            raise _BlockConflict(
+                "layout activation cutover is overdue; retry request"
+            )
+
+        if current_snapshot is None:
+            raise _BlockConflict("published layout record is inconsistent")
+        current = _validate_current_snapshot(
+            current_snapshot,
             location_id,
-            current_version,
-            table_id,
+            state,
             now,
+        )
+
+        if pending is not None and pending["status"] == _SCHEDULING:
+            if slot["endUtc"] > pending["parsedCutover"]:
+                raise _BlockConflict(
+                    "layout activation is still being scheduled; retry request"
+                )
+            return (
+                state["currentVersion"]
+                if table_id in current["tableIds"]
+                else None
+            )
+
+        if pending is None:
+            return (
+                state["currentVersion"]
+                if table_id in current["tableIds"]
+                else None
+            )
+
+        cutover = pending["parsedCutover"]
+        if slot["endUtc"] <= cutover:
+            return (
+                state["currentVersion"]
+                if table_id in current["tableIds"]
+                else None
+            )
+        if slot["startUtc"] < cutover:
+            raise _BlockConflict(
+                "requested slot crosses a layout activation cutover"
+            )
+        if pending_snapshot is None:
+            raise _BlockConflict("published layout record is inconsistent")
+        target = _validate_pending_snapshot(
+            pending_snapshot,
+            location_id,
+            state,
+        )
+        return (
+            pending["version"]
+            if table_id in target["tableIds"]
+            else None
         )
     raise _BlockConflict("active layout changed; retry request")
 
@@ -823,12 +1112,13 @@ def _new_manual_id():
     return f"MANUAL_BLOCK#{uuid.uuid4()}"
 
 
-def _manual_item(slot, caller_sub, now):
+def _manual_item(slot, caller_sub, now, layout_version):
     return {
         "PK": slot["PK"],
         "SK": slot["SK"],
         "reservationId": _new_manual_id(),
         "source": _MANUAL_SOURCE,
+        "layoutVersion": layout_version,
         "ttl": slot["ttl"],
         "createdBy": caller_sub,
         "createdAt": _isoformat(now),
@@ -945,9 +1235,11 @@ def _is_manual_item(item, partition_key):
         )
         if _MANUAL_ID_PATTERN.fullmatch(reservation_id) is None:
             raise ValueError
+        if "layoutVersion" in item:
+            _positive_integer(item.get("layoutVersion"))
         _stored_string(item, "createdBy")
         _parse_utc_timestamp(item.get("createdAt"))
-    except (TypeError, ValueError):
+    except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict(
             "slot occupancy record is inconsistent"
         ) from None
@@ -1083,7 +1375,7 @@ def _unblock_candidate(request_details):
 
 
 def _expected_manual_condition(item):
-    return {
+    condition = {
         "ConditionExpression": (
             "attribute_exists(PK) AND attribute_exists(SK) "
             "AND #reservationId = :reservationId "
@@ -1105,6 +1397,19 @@ def _expected_manual_condition(item):
             ":createdAt": item["createdAt"],
         },
     }
+    condition["ExpressionAttributeNames"]["#layoutVersion"] = "layoutVersion"
+    if "layoutVersion" in item:
+        condition["ConditionExpression"] += (
+            " AND #layoutVersion = :layoutVersion"
+        )
+        condition["ExpressionAttributeValues"][":layoutVersion"] = item[
+            "layoutVersion"
+        ]
+    else:
+        condition["ConditionExpression"] += (
+            " AND attribute_not_exists(#layoutVersion)"
+        )
+    return condition
 
 
 def _delete_manual_item(item):
@@ -1174,14 +1479,16 @@ def _handle_block_request(details, caller_sub):
 
     now = _utc_now()
     slot = _slot_details(details, location, now)
-    if not _active_table_exists(
+    layout_version = _effective_table_layout(
         details["locationId"],
         details["tableId"],
+        slot,
         now.astimezone(timezone.utc),
-    ):
+    )
+    if layout_version is None:
         return _block_error(HTTPStatus.NOT_FOUND.value, "table not found")
 
-    item = _manual_item(slot, caller_sub, now)
+    item = _manual_item(slot, caller_sub, now, layout_version)
     created = _create_manual_block(slot, item)
     status = HTTPStatus.CREATED.value if created else HTTPStatus.OK.value
     return _block_response(status, _public_block(slot))

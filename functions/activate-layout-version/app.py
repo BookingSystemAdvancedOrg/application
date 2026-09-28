@@ -5,10 +5,10 @@ TRIGGER:
     /locations/{locationId}/layout/versions/{versionId}/activate -- Auth: JWT
 
 PURPOSE:
-    Activates a published layout snapshot. An optional ``effectiveFrom``
-    request timestamp can replace the current version immediately or schedule
-    an exact future UTC-minute cutover. Omitting it preserves the default
-    activation behavior.
+    Activates a published layout snapshot. The first layout activates
+    immediately. A replacement cannot activate until five minutes after it
+    was published in dev or 28 days after publication in prod. An optional
+    ``effectiveFrom`` can select a later whole-UTC-minute cutover.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -28,7 +28,7 @@ import binascii
 import hashlib
 import json
 import os
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http import HTTPStatus
 
@@ -62,6 +62,10 @@ _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
 _ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom"})
 _MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
+_REPLACEMENT_DELAYS = {
+    "dev": timedelta(minutes=5),
+    "prod": timedelta(days=28),
+}
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "version",
@@ -584,6 +588,7 @@ def _target_condition(target):
             "AND #effectiveFrom = :expectedEffectiveFrom "
             "AND #effectiveTo = :expectedEffectiveTo "
             "AND #expiresAt = :expectedExpiresAt "
+            "AND #createdAt = :expectedCreatedAt "
             "AND attribute_not_exists(#archivedAt) "
             "AND attribute_not_exists(#archivedBy)"
         ),
@@ -593,6 +598,7 @@ def _target_condition(target):
             "#effectiveFrom": "effectiveFrom",
             "#effectiveTo": "effectiveTo",
             "#expiresAt": "expiresAt",
+            "#createdAt": "createdAt",
             "#archivedAt": "archivedAt",
             "#archivedBy": "archivedBy",
         },
@@ -603,6 +609,7 @@ def _target_condition(target):
                 ":expectedEffectiveFrom": target["effectiveFrom"],
                 ":expectedEffectiveTo": target["effectiveTo"],
                 ":expectedExpiresAt": target["expiresAt"],
+                ":expectedCreatedAt": target["createdAt"],
             }
         ),
     }
@@ -728,15 +735,36 @@ def _bootstrap_state(location_id, target, caller_sub, now):
     return target["effectiveFrom"], normalized_target
 
 
-def _cutover_time(now):
-    if not isinstance(now, datetime) or now.tzinfo is None:
+def _replacement_delay():
+    delay = _REPLACEMENT_DELAYS.get(ENVIRONMENT)
+    if delay is None:
         raise _ActivationServiceFailure
-    future_date = (now.astimezone(timezone.utc) + timedelta(weeks=4)).date()
-    return datetime.combine(
-        future_date,
-        time(hour=1),
-        tzinfo=timezone.utc,
-    )
+    return delay
+
+
+def _replacement_eligibility(target):
+    delay = _replacement_delay()
+
+    try:
+        created_at = datetime.fromisoformat(
+            _utc_timestamp(target, "createdAt").replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        return created_at + delay
+    except (OverflowError, TypeError, ValueError):
+        raise _ActivationConflict(
+            "published layout record is inconsistent"
+        ) from None
+
+
+def _ceil_to_whole_minute(value):
+    try:
+        value = value.astimezone(timezone.utc)
+        minute = value.replace(second=0, microsecond=0)
+        if value != minute:
+            minute += timedelta(minutes=1)
+        return minute
+    except (AttributeError, OverflowError, ValueError):
+        raise _ActivationServiceFailure from None
 
 
 def _activation_token(
@@ -1255,6 +1283,7 @@ def _snapshot_condition_is_unchanged(actual, expected):
         "effectiveFrom",
         "effectiveTo",
         "expiresAt",
+        "createdAt",
     )
     return all(
         actual.get(field) == expected.get(field)
@@ -1775,16 +1804,52 @@ def _start_pending_activation(
     return _pending_response(state_details["currentVersion"], pending)
 
 
-def _new_transition_cutover(timing, now):
+def _replacement_transition(timing, target, now):
+    eligible_at = _replacement_eligibility(target)
+    now = now.astimezone(timezone.utc)
+
     if timing["mode"] == "default":
-        return _isoformat(_cutover_time(now))
+        if now >= eligible_at:
+            return {"mode": "immediate"}
+        try:
+            earliest_safe_cutover = max(
+                eligible_at,
+                now + _MINIMUM_SCHEDULE_LEAD,
+            )
+        except OverflowError:
+            raise _ActivationServiceFailure from None
+        return {
+            "mode": "future",
+            "effectiveFrom": _isoformat(
+                _ceil_to_whole_minute(earliest_safe_cutover)
+            ),
+        }
+
+    if timing["mode"] == "immediate":
+        if now < eligible_at:
+            raise _ActivationConflict(
+                "layout version cannot activate before "
+                f"{_isoformat(eligible_at)}"
+            )
+        return {"mode": "immediate"}
+
     if timing["mode"] != "future":
         raise _ActivationServiceFailure
     if not timing["hasMinimumLead"]:
         raise _ActivationRequestError(
             "future effectiveFrom must be at least 60 seconds from now"
         )
-    return timing["effectiveFrom"]
+
+    earliest_scheduled = _ceil_to_whole_minute(eligible_at)
+    requested_at = datetime.fromisoformat(
+        timing["effectiveFrom"].replace("Z", "+00:00")
+    )
+    if requested_at < earliest_scheduled:
+        raise _ActivationConflict(
+            "layout version cannot activate before "
+            f"{_isoformat(earliest_scheduled)}"
+        )
+    return timing
 
 
 def _activate_version(location_id, version, caller_sub, timing, now):
@@ -1834,7 +1899,8 @@ def _activate_version(location_id, version, caller_sub, timing, now):
             )
         if state_details["currentVersion"] == version:
             return _active_response(version, target["effectiveFrom"])
-        if timing["mode"] == "immediate":
+        transition = _replacement_transition(timing, target, now)
+        if transition["mode"] == "immediate":
             effective_from = _replace_current_immediately(
                 location_id,
                 state_details,
@@ -1844,7 +1910,6 @@ def _activate_version(location_id, version, caller_sub, timing, now):
                 now,
             )
             return _active_response(version, effective_from)
-        cutover_at = _new_transition_cutover(timing, now)
         return _start_pending_activation(
             location_id,
             state_details,
@@ -1852,7 +1917,7 @@ def _activate_version(location_id, version, caller_sub, timing, now):
             target,
             caller_sub,
             now,
-            cutover_at,
+            transition["effectiveFrom"],
         )
 
     target = by_version.get(version)
@@ -1868,7 +1933,10 @@ def _activate_version(location_id, version, caller_sub, timing, now):
 
     if current:
         current_version = _snapshot_version(current[0], location_id)
-        if current_version != version and timing["mode"] == "immediate":
+        transition = None
+        if current_version != version:
+            transition = _replacement_transition(timing, target, now)
+        if transition is not None and transition["mode"] == "immediate":
             effective_from = _replace_current_immediately(
                 location_id,
                 None,
@@ -1879,9 +1947,6 @@ def _activate_version(location_id, version, caller_sub, timing, now):
             )
             return _active_response(version, effective_from)
 
-        cutover_at = None
-        if current_version != version:
-            cutover_at = _new_transition_cutover(timing, now)
         effective_from, normalized_current = _bootstrap_state(
             location_id,
             current[0],
@@ -1901,11 +1966,14 @@ def _activate_version(location_id, version, caller_sub, timing, now):
             target,
             caller_sub,
             now,
-            cutover_at,
+            transition["effectiveFrom"],
         )
 
     if timing["mode"] == "future":
-        _new_transition_cutover(timing, now)
+        if not timing["hasMinimumLead"]:
+            raise _ActivationRequestError(
+                "future effectiveFrom must be at least 60 seconds from now"
+            )
         raise _ActivationConflict(
             "future activation requires a current layout version"
         )
@@ -1976,6 +2044,7 @@ def handler(event, context):
     now = _utc_now()
     try:
         timing = _activation_timing(event, now)
+        _replacement_delay()
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _ActivationServiceFailure:

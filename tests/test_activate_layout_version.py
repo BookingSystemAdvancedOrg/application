@@ -795,7 +795,7 @@ def test_valid_archived_history_does_not_break_active_version_read(
 def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     snapshot_table.put_item(Item=current)
     snapshot_table.put_item(Item=target)
     snapshot_table.put_item(Item=activation_state())
@@ -811,7 +811,7 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
             "status": "pending",
             "version": 2,
             "currentVersion": 1,
-            "cutoverAt": "2026-10-05T01:00:00Z",
+            "cutoverAt": "2026-09-07T10:31:00Z",
         },
     )
 
@@ -823,10 +823,10 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
     )["Item"]
     assert stored_current["isCurrent"] is True
     assert stored_current["effectiveFrom"] == current["effectiveFrom"]
-    assert stored_current["effectiveTo"] == "2026-10-05T01:00:00Z"
-    assert stored_current["expiresAt"] == "2026-10-05T01:00:00Z"
+    assert stored_current["effectiveTo"] == "2026-09-07T10:31:00Z"
+    assert stored_current["expiresAt"] == "2026-09-07T10:31:00Z"
     assert stored_target["isCurrent"] is False
-    assert stored_target["effectiveFrom"] == "2026-10-05T01:00:00Z"
+    assert stored_target["effectiveFrom"] == "2026-09-07T10:31:00Z"
     assert stored_target["effectiveTo"] is None
     assert stored_target["expiresAt"] is None
     assert sum(
@@ -834,7 +834,10 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
     ) == 1
 
     state = snapshot_table.get_item(Key=state_key())["Item"]
-    assert state == pending_activation_state(app)
+    assert state == pending_activation_state(
+        app,
+        cutover_at="2026-09-07T10:31:00Z",
+    )
     assert state["revision"] == Decimal("3")
 
     request = scheduler.create_schedule.call_args.kwargs
@@ -842,7 +845,7 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
         "Name": state["scheduleName"],
         "GroupName": "default",
         "ClientToken": state["activationToken"],
-        "ScheduleExpression": "at(2026-10-05T01:00:00)",
+        "ScheduleExpression": "at(2026-09-07T10:31:00)",
         "ScheduleExpressionTimezone": "UTC",
         "FlexibleTimeWindow": {"Mode": "OFF"},
         "ActionAfterCompletion": "DELETE",
@@ -870,14 +873,14 @@ def test_second_activation_creates_pending_cutover(app_and_table, monkeypatch):
 
 
 @pytest.mark.parametrize("body", [None, "", "{}"])
-def test_empty_optional_body_preserves_legacy_cutover(
+def test_empty_optional_body_uses_publication_delay(
     app_and_table,
     monkeypatch,
     body,
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     scheduler = successful_scheduler()
@@ -895,15 +898,195 @@ def test_empty_optional_body_preserves_legacy_cutover(
             "status": "pending",
             "version": 2,
             "currentVersion": 1,
-            "cutoverAt": "2026-10-05T01:00:00Z",
+            "cutoverAt": "2026-09-07T10:31:00Z",
         },
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
     assert scheduler.create_schedule.call_args.kwargs[
         "ScheduleExpression"
-    ] == "at(2026-10-05T01:00:00)"
+    ] == "at(2026-09-07T10:31:00)"
+
+
+@pytest.mark.parametrize(
+    ("environment", "created_at", "expected_cutover"),
+    [
+        (
+            "dev",
+            "2026-09-07T10:26:01Z",
+            "2026-09-07T10:32:00Z",
+        ),
+        (
+            "dev",
+            "2026-09-07T10:25:30Z",
+            "2026-09-07T10:31:00Z",
+        ),
+        (
+            "prod",
+            "2026-08-10T10:31:15Z",
+            "2026-09-07T10:32:00Z",
+        ),
+    ],
+)
+def test_default_replacement_uses_safe_whole_minute_cutover(
+    app_and_table,
+    monkeypatch,
+    environment,
+    created_at,
+    expected_cutover,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt=created_at)
+    for item in (current, target, activation_state()):
+        snapshot_table.put_item(Item=item)
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        202,
+        {
+            "status": "pending",
+            "version": 2,
+            "currentVersion": 1,
+            "cutoverAt": expected_cutover,
+        },
+    )
+    assert scheduler.create_schedule.call_args.kwargs[
+        "ScheduleExpression"
+    ] == f"at({expected_cutover.removesuffix('Z')})"
+
+
+@pytest.mark.parametrize(
+    ("environment", "created_at"),
+    [
+        ("dev", "2026-09-07T10:25:00Z"),
+        ("dev", "2026-09-07T10:24:00Z"),
+        ("prod", "2026-08-10T10:30:00Z"),
+    ],
+)
+def test_default_replacement_is_immediate_once_eligible(
+    app_and_table,
+    monkeypatch,
+    environment,
+    created_at,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt=created_at)
+    for item in (current, target, activation_state()):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "status": "active",
+            "version": 2,
+            "effectiveFrom": "2026-09-07T10:30:00Z",
+        },
+    )
+    scheduler_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "effective_from",
+    [
+        "2026-09-07T10:29:00Z",
+        "2026-09-07T10:30:00Z",
+        "2026-09-07T10:31:00Z",
+    ],
+)
+def test_ineligible_replacement_request_is_rejected_without_writes(
+    app_and_table,
+    monkeypatch,
+    effective_from,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt="2026-09-07T10:27:00Z")
+    state = activation_state()
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    transaction_factory = Mock(
+        side_effect=AssertionError("must not write")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
+
+    response = app.handler(
+        make_event(
+            version_id="2",
+            body=json.dumps({"effectiveFrom": effective_from}),
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {
+            "error": (
+                "layout version cannot activate before "
+                "2026-09-07T10:32:00Z"
+            )
+        },
+    )
+    scheduler_factory.assert_not_called()
+    transaction_factory.assert_not_called()
+    assert snapshot_table.get_item(Key=state_key())["Item"] == state
+    assert snapshot_table.get_item(
+        Key={"PK": current["PK"], "SK": current["SK"]}
+    )["Item"] == current
+    assert snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"] == target
+
+
+def test_explicit_future_at_eligibility_is_accepted(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt="2026-09-07T10:27:00Z")
+    for item in (current, target, activation_state()):
+        snapshot_table.put_item(Item=item)
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+
+    response = app.handler(
+        make_event(
+            version_id="2",
+            body=json.dumps(
+                {"effectiveFrom": "2026-09-07T10:32:00Z"}
+            ),
+        ),
+        None,
+    )
+
+    assert_response(response, 202)
+    assert response_body(response)["cutoverAt"] == (
+        "2026-09-07T10:32:00Z"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1142,6 +1325,7 @@ def test_delayed_activation_preserves_immutable_content(
         2,
         label="Replacement",
         elements=[{"elementId": "new"}],
+        createdAt="2026-09-07T10:26:00Z",
     )
     snapshot_table.put_item(Item=current)
     snapshot_table.put_item(Item=target)
@@ -1170,7 +1354,7 @@ def test_delayed_activation_preserves_immutable_content(
 def test_delayed_activation_creates_schedule_with_moto(app_and_table):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
 
@@ -1184,7 +1368,7 @@ def test_delayed_activation_creates_schedule_with_moto(app_and_table):
     )
     assert stored_schedule["Arn"] == state["scheduleArn"]
     assert stored_schedule["ScheduleExpression"] == (
-        "at(2026-10-05T01:00:00)"
+        "at(2026-09-07T10:31:00)"
     )
     assert stored_schedule["ScheduleExpressionTimezone"] == "UTC"
     assert json.loads(stored_schedule["Target"]["Input"]) == {
@@ -1202,7 +1386,7 @@ def test_legacy_current_without_state_can_schedule_replacement(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     snapshot_table.put_item(Item=current)
     snapshot_table.put_item(Item=target)
     scheduler = successful_scheduler()
@@ -1212,7 +1396,10 @@ def test_legacy_current_without_state_can_schedule_replacement(
 
     assert_response(response, 202)
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
 
 
@@ -1223,7 +1410,7 @@ def test_legacy_current_without_state_can_schedule_exact_future(
     app, snapshot_table = app_and_table
     cutover_at = "2026-09-10T12:45:00Z"
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     snapshot_table.put_item(Item=current)
     snapshot_table.put_item(Item=target)
     scheduler = successful_scheduler()
@@ -1335,39 +1522,109 @@ def test_unstaged_current_with_cutoff_returns_409(app_and_table, field):
 
 
 @pytest.mark.parametrize(
-    ("now", "expected"),
+    ("environment", "expected"),
     [
-        (
-            datetime(2026, 9, 7, 10, 30, tzinfo=timezone.utc),
-            "2026-10-05T01:00:00Z",
-        ),
-        (
-            datetime(2026, 12, 10, 23, 59, tzinfo=timezone.utc),
-            "2027-01-07T01:00:00Z",
-        ),
-        (
-            datetime(2027, 1, 31, 12, 0, tzinfo=timezone.utc),
-            "2027-02-28T01:00:00Z",
-        ),
-        (
-            datetime(
-                2026,
-                9,
-                7,
-                0,
-                30,
-                59,
-                999999,
-                tzinfo=timezone(timedelta(hours=2)),
-            ),
-            "2026-10-04T01:00:00Z",
-        ),
+        ("dev", "2026-09-07T10:31:45.123456Z"),
+        ("prod", "2026-10-05T10:26:45.123456Z"),
     ],
 )
-def test_cutover_uses_utc_date_four_weeks_ahead(app_and_table, now, expected):
+def test_replacement_eligibility_uses_publication_time_and_environment(
+    app_and_table,
+    monkeypatch,
+    environment,
+    expected,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    target = snapshot_item(createdAt="2026-09-07T10:26:45.123456Z")
+
+    assert app._isoformat(app._replacement_eligibility(target)) == expected
+
+
+def test_whole_minute_ceiling_normalizes_to_utc(app_and_table):
     app, _ = app_and_table
 
-    assert app._isoformat(app._cutover_time(now)) == expected
+    result = app._ceil_to_whole_minute(
+        datetime(
+            2026,
+            9,
+            7,
+            12,
+            31,
+            0,
+            1,
+            tzinfo=timezone(timedelta(hours=2)),
+        )
+    )
+
+    assert app._isoformat(result) == "2026-09-07T10:32:00Z"
+
+
+def test_unknown_environment_returns_503_without_transition_writes(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", "staging")
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2)
+    state = activation_state()
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    transaction_factory = Mock(
+        side_effect=AssertionError("must not write")
+    )
+    table_factory = Mock(
+        side_effect=AssertionError("must not read DynamoDB")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "layout activation service unavailable"},
+    )
+    scheduler_factory.assert_not_called()
+    transaction_factory.assert_not_called()
+    table_factory.assert_not_called()
+    assert snapshot_table.get_item(Key=state_key())["Item"] == state
+
+
+def test_created_at_delay_overflow_is_a_stored_record_conflict(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2, createdAt="9999-12-31T23:59:59Z")
+    state = activation_state()
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    scheduler_factory = Mock(
+        side_effect=AssertionError("must not call Scheduler")
+    )
+    transaction_factory = Mock(
+        side_effect=AssertionError("must not write")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", scheduler_factory)
+    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    scheduler_factory.assert_not_called()
+    transaction_factory.assert_not_called()
 
 
 def test_schedule_name_is_aws_safe_and_deterministic(app_and_table):
@@ -1479,6 +1736,60 @@ def test_repeat_of_scheduled_activation_is_idempotent(
     )
     scheduler.create_schedule.assert_not_called()
     transaction_factory.assert_not_called()
+
+
+def test_pending_retry_preserves_cutover_that_predates_current_policy(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-09-07T10:31:00Z"
+    current = snapshot_item(
+        1,
+        is_current=True,
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = snapshot_item(
+        2,
+        createdAt="2026-09-07T10:29:00Z",
+        effectiveFrom=cutover_at,
+        expiresAt=None,
+    )
+    state = pending_activation_state(app, cutover_at=cutover_at)
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    pending = app._validate_state(state, LOCATION_ID)["pending"]
+    schedule_request = app._schedule_request(current, target, pending)
+    scheduler = Mock()
+    scheduler.get_schedule.return_value = existing_schedule_response(
+        schedule_request
+    )
+    scheduler.create_schedule.side_effect = AssertionError(
+        "must not create a second schedule"
+    )
+    transaction_factory = Mock(
+        side_effect=AssertionError("must not write")
+    )
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
+    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        202,
+        {
+            "status": "pending",
+            "version": 2,
+            "currentVersion": 1,
+            "cutoverAt": cutover_at,
+        },
+    )
+    scheduler.get_schedule.assert_called_once()
+    scheduler.create_schedule.assert_not_called()
+    transaction_factory.assert_not_called()
+    assert snapshot_table.get_item(Key=state_key())["Item"] == state
 
 
 @pytest.mark.parametrize(
@@ -1952,6 +2263,8 @@ def test_multiple_current_versions_return_409_without_writes(app_and_table):
         ("elements", ["invalid"]),
         ("validPositions", [{}]),
         ("createdBy", " publisher-sub"),
+        ("createdAt", "not-a-time"),
+        ("createdAt", "2026-09-07T10:30:00+02:00"),
         ("updatedAt", "2026-09-07T10:30:00+02:00"),
     ],
 )
@@ -2435,7 +2748,7 @@ def test_schedule_failure_leaves_resumable_safe_state(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     initial_state = activation_state()
     for item in (current, target, initial_state):
         snapshot_table.put_item(Item=item)
@@ -2452,7 +2765,11 @@ def test_schedule_failure_leaves_resumable_safe_state(
     )
     assert "sensitive" not in response["body"]
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app, status="scheduling")
+        pending_activation_state(
+            app,
+            status="scheduling",
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
@@ -2484,7 +2801,7 @@ def test_malformed_schedule_response_leaves_resumable_state(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     scheduler = Mock()
@@ -2499,7 +2816,11 @@ def test_malformed_schedule_response_leaves_resumable_state(
         {"error": "layout activation service unavailable"},
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app, status="scheduling")
+        pending_activation_state(
+            app,
+            status="scheduling",
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
@@ -2512,7 +2833,7 @@ def test_malformed_schedule_response_leaves_resumable_state(
 def test_schedule_retry_reuses_persisted_request(app_and_table, monkeypatch):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     requests = []
@@ -2537,7 +2858,10 @@ def test_schedule_retry_reuses_persisted_request(app_and_table, monkeypatch):
     assert len(requests) == 2
     assert requests[0] == requests[1]
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
 
 
@@ -2547,7 +2871,7 @@ def test_create_schedule_conflict_recovers_matching_existing_schedule(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     created_request = {}
@@ -2575,7 +2899,10 @@ def test_create_schedule_conflict_recovers_matching_existing_schedule(
         GroupName="default",
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
 
 
@@ -2585,7 +2912,7 @@ def test_schedule_finalize_failure_is_recovered_on_retry(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     scheduler = successful_scheduler()
@@ -2612,7 +2939,11 @@ def test_schedule_finalize_failure_is_recovered_on_retry(
 
     assert_response(first, 503)
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app, status="scheduling")
+        pending_activation_state(
+            app,
+            status="scheduling",
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
@@ -2630,7 +2961,10 @@ def test_schedule_finalize_failure_is_recovered_on_retry(
     second_request = scheduler.create_schedule.call_args_list[1].kwargs
     assert first_request == second_request
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
 
 
@@ -2640,7 +2974,7 @@ def test_committed_finalize_timeout_is_reconciled_as_success(
 ):
     app, snapshot_table = app_and_table
     current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
+    target = snapshot_item(2, createdAt="2026-09-07T10:26:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
     scheduler = successful_scheduler()
@@ -2669,7 +3003,10 @@ def test_committed_finalize_timeout_is_reconciled_as_success(
     assert_response(response, 202)
     assert scheduler.create_schedule.call_count == 1
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
-        pending_activation_state(app)
+        pending_activation_state(
+            app,
+            cutover_at="2026-09-07T10:31:00Z",
+        )
     )
 
 
@@ -2824,7 +3161,7 @@ def test_stale_target_condition_prevents_partial_state_write(
     assert stored["effectiveFrom"] is None
 
 
-def test_target_condition_requires_archive_fields_to_be_absent(app_and_table):
+def test_target_condition_binds_created_at_and_archive_state(app_and_table):
     app, _ = app_and_table
 
     condition = app._target_condition(snapshot_item())
@@ -2835,12 +3172,68 @@ def test_target_condition_requires_archive_fields_to_be_absent(app_and_table):
     assert "attribute_not_exists(#archivedBy)" in condition[
         "ConditionExpression"
     ]
+    assert "#createdAt = :expectedCreatedAt" in condition[
+        "ConditionExpression"
+    ]
     assert condition["ExpressionAttributeNames"]["#archivedAt"] == (
         "archivedAt"
     )
     assert condition["ExpressionAttributeNames"]["#archivedBy"] == (
         "archivedBy"
     )
+    assert condition["ExpressionAttributeNames"]["#createdAt"] == (
+        "createdAt"
+    )
+    assert condition["ExpressionAttributeValues"][":expectedCreatedAt"] == {
+        "S": "2026-09-07T09:00:00Z"
+    }
+
+
+def test_concurrent_created_at_change_prevents_policy_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    current = snapshot_item(1, is_current=True)
+    target = snapshot_item(2)
+    state = activation_state()
+    for item in (current, target, state):
+        snapshot_table.put_item(Item=item)
+    real_client = app.dynamodb_client()
+
+    def change_created_at_then_write(**request):
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression="SET createdAt = :createdAt",
+            ExpressionAttributeValues={
+                ":createdAt": "2026-09-07T10:29:00Z"
+            },
+        )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        change_created_at_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    response = app.handler(make_event(version_id="2"), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation changed; retry request"},
+    )
+    assert snapshot_table.get_item(Key=state_key())["Item"] == state
+    assert snapshot_table.get_item(
+        Key={"PK": current["PK"], "SK": current["SK"]}
+    )["Item"] == current
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert stored_target["createdAt"] == "2026-09-07T10:29:00Z"
+    assert stored_target["isCurrent"] is False
+    assert stored_target["effectiveFrom"] is None
 
 
 def test_concurrent_archive_prevents_partial_activation_write(

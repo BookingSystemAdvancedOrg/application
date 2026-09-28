@@ -779,6 +779,151 @@ def test_archived_snapshot_makes_cutover_state_inconsistent(
         assert stored == original
 
 
+@pytest.mark.parametrize(
+    ("environment", "created_at"),
+    [
+        ("dev", "2026-10-05T14:32:00Z"),
+        ("prod", "2026-09-07T14:37:00Z"),
+    ],
+)
+def test_replacement_cutover_at_exact_eligibility_is_allowed(
+    app_and_table,
+    monkeypatch,
+    environment,
+    created_at,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    outgoing = outgoing_snapshot()
+    target = target_snapshot(createdAt=created_at)
+    state = pending_state(app)
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+
+    assert app.handler(event_for_state(state), None) is None
+
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["currentVersion"] == Decimal("2")
+    assert not set(stored_state).intersection(app._PENDING_FIELDS)
+
+
+def test_whole_minute_cutover_may_ceil_exact_eligibility(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    cutover_at = "2026-10-05T14:38:00Z"
+    outgoing = outgoing_snapshot(
+        effectiveTo=cutover_at,
+        expiresAt=cutover_at,
+    )
+    target = target_snapshot(
+        createdAt="2026-10-05T14:32:01Z",
+        effectiveFrom=cutover_at,
+    )
+    state = pending_state(app, cutover_at=cutover_at)
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 10, 5, 14, 38, tzinfo=timezone.utc),
+    )
+
+    assert app.handler(event_for_state(state), None) is None
+
+    stored_state = snapshot_table.get_item(Key=state_key())["Item"]
+    assert stored_state["currentVersion"] == Decimal("2")
+
+
+@pytest.mark.parametrize(
+    ("environment", "created_at"),
+    [
+        ("dev", "2026-10-05T14:32:00.000001Z"),
+        ("prod", "2026-09-07T14:37:00.000001Z"),
+    ],
+)
+def test_cutover_before_exact_replacement_eligibility_fails_closed(
+    app_and_table,
+    monkeypatch,
+    environment,
+    created_at,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    outgoing = outgoing_snapshot()
+    target = target_snapshot(createdAt=created_at)
+    state = pending_state(app)
+    originals = [copy.deepcopy(item) for item in (outgoing, target, state)]
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    transaction_client = Mock(
+        side_effect=AssertionError("must not write DynamoDB")
+    )
+    monkeypatch.setattr(app, "dynamodb_client", transaction_client)
+
+    with pytest.raises(
+        app._CutoverConflict,
+        match="replacement activation delay",
+    ):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.assert_not_called()
+    for original in originals:
+        stored = snapshot_table.get_item(
+            Key={"PK": original["PK"], "SK": original["SK"]}
+        )["Item"]
+        assert stored == original
+
+
+@pytest.mark.parametrize(
+    ("environment", "created_at", "message"),
+    [
+        ("staging", "2026-09-01T00:00:00Z", "environment is invalid"),
+        (
+            "dev",
+            "not-a-timestamp",
+            "published layout record is inconsistent",
+        ),
+        (
+            "dev",
+            "9999-12-31T23:59:59Z",
+            "published layout record is inconsistent",
+        ),
+    ],
+    ids=["invalid-environment", "malformed-created-at", "overflow"],
+)
+def test_invalid_replacement_policy_input_fails_without_writing(
+    app_and_table,
+    monkeypatch,
+    environment,
+    created_at,
+    message,
+):
+    app, snapshot_table = app_and_table
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    outgoing = outgoing_snapshot()
+    target = target_snapshot(createdAt=created_at)
+    state = pending_state(app)
+    originals = [copy.deepcopy(item) for item in (outgoing, target, state)]
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    transaction_client = Mock(
+        side_effect=AssertionError("must not write DynamoDB")
+    )
+    monkeypatch.setattr(app, "dynamodb_client", transaction_client)
+
+    with pytest.raises(app._CutoverConflict, match=message):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.assert_not_called()
+    for original in originals:
+        stored = snapshot_table.get_item(
+            Key={"PK": original["PK"], "SK": original["SK"]}
+        )["Item"]
+        assert stored == original
+
+
 @pytest.mark.parametrize("record", ["outgoing", "target"])
 @pytest.mark.parametrize(
     "archive_metadata",
@@ -896,6 +1041,7 @@ def test_transaction_conditions_bind_the_complete_transition(
             "effectiveFrom",
             "effectiveTo",
             "expiresAt",
+            "createdAt",
             "updatedBy",
             "updatedAt",
             "archivedAt",
@@ -907,6 +1053,7 @@ def test_transaction_conditions_bind_the_complete_transition(
             "#effectiveFrom",
             "#effectiveTo",
             "#expiresAt",
+            "#createdAt",
         ):
             assert field in update["ConditionExpression"]
         assert "attribute_not_exists(#archivedAt)" in update[
@@ -1022,6 +1169,47 @@ def test_concurrent_archive_prevents_cutover(
     assert stored_target["archivedAt"] == "2026-09-08T11:00:00Z"
     assert stored_target["archivedBy"] == "archiver-sub"
     assert stored_state == original_state
+
+
+def test_concurrent_target_created_at_change_prevents_cutover(
+    app_and_table,
+    monkeypatch,
+):
+    app, snapshot_table = app_and_table
+    outgoing, target, state = put_ready_cutover(snapshot_table, app)
+    original_outgoing = copy.deepcopy(outgoing)
+    original_state = copy.deepcopy(state)
+    real_client = app.dynamodb_client()
+
+    def change_created_at_then_write(**request):
+        snapshot_table.update_item(
+            Key={"PK": target["PK"], "SK": target["SK"]},
+            UpdateExpression="SET createdAt = :createdAt",
+            ExpressionAttributeValues={
+                ":createdAt": "2026-10-05T14:36:00Z",
+            },
+        )
+        return real_client.transact_write_items(**request)
+
+    transaction_client = Mock()
+    transaction_client.transact_write_items.side_effect = (
+        change_created_at_then_write
+    )
+    monkeypatch.setattr(app, "dynamodb_client", lambda: transaction_client)
+
+    with pytest.raises(ClientError):
+        app.handler(event_for_state(state), None)
+
+    transaction_client.transact_write_items.assert_called_once()
+    stored_target = snapshot_table.get_item(
+        Key={"PK": target["PK"], "SK": target["SK"]}
+    )["Item"]
+    assert snapshot_table.get_item(
+        Key={"PK": outgoing["PK"], "SK": outgoing["SK"]}
+    )["Item"] == original_outgoing
+    assert stored_target["isCurrent"] is False
+    assert stored_target["createdAt"] == "2026-10-05T14:36:00Z"
+    assert snapshot_table.get_item(Key=state_key())["Item"] == original_state
 
 
 @pytest.mark.parametrize(
@@ -1304,6 +1492,7 @@ def test_task11_schedule_input_completes_task12_cutover(
         effectiveFrom=None,
         effectiveTo=None,
         expiresAt="2026-10-05T10:30:00Z",
+        createdAt="2026-09-07T10:30:00Z",
     )
     steady_state = {
         **state_key(),

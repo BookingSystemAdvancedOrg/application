@@ -8,10 +8,12 @@ TRIGGER:
 PURPOSE:
     At or after the stored cutover time, atomically retires the outgoing
     layout snapshot, activates the pending target, advances activation state,
-    and removes its pending fields. It also recovers a due ``scheduling``
-    intent left after Scheduler creation but before lifecycle staging. Missing
-    state and stale or completed schedule tokens are idempotent no-ops;
-    matching early, corrupt, or failed transitions raise for async retry.
+    and removes its pending fields. Before writing, it revalidates that the
+    target's publication time satisfies the five-minute dev or 28-day prod
+    replacement delay. It also recovers a due ``scheduling`` intent left after
+    Scheduler creation but before lifecycle staging. Missing state and stale
+    or completed schedule tokens are idempotent no-ops; matching early,
+    corrupt, or failed transitions raise for async retry.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -52,6 +54,10 @@ _MAX_VERSION_DIGITS = 38
 _MAX_DYNAMODB_INTEGER = int("9" * _MAX_VERSION_DIGITS)
 _VERSION_SK_PATTERN = re.compile(r"LAYOUT#v([1-9][0-9]{0,37})\Z")
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_REPLACEMENT_ACTIVATION_DELAYS = {
+    "dev": timedelta(minutes=5),
+    "prod": timedelta(days=28),
+}
 _EVENT_FIELDS = frozenset(
     {
         "PK",
@@ -502,6 +508,29 @@ def _validate_pending_lifecycle(outgoing, target, state_details, details):
     )
 
 
+def _validate_replacement_eligibility(target, state_details):
+    try:
+        activation_delay = _REPLACEMENT_ACTIVATION_DELAYS[ENVIRONMENT]
+    except KeyError as exc:
+        raise _CutoverConflict("environment is invalid") from exc
+
+    try:
+        created_at = _parse_utc_timestamp(
+            target.get("createdAt"),
+            "createdAt",
+        )
+        eligible_at = created_at + activation_delay
+    except (OverflowError, ValueError) as exc:
+        raise _CutoverConflict(
+            "published layout record is inconsistent"
+        ) from exc
+
+    if state_details["pending"]["parsedCutover"] < eligible_at:
+        raise _CutoverConflict(
+            "layout cutover violates the replacement activation delay"
+        )
+
+
 def _typed_map(values):
     return {
         key: _SERIALIZER.serialize(value)
@@ -525,6 +554,7 @@ def _snapshot_update(
         "#effectiveFrom": "effectiveFrom",
         "#effectiveTo": "effectiveTo",
         "#expiresAt": "expiresAt",
+        "#createdAt": "createdAt",
         "#updatedBy": "updatedBy",
         "#updatedAt": "updatedAt",
         "#archivedAt": "archivedAt",
@@ -537,6 +567,7 @@ def _snapshot_update(
             ":expectedEffectiveFrom": snapshot["effectiveFrom"],
             ":expectedEffectiveTo": snapshot["effectiveTo"],
             ":expectedExpiresAt": snapshot["expiresAt"],
+            ":expectedCreatedAt": snapshot["createdAt"],
             ":nextCurrent": is_current,
             ":nextEffectiveFrom": effective_from,
             ":nextEffectiveTo": effective_to,
@@ -566,6 +597,7 @@ def _snapshot_update(
                 "AND #effectiveFrom = :expectedEffectiveFrom "
                 "AND #effectiveTo = :expectedEffectiveTo "
                 "AND #expiresAt = :expectedExpiresAt "
+                "AND #createdAt = :expectedCreatedAt "
                 "AND attribute_not_exists(#archivedAt) "
                 "AND attribute_not_exists(#archivedBy)"
             ),
@@ -750,6 +782,7 @@ def handler(event, context):
             details,
             target=True,
         )
+        _validate_replacement_eligibility(target, state_details)
         outgoing_lifecycle, target_lifecycle = _validate_pending_lifecycle(
             outgoing,
             target,

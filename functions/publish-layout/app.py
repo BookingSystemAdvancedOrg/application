@@ -30,7 +30,8 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -42,7 +43,6 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
     "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME"
 ]
 
-_ALLOWED_GROUPS = ("owner_user", "super_user")
 _LIVE_ELEMENT_PREFIX = "LAYOUT#ELEMENT#"
 _SNAPSHOT_PREFIX = "LAYOUT#v"
 _ELEMENT_TYPES = frozenset(
@@ -560,9 +560,14 @@ def handler(event, context):
         return _publish_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _publish_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+        tenant.for_jwt(event, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _publish_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout publishing service unavailable",
+        )
 
     method = _request_method(event)
     if method != "POST":
@@ -574,8 +579,17 @@ def handler(event, context):
 
     try:
         location_id = _location_id(event)
+        # The location must be one of the caller's tenant's (else 404).
+        tenant.for_jwt(event, location_id=location_id, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _publish_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except (BotoCoreError, ClientError):
+        return _publish_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout publishing service unavailable",
+        )
 
     try:
         return _publish_layout(location_id, caller_sub)

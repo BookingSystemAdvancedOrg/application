@@ -6,6 +6,10 @@ from unittest.mock import Mock
 
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
+from moto import mock_aws
+
+from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -37,10 +41,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -79,7 +80,13 @@ def app_and_s3(monkeypatch):
     s3.generate_presigned_url.return_value = UPLOAD_URL
     module._s3 = s3
     monkeypatch.setattr(module, "_new_image_id", lambda: IMAGE_ID)
-    return module, s3
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+        install_tenancy(monkeypatch, [LOCATION_ID])
+        yield module, s3
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
 
 
 def test_missing_claims_returns_401_before_using_s3(app_and_s3):
@@ -131,23 +138,23 @@ def test_missing_subject_returns_401_before_using_s3(app_and_s3, sub):
 
 
 @pytest.mark.parametrize(
-    "groups",
+    ("groups", "error"),
     [
-        None,
-        "",
-        "[]",
-        '["unknown"]',
-        '["staff"]',
-        '["staff_user"]',
-        123,
+        (None, "no_tenant"),
+        ("", "no_tenant"),
+        ("[]", "no_tenant"),
+        ('["unknown"]', "no_tenant"),
+        ('["staff"]', "no_tenant"),
+        ('["staff_user"]', "owner_only"),
+        (123, "no_tenant"),
     ],
 )
-def test_wrong_group_returns_403_before_using_s3(app_and_s3, groups):
+def test_wrong_group_returns_403_before_using_s3(app_and_s3, groups, error):
     app, s3 = app_and_s3
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": error})
     s3.generate_presigned_url.assert_not_called()
 
 
@@ -159,13 +166,13 @@ def test_authorization_happens_before_method_and_query_validation(app_and_s3):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     s3.generate_presigned_url.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "groups",
-    ['["owner_user"]', '["super_user"]'],
+    ['["owner_user"]'],
 )
 def test_all_admin_groups_can_request_an_upload(
     app_and_s3,
@@ -323,7 +330,7 @@ def test_generates_location_scoped_presigned_put_url(
 
     normalized_content_type = content_type.strip().lower()
     image_key = (
-        f"menu-images/locations/{LOCATION_ID}/menu/{IMAGE_ID}.{extension}"
+        f"menu-images/{TENANT_A}/locations/{LOCATION_ID}/menu/{IMAGE_ID}.{extension}"
     )
     assert_response(
         response,
@@ -363,10 +370,10 @@ def test_each_request_receives_a_new_immutable_image_key(
     first_key = response_body(first)["imageKey"]
     second_key = response_body(second)["imageKey"]
     assert first_key == (
-        f"menu-images/locations/{LOCATION_ID}/menu/first-image-id.webp"
+        f"menu-images/{TENANT_A}/locations/{LOCATION_ID}/menu/first-image-id.webp"
     )
     assert second_key == (
-        f"menu-images/locations/{LOCATION_ID}/menu/second-image-id.webp"
+        f"menu-images/{TENANT_A}/locations/{LOCATION_ID}/menu/second-image-id.webp"
     )
     assert first_key != second_key
     assert s3.generate_presigned_url.call_count == 2
@@ -376,7 +383,7 @@ def test_real_sigv4_presigner_binds_the_required_content_type(app_and_s3):
     app, _ = app_and_s3
     app._s3 = None
     image_key = (
-        f"menu-images/locations/{LOCATION_ID}/menu/{IMAGE_ID}.webp"
+        f"menu-images/{TENANT_A}/locations/{LOCATION_ID}/menu/{IMAGE_ID}.webp"
     )
 
     upload_url = app._presigned_put_url(image_key, "image/webp")
@@ -439,3 +446,25 @@ def test_presigner_failures_return_sanitized_503(
         {"error": "image upload service unavailable"},
     )
     assert "sensitive AWS message" not in response["body"]
+
+
+
+def test_other_tenants_location_gets_no_upload_url(app_and_s3):
+    app, s3 = app_and_s3
+
+    response = app.handler(
+        make_event(query={"locationId": LOC_B, "contentType": "image/webp"}), None)
+
+    assert_response(response, 404, {"error": "not found"})
+    s3.generate_presigned_url.assert_not_called()
+
+
+def test_upload_key_is_under_the_callers_tenant(app_and_s3):
+    app, _ = app_and_s3
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims("owner-b", '["owner_user"]', TENANT_B)
+    event["queryStringParameters"]["locationId"] = LOC_B
+
+    response = app.handler(event, None)
+
+    assert response_body(response)["imageKey"].startswith(f"menu-images/{TENANT_B}/locations/{LOC_B}/")

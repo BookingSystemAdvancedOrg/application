@@ -41,6 +41,11 @@ def handler(event, context):
     query_params = event.get("queryStringParameters") or {}
 
     # TODO: implement cancel-reservation.
+    # Public route - tenant rule (shared/tenant.py): resolve the restaurant
+    # from the location with tenant.for_public(locationId, feature=
+    # "reservations"); inactive tenants answer 404. Store tenantId on every
+    # reservation written, and charge on ctx.stripe_account() (Stripe-Account
+    # header) - never on the platform account.
     # See the module docstring above (and docs/LAMBDA_REFERENCE.md).
 
     return error_response(501, "not implemented")

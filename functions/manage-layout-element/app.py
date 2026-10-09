@@ -45,7 +45,8 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -54,7 +55,6 @@ LIVE_LAYOUT_ELEMENT_TABLE_NAME = os.environ[
     "LIVE_LAYOUT_ELEMENT_TABLE_NAME"
 ]
 
-_ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
 _ELEMENT_TYPES = frozenset(
     {
         "floor",
@@ -762,14 +762,28 @@ def handler(event, context):
         return _layout_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _layout_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+        tenant.for_jwt(event)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _layout_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout service unavailable",
+        )
 
     try:
         location_id = _path_value(event, "locationId")
+        # The location must be one of the caller's tenant's (else 404).
+        tenant.for_jwt(event, location_id=location_id)
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _layout_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except (BotoCoreError, ClientError):
+        return _layout_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout service unavailable",
+        )
 
     path_parameters = event.get("pathParameters")
     proxy_path = path_parameters.get("proxy")

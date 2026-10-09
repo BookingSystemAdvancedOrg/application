@@ -4,11 +4,17 @@ TRIGGER:
     API Gateway -- GET /list-users and ANY /users/{proxy+} -- Auth: JWT
 
 PURPOSE:
-    Lists and reads internal users and manages their lifecycle: invite,
-    profile update, deactivate/reactivate, delete, and Cognito group change.
-    Callers must be owner_user or super_user. Owners may read staff_user
-    accounts and themselves and manage staff_user accounts; only super-users
-    may read or manage other privileged accounts.
+    Lists and reads the caller's tenant's users and manages their lifecycle:
+    invite, profile update, deactivate/reactivate, delete, and Cognito group
+    change. Callers must be owner_user of an active tenant. Owners read and
+    manage staff accounts and themselves; other owners are managed from the
+    operator console (sbs-admin). super_user no longer exists.
+
+    Multi-tenant: the tenant is the token's tenant_id claim. Users are listed
+    with the byTenant index (never a Scan), every target user must carry the
+    caller's tenantId (else 404), invited users get custom:tenant_id set to
+    the caller's tenant (immutable), and a staff locationId must be one of
+    the tenant's locations.
 
 ROUTES:
     GET    /list-users
@@ -23,6 +29,9 @@ ROUTES:
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     USER_TABLE_NAME -- App-side user record (role, assigned location, etc.)
+    USER_TENANT_INDEX_NAME -- byTenant GSI on the user table
+    TENANT_TABLE_NAME / LOCATION_TABLE_NAME / LOCATION_ID_INDEX_NAME --
+        tenant context (shared/tenant.py)
     COGNITO_USER_POOL_ID -- Target user pool for the Cognito admin calls
 
 AWS RESOURCE ACCESS:
@@ -47,6 +56,7 @@ Full details: docs/LAMBDA_REFERENCE.md
 
 import base64
 import binascii
+import contextvars
 import json
 import logging
 import os
@@ -60,23 +70,30 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared.auth import (
     Unauthorized,
     get_claims,
-    get_groups,
     get_sub,
-    require_group,
 )
+from boto3.dynamodb.conditions import Key
+
+from shared import tenant
 from shared.dynamo import table
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 USER_TABLE_NAME = os.environ["USER_TABLE_NAME"]
+USER_TENANT_INDEX_NAME = os.environ.get("USER_TENANT_INDEX_NAME", "byTenant")
 COGNITO_USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
+
+# The tenant of the request being handled (set by handler() from the token;
+# a Lambda container handles one request at a time).
+_TENANT_ID = contextvars.ContextVar("tenant_id")
 
 _GROUP_TO_ROLE = {
     "staff_user": "staff",
     "owner_user": "owner_user",
-    "super_user": "super_admin",
 }
 _ROLE_TO_GROUP = {role: group for group, role in _GROUP_TO_ROLE.items()}
+# Profiles written by sbs-admin / the spec use the group name as the role.
+_ROLE_TO_GROUP["staff_user"] = "staff_user"
 _MANAGED_GROUPS = frozenset(_GROUP_TO_ROLE)
 
 _INVITE_FIELDS = {"name", "email", "phone", "group", "locationId"}
@@ -261,7 +278,7 @@ def _phone(body, *, required):
 def _group_and_location(body):
     group = _required_string(body, "group")
     if group not in _GROUP_TO_ROLE:
-        raise ValueError("group must be staff_user, owner_user, or super_user")
+        raise ValueError("group must be staff_user or owner_user")
 
     raw_location_id = body.get("locationId", "")
     if not isinstance(raw_location_id, str):
@@ -362,13 +379,22 @@ def _utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+_OPTIONAL_USER_FIELDS = ("phone", "locationId")
+
+
 def _public_user(item):
+    """Owners created by onboarding / sbs-admin have no phone and no
+    location - those two default to ""."""
     if not isinstance(item, dict):
         raise _UserConflict
-    if any(field not in item for field in _PUBLIC_USER_FIELDS):
+    if any(
+        field not in item
+        for field in _PUBLIC_USER_FIELDS
+        if field not in _OPTIONAL_USER_FIELDS
+    ):
         raise _UserConflict
 
-    return {field: item[field] for field in _PUBLIC_USER_FIELDS}
+    return {field: item.get(field, "") for field in _PUBLIC_USER_FIELDS}
 
 
 def _validated_stored_user(item, expected_sub=None):
@@ -390,7 +416,7 @@ def _validated_stored_user(item, expected_sub=None):
         raise _UserConflict
     if any(
         not public_user[field].strip()
-        for field in ("name", "email", "phone", "createdBy", "createdAt")
+        for field in ("name", "email", "createdBy", "createdAt")
     ):
         raise _UserConflict
     if public_user["role"] not in _ROLE_TO_GROUP:
@@ -399,7 +425,7 @@ def _validated_stored_user(item, expected_sub=None):
         raise _UserConflict
 
     location_id = public_user["locationId"]
-    if public_user["role"] == "staff":
+    if _ROLE_TO_GROUP[public_user["role"]] == "staff_user":
         if not location_id:
             raise _UserConflict
     elif location_id:
@@ -426,22 +452,34 @@ def _read_user(target_sub):
 
 
 def _load_user(target_sub):
+    """The target user - only if it belongs to the caller's tenant. A user
+    of another tenant is indistinguishable from one that doesn't exist."""
     item = _read_user(target_sub)
-    if item is None:
+    if item is None or item.get("tenantId") != _TENANT_ID.get():
         return None
     _validated_stored_user(item, target_sub)
     return item
 
 
+def _require_tenant_location(location_id):
+    """A staff user's location must be one of the caller's tenant's."""
+    if location_id and not tenant.get_location(_TENANT_ID.get(), location_id):
+        raise ValueError("locationId is not a location of this restaurant")
+
+
 def _list_users(caller_sub, caller_groups):
+    """The tenant's users via the byTenant index - never a Scan."""
     user_table = table(USER_TABLE_NAME)
-    request = {"ConsistentRead": True}
+    request = {
+        "IndexName": USER_TENANT_INDEX_NAME,
+        "KeyConditionExpression": Key("tenantId").eq(_TENANT_ID.get()),
+    }
     users = []
     seen_last_keys = []
     is_super_user = _is_super_user(caller_groups)
 
     while True:
-        response = user_table.scan(**request)
+        response = user_table.query(**request)
         if not isinstance(response, dict):
             raise _UserServiceFailure
 
@@ -453,10 +491,12 @@ def _list_users(caller_sub, caller_groups):
             if not isinstance(item, dict):
                 raise _UserServiceFailure
 
+            if item.get("tenantId") != _TENANT_ID.get():
+                raise _UserServiceFailure
             public_user = _validated_stored_user(item)
             if (
                 is_super_user
-                or public_user["role"] == "staff"
+                or _ROLE_TO_GROUP[public_user["role"]] == "staff_user"
                 or public_user["cognitoSub"] == caller_sub
             ):
                 users.append(public_user)
@@ -476,10 +516,10 @@ def _list_users(caller_sub, caller_groups):
 
         if (
             not isinstance(last_key, dict)
-            or set(last_key) != {"PK", "SK"}
+            or set(last_key) not in ({"PK", "SK"}, {"PK", "SK", "tenantId"})
             or not all(
                 isinstance(last_key[key], str) and last_key[key]
-                for key in ("PK", "SK")
+                for key in last_key
             )
             or any(last_key == seen_key for seen_key in seen_last_keys)
         ):
@@ -714,7 +754,9 @@ def _profile_rollback_attributes(attributes, fields):
 
 
 def _is_super_user(caller_groups):
-    return "super_user" in caller_groups
+    # super_user is gone: platform operators work in sbs-admin, and tokens
+    # without a tenant never get here (shared/tenant.py).
+    return False
 
 
 def _authorize_invite(caller_groups, group):
@@ -740,7 +782,7 @@ def _authorize_target(
     if action in {"profile", "read"} and target_sub == caller_sub:
         return
 
-    if target.get("role") != "staff":
+    if _ROLE_TO_GROUP.get(target.get("role")) != "staff_user":
         raise _ForbiddenAction
 
     # Cognito is the privilege source of truth. The User-table role is only a
@@ -777,6 +819,7 @@ def _validate_profile_location(target, updates):
         raise ValueError("locationId must be empty for privileged users")
 
     updates["locationId"] = location_id
+    _require_tenant_location(location_id)
 
 
 def _cognito_attributes(profile, fields):
@@ -793,6 +836,8 @@ def _cognito_attributes(profile, fields):
 def _invite_user(event, caller_sub, caller_groups):
     requested = _invite_body(event)
     _authorize_invite(caller_groups, requested["group"])
+    _require_tenant_location(requested["locationId"])
+    tenant_id = _TENANT_ID.get()
 
     cognito = _get_cognito_client()
     try:
@@ -803,6 +848,8 @@ def _invite_user(event, caller_sub, caller_groups):
                 {"Name": "email", "Value": requested["email"]},
                 {"Name": "name", "Value": requested["name"]},
                 {"Name": "phone_number", "Value": requested["phone"]},
+                # Immutable: ties the login to this tenant for good.
+                {"Name": "custom:tenant_id", "Value": tenant_id},
             ],
             DesiredDeliveryMediums=["EMAIL"],
         )
@@ -847,6 +894,7 @@ def _invite_user(event, caller_sub, caller_groups):
         "PK": f"USER#{cognito_sub}",
         "SK": "PROFILE",
         "cognitoSub": cognito_sub,
+        "tenantId": tenant_id,
         "role": _GROUP_TO_ROLE[requested["group"]],
         "locationId": requested["locationId"],
         "name": requested["name"],
@@ -1067,6 +1115,7 @@ def _restore_groups(target_sub, old_groups, added_group, removed_groups):
 
 def _change_group(event, caller_sub, caller_groups, target_sub):
     group, location_id = _group_body(event)
+    _require_tenant_location(location_id)
     target = _load_user(target_sub)
     if target is None:
         return _user_error(HTTPStatus.NOT_FOUND.value, "user not found")
@@ -1161,11 +1210,16 @@ def handler(event, context):
         return _user_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, "owner_user", "super_user")
-    except Unauthorized:
-        return _user_error(HTTPStatus.FORBIDDEN.value, "forbidden")
-
-    caller_groups = set(get_groups(event))
+        ctx = tenant.for_jwt(event, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response({"Cache-Control": "no-store"})
+    except (BotoCoreError, ClientError):
+        return _user_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "user service unavailable",
+        )
+    _TENANT_ID.set(ctx.tenant_id)
+    caller_groups = {ctx.role}
     request_context = event.get("requestContext") or {}
     if not isinstance(request_context, dict):
         request_context = {}

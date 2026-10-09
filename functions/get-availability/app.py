@@ -13,6 +13,10 @@ PURPOSE:
     intentionally has no JWT check because customers do not have Cognito
     accounts.
 
+    Multi-tenant (shared/tenant.py): the location decides the tenant. An
+    unknown location, an inactive (suspended/offboarded) tenant, or a tenant
+    without the "reservations" feature answers 404 - nothing is bookable.
+
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     LOCATION_TABLE_NAME -- Business hours / booking rules
@@ -26,6 +30,7 @@ AWS RESOURCE ACCESS:
 Full details: docs/LAMBDA_REFERENCE.md
 """
 
+import contextvars
 import hashlib
 import json
 import os
@@ -37,6 +42,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
+from shared import tenant
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -276,8 +282,12 @@ def _validate_business_hours(value):
     return value
 
 
+# The tenant that owns the requested location (resolved per request).
+_TENANT_ID = contextvars.ContextVar("tenant_id")
+
+
 def _location_key(location_id):
-    return {"PK": "PLATFORM", "SK": f"LOCATION#{location_id}"}
+    return tenant.location_key(_TENANT_ID.get(), location_id)
 
 
 def _validate_location(item, location_id):
@@ -1289,7 +1299,16 @@ def handler(event, context):
 
     try:
         details = _request_details(event)
+        ctx = tenant.for_public(details["locationId"], feature="reservations")
+        _TENANT_ID.set(ctx.tenant_id)
         return _handle_availability(details)
+    except tenant.TenantError as exc:
+        if exc.status == HTTPStatus.NOT_FOUND.value:
+            return _availability_error(
+                HTTPStatus.NOT_FOUND.value,
+                "location not found",
+            )
+        return exc.response()
     except ValueError as exc:
         return _availability_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _AvailabilityConflict as exc:

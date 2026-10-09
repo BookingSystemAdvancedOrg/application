@@ -37,7 +37,8 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
 from shared.responses import json_response
@@ -47,8 +48,6 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
     "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME"
 ]
 
-_ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
-_ARCHIVE_ALLOWED_GROUPS = ("owner_user", "super_user")
 _PUBLIC_ACTIVE_ROUTE = "GET /locations/{locationId}/layout/active"
 _DELETE_VERSION_ROUTE = (
     "DELETE /locations/{locationId}/layout/versions/{versionId}"
@@ -1226,6 +1225,9 @@ def _get_active_layout(event):
 
     try:
         location_id = _location_id(event)
+        # Public: the location decides the tenant; unknown location or an
+        # inactive tenant -> 404 (a suspended restaurant shows no layout).
+        tenant.for_public(location_id)
         snapshot = _read_active_snapshot(location_id, _utc_now())
         if snapshot is None:
             return _version_error(
@@ -1236,6 +1238,8 @@ def _get_active_layout(event):
             HTTPStatus.OK.value,
             _customer_layout(snapshot),
         )
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _version_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _SnapshotConflict as exc:
@@ -1261,9 +1265,14 @@ def handler(event, context):
     method = _request_method(event)
     if route_key == _DELETE_VERSION_ROUTE:
         try:
-            require_group(event, *_ARCHIVE_ALLOWED_GROUPS)
-        except Unauthorized:
-            return _version_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+            tenant.for_jwt(event, owner_only=True)
+        except tenant.TenantError as exc:
+            return exc.response()
+        except (BotoCoreError, ClientError):
+            return _version_error(
+                HTTPStatus.SERVICE_UNAVAILABLE.value,
+                "layout version service unavailable",
+            )
 
         if method != "DELETE":
             return _version_response(
@@ -1275,8 +1284,16 @@ def handler(event, context):
         try:
             location_id = _location_id(event)
             version = _version_id(event)
+            tenant.for_jwt(event, location_id=location_id, owner_only=True)
+        except tenant.TenantError as exc:
+            return exc.response()
         except ValueError as exc:
             return _version_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+        except (BotoCoreError, ClientError):
+            return _version_error(
+                HTTPStatus.SERVICE_UNAVAILABLE.value,
+                "layout version service unavailable",
+            )
 
         try:
             return _archive_version(location_id, version, caller_sub)
@@ -1289,9 +1306,14 @@ def handler(event, context):
             )
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _version_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+        tenant.for_jwt(event)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _version_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout version service unavailable",
+        )
 
     if method != "GET":
         return _version_response(
@@ -1302,8 +1324,16 @@ def handler(event, context):
 
     try:
         location_id = _location_id(event)
+        tenant.for_jwt(event, location_id=location_id)
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _version_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except (BotoCoreError, ClientError):
+        return _version_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout version service unavailable",
+        )
 
     try:
         return _list_versions(location_id)

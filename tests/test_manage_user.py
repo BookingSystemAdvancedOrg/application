@@ -10,6 +10,8 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import (LOCATION_TABLE_DEFAULT, REGION, TENANT_A, TENANT_B, TENANT_TABLE,
+                            create_tables, location_row, tenant_row)
 
 
 APP_PATH = (
@@ -27,7 +29,6 @@ CREATED_AT = "2026-08-21T10:00:00Z"
 GROUP_TO_ROLE = {
     "staff_user": "staff",
     "owner_user": "owner_user",
-    "super_user": "super_admin",
 }
 ROLE_TO_GROUP = {role: group for group, role in GROUP_TO_ROLE.items()}
 
@@ -61,16 +62,20 @@ def make_event(
     groups='["owner_user"]',
     sub=CALLER_SUB,
     base64_encoded=False,
+    tenant_id=TENANT_A,
 ):
+    claims = {"sub": sub, "cognito:groups": groups}
+    role = next((r for r in ("owner_user", "staff_user") if r in (groups or "")), None)
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
+    if role is not None:
+        claims["role"] = role
     event = {
         "requestContext": {
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": claims
                 }
             },
         },
@@ -108,11 +113,13 @@ def user_item(
     name="Test User",
     email="test.user@example.com",
     phone="+46701234567",
+    tenant_id=TENANT_A,
 ):
     return {
         "PK": f"USER#{sub}",
         "SK": "PROFILE",
         "cognitoSub": sub,
+        "tenantId": tenant_id,
         "role": role,
         "locationId": location_id,
         "name": name,
@@ -193,18 +200,13 @@ def app_state(monkeypatch):
         shared_dynamo._client = None
 
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
-        user_table = resource.create_table(
-            TableName=TABLE_NAME,
-            KeySchema=[
-                {"AttributeName": "PK", "KeyType": "HASH"},
-                {"AttributeName": "SK", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "PK", "AttributeType": "S"},
-                {"AttributeName": "SK", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        create_tables(monkeypatch, user_table=TABLE_NAME)
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A))
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B))
+        for loc in ("location-id", "new-location"):
+            resource.Table(LOCATION_TABLE_DEFAULT).put_item(Item=location_row(TENANT_A, loc))
+        resource.Table(LOCATION_TABLE_DEFAULT).put_item(Item=location_row(TENANT_B, "b-location"))
+        user_table = resource.Table(TABLE_NAME)
 
         spec = importlib.util.spec_from_file_location(
             "manage_user_app",
@@ -303,12 +305,13 @@ def test_missing_subject_returns_401_without_aws(app_state):
 
 
 @pytest.mark.parametrize(
-    "groups",
-    ['["staff_user"]', '["unknown"]', "", None],
+    ("groups", "error"),
+    [('["staff_user"]', "owner_only"), ('["unknown"]', "no_tenant"), ("", "no_tenant"), (None, "no_tenant")],
 )
 def test_wrong_caller_group_returns_403_before_body_or_aws(
     app_state,
     groups,
+    error,
 ):
     app, user_table, cognito = app_state
 
@@ -317,7 +320,7 @@ def test_wrong_caller_group_returns_403_before_body_or_aws(
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": error})
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
 
@@ -359,37 +362,6 @@ def test_known_route_wrong_method_returns_405(
     assert cognito.mock_calls == []
 
 
-@pytest.mark.parametrize(
-    ("role", "location_id"),
-    [
-        ("staff", "location-id"),
-        ("owner_user", ""),
-        ("super_admin", ""),
-    ],
-)
-def test_super_user_can_get_any_user_without_calling_cognito(
-    app_state,
-    role,
-    location_id,
-):
-    app, user_table, cognito = app_state
-    stored = user_item(role=role, location_id=location_id)
-    put_user(user_table, stored)
-
-    response = app.handler(
-        make_event(
-            method="GET",
-            proxy=TARGET_SUB,
-            groups='["super_user"]',
-        ),
-        None,
-    )
-
-    assert_response(response, 200, public_user(stored))
-    assert cognito.mock_calls == []
-    assert get_user(user_table) == stored
-
-
 def test_owner_can_get_self_without_calling_cognito(app_state):
     app, user_table, cognito = app_state
     stored = user_item(
@@ -426,7 +398,7 @@ def test_owner_can_get_staff_after_live_group_check(app_state):
     assert get_user(user_table) == stored
 
 
-@pytest.mark.parametrize("role", ["owner_user", "super_admin"])
+@pytest.mark.parametrize("role", ["owner_user"])
 def test_owner_cannot_get_another_privileged_user(app_state, role):
     app, user_table, cognito = app_state
     stored = user_item(role=role, location_id="")
@@ -442,7 +414,7 @@ def test_owner_cannot_get_another_privileged_user(app_state, role):
     assert get_user(user_table) == stored
 
 
-@pytest.mark.parametrize("live_group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("live_group", ["owner_user"])
 def test_owner_single_get_denies_a_staff_mirror_with_privileged_live_group(
     app_state,
     live_group,
@@ -484,7 +456,7 @@ def test_get_user_uses_the_exact_key_and_a_consistent_read(
     monkeypatch,
 ):
     app, user_table, cognito = app_state
-    stored = user_item()
+    stored = user_item(sub=CALLER_SUB, role="owner_user", location_id="")
     put_user(user_table, stored)
     table_spy = Mock(wraps=user_table)
     monkeypatch.setattr(app, "table", lambda _: table_spy)
@@ -492,57 +464,19 @@ def test_get_user_uses_the_exact_key_and_a_consistent_read(
     response = app.handler(
         make_event(
             method="GET",
-            proxy=TARGET_SUB,
-            groups='["super_user"]',
+            proxy=CALLER_SUB,
+            groups='["owner_user"]',
         ),
         None,
     )
 
     assert_response(response, 200, public_user(stored))
     table_spy.get_item.assert_called_once_with(
-        Key={"PK": f"USER#{TARGET_SUB}", "SK": "PROFILE"},
+        Key={"PK": f"USER#{CALLER_SUB}", "SK": "PROFILE"},
         ConsistentRead=True,
     )
     table_spy.put_item.assert_not_called()
     table_spy.delete_item.assert_not_called()
-    assert cognito.mock_calls == []
-
-
-def test_super_user_lists_every_user_in_deterministic_order(app_state):
-    app, user_table, cognito = app_state
-    staff_zed = user_item(sub="staff-zed", name="zed")
-    staff_alpha = user_item(sub="staff-alpha", name="Alpha")
-    owner = user_item(
-        sub="owner-target",
-        role="owner_user",
-        location_id="",
-        name="alpha",
-    )
-    super_user = user_item(
-        sub="super-target",
-        role="super_admin",
-        location_id="",
-        name="Beta",
-    )
-    for stored in (staff_zed, staff_alpha, owner, super_user):
-        put_user(user_table, stored)
-
-    event = make_event(method="GET", proxy="", groups='["super_user"]')
-    event["pathParameters"] = None
-    response = app.handler(event, None)
-
-    assert_response(
-        response,
-        200,
-        {
-            "items": [
-                public_user(owner),
-                public_user(staff_alpha),
-                public_user(super_user),
-                public_user(staff_zed),
-            ]
-        },
-    )
     assert cognito.mock_calls == []
 
 
@@ -565,7 +499,7 @@ def test_owner_list_contains_staff_and_self_but_not_other_privileged_users(
     )
     super_user = user_item(
         sub="super-target",
-        role="super_admin",
+        role="owner_user",
         location_id="",
         name="Super User",
     )
@@ -615,14 +549,14 @@ def test_list_users_reads_every_scan_page_consistently(
     second = user_item(sub="second", name="Alpha")
     last_key = {"PK": "USER#first", "SK": "PROFILE"}
     scanning_table = Mock()
-    scanning_table.scan.side_effect = [
+    scanning_table.query.side_effect = [
         {"Items": [first], "LastEvaluatedKey": last_key},
         {"Items": [second]},
     ]
     monkeypatch.setattr(app, "table", lambda _: scanning_table)
 
     response = app.handler(
-        make_event(method="GET", proxy="", groups='["super_user"]'),
+        make_event(method="GET", proxy="", groups='["owner_user"]'),
         None,
     )
 
@@ -631,10 +565,11 @@ def test_list_users_reads_every_scan_page_consistently(
         200,
         {"items": [public_user(second), public_user(first)]},
     )
-    assert scanning_table.scan.call_args_list == [
-        call(ConsistentRead=True),
-        call(ConsistentRead=True, ExclusiveStartKey=last_key),
-    ]
+    # The tenant's own users via the byTenant index - never a Scan.
+    first_call, second_call = scanning_table.query.call_args_list
+    assert first_call.kwargs["IndexName"] == "byTenant"
+    assert "ExclusiveStartKey" not in first_call.kwargs
+    assert second_call.kwargs["ExclusiveStartKey"] == last_key
     assert cognito.mock_calls == []
 
 
@@ -669,11 +604,11 @@ def test_malformed_list_response_returns_sanitized_503(
 ):
     app, _, cognito = app_state
     scanning_table = Mock()
-    scanning_table.scan.return_value = scan_response
+    scanning_table.query.return_value = scan_response
     monkeypatch.setattr(app, "table", lambda _: scanning_table)
 
     response = app.handler(
-        make_event(method="GET", proxy="", groups='["super_user"]'),
+        make_event(method="GET", proxy="", groups='["owner_user"]'),
         None,
     )
 
@@ -692,14 +627,14 @@ def test_list_users_rejects_a_repeated_last_evaluated_key(
     app, _, cognito = app_state
     last_key = {"PK": "USER#target-sub", "SK": "PROFILE"}
     scanning_table = Mock()
-    scanning_table.scan.side_effect = [
+    scanning_table.query.side_effect = [
         {"Items": [], "LastEvaluatedKey": last_key},
         {"Items": [], "LastEvaluatedKey": dict(last_key)},
     ]
     monkeypatch.setattr(app, "table", lambda _: scanning_table)
 
     response = app.handler(
-        make_event(method="GET", proxy="", groups='["super_user"]'),
+        make_event(method="GET", proxy="", groups='["owner_user"]'),
         None,
     )
 
@@ -708,7 +643,7 @@ def test_list_users_rejects_a_repeated_last_evaluated_key(
         503,
         {"error": "user service unavailable"},
     )
-    assert scanning_table.scan.call_count == 2
+    assert scanning_table.query.call_count == 2
     assert cognito.mock_calls == []
 
 
@@ -733,11 +668,11 @@ def test_inconsistent_user_in_list_returns_409(
     app, _, cognito = app_state
     inconsistent = {**user_item(), field: value}
     scanning_table = Mock()
-    scanning_table.scan.return_value = {"Items": [inconsistent]}
+    scanning_table.query.return_value = {"Items": [inconsistent]}
     monkeypatch.setattr(app, "table", lambda _: scanning_table)
 
     response = app.handler(
-        make_event(method="GET", proxy="", groups='["super_user"]'),
+        make_event(method="GET", proxy="", groups='["owner_user"]'),
         None,
     )
 
@@ -755,14 +690,14 @@ def test_list_dynamodb_failure_is_sanitized_and_does_not_call_cognito(
 ):
     app, _, cognito = app_state
     scanning_table = Mock()
-    scanning_table.scan.side_effect = client_error(
+    scanning_table.query.side_effect = client_error(
         "InternalServerError",
         "Scan",
     )
     monkeypatch.setattr(app, "table", lambda _: scanning_table)
 
     response = app.handler(
-        make_event(method="GET", proxy="", groups='["super_user"]'),
+        make_event(method="GET", proxy="", groups='["owner_user"]'),
         None,
     )
 
@@ -793,7 +728,7 @@ def test_malformed_single_user_read_returns_sanitized_503(
         make_event(
             method="GET",
             proxy=TARGET_SUB,
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
@@ -853,74 +788,6 @@ def test_profile_rejects_server_controlled_fields(app_state, field):
     assert cognito.mock_calls == []
 
 
-@pytest.mark.parametrize(
-    ("group", "location_id", "role", "stored_location"),
-    [
-        ("staff_user", "location-id", "staff", "location-id"),
-        ("owner_user", None, "owner_user", ""),
-        ("super_user", None, "super_admin", ""),
-    ],
-)
-def test_super_user_can_invite_each_group_and_persist_mapping(
-    app_state,
-    group,
-    location_id,
-    role,
-    stored_location,
-):
-    app, user_table, cognito = app_state
-    body = invite_body(group=group, location_id=location_id)
-
-    response = app.handler(
-        make_event(
-            body=body,
-            groups='["super_user"]',
-            base64_encoded=True,
-        ),
-        None,
-    )
-    result = response_body(response)
-
-    assert_response(response, 201)
-    assert response["headers"]["Location"] == f"/users/{TARGET_SUB}"
-    assert "PK" not in result and "SK" not in result
-    assert result == {
-        "cognitoSub": TARGET_SUB,
-        "role": role,
-        "locationId": stored_location,
-        "name": body["name"],
-        "email": body["email"],
-        "phone": body["phone"],
-        "status": "active",
-        "createdBy": CALLER_SUB,
-        "createdAt": CREATED_AT,
-    }
-    assert get_user(user_table) == {
-        "PK": f"USER#{TARGET_SUB}",
-        "SK": "PROFILE",
-        **result,
-    }
-
-    create_kwargs = cognito.admin_create_user.call_args.kwargs
-    assert create_kwargs["UserPoolId"] == USER_POOL_ID
-    assert create_kwargs["Username"] == body["email"]
-    attributes = {
-        attribute["Name"]: attribute["Value"]
-        for attribute in create_kwargs["UserAttributes"]
-    }
-    assert attributes == {
-        "email": body["email"],
-        "name": body["name"],
-        "phone_number": body["phone"],
-    }
-    cognito.admin_add_user_to_group.assert_called_once_with(
-        UserPoolId=USER_POOL_ID,
-        Username=TARGET_SUB,
-        GroupName=group,
-    )
-    cognito.admin_delete_user.assert_not_called()
-
-
 def test_owner_can_invite_staff(app_state):
     app, user_table, cognito = app_state
 
@@ -931,7 +798,7 @@ def test_owner_can_invite_staff(app_state):
     cognito.admin_add_user_to_group.assert_called_once()
 
 
-@pytest.mark.parametrize("group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("group", ["owner_user"])
 def test_owner_cannot_invite_privileged_user(app_state, group):
     app, user_table, cognito = app_state
 
@@ -958,7 +825,7 @@ def test_invite_validates_group_location_invariants(app_state, body):
     app, user_table, cognito = app_state
 
     response = app.handler(
-        make_event(body=body, groups='["super_user"]'),
+        make_event(body=body, groups='["owner_user"]'),
         None,
     )
 
@@ -1126,7 +993,7 @@ def test_self_profile_update_is_allowed(app_state):
         user_table,
         user_item(
             sub=CALLER_SUB,
-            role="super_admin",
+            role="owner_user",
             location_id="",
         ),
     )
@@ -1135,7 +1002,7 @@ def test_self_profile_update_is_allowed(app_state):
         make_event(
             method="PUT",
             proxy=CALLER_SUB,
-            groups='["super_user"]',
+            groups='["owner_user"]',
             body={"name": "Self Updated"},
         ),
         None,
@@ -1206,7 +1073,7 @@ def test_profile_cognito_failure_leaves_dynamodb_unchanged(app_state):
     assert "sensitive AWS detail" not in response["body"]
 
 
-@pytest.mark.parametrize("actual_group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("actual_group", ["owner_user"])
 @pytest.mark.parametrize(
     ("method", "proxy", "body", "initial_status"),
     [
@@ -1350,7 +1217,7 @@ def test_self_deactivation_is_forbidden(app_state):
         user_table,
         user_item(
             sub=CALLER_SUB,
-            role="super_admin",
+            role="owner_user",
             location_id="",
         ),
     )
@@ -1358,7 +1225,7 @@ def test_self_deactivation_is_forbidden(app_state):
     response = app.handler(
         make_event(
             proxy=f"{CALLER_SUB}/deactivate",
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
@@ -1373,7 +1240,7 @@ def test_self_reactivation_is_forbidden(app_state):
         user_table,
         user_item(
             sub=CALLER_SUB,
-            role="super_admin",
+            role="owner_user",
             location_id="",
             status="disabled",
         ),
@@ -1382,7 +1249,7 @@ def test_self_reactivation_is_forbidden(app_state):
     response = app.handler(
         make_event(
             proxy=f"{CALLER_SUB}/reactivate",
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
@@ -1462,53 +1329,26 @@ def test_status_dynamodb_failure_reverses_cognito_change(
     ]
 
 
-def test_group_change_updates_membership_role_and_location(app_state):
+def test_owner_cannot_promote_staff_to_owner(app_state):
+    """Owners are added from the operator console (sbs-admin) only."""
     app, user_table, cognito = app_state
-    put_user(user_table)
-    cognito.admin_list_groups_for_user.side_effect = [
-        {
-            "Groups": [
-                {"GroupName": "staff_user"},
-                {"GroupName": "unrelated"},
-            ],
-            "NextToken": "next-page",
-        },
-        {"Groups": [{"GroupName": "another-unrelated"}]},
-    ]
+    original = user_item()
+    put_user(user_table, original)
 
     response = app.handler(
         make_event(
             method="PUT",
             proxy=f"{TARGET_SUB}/group",
             body={"group": "owner_user"},
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
 
-    assert_response(response, 200)
-    result = response_body(response)
-    assert result["role"] == "owner_user"
-    assert result["locationId"] == ""
-    assert get_user(user_table)["role"] == "owner_user"
-    assert cognito.admin_list_groups_for_user.call_args_list == [
-        call(UserPoolId=USER_POOL_ID, Username=TARGET_SUB),
-        call(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-            NextToken="next-page",
-        ),
-    ]
-    cognito.admin_add_user_to_group.assert_called_once_with(
-        UserPoolId=USER_POOL_ID,
-        Username=TARGET_SUB,
-        GroupName="owner_user",
-    )
-    cognito.admin_remove_user_from_group.assert_called_once_with(
-        UserPoolId=USER_POOL_ID,
-        Username=TARGET_SUB,
-        GroupName="staff_user",
-    )
+    assert_response(response, 403, {"error": "forbidden"})
+    assert get_user(user_table) == original
+    cognito.admin_add_user_to_group.assert_not_called()
+    cognito.admin_remove_user_from_group.assert_not_called()
 
 
 def test_same_staff_group_can_change_location_without_membership_calls(
@@ -1556,7 +1396,7 @@ def test_self_group_change_is_forbidden(app_state):
         user_table,
         user_item(
             sub=CALLER_SUB,
-            role="super_admin",
+            role="owner_user",
             location_id="",
         ),
     )
@@ -1566,124 +1406,13 @@ def test_self_group_change_is_forbidden(app_state):
             method="PUT",
             proxy=f"{CALLER_SUB}/group",
             body={"group": "owner_user"},
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
 
     assert_response(response, 403, {"error": "forbidden"})
     assert cognito.mock_calls == []
-
-
-def test_group_add_failure_does_not_remove_old_group_or_update_record(
-    app_state,
-):
-    app, user_table, cognito = app_state
-    original = user_item()
-    put_user(user_table, original)
-    cognito.admin_add_user_to_group.side_effect = client_error(
-        "InternalErrorException",
-        "AdminAddUserToGroup",
-    )
-
-    response = app.handler(
-        make_event(
-            method="PUT",
-            proxy=f"{TARGET_SUB}/group",
-            body={"group": "owner_user"},
-            groups='["super_user"]',
-        ),
-        None,
-    )
-
-    assert response["statusCode"] == 503
-    assert get_user(user_table) == original
-    cognito.admin_remove_user_from_group.assert_not_called()
-    assert "sensitive AWS detail" not in response["body"]
-
-
-def test_group_with_no_managed_membership_is_repaired_by_super_user(
-    app_state,
-):
-    app, user_table, cognito = app_state
-    put_user(user_table)
-    cognito.admin_list_groups_for_user.return_value = {
-        "Groups": [{"GroupName": "unrelated"}],
-    }
-
-    response = app.handler(
-        make_event(
-            method="PUT",
-            proxy=f"{TARGET_SUB}/group",
-            body={"group": "owner_user"},
-            groups='["super_user"]',
-        ),
-        None,
-    )
-
-    assert_response(response, 200)
-    assert get_user(user_table)["role"] == "owner_user"
-    assert get_user(user_table)["locationId"] == ""
-    cognito.admin_add_user_to_group.assert_called_once_with(
-        UserPoolId=USER_POOL_ID,
-        Username=TARGET_SUB,
-        GroupName="owner_user",
-    )
-    cognito.admin_remove_user_from_group.assert_not_called()
-
-
-def test_group_dynamodb_failure_restores_previous_membership(
-    app_state,
-    monkeypatch,
-):
-    app, user_table, cognito = app_state
-    original = user_item()
-    put_user(user_table, original)
-    failing_table = Mock(wraps=user_table)
-    failing_table.put_item.side_effect = client_error(
-        "ValidationException",
-        "PutItem",
-    )
-    monkeypatch.setattr(app, "table", lambda _: failing_table)
-
-    response = app.handler(
-        make_event(
-            method="PUT",
-            proxy=f"{TARGET_SUB}/group",
-            body={"group": "owner_user"},
-            groups='["super_user"]',
-        ),
-        None,
-    )
-
-    assert_response(response, 503, {"error": "user service unavailable"})
-    assert get_user(user_table) == original
-    assert cognito.mock_calls == [
-        call.admin_list_groups_for_user(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-        ),
-        call.admin_add_user_to_group(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-            GroupName="owner_user",
-        ),
-        call.admin_remove_user_from_group(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-            GroupName="staff_user",
-        ),
-        call.admin_add_user_to_group(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-            GroupName="staff_user",
-        ),
-        call.admin_remove_user_from_group(
-            UserPoolId=USER_POOL_ID,
-            Username=TARGET_SUB,
-            GroupName="owner_user",
-        ),
-    ]
 
 
 def test_delete_removes_cognito_and_dynamodb_user(app_state):
@@ -1757,7 +1486,7 @@ def test_self_delete_is_forbidden(app_state):
         user_table,
         user_item(
             sub=CALLER_SUB,
-            role="super_admin",
+            role="owner_user",
             location_id="",
         ),
     )
@@ -1766,7 +1495,7 @@ def test_self_delete_is_forbidden(app_state):
         make_event(
             method="DELETE",
             proxy=CALLER_SUB,
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )
@@ -2299,7 +2028,7 @@ def test_internal_dynamodb_fields_never_appear_in_user_response(app_state):
 def test_missing_public_user_field_returns_409_without_mutation(app_state):
     app, user_table, cognito = app_state
     incomplete = user_item()
-    del incomplete["phone"]
+    del incomplete["createdBy"]
     put_user(user_table, incomplete)
 
     response = app.handler(
@@ -2315,3 +2044,109 @@ def test_missing_public_user_field_returns_409_without_mutation(app_state):
     assert get_user(user_table) == incomplete
     cognito.admin_get_user.assert_not_called()
     cognito.admin_update_user_attributes.assert_not_called()
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_list_shows_only_the_callers_tenant(app_state):
+    app, user_table, _ = app_state
+    mine = user_item(sub="staff-a")
+    theirs = user_item(sub="staff-b", tenant_id=TENANT_B, location_id="b-location")
+    put_user(user_table, mine)
+    put_user(user_table, theirs)
+
+    event = make_event(method="GET", proxy="list-users")
+    event["pathParameters"] = None
+    a = app.handler(event, None)
+    event_b = make_event(method="GET", proxy="list-users", tenant_id=TENANT_B, sub="owner-b")
+    event_b["pathParameters"] = None
+    b = app.handler(event_b, None)
+
+    assert [u["cognitoSub"] for u in response_body(a)["items"]] == ["staff-a"]
+    assert [u["cognitoSub"] for u in response_body(b)["items"]] == ["staff-b"]
+
+
+@pytest.mark.parametrize(("method", "proxy", "body"), [
+    ("GET", TARGET_SUB, NO_BODY),
+    ("PUT", TARGET_SUB, {"name": "Hijack"}),
+    ("POST", f"{TARGET_SUB}/deactivate", NO_BODY),
+    ("DELETE", TARGET_SUB, NO_BODY),
+])
+def test_other_tenants_user_is_404_and_untouched(app_state, method, proxy, body):
+    app, user_table, cognito = app_state
+    victim = user_item(tenant_id=TENANT_B, location_id="b-location")
+    put_user(user_table, victim)
+
+    response = app.handler(make_event(method=method, proxy=proxy, body=body), None)
+
+    assert_response(response, 404, {"error": "user not found"})
+    assert get_user(user_table) == victim
+    assert cognito.mock_calls == []
+
+
+def test_invite_ties_the_user_to_the_callers_tenant(app_state):
+    app, user_table, cognito = app_state
+
+    response = app.handler(make_event(body=invite_body()), None)
+
+    assert response["statusCode"] == 201
+    attrs = cognito.admin_create_user.call_args.kwargs["UserAttributes"]
+    assert {"Name": "custom:tenant_id", "Value": TENANT_A} in attrs
+    assert get_user(user_table)["tenantId"] == TENANT_A
+
+
+def test_invite_to_another_tenants_location_is_rejected(app_state):
+    app, user_table, cognito = app_state
+
+    response = app.handler(make_event(body=invite_body(location_id="b-location")), None)
+
+    assert_response(response, 400, {"error": "locationId is not a location of this restaurant"})
+    assert cognito.mock_calls == []
+
+
+def test_owner_profile_from_onboarding_is_readable(app_state):
+    """The first owner's profile is written by the onboarding workflow
+    without phone or locationId."""
+    app, user_table, cognito = app_state
+    user_table.put_item(Item={
+        "PK": f"USER#{CALLER_SUB}", "SK": "PROFILE", "cognitoSub": CALLER_SUB,
+        "tenantId": TENANT_A, "role": "owner_user", "email": "owner@a.example",
+        "name": "Owner", "status": "active", "createdBy": "platform-onboarding",
+        "createdAt": CREATED_AT,
+    })
+
+    response = app.handler(make_event(method="GET", proxy=CALLER_SUB), None)
+
+    assert response["statusCode"] == 200
+    assert response_body(response)["phone"] == "" and response_body(response)["locationId"] == ""
+
+
+def test_real_shaped_tenant_lists_and_reads(monkeypatch):
+    """Owner rows exactly as onboarding/sbs-admin write them + a staff row:
+    the owner lists both and reads themself (no 409)."""
+    import importlib.util as _ilu
+    from tenant_support import OWNER_A_SUB, STAFF_A_SUB, seed_tenancy
+    for k, v in {"ENVIRONMENT": "dev", "USER_TABLE_NAME": "test-user", "COGNITO_USER_POOL_ID": USER_POOL_ID,
+                 "AWS_ACCESS_KEY_ID": "t", "AWS_SECRET_ACCESS_KEY": "t", "AWS_SESSION_TOKEN": "t",
+                 "AWS_DEFAULT_REGION": "eu-north-1"}.items():
+        monkeypatch.setenv(k, v)
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+        seed_tenancy(monkeypatch)
+        spec = _ilu.spec_from_file_location("manage_user_real_shape", APP_PATH)
+        app = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(app)
+        app._cognito_client = Mock(spec_set=COGNITO_METHODS)
+
+        listing = make_event(method="GET", proxy="", sub=OWNER_A_SUB)
+        listing["pathParameters"] = None
+        listed = app.handler(listing, None)
+        me = app.handler(make_event(method="GET", proxy=OWNER_A_SUB, sub=OWNER_A_SUB), None)
+
+        assert listed["statusCode"] == 200
+        assert sorted(u["cognitoSub"] for u in response_body(listed)["items"]) == sorted([OWNER_A_SUB, STAFF_A_SUB])
+        assert me["statusCode"] == 200
+        shared_dynamo._resource = None
+        shared_dynamo._client = None

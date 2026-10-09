@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, create_tables, tenant_claims, tenant_row
 
 
 APP_PATH = (
@@ -54,6 +55,7 @@ def user_item(
         "PK": f"USER#{sub}",
         "SK": "PROFILE",
         "cognitoSub": sub,
+        "tenantId": TENANT_A,
         "role": role,
         "locationId": location_id,
         "name": "Test User",
@@ -92,10 +94,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -149,8 +148,9 @@ def location_item(
             )
         }
     item = {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
         "locationId": location_id,
         "name": "Test Restaurant",
         "address": "Example Street 1",
@@ -601,6 +601,10 @@ def app_and_tables(monkeypatch):
             "occupancy": create_table(resource, OCCUPANCY_TABLE_NAME),
             "snapshot": create_table(resource, SNAPSHOT_TABLE_NAME),
         }
+        create_tables(monkeypatch, location_table=LOCATION_TABLE_NAME,
+                      existing=(LOCATION_TABLE_NAME,), user_table=None)
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A))
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B))
 
         spec = importlib.util.spec_from_file_location(
             "block_table_app",
@@ -672,7 +676,7 @@ def test_wrong_group_returns_403_before_aws_access(
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     table_factory.assert_not_called()
 
 
@@ -689,7 +693,7 @@ def test_group_authorization_precedes_body_validation(
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     table_factory.assert_not_called()
 
 
@@ -839,7 +843,6 @@ def test_rejects_invalid_request_fields_before_user_lookup(
     [
         ("staff_user", "staff", LOCATION_ID),
         ("owner_user", "owner_user", ""),
-        ("super_user", "super_admin", ""),
     ],
 )
 def test_supported_active_profiles_reach_the_operation_boundary(
@@ -953,10 +956,6 @@ def test_missing_disabled_or_unauthorized_staff_profile_is_denied(
         (
             ["owner_user"],
             user_item(role="owner_user", location_id=LOCATION_ID),
-        ),
-        (
-            ["super_user"],
-            user_item(role="super_admin", location_id=LOCATION_ID),
         ),
     ],
 )
@@ -2679,3 +2678,47 @@ def test_dependency_failure_is_sanitized(app_and_tables, monkeypatch):
         {"error": "block-table service unavailable"},
     )
     assert "sensitive AWS detail" not in response["body"]
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_profile_of_another_tenant_is_forbidden(app_and_tables):
+    """A token of tenant B whose sub resolves to a profile of tenant A
+    (shouldn't happen - but the profile decides nothing on its own)."""
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert_response(response, 403, {"error": "forbidden"})
+
+
+def test_owner_of_another_tenant_gets_404_for_this_location(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"], user_item(sub="owner-b", role="owner_user", location_id="",
+                                       tenantId=TENANT_B))
+    event = make_event(groups='["owner_user"]', sub="owner-b")
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert_response(response, 404, {"error": "location not found"})
+    assert tables["occupancy"].scan()["Items"] == []
+
+
+def test_reservations_feature_is_required(app_and_tables):
+    import boto3 as _boto3
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    _boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, features={"reservations": False, "ordering": True}))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 403, {"error": "feature_not_in_plan"})

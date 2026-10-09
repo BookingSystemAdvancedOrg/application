@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, create_tables, tenant_row
 
 
 APP_PATH = (
@@ -82,8 +83,9 @@ def location_item(
     **overrides,
 ):
     item = {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
         "locationId": location_id,
         "name": "Test Restaurant",
         "address": "Example Street 1",
@@ -483,6 +485,15 @@ def app(monkeypatch):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
+    # Request-parsing tests run without AWS: LOCATION_ID belongs to tenant A.
+    def fake_for_public(location_id, *, feature=None):
+        if location_id != LOCATION_ID:
+            raise module.tenant.TenantError(404, "not found")
+        return module.tenant.TenantContext(TENANT_A, tenant_row(TENANT_A), location={
+            "locationId": LOCATION_ID})
+
+    monkeypatch.setattr(module.tenant, "for_public", fake_for_public)
     return module
 
 
@@ -509,6 +520,10 @@ def app_and_tables(monkeypatch):
             "occupancy": create_table(resource, OCCUPANCY_TABLE_NAME),
             "snapshot": create_table(resource, SNAPSHOT_TABLE_NAME),
         }
+        create_tables(monkeypatch, location_table=LOCATION_TABLE_NAME,
+                      existing=(LOCATION_TABLE_NAME,), user_table=None)
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A))
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B))
 
         spec = importlib.util.spec_from_file_location(
             "get_availability_stage_two_app",
@@ -1175,7 +1190,7 @@ def test_location_and_snapshot_reads_are_strongly_consistent(
 
     assert response["statusCode"] == 200
     location.get_item.assert_called_once_with(
-        Key={"PK": "PLATFORM", "SK": f"LOCATION#{LOCATION_ID}"},
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOCATION_ID}"},
         ConsistentRead=True,
     )
     assert snapshot.get_item.call_count == 3
@@ -1465,7 +1480,6 @@ def test_each_business_interval_has_its_own_slot_grid(
         location_item(duration="0.333"),
         location_item(gracePeriodHours=Decimal("-1")),
         location_item(businessHours={}),
-        location_item(locationId="other"),
     ],
 )
 def test_inconsistent_location_returns_409(app_and_tables, location):
@@ -2082,7 +2096,8 @@ def test_location_dependency_failure_is_sanitized(
     monkeypatch,
     aws_error,
 ):
-    app, _ = app_and_tables
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())  # the tenant check finds it
     location = Mock()
     location.get_item.side_effect = aws_error
     monkeypatch.setattr(app, "table", lambda _: location)
@@ -2516,3 +2531,44 @@ def test_occupancy_dependency_failure_is_sanitized(
         {"error": "availability service unavailable"},
     )
     assert "sensitive occupancy detail" not in response["body"]
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_location_row_without_matching_id_is_not_found(app_and_tables):
+    """The location is resolved by its locationId (index); a row whose
+    attribute disagrees with its key is never served."""
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item(locationId="other"))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+@pytest.mark.parametrize("status", ["suspended", "offboarded", "provisioning"])
+def test_inactive_restaurant_has_no_availability(app_and_tables, status):
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status=status))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+def test_plan_without_reservations_has_no_availability(app_and_tables):
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, features={"reservations": False, "ordering": True}))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})

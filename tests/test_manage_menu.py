@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -65,7 +66,7 @@ def valid_body(**overrides):
         "description": "Swedish meatballs with mash",
         "price": 149.5,
         "category": "mains",
-        "imageKey": "locations/location-id/menu/kottbullar.webp",
+        "imageKey": f"menu-images/{TENANT_A}/locations/location-id/menu/kottbullar.webp",
         "active": True,
     }
     body.update(overrides)
@@ -101,10 +102,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -132,7 +130,7 @@ def menu_item(
     description="Swedish meatballs with mash",
     price=Decimal("149.5"),
     category="mains",
-    image_key="locations/location-id/menu/kottbullar.webp",
+    image_key=f"menu-images/{TENANT_A}/locations/location-id/menu/kottbullar.webp",
     active=True,
     created_by=CALLER_SUB,
     created_at=CREATED_AT,
@@ -241,6 +239,7 @@ def app_and_table(monkeypatch):
         shared_dynamo._resource = None
         shared_dynamo._client = None
 
+        install_tenancy(monkeypatch, [LOCATION_ID, OTHER_LOCATION_ID])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         menu_table = resource.create_table(
             TableName=TABLE_NAME,
@@ -364,7 +363,7 @@ def test_wrong_group_returns_403_without_dynamodb(
 
     response = app.handler(make_event(method="POST", groups=groups), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     table_factory.assert_not_called()
 
 
@@ -382,13 +381,13 @@ def test_authorization_happens_before_route_path_and_body_validation(
 
     response = app.handler(event, None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     assert table_items(menu_table) == []
 
 
 @pytest.mark.parametrize(
     "groups",
-    ['["staff_user"]', '["owner_user"]', '["super_user"]'],
+    ['["staff_user"]', '["owner_user"]'],
 )
 def test_all_internal_groups_can_manage_menu(app_and_table, groups):
     app, _ = app_and_table
@@ -871,8 +870,8 @@ def test_update_requires_at_least_one_editable_field(app_and_table):
         ("category", "desserts", "desserts"),
         (
             "imageKey",
-            "locations/location-id/menu/new.webp",
-            "locations/location-id/menu/new.webp",
+            f"menu-images/{TENANT_A}/locations/location-id/menu/new.webp",
+            f"menu-images/{TENANT_A}/locations/location-id/menu/new.webp",
         ),
         ("active", False, False),
     ],
@@ -1538,3 +1537,63 @@ def test_delete_commit_then_transport_error_reconciles_as_success(
 
     assert_response(response, 204, None)
     assert get_item(menu_table) is None
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+@pytest.mark.parametrize(("method", "proxy", "body"), [
+    ("POST", "items", {"name": "x"}),
+    ("PUT", f"items/{ITEM_ID}", {"name": "x"}),
+    ("DELETE", f"items/{ITEM_ID}", NO_BODY),
+])
+def test_other_tenants_location_is_404_without_touching_the_menu(app_and_table, method, proxy, body):
+    app, menu_table = app_and_table
+    before = menu_table.scan()["Items"]
+    event = make_event(method=method, proxy=proxy, body=body, location_id=LOC_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    assert menu_table.scan()["Items"] == before
+
+
+def test_other_tenants_owner_cannot_reach_this_location(app_and_table):
+    app, menu_table = app_and_table
+    event = make_event(method="POST", proxy="items", body={"name": "x"})
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims(
+        "owner-b", '["owner_user"]', TENANT_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+
+
+
+@pytest.mark.parametrize("image_key", [
+    "menu-images/01bbbbbbbbbbbbbbbbbbbbbbbb/locations/location-id/menu/x.webp",  # other tenant
+    f"menu-images/{TENANT_A}/locations/other-location-id/menu/x.webp",            # other location
+    f"menu-images/{TENANT_A}/locations/location-id/../../{TENANT_B}/x.webp",
+    "locations/location-id/menu/x.webp",                                          # legacy shape
+])
+def test_new_image_must_belong_to_this_tenant_and_location(app_and_table, image_key):
+    app, menu_table = app_and_table
+
+    response = app.handler(make_event(method="POST", body=valid_body(imageKey=image_key)), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": "imageKey must be an image uploaded for this location"}
+    assert menu_table.scan()["Items"] == []
+
+
+def test_unchanged_legacy_image_may_stay_on_update(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(image_key="locations/location-id/menu/kottbullar.webp"))  # legacy
+
+    response = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}",
+                   body={"name": "Renamed", "imageKey": "locations/location-id/menu/kottbullar.webp"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200

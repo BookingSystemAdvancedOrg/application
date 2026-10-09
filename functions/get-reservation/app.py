@@ -34,8 +34,10 @@ def handler(event, context):
 
     # TODO: implement get-reservation.
     # See the module docstring above (and docs/LAMBDA_REFERENCE.md) for
-    # what this needs to do and which group(s) should be allowed to call
-    # it, e.g.:
-    #   require_group(event, "owner_user", "super_user")
+    # what this needs to do. Tenant rule (shared/tenant.py): resolve the
+    # caller with
+    #   ctx = tenant.for_jwt(event, location_id=..., feature="reservations")
+    # and check the reservation's locationId belongs to ctx.tenant_id
+    # (foreign ids -> 404). Never trust a tenantId from the request.
 
     return error_response(501, "not implemented")

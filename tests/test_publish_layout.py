@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -38,10 +39,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -95,6 +93,7 @@ def app_and_tables(monkeypatch):
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
+        install_tenancy(monkeypatch, [LOCATION_ID])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         live_table = create_table(resource, LIVE_TABLE_NAME)
         snapshot_table = create_table(resource, SNAPSHOT_TABLE_NAME)
@@ -261,7 +260,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["staff_user"]'), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "owner_only"})
     table_factory.assert_not_called()
 
 
@@ -296,7 +295,7 @@ def test_invalid_location_returns_400_before_dynamodb(
     table_factory.assert_not_called()
 
 
-@pytest.mark.parametrize("group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("group", ["owner_user"])
 def test_publishes_first_inactive_snapshot(
     app_and_tables,
     group,
@@ -1401,3 +1400,17 @@ def test_repeated_ambiguous_put_failure_returns_503(
     )
     assert failed_put.call_count == 2
     assert snapshot_table.scan()["Items"] == []
+
+
+
+def test_other_tenants_location_cannot_be_published(app_and_tables, monkeypatch):
+    app, _, _ = app_and_tables
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims("owner-b", '["owner_user"]', TENANT_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    table_factory.assert_not_called()

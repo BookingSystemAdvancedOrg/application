@@ -1655,6 +1655,8 @@ def test_task11_schedule_input_completes_task12_cutover(
     }
     for item in (current, replacement, steady_state):
         snapshot_table.put_item(Item=item)
+    from tenant_support import install_tenancy, tenant_claims
+    install_tenancy(monkeypatch, [LOCATION_ID])
 
     response = activate.handler(
         {
@@ -1662,10 +1664,7 @@ def test_task11_schedule_input_completes_task12_cutover(
                 "http": {"method": "POST"},
                 "authorizer": {
                     "jwt": {
-                        "claims": {
-                            "sub": CALLER_SUB,
-                            "cognito:groups": '["owner_user"]',
-                        }
+                        "claims": tenant_claims(CALLER_SUB, '["owner_user"]')
                     }
                 },
             },

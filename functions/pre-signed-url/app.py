@@ -6,8 +6,12 @@ TRIGGER:
 PURPOSE:
     Generates a short-lived presigned S3 PUT URL so the admin front-end can
     upload a menu item image directly to S3. Every upload receives a new
-    location-scoped object key; replacing a menu item's image means updating
-    its imageKey to the new path, avoiding stale CloudFront cache entries.
+    tenant- and location-scoped object key
+    (menu-images/<tenantId>/locations/<locationId>/menu/<uuid>.<ext>) so a
+    tenant's images can be exported or deleted with one prefix; replacing a
+    menu item's image means updating its imageKey to the new path, avoiding
+    stale CloudFront cache entries. Owner only; the location must belong to
+    the token's tenant (else 404).
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -31,18 +35,17 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from shared import tenant
 from shared.auth import (
     Unauthorized,
     get_claims,
     get_sub,
-    require_group,
 )
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_IMAGES_BUCKET_NAME = os.environ["MENU_IMAGES_BUCKET_NAME"]
 
-_ALLOWED_GROUPS = ("owner_user", "super_user")
 _CONTENT_TYPE_EXTENSIONS = {
     "image/avif": "avif",
     "image/jpeg": "jpg",
@@ -134,10 +137,10 @@ def _new_image_id():
     return str(uuid.uuid4())
 
 
-def _object_key(location_id, content_type):
+def _object_key(tenant_id, location_id, content_type):
     extension = _CONTENT_TYPE_EXTENSIONS[content_type]
     return (
-        f"{_OBJECT_KEY_PREFIX}/locations/{location_id}/menu/"
+        f"{_OBJECT_KEY_PREFIX}/{tenant_id}/locations/{location_id}/menu/"
         f"{_new_image_id()}.{extension}"
     )
 
@@ -179,9 +182,14 @@ def handler(event, context):
         return _upload_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _upload_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+        tenant.for_jwt(event, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _upload_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "image upload service unavailable",
+        )
 
     if _request_method(event) != "GET":
         return _upload_response(
@@ -197,7 +205,17 @@ def handler(event, context):
     except ValueError as exc:
         return _upload_error(HTTPStatus.BAD_REQUEST.value, str(exc))
 
-    image_key = _object_key(location_id, content_type)
+    try:
+        ctx = tenant.for_jwt(event, location_id=location_id, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _upload_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "image upload service unavailable",
+        )
+
+    image_key = _object_key(ctx.tenant_id, location_id, content_type)
     try:
         upload_url = _presigned_put_url(image_key, content_type)
     except (BotoCoreError, ClientError, _ImageUploadServiceFailure):

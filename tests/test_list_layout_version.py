@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -43,10 +44,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -444,6 +442,7 @@ def app_and_table(monkeypatch):
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
+        install_tenancy(monkeypatch, [LOCATION_ID, OTHER_LOCATION_ID])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         snapshot_table = resource.create_table(
             TableName=TABLE_NAME,
@@ -1433,7 +1432,8 @@ def test_archive_requires_owner_or_super_user_before_validating_path(
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    expected = "owner_only" if "staff_user" in groups else "no_tenant"
+    assert_response(response, 403, {"error": expected})
     table_factory.assert_not_called()
 
 
@@ -1558,7 +1558,7 @@ def test_archive_rejects_noncanonical_version_id_before_dynamodb(
     table_factory.assert_not_called()
 
 
-@pytest.mark.parametrize("group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("group", ["owner_user"])
 def test_archive_marks_inactive_snapshot_and_preserves_history(
     app_and_table,
     monkeypatch,
@@ -2294,7 +2294,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["customer"]'), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     table_factory.assert_not_called()
 
 
@@ -2331,7 +2331,7 @@ def test_invalid_location_returns_400_before_dynamodb(
 
 @pytest.mark.parametrize(
     "group",
-    ["staff_user", "owner_user", "super_user"],
+    ["staff_user", "owner_user"],
 )
 def test_allowed_groups_can_list_empty_partition(app_and_table, group):
     app, _ = app_and_table
@@ -3081,3 +3081,17 @@ def test_unknown_snapshot_and_element_fields_are_not_returned(
     assert "scheduleArn" not in returned
     assert "internalOnly" not in returned
     assert "internalElementValue" not in returned["elements"][0]
+
+
+
+def test_other_tenants_versions_are_404(app_and_table, monkeypatch):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims("owner-b", '["owner_user"]', TENANT_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    table_factory.assert_not_called()

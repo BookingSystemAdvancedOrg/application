@@ -18,9 +18,12 @@ AWS RESOURCE ACCESS:
     Read-only GetItem and Query access on the Menu table.
 
 NOTES:
-    Protected reads enforce Cognito group membership. Current IAM does not
-    include the User table, so this function cannot restrict a staff user to
-    their assigned location.
+    Multi-tenant (shared/tenant.py). Public route: the location decides the
+    tenant; an unknown location or an inactive (suspended/offboarded) tenant
+    answers 404 - a suspended restaurant's site shows no menu. Protected
+    routes: the location must belong to the token's tenant (else 404).
+    Current IAM does not include the User table, so this function cannot
+    restrict a staff user to their assigned location.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -33,14 +36,14 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_TABLE_NAME = os.environ["MENU_TABLE_NAME"]
 
-_ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
 _CATEGORIES = frozenset({"starters", "mains", "desserts", "drinks"})
 _CUSTOMER_FIELDS = (
     "menuItemId",
@@ -332,7 +335,10 @@ def _handle_public(event):
         return _menu_error(HTTPStatus.BAD_REQUEST.value, str(exc))
 
     try:
+        tenant.for_public(location_id)
         items = _list_active_items(location_id)
+    except tenant.TenantError as exc:
+        return exc.response()
     except (BotoCoreError, ClientError, _MenuServiceFailure):
         return _menu_error(
             HTTPStatus.SERVICE_UNAVAILABLE.value,
@@ -350,14 +356,18 @@ def _handle_protected(event):
         return _menu_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _menu_error(HTTPStatus.FORBIDDEN.value, "forbidden")
-
-    try:
+        tenant.for_jwt(event)
         location_id = _path_value(event, "locationId")
+        tenant.for_jwt(event, location_id=location_id)
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _menu_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except (BotoCoreError, ClientError):
+        return _menu_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "menu service unavailable",
+        )
 
     proxy_path = event["pathParameters"].get("proxy")
     route = _match_protected_route(proxy_path)

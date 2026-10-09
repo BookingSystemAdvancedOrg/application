@@ -669,3 +669,27 @@ def test_refresh_maps_transport_errors_to_502(app):
         "error": "authentication service unavailable",
     }
     assert response["headers"]["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("error_code", "message", "expected"),
+    [
+        ("UserLambdaValidationException",
+         "PreTokenGeneration failed with error refusing tokens.", "account_not_provisioned"),
+        ("NotAuthorizedException", "User is disabled.", "account_disabled"),
+    ],
+)
+def test_login_maps_tenant_refusals_to_stable_codes(app, error_code, message, expected):
+    """A user without a tenant (pre-token trigger refuses) or of a suspended
+    tenant (disabled) gets a 403 code the admin app can show a message for."""
+    cognito = Mock()
+    cognito.initiate_auth.side_effect = ClientError(
+        {"Error": {"Code": error_code, "Message": message}}, "InitiateAuth")
+    app._cognito_client = cognito
+    event = make_event(proxy="login")
+    event["body"] = json.dumps({"username": "staff@example.com", "password": "Correct123!"})
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": expected}

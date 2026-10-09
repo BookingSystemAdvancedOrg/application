@@ -17,9 +17,10 @@ AWS RESOURCE ACCESS:
     Full dynamodb:* on the Menu table only.
 
 NOTES:
-    Current IAM does not include the User table, so this function can enforce
-    Cognito group membership but cannot verify a staff user's assigned
-    location. It also cannot validate location records or S3 image objects.
+    Multi-tenant (shared/tenant.py): the {locationId} must belong to the
+    token's tenant (else 404) and the tenant must be active. Current IAM
+    does not include the User table, so a staff user's assigned location
+    is not checked here. S3 image objects are not validated.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -35,14 +36,14 @@ from http import HTTPStatus
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_TABLE_NAME = os.environ["MENU_TABLE_NAME"]
 
-_ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
 _CATEGORIES = frozenset({"starters", "mains", "desserts", "drinks"})
 _EDITABLE_FIELDS = {
     "name",
@@ -506,8 +507,21 @@ def _delete_existing_item(location_id, menu_item_id, expected):
     )
 
 
-def _create_item(event, location_id, caller_sub):
+def _require_own_image(fields, tenant_id, location_id, previous=None):
+    """A new or changed imageKey must be one uploaded for THIS location of
+    THIS tenant (pre-signed-url's prefix) - a tenant can't point its menu at
+    another tenant's images. An unchanged legacy key may stay."""
+    key = fields.get("imageKey")
+    if key is None or (previous is not None and previous.get("imageKey") == key):
+        return
+    prefix = f"menu-images/{tenant_id}/locations/{location_id}/"
+    if not key.startswith(prefix) or ".." in key or len(key) > 512:
+        raise ValueError("imageKey must be an image uploaded for this location")
+
+
+def _create_item(event, location_id, caller_sub, tenant_id):
     fields = _menu_fields(event, partial=False)
+    _require_own_image(fields, tenant_id, location_id)
     menu_item_id = _new_menu_item_id()
     timestamp = _utc_now()
     item = {
@@ -531,11 +545,12 @@ def _create_item(event, location_id, caller_sub):
     )
 
 
-def _update_item(event, location_id, menu_item_id, caller_sub):
+def _update_item(event, location_id, menu_item_id, caller_sub, tenant_id):
     updates = _menu_fields(event, partial=True)
     item = _load_item(location_id, menu_item_id)
     if item is None:
         return _menu_error(HTTPStatus.NOT_FOUND.value, "menu item not found")
+    _require_own_image(updates, tenant_id, location_id, previous=item)
 
     changed = {
         field: value
@@ -572,14 +587,19 @@ def handler(event, context):
         return _menu_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _menu_error(HTTPStatus.FORBIDDEN.value, "forbidden")
-
-    try:
+        tenant.for_jwt(event)
         location_id = _path_value(event, "locationId")
+        # The location must be one of the caller's tenant's (else 404).
+        ctx = tenant.for_jwt(event, location_id=location_id)
+    except tenant.TenantError as exc:
+        return exc.response()
     except ValueError as exc:
         return _menu_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    except (BotoCoreError, ClientError):
+        return _menu_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "menu service unavailable",
+        )
 
     path_parameters = event.get("pathParameters")
     proxy_path = path_parameters.get("proxy")
@@ -615,13 +635,14 @@ def handler(event, context):
         )
 
         if route_name == "collection":
-            return _create_item(event, location_id, caller_sub)
+            return _create_item(event, location_id, caller_sub, ctx.tenant_id)
         if method == "PUT":
             return _update_item(
                 event,
                 location_id,
                 menu_item_id,
                 caller_sub,
+                ctx.tenant_id,
             )
         return _delete_item(location_id, menu_item_id)
     except ValueError as exc:

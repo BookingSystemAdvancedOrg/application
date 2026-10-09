@@ -48,6 +48,8 @@ EXPECTED_OPERATIONS = {
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),
     "/users/{cognitoSub}/reactivate": frozenset({"post"}),
     "/users/{cognitoSub}/group": frozenset({"put"}),
+    "/tenant": frozenset({"get", "patch"}),
+    "/tenant/stripe/account-link": frozenset({"post"}),
 }
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -61,8 +63,8 @@ PUBLIC_OPERATIONS = frozenset(
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]
-ADMIN_GROUPS = ["owner_user", "super_user"]
-STAFF_GROUPS = ["staff_user", "owner_user", "super_user"]
+ADMIN_GROUPS = ["owner_user"]
+STAFF_GROUPS = ["staff_user", "owner_user"]
 STAFF_OPERATIONS = frozenset(
     {
         ("/locations/{locationId}", "get"),
@@ -87,6 +89,7 @@ STAFF_OPERATIONS = frozenset(
             "delete",
         ),
         ("/locations/{locationId}/layout/versions", "get"),
+        ("/tenant", "get"),
     }
 )
 
@@ -1629,8 +1632,8 @@ def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
     assert response["schema"] == {
         "$ref": "#/components/schemas/MenuImageUpload"
     }
-    assert example["imageKey"].startswith("menu-images/locations/")
-    assert "/menu-images/locations/" in example["uploadUrl"]
+    assert example["imageKey"].startswith("menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/")
+    assert "/menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/" in example["uploadUrl"]
     assert example["requiredHeaders"] == {"Content-Type": "image/webp"}
 
     upload = document["components"]["schemas"]["MenuImageUpload"]
@@ -1640,6 +1643,6 @@ def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
     assert upload["properties"]["requiredHeaders"]["properties"][
         "Content-Type"
     ] == {"$ref": "#/components/schemas/MenuImageContentType"}
-    assert "menu-images/locations/" in upload["properties"]["imageKey"][
+    assert "menu-images/{tenantId}/locations/" in upload["properties"]["imageKey"][
         "description"
     ]

@@ -43,7 +43,8 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
 from shared.responses import json_response
@@ -57,7 +58,6 @@ EXPIRE_LAYOUT_VERSION_FUNCTION_ARN = os.environ[
     "EXPIRE_LAYOUT_VERSION_FUNCTION_ARN"
 ]
 
-_ALLOWED_GROUPS = ("owner_user", "super_user")
 _ACTIVATE_ROUTE_KEY = (
     "POST /locations/{locationId}/layout/versions/{versionId}/activate"
 )
@@ -3087,9 +3087,14 @@ def handler(event, context):
         return _activation_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _activation_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+        tenant.for_jwt(event, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _activation_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout activation service unavailable",
+        )
 
     operation = _request_operation(event)
     allowed_method = {
@@ -3114,6 +3119,17 @@ def handler(event, context):
         )
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
+
+    try:
+        # The location must be one of the caller's tenant's (else 404).
+        tenant.for_jwt(event, location_id=location_id, owner_only=True)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _activation_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "layout activation service unavailable",
+        )
 
     if operation == "cancel":
         try:

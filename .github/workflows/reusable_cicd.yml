@@ -77,11 +77,13 @@ jobs:
           aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
             | docker login --username AWS --password-stdin "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
 
-      - name: Push every function to ECR and deploy to Lambda
+      - name: Push every function to ECR
+        # Each image is pushed under the commit SHA (immutable, what gets
+        # released) and :latest (what Terraform's image_uri points at).
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
-
+          : > release-list.txt
           for fn in $(ls functions); do
             if [ "${{ inputs.environment }}" = "prod" ]; then
               resource_name="$fn"
@@ -89,13 +91,49 @@ jobs:
               resource_name="${{ inputs.environment }}-$fn"
             fi
             repo_url="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${resource_name}"
-
-            echo "::group::push + deploy $fn -> $resource_name"
+            echo "::group::push $fn -> $resource_name"
+            docker tag "$fn:latest" "$repo_url:${GITHUB_SHA}"
             docker tag "$fn:latest" "$repo_url:latest"
+            docker push "$repo_url:${GITHUB_SHA}"
             docker push "$repo_url:latest"
-            aws lambda update-function-code \
-              --function-name "$resource_name" \
-              --image-uri "$repo_url:latest" \
-              >/dev/null
             echo "::endgroup::"
+            echo "$resource_name $repo_url:${GITHUB_SHA}" >> release-list.txt
           done
+
+      - name: Release every function (blue/green)
+        # Publishes each new image as a version and moves the function's
+        # "live" alias to it through CodeDeploy - prod: 10% for 5 minutes,
+        # rolled back automatically if the function's alarms fire; dev: all at
+        # once. Failures/rollbacks are emailed per function; one summary
+        # email is sent at the end. Releases run 6 at a time; a failure fails
+        # the job only after every release has finished.
+        if: github.event_name == 'push'
+        env:
+          CODEDEPLOY_APP: ${{ inputs.environment == 'prod' && env.CODEDEPLOY_APP_PROD || env.CODEDEPLOY_APP_DEV }}
+          ALERT_TOPIC_ARN: ${{ inputs.environment == 'prod' && env.ALERT_TOPIC_ARN_PROD || env.ALERT_TOPIC_ARN_DEV }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          # Actions runs this with `bash -e`: capture the release status
+          # instead of letting a failed release abort before the summary.
+          set -uo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          export SHORT_SHA
+          touch release-results.txt
+          status=0
+          xargs -P 6 -L 1 bash -c '
+            if bash .github/scripts/lambda-release.sh --function "$0" --image "$1" \
+                 --app "$CODEDEPLOY_APP" --topic "$ALERT_TOPIC_ARN" --environment "$ENVIRONMENT" \
+                 --source "application@$SHORT_SHA" --notify failure > "release-$0.log" 2>&1; then
+              echo "OK      $0" >> release-results.txt
+            else
+              echo "FAILED  $0" >> release-results.txt
+              echo "::error::release failed: $0"; cat "release-$0.log"
+              exit 1
+            fi' < release-list.txt || status=$?
+          sort release-results.txt
+          failed=$(grep -c '^FAILED' release-results.txt || true)
+          subject="[$ENVIRONMENT] application release $SHORT_SHA: $([ "$failed" = 0 ] && echo SUCCESS || echo "$failed FAILED")"
+          aws sns publish --topic-arn "$ALERT_TOPIC_ARN" --subject "$subject" \
+            --message "$(printf 'Commit: %s\nRun: %s/%s/actions/runs/%s\n\n%s\n' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(sort release-results.txt)")" \
+            >/dev/null || echo "::warning::could not send the summary email"
+          exit $status

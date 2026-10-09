@@ -14,6 +14,18 @@ info:
     In particular, conditional rules described below are checked by the
     corresponding Lambda handler.
 
+    Multi-tenancy: every restaurant is a tenant. Protected routes take the
+    tenant only from the access token's `tenant_id` claim (added by the
+    Cognito pre-token-generation trigger together with `role`); there is no
+    tenant id in any path, query or body. A `{locationId}` (or user) of
+    another tenant answers 404 exactly like one that does not exist. Public
+    routes resolve the tenant from the location; unknown locations,
+    suspended/offboarded tenants and plan features a tenant doesn't have
+    answer 404 there. Stable 403/409 error codes the clients key off:
+    `no_tenant` (token without tenant/role), `owner_only`,
+    `tenant_inactive`, `feature_not_in_plan`, `plan_limit_reached`.
+    Platform operators do not use this API (they use the operator console).
+
     This is a client-facing documentation and testing contract. API Gateway,
     Lambda integrations, routes, and the JWT authorizer are provisioned from
     the separate infrastructure repository rather than imported from this file.
@@ -33,7 +45,7 @@ tags:
   - name: Authentication
     description: Public Cognito sign-in, challenge, and token-refresh flows.
   - name: Users
-    description: Owner and super-user management of internal users.
+    description: Owner management of the restaurant's own staff users.
   - name: Locations
     description: Public location details and staff-facing location management.
   - name: Menu
@@ -42,6 +54,8 @@ tags:
     description: Public active layouts, editing, publication, and scheduled activation.
   - name: Media
     description: Authenticated direct-upload capabilities for menu images.
+  - name: Account
+    description: The signed-in restaurant's own account, plan and Stripe onboarding.
 
 paths:
   /auth/login:
@@ -173,17 +187,16 @@ paths:
       operationId: listUsers
       description: |
         Dedicated collection route handled by the same `manage-user` Lambda as
-        the `/users/{proxy+}` family. Returns the User-table staff directory.
-        Super-users see every valid mirrored user. Owners see staff users plus
-        their own record, but not other owner or super-user records. The Lambda
-        follows every DynamoDB scan page and sorts the result
+        the `/users/{proxy+}` family. Returns the caller's tenant's users from
+        the User table's `byTenant` index (never a scan of other tenants).
+        Owners see staff users plus their own record, but not other owners.
+        The Lambda follows every DynamoDB query page and sorts the result
         case-insensitively by name, then by `cognitoSub`. This collection read
         uses the User-table mirror and does not call Cognito.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '200':
           description: Visible internal users, possibly an empty list.
@@ -211,13 +224,14 @@ paths:
       operationId: inviteUser
       description: |
         Creates the Cognito user, assigns its managed group, and creates the
-        User-table mirror. Owners may invite staff users; only super-users may
-        invite owner or super-user accounts.
+        User-table mirror. The Cognito user gets the caller's tenant in its
+        immutable `custom:tenant_id`. Owners may invite staff users only (more
+        owners are added from the operator console), and `locationId` must be
+        one of the caller's tenant's locations.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -234,7 +248,7 @@ paths:
                   group: staff_user
                   locationId: 154b5c59-3a7f-4248-895c-29ee980356f3
               owner:
-                summary: Super-user invites an owner
+                summary: Rejected - owners invite staff only (403)
                 value:
                   name: Restaurant Owner
                   email: owner@example.com
@@ -287,15 +301,14 @@ paths:
       summary: Get an internal user
       operationId: getUser
       description: |
-        Reads one User-table mirror record. A super-user may read any valid
-        user. An owner may read a staff user or their own record, but not
-        another owner or super-user. An owner's non-self staff read verifies
+        Reads one User-table mirror record of the caller's tenant (another
+        tenant's user answers 404). An owner may read a staff user or their
+        own record, but not another owner. An owner's non-self staff read verifies
         that the target's live managed Cognito group is still `staff_user`.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '200':
           description: Full logical user record without DynamoDB keys.
@@ -328,14 +341,13 @@ paths:
       description: |
         Performs a partial profile update despite using `PUT` because the
         deployed CORS policy does not permit `PATCH`. An owner may update a
-        staff target or their own profile; only a super-user may manage a
-        privileged target. The resulting location must remain non-empty for
-        staff and empty for privileged users.
+        staff target or their own profile; other owners are managed from the
+        operator console. The resulting location must remain non-empty for
+        staff (and one of the tenant's locations) and empty for owners.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -376,13 +388,12 @@ paths:
       operationId: deleteUser
       description: |
         Deletes the Cognito user and its User-table mirror. Owners may delete
-        staff targets; only super-users may delete privileged targets. A
+        staff targets; owners are removed from the operator console. A
         caller may not delete their own account.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '204':
           description: User deleted successfully. The response body is empty.
@@ -414,13 +425,12 @@ paths:
       operationId: deactivateUser
       description: |
         Disables the Cognito user and records `disabled` in the User table.
-        Owners may deactivate staff targets; only super-users may deactivate
-        privileged targets. A caller may not deactivate their own account.
+        Owners may deactivate staff targets; owners are managed from the
+        operator console. A caller may not deactivate their own account.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '200':
           description: User disabled, or already disabled.
@@ -456,13 +466,12 @@ paths:
       operationId: reactivateUser
       description: |
         Enables the Cognito user and records `active` in the User table.
-        Owners may reactivate staff targets; only super-users may reactivate
-        privileged targets. A caller may not reactivate their own account.
+        Owners may reactivate staff targets; owners are managed from the
+        operator console. A caller may not reactivate their own account.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '200':
           description: User active, or already active.
@@ -499,13 +508,12 @@ paths:
       description: |
         Converges the target to one managed Cognito group and updates the
         mirrored role/location. Owners may update staff assignments but may
-        not promote a target; only super-users may assign privileged groups.
+        not promote a target; owners are added from the operator console.
         A caller may not change their own group.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -552,15 +560,14 @@ paths:
       summary: List restaurant locations
       operationId: listLocations
       description: |
-        Returns every valid logical location from the `PLATFORM` partition.
-        The Lambda follows every DynamoDB query page and uses strongly
-        consistent reads. Response ordering is not guaranteed. Only owners
-        and super-users may list the complete location directory.
+        Returns every valid location of the caller's tenant (partition
+        `TENANT#<tenant_id>` - never another tenant's). The Lambda follows
+        every DynamoDB query page and uses strongly consistent reads.
+        Response ordering is not guaranteed. Owners only.
       security:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '200':
           description: Restaurant locations, possibly an empty list.
@@ -594,7 +601,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -668,7 +674,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Full location details.
@@ -708,7 +713,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -757,7 +761,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '204':
           description: Location directory record deleted; the body is empty.
@@ -1000,7 +1003,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -1108,7 +1110,7 @@ paths:
                     description: Sourdough, mushrooms, and herbs
                     price: 125.50
                     category: starters
-                    imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
+                    imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/central/menu/mushroom-toast.jpg
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '503':
@@ -1132,7 +1134,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Menu items retrieved successfully.
@@ -1150,7 +1151,7 @@ paths:
                     description: Sourdough, mushrooms, and herbs
                     price: 125.50
                     category: starters
-                    imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
+                    imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/central/menu/mushroom-toast.jpg
                     active: true
                     createdBy: 506a9170-a571-4dbc-9f86-5d831ee90c23
                     createdAt: '2026-08-21T10:00:00Z'
@@ -1181,7 +1182,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -1193,7 +1193,7 @@ paths:
               description: Sourdough, mushrooms, and herbs
               price: 125.50
               category: starters
-              imageKey: menu-images/locations/central/menu/mushroom-toast.jpg
+              imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/central/menu/mushroom-toast.jpg
               active: true
       responses:
         '201':
@@ -1239,7 +1239,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Menu item retrieved successfully.
@@ -1275,7 +1274,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -1317,7 +1315,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '204':
           description: Menu item deleted successfully. The response body is empty.
@@ -1359,7 +1356,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Layout elements retrieved successfully.
@@ -1450,7 +1446,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -1552,7 +1547,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Layout element retrieved successfully.
@@ -1594,7 +1588,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       requestBody:
         required: true
         content:
@@ -1650,7 +1643,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '204':
           description: Layout element deleted successfully. The response body is empty.
@@ -1703,7 +1695,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '201':
           description: A new snapshot with immutable compiled content was created.
@@ -1957,7 +1948,6 @@ paths:
       x-required-groups:
         - staff_user
         - owner_user
-        - super_user
       responses:
         '200':
           description: Published snapshots ordered by version descending.
@@ -2045,7 +2035,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '204':
           description: The version was archived or was already archived. The response body is empty.
@@ -2130,7 +2119,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: false
         description: |
@@ -2281,7 +2269,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       requestBody:
         required: true
         description: Exact future cutoff for the existing pending activation.
@@ -2400,7 +2387,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       responses:
         '204':
           description: The pending activation is absent or has been cancelled.
@@ -2444,7 +2430,7 @@ paths:
       description: |
         Creates a five-minute S3 PUT URL for a new immutable, location-scoped
         object key under
-        `menu-images/locations/{locationId}/menu/{uuid}.{extension}`. After
+        `menu-images/{tenantId}/locations/{locationId}/menu/{uuid}.{extension}`. After
         uploading with the required Content-Type header, store the complete
         returned imageKey, including its `menu-images/` prefix, through the
         menu-item create or update operation. The client cannot choose an S3
@@ -2453,7 +2439,6 @@ paths:
         - bearerAuth: []
       x-required-groups:
         - owner_user
-        - super_user
       parameters:
         - name: locationId
           in: query
@@ -2483,8 +2468,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/MenuImageUpload'
               example:
-                uploadUrl: https://menu-images.s3.eu-north-1.amazonaws.com/menu-images/locations/location-id/menu/image-id.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256
-                imageKey: menu-images/locations/location-id/menu/image-id.webp
+                uploadUrl: https://menu-images.s3.eu-north-1.amazonaws.com/menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/location-id/menu/image-id.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256
+                imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/location-id/menu/image-id.webp
                 expiresIn: 300
                 requiredHeaders:
                   Content-Type: image/webp
@@ -2513,6 +2498,116 @@ paths:
                 error: method not allowed
         '503':
           $ref: '#/components/responses/ImageUploadServiceUnavailable'
+
+  /tenant:
+    get:
+      tags:
+        - Account
+      summary: The signed-in restaurant's account
+      operationId: getTenant
+      description: |
+        The caller's own tenant (from the token's `tenant_id`): name, plan
+        and entitlements, location usage, Stripe onboarding status, domains,
+        and the self-service sender settings. Operator-only fields are never
+        returned. Owners and staff may read; a suspended or offboarded
+        tenant answers 403 `tenant_inactive`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The caller's tenant.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+    patch:
+      tags:
+        - Account
+      summary: Edit the restaurant's self-service settings
+      operationId: updateTenant
+      description: |
+        Owner only. Only `senderName` (1-11 letters, digits or spaces - the
+        email From name and SMS sender), `replyToEmail` and `branding` may
+        be changed; `null` or `""` removes a value (the platform default is
+        used). Everything else is managed by operators.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUpdateRequest'
+            example:
+              senderName: Roma
+              replyToEmail: info@roma.se
+      responses:
+        '200':
+          description: The updated tenant.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/stripe/account-link:
+    post:
+      tags:
+        - Account
+      summary: Stripe onboarding link for the restaurant's own account
+      operationId: createTenantStripeAccountLink
+      description: |
+        Owner only. A single-use Stripe-hosted onboarding URL (Accounts v2
+        account link, merchant configuration) for the tenant's connected
+        account. Expires within minutes - open it immediately, never store
+        it. Returns to `{ADMIN_APP_URL}/settings/payments?stripe=return`.
+        409 `no_stripe_account` until onboarding created the account.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: The onboarding URL.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeAccountLink'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
 
 components:
   securitySchemes:
@@ -2623,6 +2718,122 @@ components:
           - no-store
 
   schemas:
+    Tenant:
+      type: object
+      additionalProperties: false
+      required:
+        - tenantId
+        - name
+        - status
+        - entitlements
+        - locationCount
+        - stripe
+        - domains
+        - branding
+        - role
+      properties:
+        tenantId:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [active]
+          description: Only active tenants reach this API.
+        planId:
+          type: string
+          nullable: true
+        entitlements:
+          type: object
+          properties:
+            maxLocations:
+              type: integer
+              nullable: true
+            features:
+              type: object
+              additionalProperties:
+                type: boolean
+              description: e.g. reservations, ordering, catering, terminal.
+        locationCount:
+          type: integer
+        stripe:
+          type: object
+          additionalProperties: false
+          required: [connected, chargesEnabled, payoutsEnabled, detailsSubmitted]
+          properties:
+            connected:
+              type: boolean
+            chargesEnabled:
+              type: boolean
+            payoutsEnabled:
+              type: boolean
+            detailsSubmitted:
+              type: boolean
+        primaryDomain:
+          type: string
+          nullable: true
+        domains:
+          type: array
+          items:
+            type: object
+            properties:
+              domain:
+                type: string
+              kind:
+                type: string
+                nullable: true
+              status:
+                type: string
+                nullable: true
+              cnameTarget:
+                type: string
+                nullable: true
+              primary:
+                type: boolean
+        senderName:
+          type: string
+          nullable: true
+        replyToEmail:
+          type: string
+          nullable: true
+        branding:
+          type: object
+          additionalProperties: true
+        role:
+          type: string
+          enum: [owner_user, staff_user]
+
+    TenantUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        senderName:
+          type: string
+          nullable: true
+          maxLength: 11
+        replyToEmail:
+          type: string
+          nullable: true
+        branding:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    StripeAccountLink:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+        expiresAt:
+          type: string
+          nullable: true
+
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -2801,14 +3012,12 @@ components:
       enum:
         - staff_user
         - owner_user
-        - super_user
 
     UserRole:
       type: string
       enum:
         - staff
         - owner_user
-        - super_admin
 
     UserStatus:
       type: string
@@ -2844,8 +3053,8 @@ components:
         - group
       description: |
         `locationId` is required and nonblank when `group` is `staff_user`.
-        It must be omitted or the empty string for `owner_user` and
-        `super_user`. This conditional rule is enforced by the Lambda.
+        It must be omitted or the empty string for `owner_user`. This
+        conditional rule is enforced by the Lambda.
       properties:
         name:
           $ref: '#/components/schemas/UserName'
@@ -2909,7 +3118,7 @@ components:
           $ref: '#/components/schemas/UserRole'
         locationId:
           type: string
-          description: Empty for owner and super-user accounts.
+          description: Empty for owner accounts.
         name:
           type: string
         email:
@@ -4936,10 +5145,10 @@ components:
           type: string
           description: |
             Complete S3 object key in the form
-            `menu-images/locations/{locationId}/menu/{uuid}.{extension}`.
+            `menu-images/{tenantId}/locations/{locationId}/menu/{uuid}.{extension}`.
             Store this exact returned value on the menu item after the S3 PUT
             succeeds; do not remove the `menu-images/` prefix.
-          example: menu-images/locations/location-id/menu/image-id.webp
+          example: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/location-id/menu/image-id.webp
         expiresIn:
           type: integer
           enum:
@@ -5165,6 +5374,18 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: location not found
+    AccountServiceUnavailable:
+      description: The tenant table or Stripe is unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: account service unavailable
+
     LocationServiceUnavailable:
       description: The Location table is unavailable.
       headers:

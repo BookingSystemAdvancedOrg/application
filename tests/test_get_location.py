@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, seed_tenancy
 
 
 APP_PATH = (
@@ -31,8 +32,9 @@ def location_item(
     **overrides,
 ):
     item = {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
         "locationId": location_id,
         "name": "Södermalm",
         "address": "Götgatan 1, Stockholm",
@@ -78,7 +80,7 @@ def public_location(item):
             else value
         )
         for key, value in item.items()
-        if key not in {"PK", "SK"}
+        if key not in {"PK", "SK", "tenantId"}
     }
 
 
@@ -89,16 +91,20 @@ def make_event(
     location_id=LOCATION_ID,
     route_key=None,
     sub="caller-sub",
+    tenant_id=TENANT_A,
 ):
+    claims = {"sub": sub, "cognito:groups": groups}
+    role = next((r for r in ("owner_user", "staff_user") if r in (groups or "")), None)
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
+    if role is not None:
+        claims["role"] = role
     event = {
         "requestContext": {
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": claims
                 }
             },
         },
@@ -131,18 +137,11 @@ def app_and_table(monkeypatch):
         shared_dynamo._client = None
 
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
-        location_table = resource.create_table(
-            TableName=TABLE_NAME,
-            KeySchema=[
-                {"AttributeName": "PK", "KeyType": "HASH"},
-                {"AttributeName": "SK", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "PK", "AttributeType": "S"},
-                {"AttributeName": "SK", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        # Tenant A (active, no locations seeded - each test puts its own)
+        # and tenant B with one location of its own.
+        seed_tenancy(monkeypatch, location_table=TABLE_NAME, user_table=None,
+                     locations_a=[], locations_b=[])
+        location_table = resource.Table(TABLE_NAME)
 
         spec = importlib.util.spec_from_file_location(
             "get_location_app",
@@ -334,8 +333,9 @@ def test_wrong_group_returns_403_before_reading(
 
     response = app.handler(make_event(groups=groups), None)
 
+    # No tenant role in the token -> refused before anything is read.
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "forbidden"}
+    assert json.loads(response["body"]) == {"error": "no_tenant"}
     table_factory.assert_not_called()
 
 
@@ -348,12 +348,12 @@ def test_authorization_happens_before_path_validation(app_and_table):
     )
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "forbidden"}
+    assert json.loads(response["body"]) == {"error": "no_tenant"}
 
 
 @pytest.mark.parametrize(
     "groups",
-    ['["staff_user"]', '["owner_user"]', '["super_user"]'],
+    ['["staff_user"]', '["owner_user"]'],
 )
 def test_all_internal_groups_can_read_location(
     app_and_table,
@@ -436,7 +436,7 @@ def test_returns_full_logical_location_without_internal_keys(app_and_table):
     assert body == {
         key: value
         for key, value in item.items()
-        if key not in {"PK", "SK"}
+        if key not in {"PK", "SK", "tenantId"}
     }
     assert "PK" not in body
     assert "SK" not in body
@@ -459,27 +459,56 @@ def test_reads_legacy_location_without_contact_fields(app_and_table):
     assert "phoneNumber" not in body
 
 
-def test_uses_one_strongly_consistent_get_item(
-    app_and_table,
-    monkeypatch,
-):
-    app, _ = app_and_table
-    location_table = Mock()
-    location_table.get_item.return_value = {"Item": location_item()}
-    table_factory = Mock(return_value=location_table)
-    monkeypatch.setattr(app, "table", table_factory)
+def test_reads_the_location_under_the_callers_tenant_key(app_and_table):
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item())
 
     response = app.handler(make_event(location_id="  location-id  "), None)
 
     assert response["statusCode"] == 200
-    table_factory.assert_called_once_with(TABLE_NAME)
-    location_table.get_item.assert_called_once_with(
-        Key={
-            "PK": "PLATFORM",
-            "SK": "LOCATION#location-id",
-        },
-        ConsistentRead=True,
-    )
+    assert json.loads(response["body"])["locationId"] == LOCATION_ID
+
+
+def test_other_tenants_location_is_404_like_a_missing_one(app_and_table):
+    """Isolation: tenant B's owner asks for tenant A's location."""
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item())
+
+    for groups in ('["owner_user"]', '["staff_user"]'):
+        response = app.handler(make_event(groups=groups, tenant_id=TENANT_B), None)
+        assert response["statusCode"] == 404
+        assert json.loads(response["body"]) == {"error": "location not found"}
+
+
+def test_list_contains_only_the_callers_tenant(app_and_table):
+    """Isolation: B's list never shows A's locations and vice versa."""
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item(location_id="a"))
+    location_table.put_item(Item=location_item(
+        location_id="b", PK=f"TENANT#{TENANT_B}", tenantId=TENANT_B))
+
+    a = app.handler(make_event(groups='["owner_user"]', location_id=_UNSET), None)
+    b = app.handler(make_event(groups='["owner_user"]', location_id=_UNSET, tenant_id=TENANT_B), None)
+
+    assert [i["locationId"] for i in json.loads(a["body"])["items"]] == ["a"]
+    assert [i["locationId"] for i in json.loads(b["body"])["items"]] == ["b"]
+
+
+def test_inactive_tenant_is_refused(app_and_table):
+    from tenant_support import tenant_row
+    from shared import tenant as shared_tenant
+    app, location_table = app_and_table
+    location_table.put_item(Item=location_item())
+    boto3.resource("dynamodb", region_name="eu-north-1").Table("test-tenant").put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+    public = app.handler(public_info_event(), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert public["statusCode"] == 404
 
 
 @pytest.mark.parametrize(
@@ -508,6 +537,7 @@ def test_dynamodb_failures_return_sanitized_503(
     location_table = Mock()
     location_table.get_item.side_effect = aws_error
     monkeypatch.setattr(app, "table", lambda _: location_table)
+    monkeypatch.setattr(shared_dynamo, "table", lambda _: location_table)
 
     response = app.handler(make_event(), None)
 
@@ -518,7 +548,7 @@ def test_dynamodb_failures_return_sanitized_503(
     assert "sensitive AWS message" not in response["body"]
 
 
-@pytest.mark.parametrize("groups", ['["owner_user"]', '["super_user"]'])
+@pytest.mark.parametrize("groups", ['["owner_user"]'])
 def test_privileged_groups_can_list_locations(app_and_table, groups):
     app, location_table = app_and_table
     location_table.put_item(Item=location_item(location_id="a"))
@@ -544,7 +574,7 @@ def test_staff_cannot_list_the_location_directory_before_reading(
     response = app.handler(make_event(location_id=_UNSET), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "forbidden"}
+    assert json.loads(response["body"]) == {"error": "owner_only"}
     table_factory.assert_not_called()
 
 
@@ -569,14 +599,14 @@ def test_list_queries_only_location_records_and_hides_internal_keys(
     location_table.put_item(Item=first)
     location_table.put_item(Item=second)
     location_table.put_item(
-        Item={"PK": "PLATFORM", "SK": "CONFIG", "value": "hidden"}
+        Item={"PK": f"TENANT#{TENANT_A}", "SK": "CONFIG", "value": "hidden"}
     )
     location_table.put_item(
         Item={"PK": "OTHER", "SK": "LOCATION#other", "value": "hidden"}
     )
 
     response = app.handler(
-        make_event(groups='["super_user"]', location_id=_UNSET),
+        make_event(groups='["owner_user"]', location_id=_UNSET),
         None,
     )
 
@@ -597,7 +627,7 @@ def test_list_follows_every_query_page_with_consistent_reads(
     app, _ = app_and_table
     first = location_item(location_id="a")
     second = location_item(location_id="b", include_updated=True)
-    last_key = {"PK": "PLATFORM", "SK": "LOCATION#a"}
+    last_key = {"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#a"}
     location_table = Mock()
     location_table.query.side_effect = [
         {"Items": [first], "LastEvaluatedKey": last_key},
@@ -662,7 +692,7 @@ def test_list_rejects_a_repeated_last_evaluated_key(
     monkeypatch,
 ):
     app, _ = app_and_table
-    last_key = {"PK": "PLATFORM", "SK": "LOCATION#a"}
+    last_key = {"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#a"}
     location_table = Mock()
     location_table.query.side_effect = [
         {"Items": [], "LastEvaluatedKey": last_key},
@@ -706,7 +736,7 @@ def test_inconsistent_location_in_list_returns_409(
     monkeypatch.setattr(app, "table", lambda _: location_table)
 
     response = app.handler(
-        make_event(groups='["super_user"]', location_id=_UNSET),
+        make_event(groups='["owner_user"]', location_id=_UNSET),
         None,
     )
 
@@ -716,18 +746,17 @@ def test_inconsistent_location_in_list_returns_409(
     }
 
 
-def test_location_with_only_one_contact_field_returns_409(app_and_table):
+def test_location_with_only_one_contact_field_is_returned(app_and_table):
     app, location_table = app_and_table
-    corrupt = location_item()
-    del corrupt["phoneNumber"]
-    location_table.put_item(Item=corrupt)
+    stored = location_item()
+    del stored["phoneNumber"]
+    location_table.put_item(Item=stored)
 
     response = app.handler(make_event(), None)
 
-    assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location record is inconsistent",
-    }
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["email"] == stored["email"] and "phoneNumber" not in body
 
 
 def test_list_dynamodb_failure_returns_sanitized_503(

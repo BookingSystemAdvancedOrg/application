@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = Path(__file__).parents[1] / "functions" / "get-menu" / "app.py"
@@ -97,7 +98,8 @@ def make_event(
         event["pathParameters"]["proxy"] = proxy
 
     if groups is not ABSENT:
-        claims = {"cognito:groups": groups}
+        claims = tenant_claims(None, groups)
+        claims.pop("sub")
         if sub is not ABSENT:
             claims["sub"] = sub
         event["requestContext"]["authorizer"] = {
@@ -124,6 +126,7 @@ def app_and_table(monkeypatch):
         shared_dynamo._resource = None
         shared_dynamo._client = None
 
+        install_tenancy(monkeypatch, [LOCATION_ID, OTHER_LOCATION_ID])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         menu_table = resource.create_table(
             TableName=TABLE_NAME,
@@ -207,16 +210,49 @@ def test_decimal_prices_are_serialized_as_json_numbers(
     assert response_body(response)["items"][0]["price"] == expected_price
 
 
-def test_empty_or_unknown_location_returns_an_empty_list(app_and_table):
+def test_location_without_menu_returns_an_empty_list(app_and_table):
     app, _ = app_and_table
 
-    response = app.handler(
-        make_event(location_id="location-without-menu"),
-        None,
-    )
+    response = app.handler(make_event(location_id=OTHER_LOCATION_ID), None)
 
     assert response["statusCode"] == 200
     assert response_body(response) == {"items": []}
+
+
+def test_unknown_location_returns_404(app_and_table):
+    """The public menu is served only for a location of an active tenant."""
+    app, _ = app_and_table
+
+    response = app.handler(make_event(location_id="location-without-tenant"), None)
+
+    assert response["statusCode"] == 404
+    assert response_body(response) == {"error": "not found"}
+
+
+def test_suspended_tenant_has_no_public_menu(app_and_table):
+    import boto3 as _boto3
+    from shared import tenant as shared_tenant
+    from tenant_support import TENANT_A, TENANT_TABLE, tenant_row
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item())
+    _boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 404
+
+
+def test_other_tenants_staff_cannot_read_management_items(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item())
+    event = make_event(proxy="items", groups='["owner_user"]')
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
 
 
 def test_inactive_item_does_not_need_customer_fields(app_and_table):
@@ -586,7 +622,7 @@ def test_protected_route_rejects_the_wrong_group_before_reading(
     )
 
     assert response["statusCode"] == 403
-    assert response_body(response) == {"error": "forbidden"}
+    assert response_body(response) == {"error": "no_tenant"}
     table_factory.assert_not_called()
 
 
@@ -606,13 +642,13 @@ def test_protected_route_rejects_missing_or_malformed_groups(
     )
 
     assert response["statusCode"] == 403
-    assert response_body(response) == {"error": "forbidden"}
+    assert response_body(response) == {"error": "no_tenant"}
     table_factory.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "group",
-    ["staff_user", "owner_user", "super_user"],
+    ["staff_user", "owner_user"],
 )
 def test_each_staff_group_can_list_management_items(
     app_and_table,
@@ -750,7 +786,7 @@ def test_protected_item_returns_full_logical_item_using_strong_read(
     response = app.handler(
         make_event(
             proxy=f"items/{ITEM_ID}",
-            groups='["super_user"]',
+            groups='["owner_user"]',
         ),
         None,
     )

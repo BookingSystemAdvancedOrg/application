@@ -6,17 +6,25 @@ TRIGGER:
     API Gateway -- GET /locations/{locationId}/public-info -- Auth: NONE
 
 PURPOSE:
-    Lists restaurant locations for owner_user/super_user callers and returns
-    full detail for one location to staff_user/owner_user/super_user callers.
-    The public-info route returns only customer-facing contact, timezone, and
-    opening-hours fields and deliberately performs no JWT validation.
+    Lists the caller's tenant's locations (owner_user) and returns full
+    detail for one of them (owner_user, or staff_user on their assigned
+    location). The public-info route returns only customer-facing contact,
+    timezone, and opening-hours fields and performs no JWT validation - the
+    location decides the tenant, and inactive tenants answer 404.
+
+    Multi-tenant: locations live under PK TENANT#<tenantId>. The tenant comes
+    from the token's tenant_id claim only (shared/tenant.py); another
+    tenant's locationId answers 404 exactly like an unknown one.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     LOCATION_TABLE_NAME -- DynamoDB table to read from
+    LOCATION_ID_INDEX_NAME -- byLocationId GSI (locationId -> tenant)
+    TENANT_TABLE_NAME -- tenant table (status, plan)
+    USER_TABLE_NAME -- optional; staff location assignment
 
 AWS RESOURCE ACCESS:
-    Read-only (Scan, GetItem, Query) on the Location table.
+    Read-only (GetItem, Query) on the Location and Tenant tables.
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -31,15 +39,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
 
-_ITEM_GROUPS = ("staff_user", "owner_user", "super_user")
-_LIST_GROUPS = ("owner_user", "super_user")
 _PUBLIC_INFO_ROUTE = "GET /locations/{locationId}/public-info"
 _WEEKDAYS = (
     "monday",
@@ -156,12 +163,10 @@ def _validate_contact_fields(source):
     present = {
         field for field in _OPTIONAL_CONTACT_FIELDS if field in source
     }
-    if not present:
-        return
-    if present != set(_OPTIONAL_CONTACT_FIELDS):
-        raise ValueError("location contact fields are incomplete")
-    _required_email(source)
-    _required_phone_number(source)
+    if "email" in present:
+        _required_email(source)
+    if "phoneNumber" in present:
+        _required_phone_number(source)
 
 
 def _canonical_number(value, field):
@@ -251,19 +256,17 @@ def _valid_utc_timestamp(source, field):
     return value
 
 
-def _location_key(location_id):
-    return {
-        "PK": "PLATFORM",
-        "SK": f"LOCATION#{location_id}",
-    }
+def _location_key(tenant_id, location_id):
+    return tenant.location_key(tenant_id, location_id)
 
 
 def _public_location(item):
     public = {field: item[field] for field in _PUBLIC_REQUIRED_FIELDS}
-    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
-        public.update(
-            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
-        )
+    # Contacts are independent: a location may have only an email or only
+    # a phone number (operators add locations with what the customer gave).
+    public.update(
+        {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS if field in item}
+    )
     if all(field in item for field in _OPTIONAL_AUDIT_FIELDS):
         public.update(
             {field: item[field] for field in _OPTIONAL_AUDIT_FIELDS}
@@ -273,19 +276,21 @@ def _public_location(item):
 
 def _customer_location(item):
     public = {field: item[field] for field in _CUSTOMER_LOCATION_FIELDS}
-    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
-        public.update(
-            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
-        )
+    # Contacts are independent: a location may have only an email or only
+    # a phone number (operators add locations with what the customer gave).
+    public.update(
+        {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS if field in item}
+    )
     return public
 
 
-def _validate_stored_location(item, location_id):
-    expected_key = _location_key(location_id)
+def _validate_stored_location(item, tenant_id, location_id):
+    expected_key = _location_key(tenant_id, location_id)
     if (
         not isinstance(item, dict)
         or item.get("PK") != expected_key["PK"]
         or item.get("SK") != expected_key["SK"]
+        or item.get("tenantId") != tenant_id
         or item.get("locationId") != location_id
         or len(location_id) > 128
     ):
@@ -315,27 +320,12 @@ def _validate_stored_location(item, location_id):
     return item
 
 
-def _read_location(location_id):
-    response = table(LOCATION_TABLE_NAME).get_item(
-        Key=_location_key(location_id),
-        ConsistentRead=True,
-    )
-    if not isinstance(response, dict):
-        raise _LocationServiceFailure
-
-    item = response.get("Item")
-    if item is None:
-        return None
-    if not isinstance(item, dict):
-        raise _LocationServiceFailure
-    return _validate_stored_location(item, location_id)
-
-
-def _list_locations():
+def _list_locations(tenant_id):
+    """Only the caller's tenant partition - never a Scan + filter."""
     location_table = table(LOCATION_TABLE_NAME)
     request = {
         "KeyConditionExpression": (
-            Key("PK").eq("PLATFORM")
+            Key("PK").eq(tenant.tenant_pk(tenant_id))
             & Key("SK").begins_with("LOCATION#")
         ),
         "ConsistentRead": True,
@@ -357,7 +347,7 @@ def _list_locations():
             location_id = item.get("locationId")
             if not isinstance(location_id, str) or not location_id:
                 raise _LocationConflict("location record is inconsistent")
-            _validate_stored_location(item, location_id)
+            _validate_stored_location(item, tenant_id, location_id)
             locations.append(_public_location(item))
 
         last_key = response.get("LastEvaluatedKey")
@@ -374,13 +364,27 @@ def _list_locations():
 
 
 def _read_location_response(event, *, customer_facing):
-    location_id = _location_id(event)
-    item = _read_location(location_id)
-    if item is None:
-        return _location_error(
-            HTTPStatus.NOT_FOUND.value,
-            "location not found",
+    """The location row comes from the tenant check: on public-info the
+    location decides the tenant; on the JWT route it must belong to the
+    caller's tenant. Either way a foreign or unknown id is 404."""
+    try:
+        if not customer_facing:
+            # Who is calling is decided before anything about the path is.
+            tenant.for_jwt(event)
+        location_id = _location_id(event)
+        ctx = (
+            tenant.for_public(location_id)
+            if customer_facing
+            else tenant.for_jwt(event, location_id=location_id)
         )
+    except tenant.TenantError as exc:
+        if exc.status == HTTPStatus.NOT_FOUND.value:
+            return _location_error(
+                HTTPStatus.NOT_FOUND.value,
+                "location not found",
+            )
+        return exc.response({"Cache-Control": "no-store"})
+    item = _validate_stored_location(ctx.location, ctx.tenant_id, location_id)
     return _location_response(
         HTTPStatus.OK.value,
         (
@@ -420,15 +424,16 @@ def handler(event, context):
 
     item_route = _has_item_route(event)
     try:
-        require_group(event, *(_ITEM_GROUPS if item_route else _LIST_GROUPS))
-    except Unauthorized:
-        return _location_error(HTTPStatus.FORBIDDEN.value, "forbidden")
-
-    try:
         if not item_route:
+            # Listing every location of the tenant is an owner action;
+            # staff work on the one location they are assigned to.
+            try:
+                ctx = tenant.for_jwt(event, owner_only=True)
+            except tenant.TenantError as exc:
+                return exc.response({"Cache-Control": "no-store"})
             return _location_response(
                 HTTPStatus.OK.value,
-                {"items": _list_locations()},
+                {"items": _list_locations(ctx.tenant_id)},
             )
 
         return _read_location_response(event, customer_facing=False)

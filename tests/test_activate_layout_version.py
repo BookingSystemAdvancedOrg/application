@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -47,10 +48,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -305,6 +303,7 @@ def app_and_table(monkeypatch):
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
+        install_tenancy(monkeypatch, [LOCATION_ID, "second-location"])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         snapshot_table = resource.create_table(
             TableName=TABLE_NAME,
@@ -377,7 +376,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["staff_user"]'), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "owner_only"})
     table_factory.assert_not_called()
 
 
@@ -419,7 +418,7 @@ def test_wrong_pending_activation_method_returns_route_specific_405(
     [
         ("claims", 401, "no JWT claims on this request"),
         ("subject", 401, "JWT is missing a subject"),
-        ("group", 403, "forbidden"),
+        ("group", 403, "owner_only"),
     ],
 )
 def test_cancel_authorization_runs_before_aws_access(
@@ -438,9 +437,8 @@ def test_cancel_authorization_runs_before_aws_access(
             "sub"
         ] = " "
     else:
-        event["requestContext"]["authorizer"]["jwt"]["claims"][
-            "cognito:groups"
-        ] = '["staff_user"]'
+        event["requestContext"]["authorizer"]["jwt"]["claims"].update(
+            {"cognito:groups": '["staff_user"]', "role": "staff_user"})
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     scheduler_factory = Mock(
         side_effect=AssertionError("must not access Scheduler")
@@ -523,7 +521,7 @@ def test_cancel_invalid_location_returns_400_before_aws_access(
             {"error": "no JWT claims on this request"},
         ),
         ("subject", 401, {"error": "JWT is missing a subject"}),
-        ("group", 403, {"error": "forbidden"}),
+        ("group", 403, {"error": "owner_only"}),
         ("method", 405, {"error": "method not allowed"}),
         ("location", 400, {"error": "locationId is required"}),
         (
@@ -547,9 +545,8 @@ def test_request_gates_run_before_body_validation(
     elif gate == "subject":
         event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"] = " "
     elif gate == "group":
-        event["requestContext"]["authorizer"]["jwt"]["claims"][
-            "cognito:groups"
-        ] = '["staff_user"]'
+        event["requestContext"]["authorizer"]["jwt"]["claims"].update(
+            {"cognito:groups": '["staff_user"]', "role": "staff_user"})
     elif gate == "method":
         event["requestContext"]["http"]["method"] = "GET"
     elif gate == "location":
@@ -728,7 +725,7 @@ def test_future_cutover_requires_sixty_seconds_of_lead_time(
     )["Item"] == target
 
 
-@pytest.mark.parametrize("group", ["owner_user", "super_user"])
+@pytest.mark.parametrize("group", ["owner_user"])
 def test_first_activation_is_immediate_and_atomic(
     app_and_table,
     group,
@@ -2031,7 +2028,7 @@ def test_wrong_reschedule_method_returns_route_specific_405(
     [
         ("claims", 401, "no JWT claims on this request"),
         ("subject", 401, "JWT is missing a subject"),
-        ("group", 403, "forbidden"),
+        ("group", 403, "owner_only"),
     ],
 )
 def test_reschedule_authorization_runs_before_body_and_aws_access(
@@ -2050,9 +2047,8 @@ def test_reschedule_authorization_runs_before_body_and_aws_access(
             "sub"
         ] = " "
     else:
-        event["requestContext"]["authorizer"]["jwt"]["claims"][
-            "cognito:groups"
-        ] = '["staff_user"]'
+        event["requestContext"]["authorizer"]["jwt"]["claims"].update(
+            {"cognito:groups": '["staff_user"]', "role": "staff_user"})
     table_factory = Mock(side_effect=AssertionError("must not access table"))
     scheduler_factory = Mock(
         side_effect=AssertionError("must not access Scheduler")
@@ -6012,3 +6008,17 @@ def test_transaction_dependency_failure_returns_sanitized_503(
         {"error": "layout activation service unavailable"},
     )
     assert "sensitive" not in response["body"]
+
+
+
+def test_other_tenants_location_cannot_be_activated(app_and_table, monkeypatch):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims("owner-b", '["owner_user"]', TENANT_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    table_factory.assert_not_called()

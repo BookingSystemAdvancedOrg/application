@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, seed_tenancy, tenant_row
 
 
 APP_PATH = (
@@ -59,8 +60,9 @@ def location_item(
         del body["email"]
         del body["phoneNumber"]
     item = {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
         "locationId": location_id,
         **body,
         "bookingDurationHours": Decimal("2"),
@@ -116,7 +118,7 @@ def put_location(location_table, item=None):
 
 def get_location(location_table, location_id="location-id"):
     return location_table.get_item(
-        Key={"PK": "PLATFORM", "SK": f"LOCATION#{location_id}"},
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{location_id}"},
         ConsistentRead=True,
     ).get("Item")
 
@@ -128,19 +130,23 @@ def make_event(
     groups='["owner_user"]',
     sub="caller-sub",
     location_id=_UNSET,
+    tenant_id=TENANT_A,
 ):
     if body is None:
         body = valid_body()
 
+    claims = {"sub": sub, "cognito:groups": groups}
+    role = next((r for r in ("owner_user", "staff_user") if r in (groups or "")), None)
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
+    if role is not None:
+        claims["role"] = role
     event = {
         "requestContext": {
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": claims
                 }
             },
         },
@@ -153,7 +159,15 @@ def make_event(
 
 
 def table_items(table):
-    return table.scan()["Items"]
+    """The test tenant's location rows (tenant B's seed row is not part of
+    what a test of tenant A writes)."""
+    return [i for i in table.scan()["Items"] if i["PK"] == f"TENANT#{TENANT_A}"]
+
+
+def location_count(tenant_id=TENANT_A):
+    item = boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).get_item(
+        Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"})["Item"]
+    return int(item.get("locationCount", 0))
 
 
 @pytest.fixture
@@ -170,18 +184,8 @@ def app_and_table(monkeypatch):
         shared_dynamo._client = None
 
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
-        location_table = resource.create_table(
-            TableName=TABLE_NAME,
-            KeySchema=[
-                {"AttributeName": "PK", "KeyType": "HASH"},
-                {"AttributeName": "SK", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "PK", "AttributeType": "S"},
-                {"AttributeName": "SK", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        seed_tenancy(monkeypatch, location_table=TABLE_NAME, user_table=None, locations_a=[])
+        location_table = resource.Table(TABLE_NAME)
 
         spec = importlib.util.spec_from_file_location(
             "create_location_app",
@@ -222,14 +226,16 @@ def test_missing_subject_returns_401_without_writing(app_and_table):
     assert table_items(location_table) == []
 
 
-@pytest.mark.parametrize("groups", ['["staff_user"]', "", None])
-def test_wrong_group_returns_403_without_writing(app_and_table, groups):
+@pytest.mark.parametrize(("groups", "error"), [
+    ('["staff_user"]', "owner_only"), ("", "no_tenant"), (None, "no_tenant"),
+])
+def test_wrong_group_returns_403_without_writing(app_and_table, groups, error):
     app, location_table = app_and_table
 
     response = app.handler(make_event(groups=groups), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "forbidden"}
+    assert json.loads(response["body"]) == {"error": error}
     assert table_items(location_table) == []
 
 
@@ -241,11 +247,11 @@ def test_authorization_happens_before_body_validation(app_and_table):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "forbidden"}
+    assert json.loads(response["body"]) == {"error": "owner_only"}
     assert table_items(location_table) == []
 
 
-@pytest.mark.parametrize("groups", ['["owner_user"]', '["super_user"]'])
+@pytest.mark.parametrize("groups", ['["owner_user"]'])
 def test_allowed_groups_can_create_locations(
     app_and_table,
     monkeypatch,
@@ -580,11 +586,12 @@ def test_creates_expected_location_item(app_and_table, monkeypatch):
     }
 
     stored = location_table.get_item(
-        Key={"PK": "PLATFORM", "SK": "LOCATION#location-id"}
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#location-id"}
     )["Item"]
     assert stored == {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": "LOCATION#location-id",
+        "tenantId": TENANT_A,
         **response_body,
         "bookingDurationHours": Decimal("2"),
         "gracePeriodHours": Decimal("0.5"),
@@ -598,7 +605,7 @@ def test_location_id_collision_returns_409_without_overwriting(
     app, location_table = app_and_table
     monkeypatch.setattr(app, "_new_location_id", lambda: "existing-id")
     existing = {
-        "PK": "PLATFORM",
+        "PK": f"TENANT#{TENANT_A}",
         "SK": "LOCATION#existing-id",
         "locationId": "existing-id",
         "name": "Existing",
@@ -612,24 +619,24 @@ def test_location_id_collision_returns_409_without_overwriting(
         "error": "location already exists",
     }
     stored = location_table.get_item(
-        Key={"PK": "PLATFORM", "SK": "LOCATION#existing-id"}
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#existing-id"}
     )["Item"]
     assert stored == existing
 
 
 def test_sanitizes_dynamodb_errors(app_and_table, monkeypatch):
     app, _ = app_and_table
-    location_table = Mock()
-    location_table.put_item.side_effect = ClientError(
+    ddb = Mock()
+    ddb.transact_write_items.side_effect = ClientError(
         {
             "Error": {
                 "Code": "InternalServerError",
                 "Message": "sensitive AWS message",
             }
         },
-        "PutItem",
+        "TransactWriteItems",
     )
-    monkeypatch.setattr(app, "table", lambda _: location_table)
+    monkeypatch.setattr(shared_dynamo, "client", lambda: ddb)
 
     response = app.handler(make_event(), None)
 
@@ -642,21 +649,23 @@ def test_sanitizes_dynamodb_errors(app_and_table, monkeypatch):
 
 def test_maps_transport_errors_to_503(app_and_table, monkeypatch):
     app, _ = app_and_table
-    location_table = Mock()
-    location_table.put_item.side_effect = EndpointConnectionError(
+    ddb = Mock()
+    ddb.transact_write_items.side_effect = EndpointConnectionError(
         endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
     )
-    monkeypatch.setattr(app, "table", lambda _: location_table)
+    monkeypatch.setattr(shared_dynamo, "client", lambda: ddb)
 
     response = app.handler(make_event(), None)
 
+    # Retried once with the same idempotency token, then given up.
+    assert ddb.transact_write_items.call_count == 2
     assert response["statusCode"] == 503
     assert json.loads(response["body"]) == {
         "error": "location service unavailable",
     }
 
 
-@pytest.mark.parametrize("groups", ['["owner_user"]', '["super_user"]'])
+@pytest.mark.parametrize("groups", ['["owner_user"]'])
 def test_allowed_groups_can_update_locations(
     app_and_table,
     monkeypatch,
@@ -866,12 +875,13 @@ def test_legacy_location_can_be_updated_without_contact_fields(
     assert "phoneNumber" not in body
 
 
-def test_legacy_location_requires_both_contacts_when_backfilled(
-    app_and_table,
-):
+def test_location_may_get_only_an_email(app_and_table, monkeypatch):
+    """Contacts are independent: a location created by the operator with
+    only an email (or only a phone) is valid and can be edited."""
     app, location_table = app_and_table
     original = location_item(include_contacts=False)
     put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
 
     response = app.handler(
         make_event(
@@ -882,11 +892,10 @@ def test_legacy_location_requires_both_contacts_when_backfilled(
         None,
     )
 
-    assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "phoneNumber is required",
-    }
-    assert get_location(location_table) == original
+    assert response["statusCode"] == 200
+    stored = get_location(location_table)
+    assert stored["email"] == "contact@example.com" and "phoneNumber" not in stored
+    assert json.loads(response["body"])["email"] == "contact@example.com"
 
 
 def test_legacy_location_accepts_both_contacts_when_backfilled(
@@ -1099,8 +1108,9 @@ def test_ambiguous_committed_update_is_reconciled(
     app_and_table,
     monkeypatch,
 ):
-    app, _ = app_and_table
+    app, real_table = app_and_table
     original = location_item()
+    put_location(real_table, original)  # the tenant check finds it
     desired = {
         **original,
         "name": "Updated",
@@ -1145,3 +1155,159 @@ def test_create_rejects_numbers_outside_dynamodb_range(
 
     assert response["statusCode"] == 400
     assert table_items(location_table) == []
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_new_location_belongs_to_the_callers_tenant_and_counts(app_and_table):
+    app, location_table = app_and_table
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    (item,) = table_items(location_table)
+    assert item["PK"] == f"TENANT#{TENANT_A}" and item["tenantId"] == TENANT_A
+    assert location_count() == 1
+
+
+def test_tenant_in_body_is_ignored(app_and_table):
+    app, location_table = app_and_table
+    body = valid_body()
+    body["tenantId"] = TENANT_B
+
+    response = app.handler(make_event(body), None)
+
+    # Unknown field -> rejected; nothing is written for B either way.
+    assert response["statusCode"] == 400
+    assert all(i["PK"] != f"TENANT#{TENANT_B}" or i["locationId"] == "loc-b-1"
+               for i in location_table.scan()["Items"])
+
+
+def test_plan_limit_is_enforced(app_and_table):
+    app, location_table = app_and_table
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, max_locations=1))
+
+    first = app.handler(make_event(), None)
+    second = app.handler(make_event(), None)
+
+    assert first["statusCode"] == 201
+    assert second["statusCode"] == 409
+    assert json.loads(second["body"]) == {"error": "plan_limit_reached"}
+    assert len(table_items(location_table)) == 1 and location_count() == 1
+
+
+def test_inactive_tenant_cannot_create(app_and_table):
+    from shared import tenant as shared_tenant
+    app, location_table = app_and_table
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert table_items(location_table) == []
+
+
+def test_delete_frees_the_plan_slot(app_and_table):
+    app, location_table = app_and_table
+    created = json.loads(app.handler(make_event(), None)["body"])
+
+    response = app.handler(
+        make_event(method="DELETE", location_id=created["locationId"]), None)
+
+    assert response["statusCode"] == 204
+    assert table_items(location_table) == [] and location_count() == 0
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_other_tenants_location_is_404_and_untouched(app_and_table, method):
+    app, location_table = app_and_table
+    put_location(location_table)  # tenant A's
+
+    response = app.handler(
+        make_event({"name": "Hijacked"}, method=method, location_id="location-id",
+                   tenant_id=TENANT_B, sub="owner-b"),
+        None,
+    )
+
+    assert response["statusCode"] == 404
+    assert get_location(location_table) == location_item()
+
+
+def _set_tenant(**fields):
+    from shared import tenant as shared_tenant
+    row = tenant_row(TENANT_A)
+    row.update(fields)
+    for key in [k for k, v in row.items() if v is _UNSET]:
+        del row[key]
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(Item=row)
+    shared_tenant.reset_caches()
+
+
+def test_transaction_tokens_fit_dynamodbs_36_characters(app_and_table, monkeypatch):
+    """DynamoDB rejects ClientRequestToken > 36 chars in AWS (moto doesn't)."""
+    app, _ = app_and_table
+    real = shared_dynamo.client()
+    tokens = []
+
+    class Spy:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def transact_write_items(self, **kwargs):
+            tokens.append(kwargs["ClientRequestToken"])
+            return real.transact_write_items(**kwargs)
+
+    monkeypatch.setattr(shared_dynamo, "client", lambda: Spy())
+    created = json.loads(app.handler(make_event(), None)["body"])
+    app.handler(make_event(method="DELETE", location_id=created["locationId"]), None)
+
+    assert len(tokens) == 2 and all(1 <= len(t) <= 36 for t in tokens)
+
+
+@pytest.mark.parametrize("max_locations", [None, _UNSET])
+def test_plan_without_a_location_limit_is_unlimited(app_and_table, max_locations):
+    app, location_table = app_and_table
+    _set_tenant(entitlements={"features": {"reservations": True}} if max_locations is _UNSET
+                else {"maxLocations": None, "features": {"reservations": True}}, locationCount=5)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201 and location_count() == 6
+
+
+def test_missing_count_still_respects_a_zero_limit(app_and_table):
+    app, location_table = app_and_table
+    _set_tenant(entitlements={"maxLocations": 0, "features": {}}, locationCount=_UNSET)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 409 and table_items(location_table) == []
+
+
+def test_delete_never_drives_the_count_below_zero(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    _set_tenant(locationCount=0)  # drifted
+
+    response = app.handler(make_event(method="DELETE", location_id="location-id"), None)
+
+    assert response["statusCode"] == 204
+    assert table_items(location_table) == [] and location_count() == 0
+
+
+def test_suspension_a_moment_ago_reads_as_inactive_not_quota(app_and_table):
+    """The cached tenant still says active; the refusal must re-read it."""
+    from shared import tenant as shared_tenant
+    app, _ = app_and_table
+    shared_tenant.get_tenant(TENANT_A)  # warm the cache with "active"
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "tenant_inactive"}

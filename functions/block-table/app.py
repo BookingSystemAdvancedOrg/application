@@ -12,6 +12,12 @@ PURPOSE:
     layout effective for the complete slot and records that layout version.
     A manual hold must never overwrite or delete a real reservation hold.
 
+    Multi-tenant (shared/tenant.py): the caller's tenant (token tenant_id)
+    must be active with the "reservations" feature; the caller's profile
+    must belong to that tenant; the location is read under the tenant's key,
+    so another tenant's location answers 404. Staff only on their assigned
+    location.
+
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     LOCATION_TABLE_NAME -- Location timezone, hours, and booking duration
@@ -29,6 +35,7 @@ Full details: docs/LAMBDA_REFERENCE.md
 
 import base64
 import binascii
+import contextvars
 import hashlib
 import json
 import os
@@ -42,12 +49,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
+from shared import tenant
 from shared.auth import (
     Unauthorized,
     get_claims,
-    get_groups,
     get_sub,
-    require_group,
 )
 from shared.dynamo import table
 from shared.responses import json_response
@@ -60,12 +66,15 @@ PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME = os.environ[
     "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME"
 ]
 
-_ALLOWED_GROUPS = ("staff_user", "owner_user", "super_user")
-_GROUP_TO_ROLE = {
-    "staff_user": "staff",
-    "owner_user": "owner_user",
-    "super_user": "super_admin",
+_ALLOWED_GROUPS = ("staff_user", "owner_user")
+# Profile role values per group ("staff" is the admin app's, "staff_user"
+# the spec's - both mean staff).
+_GROUP_TO_ROLES = {
+    "staff_user": ("staff", "staff_user"),
+    "owner_user": ("owner_user",),
 }
+# The tenant of the request being handled (set by the handler from the token).
+_TENANT_ID = contextvars.ContextVar("tenant_id")
 _REQUEST_FIELDS = frozenset({"date", "startTime", "blocked"})
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _TIME_PATTERN = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d\Z")
@@ -318,7 +327,7 @@ def _validate_business_hours(value):
 
 
 def _location_key(location_id):
-    return {"PK": "PLATFORM", "SK": f"LOCATION#{location_id}"}
+    return tenant.location_key(_TENANT_ID.get(), location_id)
 
 
 def _validate_location(item, location_id):
@@ -1098,15 +1107,9 @@ def _caller_identity(event):
     if len(caller_sub) > _MAX_IDENTIFIER_LENGTH or "#" in caller_sub:
         raise Unauthorized("JWT subject is invalid")
 
-    try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized as exc:
-        raise _ForbiddenAction from exc
-
-    managed_groups = set(get_groups(event)) & set(_ALLOWED_GROUPS)
-    if len(managed_groups) != 1:
-        raise _ForbiddenAction
-    return caller_sub, managed_groups.pop()
+    ctx = tenant.for_jwt(event, feature="reservations")
+    _TENANT_ID.set(ctx.tenant_id)
+    return caller_sub, ctx.role
 
 
 def _read_user_profile(caller_sub):
@@ -1132,6 +1135,8 @@ def _authorize_location(caller_sub, caller_group, location_id):
         or profile.get("cognitoSub") != caller_sub
     ):
         raise _BlockServiceFailure
+    if profile.get("tenantId") != _TENANT_ID.get():
+        raise _ForbiddenAction
 
     status = profile.get("status")
     if status == "disabled":
@@ -1139,10 +1144,11 @@ def _authorize_location(caller_sub, caller_group, location_id):
     if status != "active":
         raise _BlockServiceFailure
 
-    if profile.get("role") != _GROUP_TO_ROLE[caller_group]:
+    if profile.get("role") not in _GROUP_TO_ROLES[caller_group]:
         raise _ForbiddenAction
 
-    assigned_location = profile.get("locationId")
+    # Owners created by onboarding have no locationId attribute at all.
+    assigned_location = profile.get("locationId", "")
     if not isinstance(assigned_location, str):
         raise _BlockServiceFailure
     if caller_group == "staff_user":
@@ -1552,6 +1558,13 @@ def handler(event, context):
         return _block_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
     except _ForbiddenAction:
         return _block_error(HTTPStatus.FORBIDDEN.value, "forbidden")
+    except tenant.TenantError as exc:
+        return exc.response()
+    except (BotoCoreError, ClientError):
+        return _block_error(
+            HTTPStatus.SERVICE_UNAVAILABLE.value,
+            "block-table service unavailable",
+        )
 
     try:
         details = _request_details(event)

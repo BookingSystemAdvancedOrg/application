@@ -5,16 +5,24 @@ TRIGGER:
     API Gateway -- PUT|DELETE /locations/{locationId} -- Auth: JWT
 
 PURPOSE:
-    Creates, partially updates, and hard-deletes restaurant location records.
-    All actions are restricted to owner_user/super_user. Deletion affects only
-    the Location-table item; it does not cascade to related resources.
+    Creates, partially updates, and hard-deletes the caller's tenant's
+    restaurant locations. Owner only (owner_user of an active tenant).
+    Deletion affects only the Location-table item; it does not cascade to
+    related resources.
+
+    Multi-tenant: rows live under PK TENANT#<tenantId> (the token's
+    tenant_id claim). Create and delete move the tenant's locationCount in
+    the same transaction, so the plan's entitlements.maxLocations can't be
+    exceeded (409 plan_limit_reached). Another tenant's locationId -> 404.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     LOCATION_TABLE_NAME -- DynamoDB table to read/write
+    LOCATION_ID_INDEX_NAME -- byLocationId GSI
+    TENANT_TABLE_NAME -- tenant table (status, plan, locationCount)
 
 AWS RESOURCE ACCESS:
-    Full dynamodb:* on the Location table only.
+    Location table (read/write), tenant PROFILE row (read, locationCount).
 
 Full details: docs/LAMBDA_REFERENCE.md
 """
@@ -30,16 +38,18 @@ from decimal import Decimal
 from http import HTTPStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.auth import Unauthorized, get_claims, get_sub, require_group
+from shared import dynamo, tenant
+from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
+TENANT_TABLE_NAME = os.environ["TENANT_TABLE_NAME"]
 
-_ALLOWED_GROUPS = ("owner_user", "super_user")
 _WEEKDAYS = (
     "monday",
     "tuesday",
@@ -185,19 +195,20 @@ def _validated_contact_fields(source, *, required):
     present = {
         field for field in _OPTIONAL_CONTACT_FIELDS if field in source
     }
-    if not required and not present:
-        return {}
+    if required:
+        missing = [
+            field for field in _OPTIONAL_CONTACT_FIELDS if field not in source
+        ]
+        if missing:
+            raise ValueError(f"{missing[0]} is required")
 
-    missing = [
-        field for field in _OPTIONAL_CONTACT_FIELDS if field not in source
-    ]
-    if missing:
-        raise ValueError(f"{missing[0]} is required")
-
-    return {
-        "email": _required_email(source),
-        "phoneNumber": _required_phone_number(source),
-    }
+    # Each contact is optional on its own once the location exists.
+    fields = {}
+    if "email" in present or required:
+        fields["email"] = _required_email(source)
+    if "phoneNumber" in present or required:
+        fields["phoneNumber"] = _required_phone_number(source)
+    return fields
 
 
 def _required_timezone(source):
@@ -363,11 +374,8 @@ def _utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _location_key(location_id):
-    return {
-        "PK": "PLATFORM",
-        "SK": f"LOCATION#{location_id}",
-    }
+def _location_key(tenant_id, location_id):
+    return tenant.location_key(tenant_id, location_id)
 
 
 def _valid_utc_timestamp(source, field):
@@ -383,10 +391,11 @@ def _valid_utc_timestamp(source, field):
 
 def _public_location(item):
     public = {field: item[field] for field in _PUBLIC_REQUIRED_FIELDS}
-    if all(field in item for field in _OPTIONAL_CONTACT_FIELDS):
-        public.update(
-            {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS}
-        )
+    # Contacts are independent: a location may have only an email or only
+    # a phone number (operators add locations with what the customer gave).
+    public.update(
+        {field: item[field] for field in _OPTIONAL_CONTACT_FIELDS if field in item}
+    )
     if all(field in item for field in _OPTIONAL_AUDIT_FIELDS):
         public.update(
             {field: item[field] for field in _OPTIONAL_AUDIT_FIELDS}
@@ -394,12 +403,13 @@ def _public_location(item):
     return public
 
 
-def _validate_stored_location(item, location_id):
-    expected_key = _location_key(location_id)
+def _validate_stored_location(item, tenant_id, location_id):
+    expected_key = _location_key(tenant_id, location_id)
     if (
         not isinstance(item, dict)
         or item.get("PK") != expected_key["PK"]
         or item.get("SK") != expected_key["SK"]
+        or item.get("tenantId") != tenant_id
         or item.get("locationId") != location_id
         or len(location_id) > 128
     ):
@@ -423,9 +433,9 @@ def _validate_stored_location(item, location_id):
     return item
 
 
-def _read_raw_location(location_id):
+def _read_raw_location(key):
     response = table(LOCATION_TABLE_NAME).get_item(
-        Key=_location_key(location_id),
+        Key=key,
         ConsistentRead=True,
     )
     if not isinstance(response, dict):
@@ -436,11 +446,11 @@ def _read_raw_location(location_id):
     return item
 
 
-def _load_location(location_id):
-    item = _read_raw_location(location_id)
+def _load_location(tenant_id, location_id):
+    item = _read_raw_location(_location_key(tenant_id, location_id))
     if item is None:
         return None
-    return _validate_stored_location(item, location_id)
+    return _validate_stored_location(item, tenant_id, location_id)
 
 
 def _expected_location_condition(expected):
@@ -486,9 +496,9 @@ def _is_ambiguous_dynamo_error(exc):
     return isinstance(exc, BotoCoreError)
 
 
-def _reconcile_state(location_id, desired, previous):
+def _reconcile_state(key, desired, previous):
     try:
-        current = _read_raw_location(location_id)
+        current = _read_raw_location(key)
     except (BotoCoreError, ClientError, _LocationServiceFailure):
         raise _LocationServiceFailure from None
 
@@ -501,12 +511,12 @@ def _reconcile_state(location_id, desired, previous):
 
 def _recover_ambiguous_write(
     write,
-    location_id,
+    key,
     desired,
     previous,
     conflict_message,
 ):
-    outcome = _reconcile_state(location_id, desired, previous)
+    outcome = _reconcile_state(key, desired, previous)
     if outcome == "applied":
         return
     if outcome == "conflict":
@@ -516,7 +526,7 @@ def _recover_ambiguous_write(
         write()
         return
     except (BotoCoreError, ClientError):
-        outcome = _reconcile_state(location_id, desired, previous)
+        outcome = _reconcile_state(key, desired, previous)
         if outcome == "applied":
             return
         if outcome == "conflict":
@@ -526,7 +536,7 @@ def _recover_ambiguous_write(
 
 def _execute_write(
     write,
-    location_id,
+    key,
     desired,
     previous,
     conflict_message,
@@ -541,7 +551,7 @@ def _execute_write(
             raise _LocationServiceFailure from None
         _recover_ambiguous_write(
             write,
-            location_id,
+            key,
             desired,
             previous,
             conflict_message,
@@ -549,36 +559,14 @@ def _execute_write(
     except BotoCoreError:
         _recover_ambiguous_write(
             write,
-            location_id,
+            key,
             desired,
             previous,
             conflict_message,
         )
 
 
-def _put_new_location(item):
-    location_id = item["locationId"]
-
-    def write():
-        table(LOCATION_TABLE_NAME).put_item(
-            Item=item,
-            ConditionExpression=(
-                "attribute_not_exists(PK) AND attribute_not_exists(SK)"
-            ),
-        )
-
-    _execute_write(
-        write,
-        location_id,
-        item,
-        None,
-        "location already exists",
-    )
-
-
 def _put_existing_location(item, expected):
-    location_id = item["locationId"]
-
     def write():
         table(LOCATION_TABLE_NAME).put_item(
             Item=item,
@@ -587,30 +575,154 @@ def _put_existing_location(item, expected):
 
     _execute_write(
         write,
-        location_id,
+        {"PK": item["PK"], "SK": item["SK"]},
         item,
         expected,
         "location changed; retry request",
     )
 
 
-def _delete_existing_location(location_id, expected):
-    def write():
-        table(LOCATION_TABLE_NAME).delete_item(
-            Key=_location_key(location_id),
-            **_expected_location_condition(expected),
+_serializer = TypeSerializer()
+
+
+def _ddb(item):
+    return {key: _serializer.serialize(value) for key, value in item.items()}
+
+
+def _tenant_key(tenant_id):
+    return {"PK": {"S": tenant.tenant_pk(tenant_id)}, "SK": {"S": "PROFILE"}}
+
+
+def _transact(items, token):
+    """One all-or-nothing write. The ClientRequestToken makes a retry after
+    an ambiguous failure (timeout, 5xx) idempotent for 10 minutes, so it is
+    retried once with the same token instead of reconciling by hand."""
+    request = {"TransactItems": items, "ClientRequestToken": token}
+    try:
+        dynamo.client().transact_write_items(**request)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            raise
+        if not _is_ambiguous_dynamo_error(exc):
+            raise _LocationServiceFailure from None
+        dynamo.client().transact_write_items(**request)
+    except BotoCoreError:
+        dynamo.client().transact_write_items(**request)
+
+
+def _cancellation_codes(exc):
+    return [
+        (reason or {}).get("Code", "None")
+        for reason in exc.response.get("CancellationReasons") or []
+    ]
+
+
+def _insert_location_within_plan(ctx, item):
+    """Location row + tenant locationCount in one transaction: the plan's
+    maxLocations can't be exceeded, not even by two requests at once, and an
+    inactive tenant can't add locations."""
+    try:
+        _transact(
+            [
+                {"Update": {
+                    "TableName": TENANT_TABLE_NAME,
+                    "Key": _tenant_key(ctx.tenant_id),
+                    "UpdateExpression": (
+                        "SET locationCount = if_not_exists(locationCount, :zero) + :one"
+                    ),
+                    # Active tenant AND (no limit (missing/null maxLocations)
+                    # OR below the limit; a missing count is 0).
+                    "ConditionExpression": (
+                        "#status = :active AND ("
+                        "attribute_not_exists(entitlements.maxLocations) "
+                        "OR attribute_type(entitlements.maxLocations, :null) "
+                        "OR (attribute_not_exists(locationCount) AND entitlements.maxLocations > :zero) "
+                        "OR locationCount < entitlements.maxLocations)"
+                    ),
+                    "ExpressionAttributeNames": {"#status": "status"},
+                    "ExpressionAttributeValues": {
+                        ":zero": {"N": "0"}, ":one": {"N": "1"}, ":active": {"S": "active"},
+                        ":null": {"S": "NULL"},
+                    },
+                }},
+                {"Put": {
+                    "TableName": LOCATION_TABLE_NAME,
+                    "Item": _ddb(item),
+                    "ConditionExpression": "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+                }},
+            ],
+            # DynamoDB allows at most 36 characters: the new location's own
+            # uuid4 is unique per create and exactly 36.
+            token=item["locationId"],
         )
+    except ClientError as exc:
+        codes = _cancellation_codes(exc)
+        if codes[:1] == ["ConditionalCheckFailed"]:
+            # Uncached: a suspension a moment ago must not read as a quota.
+            current = tenant.get_tenant(ctx.tenant_id, fresh=True) or {}
+            if current.get("status") != "active":
+                raise tenant.TenantError(HTTPStatus.FORBIDDEN.value, "tenant_inactive") from None
+            raise tenant.TenantError(HTTPStatus.CONFLICT.value, "plan_limit_reached") from None
+        if codes[1:2] == ["ConditionalCheckFailed"]:
+            raise _LocationConflict("location already exists") from None
+        raise _LocationServiceFailure from None
+    finally:
+        tenant.invalidate(ctx.tenant_id)
 
-    _execute_write(
-        write,
-        location_id,
-        None,
-        expected,
-        "location changed; retry request",
-    )
+
+def _token(*parts):
+    """A deterministic idempotency token within DynamoDB's 36 characters."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "location:" + ":".join(map(str, parts))))
 
 
-def _create_location(event, caller_sub):
+def _delete_location_and_count(ctx, expected):
+    """Removes the location row (only if unchanged since it was read) and
+    gives the slot back to the tenant's plan in the same transaction."""
+    condition = _expected_location_condition(expected)
+    delete = {"Delete": {
+        "TableName": LOCATION_TABLE_NAME,
+        "Key": _ddb({"PK": expected["PK"], "SK": expected["SK"]}),
+        "ConditionExpression": condition["ConditionExpression"],
+        "ExpressionAttributeNames": condition["ExpressionAttributeNames"],
+        **({"ExpressionAttributeValues": _ddb(condition["ExpressionAttributeValues"])}
+           if condition["ExpressionAttributeValues"] else {}),
+    }}
+    decrement = {"Update": {
+        "TableName": TENANT_TABLE_NAME,
+        "Key": _tenant_key(ctx.tenant_id),
+        "UpdateExpression": "SET locationCount = locationCount - :one",
+        # Never below zero: a count that already drifted to 0 stays 0.
+        "ConditionExpression": "locationCount > :zero",
+        "ExpressionAttributeValues": {":one": {"N": "1"}, ":zero": {"N": "0"}},
+    }}
+    version = expected.get("updatedAt") or expected.get("createdAt")
+    try:
+        try:
+            _transact(
+                [delete, decrement],
+                token=_token("delete", ctx.tenant_id, expected["locationId"], version),
+            )
+        except ClientError as exc:
+            codes = _cancellation_codes(exc)
+            if codes[:1] == ["ConditionalCheckFailed"]:
+                raise _LocationConflict("location changed; retry request") from None
+            if codes[1:2] != ["ConditionalCheckFailed"]:
+                raise _LocationServiceFailure from None
+            # The count is already 0 (drifted) - still delete the location.
+            _transact(
+                [delete],
+                token=_token("delete-uncounted", ctx.tenant_id, expected["locationId"], version),
+            )
+    except ClientError as exc:
+        if _cancellation_codes(exc)[:1] == ["ConditionalCheckFailed"]:
+            raise _LocationConflict("location changed; retry request") from None
+        raise _LocationServiceFailure from None
+    finally:
+        tenant.invalidate(ctx.tenant_id)
+
+
+def _create_location(event, ctx):
+    caller_sub = ctx.sub
     fields = _validated_location_fields(
         _request_body(event, partial=False),
         require_contacts=True,
@@ -618,7 +730,8 @@ def _create_location(event, caller_sub):
     location_id = _new_location_id()
     timestamp = _utc_now()
     item = {
-        **_location_key(location_id),
+        **_location_key(ctx.tenant_id, location_id),
+        "tenantId": ctx.tenant_id,
         "locationId": location_id,
         **fields,
         "createdBy": caller_sub,
@@ -626,7 +739,7 @@ def _create_location(event, caller_sub):
         "updatedBy": caller_sub,
         "updatedAt": timestamp,
     }
-    _put_new_location(item)
+    _insert_location_within_plan(ctx, item)
     return _location_response(
         HTTPStatus.CREATED.value,
         _public_location(item),
@@ -634,9 +747,10 @@ def _create_location(event, caller_sub):
     )
 
 
-def _update_location(event, location_id, caller_sub):
+def _update_location(event, ctx):
+    location_id, caller_sub = ctx.location_id, ctx.sub
     updates = _request_body(event, partial=True)
-    item = _load_location(location_id)
+    item = _load_location(ctx.tenant_id, location_id)
     if item is None:
         return _location_error(HTTPStatus.NOT_FOUND.value, "location not found")
 
@@ -671,11 +785,11 @@ def _update_location(event, location_id, caller_sub):
     )
 
 
-def _delete_location(location_id):
-    item = _load_location(location_id)
+def _delete_location(ctx):
+    item = _load_location(ctx.tenant_id, ctx.location_id)
     if item is None:
         return _location_error(HTTPStatus.NOT_FOUND.value, "location not found")
-    _delete_existing_location(location_id, item)
+    _delete_location_and_count(ctx, item)
     return _empty_response(HTTPStatus.NO_CONTENT.value)
 
 
@@ -692,23 +806,25 @@ def handler(event, context):
 
     try:
         get_claims(event)
-        caller_sub = get_sub(event).strip()
+        get_sub(event).strip()
     except Unauthorized as exc:
         return _location_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
 
     try:
-        require_group(event, *_ALLOWED_GROUPS)
-    except Unauthorized:
-        return _location_error(HTTPStatus.FORBIDDEN.value, "forbidden")
-
-    try:
+        # Owners only; the tenant is the token's, never the request's.
+        tenant.for_jwt(event, owner_only=True)
         if method == "POST":
-            return _create_location(event, caller_sub)
+            return _create_location(event, tenant.for_jwt(event, owner_only=True))
 
         location_id = _path_location_id(event)
+        ctx = tenant.for_jwt(event, location_id=location_id, owner_only=True)
         if method == "PUT":
-            return _update_location(event, location_id, caller_sub)
-        return _delete_location(location_id)
+            return _update_location(event, ctx)
+        return _delete_location(ctx)
+    except tenant.TenantError as exc:
+        if exc.status == HTTPStatus.NOT_FOUND.value:
+            return _location_error(HTTPStatus.NOT_FOUND.value, "location not found")
+        return exc.response({"Cache-Control": "no-store"})
     except ValueError as exc:
         return _location_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _LocationConflict as exc:

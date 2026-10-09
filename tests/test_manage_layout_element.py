@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
 
 
 APP_PATH = (
@@ -145,10 +146,7 @@ def make_event(
             "http": {"method": method},
             "authorizer": {
                 "jwt": {
-                    "claims": {
-                        "sub": sub,
-                        "cognito:groups": groups,
-                    }
+                    "claims": tenant_claims(sub, groups)
                 }
             },
         },
@@ -221,6 +219,7 @@ def app_and_table(monkeypatch):
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
+        install_tenancy(monkeypatch, [LOCATION_ID, OTHER_LOCATION_ID])
         resource = boto3.resource("dynamodb", region_name="eu-north-1")
         layout_table = resource.create_table(
             TableName=TABLE_NAME,
@@ -319,13 +318,13 @@ def test_wrong_group_returns_403_without_dynamodb(
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, {"error": "no_tenant"})
     table_factory.assert_not_called()
 
 
 @pytest.mark.parametrize(
     "groups",
-    ['["staff_user"]', '["owner_user"]', '["super_user"]'],
+    ['["staff_user"]', '["owner_user"]'],
 )
 def test_all_internal_groups_can_read_layout(app_and_table, groups):
     app, _ = app_and_table
@@ -2160,3 +2159,18 @@ def test_malformed_query_results_return_503(
         503,
         {"error": "layout service unavailable"},
     )
+
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]', '["staff_user"]'])
+def test_other_tenants_location_is_404_without_touching_the_layout(app_and_table, monkeypatch, groups):
+    app = app_and_table[0]
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+    event = make_event(groups=groups)
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    table_factory.assert_not_called()

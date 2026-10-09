@@ -6,7 +6,7 @@ TRIGGER:
 PURPOSE:
     Handles the staff login flow itself (sign-in, challenge responses, token
     refresh). Necessarily NONE-auth - you can't require a valid JWT to obtain
-    one. Only staff/owner/super_user accounts exist in Cognito; customers
+    one. Only staff/owner accounts exist in Cognito; customers
     never authenticate.
 
 ENV_VARS:
@@ -164,7 +164,24 @@ def _auth_error_response(status_code, message):
 
 
 def _cognito_error_response(exc):
-    error_code = exc.response.get("Error", {}).get("Code")
+    error = exc.response.get("Error", {})
+    error_code = error.get("Code")
+    message = str(error.get("Message") or "")
+
+    # Multi-tenant sign-in refusals (stable codes the admin app keys off):
+    # - the pre-token-generation trigger refuses users without a tenant or
+    #   tenant role -> Cognito answers UserLambdaValidationException;
+    # - users of a suspended/offboarded tenant are disabled in Cognito.
+    if error_code == "UserLambdaValidationException":
+        return _auth_error_response(
+            HTTPStatus.FORBIDDEN.value,
+            "account_not_provisioned",
+        )
+    if error_code == "NotAuthorizedException" and "disabled" in message.lower():
+        return _auth_error_response(
+            HTTPStatus.FORBIDDEN.value,
+            "account_disabled",
+        )
 
     status_code, message = _COGNITO_ERROR_MAPPING.get(
         error_code,

@@ -2508,7 +2508,10 @@ paths:
       description: |
         The caller's own tenant (from the token's `tenant_id`): name, plan
         and entitlements, location usage, Stripe onboarding status, domains,
-        and the self-service sender settings. Operator-only fields are never
+        the self-service sender settings and `locations` - the locations the
+        caller may work with (owners: all of the tenant's, oldest first;
+        staff: only their assigned one, or none). The admin app picks its
+        working location from this list. Operator-only fields are never
         returned. Owners and staff may read; a suspended or offboarded
         tenant answers 403 `tenant_inactive`.
       security:
@@ -2731,6 +2734,7 @@ components:
         - domains
         - branding
         - role
+        - locations
       properties:
         tenantId:
           type: string
@@ -2805,6 +2809,25 @@ components:
         role:
           type: string
           enum: [owner_user, staff_user]
+        locations:
+          type: array
+          description: Owners - every location of the tenant, oldest first. Staff - only their assigned location (empty when unassigned or disabled).
+          items:
+            type: object
+            additionalProperties: false
+            required: [locationId, name, address, timezone]
+            properties:
+              locationId:
+                type: string
+              name:
+                type: string
+                nullable: true
+              address:
+                type: string
+                nullable: true
+              timezone:
+                type: string
+                nullable: true
 
     TenantUpdateRequest:
       type: object

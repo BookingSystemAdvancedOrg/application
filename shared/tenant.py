@@ -213,7 +213,7 @@ def _groups(claims: dict) -> list:
     return [g for g in raw if isinstance(g, str)]
 
 
-def _staff_location(sub: str, tenant_id: str) -> Optional[str]:
+def staff_location(sub: str, tenant_id: str) -> Optional[str]:
     """The location an active staff user of this tenant is assigned to
     (their USER# profile) when the function has the user table; None = not
     checked here; "" = no usable assignment (missing, disabled, other
@@ -227,6 +227,9 @@ def _staff_location(sub: str, tenant_id: str) -> Optional[str]:
     if item.get("tenantId") != tenant_id or item.get("status") != "active":
         return ""
     return item.get("locationId") or ""
+
+
+_staff_location = staff_location
 
 
 def for_jwt(

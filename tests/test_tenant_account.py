@@ -14,8 +14,11 @@ from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
 from shared import tenant as shared_tenant
-from tenant_support import (OWNER_A_SUB, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE,
-                            seed_tenancy, tenant_claims, tenant_row)
+from tenant_support import (LOC_A, LOC_A2, LOCATION_TABLE_DEFAULT, OWNER_A_SUB, REGION,
+                            STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE, USER_TABLE_DEFAULT,
+                            location_row, seed_tenancy, tenant_claims, tenant_row)
+
+USER_TABLE = USER_TABLE_DEFAULT
 
 APP_PATH = Path(__file__).parents[1] / "functions" / "tenant-account" / "app.py"
 ADMIN_URL = "https://admin.example.se"
@@ -46,6 +49,7 @@ def app(monkeypatch):
         "AWS_SESSION_TOKEN": "testing", "AWS_DEFAULT_REGION": REGION,
         "STRIPE_SECRET_ARN": "arn:aws:secretsmanager:eu-north-1:1:secret:stripe",
         "STRIPE_API_VERSION": "2026-07-29.dahlia", "ADMIN_APP_URL": ADMIN_URL + "/",
+        "USER_TABLE_NAME": USER_TABLE,
     }.items():
         monkeypatch.setenv(key, value)
     with mock_aws():
@@ -96,6 +100,57 @@ def test_get_returns_own_tenant_without_operator_fields(app):
 def test_staff_can_read(app):
     module, _ = app
     assert body_of(module.handler(make_event(role="staff_user"), None))["role"] == "staff_user"
+
+
+def test_owner_gets_all_own_locations_oldest_first(app):
+    module, _ = app
+    locations = boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT)
+    locations.put_item(Item=location_row(TENANT_A, LOC_A, name="Hagastan", address="Gatan 1",
+                                         timezone="Europe/Stockholm",
+                                         createdAt="2026-10-05T10:00:00.000Z"))
+    locations.put_item(Item=location_row(TENANT_A, LOC_A2, name="Södermalm",
+                                         createdAt="2026-10-01T10:00:00.000Z"))
+
+    body = body_of(module.handler(make_event(), None))
+
+    assert body["locations"] == [
+        {"locationId": LOC_A2, "name": "Södermalm", "address": None, "timezone": None},
+        {"locationId": LOC_A, "name": "Hagastan", "address": "Gatan 1",
+         "timezone": "Europe/Stockholm"},
+    ]
+
+
+def test_staff_get_only_their_assigned_location(app):
+    module, _ = app
+
+    body = body_of(module.handler(make_event(role="staff_user"), None))
+
+    assert [loc["locationId"] for loc in body["locations"]] == [LOC_A]
+
+
+@pytest.mark.parametrize("profile_change", [
+    {"status": "disabled"},
+    {"tenantId": TENANT_B},
+    {"locationId": "loc-b-1"},
+    {"locationId": ""},
+])
+def test_staff_without_a_usable_assignment_get_no_locations(app, profile_change):
+    module, _ = app
+    users = boto3.resource("dynamodb", region_name=REGION).Table(USER_TABLE)
+    profile = users.get_item(Key={"PK": f"USER#{STAFF_A_SUB}", "SK": "PROFILE"})["Item"]
+    users.put_item(Item={**profile, **profile_change})
+
+    body = body_of(module.handler(make_event(role="staff_user"), None))
+
+    assert body["locations"] == []
+
+
+def test_other_tenants_locations_are_never_listed(app):
+    module, _ = app
+
+    body = body_of(module.handler(make_event(tenant_id=TENANT_B), None))
+
+    assert [loc["locationId"] for loc in body["locations"]] == ["loc-b-1"]
 
 
 def test_tenant_comes_only_from_the_token(app):

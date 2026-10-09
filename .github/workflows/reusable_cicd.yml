@@ -10,6 +10,16 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-24.04
+    # Deploys (push to dev/main) run in the GitHub environment named like the
+    # target - "prod" has required reviewers, so nothing reaches prod without
+    # an approval. The environment also puts ":environment:<env>" in the OIDC
+    # token's sub, which the AWS deploy roles can trust. PR runs (tests /
+    # plan only) use no environment, so they never wait for approval.
+    environment: ${{ github.event_name == 'push' && inputs.environment || '' }}
+    # Never two releases of one environment at once; a queued one waits.
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('release-{0}', inputs.environment) || github.run_id }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read

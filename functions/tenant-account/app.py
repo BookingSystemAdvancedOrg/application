@@ -8,7 +8,9 @@ TRIGGER:
 
 PURPOSE:
     The signed-in restaurant's own account: name, plan and what it allows,
-    usage, Stripe onboarding status and domains (GET - owner and staff), the
+    usage, Stripe onboarding status, domains and the locations the caller may
+    work with (GET - owner and staff; staff see only their assigned
+    location), the
     few fields an owner may edit themselves (PATCH: senderName,
     replyToEmail, branding) and a fresh Stripe onboarding link (POST, owner).
     Everything else about the tenant is managed by operators in sbs-admin.
@@ -22,12 +24,15 @@ ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     TENANT_TABLE_NAME -- tenant table (PROFILE + DOMAIN# rows)
     LOCATION_TABLE_NAME / LOCATION_ID_INDEX_NAME -- tenant context
+    USER_TABLE_NAME -- staff users' assigned location (their USER# profile)
     STRIPE_SECRET_ARN -- platform Stripe key, Secrets Manager {"apiKey": ...}
     STRIPE_API_VERSION -- Stripe-Version header
     ADMIN_APP_URL -- admin app base URL (Stripe return/refresh links)
 
 AWS RESOURCE ACCESS:
-    Tenant table GetItem/Query; UpdateItem limited by IAM to senderName,
+    Tenant table GetItem/Query; location table Query on the caller's own
+    TENANT# partition / GetItem; user table GetItem of the caller's own
+    profile (staff); UpdateItem limited by IAM to senderName,
     replyToEmail, branding, updatedAt, updatedBy with ReturnValues
     NONE/UPDATED_*; GetSecretValue on the platform Stripe key.
 
@@ -136,7 +141,33 @@ def _domains(tenant_id, primary):
     return sorted(domains, key=lambda d: d["domain"])
 
 
-def _public_tenant(tenant_id, row, role):
+def _location_summary(row):
+    return {
+        "locationId": row.get("locationId") or row["SK"].split("#", 1)[1],
+        "name": row.get("name"),
+        "address": row.get("address"),
+        "timezone": row.get("timezone"),
+    }
+
+
+def _locations(ctx):
+    """The locations the caller may work with: an owner all of the tenant's,
+    staff only the one in their own profile (none when unassigned/disabled).
+    The admin app uses this to pick its working location - there is no other
+    way for staff to learn it (GET /locations is owner only)."""
+    if ctx.role == "owner_user":
+        rows = tenant.list_locations(ctx.tenant_id)
+    else:
+        assigned = tenant.staff_location(ctx.sub, ctx.tenant_id)
+        row = tenant.get_location(ctx.tenant_id, assigned) if assigned else None
+        rows = [row] if row else []
+    # Oldest first, so every device lands on the same default location.
+    rows.sort(key=lambda r: (str(r.get("createdAt") or "~"), str(r.get("name") or ""), r["SK"]))
+    return [_location_summary(row) for row in rows]
+
+
+def _public_tenant(ctx, row):
+    tenant_id, role = ctx.tenant_id, ctx.role
     stripe = row.get("stripe") or {}
     entitlements = row.get("entitlements") or {}
     return {
@@ -162,6 +193,7 @@ def _public_tenant(tenant_id, row, role):
         "replyToEmail": row.get("replyToEmail"),
         "branding": row.get("branding") or {},
         "role": role,
+        "locations": _locations(ctx),
     }
 
 
@@ -361,8 +393,7 @@ def handler(event, context):
             # Fresh, not the per-container cache: the owner must see a change
             # (an edit, a new location, Stripe onboarding) immediately.
             return _response(
-                HTTPStatus.OK.value,
-                _public_tenant(ctx.tenant_id, _fresh_profile(ctx.tenant_id), ctx.role),
+                HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id))
             )
         if method == "PATCH":
             try:
@@ -370,8 +401,7 @@ def handler(event, context):
             finally:
                 tenant.invalidate(ctx.tenant_id)
             return _response(
-                HTTPStatus.OK.value,
-                _public_tenant(ctx.tenant_id, _fresh_profile(ctx.tenant_id), ctx.role),
+                HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id))
             )
         return _account_link(
             tenant.TenantContext(ctx.tenant_id, _fresh_profile(ctx.tenant_id), ctx.role, ctx.sub)

@@ -33,7 +33,10 @@ def site(monkeypatch):
             monkeypatch,
             tenant_a=tenant_row(
                 TENANT_A, name="Roma", slug="roma", legalName="Roma AB", orgNumber="556677-8899",
-                contactEmail="info@roma.se", ownerEmail="owner-private@roma.se", ownerPhone="+46700000000",
+                contactEmail="info@roma.se",
+                address={"street": "Drottninggatan 1", "postalCode": "11151", "city": "Stockholm",
+                         "country": "SE"},
+                ownerEmail="owner-private@roma.se", ownerPhone="+46700000000",
                 lastError="boom", stripe={"accountId": "acct_A", "chargesEnabled": True,
                                           "taxRates": {"food": "txr_1"}},
                 branding={"primaryColor": "#AA3300", "logoUrl": "https://cdn.roma.se/logo.png",
@@ -84,6 +87,7 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     assert body["tenant"]["branding"] == {"primaryColor": "#aa3300",
                                           "logoUrl": "https://cdn.roma.se/logo.png", "tagline": "Pizza"}
     assert body["legal"]["legalName"] == "Roma AB" and body["legal"]["orgNumber"] == "556677-8899"
+    assert body["legal"]["address"] == "Drottninggatan 1, 11151 Stockholm"
     assert [loc["name"] for loc in body["locations"]] == ["Hagastan", "Södermalm"]
     assert body["locations"][0]["bookingDurationHours"] == 1.5
     assert body["stripe"] == {"publishableKey": "pk_test_123", "accountId": "acct_A"}
@@ -129,3 +133,13 @@ def test_method_and_path(site):
     module, _ = site
     assert call(module, {"host": "www.roma.se"}, method="POST")["statusCode"] == 405
     assert module.handler({"routeKey": "GET /other"}, None)["statusCode"] == 404
+
+
+@pytest.mark.parametrize("raw, shown", [
+    ("Gatan 1, Stockholm", "Gatan 1, Stockholm"),
+    ({"street": "Main St 1", "city": "Oslo", "country": "NO"}, "Main St 1, Oslo, NO"),
+    ({}, None), (None, None), (42, None),
+])
+def test_address_is_always_one_line_of_text(site, raw, shown):
+    module, _ = site
+    assert module._address(raw) == shown

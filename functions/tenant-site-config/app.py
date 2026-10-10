@@ -94,6 +94,19 @@ def _branding(raw):
     return out
 
 
+def _address(value):
+    """sbs-admin stores {street, postalCode, city, country}; the site shows one line."""
+    if isinstance(value, str):
+        return value.strip()[:300] or None
+    if not isinstance(value, dict):
+        return None
+    street = str(value.get("street") or "").strip()
+    town = " ".join(str(value.get(k) or "").strip() for k in ("postalCode", "city")).strip()
+    country = str(value.get("country") or "").strip()
+    parts = [street, town] + ([country] if country and country.upper() != "SE" else [])
+    return ", ".join(p for p in parts if p)[:300] or None
+
+
 def _number(value):
     try:
         number = float(value)
@@ -156,7 +169,7 @@ def _site_config(params):
             "orgNumber": row.get("orgNumber"),
             "contactEmail": row.get("contactEmail") or row.get("replyToEmail"),
             "contactPhone": row.get("contactPhone"),
-            "address": row.get("address"),
+            "address": _address(row.get("address")),
         },
         "locations": [_public_location(r) for r in locations],
         "stripe": {

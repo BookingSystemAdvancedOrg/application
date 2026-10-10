@@ -56,6 +56,8 @@ tags:
     description: Authenticated direct-upload capabilities for menu images.
   - name: Account
     description: The signed-in restaurant's own account, plan and Stripe onboarding.
+  - name: Reservations
+    description: Guest table bookings, the guest manage link, and staff booking management.
 
 paths:
   /auth/login:
@@ -2612,6 +2614,332 @@ paths:
         '503':
           $ref: '#/components/responses/AccountServiceUnavailable'
 
+  /locations/{locationId}/reservations:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Reservations
+      summary: Book a table (guest)
+      operationId: createReservation
+      description: |
+        Public. The guest picks a date, a `startTime` and one or more of the
+        tables listed as free by `GET /locations/{locationId}/availability`,
+        plus the party size. Validated with the same availability engine and
+        committed atomically with per-table locks: if a table was taken
+        meanwhile the answer is 409 `table_taken`. Returns a one-time
+        `manageToken` (the guest's link to view or cancel the booking; only
+        its hash is stored). Tenants without the `reservations` feature or
+        inactive tenants answer 404.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationCreateRequest'
+            example:
+              date: '2026-09-20'
+              startTime: '18:00'
+              tableIds: [table-b]
+              partySize: 3
+              name: Anna Svensson
+              email: anna@example.se
+              phone: '+46701234567'
+              acceptTerms: true
+      responses:
+        '201':
+          description: Booked.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestReservationCreated'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+    get:
+      tags:
+        - Reservations
+      summary: A day's bookings (staff)
+      operationId: listReservations
+      description: Every booking of the location on `date`, all statuses, sorted by start time.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: The day's bookings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationList'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/manual:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Reservations
+      summary: Book a table for a guest (staff)
+      operationId: createManualReservation
+      description: |
+        Phone bookings and walk-ins. Email and phone are optional; a walk-in
+        (`source: walk_in`) may take the slot that is already running.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualReservationRequest'
+      responses:
+        '201':
+          description: Booked.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+    get:
+      tags:
+        - Reservations
+      summary: One booking with its history (staff)
+      operationId: getReservation
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+    patch:
+      tags:
+        - Reservations
+      summary: Edit or move a booking (staff)
+      operationId: updateReservation
+      description: |
+        Guest details, notes, party size, and/or a move to another `date`,
+        `startTime` or `tableIds`. A move is re-validated against
+        availability (ignoring the booking's own holds) and committed
+        atomically; a taken table answers 409 `table_taken`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationUpdateRequest'
+      responses:
+        '200':
+          description: The updated booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags:
+        - Reservations
+      summary: Change a booking's status (staff)
+      operationId: setReservationStatus
+      description: |
+        `arrived` (from 3 h before the start; also from `no_show` when the
+        guest came late), `reserved` (undo an arrival before the end),
+        `no_show` (after start + the location's grace period; frees the
+        tables), `cancelled` (restaurant cancels; frees the tables). A
+        transition that isn't allowed answers 409 with a code such as
+        `too_early`, `grace_period_not_over`, `not_cancellable`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationStatusRequest'
+      responses:
+        '200':
+          description: The updated booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/guest:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+      - $ref: '#/components/parameters/ManageToken'
+    get:
+      tags:
+        - Reservations
+      summary: The guest's own booking (manage link)
+      operationId: getGuestReservation
+      description: |
+        Public, with the `X-Manage-Token` from the booking confirmation. A
+        wrong or missing token answers 404, exactly like an unknown booking.
+        No email/phone in the response.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestReservation'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+      - $ref: '#/components/parameters/ManageToken'
+    post:
+      tags:
+        - Reservations
+      summary: The guest cancels (manage link)
+      operationId: cancelGuestReservation
+      description: |
+        Public, with the `X-Manage-Token`. Allowed until the booking starts
+        (409 `already_started` after); frees the tables. Cancelling again
+        answers 200 with the booking as it is.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The cancelled booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestReservation'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2712,6 +3040,20 @@ components:
         pattern: '.*\S.*'
       example: 9befdbd3-45ba-4240-965c-a01b8c981fd3
 
+    ReservationId:
+      name: reservationId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{32}$'
+    ManageToken:
+      name: X-Manage-Token
+      in: header
+      required: true
+      description: The guest's manage token from the booking confirmation.
+      schema:
+        type: string
   headers:
     CacheControlNoStore:
       description: Prevents storage of authentication, PII, or staff data.
@@ -2721,6 +3063,268 @@ components:
           - no-store
 
   schemas:
+    ReservationStatus:
+      type: string
+      enum: [pending, reserved, arrived, no_show, cancelled_no_charge, cancelled_by_restaurant,
+             cancelled_charged, cancelled_charge_failed, no_show_charged, no_show_charge_failed]
+
+    ReservationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [date, startTime, tableIds, partySize, name, email, phone, acceptTerms]
+      properties:
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        tableIds:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: string
+        partySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+        name:
+          type: string
+          maxLength: 100
+        email:
+          type: string
+          maxLength: 254
+        phone:
+          type: string
+          description: E.164, or a Swedish national number (070..., 08...).
+        notes:
+          type: string
+          maxLength: 500
+        language:
+          type: string
+          enum: [sv, en]
+        marketingOptIn:
+          type: boolean
+        acceptTerms:
+          type: boolean
+          enum: [true]
+
+    ManualReservationRequest:
+      type: object
+      additionalProperties: false
+      required: [date, startTime, tableIds, partySize, name]
+      properties:
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+        tableIds:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            type: string
+        partySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+        language:
+          type: string
+          enum: [sv, en]
+        source:
+          type: string
+          enum: [phone, walk_in, staff]
+
+    ReservationUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+        tableIds:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            type: string
+        partySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        language:
+          type: string
+          enum: [sv, en]
+
+    ReservationStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [arrived, reserved, no_show, cancelled]
+        reason:
+          type: string
+          maxLength: 300
+
+    Reservation:
+      type: object
+      description: Staff view of a booking (includes guest contact details and history).
+      properties:
+        reservationId:
+          type: string
+        locationId:
+          type: string
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+        endTime:
+          type: string
+        bookedFor:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        tableIds:
+          type: array
+          items:
+            type: string
+        seats:
+          type: integer
+        partySize:
+          type: integer
+        layoutVersion:
+          type: integer
+          nullable: true
+        customerName:
+          type: string
+        customerEmail:
+          type: string
+        customerPhone:
+          type: string
+        notes:
+          type: string
+        language:
+          type: string
+        marketingOptIn:
+          type: boolean
+        source:
+          type: string
+          enum: [online, phone, walk_in, staff]
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+        updatedAt:
+          type: string
+        updatedBy:
+          type: string
+        history:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ReservationList:
+      type: object
+      required: [locationId, date, items]
+      properties:
+        locationId:
+          type: string
+        date:
+          type: string
+          format: date
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+
+    GuestReservation:
+      type: object
+      required: [reservationId, status, date, startTime, endTime, cancellable]
+      properties:
+        reservationId:
+          type: string
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+        endTime:
+          type: string
+        timezone:
+          type: string
+        partySize:
+          type: integer
+        tableIds:
+          type: array
+          items:
+            type: string
+        customerName:
+          type: string
+        cancellable:
+          type: boolean
+        location:
+          type: object
+          properties:
+            locationId:
+              type: string
+            name:
+              type: string
+            address:
+              type: string
+            phoneNumber:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+
+    GuestReservationCreated:
+      allOf:
+        - $ref: '#/components/schemas/GuestReservation'
+        - type: object
+          required: [manageToken]
+          properties:
+            manageToken:
+              type: string
+              description: Shown once - the guest's link to view or cancel the booking.
+
     Tenant:
       type: object
       additionalProperties: false
@@ -5187,6 +5791,42 @@ components:
               $ref: '#/components/schemas/MenuImageContentType'
 
   responses:
+    ReservationNotFound:
+      description: Unknown location/booking, another tenant's, a wrong manage token, or reservations not available.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: not found
+    ReservationConflict:
+      description: |
+        `table_taken` (pick another table/time), `availability_changed`,
+        `changed_retry`, or a status-transition code (`too_early`,
+        `grace_period_not_over`, `not_cancellable`, `already_started`, ...).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: table_taken
+    ReservationServiceUnavailable:
+      description: A reservation dependency is unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: reservation service unavailable
     AuthSuccess:
       description: Authenticated successfully or another Cognito challenge is required.
       headers:

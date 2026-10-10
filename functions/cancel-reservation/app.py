@@ -1,51 +1,95 @@
 """cancel-reservation
 
 TRIGGER:
-    API Gateway -- POST /reservations/{reservationId}/cancel -- Auth: NONE
+    API Gateway -- POST /locations/{locationId}/reservations/{reservationId}/cancel
+    Auth: NONE, header X-Manage-Token (the guest's manage link)
 
 PURPOSE:
-    Customer-facing cancellation (no login - reached via a link, e.g. from a
-    confirmation email). Releases the Slot Occupancy hold and transitions the
-    reservation to a terminal cancelled_* status.
+    A guest cancels their own booking before it starts. The tables are freed
+    in the same transaction (holds deleted, table locks bumped), the booking
+    keeps its row with status "cancelled_no_charge" and a history entry.
+    Cancelling twice is answered with the booking as it is (idempotent).
+
+    Card guarantee (M4): a cancellation inside the location's cutoff charges
+    the late-cancellation fee instead; until then cancelling is always free.
+
+    Multi-tenant: the location decides the tenant; a wrong token, another
+    location's booking or an unknown id all answer 404.
 
 ENV_VARS:
-    ENVIRONMENT -- "dev" or "prod"
-    LOCATION_TABLE_NAME -- Read the cancellation policy/cutoff window to decide which cancelled_* status applies
-    SLOT_OCCUPANCY_TABLE_NAME -- Release the held slot
-    RESERVATION_TABLE_NAME -- Update reservation status
+    ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
+    SLOT_OCCUPANCY_TABLE_NAME, RESERVATION_TABLE_NAME
+    STRIPE_SECRET_ARN (M4)
 
-AWS RESOURCE ACCESS:
-    Read-only on Location; full dynamodb:* on Slot Occupancy and Reservation.
-
-NOTES:
-    KNOWN GAP: no Stripe/Scheduler permissions and no Payment Delinquency
-    access. If a late cancellation is meant to trigger an actual charge
-    (cancelled_charged / cancelled_charge_failed), that cannot happen inside
-    this function as currently provisioned - confirm the intended design with
-    the infra owner before implementing anything beyond cancelled_no_charge.
-
-Full details: docs/LAMBDA_REFERENCE.md
+Full details: docs/RESERVATIONS.md
 """
 
-import os
-from shared.responses import error_response, json_response
+from botocore.exceptions import BotoCoreError, ClientError
 
-ENVIRONMENT = os.environ["ENVIRONMENT"]
-LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
-SLOT_OCCUPANCY_TABLE_NAME = os.environ["SLOT_OCCUPANCY_TABLE_NAME"]
-RESERVATION_TABLE_NAME = os.environ["RESERVATION_TABLE_NAME"]
+from shared import http, tenant
+from shared import reservations as r
+
+_PATH = "/locations/{locationId}/reservations/{reservationId}/cancel"
+
+
+def _cancel(event):
+    location_id = http.path_id(event, "locationId")
+    ctx = tenant.for_public(location_id, feature="reservations")
+    http.body(event, allowed=set(), required=False)
+    item = r.load(location_id, http.path_id(event, "reservationId"))
+    if not r.token_matches(item, http.header(event, "x-manage-token")):
+        raise r.NotFound
+    now = r.now_utc()
+    if item["status"] in (r.CANCELLED_BY_GUEST, r.CANCELLED_BY_RESTAURANT):
+        return http.respond(200, r.guest_view(item, ctx.location, now=now))
+    if item["status"] not in r.ACTIVE:
+        raise r.InvalidState("not_cancellable")
+    if r.parse_iso(item["bookedFor"]) <= now:
+        raise r.InvalidState("already_started")
+
+    entry = r.history_entry("cancelled", "guest", now, status=r.CANCELLED_BY_GUEST)
+    versions = r.read_lock_versions(location_id, item["date"], item.get("tableIds") or [])
+    r.transact(
+        r.lock_updates(location_id, item["date"], versions)
+        + r.release_items(item)
+        + [{
+            "Update": {
+                "TableName": r.reservation_table(),
+                "Key": r.serialize(r.reservation_key(location_id, item["date"], item["reservationId"])),
+                "UpdateExpression": "SET #s = :new, updatedAt = :now, updatedBy = :by, "
+                                    "cancelledAt = :now, history = list_append(if_not_exists(history, :empty), :entry), "
+                                    "version = if_not_exists(version, :zero) + :one",
+                "ConditionExpression": "#s = :old",
+                "ExpressionAttributeNames": {"#s": "status"},
+                "ExpressionAttributeValues": r.serialize({
+                    ":new": r.CANCELLED_BY_GUEST, ":old": item["status"], ":now": r.iso(now),
+                    ":by": "guest", ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
+                }),
+            }
+        }]
+    )
+    item = {**item, "status": r.CANCELLED_BY_GUEST}
+    return http.respond(200, r.guest_view(item, ctx.location, now=now))
 
 
 def handler(event, context):
-    path_params = event.get("pathParameters") or {}
-    query_params = event.get("queryStringParameters") or {}
-
-    # TODO: implement cancel-reservation.
-    # Public route - tenant rule (shared/tenant.py): resolve the restaurant
-    # from the location with tenant.for_public(locationId, feature=
-    # "reservations"); inactive tenants answer 404. Store tenantId on every
-    # reservation written, and charge on ctx.stripe_account() (Stripe-Account
-    # header) - never on the platform account.
-    # See the module docstring above (and docs/LAMBDA_REFERENCE.md).
-
-    return error_response(501, "not implemented")
+    method, path = http.route(event)
+    if path != _PATH:
+        return http.error(404, "not found")
+    if method != "POST":
+        return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
+    try:
+        return _cancel(event)
+    except tenant.TenantError as exc:
+        return exc.response()
+    except r.NotFound:
+        return http.error(404, "not found")
+    except r.InvalidState as exc:
+        return http.error(409, exc.code)
+    except r.Conflict:
+        # The booking or a table lock changed meanwhile - ask to retry.
+        return http.error(409, "changed_retry")
+    except ValueError as exc:
+        return http.error(400, str(exc))
+    except (BotoCoreError, ClientError):
+        return http.error(503, "reservation service unavailable")

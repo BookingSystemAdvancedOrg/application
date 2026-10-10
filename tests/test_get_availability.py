@@ -1175,7 +1175,7 @@ def test_location_and_snapshot_reads_are_strongly_consistent(
     successful_occupancy_boundary(app, monkeypatch)
     location = Mock(wraps=tables["location"])
     snapshot = Mock(wraps=tables["snapshot"])
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         if name == LOCATION_TABLE_NAME:
@@ -1184,7 +1184,7 @@ def test_location_and_snapshot_reads_are_strongly_consistent(
             return snapshot
         return real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -1233,12 +1233,12 @@ def test_closed_day_skips_layout_read(app_and_tables, monkeypatch):
     tables["location"].put_item(Item=location_item(hours=hours))
     captured = successful_occupancy_boundary(app, monkeypatch)
     snapshot = Mock()
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -1255,12 +1255,12 @@ def test_past_date_is_rejected_before_layout_read(
     app, tables = app_and_tables
     tables["location"].put_item(Item=location_item())
     snapshot = Mock()
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(
         make_event(query={"date": "2026-09-07"}),
@@ -1321,7 +1321,7 @@ def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
     tables["location"].put_item(Item=location_item())
     location = Mock(wraps=tables["location"])
     snapshot = Mock()
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         if name == LOCATION_TABLE_NAME:
@@ -1330,7 +1330,7 @@ def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
             return snapshot
         return real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(
         make_event(query={"date": "2026-09-30"}),
@@ -1616,7 +1616,7 @@ def test_active_layout_read_retries_once_when_version_changes(
         {"Item": snapshot_two},
         {"Item": state_two},
     ]
-    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
 
     tables = app._active_tables(LOCATION_ID, NOW)
 
@@ -1643,7 +1643,7 @@ def test_active_layout_read_rejects_persistent_version_race(
         {"Item": snapshot_item("2")},
         {"Item": state_one},
     ]
-    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
 
     with pytest.raises(
         app._AvailabilityConflict,
@@ -1826,7 +1826,7 @@ def test_layout_read_retries_when_pending_identity_changes(
         },
         {"Item": state_two},
     ]
-    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
     slot = {
         "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
         "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
@@ -1880,7 +1880,7 @@ def test_layout_read_rejects_persistent_pending_identity_race(
         {"Item": target_one},
         {"Item": state_two},
     ]
-    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
     slot = {
         "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
         "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
@@ -1960,7 +1960,7 @@ def test_invalid_environment_with_pending_state_returns_503(
     state = pending_activation_state(app)
     tables["location"].put_item(Item=location_item())
     tables["snapshot"].put_item(Item=state)
-    monkeypatch.setattr(app, "ENVIRONMENT", "staging")
+    monkeypatch.setenv("ENVIRONMENT", "staging")
 
     response = app.handler(make_event(), None)
 
@@ -2059,12 +2059,12 @@ def test_snapshot_dependency_failure_is_sanitized(
         },
         "GetItem",
     )
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2100,7 +2100,7 @@ def test_location_dependency_failure_is_sanitized(
     tables["location"].put_item(Item=location_item())  # the tenant check finds it
     location = Mock()
     location.get_item.side_effect = aws_error
-    monkeypatch.setattr(app, "table", lambda _: location)
+    monkeypatch.setattr(app.engine, "table", lambda _: location)
 
     response = app.handler(make_event(), None)
 
@@ -2173,14 +2173,14 @@ def test_occupancy_is_filtered_against_each_slots_layout(
         )
     )
     occupancy = Mock(wraps=tables["occupancy"])
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         if name == OCCUPANCY_TABLE_NAME:
             return occupancy
         return real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2319,12 +2319,12 @@ def test_occupancy_query_is_single_and_strongly_consistent(
     app, tables = app_and_tables
     put_stage_two_records(tables)
     occupancy = Mock(wraps=tables["occupancy"])
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2349,7 +2349,7 @@ def test_occupancy_query_follows_all_pages(
         {"Items": [first], "LastEvaluatedKey": last_key},
         {"Items": [second]},
     ]
-    monkeypatch.setattr(app, "table", lambda _: occupancy)
+    monkeypatch.setattr(app.engine, "table", lambda _: occupancy)
 
     items = app._query_occupancies(LOCATION_ID, "2026-09-20")
 
@@ -2370,12 +2370,12 @@ def test_no_slots_skips_occupancy_query(app_and_tables, monkeypatch):
     hours["sunday"] = []
     tables["location"].put_item(Item=location_item(hours=hours))
     occupancy = Mock()
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2402,12 +2402,12 @@ def test_no_active_tables_skips_occupancy_query(
         snapshot=snapshot_item(elements=[wall_element()]),
     )
     occupancy = Mock()
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2476,12 +2476,12 @@ def test_malformed_occupancy_response_returns_503(
     put_stage_two_records(tables)
     occupancy = Mock()
     occupancy.query.return_value = query_result
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 
@@ -2516,12 +2516,12 @@ def test_occupancy_dependency_failure_is_sanitized(
     put_stage_two_records(tables)
     occupancy = Mock()
     occupancy.query.side_effect = aws_error
-    real_table = app.table
+    real_table = app.engine.table
 
     def table_factory(name):
         return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
 
-    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app.engine, "table", table_factory)
 
     response = app.handler(make_event(), None)
 

@@ -50,6 +50,20 @@ EXPECTED_OPERATIONS = {
     "/users/{cognitoSub}/group": frozenset({"put"}),
     "/tenant": frozenset({"get", "patch"}),
     "/tenant/stripe/account-link": frozenset({"post"}),
+    "/locations/{locationId}/reservations": frozenset({"get", "post"}),
+    "/locations/{locationId}/reservations/manual": frozenset({"post"}),
+    "/locations/{locationId}/reservations/{reservationId}": frozenset(
+        {"get", "patch"}
+    ),
+    "/locations/{locationId}/reservations/{reservationId}/status": frozenset(
+        {"post"}
+    ),
+    "/locations/{locationId}/reservations/{reservationId}/guest": frozenset(
+        {"get"}
+    ),
+    "/locations/{locationId}/reservations/{reservationId}/cancel": frozenset(
+        {"post"}
+    ),
 }
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -60,6 +74,9 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/availability", "get"),
         ("/locations/{locationId}/menu", "get"),
         ("/locations/{locationId}/layout/active", "get"),
+        ("/locations/{locationId}/reservations", "post"),
+        ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
+        ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]
@@ -90,6 +107,11 @@ STAFF_OPERATIONS = frozenset(
         ),
         ("/locations/{locationId}/layout/versions", "get"),
         ("/tenant", "get"),
+        ("/locations/{locationId}/reservations", "get"),
+        ("/locations/{locationId}/reservations/manual", "post"),
+        ("/locations/{locationId}/reservations/{reservationId}", "get"),
+        ("/locations/{locationId}/reservations/{reservationId}", "patch"),
+        ("/locations/{locationId}/reservations/{reservationId}/status", "post"),
     }
 )
 

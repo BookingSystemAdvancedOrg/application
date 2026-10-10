@@ -1,2 +1,3 @@
 # boto3 is already present in the public.ecr.aws/lambda/python base image.
 # Add this function's third-party dependencies here.
+tzdata

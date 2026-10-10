@@ -25,11 +25,8 @@ Manual blocks (block-table) don't take the lock; that rare race is
 documented in docs/RESERVATIONS.md.
 """
 
-import hashlib
-import hmac
 import os
 import re
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -121,19 +118,39 @@ def new_id():
     return uuid.uuid4().hex
 
 
-def new_manage_token():
-    return secrets.token_urlsafe(32)
+# --- guest notices --------------------------------------------------------------
+#
+# A write that the guest should hear about sets ``notice`` on the booking:
+# {"id": <new uuid>, "type": <one of NOTICE_TYPES>, "at": <iso>}. The
+# Reservation table's stream delivers records whose NewImage has a notice
+# to the notification function, which sends only when the id is new
+# (OldImage.notice.id differs) - so unrelated later writes never resend.
+
+NOTICE_CONFIRMED = "confirmed"
+NOTICE_CHANGED = "changed"
+NOTICE_CANCELLED_BY_GUEST = "cancelled_by_guest"
+NOTICE_CANCELLED_BY_RESTAURANT = "cancelled_by_restaurant"
+NOTICE_REMINDER = "reminder"
+NOTICE_TYPES = frozenset({NOTICE_CONFIRMED, NOTICE_CHANGED, NOTICE_CANCELLED_BY_GUEST,
+                          NOTICE_CANCELLED_BY_RESTAURANT, NOTICE_REMINDER})
 
 
-def hash_token(token):
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def notice(kind, at):
+    if kind not in NOTICE_TYPES:
+        raise ValueError(f"unknown notice type {kind}")
+    return {"id": new_id(), "type": kind, "at": iso(at)}
 
 
-def token_matches(item, token):
-    stored = item.get("manageTokenHash")
-    if not isinstance(stored, str) or not isinstance(token, str) or not token:
-        return False
-    return hmac.compare_digest(stored, hash_token(token))
+def can_be_notified(item):
+    return bool(item.get("customerEmail") or item.get("customerPhone"))
+
+
+def notify_flag(data):
+    """Staff actions notify the guest unless the body says notifyGuest=false."""
+    value = data.get("notifyGuest", True)
+    if not isinstance(value, bool):
+        raise ValueError("notifyGuest must be true or false")
+    return value
 
 
 def retention_ttl(ends_at):

@@ -2544,8 +2544,8 @@ paths:
       operationId: updateTenant
       description: |
         Owner only. Only `senderName` (1-11 letters, digits or spaces - the
-        email From name and SMS sender), `replyToEmail` and `branding` may
-        be changed; `null` or `""` removes a value (the platform default is
+        SMS sender), `replyToEmail`, `branding` and `notifications` may be
+        changed; `null` or `""` removes a value (the platform default is
         used). Everything else is managed by operators.
       security:
         - bearerAuth: []
@@ -2628,8 +2628,9 @@ paths:
         plus the party size. Validated with the same availability engine and
         committed atomically with per-table locks: if a table was taken
         meanwhile the answer is 409 `table_taken`. Returns a one-time
-        `manageToken` (the guest's link to view or cancel the booking; only
-        its hash is stored). Tenants without the `reservations` feature or
+        `manageToken` (the guest's link to view or cancel the booking; an
+        HMAC of the booking with a platform key - never stored, rebuilt for
+        the confirmation and reminder messages). Tenants without the `reservations` feature or
         inactive tenants answer 404.
       security: []
       x-required-groups: []
@@ -3273,6 +3274,9 @@ components:
         source:
           type: string
           enum: [phone, walk_in, staff]
+        notifyGuest:
+          type: boolean
+          description: Send the guest a confirmation (email, and SMS when enabled). Default true, false for walk_in.
 
     ReservationUpdateRequest:
       type: object
@@ -3308,6 +3312,9 @@ components:
         language:
           type: string
           enum: [sv, en]
+        notifyGuest:
+          type: boolean
+          description: Tell the guest about a new date/time (default true). Table-only changes never notify.
 
     ReservationStatusRequest:
       type: object
@@ -3320,6 +3327,10 @@ components:
         reason:
           type: string
           maxLength: 300
+          description: Kept in the booking history; never sent to the guest.
+        notifyGuest:
+          type: boolean
+          description: For `cancelled` - send the guest a cancellation notice (default true).
 
     Reservation:
       type: object
@@ -3538,6 +3549,8 @@ components:
         branding:
           type: object
           additionalProperties: true
+        notifications:
+          $ref: '#/components/schemas/TenantNotifications'
         role:
           type: string
           enum: [owner_user, staff_user]
@@ -3577,6 +3590,37 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+        notifications:
+          type: object
+          additionalProperties: false
+          description: Partial update, merged over the current settings.
+          properties:
+            sms:
+              type: boolean
+            staffEmails:
+              type: boolean
+            reminderHours:
+              type: integer
+              enum: [0, 2, 3, 6, 12, 24, 48]
+
+    TenantNotifications:
+      type: object
+      additionalProperties: false
+      required: [sms, staffEmails, reminderHours]
+      description: |
+        Guest and restaurant messages for table bookings. Guests always get
+        email (confirmation with manage link, change and cancellation
+        notices); `sms` adds SMS (sender = senderName); `reminderHours`
+        before the visit a reminder is sent (0 = off); `staffEmails` emails
+        the location about new online bookings and guest cancellations.
+      properties:
+        sms:
+          type: boolean
+        staffEmails:
+          type: boolean
+        reminderHours:
+          type: integer
+          enum: [0, 2, 3, 6, 12, 24, 48]
 
     StripeAccountLink:
       type: object

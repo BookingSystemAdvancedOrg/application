@@ -18,15 +18,19 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    SLOT_OCCUPANCY_TABLE_NAME, RESERVATION_TABLE_NAME
+    SLOT_OCCUPANCY_TABLE_NAME, RESERVATION_TABLE_NAME,
+    RESERVATION_LINK_KEY_SECRET_ARN (verifies the manage token)
     STRIPE_SECRET_ARN (M4)
+
+    The update carries a "cancelled_by_guest" notice: the guest gets a
+    cancellation receipt and the restaurant an email (notification).
 
 Full details: docs/RESERVATIONS.md
 """
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, tenant
+from shared import http, manage_link, tenant
 from shared import reservations as r
 
 _PATH = "/locations/{locationId}/reservations/{reservationId}/cancel"
@@ -37,7 +41,7 @@ def _cancel(event):
     ctx = tenant.for_public(location_id, feature="reservations")
     http.body(event, allowed=set(), required=False)
     item = r.load(location_id, http.path_id(event, "reservationId"))
-    if not r.token_matches(item, http.header(event, "x-manage-token")):
+    if not manage_link.matches(item, http.header(event, "x-manage-token")):
         raise r.NotFound
     now = r.now_utc()
     if item["status"] in (r.CANCELLED_BY_GUEST, r.CANCELLED_BY_RESTAURANT):
@@ -48,6 +52,7 @@ def _cancel(event):
         raise r.InvalidState("already_started")
 
     entry = r.history_entry("cancelled", "guest", now, status=r.CANCELLED_BY_GUEST)
+    notice = r.notice(r.NOTICE_CANCELLED_BY_GUEST, now)
     versions = r.read_lock_versions(location_id, item["date"], item.get("tableIds") or [])
     r.transact(
         r.lock_updates(location_id, item["date"], versions)
@@ -57,13 +62,13 @@ def _cancel(event):
                 "TableName": r.reservation_table(),
                 "Key": r.serialize(r.reservation_key(location_id, item["date"], item["reservationId"])),
                 "UpdateExpression": "SET #s = :new, updatedAt = :now, updatedBy = :by, "
-                                    "cancelledAt = :now, history = list_append(if_not_exists(history, :empty), :entry), "
+                                    "cancelledAt = :now, notice = :notice, history = list_append(if_not_exists(history, :empty), :entry), "
                                     "version = if_not_exists(version, :zero) + :one",
                 "ConditionExpression": "#s = :old",
                 "ExpressionAttributeNames": {"#s": "status"},
                 "ExpressionAttributeValues": r.serialize({
                     ":new": r.CANCELLED_BY_GUEST, ":old": item["status"], ":now": r.iso(now),
-                    ":by": "guest", ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
+                    ":by": "guest", ":notice": notice, ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
                 }),
             }
         }]
@@ -91,5 +96,5 @@ def handler(event, context):
         return http.error(409, "changed_retry")
     except ValueError as exc:
         return http.error(400, str(exc))
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):
         return http.error(503, "reservation service unavailable")

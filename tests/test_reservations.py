@@ -14,6 +14,7 @@ import pytest
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
+from shared import manage_link
 from shared import reservations as shared_r
 from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_A2, LOC_B, REGION, STAFF_A_SUB, TENANT_A, TENANT_B,
@@ -109,6 +110,10 @@ def env(monkeypatch):
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
+        manage_link.reset_cache()
+        secret = boto3.client("secretsmanager", region_name=REGION).create_secret(
+            Name="test/reservations/link-signing-key", SecretString="k" * 64)
+        monkeypatch.setenv("RESERVATION_LINK_KEY_SECRET_ARN", secret["ARN"])
         resource = boto3.resource("dynamodb", region_name=REGION)
         for name in (OCCUPANCY_TABLE, SNAPSHOT_TABLE, RESERVATION_TABLE):
             _table(resource, name)
@@ -135,6 +140,7 @@ def env(monkeypatch):
         shared_dynamo._resource = None
         shared_dynamo._client = None
         shared_tenant.reset_caches()
+        manage_link.reset_cache()
 
 
 # --- event helpers ---------------------------------------------------------------
@@ -234,7 +240,11 @@ def test_guest_books_a_table_and_it_disappears_from_availability(env):
         Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{DAY}#{body['reservationId']}"})["Item"]
     assert stored["customerEmail"] == "anna@example.se" and stored["customerPhone"] == "+46701234567"
     assert stored["tenantId"] == TENANT_A and stored["bookedFor"] == "2026-09-20T16:00:00Z"
-    assert stored["manageTokenHash"] != body["manageToken"] and "manageToken" not in stored
+    # The token is never stored - it is rebuilt from the booking with the key.
+    assert "manageToken" not in stored and "manageTokenHash" not in stored
+    assert body["manageToken"] not in json.dumps(stored, default=str)
+    assert manage_link.token_for(stored) == body["manageToken"]
+    assert stored["notice"]["type"] == "confirmed" and len(stored["notice"]["id"]) == 32
     assert stored["termsAcceptedAt"] and stored["ttl"] > int(datetime(2027, 9, 1).timestamp())
 
 
@@ -584,3 +594,119 @@ def test_same_day_move_keeps_the_pointer_expiry_in_step(env):
     item = tbl.get_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{DAY}#{rid}"})["Item"]
     pointer = tbl.get_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RID#{rid}"})["Item"]
     assert pointer["ttl"] == item["ttl"]
+
+
+# --- signed manage links and guest notices (M3) -------------------------------------
+
+def stored_item(env, rid, day=DAY, location=LOC_A):
+    return env["res"].Table(RESERVATION_TABLE).get_item(
+        Key={"PK": f"LOCATION#{location}", "SK": f"RESERVATION#{day}#{rid}"})["Item"]
+
+
+def test_link_from_before_signed_tokens_still_works(env):
+    created = body_of(guest_booking(env))
+    rid = created["reservationId"]
+    table = env["res"].Table(RESERVATION_TABLE)
+    table.update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{DAY}#{rid}"},
+                      UpdateExpression="SET manageTokenHash = :h",
+                      ExpressionAttributeValues={":h": __import__("hashlib").sha256(b"old-random").hexdigest()})
+
+    assert guest_get(env, rid, "old-random")["statusCode"] == 200
+    assert guest_get(env, rid, created["manageToken"])["statusCode"] == 404
+
+
+def test_bumping_link_version_revokes_old_links(env):
+    created = body_of(guest_booking(env))
+    rid = created["reservationId"]
+    env["res"].Table(RESERVATION_TABLE).update_item(
+        Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{DAY}#{rid}"},
+        UpdateExpression="SET linkVersion = :v", ExpressionAttributeValues={":v": 2})
+    assert guest_get(env, rid, created["manageToken"])["statusCode"] == 404
+    assert guest_get(env, rid, manage_link.token_for(stored_item(env, rid)))["statusCode"] == 200
+
+
+def test_token_for_another_booking_or_tenant_never_matches(env):
+    a = body_of(guest_booking(env, tables=("table-a",), party=2))
+    b = body_of(guest_booking(env, tables=("table-c",), party=2))
+    assert a["manageToken"] != b["manageToken"]
+    assert guest_get(env, a["reservationId"], b["manageToken"])["statusCode"] == 404
+    assert guest_cancel(env, a["reservationId"], "x" * 300)["statusCode"] == 404
+
+
+def test_missing_signing_key_fails_the_booking_cleanly(env, monkeypatch):
+    monkeypatch.delenv("RESERVATION_LINK_KEY_SECRET_ARN")
+    manage_link.reset_cache()
+
+    response = guest_booking(env)
+
+    assert response["statusCode"] == 503
+    assert "table-b" in free_tables_at(env, "18:00")  # nothing half-written
+
+
+def test_guest_cancel_sets_a_cancellation_notice(env):
+    created = body_of(guest_booking(env))
+    first = stored_item(env, created["reservationId"])["notice"]
+
+    guest_cancel(env, created["reservationId"], created["manageToken"])
+
+    notice = stored_item(env, created["reservationId"])["notice"]
+    assert notice["type"] == "cancelled_by_guest" and notice["id"] != first["id"]
+
+
+def staff_booking(env, **extra):
+    payload = {"date": DAY, "startTime": "18:00", "tableIds": ["table-b"], "partySize": 2,
+               "name": "Per", "phone": "0701112233", **extra}
+    return env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", body=payload, staff=OWNER_A), None)
+
+
+@pytest.mark.parametrize("extra, notified", [
+    ({}, True),                                  # phone booking: confirmation by SMS
+    ({"notifyGuest": False}, False),
+    ({"source": "walk_in"}, False),              # standing in the restaurant
+    ({"source": "walk_in", "notifyGuest": True}, True),
+    ({"phone": None}, False),                    # nothing to send to
+])
+def test_staff_booking_notice(env, extra, notified):
+    response = staff_booking(env, **extra)
+    assert response["statusCode"] == 201, response
+    assert ("notice" in stored_item(env, body_of(response)["reservationId"])) is notified
+
+
+def test_staff_booking_rejects_a_non_boolean_notify_flag(env):
+    assert staff_booking(env, notifyGuest="yes")["statusCode"] == 400
+
+
+def test_restaurant_cancel_notifies_unless_told_not_to(env):
+    a = body_of(guest_booking(env, tables=("table-a",), party=2))["reservationId"]
+    b = body_of(guest_booking(env, tables=("table-c",), party=2))["reservationId"]
+    before_b = stored_item(env, b)["notice"]["id"]
+    ok = env["m"]["staff"].handler(event(
+        "POST", "/locations/{locationId}/reservations/{reservationId}/status", reservation=a,
+        body={"status": "cancelled", "reason": "Kök stängt"}, staff=OWNER_A), None)
+    quiet = env["m"]["staff"].handler(event(
+        "POST", "/locations/{locationId}/reservations/{reservationId}/status", reservation=b,
+        body={"status": "cancelled", "notifyGuest": False}, staff=OWNER_A), None)
+    assert ok["statusCode"] == 200 and quiet["statusCode"] == 200
+    assert stored_item(env, a)["notice"]["type"] == "cancelled_by_restaurant"
+    assert stored_item(env, b)["notice"]["id"] == before_b  # untouched: no new notice
+
+
+def test_move_to_new_time_notifies_but_table_swap_does_not(env):
+    rid = body_of(guest_booking(env))["reservationId"]
+    confirmed = stored_item(env, rid)["notice"]["id"]
+
+    assert edit(env, rid, {"tableIds": ["table-c"]})["statusCode"] == 200
+    assert "notice" not in stored_item(env, rid)          # one-shot: old notice dropped
+
+    assert edit(env, rid, {"startTime": "20:00"})["statusCode"] == 200
+    moved = stored_item(env, rid)["notice"]
+    assert moved["type"] == "changed" and moved["id"] != confirmed
+
+    assert edit(env, rid, {"date": "2026-09-21", "notifyGuest": False})["statusCode"] == 200
+    assert "notice" not in stored_item(env, rid, day="2026-09-21")  # INSERT carries no stale notice
+
+
+def test_notify_flag_alone_is_not_an_edit(env):
+    rid = body_of(guest_booking(env))["reservationId"]
+    assert edit(env, rid, {"notifyGuest": False})["statusCode"] == 400

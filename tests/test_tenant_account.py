@@ -202,6 +202,11 @@ def test_empty_value_removes_the_field(app):
     ({"branding": {"x": "y" * 5000}}, "branding must be an object of at most 4 KB"),
     ("[]", "request body must be a JSON object"),
     ("{", "request body must be valid JSON"),
+    ({"notifications": "on"}, "notifications must be an object"),
+    ({"notifications": {"email": True}}, "unsupported notifications fields: email"),
+    ({"notifications": {"sms": "yes"}}, "notifications.sms must be true or false"),
+    ({"notifications": {"reminderHours": 5}}, "notifications.reminderHours must be one of 0, 2, 3, 6, 12, 24, 48"),
+    ({"notifications": {"reminderHours": True}}, "notifications.reminderHours must be one of 0, 2, 3, 6, 12, 24, 48"),
 ])
 def test_invalid_edits_are_rejected(app, body, error):
     module, tenants = app
@@ -223,7 +228,7 @@ def test_update_never_asks_for_the_whole_row(app, monkeypatch):
 
     assert spy.update_item.call_args.kwargs["ReturnValues"] == "NONE"
     names = set(spy.update_item.call_args.kwargs["ExpressionAttributeNames"].values())
-    assert names <= {"senderName", "replyToEmail", "branding"}
+    assert names <= {"senderName", "replyToEmail", "branding", "notifications"}
 
 
 @pytest.mark.parametrize(("method", "path"), [("PATCH", "/tenant"),
@@ -345,3 +350,17 @@ def test_account_link_sees_a_stripe_account_saved_a_moment_ago(app, monkeypatch)
                         lambda request, timeout: io.BytesIO(b'{"url": "https://connect.stripe.com/y"}'))
 
     assert module.handler(make_event("POST", "/tenant/stripe/account-link"), None)["statusCode"] == 200
+
+
+def test_notification_settings_default_and_merge(app):
+    module, tenants = app
+    assert body_of(module.handler(make_event(), None))["notifications"] == {
+        "sms": False, "staffEmails": True, "reminderHours": 24}
+
+    first = module.handler(make_event("PATCH", body={"notifications": {"sms": True}}), None)
+    second = module.handler(make_event("PATCH", body={"notifications": {"reminderHours": 2}}), None)
+
+    assert first["statusCode"] == 200 and second["statusCode"] == 200
+    assert body_of(second)["notifications"] == {"sms": True, "staffEmails": True, "reminderHours": 2}
+    row = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]
+    assert row["notifications"] == {"sms": True, "staffEmails": True, "reminderHours": 2}

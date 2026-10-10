@@ -18,9 +18,16 @@ PURPOSE:
     get the same table at overlapping times - the second gets 409
     "table_taken" and picks again.
 
-    Online bookings return a one-time manage token (the guest's link to view
-    or cancel the booking; only its hash is stored). Staff bookings may omit
-    email/phone and may book the slot that is already running (walk-ins).
+    Online bookings return the manage token (the guest's link to view or
+    cancel the booking - an HMAC, never stored; shared/manage_link.py).
+    Staff bookings may omit email/phone and may book the slot that is
+    already running (walk-ins).
+
+    Notifications: the booking is written with a "confirmed" notice, which
+    the Reservation stream turns into the guest's confirmation (email/SMS,
+    with the manage link) and, for online bookings, the restaurant's
+    new-booking email. Staff bookings notify the guest unless
+    notifyGuest=false (walk-ins default to false).
 
     Card guarantee (M4): when the location requires one, the booking is
     created as "pending" and a Stripe SetupIntent is returned; until then
@@ -34,7 +41,8 @@ ENV_VARS:
     ENVIRONMENT, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME, TENANT_TABLE_NAME,
     PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME, SLOT_OCCUPANCY_TABLE_NAME,
     RESERVATION_TABLE_NAME, USER_TABLE_NAME (staff location check),
-    RESERVATION_RETENTION_DAYS (optional, default 395)
+    RESERVATION_RETENTION_DAYS (optional, default 395),
+    RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     PAYMENT_DELINQUENCY_TABLE_NAME, STRIPE_SECRET_ARN (M4)
 
 Full details: docs/RESERVATIONS.md
@@ -42,8 +50,7 @@ Full details: docs/RESERVATIONS.md
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, tenant
-from shared import http
+from shared import availability, http, manage_link, tenant
 from shared import reservations as r
 
 _ONLINE = "/locations/{locationId}/reservations"
@@ -52,7 +59,7 @@ _ONLINE_FIELDS = {
     "date", "startTime", "tableIds", "partySize", "name", "email", "phone",
     "notes", "language", "marketingOptIn", "acceptTerms",
 }
-_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn"}) | {"source"}
+_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn"}) | {"source", "notifyGuest"}
 
 
 def _max_online_party(location):
@@ -80,7 +87,9 @@ def _create(event, *, staff):
         source = data.get("source", "phone")
         if source not in r.SOURCES - {"online"}:
             raise ValueError("source must be phone, walk_in or staff")
+        notify = r.notify_flag({"notifyGuest": data.get("notifyGuest", source != "walk_in")})
     else:
+        notify = True
         source = "online"
         if data.get("acceptTerms") is not True:
             raise ValueError("acceptTerms must be true")
@@ -103,7 +112,6 @@ def _create(event, *, staff):
     )
 
     reservation_id = r.new_id()
-    manage_token = r.new_manage_token() if guest["customerEmail"] else None
     starts_at, ends_at = slot["startUtc"], slot["endUtc"]
     actor = ctx.sub if staff else "guest"
     item = {
@@ -124,7 +132,7 @@ def _create(event, *, staff):
         **{k: v for k, v in guest.items() if v is not None},
         "source": source,
         "status": r.RESERVED,
-        "manageTokenHash": r.hash_token(manage_token) if manage_token else None,
+        "linkVersion": 1,
         "termsAcceptedAt": r.iso(now) if source == "online" else None,
         "createdAt": r.iso(now),
         "createdBy": actor,
@@ -132,6 +140,11 @@ def _create(event, *, staff):
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
+    if notify and r.can_be_notified(item):
+        item["notice"] = r.notice(r.NOTICE_CONFIRMED, now)
+    # Built before the write: a missing signing key fails the request
+    # instead of leaving a booking whose link can't be sent.
+    manage_token = None if staff else manage_link.token_for(item)
     pointer = {
         **r.pointer_key(location_id, reservation_id),
         "reservationId": reservation_id,
@@ -175,5 +188,6 @@ def handler(event, context):
         return http.error(400, str(exc))
     except availability.AvailabilityConflict:
         return http.error(409, "availability_changed")
-    except (BotoCoreError, ClientError, availability.AvailabilityServiceFailure):
+    except (BotoCoreError, ClientError, availability.AvailabilityServiceFailure,
+            manage_link.LinkKeyUnavailable):
         return http.error(503, "reservation service unavailable")

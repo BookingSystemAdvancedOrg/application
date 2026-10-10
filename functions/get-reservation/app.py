@@ -20,14 +20,15 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    RESERVATION_TABLE_NAME, USER_TABLE_NAME (staff location check)
+    RESERVATION_TABLE_NAME, USER_TABLE_NAME (staff location check),
+    RESERVATION_LINK_KEY_SECRET_ARN (guest route: verifies the manage token)
 
 Full details: docs/RESERVATIONS.md
 """
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, tenant
+from shared import http, manage_link, tenant
 from shared import reservations as r
 
 _LIST = "/locations/{locationId}/reservations"
@@ -59,7 +60,7 @@ def _guest(event):
     location_id = http.path_id(event, "locationId")
     ctx = tenant.for_public(location_id, feature="reservations")
     item = r.load(location_id, http.path_id(event, "reservationId"))
-    if not r.token_matches(item, http.header(event, "x-manage-token")):
+    if not manage_link.matches(item, http.header(event, "x-manage-token")):
         raise r.NotFound
     return http.respond(200, r.guest_view(item, ctx.location))
 
@@ -84,5 +85,5 @@ def handler(event, context):
         if path == _GUEST:
             return http.error(404, "not found")
         return http.error(400, str(exc))
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):
         return http.error(503, "reservation service unavailable")

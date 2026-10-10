@@ -12,7 +12,7 @@ PURPOSE:
     work with (GET - owner and staff; staff see only their assigned
     location), the
     few fields an owner may edit themselves (PATCH: senderName,
-    replyToEmail, branding) and a fresh Stripe onboarding link (POST, owner).
+    replyToEmail, branding, notifications) and a fresh Stripe onboarding link (POST, owner).
     Everything else about the tenant is managed by operators in sbs-admin.
 
     Multi-tenant: the tenant is the token's tenant_id claim - there is no
@@ -33,7 +33,7 @@ AWS RESOURCE ACCESS:
     Tenant table GetItem/Query; location table Query on the caller's own
     TENANT# partition / GetItem; user table GetItem of the caller's own
     profile (staff); UpdateItem limited by IAM to senderName,
-    replyToEmail, branding, updatedAt, updatedBy with ReturnValues
+    replyToEmail, branding, notifications, updatedAt, updatedBy with ReturnValues
     NONE/UPDATED_*; GetSecretValue on the platform Stripe key.
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.2
@@ -68,7 +68,10 @@ _ROUTES = {
     ("PATCH", "/tenant"),
     ("POST", "/tenant/stripe/account-link"),
 }
-_EDITABLE = ("senderName", "replyToEmail", "branding")
+_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications")
+# Guest/restaurant messages (functions/notification, reservation-reminders).
+_REMINDER_HOURS = (0, 2, 3, 6, 12, 24, 48)
+NOTIFICATION_DEFAULTS = {"sms": False, "staffEmails": True, "reminderHours": 24}
 # SMS sender ids: max 11 characters, letters/digits/space only.
 _SENDER_NAME = re.compile(r"[A-Za-z0-9 ]{1,11}")
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -192,6 +195,7 @@ def _public_tenant(ctx, row):
         "senderName": row.get("senderName"),
         "replyToEmail": row.get("replyToEmail"),
         "branding": row.get("branding") or {},
+        "notifications": _notifications(row.get("notifications")),
         "role": role,
         "locations": _locations(ctx),
     }
@@ -241,7 +245,44 @@ def _storable(value, depth=0):
     return value is None or isinstance(value, (str, bool, int))
 
 
-def _validated_edit(body):
+def _notifications(raw):
+    """Stored settings merged over the defaults (what the senders use)."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = dict(NOTIFICATION_DEFAULTS)
+    if isinstance(raw.get("sms"), bool):
+        out["sms"] = raw["sms"]
+    if isinstance(raw.get("staffEmails"), bool):
+        out["staffEmails"] = raw["staffEmails"]
+    try:
+        hours = int(raw.get("reminderHours", out["reminderHours"]))
+        if hours in _REMINDER_HOURS:
+            out["reminderHours"] = hours
+    except (TypeError, ValueError, ArithmeticError):
+        pass
+    return out
+
+
+def _validated_notifications(value, current):
+    if not isinstance(value, dict):
+        raise ValueError("notifications must be an object")
+    unknown = sorted(set(value) - set(NOTIFICATION_DEFAULTS))
+    if unknown:
+        raise ValueError(f"unsupported notifications fields: {', '.join(unknown)}")
+    merged = _notifications(current)
+    for key in ("sms", "staffEmails"):
+        if key in value:
+            if not isinstance(value[key], bool):
+                raise ValueError(f"notifications.{key} must be true or false")
+            merged[key] = value[key]
+    if "reminderHours" in value:
+        hours = value["reminderHours"]
+        if isinstance(hours, bool) or not isinstance(hours, (int, Decimal)) or hours not in _REMINDER_HOURS:
+            raise ValueError("notifications.reminderHours must be one of 0, 2, 3, 6, 12, 24, 48")
+        merged["reminderHours"] = int(hours)
+    return merged
+
+
+def _validated_edit(body, current=None):
     """None or "" removes a field (falls back to the platform default)."""
     unknown = sorted(set(body) - set(_EDITABLE))
     if unknown:
@@ -281,6 +322,9 @@ def _validated_edit(body):
             raise ValueError("branding must be an object of at most 4 KB")
         else:
             fields["branding"] = value
+    if "notifications" in body:
+        fields["notifications"] = _validated_notifications(
+            body["notifications"], (current or {}).get("notifications"))
     return fields
 
 
@@ -397,7 +441,9 @@ def handler(event, context):
             )
         if method == "PATCH":
             try:
-                _apply_edit(ctx, _validated_edit(_body(event)))
+                body = _body(event)
+                current = _fresh_profile(ctx.tenant_id) if "notifications" in body else None
+                _apply_edit(ctx, _validated_edit(body, current))
             finally:
                 tenant.invalidate(ctx.tenant_id)
             return _response(

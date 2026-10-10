@@ -30,9 +30,51 @@ to their own location.
    enters name, email, phone (+ notes, language, marketing opt-in) and
    accepts the booking terms.
 3. `POST .../reservations` re-checks with the same engine and commits. The
-   response carries a one-time `manageToken`; the confirmation (M3) links to
-   `/boka/hantera/{l}/{r}#<token>` - the site sends the token as the
+   response carries the `manageToken`; the guest's link is
+   `/bokning/{l}/{r}#<token>` - the site sends the token as the
    `X-Manage-Token` header, so it never reaches access logs.
+
+## Manage link
+
+`token = base64url(HMAC-SHA256(key, "reservation-manage|v1|<tenant>|<location>|<reservation>|<linkVersion>"))`
+with the platform key in Secrets Manager (`reservations/link-signing-key`,
+`shared/manage_link.py`). Nothing is stored: create returns it, the
+notification function rebuilds it for confirmations, change notices and
+reminders, the guest routes verify it in constant time. Bumping a booking's
+`linkVersion` revokes its links; rotating the key revokes all. Bookings from
+before signed links keep their `manageTokenHash` and old token.
+
+The link host is the tenant's active domain (`primaryDomain` first); in dev
+without one it is `CUSTOMER_SITE_URL` + `?restaurang=<slug>`, in prod
+without one the message has no link.
+
+## Messages (M3)
+
+A write the guest should hear about sets `notice = {id, type, at}` on the
+booking. The Reservation stream forwards INSERT/MODIFY records with a notice
+to `notification`, which sends once per notice id (OldImage with the same id
+= unrelated write, skipped; older than 24 h = dropped).
+
+| Notice | Set by | Guest | Restaurant |
+|---|---|---|---|
+| `confirmed` | create (online; staff unless `notifyGuest:false`, walk-ins opt in) | confirmation + link | email for online bookings |
+| `changed` | staff move to another date/time (`notifyGuest`) | new time + link | - |
+| `cancelled_by_guest` | guest cancel | receipt | email for online bookings |
+| `cancelled_by_restaurant` | staff cancel (`notifyGuest`) | notice (reason is never sent) | - |
+| `reminder` | `reservation-reminders` (every 15 min) | reminder + cancel link | - |
+
+Guests get email when they have an address; SMS too when the tenant turned
+`notifications.sms` on (sender = `senderName`). `notifications.reminderHours`
+(default 24, 0 = off) sets the reminder; bookings made inside that window
+get none (the confirmation was just sent), and nothing within 1 h of the
+start. A reminder is claimed with one conditional update (`reminderSentAt`),
+so overlapping runs never send twice; a move clears it. Restaurant emails go
+to the location's email unless `notifications.staffEmails` is false.
+
+Delivery: guest email first - a retryable failure there fails only that
+record (ReportBatchItemFailures) before anything was sent; SMS / restaurant
+email failures after it are logged, never retried, so nobody gets the same
+email twice.
 
 Online limits: party size up to the seats of the chosen tables, up to 6
 tables, and the location's optional `maxPartySizeOnline`.
@@ -43,7 +85,7 @@ Reservation table:
 
 | Key | Item |
 |---|---|
-| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `manageTokenHash`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl` |
+| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `linkVersion` (`manageTokenHash` on older bookings), `notice`, `reminderSentAt`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl` |
 | `LOCATION#<l>` / `RID#<id>` | pointer: id -> `date` (read a booking by id; moves update it) |
 
 Slot Occupancy table:
@@ -93,11 +135,5 @@ the payment functions (M4). Every change appends `{action, by, at, ...}` to
 
 ## Next
 
-- M3: confirmation, reminder and cancellation messages. Only the manage
-  token's hash is stored, so the stream-driven notification function can't
-  build the manage link: the confirmation is sent by create itself (it has
-  the token), reminders link to the booking site's "find my booking" flow
-  (email + one-time code) instead. The stream filter must also cover
-  bookings created directly as `reserved` (INSERT).
 - M4: card guarantee (`pending` + SetupIntent), late-cancellation and
-  no-show fees.
+  no-show fees - their outcomes add notice types (charged / charge failed).

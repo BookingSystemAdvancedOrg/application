@@ -17,6 +17,10 @@ PURPOSE:
                                       period; frees the tables
       no_show   -> arrived            the guest came late after all
       reserved/pending -> cancelled   restaurant cancels; frees the tables
+    Guest notices: cancelling and moving to another date/time notify the
+    guest (email/SMS via the Reservation stream) unless the body has
+    "notifyGuest": false. Table-only moves, arrivals and no-shows don't.
+
     A move re-checks availability with the shared engine (ignoring the
     booking's own holds) and swaps holds, locks and - for a new date - the
     row itself in ONE transaction, so it can't collide with a guest booking.
@@ -46,7 +50,7 @@ _STATUS = "/locations/{locationId}/reservations/{reservationId}/status"
 _EDIT = "/locations/{locationId}/reservations/{reservationId}"
 _ARRIVE_EARLY = timedelta(hours=3)
 _EDIT_FIELDS = {"date", "startTime", "tableIds", "partySize", "name", "email",
-                "phone", "notes", "language"}
+                "phone", "notes", "language", "notifyGuest"}
 
 
 def _grace(location):
@@ -80,7 +84,8 @@ def _retake_holds(item, ctx):
     )
 
 
-def _status_update(item, new_status, actor, now, *, release=False, retake=None, reason=None):
+def _status_update(item, new_status, actor, now, *, release=False, retake=None, reason=None,
+                   notice=None):
     entry = r.history_entry("status", actor, now, status=new_status, previous=item["status"], reason=reason)
     ops = []
     if release:
@@ -93,6 +98,8 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
                   "version = if_not_exists(version, :zero) + :one")
     if release:
         expression += ", holdsReleased = :true"
+    if notice:
+        expression += ", notice = :notice"
     if retake:
         expression += " REMOVE holdsReleased"
     ops.append({
@@ -105,7 +112,7 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
             "ExpressionAttributeValues": r.serialize({
                 ":new": new_status, ":old": item["status"], ":now": r.iso(now), ":by": actor,
                 ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
-                ":true": True if release else None,
+                ":true": True if release else None, ":notice": notice,
             }),
         }
     })
@@ -117,11 +124,14 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
         updated["holdsReleased"] = True
     if retake:
         updated.pop("holdsReleased", None)
+    if notice:
+        updated["notice"] = notice
     return updated
 
 
 def _set_status(event, ctx, item):
-    data = http.body(event, allowed={"status", "reason"})
+    data = http.body(event, allowed={"status", "reason", "notifyGuest"})
+    notify = r.notify_flag(data)
     wanted = data.get("status")
     reason = data.get("reason")
     if reason is not None and (not isinstance(reason, str) or len(reason) > 300):
@@ -158,12 +168,17 @@ def _set_status(event, ctx, item):
             raise r.InvalidState("not_cancellable")
         if now >= ends:
             raise r.InvalidState("already_ended")
-        return _status_update(item, r.CANCELLED_BY_RESTAURANT, ctx.sub, now, release=True, reason=reason)
+        notice = (r.notice(r.NOTICE_CANCELLED_BY_RESTAURANT, now)
+                  if notify and r.can_be_notified(item) else None)
+        return _status_update(item, r.CANCELLED_BY_RESTAURANT, ctx.sub, now, release=True,
+                              reason=reason, notice=notice)
     raise ValueError("status must be arrived, reserved, no_show or cancelled")
 
 
 def _edit(event, ctx, item):
     data = http.body(event, allowed=_EDIT_FIELDS)
+    notify = r.notify_flag(data)
+    data.pop("notifyGuest", None)
     if not data:
         raise ValueError("nothing to update")
     now = r.now_utc()
@@ -236,6 +251,14 @@ def _edit(event, ctx, item):
 
     entry = r.history_entry("edited", ctx.sub, now, fields=sorted(changes))
     new_item.update(changes)
+    # A notice is a one-shot signal: the rewritten row never carries an old
+    # one (a date move is a new row = stream INSERT, which would resend it).
+    new_item.pop("notice", None)
+    if {"date", "startTime"} & set(changes):
+        new_item.pop("reminderSentAt", None)  # a new time earns a new reminder
+    if notify and ({"date", "startTime"} & set(changes)) and r.can_be_notified(new_item):
+        # The guest hears about a new date/time (not about a table swap).
+        new_item["notice"] = r.notice(r.NOTICE_CHANGED, now)
     for field in ("customerEmail", "customerPhone", "notes"):
         if new_item.get(field) is None:
             new_item.pop(field, None)

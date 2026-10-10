@@ -77,7 +77,7 @@ def test_due_bookings_get_one_reminder_notice(env):
     phone_only = put(table, "0" * 32, starts=NOW + timedelta(hours=3), customerEmail=None,
                      customerPhone="+46701234567")
 
-    assert module.handler({}, None) == {"reminders": 2}
+    assert module.handler({}, None)["reminders"] == 2
 
     marked = get(table, tomorrow)
     assert marked["reminderSentAt"] == shared_r.iso(NOW) and marked["notice"]["type"] == "reminder"
@@ -86,7 +86,7 @@ def test_due_bookings_get_one_reminder_notice(env):
         assert "reminderSentAt" not in get(table, item)
 
     first_id = marked["notice"]["id"]
-    assert module.handler({}, None) == {"reminders": 0}
+    assert module.handler({}, None)["reminders"] == 0
     assert get(table, tomorrow)["notice"]["id"] == first_id
 
 
@@ -99,7 +99,7 @@ def test_tenant_setting_changes_the_window_and_zero_turns_it_off(env):
     in_3_h = put(table, "b" * 32, starts=NOW + timedelta(hours=3))
     other_tenant = put(table, "c" * 32, starts=NOW + timedelta(hours=3), location=LOC_B, tenant_id=TENANT_B)
 
-    assert module.handler({}, None) == {"reminders": 1}
+    assert module.handler({}, None)["reminders"] == 1
     assert "reminderSentAt" in get(table, in_90_min)
     assert "reminderSentAt" not in get(table, in_3_h) and "reminderSentAt" not in get(table, other_tenant)
 
@@ -111,7 +111,7 @@ def test_inactive_tenant_or_no_reservations_feature_is_skipped(env):
     shared_tenant.reset_caches()
     put(table, "a" * 32, starts=NOW + timedelta(hours=5))
     put(table, "b" * 32, starts=NOW + timedelta(hours=5), location=LOC_B, tenant_id=TENANT_B)
-    assert module.handler({}, None) == {"reminders": 0}
+    assert module.handler({}, None)["reminders"] == 0
 
 
 def test_booking_moved_meanwhile_is_not_reminded_for_the_old_time(env, monkeypatch):

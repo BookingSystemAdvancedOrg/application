@@ -114,7 +114,8 @@ same instant could both succeed. Staff see both in the day list.
 
 | From | To | Who | Rule |
 |---|---|---|---|
-| (new) | `reserved` | guest / staff | `pending` once card guarantee exists (M4) |
+| (new) | `reserved` | guest / staff | `pending` first when a card guarantee applies |
+| `pending` | `reserved` / `expired` | guest / Stripe / sweep | card confirmed / not within 20 min |
 | `reserved` | `arrived` | staff | from 3 h before the start |
 | `arrived` | `reserved` | staff | undo, before the end |
 | `reserved` | `no_show` | staff | after start + `gracePeriodHours`; frees the tables |
@@ -133,7 +134,31 @@ the payment functions (M4). Every change appends `{action, by, at, ...}` to
 (`too_early`, `grace_period_not_over`, `not_cancellable`, `already_started`,
 `not_movable`, ...), `503` dependency down.
 
+## Card guarantee (M4)
+
+Per location `guarantee` = {enabled, minPartySize, noShowFeePerPerson,
+lateCancelFeePerPerson (kr), cancelCutoffHours} - edited with
+`PUT /locations/{id}`, shown on the site through `/site-config`
+(`locations[].guarantee`, null = no card). It applies only when the
+location's (or tenant's) Stripe account can take charges.
+
+| Step | What happens |
+|---|---|
+| Book (party >= minPartySize) | status `pending`, tables held 20 min, Customer + SetupIntent on the restaurant's account; response `setup.clientSecret` / `stripeAccount`; fees snapshotted (`guarantee`, öre) |
+| Card form | Stripe Payment Element confirms the SetupIntent (3-D Secure while present) |
+| `POST .../confirm` or webhook `setup_intent.succeeded` | SetupIntent checked with Stripe -> `reserved`, card stored, confirmation sent |
+| Not confirmed in 20 min | `reservation-reminders` -> `expired`, tables released (PENDING# marker rows) |
+| Guest cancels inside the cutoff | 409 `fee_applies` until `acceptFee: true`; then cancelled + late fee charged -> `cancelled_charged` / `cancelled_charge_failed` |
+| Staff marks no-show | tables freed, no-show fee charged (`chargeFee: false` waives) -> `no_show_charged` / `no_show_charge_failed` |
+| `POST .../payment {action: charge}` | retry; an interrupted attempt reuses its Stripe idempotency key (never charges twice), a declined one starts a new attempt |
+| `POST .../payment {action: refund}` | owner only, partial or full; Dashboard refunds arrive via `charge.refunded` |
+
+Guests get a receipt (`fee_charged` notice), the restaurant an email when a
+fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
+`authentication_required` - the restaurant settles those with the guest
+(a pay-by-link flow is a later addition).
+
 ## Next
 
-- M4: card guarantee (`pending` + SetupIntent), late-cancellation and
-  no-show fees - their outcomes add notice types (charged / charge failed).
+- M5: admin bookings page on the real API (status, move, no-show with
+  fee, retry, refund).

@@ -1311,3 +1311,38 @@ def test_suspension_a_moment_ago_reads_as_inactive_not_quota(app_and_table):
 
     assert response["statusCode"] == 403
     assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+
+
+def test_owner_sets_and_removes_the_card_guarantee_and_online_party_cap(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    policy = {"enabled": True, "minPartySize": 4, "noShowFeePerPerson": 250,
+              "lateCancelFeePerPerson": 100, "cancelCutoffHours": 24}
+
+    response = app.handler(make_event({"guarantee": policy, "maxPartySizeOnline": 8},
+                                      method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["guarantee"] == policy and body["maxPartySizeOnline"] == 8
+    stored = get_location(location_table)
+    assert stored["guarantee"]["noShowFeePerPerson"] == 250 and stored["maxPartySizeOnline"] == 8
+
+    removed = app.handler(make_event({"guarantee": None, "maxPartySizeOnline": None},
+                                     method="PUT", location_id="location-id"), None)
+    assert removed["statusCode"] == 200
+    stored = get_location(location_table)
+    assert "guarantee" not in stored and "maxPartySizeOnline" not in stored
+
+
+@pytest.mark.parametrize(("body", "error"), [
+    ({"guarantee": {"enabled": True}}, "needs a no-show or late-cancellation fee"),
+    ({"guarantee": {"enabled": True, "noShowFeePerPerson": 9000}}, "between 0 and 5000"),
+    ({"maxPartySizeOnline": 0}, "between 1 and 50"),
+    ({"maxPartySizeOnline": 2.5}, "between 1 and 50"),
+])
+def test_rejects_invalid_booking_rules(app_and_table, body, error):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 400 and error in json.loads(response["body"])["error"]

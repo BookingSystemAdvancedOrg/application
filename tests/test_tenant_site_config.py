@@ -143,3 +143,21 @@ def test_method_and_path(site):
 def test_address_is_always_one_line_of_text(site, raw, shown):
     module, _ = site
     assert module._address(raw) == shown
+
+
+def test_card_guarantee_terms_are_public_only_when_stripe_can_charge(site):
+    module, tenants = site
+    locations = boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT)
+    locations.update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+        UpdateExpression="SET guarantee = :g",
+        ExpressionAttributeValues={":g": {"enabled": True, "minPartySize": Decimal(4),
+                                          "noShowFeePerPerson": Decimal(200),
+                                          "lateCancelFeePerPerson": Decimal(0),
+                                          "cancelCutoffHours": Decimal(12)}})
+    shared_tenant.reset_caches()
+    body = json.loads(call(module, {"host": "www.roma.se"})["body"])
+    haga = next(loc for loc in body["locations"] if loc["locationId"] == LOC_A)
+    assert haga["guarantee"] == {"minPartySize": 4, "noShowFeePerPerson": 200,
+                                 "lateCancelFeePerPerson": 0, "cancelCutoffHours": 12}
+    assert next(loc for loc in body["locations"] if loc["locationId"] == LOC_A2)["guarantee"] is None

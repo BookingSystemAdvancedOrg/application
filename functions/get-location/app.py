@@ -271,6 +271,8 @@ def _public_location(item):
         public.update(
             {field: item[field] for field in _OPTIONAL_AUDIT_FIELDS}
         )
+    public.update({field: item[field] for field in ("guarantee", "maxPartySizeOnline")
+                   if item.get(field) is not None})
     return public
 
 

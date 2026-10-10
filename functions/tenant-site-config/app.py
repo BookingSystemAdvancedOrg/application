@@ -33,7 +33,7 @@ import re
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, tenant
+from shared import dynamo, guarantee, http, tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -115,8 +115,10 @@ def _number(value):
     return int(number) if number == int(number) else number
 
 
-def _public_location(row):
+def _public_location(row, tenant_row):
     return {
+        # Card guarantee terms shown BEFORE booking (None = no card asked).
+        "guarantee": guarantee.public_policy(row, tenant_row),
         "locationId": row.get("locationId"),
         "name": row.get("name"),
         "address": row.get("address"),
@@ -171,7 +173,7 @@ def _site_config(params):
             "contactPhone": row.get("contactPhone"),
             "address": _address(row.get("address")),
         },
-        "locations": [_public_location(r) for r in locations],
+        "locations": [_public_location(r, row) for r in locations],
         "stripe": {
             "publishableKey": os.environ.get("STRIPE_PUBLISHABLE_KEY") or None,
             "accountId": (row.get("stripe") or {}).get("accountId"),

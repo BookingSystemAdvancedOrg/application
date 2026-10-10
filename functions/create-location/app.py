@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, tenant
+from shared import dynamo, guarantee, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -68,7 +68,12 @@ _EDITABLE_FIELDS = {
     "businessHours",
     "bookingDurationHours",
     "gracePeriodHours",
+    # Optional booking rules (None removes): the card-guarantee policy
+    # (shared/guarantee.py) and the largest party bookable online.
+    "guarantee",
+    "maxPartySizeOnline",
 }
+_OPTIONAL_RULE_FIELDS = ("guarantee", "maxPartySizeOnline")
 _PUBLIC_REQUIRED_FIELDS = (
     "locationId",
     "name",
@@ -315,8 +320,24 @@ def _required_business_hours(source):
     return normalized
 
 
+def _optional_rules(source):
+    rules = {}
+    if "guarantee" in source:
+        rules["guarantee"] = guarantee.validate_policy(source["guarantee"])
+    if "maxPartySizeOnline" in source:
+        value = source["maxPartySizeOnline"]
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or value != int(value) \
+                    or not 1 <= int(value) <= 50:
+                raise ValueError("maxPartySizeOnline must be a whole number between 1 and 50")
+            value = int(value)
+        rules["maxPartySizeOnline"] = value
+    return rules
+
+
 def _validated_location_fields(source, *, require_contacts=False):
     return {
+        **_optional_rules(source),
         "name": _required_string(source, "name"),
         "address": _required_string(source, "address"),
         **_validated_contact_fields(source, required=require_contacts),
@@ -391,6 +412,7 @@ def _valid_utc_timestamp(source, field):
 
 def _public_location(item):
     public = {field: item[field] for field in _PUBLIC_REQUIRED_FIELDS}
+    public.update({field: item[field] for field in _OPTIONAL_RULE_FIELDS if item.get(field) is not None})
     # Contacts are independent: a location may have only an email or only
     # a phone number (operators add locations with what the customer gave).
     public.update(
@@ -739,6 +761,7 @@ def _create_location(event, ctx):
         "updatedBy": caller_sub,
         "updatedAt": timestamp,
     }
+    item = {k: v for k, v in item.items() if v is not None}
     _insert_location_within_plan(ctx, item)
     return _location_response(
         HTTPStatus.CREATED.value,
@@ -778,6 +801,7 @@ def _update_location(event, ctx):
         "updatedBy": caller_sub,
         "updatedAt": _utc_now(),
     }
+    updated = {k: v for k, v in updated.items() if v is not None}
     _put_existing_location(updated, item)
     return _location_response(
         HTTPStatus.OK.value,

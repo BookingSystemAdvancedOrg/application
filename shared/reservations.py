@@ -48,6 +48,7 @@ CANCELLED_CHARGED = "cancelled_charged"
 CANCELLED_CHARGE_FAILED = "cancelled_charge_failed"
 NO_SHOW_CHARGED = "no_show_charged"
 NO_SHOW_CHARGE_FAILED = "no_show_charge_failed"
+EXPIRED = "expired"  # pending card guarantee never completed - tables released
 
 ACTIVE = frozenset({PENDING, RESERVED})
 HOLDS_TABLES = frozenset({PENDING, RESERVED, ARRIVED})
@@ -131,8 +132,11 @@ NOTICE_CHANGED = "changed"
 NOTICE_CANCELLED_BY_GUEST = "cancelled_by_guest"
 NOTICE_CANCELLED_BY_RESTAURANT = "cancelled_by_restaurant"
 NOTICE_REMINDER = "reminder"
+NOTICE_FEE_CHARGED = "fee_charged"   # guest receipt for a no-show / late-cancel fee
+NOTICE_FEE_FAILED = "fee_failed"     # restaurant only: the fee could not be charged
 NOTICE_TYPES = frozenset({NOTICE_CONFIRMED, NOTICE_CHANGED, NOTICE_CANCELLED_BY_GUEST,
-                          NOTICE_CANCELLED_BY_RESTAURANT, NOTICE_REMINDER})
+                          NOTICE_CANCELLED_BY_RESTAURANT, NOTICE_REMINDER,
+                          NOTICE_FEE_CHARGED, NOTICE_FEE_FAILED})
 
 
 def notice(kind, at):
@@ -484,12 +488,18 @@ _STAFF_FIELDS = (
     "endsAt", "timezone", "tableIds", "seats", "partySize", "layoutVersion",
     "customerName", "customerEmail", "customerPhone", "notes", "language",
     "marketingOptIn", "source", "status", "createdAt", "createdBy", "updatedAt",
-    "updatedBy", "history",
+    "updatedBy", "history", "guarantee", "payment", "pendingExpiresAt",
 )
 
 
+def _card_on_file(item):
+    return bool(item.get("stripePaymentMethodId"))
+
+
 def staff_view(item):
-    return {f: item.get(f) for f in _STAFF_FIELDS if f in item}
+    view = {f: item.get(f) for f in _STAFF_FIELDS if f in item}
+    view["cardOnFile"] = _card_on_file(item)
+    return view
 
 
 def guest_view(item, location=None, *, now=None):
@@ -506,6 +516,23 @@ def guest_view(item, location=None, *, now=None):
         "customerName": item.get("customerName"),
         "cancellable": item["status"] in ACTIVE and parse_iso(item["bookedFor"]) > now,
     }
+    snap = item.get("guarantee")
+    if isinstance(snap, dict):
+        from shared import guarantee  # local: guarantee imports this module
+        view["guarantee"] = {
+            "cardOnFile": _card_on_file(item),
+            "noShowFee": int(snap.get("noShowFee") or 0),
+            "lateCancelFee": int(snap.get("lateCancelFee") or 0),
+            "cancelCutoffHours": int(snap.get("cancelCutoffHours") or 0),
+            "currency": snap.get("currency", "sek"),
+            # What cancelling NOW would cost (öre) - shown before the guest confirms.
+            "cancellationFee": guarantee.late_cancel_fee(item, now) if item["status"] in ACTIVE else 0,
+        }
+    if isinstance(item.get("payment"), dict):
+        pay = item["payment"]
+        view["fee"] = {"kind": pay.get("kind"), "status": pay.get("status"),
+                       "amount": int(pay.get("amount") or 0),
+                       "refundedAmount": int(pay.get("refundedAmount") or 0)}
     if location:
         view["location"] = {
             "locationId": location.get("locationId"),

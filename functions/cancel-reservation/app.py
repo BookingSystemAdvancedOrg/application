@@ -10,8 +10,15 @@ PURPOSE:
     keeps its row with status "cancelled_no_charge" and a history entry.
     Cancelling twice is answered with the booking as it is (idempotent).
 
-    Card guarantee (M4): a cancellation inside the location's cutoff charges
-    the late-cancellation fee instead; until then cancelling is always free.
+    Card guarantee: inside the cutoff the guest accepted at booking, a
+    guaranteed booking costs the late-cancellation fee. The guest must send
+    {"acceptFee": true} - without it the answer is 409 {"error":
+    "fee_applies", "fee": <öre>} so the site can show the amount first. The
+    booking is cancelled (tables freed, receipt sent) and then the fee is
+    charged off-session (shared/guarantee.py): status cancelled_charged or
+    cancelled_charge_failed. If Stripe is unreachable the booking stays
+    cancelled_no_charge with payment.status "pending" for staff to retry.
+    Pending bookings (card never confirmed) cancel for free.
 
     Multi-tenant: the location decides the tenant; a wrong token, another
     location's booking or an unknown id all answer 404.
@@ -20,7 +27,7 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     SLOT_OCCUPANCY_TABLE_NAME, RESERVATION_TABLE_NAME,
     RESERVATION_LINK_KEY_SECRET_ARN (verifies the manage token)
-    STRIPE_SECRET_ARN (M4)
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION (late-cancellation fee)
 
     The update carries a "cancelled_by_guest" notice: the guest gets a
     cancellation receipt and the restaurant an email (notification).
@@ -28,10 +35,14 @@ ENV_VARS:
 Full details: docs/RESERVATIONS.md
 """
 
+import logging
+
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, manage_link, tenant
+from shared import guarantee, http, manage_link, tenant
 from shared import reservations as r
+
+logger = logging.getLogger()
 
 _PATH = "/locations/{locationId}/reservations/{reservationId}/cancel"
 
@@ -39,7 +50,10 @@ _PATH = "/locations/{locationId}/reservations/{reservationId}/cancel"
 def _cancel(event):
     location_id = http.path_id(event, "locationId")
     ctx = tenant.for_public(location_id, feature="reservations")
-    http.body(event, allowed=set(), required=False)
+    data = http.body(event, allowed={"acceptFee"}, required=False) or {}
+    accept_fee = data.get("acceptFee", False)
+    if not isinstance(accept_fee, bool):
+        raise ValueError("acceptFee must be true or false")
     item = r.load(location_id, http.path_id(event, "reservationId"))
     if not manage_link.matches(item, http.header(event, "x-manage-token")):
         raise r.NotFound
@@ -50,6 +64,10 @@ def _cancel(event):
         raise r.InvalidState("not_cancellable")
     if r.parse_iso(item["bookedFor"]) <= now:
         raise r.InvalidState("already_started")
+    fee = guarantee.late_cancel_fee(item, now) if item["status"] == r.RESERVED else 0
+    if fee and not accept_fee:
+        return http.respond(409, {"error": "fee_applies", "fee": fee,
+                                  "currency": item["guarantee"].get("currency", "sek")})
 
     entry = r.history_entry("cancelled", "guest", now, status=r.CANCELLED_BY_GUEST)
     notice = r.notice(r.NOTICE_CANCELLED_BY_GUEST, now)
@@ -57,13 +75,14 @@ def _cancel(event):
     r.transact(
         r.lock_updates(location_id, item["date"], versions)
         + r.release_items(item)
+        + guarantee.marker_delete_ops(item)
         + [{
             "Update": {
                 "TableName": r.reservation_table(),
                 "Key": r.serialize(r.reservation_key(location_id, item["date"], item["reservationId"])),
                 "UpdateExpression": "SET #s = :new, updatedAt = :now, updatedBy = :by, "
                                     "cancelledAt = :now, notice = :notice, history = list_append(if_not_exists(history, :empty), :entry), "
-                                    "version = if_not_exists(version, :zero) + :one",
+                                    "version = if_not_exists(version, :zero) + :one REMOVE pendingExpiresAt",
                 "ConditionExpression": "#s = :old",
                 "ExpressionAttributeNames": {"#s": "status"},
                 "ExpressionAttributeValues": r.serialize({
@@ -73,7 +92,12 @@ def _cancel(event):
             }
         }]
     )
-    item = {**item, "status": r.CANCELLED_BY_GUEST}
+    item = {**item, "status": r.CANCELLED_BY_GUEST, "holdsReleased": True}
+    if fee:
+        try:
+            item = guarantee.run_charge(item, guarantee.KIND_LATE_CANCEL, now, "guest", amount=fee)
+        except Exception:  # noqa: BLE001 - the cancellation stands; staff can charge later
+            logger.exception("late-cancel fee not started for %s", item["reservationId"])
     return http.respond(200, r.guest_view(item, ctx.location, now=now))
 
 

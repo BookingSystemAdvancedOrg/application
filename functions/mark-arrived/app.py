@@ -8,6 +8,10 @@ TRIGGER:
     PATCH /locations/{locationId}/reservations/{reservationId}
           guest details, party size, notes, and/or a move:
           {"date", "startTime", "tableIds"}
+    POST  /locations/{locationId}/reservations/{reservationId}/payment
+          {"action": "charge"}                 charge / retry the fee
+          {"action": "refund", "amount": öre}  refund (owner only; amount
+                                               optional = the rest)
 
 PURPOSE:
     Everything the restaurant does with a booking after it exists:
@@ -26,14 +30,22 @@ PURPOSE:
     row itself in ONE transaction, so it can't collide with a guest booking.
     Every change appends to the booking's history (who, when, what).
 
-    Card guarantee (M4): no_show on a guaranteed booking charges the fee.
+    Card guarantee (shared/guarantee.py): no_show on a guaranteed booking
+    charges the no-show fee the guest accepted at booking, unless the body
+    says "chargeFee": false (waived). The tables are freed first; the
+    charge result lands as no_show_charged / no_show_charge_failed (the
+    guest gets a receipt, the restaurant an email on failure). A failed or
+    interrupted charge can be retried with POST .../payment - an interrupted
+    attempt is re-sent with the same Stripe idempotency key, so it can
+    never charge twice. Refunds are owner only.
 
     Multi-tenant: token's tenant; staff limited to their own location.
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME, SLOT_OCCUPANCY_TABLE_NAME,
-    RESERVATION_TABLE_NAME, USER_TABLE_NAME
+    RESERVATION_TABLE_NAME, USER_TABLE_NAME,
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION (fees and refunds)
 
 Full details: docs/RESERVATIONS.md
 """
@@ -43,11 +55,13 @@ from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, http, tenant
+from shared import availability, guarantee, http, tenant
 from shared import reservations as r
+from shared import stripe_client as stripe
 
 _STATUS = "/locations/{locationId}/reservations/{reservationId}/status"
 _EDIT = "/locations/{locationId}/reservations/{reservationId}"
+_PAYMENT = "/locations/{locationId}/reservations/{reservationId}/payment"
 _ARRIVE_EARLY = timedelta(hours=3)
 _EDIT_FIELDS = {"date", "startTime", "tableIds", "partySize", "name", "email",
                 "phone", "notes", "language", "notifyGuest"}
@@ -91,6 +105,7 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
     if release:
         versions = r.read_lock_versions(item["locationId"], item["date"], item.get("tableIds") or [])
         ops += r.lock_updates(item["locationId"], item["date"], versions) + r.release_items(item)
+        ops += guarantee.marker_delete_ops(item)
     if retake:
         ops += retake
     expression = ("SET #s = :new, updatedAt = :now, updatedBy = :by, "
@@ -98,10 +113,13 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
                   "version = if_not_exists(version, :zero) + :one")
     if release:
         expression += ", holdsReleased = :true"
+    removes = ["pendingExpiresAt"] if release and item.get("pendingExpiresAt") else []
     if notice:
         expression += ", notice = :notice"
     if retake:
-        expression += " REMOVE holdsReleased"
+        removes.append("holdsReleased")
+    if removes:
+        expression += " REMOVE " + ", ".join(removes)
     ops.append({
         "Update": {
             "TableName": r.reservation_table(),
@@ -122,6 +140,7 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
                "history": (item.get("history") or []) + [entry]}
     if release:
         updated["holdsReleased"] = True
+        updated.pop("pendingExpiresAt", None)
     if retake:
         updated.pop("holdsReleased", None)
     if notice:
@@ -130,8 +149,11 @@ def _status_update(item, new_status, actor, now, *, release=False, retake=None, 
 
 
 def _set_status(event, ctx, item):
-    data = http.body(event, allowed={"status", "reason", "notifyGuest"})
+    data = http.body(event, allowed={"status", "reason", "notifyGuest", "chargeFee"})
     notify = r.notify_flag(data)
+    charge_fee = data.get("chargeFee", True)
+    if not isinstance(charge_fee, bool):
+        raise ValueError("chargeFee must be true or false")
     wanted = data.get("status")
     reason = data.get("reason")
     if reason is not None and (not isinstance(reason, str) or len(reason) > 300):
@@ -162,7 +184,13 @@ def _set_status(event, ctx, item):
             raise r.InvalidState("not_reserved")
         if now < starts + _grace(ctx.location):
             raise r.InvalidState("grace_period_not_over")
-        return _status_update(item, r.NO_SHOW, ctx.sub, now, release=True, reason=reason)
+        fee = guarantee.no_show_fee(item) if charge_fee else 0
+        waived = bool(guarantee.no_show_fee(item)) and not charge_fee
+        item = _status_update(item, r.NO_SHOW, ctx.sub, now, release=True,
+                              reason=(reason or "fee waived") if waived else reason)
+        if fee:
+            item = guarantee.run_charge(item, guarantee.KIND_NO_SHOW, now, ctx.sub, amount=fee)
+        return item
     if wanted == "cancelled":
         if current not in r.ACTIVE:
             raise r.InvalidState("not_cancellable")
@@ -173,6 +201,41 @@ def _set_status(event, ctx, item):
         return _status_update(item, r.CANCELLED_BY_RESTAURANT, ctx.sub, now, release=True,
                               reason=reason, notice=notice)
     raise ValueError("status must be arrived, reserved, no_show or cancelled")
+
+
+def _payment(event, ctx, item):
+    data = http.body(event, allowed={"action", "amount"})
+    action = data.get("action")
+    now = r.now_utc()
+    status = item["status"]
+    payment = item.get("payment") or {}
+    if action == "charge":
+        if status in (r.NO_SHOW, r.NO_SHOW_CHARGE_FAILED):
+            if not guarantee.no_show_fee(item):
+                raise r.InvalidState("no_fee")
+            return guarantee.run_charge(item, guarantee.KIND_NO_SHOW, now, ctx.sub)
+        if status in (r.CANCELLED_BY_GUEST, r.CANCELLED_CHARGE_FAILED):
+            amount = int(payment.get("amount") or 0) if payment.get("kind") == guarantee.KIND_LATE_CANCEL else 0
+            if not amount:
+                cancelled_at = item.get("cancelledAt")
+                amount = (guarantee.late_cancel_fee(item, r.parse_iso(cancelled_at))
+                          if cancelled_at else 0)
+            if not amount:
+                raise r.InvalidState("no_fee")
+            return guarantee.run_charge(item, guarantee.KIND_LATE_CANCEL, now, ctx.sub, amount=amount)
+        raise r.InvalidState("not_chargeable")
+    if action == "refund":
+        if not ctx.is_owner:
+            raise tenant.TenantError(403, "owner_only")
+        if status not in (r.NO_SHOW_CHARGED, r.CANCELLED_CHARGED) or payment.get("status") != guarantee.PAY_SUCCEEDED:
+            raise r.InvalidState("not_refundable")
+        remaining = int(payment["amount"]) - int(payment.get("refundedAmount") or 0)
+        amount = data.get("amount", remaining)
+        if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= remaining:
+            raise ValueError(f"amount must be a whole number of öre between 1 and {remaining}")
+        refund_obj = guarantee.refund(item, amount)
+        return guarantee.record_refund(item, refund_obj, now, ctx.sub)
+    raise ValueError("action must be charge or refund")
 
 
 def _edit(event, ctx, item):
@@ -303,7 +366,7 @@ def _edit(event, ctx, item):
 
 def handler(event, context):
     method, path = http.route(event)
-    if path == _STATUS:
+    if path in (_STATUS, _PAYMENT):
         allowed = "POST"
     elif path == _EDIT:
         allowed = "PATCH"
@@ -317,6 +380,8 @@ def handler(event, context):
         item = r.load(location_id, http.path_id(event, "reservationId"))
         if path == _STATUS:
             return http.respond(200, r.staff_view(_set_status(event, ctx, item)))
+        if path == _PAYMENT:
+            return http.respond(200, r.staff_view(_payment(event, ctx, item)))
         return http.respond(200, _edit(event, ctx, item))
     except tenant.TenantError as exc:
         return exc.response()
@@ -330,5 +395,9 @@ def handler(event, context):
         return http.error(400, str(exc))
     except availability.AvailabilityConflict:
         return http.error(409, "availability_changed")
+    except stripe.StripeError as exc:
+        return http.error(402, exc.code or "payment_error")
+    except stripe.StripeUnavailable:
+        return http.error(503, "payment_unavailable")
     except (BotoCoreError, ClientError, availability.AvailabilityServiceFailure):
         return http.error(503, "reservation service unavailable")

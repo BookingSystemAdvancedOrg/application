@@ -17,6 +17,8 @@ PURPOSE:
       cancelled_by_guest        cancellation receipt      guest cancelled
       cancelled_by_restaurant   cancellation notice       -
       reminder                  reminder + cancel link    -
+      fee_charged               fee receipt               -
+      fee_failed                -                         charge failed (any source)
 
     * SMS only when the tenant enabled it (tenant.notifications.sms) and
       the booking has a phone number. Restaurant emails go to the location's
@@ -178,7 +180,8 @@ def _reservation(record):
     new = _image(record["dynamodb"].get("NewImage"))
     old = _image(record["dynamodb"].get("OldImage"))
     notice = new.get("notice")
-    if not isinstance(notice, dict) or notice.get("type") not in messages.GUEST_NOTICES:
+    if not isinstance(notice, dict) or notice.get("type") not in (
+            messages.GUEST_NOTICES + messages.STAFF_ONLY_NOTICES):
         return "no_notice"
     if isinstance(old.get("notice"), dict) and old["notice"].get("id") == notice.get("id"):
         return "same_notice"
@@ -209,7 +212,8 @@ def _reservation(record):
     reply_to = _reply_to(tenant_row, location)
     sent = []
 
-    email = new.get("customerEmail")
+    staff_only = kind in messages.STAFF_ONLY_NOTICES
+    email = None if staff_only else new.get("customerEmail")
     if email:
         subject, text, html_body = messages.guest_email(kind, new, tenant_row, location, link)
         try:
@@ -221,7 +225,7 @@ def _reservation(record):
             logger.error(json.dumps({"failed": "guest_email", "reservationId": new.get("reservationId"),
                                      "error": str(exc)}))
 
-    phone = new.get("customerPhone")
+    phone = None if staff_only else new.get("customerPhone")
     if phone and settings["sms"]:
         try:
             _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row)
@@ -237,12 +241,15 @@ def _reservation(record):
             logger.exception("guest_sms failed for %s", new.get("reservationId"))
 
     staff_to = location.get("email") or tenant_row.get("replyToEmail")
-    if kind in _STAFF_NOTICES and new.get("source") == "online" and settings["staffEmails"] and staff_to:
+    staff_wanted = staff_only or (kind in _STAFF_NOTICES and new.get("source") == "online"
+                                  and settings["staffEmails"])
+    if staff_wanted and staff_to:
         try:
             subject, text = messages.staff_email(kind, new, tenant_row, location,
                                                  os.environ.get("ADMIN_DASHBOARD_URL"))
+            guest_email = new.get("customerEmail")
             _send_email(staff_to, subject, text, None, source=source,
-                        reply_to=[email] if email else [])
+                        reply_to=[guest_email] if guest_email else [])
             sent.append("staff_email")
         except Exception as exc:  # noqa: BLE001 - the guest part is done; log, don't retry
             logger.error(json.dumps({"failed": "staff_email", "reservationId": new.get("reservationId"),

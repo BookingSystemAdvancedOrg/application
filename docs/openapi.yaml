@@ -2921,9 +2921,22 @@ paths:
       description: |
         Public, with the `X-Manage-Token`. Allowed until the booking starts
         (409 `already_started` after); frees the tables. Cancelling again
-        answers 200 with the booking as it is.
+        answers 200 with the booking as it is. Inside a guaranteed booking's
+        cutoff the late-cancellation fee applies: without `acceptFee: true`
+        the answer is 409 `{"error": "fee_applies", "fee": <öre>}`; with it
+        the booking is cancelled and the fee charged (`fee` in the answer).
       security: []
       x-required-groups: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                acceptFee:
+                  type: boolean
       responses:
         '200':
           description: The cancelled booking.
@@ -2934,6 +2947,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GuestReservation'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+      - $ref: '#/components/parameters/ManageToken'
+    post:
+      tags:
+        - Reservations
+      summary: Complete a card-guarantee booking
+      operationId: confirmGuestReservation
+      description: |
+        Public, with the `X-Manage-Token`. After Stripe.js confirmed the
+        SetupIntent, checks it with Stripe and turns the `pending` booking
+        `reserved` (the confirmation is sent then). Idempotent. 409
+        `card_not_confirmed` while the card isn't done, `expired` after the
+        20-minute hold.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The booking.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestReservation'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/payment:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags:
+        - Reservations
+      summary: Charge (retry) or refund a booking's fee
+      operationId: reservationPayment
+      description: |
+        `charge` - charge or retry the no-show / late-cancellation fee the
+        guest accepted (an interrupted attempt is re-sent with the same
+        Stripe idempotency key, so it never charges twice). `refund` -
+        owner only; `amount` in öre, default the rest.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [charge, refund]
+                amount:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: The booking with its payment.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
         '404':
           $ref: '#/components/responses/ReservationNotFound'
         '409':
@@ -3176,6 +3281,8 @@ components:
               maxPartySizeOnline:
                 type: integer
                 nullable: true
+              guarantee:
+                $ref: '#/components/schemas/GuaranteeTerms'
         stripe:
           type: object
           properties:
@@ -3195,7 +3302,10 @@ components:
     ReservationStatus:
       type: string
       enum: [pending, reserved, arrived, no_show, cancelled_no_charge, cancelled_by_restaurant,
-             cancelled_charged, cancelled_charge_failed, no_show_charged, no_show_charge_failed]
+             cancelled_charged, cancelled_charge_failed, no_show_charged, no_show_charge_failed, expired]
+      description: |
+        `pending` = card guarantee not confirmed yet (tables held 20 min);
+        `expired` = the card was never confirmed, tables released.
 
     ReservationCreateRequest:
       type: object
@@ -3328,6 +3438,9 @@ components:
           type: string
           maxLength: 300
           description: Kept in the booking history; never sent to the guest.
+        chargeFee:
+          type: boolean
+          description: For `no_show` on a guaranteed booking - charge the no-show fee (default true; false waives it).
         notifyGuest:
           type: boolean
           description: For `cancelled` - send the guest a cancellation notice (default true).
@@ -3396,6 +3509,15 @@ components:
           items:
             type: object
             additionalProperties: true
+        cardOnFile:
+          type: boolean
+        guarantee:
+          $ref: '#/components/schemas/GuaranteeSnapshot'
+        payment:
+          $ref: '#/components/schemas/ReservationPayment'
+        pendingExpiresAt:
+          type: string
+          format: date-time
 
     ReservationList:
       type: object
@@ -3453,6 +3575,37 @@ components:
             email:
               type: string
               nullable: true
+        guarantee:
+          type: object
+          description: Present when the booking has a card guarantee. Amounts in öre.
+          properties:
+            cardOnFile:
+              type: boolean
+            noShowFee:
+              type: integer
+            lateCancelFee:
+              type: integer
+            cancelCutoffHours:
+              type: integer
+            currency:
+              type: string
+            cancellationFee:
+              type: integer
+              description: What cancelling NOW costs (0 = free) - show it before the guest confirms.
+        fee:
+          type: object
+          description: A charged / attempted fee.
+          properties:
+            kind:
+              type: string
+              enum: [no_show, late_cancel]
+            status:
+              type: string
+              enum: [pending, processing, succeeded, failed, refunded]
+            amount:
+              type: integer
+            refundedAmount:
+              type: integer
 
     GuestReservationCreated:
       allOf:
@@ -3463,6 +3616,86 @@ components:
             manageToken:
               type: string
               description: Shown once - the guest's link to view or cancel the booking.
+            setup:
+              type: object
+              description: |
+                Only for card-guarantee bookings (status `pending`): confirm
+                the SetupIntent with Stripe.js (publishable key from
+                /site-config, `stripeAccount`), then POST .../confirm before
+                `expiresAt`.
+              properties:
+                clientSecret:
+                  type: string
+                stripeAccount:
+                  type: string
+                expiresAt:
+                  type: string
+                  format: date-time
+
+    GuaranteePolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        minPartySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Card required from this party size.
+        noShowFeePerPerson:
+          type: integer
+          minimum: 0
+          maximum: 5000
+          description: kr per guest.
+        lateCancelFeePerPerson:
+          type: integer
+          minimum: 0
+          maximum: 5000
+          description: kr per guest.
+        cancelCutoffHours:
+          type: integer
+          minimum: 0
+          maximum: 168
+
+    GuaranteeTerms:
+      type: object
+      nullable: true
+      description: The location's card-guarantee terms shown before booking; null = no card asked.
+      properties:
+        minPartySize:
+          type: integer
+        noShowFeePerPerson:
+          type: integer
+        lateCancelFeePerPerson:
+          type: integer
+        cancelCutoffHours:
+          type: integer
+
+    GuaranteeSnapshot:
+      type: object
+      description: The fees the guest accepted at booking (öre) - what may be charged.
+      additionalProperties: true
+
+    ReservationPayment:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [no_show, late_cancel]
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed, refunded]
+        amount:
+          type: integer
+        attempt:
+          type: integer
+        paymentIntentId:
+          type: string
+        error:
+          type: string
+        refundedAmount:
+          type: integer
 
     Tenant:
       type: object
@@ -4035,6 +4268,17 @@ components:
           minimum: 0
           description: Grace period in hours; zero is allowed.
           example: 0.25
+        guarantee:
+          allOf:
+            - $ref: '#/components/schemas/GuaranteePolicy'
+          nullable: true
+          description: Card guarantee policy; null removes it.
+        maxPartySizeOnline:
+          type: integer
+          minimum: 1
+          maximum: 50
+          nullable: true
+          description: Largest party bookable online; null = no limit.
 
     LocationUpdateRequest:
       type: object
@@ -4073,6 +4317,17 @@ components:
           minimum: 0
           description: Grace period in hours; zero is allowed.
           example: 0.25
+        guarantee:
+          allOf:
+            - $ref: '#/components/schemas/GuaranteePolicy'
+          nullable: true
+          description: Card guarantee policy; null removes it.
+        maxPartySizeOnline:
+          type: integer
+          minimum: 1
+          maximum: 50
+          nullable: true
+          description: Largest party bookable online; null = no limit.
 
     Location:
       type: object
@@ -4114,6 +4369,10 @@ components:
           type: number
         gracePeriodHours:
           type: number
+        guarantee:
+          $ref: '#/components/schemas/GuaranteePolicy'
+        maxPartySizeOnline:
+          type: integer
         createdBy:
           type: string
         createdAt:

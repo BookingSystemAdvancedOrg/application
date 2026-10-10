@@ -269,3 +269,25 @@ def test_phone_only_booking_without_sms_sends_nothing_and_succeeds(env):
     item = booking(customerEmail=None, source="phone")
     assert run(module, record(item, event_name="INSERT")) == {"batchItemFailures": []}
     assert ses.calls == [] and sns.calls == []
+
+
+def test_fee_receipt_goes_to_the_guest_and_a_failed_fee_to_the_restaurant(env):
+    module, ses, sns = env
+    paid = booking(status="no_show_charged", payment={"kind": "no_show", "amount": 60000, "attempt": 1},
+                   notice={"id": "f" * 32, "type": "fee_charged", "at": NOW.isoformat()})
+    run(module, record(paid, old=booking()))
+    receipt = ses.calls[0]
+    assert receipt["Destination"] == {"ToAddresses": ["anna@example.se"]}
+    assert receipt["Message"]["Subject"]["Data"] == "Kvitto: Avgift för utebliven gäst - Roma Södermalm"
+    assert "600 kr" in receipt["Message"]["Body"]["Text"]["Data"]
+    assert "600 kr" in sns.calls[0]["Message"]
+    ses.calls.clear()
+    sns.calls.clear()
+
+    failed = booking(status="no_show_charge_failed", source="phone",
+                     payment={"kind": "no_show", "amount": 60000, "attempt": 1, "error": "insufficient_funds"},
+                     notice={"id": "e" * 32, "type": "fee_failed", "at": NOW.isoformat()})
+    run(module, record(failed, old=paid))
+    (staff,) = ses.calls
+    assert staff["Destination"] == {"ToAddresses": ["soder@roma.se"]} and sns.calls == []
+    assert "insufficient_funds" in staff["Message"]["Body"]["Text"]["Data"]

@@ -36,6 +36,12 @@ _TEXT = {
                                          "Hör av dig om du har frågor eller vill boka en ny tid."),
         "reminder.subject": "Påminnelse: bord {when} - {restaurant}",
         "reminder.lead": "En påminnelse om din bokning. Vi ser fram emot ditt besök!",
+        "fee_charged.subject": "Kvitto: {fee_label} - {restaurant}",
+        "fee_charged.lead": ("Enligt villkoren du godkände vid bokningen har vi debiterat ditt kort "
+                             "{amount} ({fee_label_lower}). Kontakta restaurangen om du har frågor."),
+        "fee.no_show": "Avgift för utebliven gäst",
+        "fee.late_cancel": "Avgift för sen avbokning",
+        "amount": "Belopp",
         "restaurant": "Restaurang",
         "date": "Datum",
         "time": "Tid",
@@ -52,6 +58,7 @@ _TEXT = {
         "sms.cancelled_by_guest": "{restaurant}: Din bokning {when} är avbokad.",
         "sms.cancelled_by_restaurant": "{restaurant}: Tyvärr har vi behövt avboka din bokning {when}. Kontakta oss: {contact}",
         "sms.reminder": "{restaurant}: Påminnelse om ditt bord {when}, {guests}.",
+        "sms.fee_charged": "{restaurant}: {fee_label} {amount} har debiterats för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
         "when": "{weekday} {day} {month} kl {time}",
     },
@@ -68,6 +75,12 @@ _TEXT = {
                                          "Get in touch if you have questions or want a new time."),
         "reminder.subject": "Reminder: table {when} - {restaurant}",
         "reminder.lead": "A reminder about your booking. We look forward to your visit!",
+        "fee_charged.subject": "Receipt: {fee_label} - {restaurant}",
+        "fee_charged.lead": ("As agreed in the terms you accepted when booking, your card has been "
+                             "charged {amount} ({fee_label_lower}). Contact the restaurant with any questions."),
+        "fee.no_show": "No-show fee",
+        "fee.late_cancel": "Late cancellation fee",
+        "amount": "Amount",
         "restaurant": "Restaurant",
         "date": "Date",
         "time": "Time",
@@ -84,12 +97,27 @@ _TEXT = {
         "sms.cancelled_by_guest": "{restaurant}: Your booking {when} is cancelled.",
         "sms.cancelled_by_restaurant": "{restaurant}: Unfortunately we had to cancel your booking {when}. Contact us: {contact}",
         "sms.reminder": "{restaurant}: Reminder of your table {when}, {guests}.",
+        "sms.fee_charged": "{restaurant}: {fee_label} {amount} has been charged for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
         "when": "{weekday} {day} {month} at {time}",
     },
 }
 
-GUEST_NOTICES = ("confirmed", "changed", "cancelled_by_guest", "cancelled_by_restaurant", "reminder")
+GUEST_NOTICES = ("confirmed", "changed", "cancelled_by_guest", "cancelled_by_restaurant", "reminder",
+                 "fee_charged")
+STAFF_ONLY_NOTICES = ("fee_failed",)
+
+
+def money(ore):
+    kronor = int(ore) / 100
+    text = f"{kronor:,.2f}".replace(",", " ").replace(".", ",")
+    return (text[:-3] if text.endswith(",00") else text) + " kr"
+
+
+def _fee(item, lang):
+    payment = item.get("payment") or {}
+    label = _t(lang, f"fee.{payment.get('kind', 'no_show')}")
+    return label, money(payment.get("amount") or 0)
 _WITH_LINK = ("confirmed", "changed", "reminder")
 
 
@@ -154,8 +182,11 @@ def guest_email(kind, item, tenant_row, location, link):
     ]
     if (location or {}).get("address"):
         rows.append((_t(lang, "address"), location["address"]))
-    subject = _t(lang, f"{kind}.subject", restaurant=name, when=when(item, lang))
-    lead = _t(lang, f"{kind}.lead")
+    fee_label, amount = _fee(item, lang)
+    subject = _t(lang, f"{kind}.subject", restaurant=name, when=when(item, lang), fee_label=fee_label)
+    lead = _t(lang, f"{kind}.lead", amount=amount, fee_label_lower=fee_label.lower())
+    if kind == "fee_charged":
+        rows.append((_t(lang, "amount"), amount))
     hello = _t(lang, "hello", name=first_name).replace(" !", "!").replace(" ,", ",")
     manage_label = _t(lang, "manage.reminder" if kind == "reminder" else "manage")
     show_link = bool(link) and kind in _WITH_LINK
@@ -204,8 +235,9 @@ def guest_email(kind, item, tenant_row, location, link):
 def guest_sms(kind, item, tenant_row, location, link):
     lang = _lang(item)
     name = restaurant_name(tenant_row, location)
-    text = _t(lang, f"sms.{kind}", restaurant=name, when=when(item, lang),
-              guests=_guests(item, lang), contact=contact_line(tenant_row, location) or name)
+    fee_label, amount = _fee(item, lang)
+    text = _t(lang, f"sms.{kind}", restaurant=name, when=when(item, lang), guests=_guests(item, lang),
+              contact=contact_line(tenant_row, location) or name, fee_label=fee_label, amount=amount)
     if link and kind in _WITH_LINK:
         text += " " + _t(lang, "sms.manage", link=link)
     return text
@@ -229,7 +261,13 @@ def staff_email(kind, item, tenant_row, location, admin_url):
     ]
     if item.get("notes"):
         lines.append(f"Meddelande: {item['notes']}")
-    if kind == "confirmed":
+    if kind == "fee_failed":
+        fee_label, amount = _fee(item, "sv")
+        error = (item.get("payment") or {}).get("error") or "okänt fel"
+        subject = f"Avgiften kunde inte dras: {fee_label.lower()} {amount} - {name}"
+        lead = (f"{fee_label} på {amount} kunde inte dras från gästens kort ({error}). "
+                "Försök igen från bokningen i admin, eller kontakta gästen.")
+    elif kind == "confirmed":
         subject = f"Ny bokning {item['date']} {item['startTime']}, {_guests(item, 'sv')} - {name}"
         lead = "En gäst har bokat bord via er webbplats."
     else:

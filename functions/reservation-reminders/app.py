@@ -14,6 +14,11 @@ PURPOSE:
              at least H before its start (a booking made 3 h ahead just got
              its confirmation - no reminder on top).
 
+    Also expires card-guarantee bookings whose card was never confirmed
+    (status pending past pendingExpiresAt): found through their PENDING#
+    marker rows, set to "expired" with their tables released in one
+    transaction (shared/guarantee.py).
+
     Each due booking gets ONE conditional update: reminderSentAt + a
     "reminder" notice, only if it is still reserved, still at the same
     start time and not reminded yet. The Reservation stream hands the
@@ -23,12 +28,13 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    RESERVATION_TABLE_NAME
+    RESERVATION_TABLE_NAME, SLOT_OCCUPANCY_TABLE_NAME
 
 AWS RESOURCE ACCESS:
     Scan on the location table (list locations), GetItem on the tenant
-    table (tenant-context policy), Query + UpdateItem on the reservation
-    table.
+    table (tenant-context policy), Query/GetItem/UpdateItem/DeleteItem on
+    the reservation table, BatchGetItem/UpdateItem/DeleteItem on the slot
+    occupancy table (releasing expired holds).
 """
 
 import json
@@ -40,7 +46,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
-from shared import dynamo, tenant
+from shared import dynamo, guarantee, tenant
 from shared import reservations as r
 
 logger = logging.getLogger()
@@ -123,14 +129,48 @@ def _mark(item, now):
         raise
 
 
+def expire_pending(location_id, now):
+    """Expire this location's pending bookings past their hold. Returns the count."""
+    table = dynamo.table(r.reservation_table())
+    request = {"KeyConditionExpression": Key("PK").eq(r.location_pk(location_id))
+               & Key("SK").between("PENDING#", f"PENDING#{r.iso(now)}#~")}
+    expired = 0
+    while True:
+        page = table.query(**request)
+        for marker in page.get("Items") or []:
+            try:
+                item = r.load(location_id, marker["reservationId"])
+            except r.NotFound:
+                table.delete_item(Key={"PK": marker["PK"], "SK": marker["SK"]})
+                continue
+            if item["status"] != r.PENDING or item.get("pendingExpiresAt") is None:
+                table.delete_item(Key={"PK": marker["PK"], "SK": marker["SK"]})
+                continue
+            if r.parse_iso(item["pendingExpiresAt"]) > now:
+                continue
+            try:
+                r.transact(guarantee.expire_items(item, now))
+                expired += 1
+            except r.Conflict:
+                pass  # confirmed or cancelled in the same instant - its own write wins
+        if "LastEvaluatedKey" not in page:
+            return expired
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 def handler(event, context):
     now = r.now_utc()
     tenants = {}
-    marked = failed = 0
+    marked = failed = expired = 0
     for location in _locations():
         tenant_id, location_id = location.get("tenantId"), location.get("locationId")
         if not tenant_id or not location_id:
             continue
+        try:
+            expired += expire_pending(location_id, now)
+        except ClientError:
+            failed += 1
+            logger.exception("expiry failed for location %s", location_id)
         if tenant_id not in tenants:
             row = tenant.get_tenant(tenant_id)
             active = bool(row) and row.get("status") == "active" and \
@@ -152,7 +192,7 @@ def handler(event, context):
             # (15 min) picks its bookings up again - nothing was marked.
             failed += 1
             logger.exception("reminders failed for location %s", location_id)
-    logger.info(json.dumps({"reminders": marked, "failedLocations": failed}))
+    logger.info(json.dumps({"reminders": marked, "expired": expired, "failedLocations": failed}))
     if failed:
         raise RuntimeError(f"{failed} location(s) failed")  # visible in metrics/alarms
-    return {"reminders": marked}
+    return {"reminders": marked, "expired": expired}

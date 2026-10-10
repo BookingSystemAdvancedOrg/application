@@ -50,6 +50,7 @@ EXPECTED_OPERATIONS = {
     "/users/{cognitoSub}/group": frozenset({"put"}),
     "/tenant": frozenset({"get", "patch"}),
     "/tenant/stripe/account-link": frozenset({"post"}),
+    "/site-config": frozenset({"get"}),
     "/locations/{locationId}/reservations": frozenset({"get", "post"}),
     "/locations/{locationId}/reservations/manual": frozenset({"post"}),
     "/locations/{locationId}/reservations/{reservationId}": frozenset(
@@ -74,6 +75,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/availability", "get"),
         ("/locations/{locationId}/menu", "get"),
         ("/locations/{locationId}/layout/active", "get"),
+        ("/site-config", "get"),
         ("/locations/{locationId}/reservations", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
         ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),

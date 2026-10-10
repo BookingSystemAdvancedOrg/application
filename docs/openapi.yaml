@@ -2940,6 +2940,51 @@ paths:
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
+  /site-config:
+    get:
+      tags:
+        - Account
+      summary: Public website bootstrap
+      operationId: getSiteConfig
+      description: |
+        Which restaurant a website hostname belongs to, and everything the
+        booking site needs to render it: name, branding, enabled features,
+        locations (address, contact, opening hours, booking rules), legal
+        entity and the public Stripe / Turnstile keys. Pass exactly one of
+        `host` (production) or `slug` (outside prod only - for
+        `*.cloudfront.net` / localhost). Unknown, pending or inactive: 404.
+      security: []
+      x-required-groups: []
+      parameters:
+        - name: host
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: slug
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The site configuration (cacheable for 5 minutes).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=300
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteConfig'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3063,6 +3108,89 @@ components:
           - no-store
 
   schemas:
+    SiteConfig:
+      type: object
+      required: [tenant, legal, locations, stripe, turnstile]
+      properties:
+        tenant:
+          type: object
+          properties:
+            tenantId:
+              type: string
+            name:
+              type: string
+            slug:
+              type: string
+            branding:
+              type: object
+              description: logoUrl, heroImageUrl, faviconUrl, primaryColor, accentColor, tagline, about, instagramUrl, facebookUrl (only valid values).
+              additionalProperties:
+                type: string
+            features:
+              type: object
+              additionalProperties:
+                type: boolean
+        legal:
+          type: object
+          properties:
+            legalName:
+              type: string
+            orgNumber:
+              type: string
+              nullable: true
+            contactEmail:
+              type: string
+              nullable: true
+            contactPhone:
+              type: string
+              nullable: true
+            address:
+              type: string
+              nullable: true
+        locations:
+          type: array
+          items:
+            type: object
+            properties:
+              locationId:
+                type: string
+              name:
+                type: string
+              address:
+                type: string
+              phoneNumber:
+                type: string
+                nullable: true
+              email:
+                type: string
+                nullable: true
+              timezone:
+                type: string
+              businessHours:
+                type: object
+                additionalProperties: true
+              bookingDurationHours:
+                type: number
+                nullable: true
+              maxPartySizeOnline:
+                type: integer
+                nullable: true
+        stripe:
+          type: object
+          properties:
+            publishableKey:
+              type: string
+              nullable: true
+            accountId:
+              type: string
+              nullable: true
+        turnstile:
+          type: object
+          properties:
+            siteKey:
+              type: string
+              nullable: true
+
     ReservationStatus:
       type: string
       enum: [pending, reserved, arrived, no_show, cancelled_no_charge, cancelled_by_restaurant,

@@ -127,6 +127,8 @@ def test_online_booking_confirms_to_guest_and_tells_the_restaurant(env):
     assert "https://admin.example.se/bokningar?date=2026-09-20" in staff["Message"]["Body"]["Text"]["Data"]
     (sms,) = sns.calls
     assert sms["PhoneNumber"] == "+46701234567" and "söndag 20 september kl 18:00" in sms["Message"]
+    assert sms["Message"].startswith("Roma Södermalm: Hej Anna! Ditt bord är bokat")
+    assert "/bokning/" in sms["Message"]
     assert sms["MessageAttributes"]["AWS.SNS.SMS.SenderID"]["StringValue"] == "Roma"
 
 

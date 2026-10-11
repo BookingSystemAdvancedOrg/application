@@ -53,13 +53,14 @@ _TEXT = {
         "manage.reminder": "Kan du inte komma? Avboka här, så kan någon annan få bordet",
         "contact": "Frågor? Kontakta {restaurant}: {contact}",
         "footer": "Du får det här mejlet för att du har bokat bord hos {restaurant}.",
-        "sms.confirmed": "{restaurant}: Ditt bord är bokat {when}, {guests}.",
-        "sms.changed": "{restaurant}: Din bokning är ändrad till {when}, {guests}.",
-        "sms.cancelled_by_guest": "{restaurant}: Din bokning {when} är avbokad.",
-        "sms.cancelled_by_restaurant": "{restaurant}: Tyvärr har vi behövt avboka din bokning {when}. Kontakta oss: {contact}",
-        "sms.reminder": "{restaurant}: Påminnelse om ditt bord {when}, {guests}.",
-        "sms.fee_charged": "{restaurant}: {fee_label} {amount} har debiterats för bokningen {when}.",
+        "sms.confirmed": "{restaurant}: {greeting}Ditt bord är bokat {when}, {guests}.",
+        "sms.changed": "{restaurant}: {greeting}Din bokning är ändrad till {when}, {guests}.",
+        "sms.cancelled_by_guest": "{restaurant}: {greeting}Din bokning {when} är avbokad.",
+        "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Tyvärr har vi behövt avboka din bokning {when}. Kontakta oss: {contact}",
+        "sms.reminder": "{restaurant}: {greeting}Påminnelse om ditt bord {when}, {guests}.",
+        "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} har debiterats för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
+        "sms.greeting": "Hej {first}! ",
         "when": "{weekday} {day} {month} kl {time}",
     },
     "en": {
@@ -92,13 +93,14 @@ _TEXT = {
         "manage.reminder": "Can't make it? Cancel here so someone else can have the table",
         "contact": "Questions? Contact {restaurant}: {contact}",
         "footer": "You are receiving this email because you booked a table at {restaurant}.",
-        "sms.confirmed": "{restaurant}: Your table is booked {when}, {guests}.",
-        "sms.changed": "{restaurant}: Your booking is now {when}, {guests}.",
-        "sms.cancelled_by_guest": "{restaurant}: Your booking {when} is cancelled.",
-        "sms.cancelled_by_restaurant": "{restaurant}: Unfortunately we had to cancel your booking {when}. Contact us: {contact}",
-        "sms.reminder": "{restaurant}: Reminder of your table {when}, {guests}.",
-        "sms.fee_charged": "{restaurant}: {fee_label} {amount} has been charged for your booking {when}.",
+        "sms.confirmed": "{restaurant}: {greeting}Your table is booked {when}, {guests}.",
+        "sms.changed": "{restaurant}: {greeting}Your booking is now {when}, {guests}.",
+        "sms.cancelled_by_guest": "{restaurant}: {greeting}Your booking {when} is cancelled.",
+        "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Unfortunately we had to cancel your booking {when}. Contact us: {contact}",
+        "sms.reminder": "{restaurant}: {greeting}Reminder of your table {when}, {guests}.",
+        "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} has been charged for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
+        "sms.greeting": "Hi {first}! ",
         "when": "{weekday} {day} {month} at {time}",
     },
 }
@@ -232,11 +234,22 @@ def guest_email(kind, item, tenant_row, location, link):
     return subject, text, html_body
 
 
+def _first_name(full):
+    """First word of the guest's name, kept short for an SMS (None if missing)."""
+    if not isinstance(full, str) or not full.strip():
+        return None
+    first = full.strip().split()[0]
+    return first[:20]
+
+
 def guest_sms(kind, item, tenant_row, location, link):
     lang = _lang(item)
     name = restaurant_name(tenant_row, location)
     fee_label, amount = _fee(item, lang)
-    text = _t(lang, f"sms.{kind}", restaurant=name, when=when(item, lang), guests=_guests(item, lang),
+    first = _first_name(item.get("customerName"))
+    greeting = _t(lang, "sms.greeting", first=first) if first else ""
+    text = _t(lang, f"sms.{kind}", restaurant=name, greeting=greeting, when=when(item, lang),
+              guests=_guests(item, lang),
               contact=contact_line(tenant_row, location) or name, fee_label=fee_label, amount=amount)
     if link and kind in _WITH_LINK:
         text += " " + _t(lang, "sms.manage", link=link)

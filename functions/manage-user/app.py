@@ -823,14 +823,21 @@ def _validate_profile_location(target, updates):
 
 
 def _cognito_attributes(profile, fields):
-    return [
-        {
+    attributes = []
+    for field in ("name", "email", "phone"):
+        if field not in fields:
+            continue
+        attributes.append({
             "Name": _PROFILE_TO_COGNITO_ATTRIBUTE[field],
             "Value": profile[field],
-        }
-        for field in ("name", "email", "phone")
-        if field in fields
-    ]
+        })
+        if field == "email":
+            # The owner vouches for the address, as with the invitation:
+            # "forgot password" only sends to a verified email. Set in the
+            # same call, so Cognito doesn't email a verification code that
+            # nobody can enter anywhere.
+            attributes.append({"Name": "email_verified", "Value": "true"})
+    return attributes
 
 
 def _invite_user(event, caller_sub, caller_groups):
@@ -846,6 +853,9 @@ def _invite_user(event, caller_sub, caller_groups):
             Username=requested["email"],
             UserAttributes=[
                 {"Name": "email", "Value": requested["email"]},
+                # The invitation goes to this address; "forgot password"
+                # only sends to a verified email.
+                {"Name": "email_verified", "Value": "true"},
                 {"Name": "name", "Value": requested["name"]},
                 {"Name": "phone_number", "Value": requested["phone"]},
                 # Immutable: ties the login to this tenant for good.

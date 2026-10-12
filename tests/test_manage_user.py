@@ -1587,6 +1587,7 @@ def test_profile_rollback_uses_live_cognito_values_and_verification_flags(
             UserAttributes=[
                 {"Name": "name", "Value": "New Name"},
                 {"Name": "email", "Value": "new.user@example.com"},
+                {"Name": "email_verified", "Value": "true"},
                 {"Name": "phone_number", "Value": "+46709999999"},
             ],
         ),
@@ -2094,6 +2095,43 @@ def test_invite_ties_the_user_to_the_callers_tenant(app_state):
     attrs = cognito.admin_create_user.call_args.kwargs["UserAttributes"]
     assert {"Name": "custom:tenant_id", "Value": TENANT_A} in attrs
     assert get_user(user_table)["tenantId"] == TENANT_A
+
+
+def test_invited_staff_can_use_forgot_password(app_state):
+    app, user_table, cognito = app_state
+
+    response = app.handler(make_event(body=invite_body()), None)
+
+    assert response["statusCode"] == 201
+    attrs = cognito.admin_create_user.call_args.kwargs["UserAttributes"]
+    assert {"Name": "email_verified", "Value": "true"} in attrs
+
+
+def test_a_changed_email_stays_verified(app_state):
+    app, user_table, cognito = app_state
+    put_user(user_table, user_item())
+    cognito.admin_get_user.return_value = {
+        "Enabled": True,
+        "UserAttributes": [
+            {"Name": "email", "Value": "old@example.com"},
+            {"Name": "email_verified", "Value": "true"},
+        ],
+    }
+
+    response = app.handler(
+        make_event(method="PUT", proxy=TARGET_SUB, body={"email": "new@example.com"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    cognito.admin_update_user_attributes.assert_called_once_with(
+        UserPoolId=USER_POOL_ID,
+        Username=TARGET_SUB,
+        UserAttributes=[
+            {"Name": "email", "Value": "new@example.com"},
+            {"Name": "email_verified", "Value": "true"},
+        ],
+    )
 
 
 def test_invite_to_another_tenants_location_is_rejected(app_state):

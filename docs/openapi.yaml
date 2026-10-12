@@ -181,6 +181,123 @@ paths:
         '502':
           $ref: '#/components/responses/AuthBadGateway'
 
+  /auth/forgot-password:
+    post:
+      tags:
+        - Authentication
+      summary: Email a password reset link
+      operationId: authForgotPassword
+      description: |
+        Starts Cognito `ForgotPassword` for an owner/staff account. Cognito
+        emails a 6-digit code: with the user pool sending through SES, as a
+        link to the admin app's `/aterstall-losenord#code=<code>&email=<address>`
+        (the pool's custom message trigger), otherwise as the code itself.
+        The code works once and for one hour.
+
+        The answer is the same whether or not the address has an account -
+        also when the account can't reset (still on its invitation's
+        temporary password, disabled, no verified email) - so the route
+        can't be used to find out which addresses have accounts. At most 5
+        requests per IP address per 15 minutes, on top of Cognito's own
+        per-account limit.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+            example:
+              username: staff@example.com
+      responses:
+        '202':
+          description: The reset email is on its way if the address has an account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetStatus'
+              example:
+                status: sent
+        '400':
+          $ref: '#/components/responses/AuthBadRequest'
+        '429':
+          $ref: '#/components/responses/PasswordResetTooManyRequests'
+        '502':
+          $ref: '#/components/responses/AuthBadGateway'
+
+  /auth/reset-password:
+    post:
+      tags:
+        - Authentication
+      summary: Choose a new password with the emailed code
+      operationId: authResetPassword
+      description: |
+        Completes Cognito `ConfirmForgotPassword`. `username` and `code` come
+        from the reset link (or the email and the code typed in). On success
+        the user signs in with `/auth/login` as usual. Errors: `invalid code`,
+        `code expired`, `password does not meet requirements` (400),
+        `account_disabled` (403). At most 10 attempts per IP address per 15
+        minutes; Cognito also blocks an account after repeated wrong codes.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+            example:
+              username: staff@example.com
+              code: '123456'
+              newPassword: NewPassword123!
+      responses:
+        '200':
+          description: The new password is set.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetStatus'
+              example:
+                status: reset
+        '400':
+          description: The request, the code or the new password was not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCode:
+                  value:
+                    error: invalid code
+                expired:
+                  value:
+                    error: code expired
+                weakPassword:
+                  value:
+                    error: password does not meet requirements
+        '403':
+          description: The account is disabled.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: account_disabled
+        '429':
+          $ref: '#/components/responses/PasswordResetTooManyRequests'
+        '502':
+          $ref: '#/components/responses/AuthBadGateway'
+
   /list-users:
     get:
       tags:
@@ -3990,6 +4107,57 @@ components:
           minLength: 1
           pattern: '.*\S.*'
 
+    ForgotPasswordRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - username
+      properties:
+        username:
+          type: string
+          format: email
+          maxLength: 254
+          description: The account's email address (surrounding spaces are ignored).
+
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: true
+      required:
+        - username
+        - code
+        - newPassword
+      properties:
+        username:
+          type: string
+          format: email
+          maxLength: 254
+          description: The account's email address, as in the reset link.
+        code:
+          type: string
+          description: The 6-digit code from the reset email (spaces are ignored).
+          example: '123456'
+        newPassword:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 256
+          description: |
+            Must meet the user pool's password policy: at least 8 characters
+            with upper- and lowercase letters (A-Z, a-z), a number and a
+            symbol, and no space first or last.
+
+    PasswordResetStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - sent
+            - reset
+
     ChallengeRequest:
       type: object
       additionalProperties: true
@@ -6607,6 +6775,23 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: too many authentication attempts
+    PasswordResetTooManyRequests:
+      description: |
+        Too many reset requests from this IP address, or Cognito's limit for
+        the account was reached.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        Retry-After:
+          description: Seconds until the IP address limit's window ends (only for that limit).
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: too many attempts
     AuthBadGateway:
       description: Cognito was unavailable or returned an invalid result.
       headers:

@@ -693,3 +693,272 @@ def test_login_maps_tenant_refusals_to_stable_codes(app, error_code, message, ex
 
     assert response["statusCode"] == 403
     assert json.loads(response["body"]) == {"error": expected}
+
+
+# --- forgot password ----------------------------------------------------------------
+
+SECRET_HASH = "lBMgbQL20sOl5Whi4M9rO7OsXqnaDwwYQlzlEM4j1G4="
+
+
+def auth_event(proxy, body, ip=None):
+    event = make_event(proxy=proxy)
+    event["body"] = json.dumps(body)
+    if ip:
+        event["requestContext"]["http"]["sourceIp"] = ip
+    return event
+
+
+def cognito_error(code, message="sensitive AWS message", operation="ForgotPassword"):
+    return ClientError({"Error": {"Code": code, "Message": message}}, operation)
+
+
+class _GuardTable:
+    """The request guard's conditional counter, in memory."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def update_item(self, Key, ExpressionAttributeValues, **kwargs):
+        key = Key["PK"]
+        if ":minus" in ExpressionAttributeValues:
+            self.rows[key] = self.rows.get(key, 0) - 1
+            return
+        if self.rows.get(key, 0) >= ExpressionAttributeValues[":max"]:
+            raise cognito_error("ConditionalCheckFailedException", operation="UpdateItem")
+        self.rows[key] = self.rows.get(key, 0) + 1
+
+
+@pytest.fixture
+def guard(app, monkeypatch):
+    from shared import request_guard
+
+    monkeypatch.setenv("REQUEST_GUARD_TABLE_NAME", "guard")
+    table = _GuardTable()
+    monkeypatch.setattr(request_guard, "table", lambda name: table)
+    monkeypatch.setattr(app, "FORGOT_LIMIT", (2, 900))
+    monkeypatch.setattr(app, "RESET_LIMIT", (2, 900))
+    return table
+
+
+def test_forgot_password_asks_cognito_for_the_email(app):
+    cognito = Mock()
+    cognito.forgot_password.return_value = {
+        "CodeDeliveryDetails": {"Destination": "s***@e***", "DeliveryMedium": "EMAIL"},
+    }
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("forgot-password", {"username": " staff@example.com "}), None)
+
+    assert response["statusCode"] == 202
+    assert json.loads(response["body"]) == {"status": "sent"}
+    assert response["headers"]["Cache-Control"] == "no-store"
+    cognito.forgot_password.assert_called_once_with(
+        ClientId="local-test-client",
+        SecretHash=SECRET_HASH,
+        Username="staff@example.com",
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        ({}, "username is required"),
+        ({"username": "   "}, "username is required"),
+        ({"username": "not-an-email"}, "username must be an email address"),
+        ({"username": "a@b"}, "username must be an email address"),
+        ({"username": "x" * 250 + "@example.se"}, "username must be an email address"),
+    ],
+)
+def test_forgot_password_needs_an_email_address(app, body, expected_error):
+    app._cognito_client = Mock()
+
+    response = app.handler(auth_event("forgot-password", body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    app._cognito_client.forgot_password.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "UserNotFoundException",
+        "NotAuthorizedException",  # e.g. still on the invitation's temporary password
+        "InvalidParameterException",  # no verified email
+        "CodeDeliveryFailureException",
+    ],
+)
+def test_forgot_password_answers_the_same_when_no_email_goes_out(app, caplog, error_code):
+    cognito = Mock()
+    cognito.forgot_password.side_effect = cognito_error(error_code)
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("forgot-password", {"username": "nobody@example.com"}), None)
+
+    assert response["statusCode"] == 202
+    assert json.loads(response["body"]) == {"status": "sent"}
+    assert error_code in caplog.text
+    assert "nobody@example.com" not in caplog.text
+
+
+@pytest.mark.parametrize("error_code", ["LimitExceededException", "TooManyRequestsException"])
+def test_forgot_password_too_often_for_one_account(app, error_code):
+    cognito = Mock()
+    cognito.forgot_password.side_effect = cognito_error(error_code)
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("forgot-password", {"username": "staff@example.com"}), None)
+
+    assert response["statusCode"] == 429
+    assert json.loads(response["body"]) == {"error": "too many attempts"}
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["InvalidLambdaResponseException", "UnexpectedLambdaException", "InvalidEmailRoleAccessPolicyException"],
+)
+def test_a_broken_reset_email_is_not_hidden(app, caplog, error_code):
+    cognito = Mock()
+    cognito.forgot_password.side_effect = cognito_error(error_code)
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("forgot-password", {"username": "staff@example.com"}), None)
+
+    assert response["statusCode"] == 502
+    assert json.loads(response["body"]) == {"error": "authentication service unavailable"}
+    assert error_code in caplog.text
+
+
+def test_forgot_password_transport_error_is_502(app):
+    cognito = Mock()
+    cognito.forgot_password.side_effect = EndpointConnectionError(
+        endpoint_url="https://cognito-idp.eu-north-1.amazonaws.com",
+    )
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("forgot-password", {"username": "staff@example.com"}), None)
+
+    assert response["statusCode"] == 502
+
+
+def test_forgot_password_is_limited_per_ip_address(app, guard):
+    app._cognito_client = Mock()
+
+    codes = [
+        app.handler(auth_event("forgot-password", {"username": f"s{i}@example.com"}, ip="203.0.113.5"), None)
+        for i in range(3)
+    ]
+
+    assert [r["statusCode"] for r in codes] == [202, 202, 429]
+    assert json.loads(codes[2]["body"]) == {"error": "too many attempts"}
+    assert 0 < int(codes[2]["headers"]["Retry-After"]) <= 900
+    assert app._cognito_client.forgot_password.call_count == 2
+    # Another address isn't affected.
+    other = app.handler(auth_event("forgot-password", {"username": "s@example.com"}, ip="198.51.100.7"), None)
+    assert other["statusCode"] == 202
+
+
+def test_forgot_password_requires_post(app):
+    response = app.handler(make_event(method="GET", proxy="forgot-password"), None)
+
+    assert response["statusCode"] == 405
+    assert response["headers"]["Allow"] == "POST"
+
+
+# --- reset password -------------------------------------------------------------------------
+
+RESET = {"username": "staff@example.com", "code": "123456", "newPassword": "NewPassword123!"}
+
+
+def test_reset_password_sets_the_new_password(app):
+    cognito = Mock()
+    cognito.confirm_forgot_password.return_value = {}
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("reset-password", {**RESET, "code": " 123 456 "}), None)
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "reset"}
+    assert response["headers"]["Cache-Control"] == "no-store"
+    cognito.confirm_forgot_password.assert_called_once_with(
+        ClientId="local-test-client",
+        SecretHash=SECRET_HASH,
+        Username="staff@example.com",
+        ConfirmationCode="123456",
+        Password="NewPassword123!",
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_error"),
+    [
+        ({"username": "nope"}, "username must be an email address"),
+        ({"code": None}, "code is required"),
+        ({"code": "12345"}, "code must be the 6-digit code from the email"),
+        ({"code": "12345a"}, "code must be the 6-digit code from the email"),
+        ({"newPassword": ""}, "newPassword is required"),
+        ({"newPassword": "A1!" + "a" * 254}, "newPassword must be at most 256 characters"),
+    ],
+)
+def test_reset_password_validates_the_request(app, change, expected_error):
+    app._cognito_client = Mock()
+    body = {k: v for k, v in {**RESET, **change}.items() if v is not None}
+
+    response = app.handler(auth_event("reset-password", body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    app._cognito_client.confirm_forgot_password.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error_code", "message", "expected_status", "expected_error"),
+    [
+        ("CodeMismatchException", "x", 400, "invalid code"),
+        ("UserNotFoundException", "x", 400, "invalid code"),
+        ("ExpiredCodeException", "x", 400, "code expired"),
+        ("InvalidPasswordException", "x", 400, "password does not meet requirements"),
+        ("PasswordHistoryPolicyViolationException", "x", 400, "password does not meet requirements"),
+        ("InvalidParameterException", "x", 400, "invalid reset request"),
+        ("LimitExceededException", "x", 429, "too many attempts"),
+        ("TooManyFailedAttemptsException", "x", 429, "too many attempts"),
+        ("TooManyRequestsException", "x", 429, "too many attempts"),
+        ("NotAuthorizedException", "User is disabled.", 403, "account_disabled"),
+        ("NotAuthorizedException", "Invalid code provided", 400, "invalid code"),
+        ("InternalErrorException", "x", 502, "authentication service unavailable"),
+    ],
+)
+def test_reset_password_maps_cognito_errors(app, error_code, message, expected_status, expected_error):
+    cognito = Mock()
+    cognito.confirm_forgot_password.side_effect = cognito_error(error_code, message, "ConfirmForgotPassword")
+    app._cognito_client = cognito
+
+    response = app.handler(auth_event("reset-password", RESET), None)
+
+    assert response["statusCode"] == expected_status
+    assert json.loads(response["body"]) == {"error": expected_error}
+    assert response["headers"]["Cache-Control"] == "no-store"
+
+
+def test_reset_password_is_limited_per_ip_address(app, guard):
+    cognito = Mock()
+    cognito.confirm_forgot_password.side_effect = cognito_error("CodeMismatchException")
+    app._cognito_client = cognito
+
+    codes = [
+        app.handler(auth_event("reset-password", RESET, ip="203.0.113.5"), None)["statusCode"]
+        for _ in range(3)
+    ]
+
+    assert codes == [400, 400, 429]
+    assert cognito.confirm_forgot_password.call_count == 2
+
+
+def test_forgot_and_reset_have_their_own_counters(app, guard):
+    app._cognito_client = Mock()
+    app._cognito_client.confirm_forgot_password.return_value = {}
+
+    for _ in range(2):
+        app.handler(auth_event("forgot-password", {"username": "staff@example.com"}, ip="203.0.113.5"), None)
+
+    assert app.handler(auth_event("reset-password", RESET, ip="203.0.113.5"), None)["statusCode"] == 200

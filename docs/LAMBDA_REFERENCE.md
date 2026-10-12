@@ -323,7 +323,7 @@ service.
 | `STRIPE_SECRET_KEY` | Create the card-on-file SetupIntent server-side |
 | `TURNSTILE_REQUIRED` | `true` when the guest sites show the platform's Turnstile widget - online bookings then need its token (`shared/turnstile.py`) |
 | `TURNSTILE_SECRET_ARN` | Secrets Manager secret `{"secretKey": "..."}` of that widget |
-| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`) |
+| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`); manage-auth uses the same table for its per-IP forgot/reset password limits |
 
 **AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `secretsmanager:GetSecretValue` on the Turnstile secret; `dynamodb:UpdateItem` on the request-guard table.
 
@@ -818,16 +818,19 @@ A missing state item, a state item with no pending transition, or a different au
 
 ### 16. `manage-auth`
 **Trigger:** API Gateway — `ANY /auth/{proxy+}` — Auth: `NONE`
-**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh — whatever sub-paths the front-end needs). Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner/super_user accounts exist in Cognito — customers never authenticate.
+**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh — whatever sub-paths the front-end needs) and "forgot password". Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner accounts exist in Cognito — customers never authenticate.
+
+**Forgot password:** `POST /auth/forgot-password {username}` runs Cognito `ForgotPassword` and always answers `202 {"status": "sent"}` — also for an address without an account, an account still on its invitation's temporary password, a disabled account or one without a verified email — so the form can't reveal which addresses have accounts (the reason is logged, never the address). Cognito emails a 6-digit code; when the user pool sends through SES its custom message trigger (infrastructure `compute/lambda/cognito-custom-message`) turns it into a link to the admin app's `/aterstall-losenord#code=…&email=…`. `POST /auth/reset-password {username, code, newPassword}` runs `ConfirmForgotPassword`: `200 {"status": "reset"}`, or `400` `invalid code` / `code expired` / `password does not meet requirements`, `403 account_disabled`, `429 too many attempts`. A broken reset email (trigger or SES error) is a `502`, never hidden. Per IP address: 5 reset emails and 10 new-password attempts per 15 minutes (`shared/request_guard.py`, `429` with `Retry-After`), on top of Cognito's per-account limits.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `COGNITO_USER_POOL_ID` | Target user pool for auth calls |
-| `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge` |
+| `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge`/`ForgotPassword`/`ConfirmForgotPassword` |
 | `COGNITO_CLIENT_SECRET` | App client secret used to calculate Cognito `SECRET_HASH` values |
+| `REQUEST_GUARD_TABLE_NAME` | Per-IP attempt counters for forgot/reset password (optional — unset means no per-IP limit) |
 
-**AWS resource access:** Cognito `InitiateAuth` and `RespondToAuthChallenge` only, scoped to the user pool. No DynamoDB access at all — this function only talks to Cognito.
+**AWS resource access:** Cognito `InitiateAuth`, `RespondToAuthChallenge`, `ForgotPassword` and `ConfirmForgotPassword`, scoped to the user pool; `dynamodb:UpdateItem` on the request-guard table only.
 
 ---
 
@@ -859,6 +862,8 @@ The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`
 | `POST` | `<cognitoSub>/reactivate` | No body | `200` with `status="active"` |
 | `DELETE` | `<cognitoSub>` | No body | `204` with an empty body |
 | `PUT` | `<cognitoSub>/group` | `group`, plus conditional `locationId` | `200` with the updated logical user |
+
+The invitation and an email change both set `email_verified=true` (in the same Cognito call): the owner vouches for the address, the reset link of "forgot password" only goes to a verified email, and Cognito doesn't send a verification code nobody can enter.
 
 `PUT /users/<cognitoSub>` is intentionally a partial update even though it uses `PUT`: the infrastructure's CORS configuration does not permit `PATCH`. At least one supported field is required. Server-controlled fields (`PK`, `SK`, `cognitoSub`, `role`, `status`, `createdBy`, and `createdAt`) and unknown fields are rejected. A group change uses the same location rule as creation: a target `staff_user` needs a non-empty `locationId`; privileged targets get an empty location.
 

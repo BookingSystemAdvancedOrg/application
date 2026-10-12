@@ -162,3 +162,18 @@ fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 
 - M5: admin bookings page on the real API (status, move, no-show with
   fee, retry, refund).
+
+## Start times and lead time
+
+Bookings start on the clock's half hours (14:00, 14:30 - never 14:02),
+every 30 minutes inside opening hours, with the whole booking before
+closing (`shared/availability.py`, `SLOT_STEP_MINUTES`). A booking must
+start at least 30 minutes from now (`LEAD_TIME`) - online, by phone and
+when staff move a booking to another time. At 13:32 the first bookable
+start is 14:30. Exceptions, both staff-only: a walk-in (the guest is
+there) may take a slot inside the lead time or one that is already
+running, and editing a booking that keeps its own date and time (new
+tables, more guests) works right up to and during the visit. Holds are
+checked by interval overlap and serialised by the per-table lock, so
+overlapping half-hour starts can never double-book a table.
+

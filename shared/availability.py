@@ -135,6 +135,11 @@ _MANUAL_ID_PATTERN = re.compile(
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
 _BOOKING_HORIZON = timedelta(days=21)
+# Start times sit on the clock's half hours (14:00, 14:30 - never 14:02),
+# and a booking must start at least LEAD_TIME from now - online and by staff
+# alike. Only staff walk-ins (the guest is standing there) skip the lead time.
+SLOT_STEP_MINUTES = 30
+LEAD_TIME = timedelta(minutes=30)
 
 
 class _AvailabilityServiceFailure(Exception):
@@ -335,7 +340,14 @@ def _resolve_local_instant(naive_value, location_timezone):
     return candidates.pop()
 
 
-def _candidate_slots(details, location, now):
+def _first_step(minute):
+    return -(-minute // SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
+
+
+def _candidate_slots(details, location, now, *, earliest=None):
+    """Bookable slots of one day: starts every SLOT_STEP_MINUTES on the
+    clock's half hours inside opening hours, the whole booking before
+    closing, starting no earlier than ``earliest`` (default now + LEAD_TIME)."""
     if (
         not isinstance(now, datetime)
         or now.tzinfo is None
@@ -343,6 +355,7 @@ def _candidate_slots(details, location, now):
     ):
         raise _AvailabilityServiceFailure
     now = now.astimezone(timezone.utc)
+    earliest = (now + LEAD_TIME) if earliest is None else earliest.astimezone(timezone.utc)
     latest_start = now + _BOOKING_HORIZON
     requested_date = date.fromisoformat(details["date"])
     local_today = now.astimezone(location["timezone"]).date()
@@ -360,7 +373,7 @@ def _candidate_slots(details, location, now):
     for interval in location["businessHours"][weekday]:
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
-        start_minute = opens_at
+        start_minute = _first_step(opens_at)
         while start_minute + duration <= closes_at:
             end_minute = start_minute + duration
             start_local = datetime.combine(
@@ -381,12 +394,12 @@ def _candidate_slots(details, location, now):
                     location["timezone"],
                 )
             except ValueError:
-                start_minute += duration
+                start_minute += SLOT_STEP_MINUTES
                 continue
 
             if (
                 end_utc - start_utc == expected_duration
-                and now < start_utc <= latest_start
+                and earliest <= start_utc <= latest_start
             ):
                 slots.append(
                     {
@@ -398,7 +411,7 @@ def _candidate_slots(details, location, now):
                         "endUtc": end_utc,
                     }
                 )
-            start_minute += duration
+            start_minute += SLOT_STEP_MINUTES
     return slots
 
 
@@ -1159,24 +1172,31 @@ def set_tenant(tenant_id):
     _TENANT_ID.set(tenant_id)
 
 
+def candidate_slots(details, location, now, *, include_started=False):
+    """Slots for a day. ``include_started`` (staff walk-ins, keeping a
+    booking's own time) also returns slots starting within LEAD_TIME and
+    ones that have started but not ended; otherwise a slot must start at
+    least LEAD_TIME from now."""
+    now = now.astimezone(timezone.utc)
+    if not include_started:
+        return _candidate_slots(details, location, now)
+    started = now - timedelta(minutes=location["durationMinutes"])
+    slots = _candidate_slots(details, location, now, earliest=started)
+    return [s for s in slots if s["endUtc"] > now]
+
+
 def day_context(location_id, requested_date, now, *, include_started=False):
     """Bookable slots of one location and date with each slot's tables, or
-    None when the location doesn't exist. ``include_started`` also returns a
-    slot that has started but not ended (staff walk-ins); the public list
-    never does. Raises ValueError (date out of range), AvailabilityConflict,
-    AvailabilityServiceFailure."""
+    None when the location doesn't exist. ``include_started`` also returns
+    slots inside the lead time and the running ones (staff walk-ins, a
+    booking keeping its own time); otherwise every slot starts at least
+    LEAD_TIME from now. Raises ValueError (date out of range),
+    AvailabilityConflict, AvailabilityServiceFailure."""
     location = _read_location(location_id)
     if location is None:
         return None
     now = now.astimezone(timezone.utc)
-    probe_now = now
-    if include_started:
-        # A slot is offered while now < start; shift "now" back by one slot
-        # length so the running slot is included, then drop finished ones.
-        probe_now = now - timedelta(minutes=location["durationMinutes"])
-    slots = _candidate_slots({"date": requested_date}, location, probe_now)
-    if include_started:
-        slots = [s for s in slots if s["endUtc"] > now]
+    slots = candidate_slots({"date": requested_date}, location, now, include_started=include_started)
     if slots:
         slots, active_tables = _layout_slots(location_id, slots, now)
     else:

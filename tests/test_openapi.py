@@ -534,8 +534,19 @@ def test_get_availability_contract_matches_handler(openapi_document):
                 "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
             },
             "example": "2026-09-20",
-        }
+        },
+        {
+            "name": "walkIn",
+            "in": "query",
+            "required": False,
+            "description": (
+                "Staff drop-in list - include running slots and ones "
+                "starting within 30 minutes."
+            ),
+            "schema": {"type": "string", "enum": ["true", "1"]},
+        },
     ]
+    assert "at least 30 minutes after the request time" in description
     assert set(operation["responses"]) == {
         "200",
         "400",

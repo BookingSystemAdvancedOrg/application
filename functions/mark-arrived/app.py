@@ -276,7 +276,11 @@ def _edit(event, ctx, item):
         lock_sets = {new_date: set(new_tables)}
         lock_sets.setdefault(item["date"], set()).update(old_tables)
         versions = {d: r.read_lock_versions(location_id, d, sorted(t)) for d, t in lock_sets.items()}
-        context = availability.day_context(location_id, new_date, now, include_started=True)
+        # Keeping its own date and time (new tables, more guests) may happen
+        # right up to and during the booking; a move to another time needs the
+        # usual lead time, like any new booking.
+        same_time = new_date == item["date"] and new_start == item["startTime"]
+        context = availability.day_context(location_id, new_date, now, include_started=same_time)
         if context is None:
             raise r.NotFound
         occupancies = availability.query_occupancies(location_id, new_date) if context["slots"] else []

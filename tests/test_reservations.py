@@ -279,7 +279,7 @@ def test_concurrent_bookings_cannot_both_win(env, monkeypatch):
 
 
 @pytest.mark.parametrize("change, message", [
-    ({"startTime": "18:30"}, "startTime is not a bookable time"),
+    ({"startTime": "18:15"}, "startTime is not a bookable time"),
     ({"tableIds": ["table-x"]}, "isn't bookable"),
     ({"partySize": 5}, "seat 4"),
     ({"tableIds": []}, "tableIds must be a non-empty list"),
@@ -415,6 +415,41 @@ def test_walk_in_can_take_the_running_slot(env):
     assert staff["statusCode"] == 201, staff
     # Guests can't book a slot that already started.
     assert guest_booking(env, tables=("table-b",))["statusCode"] == 400
+
+
+def test_bookings_need_thirty_minutes_lead_time(env):
+    # 17:32 local: 18:00 is 28 minutes away - not bookable online or by phone.
+    env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)
+    too_soon = guest_booking(env, start="18:00")
+    assert too_soon["statusCode"] == 400 and "bookable" in body_of(too_soon)["error"]
+    phone = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Telefon", "source": "phone"}), None)
+    assert phone["statusCode"] == 400
+    # 18:30 is the first start - and the half hour grid has no 18:02.
+    assert guest_booking(env, start="18:30")["statusCode"] == 201
+    assert guest_booking(env, start="18:02", tables=("table-a",))["statusCode"] == 400
+
+
+def test_walk_in_may_take_a_slot_inside_the_lead_time(env):
+    env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)  # 17:32 local
+    walk = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Walk-in", "source": "walk_in"}), None)
+    assert walk["statusCode"] == 201, walk
+
+
+def test_moves_need_the_lead_time_but_table_swaps_do_not(env):
+    rid = body_of(guest_booking(env))["reservationId"]  # 18:00 on table-b
+    env["clock"].value = datetime(2026, 9, 20, 15, 45, tzinfo=timezone.utc)  # 17:45 local
+    # Same time, other table: fine right up to the booking.
+    swapped = edit(env, rid, {"tableIds": ["table-c"]})
+    assert swapped["statusCode"] == 200, swapped
+    # Another time inside the lead time: refused; one beyond it: fine.
+    assert edit(env, rid, {"startTime": "17:30"})["statusCode"] == 400
+    assert edit(env, rid, {"startTime": "18:30"})["statusCode"] == 200
 
 
 def test_arrive_no_show_and_undo_rules(env):

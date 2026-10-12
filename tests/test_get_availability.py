@@ -25,6 +25,22 @@ LOCATION_TABLE_NAME = "test-location"
 OCCUPANCY_TABLE_NAME = "test-occupancy"
 SNAPSHOT_TABLE_NAME = "test-layout-snapshot"
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
+def half_hours(first, last, duration_minutes=None):
+    """Start times every 30 min from first to last (inclusive), or (start,
+    end) pairs when a duration is given - the engine's slot grid."""
+    def minutes(t):
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+
+    def clock(m):
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    starts = range(minutes(first), minutes(last) + 1, 30)
+    if duration_minutes is None:
+        return [clock(m) for m in starts]
+    return [(clock(m), clock(m + duration_minutes)) for m in starts]
 _UNSET = object()
 
 
@@ -716,14 +732,7 @@ def test_builds_canonical_slots_and_active_table_capacity(
     assert [
         (slot["startTime"], slot["endTime"])
         for slot in captured["slots"]
-    ] == [
-        ("10:00", "12:00"),
-        ("12:00", "14:00"),
-        ("14:00", "16:00"),
-        ("16:00", "18:00"),
-        ("18:00", "20:00"),
-        ("20:00", "22:00"),
-    ]
+    ] == half_hours("10:00", "20:00", 120)
     assert captured["slots"][0]["startMinute"] == 600
     assert captured["slots"][0]["endMinute"] == 720
     assert captured["slots"][0]["startUtc"] == datetime(
@@ -1285,11 +1294,8 @@ def test_today_includes_only_slots_strictly_after_now(
     )
 
     assert response["statusCode"] == 200
-    assert [slot["startTime"] for slot in captured["slots"]] == [
-        "16:00",
-        "18:00",
-        "20:00",
-    ]
+    # now = 14:00 local; the first start is at least 30 minutes away
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("14:30", "20:00")
 
 
 def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
@@ -1306,11 +1312,7 @@ def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
     )
 
     assert response["statusCode"] == 200
-    assert [slot["startTime"] for slot in captured["slots"]] == [
-        "10:00",
-        "12:00",
-        "14:00",
-    ]
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("10:00", "14:00")
 
 
 def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
@@ -1391,16 +1393,7 @@ def test_fractional_hour_duration_uses_exact_minute_grid(
     assert [
         (slot["startTime"], slot["endTime"])
         for slot in captured["slots"]
-    ] == [
-        ("10:00", "11:30"),
-        ("11:30", "13:00"),
-        ("13:00", "14:30"),
-        ("14:30", "16:00"),
-        ("16:00", "17:30"),
-        ("17:30", "19:00"),
-        ("19:00", "20:30"),
-        ("20:30", "22:00"),
-    ]
+    ] == half_hours("10:00", "20:30", 90)
 
 
 @pytest.mark.parametrize(
@@ -1439,10 +1432,14 @@ def test_dst_unsafe_intervals_are_omitted_without_failing_day(
     )
 
     assert response["statusCode"] == 200
+    # starts/ends inside the skipped or repeated hour are left out
     assert [slot["startTime"] for slot in captured["slots"]] == [
         "00:00",
+        "00:30",
         "03:00",
+        "03:30",
         "04:00",
+        "04:30",
         "05:00",
     ]
 
@@ -1466,11 +1463,8 @@ def test_each_business_interval_has_its_own_slot_grid(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 200
-    assert [slot["startTime"] for slot in captured["slots"]] == [
-        "10:15",
-        "17:30",
-        "19:30",
-    ]
+    # starts sit on the clock's half hours: 10:30 + 2 h passes 12:15
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("17:30", "19:30")
 
 
 @pytest.mark.parametrize(
@@ -1669,12 +1663,11 @@ def test_scheduled_cutover_resolves_each_slot_to_effective_layout(
         )
         for slot in response_body(response)["slots"]
     ] == [
-        ("10:00", 1, [{"tableId": "current-table", "seats": 2}]),
-        ("12:00", 1, [{"tableId": "current-table", "seats": 2}]),
-        ("14:00", 1, [{"tableId": "current-table", "seats": 2}]),
-        ("16:00", 2, [{"tableId": "pending-table", "seats": 6}]),
-        ("18:00", 2, [{"tableId": "pending-table", "seats": 6}]),
-        ("20:00", 2, [{"tableId": "pending-table", "seats": 6}]),
+        (start, 1, [{"tableId": "current-table", "seats": 2}])
+        for start in half_hours("10:00", "14:00")
+    ] + [
+        (start, 2, [{"tableId": "pending-table", "seats": 6}])
+        for start in half_hours("16:00", "20:00")
     ]
 
 
@@ -1717,14 +1710,10 @@ def test_slot_straddling_scheduled_cutover_is_omitted(app_and_tables):
 
     assert response["statusCode"] == 200
     slots = response_body(response)["slots"]
-    assert [slot["startTime"] for slot in slots] == [
-        "10:00",
-        "12:00",
-        "16:00",
-        "18:00",
-        "20:00",
-    ]
-    assert [slot["layoutVersion"] for slot in slots] == [1, 1, 2, 2, 2]
+    # cutover 15:00 local: 13:30-14:30 starts straddle it and are left out
+    before, after = half_hours("10:00", "13:00"), half_hours("15:00", "20:00")
+    assert [slot["startTime"] for slot in slots] == before + after
+    assert [slot["layoutVersion"] for slot in slots] == [1] * len(before) + [2] * len(after)
 
 
 def test_scheduling_transition_conflicts_when_slot_reaches_future_side(
@@ -2135,14 +2124,7 @@ def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
                         {"tableId": "table-b", "seats": 4},
                     ],
                 }
-                for start, end in (
-                    ("10:00", "12:00"),
-                    ("12:00", "14:00"),
-                    ("14:00", "16:00"),
-                    ("16:00", "18:00"),
-                    ("18:00", "20:00"),
-                    ("20:00", "22:00"),
-                )
+                for start, end in half_hours("10:00", "20:00", 120)
             ],
         },
     )
@@ -2309,7 +2291,7 @@ def test_other_date_hold_is_not_returned_by_date_query(app_and_tables):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 200
-    assert len(response_body(response)["slots"]) == 6
+    assert len(response_body(response)["slots"]) == len(half_hours("10:00", "20:00"))
 
 
 def test_occupancy_query_is_single_and_strongly_consistent(
@@ -2572,3 +2554,52 @@ def test_plan_without_reservations_has_no_availability(app_and_tables):
     response = app.handler(make_event(), None)
 
     assert_response(response, 404, {"error": "location not found"})
+
+
+def test_first_start_is_at_least_thirty_minutes_away(app_and_tables, monkeypatch):
+    # 13:32 local: 14:00 is only 28 minutes away, so 14:30 is the first start.
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 32, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(query={"date": "2026-09-08"}), None)
+
+    assert response["statusCode"] == 200
+    assert captured["slots"][0]["startTime"] == "14:30"
+
+
+def test_exactly_thirty_minutes_ahead_is_bookable(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 30, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    app.handler(make_event(query={"date": "2026-09-08"}), None)
+
+    assert captured["slots"][0]["startTime"] == "14:00"
+
+
+def test_walk_in_list_includes_running_and_imminent_slots(app_and_tables, monkeypatch):
+    # 13:32 local: walk-ins may take the running 12:00-13:30 starts (11:30
+    # ended at 13:30) and 14:00 too - the guest is already there.
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 32, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(query={"date": "2026-09-08", "walkIn": "true"}), None)
+
+    assert response["statusCode"] == 200
+    assert [s["startTime"] for s in captured["slots"]][:6] == [
+        "12:00", "12:30", "13:00", "13:30", "14:00", "14:30",
+    ]
+
+
+def test_walk_in_flag_must_be_true(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+
+    response = app.handler(make_event(query={"date": "2026-09-20", "walkIn": "yes"}), None)
+
+    assert response["statusCode"] == 400

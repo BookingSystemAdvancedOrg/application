@@ -56,6 +56,8 @@ from shared.availability import (  # noqa: F401 - re-exported for tests
 )
 from shared.responses import json_response
 
+_OPTIONAL_QUERY_FIELDS = frozenset({"walkIn"})
+
 # Fail fast on a misconfigured function (the engine reads these per call).
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
@@ -123,7 +125,7 @@ def _requested_date(event):
             f"missing required query parameters: {', '.join(missing_fields)}"
         )
 
-    unsupported_fields = sorted(set(query) - _QUERY_FIELDS)
+    unsupported_fields = sorted(set(query) - _QUERY_FIELDS - _OPTIONAL_QUERY_FIELDS)
     if unsupported_fields:
         raise ValueError(
             f"unsupported query parameters: {', '.join(unsupported_fields)}"
@@ -141,11 +143,25 @@ def _requested_date(event):
     return value
 
 
+def _walk_in(event):
+    """?walkIn=true - the staff walk-in list: also the running slot and the
+    ones inside the lead time (free tables only - nothing about guests)."""
+    value = (event.get("queryStringParameters") or {}).get("walkIn")
+    if value is None:
+        return False
+    if value not in ("true", "1"):
+        raise ValueError("walkIn must be true")
+    return True
+
+
 def _request_details(event):
-    return {
+    details = {
         "locationId": _location_id(event),
         "date": _requested_date(event),
     }
+    if _walk_in(event):
+        details["walkIn"] = True
+    return details
 
 
 def _availability_from_occupancy(context):
@@ -170,7 +186,10 @@ def _handle_availability(details):
         )
 
     now = _utc_now()
-    slots = _candidate_slots(details, location, now)
+    if details.get("walkIn"):
+        slots = engine.candidate_slots(details, location, now, include_started=True)
+    else:
+        slots = _candidate_slots(details, location, now)
     now = now.astimezone(timezone.utc)
     if slots:
         slots, active_tables = _layout_slots(

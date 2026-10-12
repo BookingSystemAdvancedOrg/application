@@ -893,8 +893,12 @@ paths:
         overdue, changes concurrently, or has inconsistent stored state can
         return `409` rather than expose uncertain availability.
 
-        Past dates are rejected. On the current local date, a slot must start
-        strictly after the request time. Daylight-saving-unsafe intervals are
+        Slots start every 30 minutes on the clock's half hours (14:00, 14:30)
+        inside opening hours, the whole booking before closing. Past dates are
+        rejected; a slot must start at least 30 minutes after the request time
+        (at 13:32 the first start is 14:30). `walkIn=true` (the staff drop-in
+        list) also returns slots inside those 30 minutes and ones that have
+        started but not ended. Daylight-saving-unsafe intervals are
         omitted. A local date wholly beyond the 504-hour cutoff returns `400`
         with `date must not be more than 21 days ahead`; the cutoff date itself
         remains partially queryable as described above. A closed day, missing
@@ -913,6 +917,13 @@ paths:
             format: date
             pattern: '^\d{4}-\d{2}-\d{2}$'
           example: '2026-09-20'
+        - name: walkIn
+          in: query
+          required: false
+          description: Staff drop-in list - include running slots and ones starting within 30 minutes.
+          schema:
+            type: string
+            enum: ['true', '1']
       responses:
         '200':
           description: Bookable slots, possibly an empty list.

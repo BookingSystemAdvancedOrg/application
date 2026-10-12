@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 
-from shared import tenant
+from shared import booking_rules, tenant
 from shared.dynamo import table
 
 
@@ -299,6 +299,16 @@ def _validate_location(item, location_id):
             or duration_minutes >= 24 * 60
         ):
             raise ValueError
+        special_days = booking_rules.validate_special_days(item.get("specialDays"))
+        table_rules = booking_rules.validate_table_rules(item.get("tableRules"))
+        combinations = booking_rules.validate_table_combinations(
+            item.get("tableCombinations")
+        )
+        max_online = item.get("maxPartySizeOnline")
+        if max_online is not None:
+            max_online = booking_rules.whole_number(
+                max_online, "maxPartySizeOnline", 1, booking_rules.MAX_PARTY
+            )
     except (ArithmeticError, TypeError, ValueError):
         raise _AvailabilityConflict(
             "location record is inconsistent"
@@ -309,6 +319,10 @@ def _validate_location(item, location_id):
         "durationMinutes": int(duration_minutes),
         "timezone": location_timezone,
         "timezoneName": timezone_name,
+        "specialDays": booking_rules.special_days_by_date(special_days),
+        "tableRules": table_rules or {},
+        "tableCombinations": combinations or [],
+        "maxPartySizeOnline": max_online,
     }
 
 
@@ -386,7 +400,8 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
     expected_duration = timedelta(minutes=duration)
     slots = []
     weekday = _WEEKDAYS[requested_date.weekday()]
-    for interval in location["businessHours"][weekday]:
+    special = (location.get("specialDays") or {}).get(details["date"])
+    for interval in booking_rules.day_intervals(location["businessHours"], weekday, special):
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
         for start_minute in _interval_starts(opens_at, closes_at, duration, keep_start):
@@ -1122,7 +1137,21 @@ def _intervals_overlap(first_start, first_end, second_start, second_end):
     return first_start < second_end and second_start < first_end
 
 
-def _public_availability(context, occupancies):
+def _public_availability(context, occupancies, *, party_size=None):
+    """The availability response. Without ``party_size`` (staff view)
+    every slot lists its free tables. With it (the online guest view) a slot
+    also lists ``options`` - the single tables and restaurant-defined
+    combinations that party may book online (booking_rules.online_options) -
+    its ``tables`` are only the tables in those options, and slots without
+    any option are left out. A day without online booking has no slots in
+    the guest view. ``day`` is present on a special day."""
+    day = context.get("day")
+    guest_view = party_size is not None
+    max_online = context.get("maxPartySizeOnline")
+    online_closed = guest_view and (
+        (day is not None and day["kind"] == "no_online")
+        or (max_online is not None and party_size > max_online)
+    )
     occupied_by_table = {item["tableId"]: [] for item in context["tables"]}
     for item in occupancies:
         details = _validate_occupancy(
@@ -1152,22 +1181,39 @@ def _public_availability(context, occupancies):
             if not occupied:
                 available_tables.append(dict(table_details))
 
-        if available_tables:
-            public_slots.append(
-                {
-                    "startTime": slot["startTime"],
-                    "endTime": slot["endTime"],
-                    "layoutVersion": slot["layoutVersion"],
-                    "tables": available_tables,
-                }
+        options = None
+        if guest_view:
+            if online_closed:
+                continue
+            options = booking_rules.online_options(
+                {t["tableId"]: int(t["seats"]) for t in available_tables},
+                party_size,
+                context.get("tableRules"),
+                context.get("tableCombinations"),
             )
+            offered = {table_id for option in options for table_id in option["tableIds"]}
+            available_tables = [t for t in available_tables if t["tableId"] in offered]
 
-    return {
+        if available_tables:
+            public_slot = {
+                "startTime": slot["startTime"],
+                "endTime": slot["endTime"],
+                "layoutVersion": slot["layoutVersion"],
+                "tables": available_tables,
+            }
+            if options is not None:
+                public_slot["options"] = options
+            public_slots.append(public_slot)
+
+    response = {
         "locationId": context["locationId"],
         "date": context["date"],
         "timezone": context["timezone"],
         "slots": public_slots,
     }
+    if day is not None:
+        response["day"] = day
+    return response
 
 
 # --- public API ---------------------------------------------------------------
@@ -1225,6 +1271,21 @@ def day_context(location_id, requested_date, now, *, include_started=False, keep
         "durationMinutes": location["durationMinutes"],
         "slots": slots,
         "tables": active_tables,
+        **location_rules(location, requested_date),
+    }
+
+
+def location_rules(location, requested_date):
+    """The rules of one date a response or booking needs besides its slots:
+    the special-day status (None on a normal day), the online table rules
+    and combinations, and the largest party bookable online."""
+    return {
+        "day": booking_rules.day_status(
+            (location.get("specialDays") or {}).get(requested_date)
+        ),
+        "tableRules": location.get("tableRules") or {},
+        "tableCombinations": location.get("tableCombinations") or [],
+        "maxPartySizeOnline": location.get("maxPartySizeOnline"),
     }
 
 

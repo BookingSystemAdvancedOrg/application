@@ -293,3 +293,22 @@ def test_fee_receipt_goes_to_the_guest_and_a_failed_fee_to_the_restaurant(env):
     (staff,) = ses.calls
     assert staff["Destination"] == {"ToAddresses": ["soder@roma.se"]} and sns.calls == []
     assert "insufficient_funds" in staff["Message"]["Body"]["Text"]["Data"]
+
+
+@pytest.mark.parametrize("phone, sent", [
+    ("+46701234567", True), ("+4520123456", True), ("+4791234567", True),
+    ("+358401234567", True), ("+3545512345", True),
+    ("+447700900123", False), ("+12025550123", False), ("+8823456789", False),
+])
+def test_sms_only_to_nordic_numbers(env, phone, sent):
+    module, ses, sns = env
+    run(module, record(booking(customerPhone=phone), event_name="INSERT"))
+    assert bool(sns.calls) is sent
+    assert ses.calls  # the guest always gets the email
+
+
+def test_sms_countries_can_be_configured(env, monkeypatch):
+    module, _, sns = env
+    monkeypatch.setenv("SMS_ALLOWED_PREFIXES", "+44")
+    run(module, record(booking(customerPhone="+447700900123"), event_name="INSERT"))
+    assert len(sns.calls) == 1

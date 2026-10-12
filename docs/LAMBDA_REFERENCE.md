@@ -321,8 +321,11 @@ service.
 | `RESERVATION_TABLE_NAME` | Write the new `pending` reservation here |
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Check for existing unpaid debt by phone number before allowing the booking |
 | `STRIPE_SECRET_KEY` | Create the card-on-file SetupIntent server-side |
+| `TURNSTILE_REQUIRED` | `true` when the guest sites show the platform's Turnstile widget - online bookings then need its token (`shared/turnstile.py`) |
+| `TURNSTILE_SECRET_ARN` | Secrets Manager secret `{"secretKey": "..."}` of that widget |
+| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`) |
 
-**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables.
+**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `secretsmanager:GetSecretValue` on the Turnstile secret; `dynamodb:UpdateItem` on the request-guard table.
 
 **Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` — that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
 

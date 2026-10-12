@@ -9,8 +9,8 @@ PURPOSE:
     served on every restaurant's domain; at startup it asks which restaurant
     this hostname belongs to and gets everything it needs to render: name,
     branding, enabled features, the locations (address, contact, opening
-    hours, booking rules), the legal entity for the privacy notice, and the
-    public Stripe / Turnstile keys.
+    hours and upcoming special days, booking rules), the legal entity for
+    the privacy notice, and the public Stripe / Turnstile keys.
 
     Resolution: global row DOMAIN#<host>/TENANT -> tenantId, and the
     tenant's own TENANT#<t>/DOMAIN#<host> row must be active (sbs-admin
@@ -30,10 +30,12 @@ Full details: infrastructure docs/handoff/BACKEND.md section 6.3
 
 import os
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, guarantee, http, tenant
+from shared import booking_rules, dynamo, guarantee, http, tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -115,6 +117,18 @@ def _number(value):
     return int(number) if number == int(number) else number
 
 
+def _special_days(row):
+    """Closed days, special hours and days without online booking from
+    today (the location's date) through the next 60 days. A malformed stored
+    value is left out rather than breaking the site."""
+    try:
+        days = booking_rules.validate_special_days(row.get("specialDays"))
+        today = datetime.now(ZoneInfo(row.get("timezone") or "Europe/Stockholm")).date()
+    except (ValueError, KeyError):
+        return []
+    return booking_rules.public_special_days(days, today)
+
+
 def _public_location(row, tenant_row):
     return {
         # Card guarantee terms shown BEFORE booking (None = no card asked).
@@ -128,6 +142,7 @@ def _public_location(row, tenant_row):
         "businessHours": row.get("businessHours") or {},
         "bookingDurationHours": _number(row.get("bookingDurationHours")),
         "maxPartySizeOnline": _number(row.get("maxPartySizeOnline")),
+        "specialDays": _special_days(row),
     }
 
 

@@ -37,6 +37,14 @@ def query(event):
     return value
 
 
+def source_ip(event):
+    """The caller's IP address as API Gateway saw it (None if absent)."""
+    context = event.get("requestContext") if isinstance(event, dict) else None
+    http = (context or {}).get("http") if isinstance(context, dict) else None
+    value = (http or {}).get("sourceIp") if isinstance(http, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def header(event, name):
     headers = event.get("headers") if isinstance(event, dict) else None
     if not isinstance(headers, dict):

@@ -161,3 +161,38 @@ def test_card_guarantee_terms_are_public_only_when_stripe_can_charge(site):
     assert haga["guarantee"] == {"minPartySize": 4, "noShowFeePerPerson": 200,
                                  "lateCancelFeePerPerson": 0, "cancelCutoffHours": 12}
     assert next(loc for loc in body["locations"] if loc["locationId"] == LOC_A2)["guarantee"] is None
+
+
+def test_upcoming_special_days_are_public(site, monkeypatch):
+    from datetime import datetime as _dt, timedelta
+    from zoneinfo import ZoneInfo
+    module, _ = site
+    today = _dt.now(ZoneInfo("Europe/Stockholm")).date()
+    boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT).update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+        UpdateExpression="SET specialDays = :d",
+        ExpressionAttributeValues={":d": [
+            {"date": (today - timedelta(days=1)).isoformat(), "kind": "closed"},
+            {"date": (today + timedelta(days=2)).isoformat(), "kind": "closed", "note": "Privat fest"},
+            {"date": (today + timedelta(days=90)).isoformat(), "kind": "closed"},
+        ]})
+    shared_tenant.reset_caches()
+
+    body = json.loads(call(module, {"host": "www.roma.se"})["body"])
+
+    hagastan = next(loc for loc in body["locations"] if loc["name"] == "Hagastan")
+    assert hagastan["specialDays"] == [
+        {"date": (today + timedelta(days=2)).isoformat(), "kind": "closed", "note": "Privat fest"}]
+    other = next(loc for loc in body["locations"] if loc["name"] == "Södermalm")
+    assert other["specialDays"] == []
+
+
+def test_a_malformed_special_day_never_breaks_the_site(site):
+    module, _ = site
+    boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT).update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+        UpdateExpression="SET specialDays = :d", ExpressionAttributeValues={":d": "broken"})
+    shared_tenant.reset_caches()
+    response = call(module, {"host": "www.roma.se"})
+    assert response["statusCode"] == 200
+    assert all(loc["specialDays"] == [] for loc in json.loads(response["body"])["locations"])

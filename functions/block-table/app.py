@@ -50,7 +50,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import booking_rules, tenant
 from shared.availability import SLOT_STEP_MINUTES
 from shared.auth import (
     Unauthorized,
@@ -376,6 +376,7 @@ def _validate_location(item, location_id):
             or duration_minutes >= 24 * 60
         ):
             raise ValueError
+        special_days = booking_rules.validate_special_days(item.get("specialDays"))
     except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict("location record is inconsistent") from None
 
@@ -384,6 +385,7 @@ def _validate_location(item, location_id):
         "businessHours": business_hours,
         "durationMinutes": int(duration_minutes),
         "timezone": location_timezone,
+        "specialDays": booking_rules.special_days_by_date(special_days),
     }
 
 
@@ -431,7 +433,9 @@ def _slot_details(request_details, location, now):
 
     weekday = _WEEKDAYS[requested_date.weekday()]
     canonical = False
-    for interval in location["businessHours"][weekday]:
+    # A closed day has no slots to block; special hours replace the weekday's.
+    special = (location.get("specialDays") or {}).get(request_details["date"])
+    for interval in booking_rules.day_intervals(location["businessHours"], weekday, special):
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
         # The same start times guests and staff book: the clock's half

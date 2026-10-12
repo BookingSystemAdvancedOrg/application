@@ -545,6 +545,16 @@ def test_get_availability_contract_matches_handler(openapi_document):
             ),
             "schema": {"type": "string", "enum": ["true", "1"]},
         },
+        {
+            "name": "partySize",
+            "in": "query",
+            "required": False,
+            "description": (
+                "Online guest view for this party size - only the tables and "
+                "combinations it may book online."
+            ),
+            "schema": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
     ]
     assert "at least 30 minutes after the request time" in description
     assert set(operation["responses"]) == {
@@ -579,9 +589,13 @@ def test_get_availability_contract_matches_handler(openapi_document):
     availability = document["components"]["schemas"]["Availability"]
     slot = document["components"]["schemas"]["AvailabilitySlot"]
     table = document["components"]["schemas"]["AvailabilityTable"]
-    for schema in (availability, slot, table):
+    # Everything is always present except `day` (only on a special day) and
+    # a slot's `options` (only in the partySize guest view).
+    for schema, optional in ((availability, {"day"}), (slot, {"options"}), (table, set())):
         assert schema["additionalProperties"] is False
-        assert set(schema["required"]) == set(schema["properties"])
+        assert set(schema["properties"]) - set(schema["required"]) == optional
+    assert availability["properties"]["day"] == {"$ref": "#/components/schemas/DayStatus"}
+    assert slot["properties"]["options"]["items"] == {"$ref": "#/components/schemas/TableOption"}
 
     assert availability["properties"]["slots"]["items"] == {
         "$ref": "#/components/schemas/AvailabilitySlot"

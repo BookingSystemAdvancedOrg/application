@@ -2734,3 +2734,27 @@ def test_blocks_any_half_hour_start(app_and_tables):
     assert response["statusCode"] == 201
     assert response_body(response)["endTime"] == "13:30"
 
+
+
+def test_a_closed_special_day_has_nothing_to_block(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(
+        specialDays=[{"date": "2026-09-20", "kind": "closed", "note": "Privat fest"}]))
+
+    response = app.handler(make_event(body=valid_body()), None)
+
+    assert response["statusCode"] == 400
+    assert response_body(response) == {"error": "requested slot is outside the booking schedule"}
+
+
+def test_special_hours_decide_what_can_be_blocked(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(
+        specialDays=[{"date": "2026-09-20", "kind": "hours",
+                      "intervals": [{"opensAt": "17:00", "closesAt": "23:30"}]}]))
+
+    early = app.handler(make_event(body=valid_body(startTime="12:00")), None)
+    late = app.handler(make_event(body=valid_body(startTime="21:30")), None)
+
+    assert early["statusCode"] == 400
+    assert late["statusCode"] == 201, late

@@ -302,11 +302,114 @@ def test_invalid_bookings_are_rejected(env, change, message):
     assert message in body_of(response)["error"]
 
 
+def set_location(env, location=LOC_A, tenant_id=TENANT_A, **fields):
+    """Stores booking rules on a location the way PUT /locations does."""
+    table = env["res"].Table(LOCATION_TABLE)
+    key = {"PK": f"TENANT#{tenant_id}", "SK": f"LOCATION#{location}"}
+    item = table.get_item(Key=key)["Item"]
+    for name, value in fields.items():
+        if value is None:
+            item.pop(name, None)
+        else:
+            item[name] = value
+    table.put_item(Item=item)
+    shared_tenant.reset_caches()
+
+
 def test_two_tables_for_a_big_party(env):
+    set_location(env, tableCombinations=[
+        {"tableIds": ["table-b", "table-c"], "minParty": Decimal(7), "maxParty": Decimal(10)}])
     response = guest_booking(env, tables=("table-b", "table-c"), party=9)
     assert response["statusCode"] == 201
     assert body_of(response)["tableIds"] == ["table-b", "table-c"]
     assert free_tables_at(env, "18:00") == ["table-a"]
+
+
+def test_guests_combine_tables_only_as_the_restaurant_set_up(env):
+    # No combination set up: two tables online are refused...
+    refused = guest_booking(env, tables=("table-b", "table-c"), party=9)
+    assert refused["statusCode"] == 400
+    assert body_of(refused)["error"] == "tableIds are not offered online for this party size"
+    # ...a combination's own party range counts...
+    set_location(env, tableCombinations=[
+        {"tableIds": ["table-b", "table-c"], "minParty": Decimal(8), "maxParty": Decimal(10)}])
+    assert guest_booking(env, tables=("table-b", "table-c"), party=7)["statusCode"] == 400
+    assert guest_booking(env, tables=("table-c", "table-b"), party=8)["statusCode"] == 201
+    # ...and staff may still combine any free tables with enough seats.
+    staff = staff_booking(env, tableIds=["table-a", "table-b"], partySize=5, startTime="20:00")
+    assert staff["statusCode"] == 201, staff
+
+
+def test_one_guest_cannot_take_a_big_table_online(env):
+    # Default online range of a table: half its seats (rounded up) to all
+    # of them - the 6-seat table-c is for 3-6 guests online.
+    small = guest_booking(env, tables=("table-c",), party=2)
+    assert small["statusCode"] == 400
+    assert body_of(small)["error"] == "tableIds are not offered online for this party size"
+    assert guest_booking(env, tables=("table-c",), party=3)["statusCode"] == 201
+    # Staff may seat two people at any table.
+    staff = staff_booking(env, tableIds=["table-c"], partySize=2, startTime="20:00")
+    assert staff["statusCode"] == 201, staff
+
+
+def test_table_rules_set_who_may_book_a_table_online(env):
+    set_location(env, tableRules={
+        "table-c": {"minParty": Decimal(1), "maxParty": Decimal(4), "online": True},
+        "table-b": {"minParty": Decimal(1), "maxParty": Decimal(4), "online": False},
+    })
+    assert guest_booking(env, tables=("table-c",), party=1)["statusCode"] == 201
+    # Max 4 online even though the table seats 6.
+    assert guest_booking(env, tables=("table-c",), party=5, start="20:00")["statusCode"] == 400
+    # Not bookable online at all.
+    off = guest_booking(env, tables=("table-b",), party=2)
+    assert off["statusCode"] == 400
+    assert staff_booking(env, tableIds=["table-b"], partySize=2)["statusCode"] == 201
+
+
+def guest_view(env, party, day=DAY, location=LOC_A):
+    response = env["m"]["avail"].handler(
+        {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": location},
+         "queryStringParameters": {"date": day, "partySize": str(party)}}, None)
+    assert response["statusCode"] == 200, response
+    return body_of(response)
+
+
+def test_availability_offers_a_party_only_its_online_options(env):
+    set_location(env, tableCombinations=[
+        {"tableIds": ["table-b", "table-c"], "minParty": Decimal(5), "maxParty": Decimal(10)}])
+    slot = next(s for s in guest_view(env, 5)["slots"] if s["startTime"] == "18:00")
+    # 5 guests: table-c alone (6 seats, 3-6) first, then the combination.
+    assert slot["options"] == [
+        {"tableIds": ["table-c"], "seats": 6},
+        {"tableIds": ["table-b", "table-c"], "seats": 10},
+    ]
+    assert [t["tableId"] for t in slot["tables"]] == ["table-b", "table-c"]
+    two = next(s for s in guest_view(env, 2)["slots"] if s["startTime"] == "18:00")
+    assert two["options"] == [{"tableIds": ["table-a"], "seats": 2}, {"tableIds": ["table-b"], "seats": 4}]
+    # Nothing fits 11 online: no slots at all.
+    assert guest_view(env, 11)["slots"] == []
+    # The staff view (no partySize) is unchanged: every free table, no options.
+    staff_slot = next(s for s in body_of(env["m"]["avail"].handler(
+        {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": LOC_A},
+         "queryStringParameters": {"date": DAY}}, None))["slots"] if s["startTime"] == "18:00")
+    assert "options" not in staff_slot and len(staff_slot["tables"]) == 3
+
+
+@pytest.mark.parametrize("query", [
+    {"partySize": "0"}, {"partySize": "51"}, {"partySize": "two"}, {"partySize": "²"},
+    {"partySize": "2", "walkIn": "true"},
+])
+def test_availability_party_size_is_validated(env, query):
+    response = env["m"]["avail"].handler(
+        {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": LOC_A},
+         "queryStringParameters": {"date": DAY, **query}}, None)
+    assert response["statusCode"] == 400
+
+
+def test_online_party_limit_empties_the_guest_view(env):
+    set_location(env, maxPartySizeOnline=Decimal(4))
+    assert guest_view(env, 5)["slots"] == []
+    assert guest_view(env, 4)["slots"]
 
 
 def test_online_party_size_limit_of_the_location(env):
@@ -743,7 +846,7 @@ def test_bumping_link_version_revokes_old_links(env):
 
 def test_token_for_another_booking_or_tenant_never_matches(env):
     a = body_of(guest_booking(env, tables=("table-a",), party=2))
-    b = body_of(guest_booking(env, tables=("table-c",), party=2))
+    b = body_of(guest_booking(env, tables=("table-c",), party=3))
     assert a["manageToken"] != b["manageToken"]
     assert guest_get(env, a["reservationId"], b["manageToken"])["statusCode"] == 404
     assert guest_cancel(env, a["reservationId"], "x" * 300)["statusCode"] == 404
@@ -797,7 +900,7 @@ def test_staff_booking_rejects_a_non_boolean_notify_flag(env):
 
 def test_restaurant_cancel_notifies_unless_told_not_to(env):
     a = body_of(guest_booking(env, tables=("table-a",), party=2))["reservationId"]
-    b = body_of(guest_booking(env, tables=("table-c",), party=2))["reservationId"]
+    b = body_of(guest_booking(env, tables=("table-c",), party=3))["reservationId"]
     before_b = stored_item(env, b)["notice"]["id"]
     ok = env["m"]["staff"].handler(event(
         "POST", "/locations/{locationId}/reservations/{reservationId}/status", reservation=a,
@@ -828,3 +931,198 @@ def test_move_to_new_time_notifies_but_table_swap_does_not(env):
 def test_notify_flag_alone_is_not_an_edit(env):
     rid = body_of(guest_booking(env))["reservationId"]
     assert edit(env, rid, {"notifyGuest": False})["statusCode"] == 400
+
+
+# --- special days ------------------------------------------------------------------
+
+def staff_view(env, day=DAY, location=LOC_A):
+    response = env["m"]["avail"].handler(
+        {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": location},
+         "queryStringParameters": {"date": day}}, None)
+    assert response["statusCode"] == 200, response
+    return body_of(response)
+
+
+def test_a_closed_day_has_no_times_for_anyone(env):
+    set_location(env, specialDays=[{"date": DAY, "kind": "closed", "note": "Privat fest"}])
+    for view in (staff_view(env), guest_view(env, 2)):
+        assert view["slots"] == []
+        assert view["day"] == {"kind": "closed", "note": "Privat fest"}
+    assert guest_booking(env)["statusCode"] == 400
+    assert staff_booking(env)["statusCode"] == 400
+    # Other days are untouched (and say nothing about a special day).
+    other = staff_view(env, day="2026-09-21")
+    assert other["slots"] and "day" not in other
+
+
+def test_special_hours_replace_the_weekday_hours(env):
+    set_location(env, specialDays=[{"date": DAY, "kind": "hours",
+                                    "intervals": [{"opensAt": "17:00", "closesAt": "23:00"}]}])
+    view = staff_view(env)
+    assert [s["startTime"] for s in view["slots"]] == ["17:00", "17:30", "18:00", "18:30", "19:00",
+                                                       "19:30", "20:00", "20:30", "21:00"]
+    assert view["day"] == {"kind": "hours", "intervals": [{"opensAt": "17:00", "closesAt": "23:00"}]}
+    assert guest_booking(env, start="12:00")["statusCode"] == 400
+    assert guest_booking(env, start="21:00")["statusCode"] == 201
+
+
+def test_a_day_without_online_booking_is_still_bookable_by_staff(env):
+    set_location(env, specialDays=[{"date": DAY, "kind": "no_online"}])
+    assert guest_view(env, 3)["slots"] == []
+    assert guest_view(env, 3)["day"] == {"kind": "no_online"}
+    assert staff_view(env)["slots"]
+    refused = guest_booking(env)
+    assert refused["statusCode"] == 400
+    assert body_of(refused)["error"] == "online booking is closed for this date"
+    assert staff_booking(env)["statusCode"] == 201
+
+
+def test_a_booking_cannot_be_moved_to_a_closed_day(env):
+    rid = body_of(guest_booking(env))["reservationId"]
+    set_location(env, specialDays=[{"date": "2026-09-21", "kind": "closed"}])
+    moved = edit(env, rid, {"date": "2026-09-21"})
+    assert moved["statusCode"] == 400
+    assert stored_item(env, rid)["date"] == DAY
+
+
+# --- abuse protection -----------------------------------------------------------------
+
+from shared import request_guard as shared_guard  # noqa: E402
+from shared import turnstile as shared_turnstile  # noqa: E402
+
+GUARD_TABLE = "test-request-guard"
+
+
+def online_attempt(env, *, ip="203.0.113.5", phone="070-123 45 67", email="anna@example.se",
+                   start="18:00", tables=("table-b",), party=3, **extra):
+    payload = {"date": DAY, "startTime": start, "tableIds": list(tables), "partySize": party,
+               "name": "Anna", "email": email, "phone": phone, "acceptTerms": True, **extra}
+    e = event("POST", "/locations/{locationId}/reservations", body=payload)
+    e["requestContext"]["http"]["sourceIp"] = ip
+    return env["m"]["create"].handler(e, None)
+
+
+@pytest.fixture
+def guard(env, monkeypatch):
+    env["res"].create_table(
+        TableName=GUARD_TABLE, KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST")
+    monkeypatch.setenv("REQUEST_GUARD_TABLE_NAME", GUARD_TABLE)
+    monkeypatch.setattr(env["m"]["create"], "IP_LIMIT", (2, 600))
+    monkeypatch.setattr(env["m"]["create"], "CONTACT_LIMIT", (2, 86400))
+    return env
+
+
+def test_one_ip_address_gets_a_few_booking_attempts(guard):
+    starts = ("10:00", "12:00", "14:00")
+    results = [online_attempt(guard, start=s, phone=f"07012345{i}0", email=f"g{i}@example.se")
+               for i, s in enumerate(starts)]
+    assert [r["statusCode"] for r in results] == [201, 201, 429]
+    assert body_of(results[2]) == {"error": "too_many_requests"}
+    assert 0 < int(results[2]["headers"]["Retry-After"]) <= 600
+    # Another address is not affected.
+    assert online_attempt(guard, ip="198.51.100.7", start="16:00", phone="0709999999",
+                          email="other@example.se")["statusCode"] == 201
+
+
+def test_one_phone_number_gets_a_few_bookings_a_day(guard):
+    codes = [online_attempt(guard, ip=f"203.0.113.{i}", start=s, email=f"g{i}@example.se")["statusCode"]
+             for i, s in enumerate(("10:00", "12:00", "14:00"))]
+    assert codes == [201, 201, 429]
+
+
+def test_attempts_that_book_nothing_dont_count_against_the_guest(guard):
+    assert staff_booking(guard)["statusCode"] == 201  # table-b 18:00 is taken
+    lost = [online_attempt(guard, ip=f"198.51.100.{i}")["statusCode"] for i in range(3)]
+    assert lost == [409, 409, 409]
+    codes = [online_attempt(guard, ip=f"203.0.113.{i}", start=s)["statusCode"]
+             for i, s in enumerate(("10:00", "12:00", "14:00"))]
+    assert codes == [201, 201, 429]
+
+
+def test_the_guard_stores_no_raw_identifiers(guard):
+    online_attempt(guard)
+    rows = guard["res"].Table(GUARD_TABLE).scan()["Items"]
+    assert len(rows) == 3  # ip, phone, email
+    text = json.dumps(rows, default=str)
+    assert "203.0.113.5" not in text and "46701234567" not in text and "anna@" not in text
+    assert all(int(row["ttl"]) > 0 for row in rows)
+
+
+def test_staff_bookings_are_not_limited(guard):
+    codes = [staff_booking(guard, startTime=s)["statusCode"] for s in ("10:00", "12:00", "14:00")]
+    assert codes == [201, 201, 201]
+
+
+@pytest.fixture
+def bot_check(env, monkeypatch):
+    secret = boto3.client("secretsmanager", region_name=REGION).create_secret(
+        Name="test/turnstile", SecretString=json.dumps({"secretKey": "1x0000000000000000000000000000000AA"}))
+    monkeypatch.setenv("TURNSTILE_SECRET_ARN", secret["ARN"])
+    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
+    shared_turnstile.reset_cache()
+    calls = []
+
+    def answer(result):
+        def post(payload):
+            calls.append(payload)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        monkeypatch.setattr(shared_turnstile, "_post", post)
+
+    answer({"success": True, "action": "booking", "hostname": "roma.example"})
+    yield {"env": env, "calls": calls, "answer": answer}
+    shared_turnstile.reset_cache()
+
+
+def test_online_booking_needs_the_bot_check(bot_check):
+    env = bot_check["env"]
+    missing = online_attempt(env)
+    assert missing["statusCode"] == 400
+    assert body_of(missing)["error"] == "turnstile token is required"
+    assert bot_check["calls"] == []
+    assert "table-b" in free_tables_at(env, "18:00")
+
+    ok = online_attempt(env, turnstileToken="XXXX.DUMMY.TOKEN.XXXX")
+    assert ok["statusCode"] == 201, ok
+    sent = bot_check["calls"][0]
+    assert sent["secret"] == "1x0000000000000000000000000000000AA"
+    assert sent["response"] == "XXXX.DUMMY.TOKEN.XXXX" and sent["remoteip"] == "203.0.113.5"
+    assert sent["idempotency_key"]
+
+
+@pytest.mark.parametrize("result, status, error", [
+    ({"success": False, "error-codes": ["invalid-input-response"]}, 400, "turnstile verification failed"),
+    ({"success": False, "error-codes": ["timeout-or-duplicate"]}, 400, "turnstile token expired"),
+    ({"success": True, "action": "catering"}, 400, "turnstile verification failed"),
+    ({"success": False, "error-codes": ["invalid-input-secret"]}, 503, "verification_unavailable"),
+])
+def test_a_failed_bot_check_books_nothing(bot_check, result, status, error):
+    env = bot_check["env"]
+    bot_check["answer"](result)
+    response = online_attempt(env, turnstileToken="token")
+    assert response["statusCode"] == status
+    assert body_of(response)["error"] == error
+    assert "table-b" in free_tables_at(env, "18:00")
+
+
+def test_cloudflare_unreachable_is_retried_once_then_unavailable(bot_check):
+    import urllib.error
+    env = bot_check["env"]
+    bot_check["answer"](urllib.error.URLError("down"))
+    response = online_attempt(env, turnstileToken="token")
+    assert response["statusCode"] == 503
+    assert len(bot_check["calls"]) == 2
+    assert bot_check["calls"][0]["idempotency_key"] == bot_check["calls"][1]["idempotency_key"]
+
+
+def test_staff_bookings_need_no_bot_check(bot_check):
+    assert staff_booking(bot_check["env"])["statusCode"] == 201
+    assert bot_check["calls"] == []
+
+
+def test_without_the_widget_no_token_is_asked_for(env, monkeypatch):
+    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
+    assert online_attempt(env)["statusCode"] == 201

@@ -24,11 +24,13 @@ to their own location.
 
 ## Booking flow
 
-1. The guest picks a date; the site calls `/availability` and shows each
-   slot's free tables (`tableId`, `seats`).
-2. The guest picks a start time, one or more tables and the party size, and
-   enters name, email, phone (+ notes, language, marketing opt-in) and
-   accepts the booking terms.
+1. The guest picks the party size and a date; the site calls
+   `/availability?date=&partySize=` and shows each slot's `options` - the
+   tables (or restaurant-defined table combinations) that party may book
+   online (see "Online table rules").
+2. The guest picks a start time and one of the options, enters name, email,
+   phone (+ notes, language, marketing opt-in), accepts the booking terms
+   and passes the bot check (Turnstile, see "Abuse protection").
 3. `POST .../reservations` re-checks with the same engine and commits. The
    response carries the `manageToken`; the guest's link is
    `/bokning/{l}/{r}#<token>` - the site sends the token as the
@@ -186,4 +188,64 @@ half-hour grid:
 Manual table blocks (block-table) use the same half-hour starts. Holds
 are checked by interval overlap and serialised by the per-table lock, so
 overlapping half-hour starts can never double-book a table.
+
+## Online table rules
+
+Guests pick their own table(s), but only among the options the location's
+rules allow (`shared/booking_rules.py`); staff may seat any party at any free
+tables with enough seats, and combine any tables.
+
+- **Per table** (`tableRules` on the location, keyed by table id):
+  `minParty`-`maxParty` and `online` (false = staff only). Without a rule a
+  table is offered online to parties of half its seats, rounded up, through
+  all of them - one guest can't take the 10-seat table. `maxParty` never
+  exceeds the table's seats.
+- **Combinations** (`tableCombinations`): tables guests may book together
+  online, with their own party range (capped by the tables' seats
+  together). A combination is offered when all its tables are free, whatever
+  the tables' own rules say. Without combinations online bookings are one
+  table each.
+- `GET /availability?partySize=N` lists each slot's `options`, best fit
+  first; `POST .../reservations` refuses table ids that aren't one of them
+  (400 `tableIds are not offered online for this party size`).
+
+## Special days
+
+`specialDays` on the location: `closed` (no bookings at all), `hours`
+(special opening hours replace the weekday's, for everyone) and
+`no_online` (normal hours, but only staff can book - online bookings get
+400 `online booking is closed for this date`). An optional `note` (80
+characters) is shown to guests. Days before today are dropped on every save;
+at most two years ahead. Existing bookings on a day that is closed later are
+kept - the admin warns how many there are and staff decide.
+
+Availability and table blocks follow the special day; `/site-config` lists
+the next 60 days of them for the guest site (date list, opening hours), and
+`/availability` returns `day` for a date that has one.
+
+## Abuse protection
+
+The public booking form must not be a way to fill a restaurant's tables or
+to send messages at the platform's cost:
+
+- **Bot check** (`shared/turnstile.py`): when the platform's Cloudflare
+  Turnstile widget is configured (`turnstile_site_key`, secret in Secrets
+  Manager `<env>-catering/turnstile` as `{"secretKey": "..."}`), every
+  online booking needs the widget's token (single-use, 5 minutes, action
+  `booking`), checked with Cloudflare; 503 `verification_unavailable` when
+  the check can't be made. The free plan allows 10 hostnames per widget -
+  each covers its subdomains, so the platform domain covers every
+  `<slug>.<platform domain>`; each custom domain takes one.
+- **Attempt limits** (`shared/request_guard.py`, table
+  `REQUEST_GUARD_TABLE_NAME`): 10 attempts per IP address per 10 minutes, 5
+  bookings per phone number and 5 per e-mail per 24 hours; then 429
+  `too_many_requests` with `Retry-After`. An attempt that books nothing
+  (table taken, closed day, failed check ...) is given back to the phone
+  number and e-mail, so a guest who loses a table a few times isn't locked
+  out; the IP address keeps it. Identifiers are stored hashed and expire
+  with their window; if the table can't be reached bookings go through
+  (logged).
+- **SMS only to Nordic numbers** (+46, +45, +47, +358, +354; notification
+  `SMS_ALLOWED_PREFIXES`): other guests get the e-mail only.
+- Staff bookings (logged in) skip the bot check and the limits.
 

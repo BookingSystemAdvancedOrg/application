@@ -5,7 +5,11 @@ TRIGGER:
 
 PURPOSE:
     Publicly returns bookable local-time slots and their currently available
-    tables for one location and ``?date=YYYY-MM-DD``. Each slot includes the
+    tables for one location and ``?date=YYYY-MM-DD``. ``?partySize=N`` is
+    the online guest view: each slot's ``options`` are the tables and
+    restaurant-defined table combinations that party may book online, and
+    a day without online booking has no slots. ``day`` describes a special
+    day (closed, special hours, no online booking) when the date has one. Each slot includes the
     layout version effective at that instant, including across a scheduled
     current-to-pending layout cutover. The implementation cross-references
     business hours, published layouts, and both reservation and manual Slot
@@ -30,6 +34,7 @@ AWS RESOURCE ACCESS:
 Full details: docs/LAMBDA_REFERENCE.md
 """
 import os
+import re
 from datetime import date, datetime, timezone
 from http import HTTPStatus
 
@@ -56,7 +61,8 @@ from shared.availability import (  # noqa: F401 - re-exported for tests
 )
 from shared.responses import json_response
 
-_OPTIONAL_QUERY_FIELDS = frozenset({"walkIn"})
+_OPTIONAL_QUERY_FIELDS = frozenset({"walkIn", "partySize"})
+_PARTY_SIZE = re.compile(r"[1-9][0-9]?")
 
 # Fail fast on a misconfigured function (the engine reads these per call).
 ENVIRONMENT = os.environ["ENVIRONMENT"]
@@ -154,13 +160,30 @@ def _walk_in(event):
     return True
 
 
+def _party_size(event):
+    """?partySize=N - the online guest view: only the tables and table
+    combinations that party may book online (shared/booking_rules.py)."""
+    value = (event.get("queryStringParameters") or {}).get("partySize")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _PARTY_SIZE.fullmatch(value) or int(value) > 50:
+        raise ValueError("partySize must be a whole number between 1 and 50")
+    return int(value)
+
+
 def _request_details(event):
     details = {
         "locationId": _location_id(event),
         "date": _requested_date(event),
     }
-    if _walk_in(event):
+    walk_in = _walk_in(event)
+    party_size = _party_size(event)
+    if walk_in and party_size is not None:
+        raise ValueError("walkIn and partySize can't be combined")
+    if walk_in:
         details["walkIn"] = True
+    if party_size is not None:
+        details["partySize"] = party_size
     return details
 
 
@@ -173,7 +196,7 @@ def _availability_from_occupancy(context):
         )
     return _availability_response(
         HTTPStatus.OK.value,
-        _public_availability(context, occupancies),
+        _public_availability(context, occupancies, party_size=context.get("partySize")),
     )
 
 
@@ -206,6 +229,8 @@ def _handle_availability(details):
             "timezone": location["timezoneName"],
             "slots": slots,
             "tables": active_tables,
+            **engine.location_rules(location, details["date"]),
+            "partySize": details.get("partySize"),
         }
     )
 

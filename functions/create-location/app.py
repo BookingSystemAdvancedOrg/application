@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, guarantee, tenant
+from shared import booking_rules, dynamo, guarantee, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -69,11 +69,22 @@ _EDITABLE_FIELDS = {
     "bookingDurationHours",
     "gracePeriodHours",
     # Optional booking rules (None removes): the card-guarantee policy
-    # (shared/guarantee.py) and the largest party bookable online.
+    # (shared/guarantee.py), the largest party bookable online, and the
+    # special days, online table rules and table combinations
+    # (shared/booking_rules.py).
     "guarantee",
     "maxPartySizeOnline",
+    "specialDays",
+    "tableRules",
+    "tableCombinations",
 }
-_OPTIONAL_RULE_FIELDS = ("guarantee", "maxPartySizeOnline")
+_OPTIONAL_RULE_FIELDS = (
+    "guarantee",
+    "maxPartySizeOnline",
+    "specialDays",
+    "tableRules",
+    "tableCombinations",
+)
 _PUBLIC_REQUIRED_FIELDS = (
     "locationId",
     "name",
@@ -320,7 +331,7 @@ def _required_business_hours(source):
     return normalized
 
 
-def _optional_rules(source):
+def _optional_rules(source, timezone_name):
     rules = {}
     if "guarantee" in source:
         rules["guarantee"] = guarantee.validate_policy(source["guarantee"])
@@ -332,16 +343,29 @@ def _optional_rules(source):
                 raise ValueError("maxPartySizeOnline must be a whole number between 1 and 50")
             value = int(value)
         rules["maxPartySizeOnline"] = value
+    if "specialDays" in source:
+        # Days that have passed are dropped on every save.
+        today = datetime.now(ZoneInfo(timezone_name)).date()
+        rules["specialDays"] = booking_rules.validate_special_days(
+            source["specialDays"], today=today
+        )
+    if "tableRules" in source:
+        rules["tableRules"] = booking_rules.validate_table_rules(source["tableRules"])
+    if "tableCombinations" in source:
+        rules["tableCombinations"] = booking_rules.validate_table_combinations(
+            source["tableCombinations"]
+        )
     return rules
 
 
 def _validated_location_fields(source, *, require_contacts=False):
+    timezone_name = _required_timezone(source)
     return {
-        **_optional_rules(source),
+        **_optional_rules(source, timezone_name),
         "name": _required_string(source, "name"),
         "address": _required_string(source, "address"),
         **_validated_contact_fields(source, required=require_contacts),
-        "timezone": _required_timezone(source),
+        "timezone": timezone_name,
         "businessHours": _required_business_hours(source),
         "bookingDurationHours": _required_number(
             source,

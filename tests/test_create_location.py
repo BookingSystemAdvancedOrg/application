@@ -1346,3 +1346,85 @@ def test_rejects_invalid_booking_rules(app_and_table, body, error):
     put_location(location_table, location_item())
     response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
     assert response["statusCode"] == 400 and error in json.loads(response["body"])["error"]
+
+
+def _local_today():
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    return _dt.now(ZoneInfo("Europe/Stockholm")).date()
+
+
+def test_owner_sets_special_days_table_rules_and_combinations(app_and_table):
+    from datetime import timedelta
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    today = _local_today()
+    later = (today + timedelta(days=30)).isoformat()
+    past = (today - timedelta(days=1)).isoformat()
+    body = {
+        "specialDays": [
+            {"date": later, "kind": "hours", "note": " Kort dag ",
+             "intervals": [{"opensAt": "17:00", "closesAt": "22:00"}]},
+            {"date": past, "kind": "closed"},
+            {"date": today.isoformat(), "kind": "no_online"},
+        ],
+        "tableRules": {"t1": {"minParty": 1, "maxParty": 2, "online": True}},
+        "tableCombinations": [{"tableIds": ["t4", "t3"], "minParty": 5, "maxParty": 8}],
+    }
+
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200, response
+    saved = json.loads(response["body"])
+    assert saved["specialDays"] == [
+        {"date": today.isoformat(), "kind": "no_online"},
+        {"date": later, "kind": "hours", "note": "Kort dag",
+         "intervals": [{"opensAt": "17:00", "closesAt": "22:00"}]},
+    ]
+    assert saved["tableRules"] == {"t1": {"minParty": 1, "maxParty": 2, "online": True}}
+    assert saved["tableCombinations"] == [{"tableIds": ["t3", "t4"], "minParty": 5, "maxParty": 8}]
+    stored = get_location(location_table)
+    assert stored["specialDays"][0]["date"] == today.isoformat()
+    assert stored["tableCombinations"][0]["tableIds"] == ["t3", "t4"]
+
+    cleared = app.handler(make_event({"specialDays": [], "tableRules": None, "tableCombinations": None},
+                                     method="PUT", location_id="location-id"), None)
+    assert cleared["statusCode"] == 200
+    stored = get_location(location_table)
+    assert "specialDays" not in stored and "tableRules" not in stored and "tableCombinations" not in stored
+
+
+@pytest.mark.parametrize(("body", "error"), [
+    ({"specialDays": [{"date": "2026-13-01", "kind": "closed"}]}, "real calendar dates"),
+    ({"specialDays": [{"date": "2099-12-24", "kind": "closed"}]}, "within two years"),
+    ({"specialDays": [{"date": "2099-12-24", "kind": "open"}]}, "kind must be"),
+    ({"tableRules": {"t1": {"minParty": 4, "maxParty": 2, "online": True}}}, "must not be larger"),
+    ({"tableCombinations": [{"tableIds": ["t1"], "minParty": 1, "maxParty": 2}]}, "2 to 6 tables"),
+])
+def test_rejects_invalid_special_days_and_table_rules(app_and_table, body, error):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 400 and error in json.loads(response["body"])["error"]
+    assert "specialDays" not in get_location(location_table)
+
+
+def test_other_updates_keep_the_rules_and_drop_passed_days(app_and_table):
+    from datetime import timedelta
+    app, location_table = app_and_table
+    today = _local_today()
+    item = location_item()
+    item["specialDays"] = [
+        {"date": (today - timedelta(days=3)).isoformat(), "kind": "closed"},
+        {"date": (today + timedelta(days=3)).isoformat(), "kind": "closed"},
+    ]
+    item["tableRules"] = {"t1": {"minParty": Decimal(1), "maxParty": Decimal(2), "online": True}}
+    put_location(location_table, item)
+
+    response = app.handler(make_event({"name": "Ny"}, method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200, response
+    stored = get_location(location_table)
+    assert stored["name"] == "Ny"
+    assert [d["date"] for d in stored["specialDays"]] == [(today + timedelta(days=3)).isoformat()]
+    assert stored["tableRules"]["t1"]["maxParty"] == 2

@@ -21,8 +21,11 @@ PURPOSE:
       fee_failed                -                         charge failed (any source)
 
     * SMS only when the tenant enabled it (tenant.notifications.sms) and
-      the booking has a phone number. Restaurant emails go to the location's
-      email unless tenant.notifications.staffEmails is false.
+      the booking has a Nordic phone number (+46, +45, +47, +358, +354;
+      SMS_ALLOWED_PREFIXES) - other numbers get the email only, so the
+      public booking form can't be used to send SMS to expensive foreign
+      numbers. Restaurant emails go to the location's email unless
+      tenant.notifications.staffEmails is false.
 
     A record is sent once per notice id: when OldImage carries the same
     notice id the write was about something else and is skipped. Notices
@@ -42,7 +45,8 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     RESERVATION_TABLE_NAME (routes this table's stream records here),
     NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
-    RESERVATION_LINK_KEY_SECRET_ARN
+    RESERVATION_LINK_KEY_SECRET_ARN,
+    SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes)
 
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
@@ -77,6 +81,8 @@ _RETRYABLE = {
     "RequestTimeoutException", "LimitExceededException",
 }
 _STAFF_NOTICES = {"confirmed", "cancelled_by_guest"}
+# Sweden, Denmark, Norway, Finland (incl. Åland), Iceland.
+SMS_ALLOWED_PREFIXES = ("+46", "+45", "+47", "+358", "+354")
 
 _clients = {}
 
@@ -159,6 +165,18 @@ def _send_email(to, subject, text, html_body, *, source, reply_to):
     )
 
 
+def _sms_prefixes():
+    raw = os.environ.get("SMS_ALLOWED_PREFIXES") or ",".join(SMS_ALLOWED_PREFIXES)
+    return tuple(p.strip() for p in raw.split(",") if p.strip().startswith("+"))
+
+
+def sms_allowed(phone):
+    """SMS go to Nordic numbers only: a booking form open to anyone must not
+    be a way to send SMS to expensive foreign numbers (SMS pumping). Other
+    guests still get the e-mail."""
+    return isinstance(phone, str) and phone.startswith(_sms_prefixes())
+
+
 def _send_sms(phone, text, tenant_row):
     attributes = {"AWS.SNS.SMS.SMSType": {"DataType": "String", "StringValue": "Transactional"}}
     sender = (tenant_row.get("senderName") or "").strip()
@@ -226,6 +244,10 @@ def _reservation(record):
                                      "error": str(exc)}))
 
     phone = None if staff_only else new.get("customerPhone")
+    if phone and settings["sms"] and not sms_allowed(phone):
+        logger.info(json.dumps({"skipped": "guest_sms", "reason": "country",
+                                "reservationId": new.get("reservationId")}))
+        phone = None
     if phone and settings["sms"]:
         try:
             _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row)

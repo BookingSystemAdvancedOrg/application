@@ -898,7 +898,21 @@ paths:
         rejected; a slot must start at least 30 minutes after the request time
         (at 13:32 the first start is 14:30). `walkIn=true` (the staff drop-in
         list) also returns slots inside those 30 minutes and ones that have
-        started but not ended. Daylight-saving-unsafe intervals are
+        started but not ended.
+
+        `partySize=N` is the online guest view: each slot lists `options`,
+        the tables and restaurant-defined table combinations that party may
+        book online (a table's online party range defaults to half its seats
+        rounded up through all of them; `tableRules` and `tableCombinations`
+        on the location change that), best fit first; `tables` is limited to
+        the tables in those options and slots without any are left out. On a
+        special day without online booking, or above the location's
+        `maxPartySizeOnline`, the guest view has no slots. `walkIn` and
+        `partySize` can't be combined.
+
+        Special days (`specialDays` on the location) apply to both views: a
+        closed day has no slots, special hours replace the weekday's opening
+        hours. `day` describes the date's special day when it has one. Daylight-saving-unsafe intervals are
         omitted. A local date wholly beyond the 504-hour cutoff returns `400`
         with `date must not be more than 21 days ahead`; the cutoff date itself
         remains partially queryable as described above. A closed day, missing
@@ -924,6 +938,14 @@ paths:
           schema:
             type: string
             enum: ['true', '1']
+        - name: partySize
+          in: query
+          required: false
+          description: Online guest view for this party size - only the tables and combinations it may book online.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
       responses:
         '200':
           description: Bookable slots, possibly an empty list.
@@ -2635,11 +2657,23 @@ paths:
       summary: Book a table (guest)
       operationId: createReservation
       description: |
-        Public. The guest picks a date, a `startTime` and one or more of the
-        tables listed as free by `GET /locations/{locationId}/availability`,
-        plus the party size. Validated with the same availability engine and
+        Public. The guest picks a date, a `startTime`, the party size and one
+        of the `options` that `GET /locations/{locationId}/availability?partySize=`
+        offered that party (one table, or a restaurant-defined combination -
+        400 `tableIds are not offered online for this party size` otherwise).
+        A special day without online booking answers 400 `online booking is
+        closed for this date`. Validated with the same availability engine and
         committed atomically with per-table locks: if a table was taken
-        meanwhile the answer is 409 `table_taken`. Returns a one-time
+        meanwhile the answer is 409 `table_taken`.
+
+        Abuse protection: when the platform's Turnstile widget is configured
+        (`turnstile.siteKey` in `/site-config`), `turnstileToken` from the
+        widget is required and checked with Cloudflare (400 `turnstile token
+        is required` / `turnstile verification failed` / `turnstile token
+        expired`; 503 `verification_unavailable` when the check can't be
+        made). A few attempts per IP address (10 minutes) and per phone
+        number or e-mail (24 hours) are allowed; past that 429
+        `too_many_requests` with `Retry-After`. Returns a one-time
         `manageToken` (the guest's link to view or cancel the booking; an
         HMAC of the booking with a platform key - never stored, rebuilt for
         the confirmation and reminder messages). Tenants without the `reservations` feature or
@@ -2661,6 +2695,7 @@ paths:
               email: anna@example.se
               phone: '+46701234567'
               acceptTerms: true
+              turnstileToken: XXXX.DUMMY.TOKEN.XXXX
       responses:
         '201':
           description: Booked.
@@ -2677,6 +2712,21 @@ paths:
           $ref: '#/components/responses/ReservationNotFound'
         '409':
           $ref: '#/components/responses/ReservationConflict'
+        '429':
+          description: Too many booking attempts from this address, phone number or e-mail.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            Retry-After:
+              description: Seconds until the limit's window ends.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: too_many_requests
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
     get:
@@ -3302,6 +3352,11 @@ components:
                 nullable: true
               guarantee:
                 $ref: '#/components/schemas/GuaranteeTerms'
+              specialDays:
+                type: array
+                description: Special days from today through the next 60 days.
+                items:
+                  $ref: '#/components/schemas/SpecialDay'
         stripe:
           type: object
           properties:
@@ -3368,6 +3423,13 @@ components:
         acceptTerms:
           type: boolean
           enum: [true]
+        turnstileToken:
+          type: string
+          maxLength: 2048
+          description: |
+            Token from the platform's Cloudflare Turnstile widget (action
+            `booking`). Required when the widget is configured; single-use and
+            valid for 5 minutes.
 
     ManualReservationRequest:
       type: object
@@ -4298,6 +4360,32 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        specialDays:
+          type: array
+          nullable: true
+          maxItems: 366
+          description: |
+            Closed days, special opening hours and days without online
+            booking (shared/booking_rules.py). Days before today are dropped
+            on save; at most two years ahead. null or [] removes them.
+          items:
+            $ref: '#/components/schemas/SpecialDay'
+        tableRules:
+          type: object
+          nullable: true
+          description: |
+            Online rules per table id. A table without a rule is bookable
+            online by parties of half its seats (rounded up) through all of
+            them. null removes every rule.
+          additionalProperties:
+            $ref: '#/components/schemas/TableRule'
+        tableCombinations:
+          type: array
+          nullable: true
+          maxItems: 100
+          description: Tables guests may book together online; staff may combine any tables. null removes them.
+          items:
+            $ref: '#/components/schemas/TableCombination'
 
     LocationUpdateRequest:
       type: object
@@ -4347,6 +4435,32 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        specialDays:
+          type: array
+          nullable: true
+          maxItems: 366
+          description: |
+            Closed days, special opening hours and days without online
+            booking (shared/booking_rules.py). Days before today are dropped
+            on save; at most two years ahead. null or [] removes them.
+          items:
+            $ref: '#/components/schemas/SpecialDay'
+        tableRules:
+          type: object
+          nullable: true
+          description: |
+            Online rules per table id. A table without a rule is bookable
+            online by parties of half its seats (rounded up) through all of
+            them. null removes every rule.
+          additionalProperties:
+            $ref: '#/components/schemas/TableRule'
+        tableCombinations:
+          type: array
+          nullable: true
+          maxItems: 100
+          description: Tables guests may book together online; staff may combine any tables. null removes them.
+          items:
+            $ref: '#/components/schemas/TableCombination'
 
     Location:
       type: object
@@ -4392,6 +4506,18 @@ components:
           $ref: '#/components/schemas/GuaranteePolicy'
         maxPartySizeOnline:
           type: integer
+        specialDays:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialDay'
+        tableRules:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TableRule'
+        tableCombinations:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableCombination'
         createdBy:
           type: string
         createdAt:
@@ -4500,6 +4626,126 @@ components:
             between layout versions.
           items:
             $ref: '#/components/schemas/AvailabilityTable'
+        options:
+          type: array
+          minItems: 1
+          description: |
+            Guest view only (`partySize`): the ways that party may book this
+            slot online, best fit first (fewest seats, then fewest tables).
+          items:
+            $ref: '#/components/schemas/TableOption'
+
+    TableOption:
+      type: object
+      additionalProperties: false
+      required: [tableIds, seats]
+      properties:
+        tableIds:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            type: string
+          description: One table, or the tables of a restaurant-defined combination (sorted).
+        seats:
+          type: integer
+          minimum: 1
+
+    DayStatus:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [closed, hours, no_online]
+          description: |
+            `closed` - no bookings; `hours` - special opening hours
+            (`intervals`) replace the weekday's; `no_online` - normal hours,
+            but only staff can book.
+        intervals:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpeningInterval'
+        note:
+          type: string
+          maxLength: 80
+          description: Public note, e.g. "Julafton".
+
+    SpecialDay:
+      type: object
+      additionalProperties: false
+      required: [date, kind]
+      properties:
+        date:
+          type: string
+          format: date
+        kind:
+          type: string
+          enum: [closed, hours, no_online]
+        intervals:
+          type: array
+          minItems: 1
+          maxItems: 6
+          description: Only with kind `hours`; non-overlapping HH:MM intervals.
+          items:
+            $ref: '#/components/schemas/OpeningInterval'
+        note:
+          type: string
+          maxLength: 80
+          description: Shown to guests on the booking site.
+
+    OpeningInterval:
+      type: object
+      additionalProperties: false
+      required: [opensAt, closesAt]
+      properties:
+        opensAt:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        closesAt:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+
+    TableRule:
+      type: object
+      additionalProperties: false
+      required: [minParty, maxParty, online]
+      properties:
+        minParty:
+          type: integer
+          minimum: 1
+          maximum: 50
+        maxParty:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Never more than the table's seats.
+        online:
+          type: boolean
+          description: false = only staff can book the table (or a combination it is part of).
+
+    TableCombination:
+      type: object
+      additionalProperties: false
+      required: [tableIds, minParty, maxParty]
+      properties:
+        tableIds:
+          type: array
+          minItems: 2
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: string
+        minParty:
+          type: integer
+          minimum: 1
+          maximum: 50
+        maxParty:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Never more than the tables' seats together.
 
     Availability:
       type: object
@@ -4529,6 +4775,8 @@ components:
           description: Bookable slots ordered by startTime.
           items:
             $ref: '#/components/schemas/AvailabilitySlot'
+        day:
+          $ref: '#/components/schemas/DayStatus'
 
     TableBlockRequest:
       type: object

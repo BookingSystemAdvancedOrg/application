@@ -26,6 +26,19 @@ PURPOSE:
     Staff bookings may omit email/phone and may book the slot that is
     already running (walk-ins).
 
+    Online bookings follow the location's booking rules
+    (shared/booking_rules.py): the chosen table(s) must be one of the
+    options the availability response offered that party - one table whose
+    online party range fits, or a restaurant-defined combination - and a
+    day without online booking takes none. Staff may combine any free
+    tables with enough seats, also on a day without online booking.
+
+    Abuse protection for online bookings: at most a few attempts per IP
+    address (10 minutes) and a few bookings per phone number / e-mail
+    (24 hours - an attempt that books nothing is given back)
+    (shared/request_guard.py, 429), and a Cloudflare Turnstile token from
+    the booking form when the sites show the widget (shared/turnstile.py).
+
     Notifications: the booking is written with a "confirmed" notice, which
     the Reservation stream turns into the guest's confirmation (email/SMS,
     with the manage link) and, for online bookings, the restaurant's
@@ -54,6 +67,8 @@ ENV_VARS:
     RESERVATION_RETENTION_DAYS (optional, default 395),
     RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (card guarantee)
+    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN (bot check, shared/turnstile.py)
+    REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
 
 Full details: docs/RESERVATIONS.md
 """
@@ -63,7 +78,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from shared import availability, guarantee, http, manage_link, tenant
+from shared import availability, booking_rules, guarantee, http, manage_link, request_guard, tenant, turnstile
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -72,9 +87,28 @@ _MANUAL = "/locations/{locationId}/reservations/manual"
 _CONFIRM = "/locations/{locationId}/reservations/{reservationId}/confirm"
 _ONLINE_FIELDS = {
     "date", "startTime", "tableIds", "partySize", "name", "email", "phone",
-    "notes", "language", "marketingOptIn", "acceptTerms",
+    "notes", "language", "marketingOptIn", "acceptTerms", "turnstileToken",
 }
-_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn"}) | {"source", "notifyGuest"}
+_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn", "turnstileToken"}) | {
+    "source", "notifyGuest",
+}
+# Online booking attempts: (max attempts, window seconds) per client.
+IP_LIMIT = (10, 10 * 60)
+CONTACT_LIMIT = (5, 24 * 60 * 60)
+
+
+def _guard_online(event, data, guest, now):
+    """Attempt limits and the bot check, before anything is read or
+    written for an online booking. Returns the phone/e-mail counters - given
+    back if the attempt doesn't end in a booking (the IP address keeps it)."""
+    ip = http.source_ip(event)
+    request_guard.check([("ip", ip, *IP_LIMIT)], now)
+    if turnstile.required():
+        turnstile.verify(data.get("turnstileToken"), ip)
+    return request_guard.check([
+        ("phone", guest.get("customerPhone"), *CONTACT_LIMIT),
+        ("email", guest.get("customerEmail"), *CONTACT_LIMIT),
+    ], now)
 
 
 def _max_online_party(location):
@@ -110,6 +144,24 @@ def _create(event, *, staff):
             raise ValueError("acceptTerms must be true")
 
     now = r.now_utc()
+    booking = {
+        "date_str": date_str, "start_time": start_time, "table_ids": table_ids,
+        "party_size": party_size, "guest": guest, "source": source, "notify": notify,
+    }
+    if staff:
+        return _book(ctx, location_id, now, staff=True, **booking)
+    counted = _guard_online(event, data, guest, now)
+    try:
+        return _book(ctx, location_id, now, staff=False, **booking)
+    except Exception:
+        # Nothing was booked (taken table, closed day ...): the attempt
+        # doesn't count against the guest's phone number and e-mail.
+        request_guard.refund(counted)
+        raise
+
+
+def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
+          party_size, guest, source, notify):
     availability.set_tenant(ctx.tenant_id)
     # Lock versions first, then holds: a write in between bumps a version
     # and the transaction below fails instead of double-booking.
@@ -121,12 +173,21 @@ def _create(event, *, staff):
     if walk_in and date_str != now.astimezone(ZoneInfo(context["timezone"])).date().isoformat():
         # A walk-in is a guest standing in the restaurant: today only.
         raise ValueError("a walk-in is booked for today")
+    if not staff and (context["day"] or {}).get("kind") == "no_online":
+        raise ValueError("online booking is closed for this date")
     occupancies = availability.query_occupancies(location_id, date_str) if context["slots"] else []
     free = availability.free_tables(context, occupancies)
     slot, seats = r.check_tables(
         context, free, start_time, table_ids, party_size,
         None if staff else _max_online_party(ctx.location),
     )
+    if not staff:
+        offered = booking_rules.online_options(
+            free[slot["startTime"]], party_size,
+            context["tableRules"], context["tableCombinations"],
+        )
+        if table_ids not in [option["tableIds"] for option in offered]:
+            raise ValueError("tableIds are not offered online for this party size")
 
     reservation_id = r.new_id()
     starts_at, ends_at = slot["startUtc"], slot["endUtc"]
@@ -234,6 +295,10 @@ def handler(event, context):
         return _create(event, staff=path == _MANUAL)
     except tenant.TenantError as exc:
         return exc.response()
+    except request_guard.Limited as exc:
+        return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
+    except turnstile.Unavailable:
+        return http.error(503, "verification_unavailable")
     except r.NotFound:
         return http.error(404, "not found")
     except r.InvalidState as exc:

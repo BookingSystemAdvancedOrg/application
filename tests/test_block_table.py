@@ -2311,7 +2311,7 @@ def test_inactive_snapshot_is_rejected(
             "requested slot is outside the booking schedule",
         ),
         (
-            valid_body(startTime="11:00"),
+            valid_body(startTime="11:15"),
             "requested slot is outside the booking schedule",
         ),
         (
@@ -2338,7 +2338,7 @@ def test_rejects_non_bookable_slot(app_and_tables, body, message):
     ("duration", "start_time", "end_time"),
     [
         ("1.5", "17:30", "19:00"),
-        ("1.1", "18:48", "19:54"),
+        ("1.1", "18:30", "19:36"),
     ],
 )
 def test_supports_integral_minute_durations(
@@ -2722,3 +2722,15 @@ def test_reservations_feature_is_required(app_and_tables):
     response = app.handler(make_event(), None)
 
     assert_response(response, 403, {"error": "feature_not_in_plan"})
+
+
+def test_blocks_any_half_hour_start(app_and_tables):
+    # Same grid as bookings: 11:30 is a start even with 2 h bookings from 10:00.
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    response = app.handler(make_event(body=valid_body(startTime="11:30")), None)
+
+    assert response["statusCode"] == 201
+    assert response_body(response)["endTime"] == "13:30"
+

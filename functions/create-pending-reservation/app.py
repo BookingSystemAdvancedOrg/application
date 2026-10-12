@@ -61,6 +61,7 @@ Full details: docs/RESERVATIONS.md
 from botocore.exceptions import BotoCoreError, ClientError
 
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from shared import availability, guarantee, http, manage_link, tenant
 from shared import reservations as r
@@ -113,11 +114,13 @@ def _create(event, *, staff):
     # Lock versions first, then holds: a write in between bumps a version
     # and the transaction below fails instead of double-booking.
     versions = r.read_lock_versions(location_id, date_str, table_ids)
-    context = availability.day_context(
-        location_id, date_str, now, include_started=staff and source == "walk_in"
-    )
+    walk_in = staff and source == "walk_in"
+    context = availability.day_context(location_id, date_str, now, include_started=walk_in)
     if context is None:
         raise tenant.TenantError(404, "not found")
+    if walk_in and date_str != now.astimezone(ZoneInfo(context["timezone"])).date().isoformat():
+        # A walk-in is a guest standing in the restaurant: today only.
+        raise ValueError("a walk-in is booked for today")
     occupancies = availability.query_occupancies(location_id, date_str) if context["slots"] else []
     free = availability.free_tables(context, occupancies)
     slot, seats = r.check_tables(

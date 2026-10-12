@@ -270,6 +270,9 @@ def _edit(event, ctx, item):
         new_date = r.validate_date(data.get("date", item["date"]))
         new_start = r.validate_time(data.get("startTime", item["startTime"]))
         new_tables = r.validate_table_ids(data.get("tableIds", item["tableIds"]))
+        if item.get("source") == "walk_in" and new_date != item["date"]:
+            # The guest is in the restaurant: another time today, never another day.
+            raise ValueError("a walk-in stays on its day")
 
         availability.set_tenant(ctx.tenant_id)
         old_tables = item.get("tableIds") or []
@@ -277,10 +280,16 @@ def _edit(event, ctx, item):
         lock_sets.setdefault(item["date"], set()).update(old_tables)
         versions = {d: r.read_lock_versions(location_id, d, sorted(t)) for d, t in lock_sets.items()}
         # Keeping its own date and time (new tables, more guests) may happen
-        # right up to and during the booking; a move to another time needs the
-        # usual lead time, like any new booking.
+        # right up to and during the booking - even when that time predates
+        # the half-hour grid. A move to another time needs the usual 30 min
+        # lead time, like any new booking - except a walk-in's, which follows
+        # the walk-in rule (the guest is already there).
         same_time = new_date == item["date"] and new_start == item["startTime"]
-        context = availability.day_context(location_id, new_date, now, include_started=same_time)
+        context = availability.day_context(
+            location_id, new_date, now,
+            include_started=same_time or item.get("source") == "walk_in",
+            keep_start=item["startTime"] if same_time else None,
+        )
         if context is None:
             raise r.NotFound
         occupancies = availability.query_occupancies(location_id, new_date) if context["slots"] else []

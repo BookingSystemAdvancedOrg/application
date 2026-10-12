@@ -6,7 +6,8 @@ TRIGGER:
 
 PURPOSE:
     Lets authorized staff create or remove one manual hold for a canonical
-    booking slot. The exact request body is ``date``, ``startTime``, and the
+    booking slot: a start on the clock's half hours, like every booking.
+    The exact request body is ``date``, ``startTime``, and the
     desired ``blocked`` boolean. The slot end is derived from the location's
     booking duration. Creation validates the table against the published
     layout effective for the complete slot and records that layout version.
@@ -50,6 +51,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import tenant
+from shared.availability import SLOT_STEP_MINUTES
 from shared.auth import (
     Unauthorized,
     get_claims,
@@ -432,10 +434,12 @@ def _slot_details(request_details, location, now):
     for interval in location["businessHours"][weekday]:
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
+        # The same start times guests and staff book: the clock's half
+        # hours (shared/availability.py).
         if (
             start_minute >= opens_at
             and end_minute <= closes_at
-            and (start_minute - opens_at) % duration_minutes == 0
+            and start_minute % SLOT_STEP_MINUTES == 0
         ):
             canonical = True
             break

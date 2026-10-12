@@ -158,10 +158,11 @@ fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 `authentication_required` - the restaurant settles those with the guest
 (a pay-by-link flow is a later addition).
 
-## Next
+## Admin
 
-- M5: admin bookings page on the real API (status, move, no-show with
-  fee, retry, refund).
+The admin app's Bokningar page uses these staff routes: the day list,
+arrive/undo, no-show (charging or waiving the fee), cancel, edit/move,
+retry a failed charge, refund (owner), and new phone / walk-in bookings.
 
 ## Start times and lead time
 
@@ -170,10 +171,19 @@ every 30 minutes inside opening hours, with the whole booking before
 closing (`shared/availability.py`, `SLOT_STEP_MINUTES`). A booking must
 start at least 30 minutes from now (`LEAD_TIME`) - online, by phone and
 when staff move a booking to another time. At 13:32 the first bookable
-start is 14:30. Exceptions, both staff-only: a walk-in (the guest is
-there) may take a slot inside the lead time or one that is already
-running, and editing a booking that keeps its own date and time (new
-tables, more guests) works right up to and during the visit. Holds are
-checked by interval overlap and serialised by the per-table lock, so
+start is 14:30. Exceptions, all staff-only and all still on the
+half-hour grid:
+
+- a walk-in (the guest is there) may take a slot inside the lead time or
+  one that is already running - when it is created and when it is moved
+  (`?walkIn=true` on GET availability lists those times). A walk-in is
+  always booked for today in the location's timezone and is never moved
+  to another day;
+- editing a booking that keeps its own date and time (new tables, more
+  guests) works right up to and during the visit, even when that time
+  predates the grid (a booking made under an older schedule).
+
+Manual table blocks (block-table) use the same half-hour starts. Holds
+are checked by interval overlap and serialised by the per-table lock, so
 overlapping half-hour starts can never double-book a table.
 

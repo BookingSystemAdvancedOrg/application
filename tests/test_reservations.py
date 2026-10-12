@@ -13,6 +13,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from shared import availability as shared_availability
 from shared import dynamo as shared_dynamo
 from shared import manage_link
 from shared import reservations as shared_r
@@ -452,6 +453,86 @@ def test_moves_need_the_lead_time_but_table_swaps_do_not(env):
     assert edit(env, rid, {"startTime": "18:30"})["statusCode"] == 200
 
 
+def test_a_walk_in_can_be_moved_to_a_running_or_imminent_time(env):
+    env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)  # 17:32 local
+    walk = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "17:30", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Walk-in", "source": "walk_in"}), None)
+    assert walk["statusCode"] == 201, walk
+    rid = body_of(walk)["reservationId"]
+    # The walk-in rule follows the booking: 18:00 is inside the 30 min.
+    moved = edit(env, rid, {"startTime": "18:00"})
+    assert moved["statusCode"] == 200, moved
+    assert body_of(moved)["startTime"] == "18:00"
+    # Off the half-hour grid is never a start - walk-in or not.
+    assert edit(env, rid, {"startTime": "17:45"})["statusCode"] == 400
+
+
+def test_a_walk_in_is_booked_for_today_only(env):
+    # NOW is 12 days before DAY: a "walk-in" for DAY is refused, a phone booking is fine.
+    later = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Walk-in", "source": "walk_in"}), None)
+    assert later["statusCode"] == 400
+    assert "today" in body_of(later)["error"]
+    phone = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Telefon", "source": "phone"}), None)
+    assert phone["statusCode"] == 201, phone
+
+
+def test_today_follows_the_location_time_zone_for_walk_ins(env):
+    # 23:10 UTC on the 19th is 01:10 on the 20th in Stockholm.
+    env["clock"].value = datetime(2026, 9, 19, 23, 10, tzinfo=timezone.utc)
+    walk = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Walk-in", "source": "walk_in"}), None)
+    assert walk["statusCode"] == 201, walk
+
+
+def test_a_walk_in_is_never_moved_to_another_day(env):
+    env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)  # 17:32 local
+    walk = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Walk-in", "source": "walk_in"}), None)
+    rid = body_of(walk)["reservationId"]
+    moved = edit(env, rid, {"date": "2026-09-21", "startTime": "18:00"})
+    assert moved["statusCode"] == 400
+    assert "its day" in body_of(moved)["error"]
+    assert stored_item(env, rid)["date"] == DAY
+
+
+def test_a_phone_booking_cannot_be_moved_inside_the_lead_time(env):
+    phone = env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
+        body={"date": DAY, "startTime": "20:00", "tableIds": ["table-a"], "partySize": 2,
+              "name": "Telefon", "source": "phone"}), None)
+    rid = body_of(phone)["reservationId"]
+    env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)  # 17:32 local
+    assert edit(env, rid, {"startTime": "18:00"})["statusCode"] == 400
+    assert edit(env, rid, {"startTime": "18:30"})["statusCode"] == 200
+
+
+def test_a_booking_from_before_the_half_hour_grid_can_still_change_tables(env, monkeypatch):
+    # Made when the location offered 18:15 (a quarter-hour grid)...
+    monkeypatch.setattr(shared_availability, "SLOT_STEP_MINUTES", 15)
+    created = guest_booking(env, start="18:15")
+    assert created["statusCode"] == 201, created
+    rid = body_of(created)["reservationId"]
+    # ...the grid is half hours again: its own time still works for edits,
+    # but nobody can book or move to 18:15.
+    monkeypatch.setattr(shared_availability, "SLOT_STEP_MINUTES", 30)
+    swapped = edit(env, rid, {"tableIds": ["table-c"]})
+    assert swapped["statusCode"] == 200, swapped
+    assert body_of(swapped)["startTime"] == "18:15"
+    assert guest_booking(env, start="18:15", tables=("table-a",), party=2)["statusCode"] == 400
+
+
 def test_arrive_no_show_and_undo_rules(env):
     rid = body_of(guest_booking(env))["reservationId"]
     env["clock"].value = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)  # 4 h before
@@ -703,6 +784,8 @@ def staff_booking(env, **extra):
     ({"phone": None}, False),                    # nothing to send to
 ])
 def test_staff_booking_notice(env, extra, notified):
+    if extra.get("source") == "walk_in":
+        env["clock"].value = datetime(2026, 9, 20, 15, 0, tzinfo=timezone.utc)  # 17:00 local, same day
     response = staff_booking(env, **extra)
     assert response["statusCode"] == 201, response
     assert ("notice" in stored_item(env, body_of(response)["reservationId"])) is notified

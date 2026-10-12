@@ -984,9 +984,10 @@ paths:
         Sets the desired manual-block state for one canonical booking slot.
         The client supplies a local date and start time; the handler derives
         `endTime` from the location's booking duration. Creating a block
-        requires a future slot aligned to one business-hours interval and a
-        table in the published layout effective for the slot's whole
-        interval. When a replacement layout has a scheduled cutover, a slot
+        requires a future slot that starts on the clock's half hours (:00 or
+        :30, the same start times as bookings), fits inside one
+        business-hours interval, and a table in the published layout
+        effective for the slot's whole interval. When a replacement layout has a scheduled cutover, a slot
         ending at or before the cutover uses the current layout and a slot
         starting at or after the cutover uses the replacement. A slot that
         crosses the cutover is rejected with `409`. Ambiguous, nonexistent,
@@ -2726,8 +2727,11 @@ paths:
       summary: Book a table for a guest (staff)
       operationId: createManualReservation
       description: |
-        Phone bookings and walk-ins. Email and phone are optional; a walk-in
-        (`source: walk_in`) may take the slot that is already running.
+        Phone bookings and walk-ins. Email and phone are optional. Starts are
+        on the clock's half hours; a phone booking starts at least 30 minutes
+        from now. A walk-in (`source: walk_in`) is booked for today only (the
+        location's timezone) and may take a slot starting within 30 minutes
+        or one that is already running.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2803,7 +2807,11 @@ paths:
         Guest details, notes, party size, and/or a move to another `date`,
         `startTime` or `tableIds`. A move is re-validated against
         availability (ignoring the booking's own holds) and committed
-        atomically; a taken table answers 409 `table_taken`.
+        atomically; a taken table answers 409 `table_taken`. A new time must
+        be on the half-hour grid and at least 30 minutes ahead, except for a
+        walk-in (running and imminent slots allowed, same day only). Keeping
+        the booking's own date and time (new tables, more guests) works up to
+        and during the visit.
       security:
         - bearerAuth: []
       x-required-groups:

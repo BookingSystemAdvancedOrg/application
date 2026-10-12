@@ -344,10 +344,26 @@ def _first_step(minute):
     return -(-minute // SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
 
 
-def _candidate_slots(details, location, now, *, earliest=None):
+def _interval_starts(opens_at, closes_at, duration, keep_start):
+    """Start minutes inside one opening interval: the half-hour grid, plus
+    ``keep_start`` (an existing booking's own time, which may predate the
+    grid) when it fits the interval."""
+    starts = list(range(_first_step(opens_at), closes_at - duration + 1, SLOT_STEP_MINUTES))
+    if (
+        keep_start is not None
+        and opens_at <= keep_start <= closes_at - duration
+        and keep_start not in starts
+    ):
+        starts.append(keep_start)
+        starts.sort()
+    return starts
+
+
+def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
     """Bookable slots of one day: starts every SLOT_STEP_MINUTES on the
     clock's half hours inside opening hours, the whole booking before
-    closing, starting no earlier than ``earliest`` (default now + LEAD_TIME)."""
+    closing, starting no earlier than ``earliest`` (default now + LEAD_TIME).
+    ``keep_start`` (minute of day) adds one existing booking's own start."""
     if (
         not isinstance(now, datetime)
         or now.tzinfo is None
@@ -373,8 +389,7 @@ def _candidate_slots(details, location, now, *, earliest=None):
     for interval in location["businessHours"][weekday]:
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
-        start_minute = _first_step(opens_at)
-        while start_minute + duration <= closes_at:
+        for start_minute in _interval_starts(opens_at, closes_at, duration, keep_start):
             end_minute = start_minute + duration
             start_local = datetime.combine(
                 requested_date,
@@ -394,7 +409,6 @@ def _candidate_slots(details, location, now, *, earliest=None):
                     location["timezone"],
                 )
             except ValueError:
-                start_minute += SLOT_STEP_MINUTES
                 continue
 
             if (
@@ -411,7 +425,6 @@ def _candidate_slots(details, location, now, *, earliest=None):
                         "endUtc": end_utc,
                     }
                 )
-            start_minute += SLOT_STEP_MINUTES
     return slots
 
 
@@ -1172,31 +1185,35 @@ def set_tenant(tenant_id):
     _TENANT_ID.set(tenant_id)
 
 
-def candidate_slots(details, location, now, *, include_started=False):
-    """Slots for a day. ``include_started`` (staff walk-ins, keeping a
-    booking's own time) also returns slots starting within LEAD_TIME and
+def candidate_slots(details, location, now, *, include_started=False, keep_start=None):
+    """Slots for a day. ``include_started`` (staff walk-ins, a booking
+    keeping its own time) also returns slots starting within LEAD_TIME and
     ones that have started but not ended; otherwise a slot must start at
-    least LEAD_TIME from now."""
+    least LEAD_TIME from now. ``keep_start`` ("HH:MM") adds a booking's own
+    start time even when it is off the half-hour grid (made before it)."""
     now = now.astimezone(timezone.utc)
+    keep = _minute_of_day(keep_start) if keep_start else None
     if not include_started:
-        return _candidate_slots(details, location, now)
+        return _candidate_slots(details, location, now, keep_start=keep)
     started = now - timedelta(minutes=location["durationMinutes"])
-    slots = _candidate_slots(details, location, now, earliest=started)
+    slots = _candidate_slots(details, location, now, earliest=started, keep_start=keep)
     return [s for s in slots if s["endUtc"] > now]
 
 
-def day_context(location_id, requested_date, now, *, include_started=False):
+def day_context(location_id, requested_date, now, *, include_started=False, keep_start=None):
     """Bookable slots of one location and date with each slot's tables, or
     None when the location doesn't exist. ``include_started`` also returns
     slots inside the lead time and the running ones (staff walk-ins, a
     booking keeping its own time); otherwise every slot starts at least
-    LEAD_TIME from now. Raises ValueError (date out of range),
-    AvailabilityConflict, AvailabilityServiceFailure."""
+    LEAD_TIME from now. ``keep_start`` - see candidate_slots. Raises
+    ValueError (date out of range), AvailabilityConflict,
+    AvailabilityServiceFailure."""
     location = _read_location(location_id)
     if location is None:
         return None
     now = now.astimezone(timezone.utc)
-    slots = candidate_slots({"date": requested_date}, location, now, include_started=include_started)
+    slots = candidate_slots({"date": requested_date}, location, now,
+                            include_started=include_started, keep_start=keep_start)
     if slots:
         slots, active_tables = _layout_slots(location_id, slots, now)
     else:

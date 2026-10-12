@@ -4,9 +4,10 @@ TRIGGER:
     DynamoDB Streams (event source mappings, ReportBatchItemFailures):
       * Reservation table - filtered upstream to INSERT/MODIFY records whose
         NewImage carries a ``notice`` (shared/reservations.py). Handled here.
-      * Order table, catering-requests table - routed by stream ARN; their
-        messages arrive with M7 and are acknowledged without sending until
-        then.
+      * Order table - filtered upstream the same way (a ``notice`` on the
+        order, shared/orders.py). Handled here.
+      * Catering-requests table - routed by stream ARN; acknowledged
+        without sending until catering messages ship.
 
 PURPOSE:
     Tells guests and restaurants about table bookings:
@@ -41,9 +42,22 @@ PURPOSE:
     the tenant's active domain; without one (dev) on CUSTOMER_SITE_URL with
     ?restaurang=<slug>. In prod without a domain the message has no link.
 
+    Food orders (shared/order_messages.py):
+
+      notice type        guest
+      order_confirmed    receipt e-mail + SMS (paid, ready around HH:MM /
+                         served at table X)
+      order_ready        SMS "ready to collect" - pickup orders; e-mail when
+                         no SMS can be sent
+      order_cancelled    SMS + e-mail (cancelled by the restaurant, refunded)
+
+    Order SMS don't depend on tenant.notifications.sms - telling the guest
+    the food is ready is what ordering is - but still go to Nordic numbers
+    only. The same once-per-notice-id and 24 h rules apply.
+
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    RESERVATION_TABLE_NAME (routes this table's stream records here),
+    RESERVATION_TABLE_NAME, ORDER_TABLE_NAME (route those tables' stream records),
     NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
     RESERVATION_LINK_KEY_SECRET_ARN,
     SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes)
@@ -67,7 +81,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, manage_link, messages, tenant
+from shared import dynamo, manage_link, messages, order_messages, orders, tenant
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -282,8 +296,91 @@ def _reservation(record):
     return "sent"
 
 
+# --- one order record --------------------------------------------------------------------
+
+def _fresh_notice(new, old, types):
+    """The record's notice when it is new, current and of one of ``types``,
+    else (None, reason)."""
+    notice = new.get("notice")
+    if not isinstance(notice, dict) or notice.get("type") not in types:
+        return None, "no_notice"
+    if isinstance(old.get("notice"), dict) and old["notice"].get("id") == notice.get("id"):
+        return None, "same_notice"
+    try:
+        noticed_at = datetime.fromisoformat(str(notice.get("at")).replace("Z", "+00:00"))
+    except ValueError:
+        return None, "bad_notice"
+    if _now() - noticed_at > _STALE_AFTER:
+        return None, "stale"
+    return notice, None
+
+
+def _order(record):
+    new = _image(record["dynamodb"].get("NewImage"))
+    old = _image(record["dynamodb"].get("OldImage"))
+    notice, skipped = _fresh_notice(new, old, orders.NOTICE_TYPES)
+    if not notice:
+        if skipped == "stale":
+            logger.warning(json.dumps({"skip": "stale_notice", "orderId": new.get("orderId")}))
+        return skipped
+    kind = notice["type"]
+    tenant_id, location_id = new.get("tenantId"), new.get("locationId")
+    try:
+        tenant_row = tenant.get_tenant(tenant_id) if tenant_id else None
+        location = tenant.get_location(tenant_id, location_id) if tenant_row else None
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    if not tenant_row or tenant_row.get("status") != "active" or not location:
+        return "inactive"
+    base, slug = _site(tenant_id, tenant_row)
+    link = orders.status_url(base, new, slug=slug)
+    source = _from_address(tenant_row, location)
+    reply_to = _reply_to(tenant_row, location)
+    sent = []
+
+    phone = new.get("customerPhone")
+    if phone and not sms_allowed(phone):
+        logger.info(json.dumps({"skipped": "guest_sms", "reason": "country", "orderId": new.get("orderId")}))
+        phone = None
+    wants_sms = kind != orders.NOTICE_READY or new.get("mode") == orders.PICKUP
+    wants_email = kind != orders.NOTICE_READY or not phone
+    steps = []
+    if wants_email and new.get("customerEmail"):
+        steps.append("email")
+    if wants_sms and phone:
+        steps.append("sms")
+    if kind == orders.NOTICE_READY:
+        steps.reverse()  # the SMS is the point; it goes first
+
+    for step in steps:
+        try:
+            if step == "email":
+                subject, text, html_body = order_messages.email(kind, new, tenant_row, location, link)
+                _send_email(new["customerEmail"], subject, text, html_body, source=source, reply_to=reply_to)
+                sent.append("guest_email")
+            else:
+                _send_sms(phone, order_messages.sms(kind, new, tenant_row, location, link), tenant_row)
+                sent.append("guest_sms")
+        except (BotoCoreError, ClientError) as exc:
+            if not sent and _retryable(exc):
+                raise Retry from exc
+            logger.error(json.dumps({"failed": f"guest_{step}", "orderId": new.get("orderId"),
+                                     "error": str(exc)}))
+        except Exception:  # noqa: BLE001 - never resend what already went out
+            if not sent:
+                raise
+            logger.exception("guest_%s failed for order %s", step, new.get("orderId"))
+
+    logger.info(json.dumps({"notice": kind, "orderId": new.get("orderId"), "tenantId": tenant_id,
+                            "sent": sent}))
+    return "sent"
+
+
 def handler(event, context):
     reservation_table = os.environ.get("RESERVATION_TABLE_NAME")
+    order_table = os.environ.get("ORDER_TABLE_NAME")
     failures = []
     for record in event.get("Records") or []:
         sequence = (record.get("dynamodb") or {}).get("SequenceNumber")
@@ -291,7 +388,10 @@ def handler(event, context):
             if _table_name_of(record.get("eventSourceARN")) == reservation_table and \
                     record.get("eventName") in ("INSERT", "MODIFY"):
                 _reservation(record)
-            # Order / catering records: their messages ship with M7.
+            elif order_table and _table_name_of(record.get("eventSourceARN")) == order_table and \
+                    record.get("eventName") in ("INSERT", "MODIFY"):
+                _order(record)
+            # Catering records: acknowledged until their messages ship.
         except Retry:
             logger.warning(json.dumps({"retry": sequence}))
             if sequence:

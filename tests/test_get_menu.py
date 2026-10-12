@@ -74,11 +74,11 @@ def public_item(item):
             "category",
             "imageKey",
         )
-    }
+    } | {"alcohol": item.get("alcohol") is True}
 
 
 def management_item(item):
-    return {field: item[field] for field in MANAGEMENT_FIELDS}
+    return {field: item[field] for field in MANAGEMENT_FIELDS} | {"alcohol": item.get("alcohol") is True}
 
 
 def make_event(

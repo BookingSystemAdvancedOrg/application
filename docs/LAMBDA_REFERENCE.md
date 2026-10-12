@@ -1016,6 +1016,29 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 
 ---
 
+## Food orders
+
+Full details: `docs/ORDERS.md`.
+
+### 22. `payment-intent`
+**Trigger:** API Gateway — `POST /order` — Auth: `NONE`
+**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, checkoutUrl, statusToken, totalAmount}`. Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
+**AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
+
+### 23. `webhook-payment-intent`
+**Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) — Auth: Stripe signature
+**Purpose:** `checkout.session.completed` / `async_payment_succeeded` with `payment_status=paid` → order `confirmed` (daily number, ready estimate, `order_confirmed` notice); `expired` / `async_payment_failed` → `failed`; `charge.refunded` → refund recorded. Matched by metadata + connected account + session id and amount; all writes conditional.
+
+### 24. `get-order`
+**Trigger:** API Gateway — `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) — Auth: `NONE`
+**Purpose:** Open/closed right now (and a QR code's table), and the guest's order. A pending order is checked with Stripe so the return page shows `confirmed` without waiting for the webhook.
+
+### 25. `manage-order`
+**Trigger:** API Gateway — `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` — Auth: `JWT` (owner, staff of the location)
+**Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
+
+---
+
 ## Quick index
 
 | # | Function | Trigger | Auth |
@@ -1039,5 +1062,9 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |
 | 18 | `stripe-webhook` | API GW `POST /webhooks/stripe/reservation` | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
-| 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |
+| 20 | `notification` | DynamoDB Streams (Reservation and Order tables, filtered on a notice) | n/a |
 | 21 | `pre-signed-url` | API GW `GET /menu-images/presigned-url` | JWT |
+| 22 | `payment-intent` | API GW `POST /order` | NONE |
+| 23 | `webhook-payment-intent` | Function URL (Stripe order payments) | Stripe signature |
+| 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |
+| 25 | `manage-order` | API GW `GET /locations/{locationId}/orders`; `ANY /locations/{locationId}/orders/{proxy+}` | JWT |

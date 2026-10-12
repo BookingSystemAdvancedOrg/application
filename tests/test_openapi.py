@@ -73,6 +73,14 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/reservations/{reservationId}/payment": frozenset(
         {"post"}
     ),
+    "/order": frozenset({"post"}),
+    "/locations/{locationId}/ordering": frozenset({"get"}),
+    "/locations/{locationId}/order-status/{orderId}": frozenset({"get"}),
+    "/locations/{locationId}/orders": frozenset({"get"}),
+    "/locations/{locationId}/orders/{orderId}": frozenset({"get"}),
+    "/locations/{locationId}/orders/{orderId}/status": frozenset({"put"}),
+    "/locations/{locationId}/orders/pause": frozenset({"put"}),
+    "/locations/{locationId}/orders/table-codes": frozenset({"post"}),
 }
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -90,6 +98,9 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
         ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/confirm", "post"),
+        ("/order", "post"),
+        ("/locations/{locationId}/ordering", "get"),
+        ("/locations/{locationId}/order-status/{orderId}", "get"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]
@@ -126,6 +137,11 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/reservations/{reservationId}", "patch"),
         ("/locations/{locationId}/reservations/{reservationId}/status", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/payment", "post"),
+        ("/locations/{locationId}/orders", "get"),
+        ("/locations/{locationId}/orders/{orderId}", "get"),
+        ("/locations/{locationId}/orders/{orderId}/status", "put"),
+        ("/locations/{locationId}/orders/pause", "put"),
+        ("/locations/{locationId}/orders/table-codes", "post"),
     }
 )
 

@@ -52,6 +52,9 @@ _EDITABLE_FIELDS = {
     "category",
     "imageKey",
     "active",
+    # Optional: true for drinks with alcohol - 25 % VAT on food orders
+    # (shared/orders.py). Missing = false.
+    "alcohol",
 }
 _PUBLIC_FIELDS = (
     "menuItemId",
@@ -227,6 +230,10 @@ def _menu_fields(event, *, partial):
         fields["imageKey"] = _nonempty_string(body, "imageKey")
     if not partial or "active" in body:
         fields["active"] = _active(body)
+    if "alcohol" in body:
+        if not isinstance(body["alcohol"], bool):
+            raise ValueError("alcohol must be a boolean")
+        fields["alcohol"] = body["alcohol"]
     return fields
 
 
@@ -292,10 +299,12 @@ def _public_item(item):
             parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
                 raise ValueError
+        if "alcohol" in item and not isinstance(item["alcohol"], bool):
+            raise ValueError
     except (OverflowError, TypeError, ValueError):
         raise _MenuConflict("menu item record is inconsistent") from None
 
-    return {field: item[field] for field in _PUBLIC_FIELDS}
+    return {**{field: item[field] for field in _PUBLIC_FIELDS}, "alcohol": item.get("alcohol") is True}
 
 
 def _validate_stored_item(item, location_id, menu_item_id):

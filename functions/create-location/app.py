@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, dynamo, guarantee, tenant
+from shared import booking_rules, dynamo, guarantee, orders, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -77,8 +77,11 @@ _EDITABLE_FIELDS = {
     "specialDays",
     "tableRules",
     "tableCombinations",
+    # Food ordering policy (shared/orders.py).
+    "ordering",
 }
 _OPTIONAL_RULE_FIELDS = (
+    "ordering",
     "guarantee",
     "maxPartySizeOnline",
     "specialDays",
@@ -335,6 +338,8 @@ def _optional_rules(source, timezone_name):
     rules = {}
     if "guarantee" in source:
         rules["guarantee"] = guarantee.validate_policy(source["guarantee"])
+    if "ordering" in source:
+        rules["ordering"] = orders.validate_policy(source["ordering"])
     if "maxPartySizeOnline" in source:
         value = source["maxPartySizeOnline"]
         if value is not None:

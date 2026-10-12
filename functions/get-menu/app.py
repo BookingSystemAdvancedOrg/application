@@ -183,7 +183,7 @@ def _public_item(item, location_id):
     ):
         raise _MenuServiceFailure
 
-    return {field: item[field] for field in _CUSTOMER_FIELDS}
+    return {**{field: item[field] for field in _CUSTOMER_FIELDS}, "alcohol": item.get("alcohol") is True}
 
 
 def _valid_management_price(value):
@@ -251,7 +251,7 @@ def _management_item(item, location_id, expected_item_id=None):
     ):
         raise _MenuConflict("menu item record is inconsistent")
 
-    return {field: item[field] for field in _MANAGEMENT_FIELDS}
+    return {**{field: item[field] for field in _MANAGEMENT_FIELDS}, "alcohol": item.get("alcohol") is True}
 
 
 def _query_items(location_id, item_converter):

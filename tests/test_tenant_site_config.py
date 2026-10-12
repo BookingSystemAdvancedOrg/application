@@ -163,6 +163,22 @@ def test_card_guarantee_terms_are_public_only_when_stripe_can_charge(site):
     assert next(loc for loc in body["locations"] if loc["locationId"] == LOC_A2)["guarantee"] is None
 
 
+def test_ordering_is_public_only_when_stripe_can_charge(site):
+    module, tenants = site
+    locations = boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT)
+    for loc in (LOC_A, LOC_A2):
+        locations.update_item(
+            Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{loc}"},
+            UpdateExpression="SET ordering = :o",
+            ExpressionAttributeValues={":o": {"enabled": loc == LOC_A, "pickup": True, "table": True,
+                                              "prepMinutes": Decimal(15), "lastOrderMinutes": Decimal(0)}})
+    shared_tenant.reset_caches()
+    body = json.loads(call(module, {"host": "www.roma.se"})["body"])
+    by_id = {loc["locationId"]: loc for loc in body["locations"]}
+    assert by_id[LOC_A]["ordering"] == {"pickup": True, "table": True, "prepMinutes": 15}
+    assert by_id[LOC_A2]["ordering"] is None
+
+
 def test_upcoming_special_days_are_public(site, monkeypatch):
     from datetime import datetime as _dt, timedelta
     from zoneinfo import ZoneInfo

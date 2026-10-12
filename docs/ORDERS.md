@@ -1,0 +1,91 @@
+# Food orders
+
+Guests order food in two ways:
+
+| Mode | Where the guest is | How they get the food |
+|---|---|---|
+| `pickup` | anywhere - the restaurant's site, `/bestall` | collects at the counter when the "ready" SMS arrives |
+| `table` | at a table - scans its QR code, `/bestall?bord=<code>` | staff bring it to that table |
+
+Payment is always online with Stripe Checkout on the restaurant's own
+connected account (direct charge, like the card guarantee). Each dish can be
+ordered 1-20 times; an order has at most 30 lines.
+
+## Flow
+
+1. **Open?** `GET /locations/{id}/ordering` - the owner's policy is on, the
+   tenant's Stripe account can take charges, ordering isn't paused, and the
+   location is open (business hours / special days) with more than
+   `lastOrderMinutes` left before closing.
+2. **Order:** `POST /order` (payment-intent). Prices, names and VAT come from
+   the menu table; the request only names dishes and quantities. The order is
+   written `pending_payment` with a TTL backstop, then the Checkout Session
+   is created; the browser goes to `checkoutUrl`.
+3. **Paid:** Stripe redirects to `/bestallning/<locationId>/<orderId>`. The
+   page polls `GET /locations/{id}/order-status/{orderId}` with the status
+   token; while pending, get-order asks Stripe itself. The webhook
+   (`checkout.session.completed`, `payment_status=paid`) does the same - the
+   first one wins (conditional write). Confirming assigns the day's number
+   (`COUNTER#<date>`), sets `readyEstimate = now + prepMinutes` and the
+   `order_confirmed` notice.
+4. **Messages:** the Order table's stream (filtered on a notice) runs the
+   notification function:
+   - `order_confirmed` - receipt e-mail + SMS ("ready around 18:40" or
+     "served at table 5")
+   - `order_ready` - SMS "ready to collect" (pickup only; e-mail when no
+     SMS can be sent)
+   - `order_cancelled` - SMS + e-mail, refund amount
+5. **Kitchen:** the admin's Beställningar screen lists the day's paid
+   orders; staff move them `preparing` → `ready` → `completed`, or
+   `cancelled` (refunds the whole order with Stripe).
+
+Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
+`failed`; the TTL (60 min) removes an order whose webhook never came.
+
+## Record
+
+`PK LOCATION#<locationId>`:
+
+| SK | What |
+|---|---|
+| `ORDER#<date>#<orderId>` | the order |
+| `OID#<orderId>` | pointer to the date (status page, webhook) |
+| `COUNTER#<date>` | `lastNumber` - the day's order numbers |
+
+Order attributes: `orderId, tenantId, locationId, date, timezone, mode,
+tableId, tableLabel, lines[{menuItemId, name, unitPrice, quantity, total,
+vatRate}], totalAmount, vat[{rate, gross, net, vat}], currency,
+customerName, customerPhone, customerEmail, notes, language, prepMinutes,
+status, paymentStatus, number, stripeAccountId, checkoutSessionId,
+paymentIntentId, refund, readyEstimate, confirmedAt, readyAt, completedAt,
+cancelledAt, notice, history, version, ttl (pending only)`. Amounts are öre.
+
+## VAT
+
+| What | Rate |
+|---|---|
+| Alcohol (menu item `alcohol: true`) - table orders only | 25 % |
+| Food and soft drinks served at the table | 12 % |
+| Takeaway food and soft drinks, 2026-04-01 - 2027-12-31 | 6 % |
+| Takeaway food and soft drinks, otherwise | 12 % |
+
+Alcohol can't be ordered for pickup (a restaurant may serve alcohol, not
+sell it to take away). Whether a restaurant needs a certified cash register
+(kassaregister) for these sales is the restaurant's matter with its
+accountant; the receipt shows seller, org.nr, lines, VAT per rate and total.
+
+## QR codes
+
+`POST /locations/{id}/orders/table-codes` signs `{tableId, label}` with the
+platform's link key (purpose `table-qr`), so a guest can't invent a table and
+the label prints on the order without a layout lookup. Renaming a table
+means printing a new code.
+
+## Security
+
+- Public routes: prices never from the client; Turnstile + per-IP and
+  per-contact limits on `POST /order`; the status page needs the HMAC token.
+- Webhook: Stripe signature; metadata + connected account + session id +
+  amount must all match the order.
+- Staff routes: tenant from the JWT, staff limited to their location, status
+  writes conditional on the status the screen showed.

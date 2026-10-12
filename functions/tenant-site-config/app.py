@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, dynamo, guarantee, http, tenant
+from shared import booking_rules, dynamo, guarantee, http, orders, tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -129,6 +129,13 @@ def _special_days(row):
     return booking_rules.public_special_days(days, today)
 
 
+def _ordering(row, tenant_row):
+    policy = orders.policy_of(row)
+    if not policy or not orders.stripe_account(tenant_row, row):
+        return None
+    return {"pickup": policy["pickup"], "table": policy["table"], "prepMinutes": policy["prepMinutes"]}
+
+
 def _public_location(row, tenant_row):
     return {
         # Card guarantee terms shown BEFORE booking (None = no card asked).
@@ -143,6 +150,10 @@ def _public_location(row, tenant_row):
         "bookingDurationHours": _number(row.get("bookingDurationHours")),
         "maxPartySizeOnline": _number(row.get("maxPartySizeOnline")),
         "specialDays": _special_days(row),
+        # Which ways to order this location offers (None = no ordering);
+        # open/closed right now comes from GET .../ordering, not this
+        # cached document.
+        "ordering": _ordering(row, tenant_row),
     }
 
 

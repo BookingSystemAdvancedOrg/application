@@ -162,7 +162,7 @@ def public_item(item):
         field: item[field]
         for field in PUBLIC_FIELDS
         if field in item
-    }
+    } | {"alcohol": item.get("alcohol") is True}
 
 
 def put_item(menu_table, item=None):
@@ -1597,3 +1597,17 @@ def test_unchanged_legacy_image_may_stay_on_update(app_and_table):
     )
 
     assert response["statusCode"] == 200
+
+
+def test_alcohol_flag_is_stored_and_returned(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={**valid_body(), "alcohol": True}), None)
+    assert response_body(response)["alcohol"] is True
+    assert get_item(menu_table)["alcohol"] is True
+
+
+def test_alcohol_flag_must_be_a_boolean(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={**valid_body(), "alcohol": "yes"}), None)
+    assert_error(response, 400)
+    assert table_items(menu_table) == []

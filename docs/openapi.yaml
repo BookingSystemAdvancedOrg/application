@@ -3277,6 +3277,375 @@ paths:
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
+  /order:
+    post:
+      tags:
+        - Orders
+      summary: Place a food order (pickup or at the table)
+      operationId: createOrder
+      description: |
+        Public. The guest orders dishes from a location's menu (quantity 1-20
+        per dish, at most 30 lines) for pickup, or at a table with the code
+        from the table's QR code. Prices and VAT are taken from the menu,
+        never from the request. Alcohol can't be ordered for pickup.
+
+        The order is created `pending_payment` and the answer carries a
+        Stripe Checkout URL (the restaurant's own Stripe account). After
+        payment Stripe sends the guest to `/bestallning/<locationId>/<orderId>`
+        on the restaurant's site; the site reads the order with the
+        `statusToken`. The order turns `confirmed` (SMS + receipt e-mail)
+        when Stripe reports the payment.
+
+        409 when ordering isn't possible now: `ordering_disabled`,
+        `ordering_no_payments`, `ordering_paused`, `ordering_closed`,
+        `ordering_pickup_off`, `ordering_table_off`, `ordering_no_site`.
+        At most 10 orders per IP address per 10 minutes and 10 per phone
+        number / e-mail per hour (429); Turnstile token (action `order`)
+        when the site shows the widget.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+            example:
+              locationId: loc-123
+              mode: pickup
+              items:
+                - menuItemId: 7f2c
+                  quantity: 2
+              name: Anna Svensson
+              phone: '+46701234567'
+              email: anna@example.se
+              acceptTerms: true
+      responses:
+        '201':
+          description: Created; send the guest to checkoutUrl.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderCreated'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '429':
+          $ref: '#/components/responses/OrderTooManyRequests'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/ordering:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - name: table
+        in: query
+        required: false
+        description: The code from a table's QR code; the answer names the table.
+        schema:
+          type: string
+    get:
+      tags:
+        - Orders
+      summary: Can the guest order right now
+      operationId: getOrderingState
+      description: Public. Open or closed now, and the reason when closed.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: Ordering state.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderingState'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/order-status/{orderId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/OrderToken'
+    get:
+      tags:
+        - Orders
+      summary: The guest's order
+      operationId: getGuestOrder
+      description: |
+        Public, with the `X-Order-Token` (from POST /order or the link in
+        the guest's SMS/e-mail); a wrong token answers 404. A pending order
+        is checked with Stripe, so the page right after payment already
+        shows `confirmed`.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The order.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestOrder'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Orders
+      summary: The day's orders (kitchen / counter screen)
+      operationId: listOrders
+      description: |
+        Oldest first. Orders waiting for payment or never paid are left out
+        unless `all=true`. Includes whether ordering is open now.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      parameters:
+        - name: date
+          in: query
+          required: false
+          description: YYYY-MM-DD (default today at the location).
+          schema:
+            type: string
+            format: date
+        - name: all
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - 'true'
+      responses:
+        '200':
+          description: The day's orders.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderList'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/{orderId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags:
+        - Orders
+      summary: One order
+      operationId: getOrder
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The order.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/{orderId}/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/OrderId'
+    put:
+      tags:
+        - Orders
+      summary: Move an order (preparing, ready, completed, cancelled)
+      operationId: setOrderStatus
+      description: |
+        `ready` on a pickup order sends the guest the "ready to collect"
+        SMS. `cancelled` refunds the whole order with Stripe and tells the
+        guest (502 `refund_failed` when Stripe refuses - the order is
+        unchanged). 409 `changed_retry` when the order isn't in
+        `expectedStatus` (someone else moved it), `cannot_move_<from>_to_<to>`
+        for a move that isn't allowed.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderStatusRequest'
+      responses:
+        '200':
+          description: The updated order.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '502':
+          $ref: '#/components/responses/OrderRefundFailed'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/pause:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    put:
+      tags:
+        - Orders
+      summary: Pause ordering for a while
+      operationId: pauseOrdering
+      description: '`minutes` 1-240 stops new orders; 0 takes orders again.'
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - minutes
+              properties:
+                minutes:
+                  type: integer
+                  minimum: 0
+                  maximum: 240
+      responses:
+        '200':
+          description: Ordering state after the change.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ordering:
+                    $ref: '#/components/schemas/OrderingState'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/table-codes:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Orders
+      summary: QR code values for tables
+      operationId: createTableCodes
+      description: |
+        Signed codes for the tables' QR codes - the guest site opens
+        `/bestall?bord=<code>`. The label is inside the code (it prints on
+        the order), so a renamed table needs a new QR code.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - tables
+              properties:
+                tables:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - tableId
+                      - label
+                    properties:
+                      tableId:
+                        type: string
+                      label:
+                        type: string
+                        maxLength: 40
+      responses:
+        '200':
+          description: One code per table.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tableId:
+                          type: string
+                        label:
+                          type: string
+                        code:
+                          type: string
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3391,6 +3760,20 @@ components:
       description: The guest's manage token from the booking confirmation.
       schema:
         type: string
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{32}$'
+    OrderToken:
+      name: X-Order-Token
+      in: header
+      required: true
+      description: The order's status token (POST /order, or the guest's SMS/e-mail link).
+      schema:
+        type: string
   headers:
     CacheControlNoStore:
       description: Prevents storage of authentication, PII, or staff data.
@@ -3467,6 +3850,17 @@ components:
               maxPartySizeOnline:
                 type: integer
                 nullable: true
+              ordering:
+                type: object
+                nullable: true
+                description: Ways to order here (null = no ordering).
+                properties:
+                  pickup:
+                    type: boolean
+                  table:
+                    type: boolean
+                  prepMinutes:
+                    type: integer
               guarantee:
                 $ref: '#/components/schemas/GuaranteeTerms'
               specialDays:
@@ -4064,6 +4458,320 @@ components:
           type: string
           nullable: true
 
+    OrderingPolicy:
+      type: object
+      additionalProperties: false
+      description: Food ordering at a location (owner setting).
+      properties:
+        enabled:
+          type: boolean
+        pickup:
+          type: boolean
+          description: Online orders collected at the counter.
+        table:
+          type: boolean
+          description: Orders from a table's QR code, served at the table.
+        prepMinutes:
+          type: integer
+          minimum: 5
+          maximum: 180
+        lastOrderMinutes:
+          type: integer
+          minimum: 0
+          maximum: 120
+          description: Stop taking orders this long before closing.
+
+    OrderingState:
+      type: object
+      required:
+        - open
+      properties:
+        open:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - disabled
+            - no_payments
+            - paused
+            - closed
+        pickup:
+          type: boolean
+        table:
+          type: boolean
+        prepMinutes:
+          type: integer
+        closesAt:
+          type: string
+        lastOrderAt:
+          type: string
+        pausedUntil:
+          type: string
+          format: date-time
+        forTable:
+          type: object
+          description: With ?table=<code> - the table the code belongs to.
+          properties:
+            label:
+              type: string
+
+    OrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - locationId
+        - mode
+        - items
+        - name
+        - phone
+        - email
+        - acceptTerms
+      properties:
+        locationId:
+          type: string
+        mode:
+          type: string
+          enum:
+            - pickup
+            - table
+        tableCode:
+          type: string
+          description: Required for table orders (from the table's QR code).
+        items:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - menuItemId
+              - quantity
+            properties:
+              menuItemId:
+                type: string
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 20
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        notes:
+          type: string
+          maxLength: 300
+        language:
+          type: string
+          enum:
+            - sv
+            - en
+        acceptTerms:
+          type: boolean
+          enum:
+            - true
+        turnstileToken:
+          type: string
+
+    OrderCreated:
+      type: object
+      required:
+        - orderId
+        - locationId
+        - checkoutUrl
+        - statusToken
+        - totalAmount
+      properties:
+        orderId:
+          type: string
+        locationId:
+          type: string
+        checkoutUrl:
+          type: string
+          format: uri
+        statusToken:
+          type: string
+        totalAmount:
+          type: integer
+          description: Öre.
+
+    OrderLine:
+      type: object
+      properties:
+        menuItemId:
+          type: string
+        name:
+          type: string
+        unitPrice:
+          type: integer
+          description: Öre, including VAT.
+        quantity:
+          type: integer
+        total:
+          type: integer
+        vatRate:
+          type: integer
+          enum:
+            - 6
+            - 12
+            - 25
+
+    OrderVat:
+      type: object
+      properties:
+        rate:
+          type: integer
+        gross:
+          type: integer
+        net:
+          type: integer
+        vat:
+          type: integer
+
+    OrderStatus:
+      type: string
+      enum:
+        - pending_payment
+        - confirmed
+        - preparing
+        - ready
+        - completed
+        - cancelled
+        - failed
+
+    GuestOrder:
+      type: object
+      properties:
+        orderId:
+          type: string
+        locationId:
+          type: string
+        number:
+          type: integer
+          description: The day's order number, from confirmation.
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        paymentStatus:
+          type: string
+          enum:
+            - processing
+            - paid
+            - failed
+            - refunded
+        mode:
+          type: string
+          enum:
+            - pickup
+            - table
+        tableLabel:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        totalAmount:
+          type: integer
+        vat:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderVat'
+        currency:
+          type: string
+        customerName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+        readyEstimate:
+          type: string
+          format: date-time
+        readyAt:
+          type: string
+          format: date-time
+        language:
+          type: string
+        location:
+          type: object
+          properties:
+            name:
+              type: string
+            address:
+              type: string
+            phoneNumber:
+              type: string
+              nullable: true
+
+    Order:
+      allOf:
+        - $ref: '#/components/schemas/GuestOrder'
+        - type: object
+          properties:
+            date:
+              type: string
+              format: date
+            customerPhone:
+              type: string
+            customerEmail:
+              type: string
+            notes:
+              type: string
+            tableId:
+              type: string
+            completedAt:
+              type: string
+              format: date-time
+            cancelledAt:
+              type: string
+              format: date-time
+            refund:
+              type: object
+              properties:
+                amount:
+                  type: integer
+                at:
+                  type: string
+                  format: date-time
+                refundId:
+                  type: string
+            history:
+              type: array
+              items:
+                type: object
+
+    OrderList:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        ordering:
+          $ref: '#/components/schemas/OrderingState'
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+
+    OrderStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - preparing
+            - ready
+            - completed
+            - cancelled
+        expectedStatus:
+          $ref: '#/components/schemas/OrderStatus'
+
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -4517,6 +5225,11 @@ components:
           minimum: 0
           description: Grace period in hours; zero is allowed.
           example: 0.25
+        ordering:
+          allOf:
+            - $ref: '#/components/schemas/OrderingPolicy'
+          nullable: true
+          description: Food ordering; null removes it.
         guarantee:
           allOf:
             - $ref: '#/components/schemas/GuaranteePolicy'
@@ -4592,6 +5305,11 @@ components:
           minimum: 0
           description: Grace period in hours; zero is allowed.
           example: 0.25
+        ordering:
+          allOf:
+            - $ref: '#/components/schemas/OrderingPolicy'
+          nullable: true
+          description: Food ordering; null removes it.
         guarantee:
           allOf:
             - $ref: '#/components/schemas/GuaranteePolicy'
@@ -4670,6 +5388,11 @@ components:
           type: number
         gracePeriodHours:
           type: number
+        ordering:
+          $ref: '#/components/schemas/OrderingPolicy'
+        orderingPausedUntil:
+          type: string
+          format: date-time
         guarantee:
           $ref: '#/components/schemas/GuaranteePolicy'
         maxPartySizeOnline:
@@ -5046,6 +5769,9 @@ components:
             keys remain accepted. Existence is not checked by this Lambda.
         active:
           type: boolean
+        alcohol:
+          type: boolean
+          description: Contains alcohol - 25 % VAT, not orderable for pickup. Optional (false).
 
     MenuItemCreateRequest:
       allOf:
@@ -5099,6 +5825,8 @@ components:
             prefix; legacy values are returned unchanged.
         active:
           type: boolean
+        alcohol:
+          type: boolean
         createdBy:
           type: string
         createdAt:
@@ -5136,6 +5864,8 @@ components:
           description: |
             Stored S3 object key. New uploads include the `menu-images/`
             prefix; legacy values are returned unchanged.
+        alcohol:
+          type: boolean
 
     PublicMenuItemList:
       type: object
@@ -6657,6 +7387,46 @@ components:
               $ref: '#/components/schemas/MenuImageContentType'
 
   responses:
+    OrderBadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderNotFound:
+      description: No such location/order (or not this tenant's, or a wrong token).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderConflict:
+      description: Ordering is closed, or the order changed / can't move that way.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderTooManyRequests:
+      description: Too many orders from this address / phone / e-mail.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderRefundFailed:
+      description: Stripe refused the refund; the order is unchanged.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderServiceUnavailable:
+      description: A dependency (DynamoDB, Stripe, signing key) is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     ReservationNotFound:
       description: Unknown location/booking, another tenant's, a wrong manage token, or reservations not available.
       headers:

@@ -33,8 +33,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 # The widget on the booking form passes this action; a token solved for
-# another form (with another action) isn't accepted for a booking.
+# another form (with another action) isn't accepted for a booking. The
+# order form passes ORDER_ACTION.
 ACTION = "booking"
+ORDER_ACTION = "order"
 _TIMEOUT = 5
 _TOKEN_MAX = 2048
 _cache = {"secret": None}
@@ -82,9 +84,10 @@ def _post(payload):
         return json.loads(response.read().decode("utf-8"))
 
 
-def verify(token, remote_ip=None):
+def verify(token, remote_ip=None, action=ACTION):
     """Raises ValueError when the token is missing or not valid and
-    Unavailable when the check can't be made; returns when it passed."""
+    Unavailable when the check can't be made; returns when it passed.
+    ``action``: the form the widget was solved on ("booking", "order")."""
     if not isinstance(token, str) or not token.strip():
         raise ValueError("turnstile token is required")
     if len(token) > _TOKEN_MAX:
@@ -114,7 +117,7 @@ def verify(token, remote_ip=None):
         raise Unavailable("turnstile answered something unexpected")
     codes = result.get("error-codes") if isinstance(result.get("error-codes"), list) else []
     if result.get("success") is True:
-        if result.get("action") not in (None, "", ACTION):
+        if result.get("action") not in (None, "", action):
             logger.warning(json.dumps({"turnstile": "wrong_action", "action": result.get("action")}))
             raise ValueError("turnstile verification failed")
         return

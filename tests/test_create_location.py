@@ -1335,7 +1335,21 @@ def test_owner_sets_and_removes_the_card_guarantee_and_online_party_cap(app_and_
     assert "guarantee" not in stored and "maxPartySizeOnline" not in stored
 
 
+def test_owner_sets_and_removes_the_ordering_policy(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    policy = {"enabled": True, "pickup": True, "table": False, "prepMinutes": 25, "lastOrderMinutes": 30}
+    response = app.handler(make_event({"ordering": policy}, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"])["ordering"] == policy
+    assert get_location(location_table)["ordering"]["prepMinutes"] == 25
+    removed = app.handler(make_event({"ordering": None}, method="PUT", location_id="location-id"), None)
+    assert removed["statusCode"] == 200 and "ordering" not in get_location(location_table)
+
+
 @pytest.mark.parametrize(("body", "error"), [
+    ({"ordering": {"enabled": True, "pickup": False, "table": False}}, "needs pickup or table"),
+    ({"ordering": {"enabled": True, "prepMinutes": 500}}, "between 5 and 180"),
     ({"guarantee": {"enabled": True}}, "needs a no-show or late-cancellation fee"),
     ({"guarantee": {"enabled": True, "noShowFeePerPerson": 9000}}, "between 0 and 5000"),
     ({"maxPartySizeOnline": 0}, "between 1 and 50"),

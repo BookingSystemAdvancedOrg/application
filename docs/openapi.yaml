@@ -5738,9 +5738,13 @@ components:
     MenuPrice:
       type: number
       minimum: 0
+      maximum: 10000
       multipleOf: 0.01
       description: |
-        Nonnegative amount with at most two decimal places. DynamoDB storage
+        Nonnegative amount with at most two decimal places, at most 10 000 kr
+        when saved (typo guard, shared/prices.py; 400 "price may be at most
+        10000 kr"). A dish saved above that before the limit existed is still
+        returned as stored, so it can be lowered. DynamoDB storage
         additionally limits the normalized value to 38 significant digits and
         an adjusted exponent no greater than 126.
 

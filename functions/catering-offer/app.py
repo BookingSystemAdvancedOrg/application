@@ -50,7 +50,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
 from shared import catering_stripe as cs
-from shared import http, tenant
+from shared import http, prices, tenant
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -72,6 +72,13 @@ _ROUTES = {
 _EDITABLE = (c.REQUESTED, c.CHANGE_REQUESTED, c.OFFER_SENT)
 _OFFER_FIELDS = {"lines", "discountPercent", "deliveryFee", "message", "validUntil"}
 
+
+
+def _unit_price(value):
+    unit = c.kronor_to_ore(value, "unitPrice")
+    if unit > prices.MAX_ITEM_PRICE_ORE:
+        raise ValueError(prices.TOO_HIGH)
+    return unit
 
 def _ctx(event, *, owner):
     location_id = http.path_id(event, "locationId")
@@ -99,7 +106,7 @@ def _offer_from(data, item, settings, location, now):
             raise ValueError("each line needs name, unitPrice (kr) and quantity")
         line = {
             "name": c.text(raw.get("name"), "line name", required=True, max_length=120),
-            "unitPrice": c.kronor_to_ore(raw.get("unitPrice"), "unitPrice"),
+            "unitPrice": _unit_price(raw.get("unitPrice")),
             "quantity": c.whole(raw.get("quantity"), 1, c.MAX_LINE_QTY, "quantity"),
         }
         if raw.get("menuItemId"):
@@ -108,8 +115,10 @@ def _offer_from(data, item, settings, location, now):
     discount = c.whole(data.get("discountPercent", 0), 0, 50, "discountPercent")
     fee = c.kronor_to_ore(data.get("deliveryFee", 0), "deliveryFee")
     totals = c.totals(lines, discount, fee)
-    if totals["total"] <= 0 or totals["total"] > c.MAX_TOTAL_ORE:
+    if totals["total"] <= 0:
         raise ValueError("offer total must be more than 0 kr")
+    if totals["total"] > c.MAX_TOTAL_ORE:
+        raise ValueError(f"offer total may be at most {c.MAX_TOTAL_ORE // 100} kr")
     tz = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
     today = now.astimezone(tz).date()
     valid = data.get("validUntil") or (today + timedelta(days=settings["offerValidDays"])).isoformat()

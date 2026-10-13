@@ -386,6 +386,10 @@ def test_offer_capacity_full_and_validation(env):
     rid = body_of(create(env))["requestId"]
     big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
     assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == {"error": "capacity_full"}
+    pricey = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 10000.01, "quantity": 1}]}
+    assert body_of(staff(env, "PUT", "/offer", body=pricey, request_id=rid)) == {"error": "price may be at most 10000 kr"}
+    at_limit = {**OFFER, "lines": [{"name": "Tårta", "unitPrice": 10000, "quantity": 1}]}
+    assert staff(env, "PUT", "/offer", body=at_limit, request_id=rid)["statusCode"] == 200
     late = {**OFFER, "validUntil": "2026-10-25"}
     assert "after the delivery date" in body_of(staff(env, "POST", "/offer/send", body=late, request_id=rid))["error"]
     assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid, role="staff_user")["statusCode"] == 403

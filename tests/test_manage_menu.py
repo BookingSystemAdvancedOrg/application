@@ -722,23 +722,49 @@ def test_price_with_trailing_zeroes_is_safely_canonicalized(
     assert stored_price.as_tuple() == Decimal("1.23").as_tuple()
 
 
-def test_large_valid_integral_price_is_written_and_json_serialized(
-    app_and_table,
-):
+def test_price_above_the_limit_is_refused(app_and_table):
     app, menu_table = app_and_table
-    price_literal = "99999999999999999999999999999"
+
+    for literal in ("10000.01", "3500000", "99999999999999999999999999999"):
+        response = app.handler(
+            make_event(method="POST", body=body_with_price_literal(literal)),
+            None,
+        )
+        assert_response(response, 400, {"error": "price may be at most 10000 kr"})
+    assert table_items(menu_table) == []
+
+
+def test_price_at_the_limit_is_accepted(app_and_table):
+    app, menu_table = app_and_table
 
     response = app.handler(
-        make_event(
-            method="POST",
-            body=body_with_price_literal(price_literal),
-        ),
+        make_event(method="POST", body=body_with_price_literal("10000")),
         None,
     )
 
     assert_response(response, 201)
-    assert response_body(response)["price"] == int(price_literal)
-    assert get_item(menu_table)["price"] == Decimal(price_literal)
+    assert get_item(menu_table)["price"] == Decimal("10000")
+
+
+def test_dish_saved_above_the_limit_before_it_existed_still_lists_and_can_be_lowered(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table, menu_item(price=Decimal("3500000")))
+
+    # Editing something else keeps working - the stored price isn't re-checked.
+    renamed = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"name": "Porsche"}),
+        None,
+    )
+    assert renamed["statusCode"] == 200
+
+    lowered = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"price": 189}),
+        None,
+    )
+    assert lowered["statusCode"] == 200
+    assert get_item(menu_table)["price"] == Decimal("189")
 
 
 @pytest.mark.parametrize(

@@ -36,7 +36,7 @@ from http import HTTPStatus
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import prices, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -194,7 +194,10 @@ def _validated_price(value):
 
 
 def _price(body):
-    return _validated_price(_present(body, "price"))
+    # The limit applies to what is saved now - not in _validated_price, which
+    # also re-checks stored items when they're read (an over-limit dish
+    # saved before the limit must still open, so it can be lowered).
+    return prices.check_kronor(_validated_price(_present(body, "price")))
 
 
 def _category(body):

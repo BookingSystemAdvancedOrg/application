@@ -15,7 +15,9 @@ PURPOSE:
              its confirmation - no reminder on top).
 
     Also expires card-guarantee bookings whose card was never confirmed
-    (status pending past pendingExpiresAt): found through their PENDING#
+    (status pending past pendingExpiresAt) and table holds the guest never
+    turned into a booking (status held - availability already shows those
+    tables free; this tidies the rows): found through their PENDING#
     marker rows, set to "expired" with their tables released in one
     transaction (shared/guarantee.py).
 
@@ -143,7 +145,7 @@ def expire_pending(location_id, now):
             except r.NotFound:
                 table.delete_item(Key={"PK": marker["PK"], "SK": marker["SK"]})
                 continue
-            if item["status"] != r.PENDING or item.get("pendingExpiresAt") is None:
+            if item["status"] not in (r.PENDING, r.HELD) or item.get("pendingExpiresAt") is None:
                 table.delete_item(Key={"PK": marker["PK"], "SK": marker["SK"]})
                 continue
             if r.parse_iso(item["pendingExpiresAt"]) > now:

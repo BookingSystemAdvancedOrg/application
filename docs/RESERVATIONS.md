@@ -11,6 +11,8 @@ the admin app. Code: `shared/reservations.py` (data, locks, views),
 |---|---|---|
 | `POST /locations/{l}/reservations` | none (guest) | create-pending-reservation |
 | `POST /locations/{l}/reservations/manual` | JWT (staff: phone, walk-in) | create-pending-reservation |
+| `POST /locations/{l}/holds` | none (guest) + Turnstile | create-pending-reservation |
+| `DELETE /locations/{l}/holds/{h}` | none + `X-Manage-Token` | create-pending-reservation |
 | `GET /locations/{l}/reservations?date=` | JWT | get-reservation |
 | `GET /locations/{l}/reservations/{r}` | JWT | get-reservation |
 | `GET /locations/{l}/reservations/{r}/guest` | none + `X-Manage-Token` | get-reservation |
@@ -28,13 +30,41 @@ to their own location.
    `/availability?date=&partySize=` and shows each slot's `options` - the
    tables (or restaurant-defined table combinations) that party may book
    online (see "Online table rules").
-2. The guest picks a start time and one of the options, enters name, email,
-   phone (+ notes, language, marketing opt-in), accepts the booking terms
-   and passes the bot check (Turnstile, see "Abuse protection").
-3. `POST .../reservations` re-checks with the same engine and commits. The
-   response carries the `manageToken`; the guest's link is
-   `/bokning/{l}/{r}#<token>` - the site sends the token as the
-   `X-Manage-Token` header, so it never reaches access logs.
+2. The guest picks a start time and one of the options, passes the bot
+   check (Turnstile, see "Abuse protection") and confirms the table(s):
+   `POST .../holds` claims them - same engine, locks and slot rows as a
+   booking - for 15 minutes ("Table holds" below). The site counts down.
+3. The guest enters name, email, phone (+ notes, language, marketing
+   opt-in) and accepts the booking terms. `POST .../reservations` with
+   `holdId` (+ the hold's `X-Manage-Token`) turns the hold into the
+   booking. The response carries the `manageToken` (the same token); the
+   guest's link is `/bokning/{l}/{r}#<token>` - the site sends the token as
+   the `X-Manage-Token` header, so it never reaches access logs.
+   (`POST .../reservations` without `holdId` still books in one step.)
+
+## Table holds
+
+| | |
+|---|---|
+| Create | `POST /locations/{l}/holds` `{date, startTime, tableIds, partySize, turnstileToken}` -> 201 `{holdId, manageToken, expiresAt, holdMinutes: 15, date, startTime, endTime, tableIds, partySize, cardRequired}`; 409 `table_taken` |
+| Let go | `DELETE /locations/{l}/holds/{h}` + `X-Manage-Token` -> 200 `{released}` - idempotent, never cancels a booking |
+| Book | `POST .../reservations` with `holdId` -> 201 booking; 409 `hold_expired` after `expiresAt` |
+
+- A hold is a reservation item in status `held` (no guest data,
+  `holdOnly`), with `pendingExpiresAt` and a `PENDING#` marker like a
+  card-guarantee booking. Its slot rows carry `holdExpiresAt` (epoch).
+- **It ends by itself.** Once `holdExpiresAt` passes, availability ignores
+  the rows (the tables are free at once) and any new claim may take a row
+  over (`attribute_not_exists(PK) OR holdExpiresAt <= :now`). A closed
+  browser never keeps tables blocked. reservation-reminders (every 15 min)
+  then marks the hold `expired` and deletes the rows it still owns.
+- Booking from a hold: no card -> `reserved`, the rows stop expiring. Card
+  guarantee -> `pending` on the **same clock** (the card step does not get
+  a fresh 20 minutes); confirming after the hold ran out -> 409 `expired`.
+- Staff never see holds (`list_day` skips `held` and never-booked holds);
+  a staff booking of a held table gets `table_taken` until the hold ends.
+- Limits: 8 holds per IP per 15 minutes, API Gateway throttling as for
+  bookings, Turnstile on the hold (not again on the booking).
 
 ## Manage link
 

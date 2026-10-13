@@ -3175,6 +3175,90 @@ paths:
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
+  /locations/{locationId}/holds:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Reservations
+      summary: Hold the chosen table(s) for 15 minutes
+      operationId: holdTables
+      description: |
+        Public (Turnstile token in the body when required). Claims the
+        tables exactly like a booking, as status `held`, for 15 minutes while
+        the guest fills in their details. 409 `table_taken` when someone was
+        faster. The hold ends by itself at `expiresAt` (the tables are free
+        again at once). Book it with `POST .../reservations` + `holdId`.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [date, startTime, tableIds, partySize]
+              properties:
+                date: {type: string, format: date}
+                startTime: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}
+                tableIds: {type: array, items: {type: string}, minItems: 1, maxItems: 6}
+                partySize: {type: integer, minimum: 1}
+                turnstileToken: {type: string}
+      responses:
+        '201':
+          description: The hold.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holdId: {type: string}
+                  manageToken: {type: string}
+                  expiresAt: {type: string, format: date-time}
+                  holdMinutes: {type: integer}
+                  date: {type: string}
+                  startTime: {type: string}
+                  endTime: {type: string}
+                  tableIds: {type: array, items: {type: string}}
+                  partySize: {type: integer}
+                  cardRequired: {type: boolean}
+        '409':
+          $ref: '#/components/responses/ReservationConflict'
+        '503':
+          $ref: '#/components/responses/ReservationServiceUnavailable'
+
+  /locations/{locationId}/holds/{holdId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - name: holdId
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+      - $ref: '#/components/parameters/ManageToken'
+    delete:
+      tags:
+        - Reservations
+      summary: Let go of held tables
+      operationId: releaseHold
+      description: |
+        Public, with the hold's `X-Manage-Token`. Idempotent: `released`
+        false when it already ran out, was let go or became a booking (a
+        booking is never cancelled here).
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: Done.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  released: {type: boolean}
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+
   /locations/{locationId}/reservations/{reservationId}/payment:
     parameters:
       - $ref: '#/components/parameters/LocationId'

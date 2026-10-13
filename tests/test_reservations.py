@@ -129,6 +129,7 @@ def env(monkeypatch):
                              "role": "staff", "locationId": LOC_A, "status": "active"})
         clock = Clock(NOW)
         monkeypatch.setattr(shared_r, "now_utc", clock)
+        monkeypatch.setattr(shared_availability, "_now_epoch", lambda: clock().timestamp())
         mods = {
             "create": load("create-pending-reservation", "res_create"),
             "get": load("get-reservation", "res_get"),

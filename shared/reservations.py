@@ -49,9 +49,15 @@ CANCELLED_CHARGE_FAILED = "cancelled_charge_failed"
 NO_SHOW_CHARGED = "no_show_charged"
 NO_SHOW_CHARGE_FAILED = "no_show_charge_failed"
 EXPIRED = "expired"  # pending card guarantee never completed - tables released
+# The guest picked and confirmed their table(s) and is filling in their
+# details: the tables are claimed (same locks/rows as a booking) for
+# HOLD_MINUTES, no guest data yet. POST .../reservations with the holdId
+# turns it into the booking; DELETE .../holds/{id} or the clock releases it.
+HELD = "held"
+HOLD_MINUTES = 15
 
 ACTIVE = frozenset({PENDING, RESERVED})
-HOLDS_TABLES = frozenset({PENDING, RESERVED, ARRIVED})
+HOLDS_TABLES = frozenset({HELD, PENDING, RESERVED, ARRIVED})
 
 SOURCES = frozenset({"online", "phone", "walk_in", "staff"})
 LANGUAGES = frozenset({"sv", "en"})
@@ -408,8 +414,14 @@ def transact(items):
 
 # --- holds ---------------------------------------------------------------------------
 
-def hold_items(location_id, date_str, start, end, table_ids, reservation_id, ends_at):
+def hold_items(location_id, date_str, start, end, table_ids, reservation_id, ends_at, *,
+               now=None, hold_expires=None):
+    """Claim each table's slot row. A row left by a table hold whose time ran
+    out (holdExpiresAt passed) may be taken over - availability already
+    shows those tables free. ``hold_expires`` marks this claim as such a
+    hold (epoch seconds on the row)."""
     ttl = int(ends_at.timestamp())
+    now_epoch = int((now or now_utc()).timestamp())
     return [
         {
             "Put": {
@@ -418,12 +430,52 @@ def hold_items(location_id, date_str, start, end, table_ids, reservation_id, end
                     **slot_key(location_id, date_str, start, end, t),
                     "reservationId": reservation_id,
                     "ttl": ttl,
+                    "holdExpiresAt": int(hold_expires.timestamp()) if hold_expires else None,
                 }),
-                "ConditionExpression": "attribute_not_exists(PK)",
+                "ConditionExpression": "attribute_not_exists(PK) OR holdExpiresAt <= :now",
+                "ExpressionAttributeValues": serialize({":now": now_epoch}),
             }
         }
         for t in table_ids
     ]
+
+
+def keep_hold_items(item):
+    """The table hold became a booking: its slot rows stop expiring. Only
+    rows this reservation still owns - a row someone took over after the
+    hold ran out fails the transaction (Conflict -> hold_expired)."""
+    return [
+        {
+            "Update": {
+                "TableName": occupancy_table(),
+                "Key": serialize(slot_key(item["locationId"], item["date"], item["startTime"], item["endTime"], t)),
+                "UpdateExpression": "REMOVE holdExpiresAt",
+                "ConditionExpression": "reservationId = :rid",
+                "ExpressionAttributeValues": serialize({":rid": item["reservationId"]}),
+            }
+        }
+        for t in item.get("tableIds") or []
+    ]
+
+
+def _owned_tables(item):
+    """Tables whose slot row still belongs to this reservation (consistent
+    read). A table hold's rows can be taken over by another guest once its
+    time ran out - releasing must leave those alone instead of failing."""
+    table_ids = item.get("tableIds") or []
+    if not table_ids:
+        return []
+    keys = [slot_key(item["locationId"], item["date"], item["startTime"], item["endTime"], t) for t in table_ids]
+    response = dynamo.client().batch_get_item(RequestItems={occupancy_table(): {
+        "Keys": [serialize(k) for k in keys], "ConsistentRead": True}})
+    if response.get("UnprocessedKeys"):
+        raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "BatchGetItem")
+    owned = set()
+    for raw in response.get("Responses", {}).get(occupancy_table(), []):
+        row = {k: _deserializer.deserialize(v) for k, v in raw.items()}
+        if row.get("reservationId") == item["reservationId"]:
+            owned.add(row["SK"].rsplit("#", 1)[1])
+    return [t for t in table_ids if t in owned]
 
 
 def release_items(item):
@@ -432,7 +484,10 @@ def release_items(item):
     if item.get("holdsReleased"):
         return []
     out = []
-    for t in item.get("tableIds") or []:
+    table_ids = item.get("tableIds") or []
+    if item.get("status") == HELD or item.get("fromHold"):
+        table_ids = _owned_tables(item)
+    for t in table_ids:
         out.append({
             "Delete": {
                 "TableName": occupancy_table(),
@@ -478,6 +533,9 @@ def list_day(location_id, date_str):
         if "LastEvaluatedKey" not in page:
             break
         request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    # Table holds (a guest still filling in the form, or one that ran out)
+    # are not bookings - staff never see them.
+    items = [i for i in items if i.get("status") != HELD and not i.get("holdOnly")]
     return sorted(items, key=lambda i: (i.get("startTime", ""), i.get("customerName") or "", i["reservationId"]))
 
 

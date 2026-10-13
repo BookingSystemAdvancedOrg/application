@@ -51,7 +51,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import booking_rules, tenant
-from shared.availability import SLOT_STEP_MINUTES
+from shared.availability import SLOT_STEP_MINUTES, _live_occupancies
 from shared.auth import (
     Unauthorized,
     get_claims,
@@ -1214,7 +1214,8 @@ def _query_occupancies(partition_key, prefix):
 
         last_key = response.get("LastEvaluatedKey")
         if last_key is None:
-            return items
+            # A table hold whose 15 minutes ran out occupies nothing.
+            return _live_occupancies(items, _utc_now().timestamp())
         if (
             not _valid_occupancy_last_key(
                 last_key,
@@ -1344,11 +1345,15 @@ def _existing_block_for_slot(slot):
 
 
 def _put_manual_item(item):
+    # The row of a table hold whose time ran out may be taken over, like a
+    # booking does (shared/reservations.py hold_items).
     table(SLOT_OCCUPANCY_TABLE_NAME).put_item(
         Item=item,
         ConditionExpression=(
-            "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+            "(attribute_not_exists(PK) AND attribute_not_exists(SK)) "
+            "OR holdExpiresAt <= :now"
         ),
+        ExpressionAttributeValues={":now": int(_utc_now().timestamp())},
     )
 
 

@@ -212,10 +212,11 @@ def marker_delete_ops(item):
     }}]
 
 
-def expire_items(item, now):
-    """Transaction items: a pending booking whose card was never confirmed
-    -> expired, its tables released, its marker gone."""
-    entry = r.history_entry("expired", "system", now, status=r.EXPIRED)
+def expire_items(item, now, *, action="expired", actor="system"):
+    """Transaction items: a pending booking whose card was never confirmed,
+    or a table hold that ran out / was let go -> expired, its tables
+    released, its marker gone."""
+    entry = r.history_entry(action, actor, now, status=r.EXPIRED)
     versions = r.read_lock_versions(item["locationId"], item["date"], item.get("tableIds") or [])
     return (r.lock_updates(item["locationId"], item["date"], versions) + r.release_items(item) + [{
         "Update": {
@@ -224,11 +225,11 @@ def expire_items(item, now):
             "UpdateExpression": ("SET #s = :expired, holdsReleased = :true, updatedAt = :now, "
                                  "updatedBy = :by, history = list_append(if_not_exists(history, :empty), :entry), "
                                  "version = if_not_exists(version, :zero) + :one REMOVE pendingExpiresAt"),
-            "ConditionExpression": "#s = :pending",
+            "ConditionExpression": "#s IN (:pending, :held)",
             "ExpressionAttributeNames": {"#s": "status"},
             "ExpressionAttributeValues": r.serialize({
-                ":expired": r.EXPIRED, ":pending": r.PENDING, ":true": True, ":now": r.iso(now),
-                ":by": "system", ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
+                ":expired": r.EXPIRED, ":pending": r.PENDING, ":held": r.HELD, ":true": True,
+                ":now": r.iso(now), ":by": actor, ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
             }),
         }
     }] + marker_delete_ops(item))
@@ -303,6 +304,10 @@ def confirm_if_ready(item, now, actor, *, intent=None):
         return item
     if item["status"] == r.EXPIRED:
         raise r.InvalidState("expired")
+    # Started from a table hold: the hold's clock is the card step's clock -
+    # once it ran out the tables may already be someone else's.
+    if item.get("fromHold") and item.get("pendingExpiresAt") and r.parse_iso(item["pendingExpiresAt"]) <= now:
+        raise r.InvalidState("expired")
     intent = intent or retrieve_setup(item)
     if not setup_matches(intent, item) or intent.get("status") != "succeeded":
         raise r.InvalidState("card_not_confirmed")
@@ -312,7 +317,8 @@ def confirm_if_ready(item, now, actor, *, intent=None):
     if not isinstance(payment_method, str):
         raise r.InvalidState("card_not_confirmed")
     try:
-        r.transact([confirm_items(item, payment_method, now, actor)] + marker_delete_ops(item))
+        r.transact([confirm_items(item, payment_method, now, actor)] + marker_delete_ops(item)
+                   + (r.keep_hold_items(item) if item.get("fromHold") else []))
     except r.Conflict:
         fresh = r.load(item["locationId"], item["reservationId"])
         if fresh["status"] == r.RESERVED:

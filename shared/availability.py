@@ -1049,7 +1049,7 @@ def _query_occupancies(location_id, requested_date):
 
         last_key = response.get("LastEvaluatedKey")
         if last_key is None:
-            return items
+            return _live_occupancies(items)
         if (
             not _valid_occupancy_last_key(
                 last_key,
@@ -1061,6 +1061,27 @@ def _query_occupancies(location_id, requested_date):
             raise _AvailabilityServiceFailure
         seen_last_keys.append(last_key)
         request["ExclusiveStartKey"] = last_key
+
+
+def _now_epoch():
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _live_occupancies(items, now_epoch=None):
+    """Rows of a table hold whose time ran out (holdExpiresAt passed) no
+    longer occupy anything - the tables are free again right away, even
+    before the sweep deletes the row."""
+    now_epoch = _now_epoch() if now_epoch is None else now_epoch
+    live = []
+    for item in items:
+        expires = item.get("holdExpiresAt") if isinstance(item, dict) else None
+        try:
+            if expires is not None and float(expires) <= now_epoch:
+                continue
+        except (TypeError, ValueError, ArithmeticError):
+            pass
+        live.append(item)
+    return live
 
 
 def _occupancy_key_details(item, location_id, requested_date):

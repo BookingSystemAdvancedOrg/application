@@ -73,6 +73,8 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/reservations/{reservationId}/payment": frozenset(
         {"post"}
     ),
+    "/locations/{locationId}/holds": frozenset({"post"}),
+    "/locations/{locationId}/holds/{holdId}": frozenset({"delete"}),
     "/order": frozenset({"post"}),
     "/locations/{locationId}/ordering": frozenset({"get"}),
     "/locations/{locationId}/order-status/{orderId}": frozenset({"get"}),
@@ -98,6 +100,8 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
         ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/confirm", "post"),
+        ("/locations/{locationId}/holds", "post"),
+        ("/locations/{locationId}/holds/{holdId}", "delete"),
         ("/order", "post"),
         ("/locations/{locationId}/ordering", "get"),
         ("/locations/{locationId}/order-status/{orderId}", "get"),

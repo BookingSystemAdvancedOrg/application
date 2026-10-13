@@ -63,6 +63,9 @@ def checkout(item, offer, account, success_url, cancel_url, now, attempt):
             "tax_rates": [rate],
         } for name, unit, qty in _amount_lines(offer)],
         "customer_email": item.get("customerEmail"),
+        # No Stripe Link (its SMS code goes to the Link account's phone, not
+        # the guest's number on the request) - same as food orders.
+        "wallet_options": {"link": {"display": "never"}},
         "client_reference_id": item["requestId"],
         "metadata": _metadata(item, offer),
         "payment_intent_data": {"metadata": _metadata(item, offer),

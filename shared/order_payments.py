@@ -42,6 +42,10 @@ def create_checkout(item, account, success_url, cancel_url, now):
         } for line in item["lines"]],
         "client_reference_id": item["orderId"],
         "customer_email": item.get("customerEmail"),
+        # No Stripe Link: it texts its own code to the phone on the guest's
+        # Link account, not the number in the order. With it off, the only
+        # SMS about the order go to the number the guest typed (ours).
+        "wallet_options": {"link": {"display": "never"}},
         "locale": _LOCALES.get(item.get("language"), "sv"),
         "metadata": metadata,
         "payment_intent_data": {"metadata": metadata,

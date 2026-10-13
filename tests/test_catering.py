@@ -466,6 +466,7 @@ def test_private_guest_pays_with_checkout(env):
     assert call["account"] == ACCOUNT and call["key"] == f"checkout-{rid}-1"
     params = call["params"]
     assert params["discounts"] == [{"coupon": "co_1"}] and params["invoice_creation"]["enabled"] is True
+    assert params["wallet_options"] == {"link": {"display": "never"}}
     assert [li["quantity"] for li in params["line_items"]] == [20, 15, 2, 1]
     assert params["line_items"][0]["tax_rates"] == ["txr_12"]
     assert params["success_url"].endswith(f"/catering/{LOC_A}/{rid}?restaurang=roma&betalning=klar")

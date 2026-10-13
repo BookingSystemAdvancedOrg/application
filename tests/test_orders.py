@@ -316,6 +316,7 @@ def test_pickup_order_is_priced_from_the_menu_and_sent_to_checkout(env):
     assert call["account"] == ACCOUNT and call["key"] == f"checkout-{body['orderId']}"
     params = call["params"]
     assert params["mode"] == "payment" and params["customer_email"] == "anna@example.se"
+    assert params["wallet_options"] == {"link": {"display": "never"}}
     assert params["line_items"][0] == {"price_data": {"currency": "sek", "unit_amount": 12500,
                                                       "product_data": {"name": "Margherita"}}, "quantity": 2}
     assert params["metadata"] == {"orderId": body["orderId"], "locationId": LOC_A, "tenantId": TENANT_A,

@@ -284,6 +284,19 @@ def test_policy_validation():
 
 # --- placing an order -------------------------------------------------------------------------
 
+def test_too_large_an_order_is_refused_and_logged_without_guest_data(env, caplog):
+    import boto3
+    boto3.resource("dynamodb", region_name=REGION).Table(MENU_TABLE).put_item(
+        Item=menu_item(LOC_A, "car", "Porsche", "3500000"))
+    with caplog.at_level("WARNING"):
+        response = post_order(env, items=[{"menuItemId": "car", "quantity": 1}])
+    assert response["statusCode"] == 400
+    assert body_of(response) == {"error": "order total is too large"}
+    refused = [r.getMessage() for r in caplog.records if "order refused" in r.getMessage()]
+    assert refused == ["order refused: 400 order total is too large"]
+    assert not any("anna" in r.getMessage().lower() or "4670" in r.getMessage() for r in caplog.records)
+
+
 def test_pickup_order_is_priced_from_the_menu_and_sent_to_checkout(env):
     response = post_order(env)
     assert response["statusCode"] == 201, response

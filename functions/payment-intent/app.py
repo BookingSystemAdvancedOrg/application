@@ -184,6 +184,12 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
                               "totalAmount": total})
 
 
+def _refused(event, status, error):
+    """One log line per refused order: the error code only - no guest data
+    (validation messages name the field, never its value)."""
+    logger.warning("order refused: %s %s", status, str(error)[:200])
+
+
 def handler(event, context):
     method, path = http.route(event)
     if path != _PATH:
@@ -193,16 +199,22 @@ def handler(event, context):
     try:
         return _create(event)
     except tenant.TenantError as exc:
+        _refused(event, exc.status, exc.error)
         return exc.response()
     except request_guard.Limited as exc:
+        _refused(event, 429, "too_many_requests")
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
     except turnstile.Unavailable:
+        _refused(event, 503, "verification_unavailable")
         return http.error(503, "verification_unavailable")
     except o.Closed as exc:
+        _refused(event, 409, exc.code)
         return http.error(409, exc.code)
     except (stripe.StripeError, stripe.StripeUnavailable):
+        logger.warning("order refused: 503 payment_unavailable", exc_info=True)
         return http.error(503, "payment_unavailable")
     except ValueError as exc:
+        _refused(event, 400, str(exc))
         return http.error(400, str(exc))
     except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):
         logger.exception("order service unavailable")

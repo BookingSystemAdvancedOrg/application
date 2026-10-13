@@ -312,3 +312,59 @@ def test_sms_countries_can_be_configured(env, monkeypatch):
     monkeypatch.setenv("SMS_ALLOWED_PREFIXES", "+44")
     run(module, record(booking(customerPhone="+447700900123"), event_name="INSERT"))
     assert len(sns.calls) == 1
+
+
+# --- dev mail outbox ---------------------------------------------------------------------
+
+def _outbox(monkeypatch):
+    s3 = boto3.client("s3", region_name=REGION)
+    s3.create_bucket(Bucket="dev-outbox", CreateBucketConfiguration={"LocationConstraint": REGION})
+    monkeypatch.setenv("MAIL_OUTBOX_BUCKET_NAME", "dev-outbox")
+    return s3
+
+
+def _saved(s3):
+    import json
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket="dev-outbox", Prefix="outbox/").get("Contents", [])]
+    return [json.loads(s3.get_object(Bucket="dev-outbox", Key=k)["Body"].read()) for k in keys]
+
+
+def test_outbox_saves_emails_instead_of_sending_and_copies_sms(env, monkeypatch):
+    module, ses, sns = env
+    s3 = _outbox(monkeypatch)
+
+    assert run(module, record(booking(), event_name="INSERT")) == {"batchItemFailures": []}
+
+    assert ses.calls == []
+    assert len(sns.calls) == 1
+    saved = _saved(s3)
+    emails = [m for m in saved if m["channel"] == "email"]
+    (sms,) = [m for m in saved if m["channel"] == "sms"]
+    assert {m["to"] for m in emails} == {"anna@example.se", "soder@roma.se"}
+    guest = next(m for m in emails if m["to"] == "anna@example.se")
+    assert guest["subject"] == "Bokningsbekräftelse - Roma Södermalm"
+    assert "no-reply@mail.example.se" in guest["from"] and guest["replyTo"] == ["soder@roma.se"]
+    assert "/bokning/" in guest["text"] and guest["html"]
+    assert sms["to"] == "+46701234567" and sms["text"].startswith("Roma Södermalm: Hej Anna!")
+    assert all(m["id"] and m["at"].endswith("Z") for m in saved)
+
+
+def test_outbox_keys_list_newest_first(env, monkeypatch):
+    module, _, _ = env
+    s3 = _outbox(monkeypatch)
+    module._to_outbox("dev-outbox", {"channel": "email", "subject": "first"})
+    monkeypatch.setattr(module, "_now", lambda: NOW + timedelta(seconds=1))
+    module._to_outbox("dev-outbox", {"channel": "email", "subject": "second"})
+
+    assert [m["subject"] for m in _saved(s3)] == ["second", "first"]
+
+
+def test_outbox_is_ignored_in_prod(env, monkeypatch):
+    module, ses, _ = env
+    s3 = _outbox(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+
+    run(module, record(booking(), event_name="INSERT"))
+
+    assert len(ses.calls) == 2
+    assert _saved(s3) == []

@@ -63,19 +63,30 @@ ENV_VARS:
     (route those tables' stream records), CATERING_LINK_SIGNING_KEY_SECRET_ARN,
     NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
     RESERVATION_LINK_KEY_SECRET_ARN,
-    SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes)
+    SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes),
+    MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox")
+
+DEV MAIL OUTBOX:
+    When MAIL_OUTBOX_BUCKET_NAME is set (infrastructure var.mail_outbox,
+    never in prod) every email is saved to that bucket as JSON instead of
+    being sent through SES, and every SMS is also copied there (it is still
+    sent). The operator console lists them ("Mail outbox"). Keys are
+    outbox/<inverted epoch ms>-<id>.json so a listing is newest first.
+    ENVIRONMENT=prod ignores the setting.
 
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
     GetItem on locations (tenant-context policy); ses:SendEmail on the
     no-reply identity; sns:Publish (SMS, Resource "*" by AWS design);
-    GetSecretValue on the link signing key.
+    GetSecretValue on the link signing key; dev only: s3:PutObject on the
+    mail outbox's outbox/* prefix.
 """
 
 import json
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.utils import formataddr
 
@@ -171,7 +182,42 @@ def _reply_to(tenant_row, location):
     return [address] if address else []
 
 
+# --- dev mail outbox --------------------------------------------------------------------
+
+_INVERT_MS = 10 ** 13 - 1
+
+
+def _outbox_bucket():
+    if os.environ.get("ENVIRONMENT") == "prod":
+        return None
+    return os.environ.get("MAIL_OUTBOX_BUCKET_NAME") or None
+
+
+def _to_outbox(bucket, entry):
+    """Save one message to the dev outbox. A failure is retryable like SES."""
+    now = _now()
+    message_id = f"{_INVERT_MS - int(now.timestamp() * 1000):013d}-{uuid.uuid4().hex[:12]}"
+    body = {"id": message_id, "at": now.isoformat().replace("+00:00", "Z"), **entry}
+    try:
+        _client("s3").put_object(
+            Bucket=bucket, Key=f"outbox/{message_id}.json",
+            Body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json; charset=utf-8",
+        )
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise
+        logger.exception("mail outbox write failed")
+        raise
+    logger.info("saved %s to the dev mail outbox: %s", entry.get("channel"), message_id)
+
+
 def _send_email(to, subject, text, html_body, *, source, reply_to):
+    bucket = _outbox_bucket()
+    if bucket:
+        _to_outbox(bucket, {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
+                            "subject": subject, "text": text, "html": html_body})
+        return
     message = {"Subject": {"Data": subject, "Charset": "UTF-8"},
                "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}}
     if html_body:
@@ -201,6 +247,13 @@ def _send_sms(phone, text, tenant_row):
     if _SENDER_ID.fullmatch(sender) and re.search(r"[A-Za-z]", sender):
         attributes["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender.replace(" ", "")}
     _client("sns").publish(PhoneNumber=phone, Message=text, MessageAttributes=attributes)
+    bucket = _outbox_bucket()
+    if bucket:
+        # A copy for the outbox - best effort, the SMS itself already went out.
+        try:
+            _to_outbox(bucket, {"channel": "sms", "to": phone, "from": sender or None, "text": text})
+        except (BotoCoreError, ClientError):
+            logger.warning("could not copy the SMS to the dev mail outbox", exc_info=True)
 
 
 def _settings(tenant_row):

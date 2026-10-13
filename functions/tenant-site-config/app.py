@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, dynamo, guarantee, http, orders, tenant
+from shared import booking_rules, catering, dynamo, guarantee, http, orders, tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -154,6 +154,8 @@ def _public_location(row, tenant_row):
         # open/closed right now comes from GET .../ordering, not this
         # cached document.
         "ordering": _ordering(row, tenant_row),
+        # Catering calculator on for this location (details: GET .../catering/settings).
+        "catering": catering.settings_of(row)["enabled"],
     }
 
 

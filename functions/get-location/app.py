@@ -273,7 +273,7 @@ def _public_location(item):
         )
     public.update({field: item[field] for field in (
         "guarantee", "maxPartySizeOnline", "specialDays", "tableRules", "tableCombinations",
-        "ordering", "orderingPausedUntil",
+        "ordering", "orderingPausedUntil", "cateringSettings",
     ) if item.get(field) is not None})
     return public
 

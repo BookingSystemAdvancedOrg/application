@@ -37,6 +37,7 @@ VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 # order form passes ORDER_ACTION.
 ACTION = "booking"
 ORDER_ACTION = "order"
+CATERING_ACTION = "catering"
 _TIMEOUT = 5
 _TOKEN_MAX = 2048
 _cache = {"secret": None}

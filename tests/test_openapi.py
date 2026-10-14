@@ -614,12 +614,15 @@ def test_get_availability_contract_matches_handler(openapi_document):
     slot = document["components"]["schemas"]["AvailabilitySlot"]
     table = document["components"]["schemas"]["AvailabilityTable"]
     # Everything is always present except `day` (only on a special day) and
-    # a slot's `options` (only in the partySize guest view).
-    for schema, optional in ((availability, {"day"}), (slot, {"options"}), (table, set())):
+    # a slot's `options` / `unavailable` (only in the partySize guest view).
+    for schema, optional in ((availability, {"day"}), (slot, {"options", "unavailable"}), (table, set())):
         assert schema["additionalProperties"] is False
         assert set(schema["properties"]) - set(schema["required"]) == optional
     assert availability["properties"]["day"] == {"$ref": "#/components/schemas/DayStatus"}
     assert slot["properties"]["options"]["items"] == {"$ref": "#/components/schemas/TableOption"}
+    assert slot["properties"]["unavailable"]["items"] == {"$ref": "#/components/schemas/TableUnavailable"}
+    reason = document["components"]["schemas"]["TableUnavailable"]["properties"]["reason"]
+    assert set(reason["enum"]) == {"booked", "blocked", "phone", "too_small", "too_large", "unavailable"}
 
     assert availability["properties"]["slots"]["items"] == {
         "$ref": "#/components/schemas/AvailabilitySlot"

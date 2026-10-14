@@ -1158,6 +1158,32 @@ def _intervals_overlap(first_start, first_end, second_start, second_end):
     return first_start < second_end and second_start < first_end
 
 
+def _why_unavailable(slot_tables, offered, occupied_how, party_size, rules):
+    """Why each table of the slot that isn't offered to this party can't be
+    chosen - ordered by tableId like ``tables``."""
+    reasons = []
+    for table_details in sorted(slot_tables, key=lambda t: t["tableId"]):
+        table_id = table_details["tableId"]
+        if table_id in offered:
+            continue
+        if table_id in occupied_how:
+            reasons.append({"tableId": table_id, "reason": occupied_how[table_id]})
+            continue
+        rule = booking_rules.table_rule(rules, table_id, table_details["seats"])
+        if not rule["online"]:
+            reasons.append({"tableId": table_id, "reason": "phone"})
+            continue
+        entry = {"tableId": table_id, "minParty": int(rule["minParty"]), "maxParty": int(rule["maxParty"])}
+        if party_size > rule["maxParty"]:
+            entry["reason"] = "too_small"
+        elif party_size < rule["minParty"]:
+            entry["reason"] = "too_large"
+        else:  # fits on its own rules yet isn't offered - cannot happen today
+            entry["reason"] = "unavailable"
+        reasons.append(entry)
+    return reasons
+
+
 def _public_availability(context, occupancies, *, party_size=None):
     """The availability response. Without ``party_size`` (staff view)
     every slot lists its free tables. With it (the online guest view) a slot
@@ -1165,7 +1191,15 @@ def _public_availability(context, occupancies, *, party_size=None):
     combinations that party may book online (booking_rules.online_options) -
     its ``tables`` are only the tables in those options, and slots without
     any option are left out. A day without online booking has no slots in
-    the guest view. ``day`` is present on a special day."""
+    the guest view. ``day`` is present on a special day.
+
+    The guest view also says why every other table of the slot can't be
+    chosen (``unavailable``), so the booking page can explain it instead of
+    just greying the table out: "booked" (a guest's booking or a table
+    someone is holding), "blocked" (staff blocked it), "phone" (not
+    bookable online), "too_small" / "too_large" (outside the party sizes it
+    takes online - ``minParty``/``maxParty`` say which). Nothing about other
+    guests is revealed."""
     day = context.get("day")
     guest_view = party_size is not None
     max_online = context.get("maxPartySizeOnline")
@@ -1182,25 +1216,29 @@ def _public_availability(context, occupancies, *, party_size=None):
         )
         if details["tableId"] in occupied_by_table:
             occupied_by_table[details["tableId"]].append(
-                (details["startMinute"], details["endMinute"])
+                (details["startMinute"], details["endMinute"], item.get("source") == _MANUAL_SOURCE)
             )
 
     public_slots = []
     for slot in context["slots"]:
         available_tables = []
+        occupied_how = {}
         for table_details in slot["tables"]:
             intervals = occupied_by_table[table_details["tableId"]]
-            occupied = any(
-                _intervals_overlap(
+            overlapping = [
+                manual
+                for start_minute, end_minute, manual in intervals
+                if _intervals_overlap(
                     slot["startMinute"],
                     slot["endMinute"],
                     start_minute,
                     end_minute,
                 )
-                for start_minute, end_minute in intervals
-            )
-            if not occupied:
+            ]
+            if not overlapping:
                 available_tables.append(dict(table_details))
+            else:
+                occupied_how[table_details["tableId"]] = "blocked" if all(overlapping) else "booked"
 
         options = None
         if guest_view:
@@ -1214,6 +1252,8 @@ def _public_availability(context, occupancies, *, party_size=None):
             )
             offered = {table_id for option in options for table_id in option["tableIds"]}
             available_tables = [t for t in available_tables if t["tableId"] in offered]
+            unavailable = _why_unavailable(
+                slot["tables"], offered, occupied_how, party_size, context.get("tableRules"))
 
         if available_tables:
             public_slot = {
@@ -1224,6 +1264,8 @@ def _public_availability(context, occupancies, *, party_size=None):
             }
             if options is not None:
                 public_slot["options"] = options
+                if unavailable:
+                    public_slot["unavailable"] = unavailable
             public_slots.append(public_slot)
 
     response = {

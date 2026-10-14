@@ -5609,6 +5609,39 @@ components:
             slot online, best fit first (fewest seats, then fewest tables).
           items:
             $ref: '#/components/schemas/TableOption'
+        unavailable:
+          type: array
+          minItems: 1
+          description: |
+            Guest view only (`partySize`): why each other table of this
+            slot's layout can't be chosen by that party, ordered by tableId.
+            Absent when every table is offered.
+          items:
+            $ref: '#/components/schemas/TableUnavailable'
+
+    TableUnavailable:
+      type: object
+      additionalProperties: false
+      required: [tableId, reason]
+      properties:
+        tableId:
+          type: string
+        reason:
+          type: string
+          enum: [booked, blocked, phone, too_small, too_large, unavailable]
+          description: |
+            booked - booked or held by another guest; blocked - blocked by
+            the restaurant; phone - not bookable online; too_small /
+            too_large - outside the party sizes the table takes online
+            (minParty-maxParty).
+        minParty:
+          type: integer
+          minimum: 1
+          description: Smallest party the table takes online (size reasons only).
+        maxParty:
+          type: integer
+          minimum: 1
+          description: Largest party the table takes online (size reasons only).
 
     TableOption:
       type: object

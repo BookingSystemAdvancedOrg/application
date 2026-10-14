@@ -396,6 +396,46 @@ def test_availability_offers_a_party_only_its_online_options(env):
     assert "options" not in staff_slot and len(staff_slot["tables"]) == 3
 
 
+def test_guest_view_explains_every_table_it_does_not_offer(env):
+    # table-a 2 seats (1-2 online), table-b 4 (2-4), table-c 6 (3-6).
+    set_location(env, tableRules={
+        "table-a": {"minParty": Decimal(1), "maxParty": Decimal(2), "online": False}})
+    slot = next(s for s in guest_view(env, 5)["slots"] if s["startTime"] == "18:00")
+    assert slot["options"] == [{"tableIds": ["table-c"], "seats": 6}]
+    assert slot["unavailable"] == [
+        {"tableId": "table-a", "reason": "phone"},
+        {"tableId": "table-b", "minParty": 2, "maxParty": 4, "reason": "too_small"},
+    ]
+    two = next(s for s in guest_view(env, 2)["slots"] if s["startTime"] == "18:00")
+    assert two["options"] == [{"tableIds": ["table-b"], "seats": 4}]
+    assert two["unavailable"] == [
+        {"tableId": "table-a", "reason": "phone"},
+        {"tableId": "table-c", "minParty": 3, "maxParty": 6, "reason": "too_large"},
+    ]
+    # A party nothing fits gets no slot at all (nothing to explain on a table).
+    assert guest_view(env, 1)["slots"] == []
+
+    # A guest's booking shows as booked - nothing else about it.
+    assert guest_booking(env, tables=("table-c",), party=4)["statusCode"] == 201
+    three = next(s for s in guest_view(env, 3)["slots"] if s["startTime"] == "18:00")
+    assert {"tableId": "table-c", "reason": "booked"} in three["unavailable"]
+
+
+def test_guest_view_tells_a_staff_block_from_a_booking(env):
+    env["res"].Table(OCCUPANCY_TABLE).put_item(Item={
+        "PK": f"LOCATION#{LOC_A}", "SK": f"SLOT#{DAY}#18:00-20:00#table-c",
+        "reservationId": "MANUAL_BLOCK#0b1c2d3e-4f50-4a6b-8c7d-8e9fa0b1c2d3",
+        "source": "manual_block", "createdBy": "staff", "createdAt": "2026-09-08T10:00:00Z",
+        "ttl": 4102444800})
+    slot = next(s for s in guest_view(env, 4)["slots"] if s["startTime"] == "18:00")
+    assert {"tableId": "table-c", "reason": "blocked"} in slot["unavailable"]
+    # The staff view has no reasons at all.
+    staff_slot = next(s for s in body_of(env["m"]["avail"].handler(
+        {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": LOC_A},
+         "queryStringParameters": {"date": DAY}}, None))["slots"] if s["startTime"] == "18:00")
+    assert "unavailable" not in staff_slot
+
+
 @pytest.mark.parametrize("query", [
     {"partySize": "0"}, {"partySize": "51"}, {"partySize": "two"}, {"partySize": "²"},
     {"partySize": "2", "walkIn": "true"},

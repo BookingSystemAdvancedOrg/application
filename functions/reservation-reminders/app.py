@@ -21,6 +21,12 @@ PURPOSE:
     marker rows, set to "expired" with their tables released in one
     transaction (shared/guarantee.py).
 
+    Scale: locations are worked through in parallel (WORKERS threads), and
+    the run stops taking new locations when the Lambda is close to its
+    deadline - the next run (15 min) carries on, and since every write is
+    conditional nothing is done twice. Thousands of locations fit in one
+    run; past that, fan out per tenant over SQS.
+
     Each due booking gets ONE conditional update: reminderSentAt + a
     "reminder" notice, only if it is still reserved, still at the same
     start time and not reminded yet. The Reservation stream hands the
@@ -42,6 +48,8 @@ AWS RESOURCE ACCESS:
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -54,6 +62,8 @@ from shared import reservations as r
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+WORKERS = 16
+STOP_MARGIN_MS = 30_000  # stop starting locations this long before the deadline
 DEFAULT_HOURS = 24
 ALLOWED_HOURS = (0, 2, 3, 6, 12, 24, 48)
 _MIN_LEAD = timedelta(hours=1)
@@ -160,41 +170,88 @@ def expire_pending(location_id, now):
         request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
+class _Tenants:
+    """reminderHours per tenant (0 = no reminders), fetched once per run."""
+
+    def __init__(self):
+        self._hours = {}
+        self._lock = threading.Lock()
+
+    def hours(self, tenant_id):
+        with self._lock:
+            if tenant_id in self._hours:
+                return self._hours[tenant_id]
+        row = tenant.get_tenant(tenant_id)
+        active = bool(row) and row.get("status") == "active" and \
+            bool(((row.get("entitlements") or {}).get("features") or {}).get("reservations"))
+        hours = reminder_hours(row) if active else 0
+        with self._lock:
+            self._hours[tenant_id] = hours
+        return hours
+
+
+def _one_location(location, tenants, now):
+    """(reminders marked, holds expired, failed?) for one location."""
+    tenant_id, location_id = location.get("tenantId"), location.get("locationId")
+    if not tenant_id or not location_id:
+        return 0, 0, False
+    marked = expired = 0
+    failed = False
+    try:
+        expired = expire_pending(location_id, now)
+    except ClientError:
+        failed = True
+        logger.exception("expiry failed for location %s", location_id)
+    try:
+        hours = tenants.hours(tenant_id)
+    except ClientError:
+        logger.exception("tenant lookup failed for location %s", location_id)
+        return marked, expired, True
+    if not hours:
+        return marked, expired, failed
+    try:
+        zone = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("Europe/Stockholm")
+    try:
+        for item in _candidates(location_id, zone, now, hours):
+            if is_due(item, now, hours) and _mark(item, now):
+                marked += 1
+    except ClientError:
+        # One location's failure must not stop the others; the next run
+        # (15 min) picks its bookings up again - nothing was marked.
+        failed = True
+        logger.exception("reminders failed for location %s", location_id)
+    return marked, expired, failed
+
+
+def _time_left_ms(context):
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    return getter() if callable(getter) else None
+
+
 def handler(event, context):
     now = r.now_utc()
-    tenants = {}
-    marked = failed = expired = 0
-    for location in _locations():
-        tenant_id, location_id = location.get("tenantId"), location.get("locationId")
-        if not tenant_id or not location_id:
-            continue
-        try:
-            expired += expire_pending(location_id, now)
-        except ClientError:
-            failed += 1
-            logger.exception("expiry failed for location %s", location_id)
-        if tenant_id not in tenants:
-            row = tenant.get_tenant(tenant_id)
-            active = bool(row) and row.get("status") == "active" and \
-                bool(((row.get("entitlements") or {}).get("features") or {}).get("reservations"))
-            tenants[tenant_id] = reminder_hours(row) if active else 0
-        hours = tenants[tenant_id]
-        if not hours:
-            continue
-        try:
-            zone = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
-        except (ZoneInfoNotFoundError, ValueError):
-            zone = ZoneInfo("Europe/Stockholm")
-        try:
-            for item in _candidates(location_id, zone, now, hours):
-                if is_due(item, now, hours) and _mark(item, now):
-                    marked += 1
-        except ClientError:
-            # One location's failure must not stop the others; the next run
-            # (15 min) picks its bookings up again - nothing was marked.
-            failed += 1
-            logger.exception("reminders failed for location %s", location_id)
-    logger.info(json.dumps({"reminders": marked, "expired": expired, "failedLocations": failed}))
+    tenants = _Tenants()
+    marked = failed = expired = skipped = 0
+
+    def run(location):
+        left = _time_left_ms(context)
+        if left is not None and left < STOP_MARGIN_MS:
+            return None  # out of time - the next run takes this location
+        return _one_location(location, tenants, now)
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for result in pool.map(run, _locations()):
+            if result is None:
+                skipped += 1
+                continue
+            m, e, f = result
+            marked, expired, failed = marked + m, expired + e, failed + int(f)
+    logger.info(json.dumps({"reminders": marked, "expired": expired, "failedLocations": failed,
+                            "skippedLocations": skipped}))
     if failed:
         raise RuntimeError(f"{failed} location(s) failed")  # visible in metrics/alarms
+    if skipped:
+        logger.warning("ran out of time: %d location(s) left for the next run", skipped)
     return {"reminders": marked, "expired": expired}

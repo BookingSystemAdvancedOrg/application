@@ -129,3 +129,41 @@ def test_booking_moved_meanwhile_is_not_reminded_for_the_old_time(env, monkeypat
 def test_reminder_hours_setting(env, raw, hours):
     module, _, _ = env
     assert module.reminder_hours({"notifications": raw} if raw is not None else {}) == hours
+
+
+class _Context:
+    def __init__(self, left_ms):
+        self.left_ms = left_ms
+
+    def get_remaining_time_in_millis(self):
+        return self.left_ms
+
+
+def test_both_tenants_locations_are_worked_through_in_parallel(env):
+    module, table, _ = env
+    a = put(table, "a" * 32, starts=NOW + timedelta(hours=20))
+    b = put(table, "b" * 32, starts=NOW + timedelta(hours=20), location=LOC_B, tenant_id=TENANT_B)
+
+    assert module.handler({}, _Context(250_000))["reminders"] == 2
+    assert get(table, a)["notice"]["type"] == "reminder" and get(table, b)["notice"]["type"] == "reminder"
+
+
+def test_near_the_deadline_the_rest_waits_for_the_next_run(env):
+    module, table, _ = env
+    due = put(table, "a" * 32, starts=NOW + timedelta(hours=20))
+
+    assert module.handler({}, _Context(module.STOP_MARGIN_MS - 1)) == {"reminders": 0, "expired": 0}
+    assert "reminderSentAt" not in get(table, due)
+    # The next run (plenty of time) picks it up, once.
+    assert module.handler({}, _Context(250_000))["reminders"] == 1
+
+
+def test_worker_threads_get_their_own_dynamodb_resource(env):
+    from concurrent.futures import ThreadPoolExecutor
+    main = shared_dynamo.table(RES_TABLE).meta.client
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.map(lambda _: id(shared_dynamo.table(RES_TABLE).meta.client), range(2))
+    worker = list(ThreadPoolExecutor(max_workers=1).map(lambda _: shared_dynamo.table(RES_TABLE), [0]))[0]
+    assert id(main) not in (first, second)
+    assert worker.meta.client is not main
+    assert shared_dynamo.table(RES_TABLE).meta.client is main  # the main thread keeps one

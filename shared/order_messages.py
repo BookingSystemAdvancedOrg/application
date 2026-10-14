@@ -22,21 +22,15 @@ from shared.messages import _brand_color, contact_line, money, restaurant_name
 
 _TEXT = {
     "sv": {
-        "sms.started.pickup": ("{restaurant}: {thanks} Vi har börjat laga din beställning #{number}. "
-                               "Beräknat klar ca {ready}. Du får ett sms när den är klar att hämta."),
-        "sms.started.table": ("{restaurant}: {thanks} Vi har börjat laga din beställning #{number}. "
-                              "Den serveras till {table}."),
+        # SMS: short and plain - one SMS part (max 160 characters), no links.
+        "sms.started.pickup": "{restaurant}: Beställning #{number} bekräftad.{ready_at}{where}",
+        "sms.started.table": "{restaurant}: Beställning #{number} bekräftad. Serveras till {table}.",
+        "sms.ready_at": " Klar ca {ready}.",
+        "sms.where": " Adress: {address}",
         "started.subject": "Vi har börjat laga din beställning #{number} - {restaurant}",
         "started.lead.pickup": "Vi har börjat laga din beställning. Beräknat klar att hämta ca {ready}.",
         "started.lead.table": "Vi har börjat laga din beställning. Den serveras till {table}.",
-        "sms.ready": "{restaurant}: {yours} beställning #{number} är klar att hämta!{where}",
-        "thanks": "Tack {first}!",
-        "thanks.anon": "Tack!",
-        "yours": "{first}, din",
-        "yours.anon": "Din",
-        "sms.cancelled": ("{restaurant}: Tyvärr har restaurangen avbrutit din beställning #{number}. "
-                          "{amount} betalas tillbaka till ditt kort inom några bankdagar."),
-        "sms.follow": " Följ: {link}",
+        "sms.ready": "{restaurant}: Beställning #{number} är klar att hämta.{where}",
         "receipt.subject": "Kvitto beställning #{number} - {restaurant}",
         "receipt.lead.pickup": ("Tack för din beställning! Du får ett sms när restaurangen har börjat laga den "
                                 "och ett när den är klar att hämta."),
@@ -68,21 +62,14 @@ _TEXT = {
         "pickup.at": " Hämtas på {address}.",
     },
     "en": {
-        "sms.started.pickup": ("{restaurant}: {thanks} We've started on your order #{number}. "
-                               "Ready around {ready}. We'll text you when it's ready to collect."),
-        "sms.started.table": ("{restaurant}: {thanks} We've started on your order #{number}. "
-                              "It will be served at {table}."),
+        "sms.started.pickup": "{restaurant}: Order #{number} confirmed.{ready_at}{where}",
+        "sms.started.table": "{restaurant}: Order #{number} confirmed. Served at {table}.",
+        "sms.ready_at": " Ready around {ready}.",
+        "sms.where": " Address: {address}",
         "started.subject": "We've started on your order #{number} - {restaurant}",
         "started.lead.pickup": "We've started on your order. Ready to collect around {ready}.",
         "started.lead.table": "We've started on your order. It will be served at {table}.",
-        "sms.ready": "{restaurant}: {yours} order #{number} is ready to collect!{where}",
-        "thanks": "Thanks {first}!",
-        "thanks.anon": "Thanks!",
-        "yours": "{first}, your",
-        "yours.anon": "Your",
-        "sms.cancelled": ("{restaurant}: Unfortunately the restaurant has cancelled your order #{number}. "
-                          "{amount} will be refunded to your card within a few business days."),
-        "sms.follow": " Track: {link}",
+        "sms.ready": "{restaurant}: Order #{number} is ready for pickup.{where}",
         "receipt.subject": "Receipt order #{number} - {restaurant}",
         "receipt.lead.pickup": ("Thanks for your order! We'll text you when the restaurant starts on it "
                                 "and when it's ready to collect."),
@@ -115,7 +102,11 @@ _TEXT = {
     },
 }
 
-SMS_NOTICES = ("order_started", "order_ready", "order_cancelled")
+# Food orders get two SMS only: the kitchen started (confirmation) and
+# ready to collect. A cancelled order is an e-mail (with the refund), never
+# an SMS - cancellation SMS are for table bookings.
+SMS_NOTICES = ("order_started", "order_ready")
+SMS_MAX = 160  # one SMS part (GSM-7) - a second part doubles the price
 
 
 def _lang(item):
@@ -162,28 +153,36 @@ def _seller(tenant_row, location):
     }
 
 
-def sms(kind, item, tenant_row, location, link):
+def _clip(value, limit):
+    value = " ".join(str(value or "").split())
+    return value if len(value) <= limit else value[:limit - 1].rstrip() + "."
+
+
+def sms(kind, item, tenant_row, location, link=None):
+    """The order SMS: confirmation (kitchen started) or ready to collect.
+    Short and plain, one SMS part: restaurant, order number, ready time /
+    table, pickup address. `link` is accepted for the caller's convenience
+    and not used - the guest has it in the receipt e-mail."""
+    if kind not in SMS_NOTICES:
+        raise ValueError(f"no SMS for {kind}")
     lang = _lang(item)
-    first = _first(item)
+    ready = _local(item, item.get("readyEstimate"), "%H:%M")
+    address = _clip((location or {}).get("address"), 60)
     values = {
-        "restaurant": restaurant_name(tenant_row, location),
-        "thanks": _t(lang, "thanks", first=first) if first else _t(lang, "thanks.anon"),
-        "yours": _t(lang, "yours", first=first) if first else _t(lang, "yours.anon"),
+        "restaurant": _clip(restaurant_name(tenant_row, location), 30),
         "number": item.get("number") or "",
-        "ready": _local(item, item.get("readyEstimate"), "%H:%M"),
-        "table": _table(item, lang),
-        "amount": money((item.get("refund") or {}).get("amount") or item.get("totalAmount") or 0),
-        "where": _t(lang, "pickup.at", address=location["address"]) if (location or {}).get("address") else "",
+        "table": _clip(_table(item, lang), 20),
+        "ready_at": _t(lang, "sms.ready_at", ready=ready) if ready else "",
+        "where": _t(lang, "sms.where", address=address) if address else "",
     }
     if kind == "order_started":
-        text = _t(lang, f"sms.started.{item.get('mode', 'pickup')}", **values)
-        if link and item.get("mode") == "pickup":
-            text += _t(lang, "sms.follow", link=link)
-    elif kind == "order_ready":
-        text = _t(lang, "sms.ready", **values)
+        text = _t(lang, f"sms.started.{'table' if item.get('mode') == 'table' else 'pickup'}", **values)
     else:
-        text = _t(lang, "sms.cancelled", **values)
-    return text
+        text = _t(lang, "sms.ready", **values)
+    if len(text) > SMS_MAX:  # very long names: drop the address rather than pay for two parts
+        text = _t(lang, f"sms.started.{'table' if item.get('mode') == 'table' else 'pickup'}"
+                  if kind == "order_started" else "sms.ready", **{**values, "where": ""})
+    return text[:SMS_MAX]
 
 
 def email(kind, item, tenant_row, location, link):

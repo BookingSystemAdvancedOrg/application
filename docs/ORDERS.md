@@ -32,11 +32,19 @@ ordered 1-20 times; an order has at most 30 lines.
    notification function:
    - `order_confirmed` - receipt e-mail only (paid)
    - `order_started` - the confirmation SMS when staff press "Påbörja"
-     ("we've started, ready around 18:40" or "served at table 5"; e-mail
-     when no SMS can be sent). `readyEstimate` is set again from that click.
+     (e-mail when no SMS can be sent). `readyEstimate` is set again from
+     that click.
    - `order_ready` - SMS "ready to collect" (pickup only; e-mail when no
      SMS can be sent)
-   - `order_cancelled` - SMS + e-mail, refund amount
+   - `order_cancelled` - e-mail only, with the refund amount. Never an
+     SMS: cancellation SMS are for table bookings.
+
+   Order SMS are short and plain, always one SMS part (max 160
+   characters, no link - the link is in the receipt e-mail):
+
+       Roma: Beställning #12 bekräftad. Klar ca 18:40. Adress: Götgatan 1, Stockholm
+       Roma: Beställning #12 bekräftad. Serveras till bord 5.
+       Roma: Beställning #12 är klar att hämta. Adress: Götgatan 1, Stockholm
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
    orders. Two clicks: "Påbörja – skicka sms" (`preparing`, the
    confirmation SMS) and "Klar – skicka sms" (`ready`, pickup) / "Klar att

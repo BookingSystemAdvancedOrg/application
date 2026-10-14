@@ -700,10 +700,9 @@ def test_pressing_start_sends_the_confirmation_sms_even_with_booking_sms_off(env
     assert ses.calls == []
     (sms,) = sns.calls
     assert sms["PhoneNumber"] == "+46701234567"
-    assert sms["Message"].startswith(
-        "Roma Södermalm: Tack Anna! Vi har börjat laga din beställning #1. Beräknat klar ca 14:50. "
-        "Du får ett sms när den är klar att hämta.")
-    assert f"/bestallning/{LOC_A}/{created['orderId']}" in sms["Message"]
+    # Short and plain, one SMS part, no link (the link is in the receipt e-mail).
+    assert sms["Message"] == "Roma Södermalm: Beställning #1 bekräftad. Klar ca 14:50. Adress: Götgatan 1, Stockholm"
+    assert len(sms["Message"]) <= 160 and "http" not in sms["Message"]
 
 
 def test_start_without_a_nordic_phone_is_an_email(env, notify):
@@ -734,8 +733,7 @@ def test_ready_pickup_is_an_sms_only(env, notify):
     module.handler({"Records": [order_record(item)]}, None)
     assert ses.calls == []
     (sms,) = sns.calls
-    assert sms["Message"] == ("Roma Södermalm: Anna, din beställning #1 är klar att hämta! "
-                              "Hämtas på Götgatan 1, Stockholm.")
+    assert sms["Message"] == "Roma Södermalm: Beställning #1 är klar att hämta. Adress: Götgatan 1, Stockholm"
 
 
 def test_ready_without_a_nordic_phone_falls_back_to_email(env, notify):
@@ -748,15 +746,25 @@ def test_ready_without_a_nordic_phone_falls_back_to_email(env, notify):
     assert mail["Message"]["Subject"]["Data"] == "Din beställning #1 är klar att hämta - Roma Södermalm"
 
 
-def test_cancelled_order_tells_the_guest_about_the_refund(env, notify):
+def test_cancelled_order_is_an_email_with_the_refund_never_an_sms(env, notify):
     module, ses, sns = notify
     created = place_and_pay(env)
     set_status(env, created["orderId"], "cancelled")
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
     (mail,) = ses.calls
     assert "250 kr" in mail["Message"]["Body"]["Text"]["Data"]
-    (sms,) = sns.calls
-    assert "avbrutit din beställning #1" in sms["Message"]
+    assert sns.calls == []  # cancellation SMS are for table bookings only
+
+
+def test_order_sms_stays_one_part_with_long_names():
+    item = {"orderId": "a" * 32, "number": 123, "mode": "pickup", "language": "sv",
+            "readyEstimate": "2026-09-08T12:50:00Z", "timezone": "Europe/Stockholm"}
+    location = {"name": "Restaurang " + "X" * 80, "address": "Väldigt lång gatuadress " + "Y" * 150}
+    for kind in ("order_started", "order_ready"):
+        text = order_messages.sms(kind, item, {}, location)
+        assert len(text) <= 160 and "#123" in text
+    with pytest.raises(ValueError):
+        order_messages.sms("order_cancelled", item, {}, location)
 
 
 def test_table_order_sms_names_the_table_in_english(env, notify):
@@ -769,7 +777,7 @@ def test_table_order_sms_names_the_table_in_english(env, notify):
     set_status(env, created["orderId"], "preparing")
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
     (sms,) = sns.calls
-    assert sms["Message"] == "Roma Södermalm: Thanks Anna! We've started on your order #1. It will be served at table 5."
+    assert sms["Message"] == "Roma Södermalm: Order #1 confirmed. Served at table 5."
 
 
 def stored_before_start(item):

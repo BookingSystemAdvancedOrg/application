@@ -53,7 +53,8 @@ PURPOSE:
                          staff press "Påbörja"; e-mail when no SMS can be sent
       order_ready        SMS "ready to collect" - pickup orders; e-mail when
                          no SMS can be sent
-      order_cancelled    SMS + e-mail (cancelled by the restaurant, refunded)
+      order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
+                         cancellation SMS are for table bookings, never food orders
 
     Order SMS don't depend on tenant.notifications.sms - telling the guest
     the food is ready is what ordering is - but still go to Nordic numbers
@@ -410,7 +411,9 @@ def _order(record):
         wants_sms = kind == orders.NOTICE_STARTED or new.get("mode") == orders.PICKUP
         wants_email = not phone  # e-mail only when no SMS can be sent
     else:
-        wants_sms = wants_email = True
+        # Cancelled by the restaurant: the e-mail with the refund - no SMS
+        # (cancellation SMS are for table bookings only).
+        wants_sms, wants_email = False, True
     steps = []
     if wants_email and new.get("customerEmail"):
         steps.append("email")

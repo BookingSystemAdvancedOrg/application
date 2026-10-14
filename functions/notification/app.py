@@ -47,8 +47,10 @@ PURPOSE:
     Food orders (shared/order_messages.py):
 
       notice type        guest
-      order_confirmed    receipt e-mail + SMS (paid, ready around HH:MM /
-                         served at table X)
+      order_confirmed    receipt e-mail (paid) - no SMS yet
+      order_started      SMS "the restaurant has started on your order,
+                         ready around HH:MM / served at table X" - when
+                         staff press "Påbörja"; e-mail when no SMS can be sent
       order_ready        SMS "ready to collect" - pickup orders; e-mail when
                          no SMS can be sent
       order_cancelled    SMS + e-mail (cancelled by the restaurant, refunded)
@@ -400,14 +402,21 @@ def _order(record):
     if phone and not sms_allowed(phone):
         logger.info(json.dumps({"skipped": "guest_sms", "reason": "country", "orderId": new.get("orderId")}))
         phone = None
-    wants_sms = kind != orders.NOTICE_READY or new.get("mode") == orders.PICKUP
-    wants_email = kind != orders.NOTICE_READY or not phone
+    if kind == orders.NOTICE_CONFIRMED:
+        # Paid: the receipt. The confirmation SMS waits until the kitchen
+        # presses "Påbörja" (order_started).
+        wants_sms, wants_email = False, True
+    elif kind in (orders.NOTICE_STARTED, orders.NOTICE_READY):
+        wants_sms = kind == orders.NOTICE_STARTED or new.get("mode") == orders.PICKUP
+        wants_email = not phone  # e-mail only when no SMS can be sent
+    else:
+        wants_sms = wants_email = True
     steps = []
     if wants_email and new.get("customerEmail"):
         steps.append("email")
     if wants_sms and phone:
         steps.append("sms")
-    if kind == orders.NOTICE_READY:
+    if kind in (orders.NOTICE_STARTED, orders.NOTICE_READY):
         steps.reverse()  # the SMS is the point; it goes first
 
     for step in steps:

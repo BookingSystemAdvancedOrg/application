@@ -1,8 +1,10 @@
 """Guest messages for food orders (SMS + e-mail), Swedish with English for
 guests who ordered in English.
 
-    order_confirmed  SMS "confirmed, ready around HH:MM" (pickup) or "will be
-                     served at table X" + the receipt e-mail
+    order_confirmed  the receipt e-mail (paid) - no SMS
+    order_started    SMS "the restaurant has started on your order, ready
+                     around HH:MM" (pickup) or "... served at table X";
+                     e-mail when no SMS can be sent
     order_ready      SMS "ready to collect" (pickup orders only); e-mail when
                      no SMS can be sent
     order_cancelled  SMS + e-mail: cancelled by the restaurant, refunded
@@ -20,10 +22,13 @@ from shared.messages import _brand_color, contact_line, money, restaurant_name
 
 _TEXT = {
     "sv": {
-        "sms.confirmed.pickup": ("{restaurant}: {thanks} Din beställning #{number} är betald. "
-                                 "Beräknat klar ca {ready}. Du får ett sms när den är klar att hämta."),
-        "sms.confirmed.table": ("{restaurant}: {thanks} Din beställning #{number} är betald och "
-                                "serveras till {table}."),
+        "sms.started.pickup": ("{restaurant}: {thanks} Vi har börjat laga din beställning #{number}. "
+                               "Beräknat klar ca {ready}. Du får ett sms när den är klar att hämta."),
+        "sms.started.table": ("{restaurant}: {thanks} Vi har börjat laga din beställning #{number}. "
+                              "Den serveras till {table}."),
+        "started.subject": "Vi har börjat laga din beställning #{number} - {restaurant}",
+        "started.lead.pickup": "Vi har börjat laga din beställning. Beräknat klar att hämta ca {ready}.",
+        "started.lead.table": "Vi har börjat laga din beställning. Den serveras till {table}.",
         "sms.ready": "{restaurant}: {yours} beställning #{number} är klar att hämta!{where}",
         "thanks": "Tack {first}!",
         "thanks.anon": "Tack!",
@@ -33,8 +38,10 @@ _TEXT = {
                           "{amount} betalas tillbaka till ditt kort inom några bankdagar."),
         "sms.follow": " Följ: {link}",
         "receipt.subject": "Kvitto beställning #{number} - {restaurant}",
-        "receipt.lead.pickup": "Tack för din beställning! Beräknat klar att hämta ca {ready}. Du får ett sms när den är klar.",
-        "receipt.lead.table": "Tack för din beställning! Den serveras till {table}.",
+        "receipt.lead.pickup": ("Tack för din beställning! Du får ett sms när restaurangen har börjat laga den "
+                                "och ett när den är klar att hämta."),
+        "receipt.lead.table": ("Tack för din beställning! Den serveras till {table}. Du får ett sms när "
+                               "restaurangen har börjat laga den."),
         "ready.subject": "Din beställning #{number} är klar att hämta - {restaurant}",
         "ready.lead": "Din beställning är klar att hämta!",
         "cancelled.subject": "Din beställning #{number} är avbruten - {restaurant}",
@@ -61,10 +68,13 @@ _TEXT = {
         "pickup.at": " Hämtas på {address}.",
     },
     "en": {
-        "sms.confirmed.pickup": ("{restaurant}: {thanks} Your order #{number} is paid. "
-                                 "Ready around {ready}. We'll text you when it's ready to collect."),
-        "sms.confirmed.table": ("{restaurant}: {thanks} Your order #{number} is paid and will be "
-                                "served at {table}."),
+        "sms.started.pickup": ("{restaurant}: {thanks} We've started on your order #{number}. "
+                               "Ready around {ready}. We'll text you when it's ready to collect."),
+        "sms.started.table": ("{restaurant}: {thanks} We've started on your order #{number}. "
+                              "It will be served at {table}."),
+        "started.subject": "We've started on your order #{number} - {restaurant}",
+        "started.lead.pickup": "We've started on your order. Ready to collect around {ready}.",
+        "started.lead.table": "We've started on your order. It will be served at {table}.",
         "sms.ready": "{restaurant}: {yours} order #{number} is ready to collect!{where}",
         "thanks": "Thanks {first}!",
         "thanks.anon": "Thanks!",
@@ -74,8 +84,10 @@ _TEXT = {
                           "{amount} will be refunded to your card within a few business days."),
         "sms.follow": " Track: {link}",
         "receipt.subject": "Receipt order #{number} - {restaurant}",
-        "receipt.lead.pickup": "Thanks for your order! Ready to collect around {ready}. We'll text you when it's ready.",
-        "receipt.lead.table": "Thanks for your order! It will be served at {table}.",
+        "receipt.lead.pickup": ("Thanks for your order! We'll text you when the restaurant starts on it "
+                                "and when it's ready to collect."),
+        "receipt.lead.table": ("Thanks for your order! It will be served at {table}. We'll text you when "
+                               "the restaurant starts on it."),
         "ready.subject": "Your order #{number} is ready to collect - {restaurant}",
         "ready.lead": "Your order is ready to collect!",
         "cancelled.subject": "Your order #{number} is cancelled - {restaurant}",
@@ -103,7 +115,7 @@ _TEXT = {
     },
 }
 
-SMS_NOTICES = ("order_confirmed", "order_ready", "order_cancelled")
+SMS_NOTICES = ("order_started", "order_ready", "order_cancelled")
 
 
 def _lang(item):
@@ -163,8 +175,8 @@ def sms(kind, item, tenant_row, location, link):
         "amount": money((item.get("refund") or {}).get("amount") or item.get("totalAmount") or 0),
         "where": _t(lang, "pickup.at", address=location["address"]) if (location or {}).get("address") else "",
     }
-    if kind == "order_confirmed":
-        text = _t(lang, f"sms.confirmed.{item.get('mode', 'pickup')}", **values)
+    if kind == "order_started":
+        text = _t(lang, f"sms.started.{item.get('mode', 'pickup')}", **values)
         if link and item.get("mode") == "pickup":
             text += _t(lang, "sms.follow", link=link)
     elif kind == "order_ready":
@@ -184,6 +196,9 @@ def email(kind, item, tenant_row, location, link):
     if kind == "order_confirmed":
         subject = _t(lang, "receipt.subject", number=number, restaurant=name)
         lead = _t(lang, f"receipt.lead.{item.get('mode', 'pickup')}", ready=ready, table=_table(item, lang))
+    elif kind == "order_started":
+        subject = _t(lang, "started.subject", number=number, restaurant=name)
+        lead = _t(lang, f"started.lead.{item.get('mode', 'pickup')}", ready=ready, table=_table(item, lang))
     elif kind == "order_ready":
         subject = _t(lang, "ready.subject", number=number, restaurant=name)
         lead = _t(lang, "ready.lead") + (_t(lang, "pickup.at", address=location["address"])

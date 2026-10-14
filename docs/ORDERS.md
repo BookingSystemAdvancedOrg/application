@@ -30,14 +30,18 @@ ordered 1-20 times; an order has at most 30 lines.
    `order_confirmed` notice.
 4. **Messages:** the Order table's stream (filtered on a notice) runs the
    notification function:
-   - `order_confirmed` - receipt e-mail + SMS ("ready around 18:40" or
-     "served at table 5")
+   - `order_confirmed` - receipt e-mail only (paid)
+   - `order_started` - the confirmation SMS when staff press "Påbörja"
+     ("we've started, ready around 18:40" or "served at table 5"; e-mail
+     when no SMS can be sent). `readyEstimate` is set again from that click.
    - `order_ready` - SMS "ready to collect" (pickup only; e-mail when no
      SMS can be sent)
    - `order_cancelled` - SMS + e-mail, refund amount
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
-   orders; staff move them `preparing` → `ready` → `completed`, or
-   `cancelled` (refunds the whole order with Stripe).
+   orders. Two clicks: "Påbörja – skicka sms" (`preparing`, the
+   confirmation SMS) and "Klar – skicka sms" (`ready`, pickup) / "Klar att
+   servera" (table), then `completed`; or `cancelled` (refunds the whole
+   order with Stripe).
 
 Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 `failed`; the TTL (60 min) removes an order whose webhook never came.

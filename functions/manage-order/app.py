@@ -8,8 +8,11 @@ TRIGGER:
          never paid are left out unless all=true.
     PUT  /locations/{locationId}/orders/{orderId}/status   {"status": ...}
          preparing | ready | completed | cancelled (see orders.TRANSITIONS).
-         ready on a pickup order sends the guest the "ready" SMS; cancelled
-         refunds the whole order with Stripe and tells the guest.
+         preparing ("Påbörja") sends the guest the confirmation SMS - the
+         restaurant has started on it, ready around now + prepMinutes (the
+         estimate is set again from this moment); ready on a pickup order
+         sends the "ready" SMS; cancelled refunds the whole order with
+         Stripe and tells the guest.
     PUT  /locations/{locationId}/orders/pause   {"minutes": 0-240}
          Stop taking orders for a while (0 = take orders again).
     POST /locations/{locationId}/orders/table-codes
@@ -140,6 +143,15 @@ def _set_status(event, location_id, ctx, order_id):
         logger.info(json.dumps({"order": "cancelled", "orderId": order_id, "refund": refund.get("id")}))
         return http.respond(200, o.staff_view(updated))
 
+    if target == o.PREPARING:
+        # The kitchen started: the guest's confirmation SMS, with a ready
+        # time counted from now (the order may have waited in "Nya").
+        prep = int(item.get("prepMinutes") or 20)
+        updated = _update_status(
+            item, target, ctx, now, expected=current, notice_kind=o.NOTICE_STARTED,
+            extra_sets=["readyEstimate = :ready"],
+            extra_values={":ready": o.iso(now + timedelta(minutes=prep))})
+        return http.respond(200, o.staff_view(updated))
     notice_kind = o.NOTICE_READY if target == o.READY and item.get("mode") == o.PICKUP else None
     updated = _update_status(item, target, ctx, now, expected=current, notice_kind=notice_kind)
     return http.respond(200, o.staff_view(updated))

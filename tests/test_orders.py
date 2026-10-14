@@ -669,7 +669,7 @@ def order_record(item, old=None):
     return {"eventName": "MODIFY", "eventSourceARN": arn, "dynamodb": data}
 
 
-def test_confirmed_order_gets_receipt_and_sms_even_with_booking_sms_off(env, notify):
+def test_paid_order_gets_the_receipt_but_no_sms_yet(env, notify):
     module, ses, sns = notify
     created = place_and_pay(env)
     item = stored(env, created["orderId"])
@@ -679,10 +679,44 @@ def test_confirmed_order_gets_receipt_and_sms_even_with_booking_sms_off(env, not
     text = mail["Message"]["Body"]["Text"]["Data"]
     assert "2 x Margherita  250 kr" in text and "Totalt: 285,50 kr" in text
     assert "Moms 6 %: 16,16 kr" in text and "Roma AB" in text and "556000-0000" in text
-    assert "ca 14:20" in text and f"/bestallning/{LOC_A}/{created['orderId']}?restaurang=roma#" in text
+    assert "sms när restaurangen har börjat laga den" in text
+    assert f"/bestallning/{LOC_A}/{created['orderId']}?restaurang=roma#" in text
+    assert sns.calls == []  # the confirmation SMS waits for the kitchen
+
+
+def test_pressing_start_sends_the_confirmation_sms_even_with_booking_sms_off(env, notify, monkeypatch):
+    module, ses, sns = notify
+    created = place_and_pay(env)
+    # The kitchen starts 30 minutes after the payment: the estimate counts from now.
+    later = NOW + timedelta(minutes=30)
+    monkeypatch.setattr(o, "now_utc", lambda: later)
+    started = set_status(env, created["orderId"], "preparing")
+    assert body_of(started)["status"] == "preparing"
+    item = stored(env, created["orderId"])
+    assert item["notice"]["type"] == "order_started"
+    assert item["readyEstimate"] == "2026-09-08T12:50:00Z"
+
+    assert module.handler({"Records": [order_record(item, old=stored_before_start(item))]}, None) == {"batchItemFailures": []}
+    assert ses.calls == []
     (sms,) = sns.calls
     assert sms["PhoneNumber"] == "+46701234567"
-    assert sms["Message"].startswith("Roma Södermalm: Tack Anna! Din beställning #1 är betald. Beräknat klar ca 14:20.")
+    assert sms["Message"].startswith(
+        "Roma Södermalm: Tack Anna! Vi har börjat laga din beställning #1. Beräknat klar ca 14:50. "
+        "Du får ett sms när den är klar att hämta.")
+    assert f"/bestallning/{LOC_A}/{created['orderId']}" in sms["Message"]
+
+
+def test_start_without_a_nordic_phone_is_an_email(env, notify):
+    module, ses, sns = notify
+    created = place_and_pay(env)
+    env["res"].Table(ORDER_TABLE).update_item(
+        Key=o.order_key(LOC_A, stored(env, created["orderId"])["date"], created["orderId"]),
+        UpdateExpression="SET customerPhone = :p", ExpressionAttributeValues={":p": "+15551234567"})
+    set_status(env, created["orderId"], "preparing")
+    module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
+    assert sns.calls == []
+    (mail,) = ses.calls
+    assert mail["Message"]["Subject"]["Data"] == "Vi har börjat laga din beställning #1 - Roma Södermalm"
 
 
 def test_same_notice_is_not_sent_twice(env, notify):
@@ -730,9 +764,16 @@ def test_table_order_sms_names_the_table_in_english(env, notify):
     created = place_and_pay(env, mode="table", tableCode=o.table_code(TENANT_A, LOC_A, "t5", "5"),
                             language="en", items=[{"menuItemId": "pizza", "quantity": 1}])
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
-    (sms,) = sns.calls
-    assert sms["Message"] == "Roma Södermalm: Thanks Anna! Your order #1 is paid and will be served at table 5."
+    assert sns.calls == []
     assert ses.calls[0]["Message"]["Subject"]["Data"] == "Receipt order #1 - Roma Södermalm"
+    set_status(env, created["orderId"], "preparing")
+    module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
+    (sms,) = sns.calls
+    assert sms["Message"] == "Roma Södermalm: Thanks Anna! We've started on your order #1. It will be served at table 5."
+
+
+def stored_before_start(item):
+    return {**item, "notice": {"id": "paid", "type": "order_confirmed", "at": item["confirmedAt"]}}
 
 
 def test_receipt_escapes_what_the_guest_typed():

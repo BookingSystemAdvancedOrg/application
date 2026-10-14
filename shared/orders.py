@@ -87,10 +87,11 @@ PAY_PAID = "paid"
 PAY_FAILED = "failed"
 PAY_REFUNDED = "refunded"
 
-NOTICE_CONFIRMED = "order_confirmed"   # SMS + receipt email
+NOTICE_CONFIRMED = "order_confirmed"   # paid: receipt email (no SMS - the kitchen hasn't seen it yet)
+NOTICE_STARTED = "order_started"       # staff pressed "Påbörja": the confirmation SMS (email if no SMS possible)
 NOTICE_READY = "order_ready"           # SMS (email if no SMS possible) - pickup only
 NOTICE_CANCELLED = "order_cancelled"   # SMS + email, refund
-NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_READY, NOTICE_CANCELLED)
+NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_STARTED, NOTICE_READY, NOTICE_CANCELLED)
 
 VAT_ALCOHOL = 25
 VAT_RESTAURANT = 12

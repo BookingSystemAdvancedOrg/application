@@ -442,8 +442,21 @@ def test_policy_defaults_and_disabled_policy():
 def test_form_encoding_matches_stripe():
     pairs = stripe_client._flatten({"amount": 100, "off_session": True, "payment_method_types": ["card"],
                                     "metadata": {"a": "1"}, "skip": None})
-    assert pairs == [("amount", "100"), ("off_session", "true"), ("payment_method_types[]", "card"),
+    assert pairs == [("amount", "100"), ("off_session", "true"), ("payment_method_types[0]", "card"),
                      ("metadata[a]", "1")]
+
+
+def test_form_encoding_keeps_each_line_item_together():
+    pairs = stripe_client._flatten({"line_items": [
+        {"price_data": {"currency": "sek", "unit_amount": 9900, "product_data": {"name": "Pizza"}}, "quantity": 2},
+        {"price_data": {"currency": "sek", "unit_amount": 4500, "product_data": {"name": "Cola"}}, "quantity": 1},
+    ]})
+    assert pairs == [
+        ("line_items[0][price_data][currency]", "sek"), ("line_items[0][price_data][unit_amount]", "9900"),
+        ("line_items[0][price_data][product_data][name]", "Pizza"), ("line_items[0][quantity]", "2"),
+        ("line_items[1][price_data][currency]", "sek"), ("line_items[1][price_data][unit_amount]", "4500"),
+        ("line_items[1][price_data][product_data][name]", "Cola"), ("line_items[1][quantity]", "1"),
+    ]
 
 
 def test_client_maps_errors(monkeypatch):

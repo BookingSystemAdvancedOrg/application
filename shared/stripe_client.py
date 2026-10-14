@@ -66,7 +66,11 @@ def _api_key():
 
 
 def _flatten(params, prefix=""):
-    """Stripe's form encoding: a[b]=1, list[]=x, metadata[k]=v."""
+    """Stripe's form encoding, as the official SDKs send it: a[b]=1,
+    list[0]=x, metadata[k]=v. Lists are always indexed: with bare "[]" each
+    field of an object in a list (line_items[][price_data][...],
+    line_items[][quantity]) starts a NEW element, so Stripe sees several
+    half-filled line items and rejects the request."""
     pairs = []
     for key, value in params.items():
         name = f"{prefix}[{key}]" if prefix else str(key)
@@ -75,11 +79,11 @@ def _flatten(params, prefix=""):
         if isinstance(value, dict):
             pairs.extend(_flatten(value, name))
         elif isinstance(value, (list, tuple)):
-            for item in value:
+            for index, item in enumerate(value):
                 if isinstance(item, dict):
-                    pairs.extend(_flatten(item, f"{name}[]"))
+                    pairs.extend(_flatten(item, f"{name}[{index}]"))
                 else:
-                    pairs.append((f"{name}[]", _scalar(item)))
+                    pairs.append((f"{name}[{index}]", _scalar(item)))
         else:
             pairs.append((name, _scalar(value)))
     return pairs

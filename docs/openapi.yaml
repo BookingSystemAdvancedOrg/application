@@ -534,6 +534,69 @@ paths:
         '503':
           $ref: '#/components/responses/UserServiceUnavailable'
 
+  /users/me/guide:
+    get:
+      tags:
+        - Users
+      summary: Has the caller finished the admin intro guide?
+      operationId: getGuideState
+      description: |
+        Self-service for every role (owner_user and staff_user). Reads one
+        field on the caller's own profile; the admin app starts the intro
+        guide only while `completed` is false - once per user, on any device.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Guide state of the caller.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuideState'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+    put:
+      tags:
+        - Users
+      summary: Mark the caller's intro guide as done
+      operationId: completeGuide
+      description: |
+        Sets `guideCompletedAt` on the caller's own profile (first time
+        kept). Never creates a profile: callers without one get 404.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Guide marked as done.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuideState'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
   /users/{cognitoSub}/deactivate:
     parameters:
       - $ref: '#/components/parameters/CognitoSub'
@@ -3867,6 +3930,19 @@ components:
           - no-store
 
   schemas:
+    GuideState:
+      type: object
+      additionalProperties: false
+      required:
+        - completed
+        - completedAt
+      properties:
+        completed:
+          type: boolean
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
     SiteConfig:
       type: object
       required: [tenant, legal, locations, stripe, turnstile]

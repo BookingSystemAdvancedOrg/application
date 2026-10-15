@@ -2188,3 +2188,59 @@ def test_real_shaped_tenant_lists_and_reads(monkeypatch):
         assert me["statusCode"] == 200
         shared_dynamo._resource = None
         shared_dynamo._client = None
+
+
+# --- /users/me/guide: the intro guide is shown once per user ------------------
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]', '["staff_user"]'])
+def test_guide_starts_not_done_and_is_marked_done_once_for_any_role(app_state, groups):
+    app, user_table, _ = app_state
+    put_user(user_table, user_item(sub=CALLER_SUB, role="staff" if "staff" in groups else "owner_user"))
+
+    response = app.handler(make_event(method="GET", proxy="me/guide", groups=groups), None)
+    assert_response(response, 200, {"completed": False, "completedAt": None})
+
+    response = app.handler(make_event(method="PUT", proxy="me/guide", groups=groups), None)
+    assert_response(response, 200, {"completed": True, "completedAt": CREATED_AT})
+
+    app_state_now = "2027-01-01T00:00:00Z"
+    app._utc_now = lambda: app_state_now
+    response = app.handler(make_event(method="PUT", proxy="me/guide", groups=groups), None)
+    assert_response(response, 200, {"completed": True, "completedAt": CREATED_AT})
+
+    response = app.handler(make_event(method="GET", proxy="me/guide", groups=groups), None)
+    assert_response(response, 200, {"completed": True, "completedAt": CREATED_AT})
+    assert get_user(user_table, CALLER_SUB)["guideCompletedAt"] == CREATED_AT
+
+
+def test_guide_never_creates_a_profile_row(app_state):
+    app, user_table, _ = app_state
+    response = app.handler(make_event(method="PUT", proxy="me/guide", groups='["staff_user"]'), None)
+    assert_response(response, 404, {"error": "not found"})
+    assert get_user(user_table, CALLER_SUB) is None
+
+
+def test_guide_ignores_a_profile_of_another_tenant(app_state):
+    app, user_table, _ = app_state
+    put_user(user_table, user_item(sub=CALLER_SUB, tenant_id=TENANT_B))
+    response = app.handler(make_event(method="PUT", proxy="me/guide"), None)
+    assert_response(response, 404, {"error": "not found"})
+    response = app.handler(make_event(method="GET", proxy="me/guide"), None)
+    assert_response(response, 200, {"completed": False, "completedAt": None})
+    assert "guideCompletedAt" not in get_user(user_table, CALLER_SUB)
+
+
+def test_guide_rejects_other_methods_and_needs_a_tenant(app_state):
+    app, _, _ = app_state
+    response = app.handler(make_event(method="DELETE", proxy="me/guide"), None)
+    assert response["statusCode"] == 405
+    assert response["headers"]["Allow"] == "GET, PUT"
+    response = app.handler(make_event(method="GET", proxy="me/guide", tenant_id=None), None)
+    assert response["statusCode"] == 403
+
+
+def test_staff_still_cannot_use_the_owner_routes(app_state):
+    app, _, _ = app_state
+    response = app.handler(make_event(method="GET", proxy=TARGET_SUB, groups='["staff_user"]'), None)
+    assert response["statusCode"] == 403

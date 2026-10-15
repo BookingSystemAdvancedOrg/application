@@ -47,6 +47,7 @@ EXPECTED_OPERATIONS = {
     "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"get", "put", "delete"}),
+    "/users/me/guide": frozenset({"get", "put"}),
     "/users/{cognitoSub}/deactivate": frozenset({"post"}),
     "/users/{cognitoSub}/reactivate": frozenset({"post"}),
     "/users/{cognitoSub}/group": frozenset({"put"}),
@@ -112,6 +113,8 @@ ADMIN_GROUPS = ["owner_user"]
 STAFF_GROUPS = ["staff_user", "owner_user"]
 STAFF_OPERATIONS = frozenset(
     {
+        ("/users/me/guide", "get"),
+        ("/users/me/guide", "put"),
         ("/locations/{locationId}", "get"),
         ("/locations/{locationId}/tables/{tableId}/block", "post"),
         ("/locations/{locationId}/menu/items", "get"),

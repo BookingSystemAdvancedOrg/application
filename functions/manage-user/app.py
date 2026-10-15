@@ -25,6 +25,13 @@ ROUTES:
     POST   /users/{cognitoSub}/reactivate
     PUT    /users/{cognitoSub}/group
     DELETE /users/{cognitoSub}
+    GET    /users/me/guide   -- any role: has the caller finished the intro guide?
+    PUT    /users/me/guide   -- any role: mark the caller's intro guide as done
+
+    The /users/me/guide routes are the only ones open to staff_user: they
+    read/write one field (guideCompletedAt) on the caller's OWN profile row
+    and nothing else, so the admin app shows the guide once per user - not
+    once per browser.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -1212,12 +1219,73 @@ def _client_error_response(exc):
     return _user_error(status_code, message)
 
 
+_GUIDE_PATH = "me/guide"
+
+
+def _guide(event, caller_sub, method):
+    """GET/PUT /users/me/guide for any role of an active tenant.
+
+    Only the caller's own profile row is touched, and only if it belongs to
+    the token's tenant. PUT keeps the first completion time (idempotent).
+    """
+    try:
+        ctx = tenant.for_jwt(event)
+    except tenant.TenantError as exc:
+        return exc.response({"Cache-Control": "no-store"})
+    except (BotoCoreError, ClientError):
+        return _user_error(HTTPStatus.SERVICE_UNAVAILABLE.value, "user service unavailable")
+
+    key = {"PK": f"USER#{caller_sub}", "SK": "PROFILE"}
+    try:
+        if method == "GET":
+            item = table(USER_TABLE_NAME).get_item(Key=key, ConsistentRead=True).get("Item") or {}
+            done = item.get("tenantId") == ctx.tenant_id and isinstance(item.get("guideCompletedAt"), str)
+            return _user_response(
+                HTTPStatus.OK.value,
+                {"completed": done, "completedAt": item.get("guideCompletedAt") if done else None},
+            )
+        result = table(USER_TABLE_NAME).update_item(
+            Key=key,
+            UpdateExpression="SET guideCompletedAt = if_not_exists(guideCompletedAt, :now)",
+            ConditionExpression="attribute_exists(PK) AND tenantId = :tenant",
+            ExpressionAttributeValues={":now": _utc_now(), ":tenant": ctx.tenant_id},
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return _user_error(HTTPStatus.NOT_FOUND.value, "not found")
+        _logger.exception("guide state failed")
+        return _user_error(HTTPStatus.SERVICE_UNAVAILABLE.value, "user service unavailable")
+    except BotoCoreError:
+        _logger.exception("guide state failed")
+        return _user_error(HTTPStatus.SERVICE_UNAVAILABLE.value, "user service unavailable")
+    return _user_response(
+        HTTPStatus.OK.value,
+        {"completed": True, "completedAt": result["Attributes"]["guideCompletedAt"]},
+    )
+
+
 def handler(event, context):
     try:
         get_claims(event)
         caller_sub = get_sub(event)
     except Unauthorized as exc:
         return _user_error(HTTPStatus.UNAUTHORIZED.value, str(exc))
+
+    # The intro-guide flag is self-service for every role - checked before
+    # the owner-only gate below.
+    early_params = event.get("pathParameters") or {}
+    early_proxy = early_params.get("proxy", "") if isinstance(early_params, dict) else ""
+    if isinstance(early_proxy, str) and early_proxy.strip("/") == _GUIDE_PATH:
+        early_http = (event.get("requestContext") or {}).get("http") or {}
+        early_method = str(early_http.get("method") or "").upper() if isinstance(early_http, dict) else ""
+        if early_method not in ("GET", "PUT"):
+            return _user_response(
+                HTTPStatus.METHOD_NOT_ALLOWED.value,
+                {"error": "method not allowed"},
+                headers={"Allow": "GET, PUT"},
+            )
+        return _guide(event, caller_sub, early_method)
 
     try:
         ctx = tenant.for_jwt(event, owner_only=True)

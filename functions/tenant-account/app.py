@@ -13,7 +13,7 @@ PURPOSE:
     location), the
     few fields an owner may edit themselves (PATCH: senderName,
     replyToEmail, branding, notifications) and a fresh Stripe onboarding link (POST, owner).
-    Everything else about the tenant is managed by operators in sbs-admin.
+    Everything else about the tenant is managed by operators in Booqy Console.
 
     Multi-tenant: the tenant is the token's tenant_id claim - there is no
     tenantId in any path or body. Operator-only fields (lastError, the

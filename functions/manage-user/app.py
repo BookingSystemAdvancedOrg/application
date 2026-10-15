@@ -8,7 +8,7 @@ PURPOSE:
     invite, profile update, deactivate/reactivate, delete, and Cognito group
     change. Callers must be owner_user of an active tenant. Owners read and
     manage staff accounts and themselves; other owners are managed from the
-    operator console (sbs-admin). super_user no longer exists.
+    operator console (Booqy Console). super_user no longer exists.
 
     Multi-tenant: the tenant is the token's tenant_id claim. Users are listed
     with the byTenant index (never a Scan), every target user must carry the
@@ -92,7 +92,7 @@ _GROUP_TO_ROLE = {
     "owner_user": "owner_user",
 }
 _ROLE_TO_GROUP = {role: group for group, role in _GROUP_TO_ROLE.items()}
-# Profiles written by sbs-admin / the spec use the group name as the role.
+# Profiles written by Booqy Console / the spec use the group name as the role.
 _ROLE_TO_GROUP["staff_user"] = "staff_user"
 _MANAGED_GROUPS = frozenset(_GROUP_TO_ROLE)
 
@@ -383,7 +383,7 @@ _OPTIONAL_USER_FIELDS = ("phone", "locationId")
 
 
 def _public_user(item):
-    """Owners created by onboarding / sbs-admin have no phone and no
+    """Owners created by onboarding / Booqy Console have no phone and no
     location - those two default to ""."""
     if not isinstance(item, dict):
         raise _UserConflict
@@ -754,7 +754,7 @@ def _profile_rollback_attributes(attributes, fields):
 
 
 def _is_super_user(caller_groups):
-    # super_user is gone: platform operators work in sbs-admin, and tokens
+    # super_user is gone: platform operators work in Booqy Console, and tokens
     # without a tenant never get here (shared/tenant.py).
     return False
 

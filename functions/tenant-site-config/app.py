@@ -13,7 +13,7 @@ PURPOSE:
     the privacy notice, and the public Stripe / Turnstile keys.
 
     Resolution: global row DOMAIN#<host>/TENANT -> tenantId, and the
-    tenant's own TENANT#<t>/DOMAIN#<host> row must be active (sbs-admin
+    tenant's own TENANT#<t>/DOMAIN#<host> row must be active (Booqy Console
     writes both). Outside prod, sites on *.cloudfront.net / localhost can't
     be mapped by host, so SLUG#<slug>/TENANT is accepted instead.
 
@@ -97,7 +97,7 @@ def _branding(raw):
 
 
 def _address(value):
-    """sbs-admin stores {street, postalCode, city, country}; the site shows one line."""
+    """Booqy Console stores {street, postalCode, city, country}; the site shows one line."""
     if isinstance(value, str):
         return value.strip()[:300] or None
     if not isinstance(value, dict):

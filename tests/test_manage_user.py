@@ -1330,7 +1330,7 @@ def test_status_dynamodb_failure_reverses_cognito_change(
 
 
 def test_owner_cannot_promote_staff_to_owner(app_state):
-    """Owners are added from the operator console (sbs-admin) only."""
+    """Owners are added from the operator console (Booqy Console) only."""
     app, user_table, cognito = app_state
     original = user_item()
     put_user(user_table, original)
@@ -2161,7 +2161,7 @@ def test_owner_profile_from_onboarding_is_readable(app_state):
 
 
 def test_real_shaped_tenant_lists_and_reads(monkeypatch):
-    """Owner rows exactly as onboarding/sbs-admin write them + a staff row:
+    """Owner rows exactly as onboarding/Booqy Console write them + a staff row:
     the owner lists both and reads themself (no 409)."""
     import importlib.util as _ilu
     from tenant_support import OWNER_A_SUB, STAFF_A_SUB, seed_tenancy

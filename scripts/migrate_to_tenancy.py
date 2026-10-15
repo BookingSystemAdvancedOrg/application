@@ -4,7 +4,7 @@
     python scripts/migrate_to_tenancy.py --env dev            # dry run: report only
     python scripts/migrate_to_tenancy.py --env dev --apply    # make the changes
 
-1. Tenant locations (PK TENANT#<t>) created before sbs-admin wrote the
+1. Tenant locations (PK TENANT#<t>) created before Booqy Console wrote the
    admin app's required fields get them: timezone Europe/Stockholm, CLOSED
    every day, 2 h bookings, 0 grace, phoneNumber (E.164) from phone, and
    tenantId/locationId from the row's key. Existing values are never

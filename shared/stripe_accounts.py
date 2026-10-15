@@ -4,7 +4,7 @@ PROFILE.stripe = {accountId, chargesEnabled, payoutsEnabled,
 detailsSubmitted, requirementsDue, disconnected, eventCreated, updatedAt}.
 The onboarding workflow creates the account and the STRIPE_ACCOUNT#<acct> /
 TENANT row; platform-stripe-webhook keeps the status fields current (same
-fields as sbs-admin's "Check status with Stripe").
+fields as Booqy Console's "Check status with Stripe").
 """
 
 import os

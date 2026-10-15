@@ -72,12 +72,12 @@ these codes, keep them stable:
 | User profile | `USER#<sub>` / `PROFILE` | `tenantId`, `role` (`owner_user` / `staff` or `staff_user`), staff `locationId` |
 | Menu images (S3) | `menu-images/<tenantId>/locations/<l>/menu/<uuid>.<ext>` | one prefix per tenant -> export/delete |
 
-New locations created by operators (sbs-admin) start **closed every day**
+New locations created by operators (Booqy Console) start **closed every day**
 (`businessHours` empty), `Europe/Stockholm`, 2 h bookings, 0 grace - the owner
 sets real hours in the admin app.
 
 `super_user` no longer exists: platform operators use the operator console
-(sbs-admin) and a separate user pool.
+(Booqy Console) and a separate user pool.
 
 ## Deploying
 

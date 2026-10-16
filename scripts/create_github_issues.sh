@@ -32,7 +32,7 @@ gh issue create \
 
 gh issue create \
   --title "Implement Lambda: get-menu" \
-  --label "lambda,trigger:api-gateway,auth:none" \
+  --label "lambda,trigger:api-gateway,auth:none,auth:jwt" \
   --body-file "issue-bodies/get-menu.md"
 
 gh issue create \

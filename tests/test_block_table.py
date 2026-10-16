@@ -1,0 +1,2760 @@
+import base64
+import importlib.util
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import Mock
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from moto import mock_aws
+
+from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, create_tables, tenant_claims, tenant_row
+
+
+APP_PATH = (
+    Path(__file__).parents[1]
+    / "functions"
+    / "block-table"
+    / "app.py"
+)
+LOCATION_TABLE_NAME = "test-block-location"
+USER_TABLE_NAME = "test-block-user"
+OCCUPANCY_TABLE_NAME = "test-block-occupancy"
+SNAPSHOT_TABLE_NAME = "test-block-snapshot"
+CALLER_SUB = "caller-sub"
+LOCATION_ID = "location-id"
+TABLE_ID = "table-id"
+NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+MANUAL_ID = "MANUAL_BLOCK#11111111-1111-4111-8111-111111111111"
+_UNSET = object()
+
+
+def valid_body(**overrides):
+    body = {
+        "date": "2026-09-20",
+        "startTime": "18:00",
+        "blocked": True,
+    }
+    body.update(overrides)
+    return body
+
+
+def user_item(
+    *,
+    sub=CALLER_SUB,
+    role="staff",
+    location_id=LOCATION_ID,
+    status="active",
+    **overrides,
+):
+    item = {
+        "PK": f"USER#{sub}",
+        "SK": "PROFILE",
+        "cognitoSub": sub,
+        "tenantId": TENANT_A,
+        "role": role,
+        "locationId": location_id,
+        "name": "Test User",
+        "email": "test.user@example.com",
+        "phone": "+46701234567",
+        "status": status,
+        "createdBy": "creator-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def make_event(
+    body=_UNSET,
+    *,
+    method="POST",
+    groups='["staff_user"]',
+    sub=CALLER_SUB,
+    location_id=LOCATION_ID,
+    table_id=TABLE_ID,
+    base64_encoded=False,
+):
+    if body is _UNSET:
+        body = valid_body()
+    raw_body = (
+        body
+        if isinstance(body, str) or body is None
+        else json.dumps(body)
+    )
+    if base64_encoded and isinstance(raw_body, str):
+        raw_body = base64.b64encode(raw_body.encode("utf-8")).decode("ascii")
+
+    event = {
+        "requestContext": {
+            "http": {"method": method},
+            "authorizer": {
+                "jwt": {
+                    "claims": tenant_claims(sub, groups)
+                }
+            },
+        },
+        "pathParameters": {
+            "locationId": location_id,
+            "tableId": table_id,
+        },
+        "body": raw_body,
+        "isBase64Encoded": base64_encoded,
+    }
+    return event
+
+
+def create_table(resource, name):
+    return resource.create_table(
+        TableName=name,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def put_user(user_table, item=None):
+    user_table.put_item(Item=item or user_item())
+
+
+def location_item(
+    *,
+    location_id=LOCATION_ID,
+    duration="2",
+    business_hours=None,
+    **overrides,
+):
+    if business_hours is None:
+        business_hours = {
+            weekday: [{"opensAt": "10:00", "closesAt": "22:00"}]
+            for weekday in (
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            )
+        }
+    item = {
+        "PK": f"TENANT#{TENANT_A}",
+        "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
+        "locationId": location_id,
+        "name": "Test Restaurant",
+        "address": "Example Street 1",
+        "timezone": "Europe/Stockholm",
+        "businessHours": business_hours,
+        "bookingDurationHours": Decimal(duration),
+        "gracePeriodHours": Decimal("1"),
+        "createdBy": "creator-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def all_day_business_hours(opens_at="00:00", closes_at="23:59"):
+    return {
+        weekday: [{"opensAt": opens_at, "closesAt": closes_at}]
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    }
+
+
+def table_element(table_id=TABLE_ID, **overrides):
+    item = {
+        "elementId": table_id,
+        "type": "table",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("2"),
+        "width": Decimal("1.2"),
+        "height": Decimal("0.75"),
+        "depth": Decimal("0.8"),
+        "rotationY": Decimal("0"),
+        "shape": "rect",
+        "seats": Decimal("4"),
+        "zone": "main",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def cash_register_element(element_id="cash-register-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "cashRegister",
+        "x": Decimal("2"),
+        "y": Decimal("0"),
+        "z": Decimal("1"),
+        "width": Decimal("1.5"),
+        "height": Decimal("1"),
+        "depth": Decimal("0.8"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def floor_area_element(element_id="floor-area-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floorArea",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("4"),
+        "height": Decimal("0.1"),
+        "depth": Decimal("3"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def wall_element(element_id="wall-id", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "wall",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("4"),
+        "height": Decimal("3"),
+        "depth": Decimal("0.2"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def door_element(element_id="door-id", *, kind=_UNSET, **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "door",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("0.9"),
+        "height": Decimal("2.1"),
+        "depth": Decimal("0.1"),
+        "rotationY": Decimal("0"),
+        "wallId": "wall-id",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    if kind is not _UNSET:
+        item["kind"] = kind
+    item.update(overrides)
+    return item
+
+
+def floor_element(element_id="floor-ground", *, level="0", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floor",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("12"),
+        "height": Decimal("0.2"),
+        "depth": Decimal("10"),
+        "rotationY": Decimal("0"),
+        "name": "Ground floor",
+        "level": Decimal(level),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def activation_state(version="1", **overrides):
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": "LAYOUT#ACTIVATION",
+        "recordType": "layoutActivationState",
+        "currentVersion": Decimal(version),
+        "revision": Decimal("1"),
+        "updatedBy": "layout-owner",
+        "updatedAt": "2026-09-01T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def pending_activation_state(
+    app,
+    *,
+    current_version=1,
+    pending_version=2,
+    status="scheduled",
+    cutover_at="2026-09-20T14:00:00Z",
+    operation_revision=2,
+    include_previous_lifecycle=True,
+):
+    token = app._activation_token(
+        LOCATION_ID,
+        current_version,
+        pending_version,
+        operation_revision,
+        cutover_at,
+    )
+    overrides = {
+        "revision": Decimal(
+            str(
+                operation_revision + 1
+                if status == "scheduled"
+                else operation_revision
+            )
+        ),
+        "pendingVersion": Decimal(str(pending_version)),
+        "pendingStatus": status,
+        "activationToken": token,
+        "cutoverAt": cutover_at,
+        "scheduleName": app._schedule_name(token),
+    }
+    if include_previous_lifecycle:
+        overrides["pendingTargetPreviousLifecycle"] = {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    if status == "scheduled":
+        overrides["scheduleArn"] = (
+            "arn:aws:scheduler:eu-north-1:123456789012:"
+            f"schedule/default/{overrides['scheduleName']}"
+        )
+    return activation_state(str(current_version), **overrides)
+
+
+def test_activation_state_accepts_pending_target_previous_lifecycle(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] == lifecycle
+
+
+def test_activation_state_accepts_legacy_pending_without_lifecycle_backup(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(
+        app,
+        include_previous_lifecycle=False,
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] is None
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    [
+        None,
+        [],
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-09-20T16:00:00+02:00",
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+    ],
+)
+def test_invalid_pending_target_previous_lifecycle_is_inconsistent(
+    app_and_tables,
+    lifecycle,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    with pytest.raises(
+        app._BlockConflict,
+        match="layout activation state is inconsistent",
+    ):
+        app._validate_activation_state(state, LOCATION_ID)
+
+
+def test_orphan_previous_lifecycle_from_old_worker_is_ignored(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"] is None
+
+
+def snapshot_item(version="1", *, elements=None, **overrides):
+    if elements is None:
+        elements = [table_element()]
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": f"LAYOUT#v{version}",
+        "version": Decimal(version),
+        "label": f"Version {version}",
+        "isCurrent": True,
+        "effectiveFrom": "2026-09-01T10:00:00Z",
+        "effectiveTo": None,
+        "expiresAt": None,
+        "elements": elements,
+        "validPositions": [],
+        "createdBy": "layout-owner",
+        "createdAt": "2026-09-01T09:00:00Z",
+        "updatedBy": "layout-owner",
+        "updatedAt": "2026-09-01T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def slot_key(
+    *,
+    date_value="2026-09-20",
+    start_time="18:00",
+    end_time="20:00",
+    table_id=TABLE_ID,
+):
+    return {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": (
+            f"SLOT#{date_value}#{start_time}-{end_time}#{table_id}"
+        ),
+    }
+
+
+def manual_item(**overrides):
+    end = datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc)
+    item = {
+        **slot_key(),
+        "reservationId": MANUAL_ID,
+        "source": "manual_block",
+        "layoutVersion": Decimal("1"),
+        "ttl": Decimal(str(int(end.timestamp()))),
+        "createdBy": CALLER_SUB,
+        "createdAt": "2026-09-08T12:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def reservation_item(**overrides):
+    item = {
+        **slot_key(),
+        "reservationId": "reservation-id",
+        "ttl": manual_item()["ttl"],
+    }
+    item.update(overrides)
+    return item
+
+
+def put_prerequisites(
+    tables,
+    *,
+    location=None,
+    user=None,
+    state=None,
+    snapshot=None,
+):
+    tables["location"].put_item(Item=location or location_item())
+    put_user(tables["user"], user)
+    tables["snapshot"].put_item(Item=state or activation_state())
+    tables["snapshot"].put_item(Item=snapshot or snapshot_item())
+
+
+def put_scheduled_layout_transition(
+    app,
+    tables,
+    *,
+    cutover_at="2026-09-20T14:00:00Z",
+    current_elements=None,
+    pending_elements=None,
+    status="scheduled",
+):
+    state = pending_activation_state(
+        app,
+        status=status,
+        cutover_at=cutover_at,
+    )
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            elements=current_elements or [table_element("current-table")],
+            effectiveTo=cutover_at if status == "scheduled" else None,
+            expiresAt=cutover_at if status == "scheduled" else None,
+        )
+    )
+    if status == "scheduled":
+        tables["snapshot"].put_item(
+            Item=snapshot_item(
+                "2",
+                elements=pending_elements
+                or [table_element("pending-table")],
+                isCurrent=False,
+                effectiveFrom=cutover_at,
+            )
+        )
+
+
+def response_body(response):
+    raw_body = response.get("body", "")
+    return None if raw_body == "" else json.loads(raw_body)
+
+
+def assert_response(response, status_code, body):
+    assert response["statusCode"] == status_code
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert response_body(response) == body
+
+
+def successful_boundary(app, monkeypatch):
+    captured = {}
+
+    def handle(details, caller_sub):
+        captured.update(details=details, callerSub=caller_sub)
+        return app._block_response(200, {"accepted": True})
+
+    monkeypatch.setattr(app, "_handle_block_request", handle)
+    return captured
+
+
+@pytest.fixture
+def app_and_tables(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("LOCATION_TABLE_NAME", LOCATION_TABLE_NAME)
+    monkeypatch.setenv("USER_TABLE_NAME", USER_TABLE_NAME)
+    monkeypatch.setenv("SLOT_OCCUPANCY_TABLE_NAME", OCCUPANCY_TABLE_NAME)
+    monkeypatch.setenv(
+        "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME",
+        SNAPSHOT_TABLE_NAME,
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+        resource = boto3.resource("dynamodb", region_name="eu-north-1")
+        tables = {
+            "location": create_table(resource, LOCATION_TABLE_NAME),
+            "user": create_table(resource, USER_TABLE_NAME),
+            "occupancy": create_table(resource, OCCUPANCY_TABLE_NAME),
+            "snapshot": create_table(resource, SNAPSHOT_TABLE_NAME),
+        }
+        create_tables(monkeypatch, location_table=LOCATION_TABLE_NAME,
+                      existing=(LOCATION_TABLE_NAME,), user_table=None)
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A))
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B))
+
+        spec = importlib.util.spec_from_file_location(
+            "block_table_app",
+            APP_PATH,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "_utc_now", lambda: NOW)
+        monkeypatch.setattr(module, "_new_manual_id", lambda: MANUAL_ID)
+
+        yield module, tables
+
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+
+def test_missing_claims_returns_401_before_aws_access(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    event = make_event()
+    del event["requestContext"]["authorizer"]
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "no JWT claims on this request"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "sub",
+    [None, "", "   ", 123, "x" * 129, "unsafe#sub"],
+)
+def test_invalid_subject_returns_401_before_aws_access(
+    app_and_tables,
+    monkeypatch,
+    sub,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(sub=sub), None)
+
+    assert response["statusCode"] == 401
+    assert response["headers"]["Cache-Control"] == "no-store"
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [None, "", [], '["customer"]', {"staff_user": True}],
+)
+def test_wrong_group_returns_403_before_aws_access(
+    app_and_tables,
+    monkeypatch,
+    groups,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(groups=groups), None)
+
+    assert_response(response, 403, {"error": "no_tenant"})
+    table_factory.assert_not_called()
+
+
+def test_group_authorization_precedes_body_validation(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(body="not JSON", groups='["customer"]'),
+        None,
+    )
+
+    assert_response(response, 403, {"error": "no_tenant"})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "DELETE", "OPTIONS", None])
+def test_only_post_is_supported_before_auth_or_aws(
+    app_and_tables,
+    monkeypatch,
+    method,
+):
+    app, _ = app_and_tables
+    event = make_event(method=method)
+    del event["requestContext"]["authorizer"]
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "POST"
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("locationId", None, "locationId is required"),
+        ("locationId", "   ", "locationId is required"),
+        ("locationId", 123, "locationId is required"),
+        ("locationId", "x" * 129, "locationId is invalid"),
+        ("locationId", "unsafe#id", "locationId is invalid"),
+        ("tableId", None, "tableId is required"),
+        ("tableId", "   ", "tableId is required"),
+        ("tableId", 123, "tableId is required"),
+        ("tableId", "x" * 129, "tableId is invalid"),
+        ("tableId", "unsafe#id", "tableId is invalid"),
+    ],
+)
+def test_rejects_invalid_path_before_user_lookup(
+    app_and_tables,
+    monkeypatch,
+    field,
+    value,
+    expected_error,
+):
+    app, _ = app_and_tables
+    event = make_event()
+    event["pathParameters"][field] = value
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(response, 400, {"error": expected_error})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("raw_body", "expected_error"),
+    [
+        (None, "request body is required"),
+        ("", "request body is required"),
+        ("{", "request body must be valid JSON"),
+        ("NaN", "request body must be valid JSON"),
+        ("[]", "request body must be a JSON object"),
+        ('"value"', "request body must be a JSON object"),
+    ],
+)
+def test_rejects_invalid_body_before_user_lookup(
+    app_and_tables,
+    monkeypatch,
+    raw_body,
+    expected_error,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(body=raw_body), None)
+
+    assert_response(response, 400, {"error": expected_error})
+    table_factory.assert_not_called()
+
+
+def test_rejects_invalid_base64_before_user_lookup(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+    event = make_event()
+    event["body"] = "not-base64!"
+    event["isBase64Encoded"] = True
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        400,
+        {"error": "request body must be valid base64"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        (
+            {"date": "2026-09-20", "startTime": "18:00"},
+            "missing required fields: blocked",
+        ),
+        (
+            {
+                **valid_body(),
+                "action": "block",
+            },
+            "unsupported fields: action",
+        ),
+        (valid_body(date=None), "date must use YYYY-MM-DD"),
+        (valid_body(date="2026-9-20"), "date must use YYYY-MM-DD"),
+        (valid_body(date="2026-02-30"), "date must be a real calendar date"),
+        (valid_body(startTime=None), "startTime must use 24-hour HH:MM"),
+        (valid_body(startTime="8:00"), "startTime must use 24-hour HH:MM"),
+        (valid_body(startTime="24:00"), "startTime must use 24-hour HH:MM"),
+        (valid_body(blocked=1), "blocked must be a boolean"),
+        (valid_body(blocked="true"), "blocked must be a boolean"),
+    ],
+)
+def test_rejects_invalid_request_fields_before_user_lookup(
+    app_and_tables,
+    monkeypatch,
+    body,
+    expected_error,
+):
+    app, _ = app_and_tables
+    table_factory = Mock()
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(body=body), None)
+
+    assert_response(response, 400, {"error": expected_error})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("group", "role", "assigned_location"),
+    [
+        ("staff_user", "staff", LOCATION_ID),
+        ("owner_user", "owner_user", ""),
+    ],
+)
+def test_supported_active_profiles_reach_the_operation_boundary(
+    app_and_tables,
+    monkeypatch,
+    group,
+    role,
+    assigned_location,
+):
+    app, tables = app_and_tables
+    put_user(
+        tables["user"],
+        user_item(role=role, location_id=assigned_location),
+    )
+    captured = successful_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(groups=[group]), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured == {
+        "details": {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "blocked": True,
+        },
+        "callerSub": CALLER_SUB,
+    }
+
+
+def test_base64_body_and_trimmed_path_reach_canonical_boundary(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    captured = successful_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(
+            location_id=f"  {LOCATION_ID}  ",
+            table_id=f"  {TABLE_ID}  ",
+            base64_encoded=True,
+        ),
+        None,
+    )
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["details"]["locationId"] == LOCATION_ID
+    assert captured["details"]["tableId"] == TABLE_ID
+
+
+def test_user_profile_is_read_by_subject_with_strong_consistency(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    user_table = Mock(wraps=tables["user"])
+    table_factory = Mock(return_value=user_table)
+    monkeypatch.setattr(app, "table", table_factory)
+    successful_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    table_factory.assert_called_once_with(USER_TABLE_NAME)
+    user_table.get_item.assert_called_once_with(
+        Key={"PK": f"USER#{CALLER_SUB}", "SK": "PROFILE"},
+        ConsistentRead=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        None,
+        user_item(status="disabled"),
+        user_item(location_id="another-location"),
+        user_item(role="owner_user"),
+        user_item(location_id=123),
+    ],
+)
+def test_missing_disabled_or_unauthorized_staff_profile_is_denied(
+    app_and_tables,
+    item,
+):
+    app, tables = app_and_tables
+    if item is not None:
+        put_user(tables["user"], item)
+
+    response = app.handler(make_event(), None)
+
+    expected_status = 503 if item and item.get("locationId") == 123 else 403
+    expected_error = (
+        "block-table service unavailable"
+        if expected_status == 503
+        else "forbidden"
+    )
+    assert_response(response, expected_status, {"error": expected_error})
+
+
+@pytest.mark.parametrize(
+    ("groups", "item"),
+    [
+        (
+            ["staff_user", "owner_user"],
+            user_item(),
+        ),
+        (
+            ["owner_user"],
+            user_item(role="owner_user", location_id=LOCATION_ID),
+        ),
+    ],
+)
+def test_ambiguous_or_scoped_privileged_identity_is_denied(
+    app_and_tables,
+    groups,
+    item,
+):
+    app, tables = app_and_tables
+    put_user(tables["user"], item)
+
+    response = app.handler(make_event(groups=groups), None)
+
+    assert_response(response, 403, {"error": "forbidden"})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PK", "USER#someone-else"),
+        ("SK", "OTHER"),
+        ("cognitoSub", "someone-else"),
+        ("status", "unknown"),
+    ],
+)
+def test_corrupt_user_profile_returns_sanitized_503(
+    app_and_tables,
+    monkeypatch,
+    field,
+    value,
+):
+    app, tables = app_and_tables
+    profile = user_item()
+    profile[field] = value
+
+    if field in {"PK", "SK"}:
+        user_table = Mock()
+        user_table.get_item.return_value = {"Item": profile}
+        monkeypatch.setattr(app, "table", lambda _: user_table)
+    else:
+        put_user(tables["user"], profile)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+
+
+def test_malformed_user_table_response_returns_sanitized_503(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    user_table = Mock()
+    user_table.get_item.return_value = []
+    monkeypatch.setattr(app, "table", lambda _: user_table)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+
+
+@pytest.mark.parametrize(
+    "aws_error",
+    [
+        ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "sensitive AWS detail",
+                }
+            },
+            "GetItem",
+        ),
+        EndpointConnectionError(endpoint_url="https://dynamodb.invalid"),
+    ],
+)
+def test_user_lookup_failures_return_sanitized_503(
+    app_and_tables,
+    monkeypatch,
+    aws_error,
+):
+    app, _ = app_and_tables
+    user_table = Mock()
+    user_table.get_item.side_effect = aws_error
+    monkeypatch.setattr(app, "table", lambda _: user_table)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+
+
+def test_creates_manual_block_for_active_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+def test_block_before_scheduled_cutover_uses_current_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T18:00:00Z",
+        current_elements=[table_element()],
+        pending_elements=[table_element("pending-table")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("1"))
+
+
+def test_block_after_scheduled_cutover_uses_pending_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element("current-table")],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("2"))
+
+
+def test_slot_starting_at_cutover_uses_pending_layout(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T16:00:00Z",
+        current_elements=[table_element("current-table")],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("2"))
+
+
+def test_table_must_exist_in_layout_effective_for_slot(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element()],
+        pending_elements=[table_element("pending-table")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_slot_crossing_scheduled_cutover_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T17:00:00Z",
+        current_elements=[table_element()],
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "requested slot crosses a layout activation cutover"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_scheduling_transition_allows_slot_wholly_before_cutover(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        status="scheduling",
+        cutover_at="2026-09-20T18:00:00Z",
+        current_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("1"))
+
+
+def test_scheduling_transition_rejects_slot_reaching_future_side(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        status="scheduling",
+        cutover_at="2026-09-20T17:00:00Z",
+        current_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {
+            "error": (
+                "layout activation is still being scheduled; retry request"
+            )
+        },
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_overdue_scheduled_cutover_returns_409(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    cutover_at = "2026-09-20T14:00:00Z"
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at=cutover_at,
+        pending_elements=[table_element()],
+    )
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 9, 20, 14, 0, tzinfo=timezone.utc),
+    )
+
+    response = app.handler(
+        make_event(body=valid_body(startTime="18:00")),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation cutover is overdue; retry request"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_incomplete_pending_activation_state_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    state.pop("scheduleArn")
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_invalid_environment_with_pending_state_returns_503(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    monkeypatch.setattr(app, "ENVIRONMENT", "staging")
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+
+
+def test_prod_pending_target_must_observe_28_day_delay(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    monkeypatch.setattr(app, "ENVIRONMENT", "prod")
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_missing_pending_snapshot_for_future_slot_returns_409(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    tables["snapshot"].delete_item(
+        Key={"PK": f"LOCATION#{LOCATION_ID}", "SK": "LAYOUT#v2"}
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_current_snapshot_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            archivedBy="owner-sub",
+            archivedAt="2026-09-02T10:00:00Z",
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_snapshot_reads_are_strongly_consistent(app_and_tables):
+    app, _ = app_and_tables
+    snapshot_table = Mock()
+    snapshot_table.get_item.return_value = {}
+    key = {"PK": f"LOCATION#{LOCATION_ID}", "SK": "LAYOUT#v1"}
+
+    assert app._read_snapshot_item(snapshot_table, key) is None
+
+    snapshot_table.get_item.assert_called_once_with(
+        Key=key,
+        ConsistentRead=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"effectiveFrom": None},
+        {
+            "archivedBy": "owner-sub",
+            "archivedAt": "2026-09-10T10:00:00Z",
+        },
+        {"createdAt": "2026-09-20T13:58:00Z"},
+    ],
+    ids=["missing-effective-from", "archived", "before-delay"],
+)
+def test_invalid_pending_snapshot_returns_409(
+    app_and_tables,
+    overrides,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        pending_elements=[table_element()],
+    )
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element()],
+            isCurrent=False,
+            **(
+                {"effectiveFrom": "2026-09-20T14:00:00Z"}
+                | overrides
+            ),
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_layout_read_retries_when_pending_identity_changes(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T15:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_one,
+                expiresAt=cutover_one,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "2",
+                isCurrent=False,
+                effectiveFrom=cutover_one,
+            )
+        },
+        {"Item": state_two},
+        {"Item": state_two},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_two,
+                expiresAt=cutover_two,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "3",
+                elements=[table_element()],
+                isCurrent=False,
+                effectiveFrom=cutover_two,
+            )
+        },
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+    }
+
+    version = app._effective_table_layout(
+        LOCATION_ID,
+        TABLE_ID,
+        slot,
+        NOW,
+    )
+
+    assert version == 3
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_layout_read_rejects_persistent_pending_identity_race(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T15:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    current = snapshot_item(
+        effectiveTo=cutover_one,
+        expiresAt=cutover_one,
+    )
+    target = snapshot_item(
+        "2",
+        isCurrent=False,
+        effectiveFrom=cutover_one,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": current},
+        {"Item": target},
+        {"Item": state_two},
+        {"Item": state_one},
+        {"Item": current},
+        {"Item": target},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+    }
+
+    with pytest.raises(
+        app._BlockConflict,
+        match="active layout changed; retry request",
+    ):
+        app._effective_table_layout(
+            LOCATION_ID,
+            TABLE_ID,
+            slot,
+            NOW,
+        )
+
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_table_label_does_not_change_block_response_or_record(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[table_element(label="T-12")]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        table_element(label=1),
+        table_element(label=""),
+        table_element(label="   "),
+        table_element(label="x" * 129),
+        table_element(label=" T-1 "),
+        wall_element(label="W-1"),
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "too-long",
+        "untrimmed",
+        "non-table",
+    ],
+)
+def test_invalid_table_label_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_creates_manual_block_for_table_on_another_floor(app_and_tables):
+    app, tables = app_and_tables
+    elements = [
+        table_element(floorId="floor-upper"),
+        floor_element(level="-1", name="Basement"),
+        floor_element(
+            "floor-upper",
+            level="1",
+            name="Upper floor",
+            y=Decimal("3"),
+        ),
+    ]
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+
+
+def test_cash_register_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                floor_element(),
+                cash_register_element(
+                    floorId="floor-ground",
+                    label="Front register",
+                ),
+                table_element(floorId="floor-ground"),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+def test_cash_register_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[cash_register_element(TABLE_ID)],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_area_element(), table_element()],
+        [
+            floor_element(),
+            floor_area_element(floorId="floor-ground"),
+            table_element(floorId="floor-ground"),
+        ],
+    ],
+    ids=["without-floor-id", "with-floor-id"],
+)
+def test_floor_area_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+def test_floor_area_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[floor_area_element(TABLE_ID)]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "variant_field",
+    [
+        {"shape": "rect"},
+        {"seats": Decimal("4")},
+        {"zone": "main"},
+        {"label": "Dining area"},
+        {"wallId": "wall-id"},
+        {"kind": "entrance"},
+        {"name": "Dining area"},
+        {"level": Decimal("0")},
+    ],
+)
+def test_floor_area_rejects_type_specific_fields(
+    app_and_tables,
+    variant_field,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[floor_area_element(**variant_field), table_element()],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_invalid_floor_area_geometry_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                floor_area_element(width=Decimal("0")),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        cash_register_element(type="cashregister"),
+        cash_register_element(shape="rect"),
+        cash_register_element(seats=Decimal("1")),
+        cash_register_element(zone="checkout"),
+        cash_register_element(wallId="wall-id"),
+        cash_register_element(kind="entrance"),
+        cash_register_element(name="Register one"),
+        cash_register_element(level=Decimal("0")),
+        cash_register_element(label=1),
+        cash_register_element(label=""),
+        cash_register_element(label="   "),
+        cash_register_element(label="x" * 129),
+        cash_register_element(label=" Front register "),
+    ],
+    ids=[
+        "wrong-type-casing",
+        "table-shape",
+        "table-seats",
+        "table-zone",
+        "wall-reference",
+        "door-kind",
+        "floor-name",
+        "floor-level",
+        "label-non-string",
+        "label-empty",
+        "label-whitespace",
+        "label-too-long",
+        "label-untrimmed",
+    ],
+)
+def test_invalid_cash_register_variant_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element, table_element()]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_invalid_cash_register_geometry_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                cash_register_element(width=Decimal("0")),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [_UNSET, "entrance", "kitchen"],
+    ids=["legacy-without-kind", "entrance", "kitchen"],
+)
+def test_door_kind_does_not_affect_blocking_an_active_table(
+    app_and_tables,
+    kind,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                wall_element(),
+                door_element(kind=kind),
+                table_element(),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        201,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item()
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        door_element(kind="service"),
+        door_element(kind=None),
+        wall_element(kind="entrance"),
+    ],
+    ids=["unknown-door-kind", "non-string-door-kind", "kind-on-wall"],
+)
+def test_invalid_door_kind_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[element, table_element()]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_floor_with_requested_id_is_not_a_table(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[floor_element(TABLE_ID, level="-1")],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_repeated_block_is_idempotent(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    first = app.handler(make_event(), None)
+    second = app.handler(make_event(), None)
+
+    assert first["statusCode"] == 201
+    assert_response(
+        second,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    items = tables["occupancy"].scan(ConsistentRead=True)["Items"]
+    assert items == [manual_item()]
+
+
+@pytest.mark.parametrize(
+    "stored_layout_version",
+    [_UNSET, Decimal("99")],
+    ids=["legacy", "different-positive-version"],
+)
+def test_idempotent_block_is_layout_version_agnostic(
+    app_and_tables,
+    stored_layout_version,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    existing = manual_item()
+    if stored_layout_version is _UNSET:
+        existing.pop("layoutVersion")
+    else:
+        existing["layoutVersion"] = stored_layout_version
+    tables["occupancy"].put_item(Item=existing)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "tableId": TABLE_ID,
+            "date": "2026-09-20",
+            "startTime": "18:00",
+            "endTime": "20:00",
+            "blocked": True,
+        },
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == existing
+
+
+def test_invalid_stored_layout_version_is_not_idempotent(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    corrupt = manual_item(layoutVersion=Decimal("0"))
+    tables["occupancy"].put_item(Item=corrupt)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot occupancy record is inconsistent"},
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == corrupt
+
+
+def test_unblocks_existing_manual_hold(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["occupancy"].put_item(Item=manual_item())
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert "Content-Type" not in response["headers"]
+    assert "Item" not in tables["occupancy"].get_item(Key=slot_key())
+
+
+def test_unblocks_legacy_manual_hold_without_layout_version(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    legacy = manual_item()
+    legacy.pop("layoutVersion")
+    tables["occupancy"].put_item(Item=legacy)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert "Item" not in tables["occupancy"].get_item(Key=slot_key())
+
+
+def test_delete_condition_tracks_optional_layout_version(app_and_tables):
+    app, _ = app_and_tables
+    versioned = app._expected_manual_condition(manual_item())
+    legacy_item = manual_item()
+    legacy_item.pop("layoutVersion")
+    legacy = app._expected_manual_condition(legacy_item)
+
+    assert "#layoutVersion = :layoutVersion" in versioned[
+        "ConditionExpression"
+    ]
+    assert versioned["ExpressionAttributeValues"][":layoutVersion"] == 1
+    assert "attribute_not_exists(#layoutVersion)" in legacy[
+        "ConditionExpression"
+    ]
+    assert ":layoutVersion" not in legacy["ExpressionAttributeValues"]
+
+
+def test_unblock_is_idempotent_when_hold_is_absent(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+
+
+def test_unblock_never_deletes_reservation_hold(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    reservation = reservation_item()
+    tables["occupancy"].put_item(Item=reservation)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot is occupied by a reservation"},
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
+
+
+def test_unblock_still_works_after_duration_and_layout_change(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item(duration="1"))
+    put_user(tables["user"])
+    tables["occupancy"].put_item(Item=manual_item())
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_missing_location_returns_404(app_and_tables):
+    app, tables = app_and_tables
+    put_user(tables["user"])
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+def test_missing_active_layout_returns_table_404(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+
+
+def test_missing_active_snapshot_is_a_conflict(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["snapshot"].put_item(Item=activation_state())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_table_must_exist_in_active_snapshot(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, snapshot=snapshot_item(elements=[]))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "table not found"})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), table_element()],
+        [
+            floor_element(),
+            table_element(floorId="missing-floor"),
+        ],
+        [
+            floor_element(),
+            cash_register_element(floorId="missing-floor"),
+            table_element(floorId="floor-ground"),
+        ],
+        [table_element(floorId="missing-floor")],
+        [cash_register_element(floorId="missing-floor"), table_element()],
+        [
+            floor_element(),
+            floor_area_element(),
+            table_element(floorId="floor-ground"),
+        ],
+        [floor_area_element(floorId="missing-floor"), table_element()],
+        [
+            floor_element(),
+            table_element("not-a-floor", floorId="floor-ground"),
+            table_element(floorId="not-a-floor"),
+        ],
+    ],
+)
+def test_inconsistent_floor_relationships_return_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [
+        floor_element(name=""),
+        floor_element(level="1.5"),
+        floor_element(floorId="floor-ground"),
+        floor_element(shape="rect"),
+    ],
+)
+def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(elements=[floor]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_duplicate_id_across_floor_and_table_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                table_element(floorId=TABLE_ID),
+                floor_element(TABLE_ID),
+            ],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    "snapshot_overrides",
+    [
+        {"isCurrent": False},
+        {"effectiveFrom": "2026-09-09T12:00:00Z"},
+        {"effectiveTo": "2026-09-08T12:00:00Z"},
+        {"expiresAt": "2026-09-08T12:00:00Z"},
+    ],
+)
+def test_inactive_snapshot_is_rejected(
+    app_and_tables,
+    snapshot_overrides,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        snapshot=snapshot_item(**snapshot_overrides),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            valid_body(startTime="09:00"),
+            "requested slot is outside the booking schedule",
+        ),
+        (
+            valid_body(startTime="11:15"),
+            "requested slot is outside the booking schedule",
+        ),
+        (
+            valid_body(startTime="21:00"),
+            "requested slot is outside the booking schedule",
+        ),
+        (
+            valid_body(date="2026-09-07", startTime="18:00"),
+            "requested slot must be in the future",
+        ),
+    ],
+)
+def test_rejects_non_bookable_slot(app_and_tables, body, message):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    response = app.handler(make_event(body=body), None)
+
+    assert_response(response, 400, {"error": message})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize(
+    ("duration", "start_time", "end_time"),
+    [
+        ("1.5", "17:30", "19:00"),
+        ("1.1", "18:30", "19:36"),
+    ],
+)
+def test_supports_integral_minute_durations(
+    app_and_tables,
+    duration,
+    start_time,
+    end_time,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(duration=duration))
+
+    response = app.handler(
+        make_event(body=valid_body(startTime=start_time)),
+        None,
+    )
+
+    assert response["statusCode"] == 201
+    assert response_body(response)["endTime"] == end_time
+
+
+def test_rejects_duration_that_is_not_whole_minutes(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(duration="0.333"))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "location record is inconsistent"},
+    )
+
+
+def test_existing_reservation_prevents_block(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    reservation = reservation_item()
+    tables["occupancy"].put_item(Item=reservation)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 409, {"error": "slot is already occupied"})
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
+
+
+def test_overlapping_old_duration_hold_prevents_block(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    overlapping = reservation_item(
+        **slot_key(start_time="17:00", end_time="19:00")
+    )
+    tables["occupancy"].put_item(Item=overlapping)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 409, {"error": "slot is already occupied"})
+
+
+def test_adjacent_hold_does_not_prevent_block(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    adjacent = reservation_item(
+        **slot_key(start_time="16:00", end_time="18:00")
+    )
+    tables["occupancy"].put_item(Item=adjacent)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert len(tables["occupancy"].scan(ConsistentRead=True)["Items"]) == 2
+
+
+def test_conditional_write_race_cannot_overwrite_reservation(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    reservation = reservation_item()
+
+    def collide(_item):
+        tables["occupancy"].put_item(Item=reservation)
+        raise ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}},
+            "PutItem",
+        )
+
+    monkeypatch.setattr(app, "_put_manual_item", collide)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 409, {"error": "slot is already occupied"})
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
+
+
+def test_ambiguous_committed_write_is_reconciled(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    def commit_then_timeout(item):
+        tables["occupancy"].put_item(Item=item)
+        raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
+
+    monkeypatch.setattr(app, "_put_manual_item", commit_then_timeout)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == manual_item()
+
+
+def test_ambiguous_uncommitted_write_retries_once(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    original_put = app._put_manual_item
+    calls = 0
+
+    def timeout_once(item):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise EndpointConnectionError(
+                endpoint_url="https://dynamodb.invalid"
+            )
+        original_put(item)
+
+    monkeypatch.setattr(app, "_put_manual_item", timeout_once)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    assert calls == 2
+
+
+def test_corrupt_manual_hold_is_not_accepted_as_idempotent(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    corrupt = manual_item(ttl=Decimal("1"))
+    tables["occupancy"].put_item(Item=corrupt)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot occupancy record is inconsistent"},
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == corrupt
+
+
+@pytest.mark.parametrize(
+    ("date_value", "start_time", "opens_at", "message"),
+    [
+        (
+            "2027-03-28",
+            "02:00",
+            "00:00",
+            "slot time is ambiguous or does not exist",
+        ),
+        (
+            "2026-10-25",
+            "02:00",
+            "00:00",
+            "slot time is ambiguous or does not exist",
+        ),
+        (
+            "2027-03-28",
+            "01:00",
+            "01:00",
+            "slot crosses a timezone transition",
+        ),
+        (
+            "2026-10-25",
+            "01:00",
+            "01:00",
+            "slot crosses a timezone transition",
+        ),
+    ],
+)
+def test_rejects_dst_unsafe_slots(
+    app_and_tables,
+    date_value,
+    start_time,
+    opens_at,
+    message,
+):
+    app, tables = app_and_tables
+    put_prerequisites(
+        tables,
+        location=location_item(
+            duration="2",
+            business_hours=all_day_business_hours(opens_at=opens_at),
+        ),
+    )
+
+    response = app.handler(
+        make_event(
+            body=valid_body(date=date_value, startTime=start_time)
+        ),
+        None,
+    )
+
+    assert_response(response, 400, {"error": message})
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_conditional_delete_race_preserves_replacement_reservation(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["occupancy"].put_item(Item=manual_item())
+    replacement = reservation_item()
+
+    def replace_then_fail(_item):
+        tables["occupancy"].put_item(Item=replacement)
+        raise ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}},
+            "DeleteItem",
+        )
+
+    monkeypatch.setattr(app, "_delete_manual_item", replace_then_fail)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot is occupied by a reservation"},
+    )
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
+
+
+@pytest.mark.parametrize(
+    ("initial_version", "replacement_version"),
+    [(_UNSET, Decimal("1")), (Decimal("1"), Decimal("2"))],
+    ids=["legacy-gains-version", "version-changes"],
+)
+def test_conditional_delete_race_preserves_layout_version_change(
+    app_and_tables,
+    monkeypatch,
+    initial_version,
+    replacement_version,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    initial = manual_item()
+    if initial_version is _UNSET:
+        initial.pop("layoutVersion")
+    else:
+        initial["layoutVersion"] = initial_version
+    tables["occupancy"].put_item(Item=initial)
+    replacement = {**initial, "layoutVersion": replacement_version}
+    original_delete = app._delete_manual_item
+
+    def change_version_then_delete(item):
+        tables["occupancy"].put_item(Item=replacement)
+        original_delete(item)
+
+    monkeypatch.setattr(app, "_delete_manual_item", change_version_then_delete)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 409, {"error": "slot changed; retry request"})
+    assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
+
+
+def test_ambiguous_committed_delete_is_reconciled(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"])
+    tables["occupancy"].put_item(Item=manual_item())
+    original_delete = app._delete_manual_item
+
+    def delete_then_timeout(item):
+        original_delete(item)
+        raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
+
+    monkeypatch.setattr(app, "_delete_manual_item", delete_then_timeout)
+
+    response = app.handler(
+        make_event(body=valid_body(blocked=False)),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+def test_dependency_failure_is_sanitized(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    occupancy = Mock()
+    occupancy.query.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "AccessDeniedException",
+                "Message": "sensitive AWS detail",
+            }
+        },
+        "Query",
+    )
+    real_table = app.table
+
+    def table_factory(name):
+        if name == OCCUPANCY_TABLE_NAME:
+            return occupancy
+        return real_table(name)
+
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "block-table service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_profile_of_another_tenant_is_forbidden(app_and_tables):
+    """A token of tenant B whose sub resolves to a profile of tenant A
+    (shouldn't happen - but the profile decides nothing on its own)."""
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    event = make_event()
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert_response(response, 403, {"error": "forbidden"})
+
+
+def test_owner_of_another_tenant_gets_404_for_this_location(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    put_user(tables["user"], user_item(sub="owner-b", role="owner_user", location_id="",
+                                       tenantId=TENANT_B))
+    event = make_event(groups='["owner_user"]', sub="owner-b")
+    event["requestContext"]["authorizer"]["jwt"]["claims"]["tenant_id"] = TENANT_B
+
+    response = app.handler(event, None)
+
+    assert_response(response, 404, {"error": "location not found"})
+    assert tables["occupancy"].scan()["Items"] == []
+
+
+def test_reservations_feature_is_required(app_and_tables):
+    import boto3 as _boto3
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_user(tables["user"])
+    _boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, features={"reservations": False, "ordering": True}))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 403, {"error": "feature_not_in_plan"})
+
+
+def test_blocks_any_half_hour_start(app_and_tables):
+    # Same grid as bookings: 11:30 is a start even with 2 h bookings from 10:00.
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+
+    response = app.handler(make_event(body=valid_body(startTime="11:30")), None)
+
+    assert response["statusCode"] == 201
+    assert response_body(response)["endTime"] == "13:30"
+
+
+
+def test_a_closed_special_day_has_nothing_to_block(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(
+        specialDays=[{"date": "2026-09-20", "kind": "closed", "note": "Privat fest"}]))
+
+    response = app.handler(make_event(body=valid_body()), None)
+
+    assert response["statusCode"] == 400
+    assert response_body(response) == {"error": "requested slot is outside the booking schedule"}
+
+
+def test_special_hours_decide_what_can_be_blocked(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables, location=location_item(
+        specialDays=[{"date": "2026-09-20", "kind": "hours",
+                      "intervals": [{"opensAt": "17:00", "closesAt": "23:30"}]}]))
+
+    early = app.handler(make_event(body=valid_body(startTime="12:00")), None)
+    late = app.handler(make_event(body=valid_body(startTime="21:30")), None)
+
+    assert early["statusCode"] == 400
+    assert late["statusCode"] == 201, late

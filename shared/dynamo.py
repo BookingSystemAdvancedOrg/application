@@ -5,20 +5,33 @@ time - table()/client() lazily create one shared object per cold start and
 reuse it for every call a function makes.
 """
 
+import threading
+
 import boto3
 
 _resource = None
 _client = None
+_local = threading.local()
 
 
 def table(name: str):
     """High-level resource Table - use for GetItem/PutItem/Query/Scan/
     UpdateItem, where boto3's friendlier Python-type marshalling is enough.
+
+    boto3 resources are not thread-safe: worker threads (a function
+    fanning out with a ThreadPoolExecutor) each get their own, made from
+    their own Session. The main thread keeps the one shared resource.
+    Clients (client()) are thread-safe and stay shared.
     """
     global _resource
-    if _resource is None:
-        _resource = boto3.resource("dynamodb")
-    return _resource.Table(name)
+    if threading.current_thread() is threading.main_thread():
+        if _resource is None:
+            _resource = boto3.resource("dynamodb")
+        return _resource.Table(name)
+    resource = getattr(_local, "resource", None)
+    if resource is None:
+        resource = _local.resource = boto3.session.Session().resource("dynamodb")
+    return resource.Table(name)
 
 
 def client():

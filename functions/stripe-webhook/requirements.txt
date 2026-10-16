@@ -1,1 +1,3 @@
-stripe
+# boto3 is already present in the public.ecr.aws/lambda/python base image.
+# Stripe is called over plain HTTPS (shared/stripe_client.py) - no SDK.
+tzdata

@@ -14,7 +14,11 @@ def _json_default(value: Any) -> Any:
     # DynamoDB's boto3 resource API returns numbers as Decimal - json.dumps
     # doesn't know how to serialize those on its own.
     if isinstance(value, Decimal):
-        return int(value) if value % 1 == 0 else float(value)
+        return (
+            int(value)
+            if value == value.to_integral_value()
+            else float(value)
+        )
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 

@@ -1,0 +1,2605 @@
+import importlib.util
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import Mock
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from moto import mock_aws
+
+from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, create_tables, tenant_row
+
+
+APP_PATH = (
+    Path(__file__).parents[1]
+    / "functions"
+    / "get-availability"
+    / "app.py"
+)
+LOCATION_ID = "location-id"
+LOCATION_TABLE_NAME = "test-location"
+OCCUPANCY_TABLE_NAME = "test-occupancy"
+SNAPSHOT_TABLE_NAME = "test-layout-snapshot"
+NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
+def half_hours(first, last, duration_minutes=None):
+    """Start times every 30 min from first to last (inclusive), or (start,
+    end) pairs when a duration is given - the engine's slot grid."""
+    def minutes(t):
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+
+    def clock(m):
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    starts = range(minutes(first), minutes(last) + 1, 30)
+    if duration_minutes is None:
+        return [clock(m) for m in starts]
+    return [(clock(m), clock(m + duration_minutes)) for m in starts]
+_UNSET = object()
+
+
+def make_event(
+    *,
+    method="GET",
+    location_id=LOCATION_ID,
+    query=_UNSET,
+):
+    if query is _UNSET:
+        query = {"date": "2026-09-20"}
+    event = {
+        "requestContext": {"http": {"method": method}},
+        "queryStringParameters": query,
+    }
+    if location_id is not _UNSET:
+        event["pathParameters"] = {"locationId": location_id}
+    return event
+
+
+def create_table(resource, name):
+    return resource.create_table(
+        TableName=name,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def business_hours(opens_at="10:00", closes_at="22:00"):
+    return {
+        weekday: [{"opensAt": opens_at, "closesAt": closes_at}]
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    }
+
+
+def location_item(
+    *,
+    location_id=LOCATION_ID,
+    duration="2",
+    hours=None,
+    **overrides,
+):
+    item = {
+        "PK": f"TENANT#{TENANT_A}",
+        "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
+        "locationId": location_id,
+        "name": "Test Restaurant",
+        "address": "Example Street 1",
+        "timezone": "Europe/Stockholm",
+        "businessHours": hours or business_hours(),
+        "bookingDurationHours": Decimal(duration),
+        "gracePeriodHours": Decimal("1"),
+        "createdBy": "creator-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def table_element(table_id="table-b", *, seats="4", **overrides):
+    item = {
+        "elementId": table_id,
+        "type": "table",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("2"),
+        "width": Decimal("1.2"),
+        "height": Decimal("0.75"),
+        "depth": Decimal("0.8"),
+        "rotationY": Decimal("0"),
+        "shape": "rect",
+        "seats": Decimal(seats),
+        "zone": "main",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def wall_element(element_id="wall-id"):
+    return {
+        "elementId": element_id,
+        "type": "wall",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("4"),
+        "height": Decimal("3"),
+        "depth": Decimal("0.2"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+
+
+def door_element(element_id="door-id", *, kind=_UNSET, **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "door",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("0.9"),
+        "height": Decimal("2.1"),
+        "depth": Decimal("0.1"),
+        "rotationY": Decimal("0"),
+        "wallId": "wall-id",
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    if kind is not _UNSET:
+        item["kind"] = kind
+    item.update(overrides)
+    return item
+
+
+def floor_element(element_id="floor-ground", *, level="0", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floor",
+        "x": Decimal("0"),
+        "y": Decimal("0"),
+        "z": Decimal("0"),
+        "width": Decimal("12"),
+        "height": Decimal("0.2"),
+        "depth": Decimal("10"),
+        "rotationY": Decimal("0"),
+        "name": "Ground floor",
+        "level": Decimal(level),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def floor_area_element(element_id="floor-area", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "floorArea",
+        "x": Decimal("1"),
+        "y": Decimal("0"),
+        "z": Decimal("1"),
+        "width": Decimal("4"),
+        "height": Decimal("0.05"),
+        "depth": Decimal("5"),
+        "rotationY": Decimal("0"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def cash_register_element(element_id="cash-register", **overrides):
+    item = {
+        "elementId": element_id,
+        "type": "cashRegister",
+        "x": Decimal("2"),
+        "y": Decimal("0"),
+        "z": Decimal("3"),
+        "width": Decimal("1.5"),
+        "height": Decimal("1"),
+        "depth": Decimal("0.7"),
+        "rotationY": Decimal("90"),
+        "updatedBy": "layout-editor",
+        "updatedAt": "2026-09-01T09:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def activation_state(version="1", **overrides):
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": "LAYOUT#ACTIVATION",
+        "recordType": "layoutActivationState",
+        "currentVersion": Decimal(version),
+        "revision": Decimal("1"),
+        "updatedBy": "layout-owner",
+        "updatedAt": "2026-09-01T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def pending_activation_state(
+    app,
+    *,
+    current_version=1,
+    pending_version=2,
+    status="scheduled",
+    cutover_at="2026-09-20T14:00:00Z",
+    operation_revision=2,
+    include_previous_lifecycle=True,
+):
+    token = app._activation_token(
+        LOCATION_ID,
+        current_version,
+        pending_version,
+        operation_revision,
+        cutover_at,
+    )
+    overrides = {
+        "revision": Decimal(
+            str(
+                operation_revision + 1
+                if status == "scheduled"
+                else operation_revision
+            )
+        ),
+        "pendingVersion": Decimal(str(pending_version)),
+        "pendingStatus": status,
+        "activationToken": token,
+        "cutoverAt": cutover_at,
+        "scheduleName": app._schedule_name(token),
+    }
+    if include_previous_lifecycle:
+        overrides["pendingTargetPreviousLifecycle"] = {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    if status == "scheduled":
+        overrides["scheduleArn"] = (
+            "arn:aws:scheduler:eu-north-1:123456789012:"
+            f"schedule/default/{overrides['scheduleName']}"
+        )
+    return activation_state(str(current_version), **overrides)
+
+
+def test_activation_state_accepts_pending_target_previous_lifecycle(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    lifecycle = {
+        "effectiveFrom": "2026-05-01T01:00:00Z",
+        "effectiveTo": "2026-06-01T01:00:00Z",
+        "expiresAt": "2026-06-01T01:00:00Z",
+    }
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] == lifecycle
+
+
+def test_activation_state_accepts_legacy_pending_without_lifecycle_backup(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(
+        app,
+        include_previous_lifecycle=False,
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"]["targetPreviousLifecycle"] is None
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    [
+        None,
+        [],
+        {},
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": "2026-09-20T16:00:00+02:00",
+        },
+        {
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+            "unexpected": None,
+        },
+    ],
+)
+def test_invalid_pending_target_previous_lifecycle_is_inconsistent(
+    app_and_tables,
+    lifecycle,
+):
+    app, _ = app_and_tables
+    state = pending_activation_state(app)
+    state["pendingTargetPreviousLifecycle"] = lifecycle
+
+    with pytest.raises(
+        app._AvailabilityConflict,
+        match="layout activation state is inconsistent",
+    ):
+        app._validate_activation_state(state, LOCATION_ID)
+
+
+def test_orphan_previous_lifecycle_from_old_worker_is_ignored(
+    app_and_tables,
+):
+    app, _ = app_and_tables
+    state = activation_state(
+        pendingTargetPreviousLifecycle={
+            "effectiveFrom": None,
+            "effectiveTo": None,
+            "expiresAt": None,
+        }
+    )
+
+    details = app._validate_activation_state(state, LOCATION_ID)
+
+    assert details["pending"] is None
+
+
+def snapshot_item(version="1", *, elements=None, **overrides):
+    if elements is None:
+        elements = [
+            table_element(),
+            wall_element(),
+            table_element("table-a", seats="2"),
+        ]
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": f"LAYOUT#v{version}",
+        "version": Decimal(version),
+        "label": f"Version {version}",
+        "isCurrent": True,
+        "effectiveFrom": "2026-09-01T10:00:00Z",
+        "effectiveTo": None,
+        "expiresAt": None,
+        "elements": elements,
+        "validPositions": [],
+        "createdBy": "layout-owner",
+        "createdAt": "2026-09-01T09:00:00Z",
+        "updatedBy": "layout-owner",
+        "updatedAt": "2026-09-01T10:00:00Z",
+    }
+    item.update(overrides)
+    return item
+
+
+def occupancy_item(
+    table_id="table-a",
+    *,
+    date_value="2026-09-20",
+    start_time="18:00",
+    end_time="20:00",
+    manual=False,
+    **overrides,
+):
+    item = {
+        "PK": f"LOCATION#{LOCATION_ID}",
+        "SK": (
+            f"SLOT#{date_value}#{start_time}-{end_time}#{table_id}"
+        ),
+        "reservationId": "reservation-id",
+        "ttl": Decimal("2000000000"),
+    }
+    if manual:
+        item.update(
+            {
+                "reservationId": (
+                    "MANUAL_BLOCK#11111111-1111-4111-8111-111111111111"
+                ),
+                "source": "manual_block",
+                "createdBy": "staff-sub",
+                "createdAt": "2026-09-08T12:00:00Z",
+            }
+        )
+    item.update(overrides)
+    return item
+
+
+def put_stage_two_records(tables, *, location=None, state=None, snapshot=None):
+    tables["location"].put_item(Item=location or location_item())
+    if state is not False:
+        tables["snapshot"].put_item(Item=state or activation_state())
+    if snapshot is not False:
+        tables["snapshot"].put_item(Item=snapshot or snapshot_item())
+
+
+def put_scheduled_layout_transition(
+    app,
+    tables,
+    *,
+    cutover_at="2026-09-20T14:00:00Z",
+    current_elements=None,
+    pending_elements=None,
+):
+    state = pending_activation_state(app, cutover_at=cutover_at)
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            elements=current_elements or [
+                table_element("current-table", seats="2")
+            ],
+            effectiveTo=cutover_at,
+            expiresAt=cutover_at,
+        )
+    )
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=pending_elements or [
+                table_element("pending-table", seats="6")
+            ],
+            isCurrent=False,
+            effectiveFrom=cutover_at,
+        )
+    )
+
+
+def response_body(response):
+    return json.loads(response["body"])
+
+
+def assert_response(response, status_code, body):
+    assert response["statusCode"] == status_code
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert response["headers"]["Content-Type"] == "application/json"
+    assert response_body(response) == body
+
+
+@pytest.fixture
+def app(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("LOCATION_TABLE_NAME", LOCATION_TABLE_NAME)
+    monkeypatch.setenv("SLOT_OCCUPANCY_TABLE_NAME", OCCUPANCY_TABLE_NAME)
+    monkeypatch.setenv(
+        "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME",
+        SNAPSHOT_TABLE_NAME,
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "get_availability_app",
+        APP_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Request-parsing tests run without AWS: LOCATION_ID belongs to tenant A.
+    def fake_for_public(location_id, *, feature=None):
+        if location_id != LOCATION_ID:
+            raise module.tenant.TenantError(404, "not found")
+        return module.tenant.TenantContext(TENANT_A, tenant_row(TENANT_A), location={
+            "locationId": LOCATION_ID})
+
+    monkeypatch.setattr(module.tenant, "for_public", fake_for_public)
+    return module
+
+
+@pytest.fixture
+def app_and_tables(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("LOCATION_TABLE_NAME", LOCATION_TABLE_NAME)
+    monkeypatch.setenv("SLOT_OCCUPANCY_TABLE_NAME", OCCUPANCY_TABLE_NAME)
+    monkeypatch.setenv(
+        "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME",
+        SNAPSHOT_TABLE_NAME,
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+        resource = boto3.resource("dynamodb", region_name="eu-north-1")
+        tables = {
+            "location": create_table(resource, LOCATION_TABLE_NAME),
+            "occupancy": create_table(resource, OCCUPANCY_TABLE_NAME),
+            "snapshot": create_table(resource, SNAPSHOT_TABLE_NAME),
+        }
+        create_tables(monkeypatch, location_table=LOCATION_TABLE_NAME,
+                      existing=(LOCATION_TABLE_NAME,), user_table=None)
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A))
+        resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B))
+
+        spec = importlib.util.spec_from_file_location(
+            "get_availability_stage_two_app",
+            APP_PATH,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "_utc_now", lambda: NOW)
+
+        yield module, tables
+
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+
+def successful_boundary(app, monkeypatch):
+    captured = {}
+
+    def handle(details):
+        captured.update(details)
+        return app._availability_response(200, {"accepted": True})
+
+    monkeypatch.setattr(app, "_handle_availability", handle)
+    return captured
+
+
+def successful_occupancy_boundary(app, monkeypatch):
+    captured = {}
+
+    def handle(context):
+        captured.update(context)
+        return app._availability_response(200, {"accepted": True})
+
+    monkeypatch.setattr(app, "_availability_from_occupancy", handle)
+    return captured
+
+
+def test_public_request_reaches_handler_without_authorizer(app, monkeypatch):
+    captured = successful_boundary(app, monkeypatch)
+    event = make_event()
+
+    assert "authorizer" not in event["requestContext"]
+    response = app.handler(event, None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured == {
+        "locationId": LOCATION_ID,
+        "date": "2026-09-20",
+    }
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "OPTIONS", ""])
+def test_non_get_method_returns_405_before_parsing(app, monkeypatch, method):
+    boundary = Mock()
+    monkeypatch.setattr(app, "_handle_availability", boundary)
+
+    response = app.handler(
+        make_event(method=method, location_id=_UNSET, query=None),
+        None,
+    )
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "GET"
+    boundary.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        None,
+        {},
+        {"requestContext": None},
+        {"requestContext": {}},
+        {"requestContext": {"http": None}},
+        {"requestContext": {"http": {}}},
+        {"requestContext": {"http": {"method": 123}}},
+    ],
+)
+def test_malformed_event_returns_405(app, event):
+    response = app.handler(event, None)
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == "GET"
+
+
+@pytest.mark.parametrize(
+    ("location_id", "message"),
+    [
+        (_UNSET, "locationId is required"),
+        (None, "locationId is required"),
+        ("", "locationId is required"),
+        ("   ", "locationId is required"),
+        (123, "locationId is required"),
+        ("x" * 129, "locationId is invalid"),
+        ("unsafe#location", "locationId is invalid"),
+    ],
+)
+def test_invalid_location_id_returns_400(
+    app,
+    monkeypatch,
+    location_id,
+    message,
+):
+    boundary = Mock()
+    monkeypatch.setattr(app, "_handle_availability", boundary)
+
+    response = app.handler(make_event(location_id=location_id), None)
+
+    assert_response(response, 400, {"error": message})
+    boundary.assert_not_called()
+
+
+def test_location_id_is_trimmed(app, monkeypatch):
+    captured = successful_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(location_id=f"  {LOCATION_ID}  "),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert captured["locationId"] == LOCATION_ID
+
+
+@pytest.mark.parametrize(
+    ("query", "message"),
+    [
+        (None, "missing required query parameters: date"),
+        ({}, "missing required query parameters: date"),
+        ([], "query parameters must be an object"),
+        (
+            {"date": "2026-09-20", "extra": "value"},
+            "unsupported query parameters: extra",
+        ),
+        ({"date": None}, "date must use YYYY-MM-DD"),
+        ({"date": 20260920}, "date must use YYYY-MM-DD"),
+        ({"date": "2026-9-20"}, "date must use YYYY-MM-DD"),
+        ({"date": "2026-09-20 "}, "date must use YYYY-MM-DD"),
+        ({"date": "2026-02-30"}, "date must be a real calendar date"),
+        ({"date": "0000-01-01"}, "date must be a real calendar date"),
+    ],
+)
+def test_invalid_query_returns_400(app, monkeypatch, query, message):
+    boundary = Mock()
+    monkeypatch.setattr(app, "_handle_availability", boundary)
+
+    response = app.handler(make_event(query=query), None)
+
+    assert_response(response, 400, {"error": message})
+    boundary.assert_not_called()
+
+
+def test_query_validation_reports_sorted_unsupported_fields(app):
+    response = app.handler(
+        make_event(
+            query={
+                "date": "2026-09-20",
+                "zeta": "value",
+                "alpha": "value",
+            }
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "unsupported query parameters: alpha, zeta"},
+    )
+
+
+def test_builds_canonical_slots_and_active_table_capacity(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["locationId"] == LOCATION_ID
+    assert captured["date"] == "2026-09-20"
+    assert captured["timezone"] == "Europe/Stockholm"
+    assert captured["tables"] == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+    assert [
+        (slot["startTime"], slot["endTime"])
+        for slot in captured["slots"]
+    ] == half_hours("10:00", "20:00", 120)
+    assert captured["slots"][0]["startMinute"] == 600
+    assert captured["slots"][0]["endMinute"] == 720
+    assert captured["slots"][0]["startUtc"] == datetime(
+        2026,
+        9,
+        20,
+        8,
+        0,
+        tzinfo=timezone.utc,
+    )
+    assert captured["slots"][0]["endUtc"] == datetime(
+        2026,
+        9,
+        20,
+        10,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+
+def test_multi_floor_snapshot_exposes_only_bookable_table_details(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    elements = [
+        table_element("ground-table", floorId="floor-ground"),
+        floor_element(),
+        floor_element(
+            "floor-upper",
+            level="1",
+            name="Upper floor",
+            y=Decimal("3"),
+        ),
+        wall_element("ground-wall") | {"floorId": "floor-ground"},
+        table_element(
+            "upper-table",
+            seats="6",
+            floorId="floor-upper",
+        ),
+    ]
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["tables"] == [
+        {"tableId": "ground-table", "seats": 4},
+        {"tableId": "upper-table", "seats": 6},
+    ]
+
+
+def test_table_label_does_not_change_availability_response_shape(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[table_element("labelled-table", label="T-12")]
+        ),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "labelled-table", "seats": 4}
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        table_element(label=1),
+        table_element(label=""),
+        table_element(label="   "),
+        table_element(label="x" * 129),
+        table_element(label=" T-1 "),
+        wall_element() | {"label": "W-1"},
+    ],
+    ids=[
+        "non-string",
+        "empty",
+        "whitespace",
+        "too-long",
+        "untrimmed",
+        "non-table",
+    ],
+)
+def test_invalid_table_label_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [_UNSET, "entrance", "kitchen"],
+    ids=["legacy-without-kind", "entrance", "kitchen"],
+)
+def test_door_kind_does_not_affect_active_table_availability(
+    app_and_tables,
+    monkeypatch,
+    kind,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[
+                wall_element(),
+                door_element(kind=kind),
+                table_element("bookable-table", seats="6"),
+            ],
+        ),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "bookable-table", "seats": 6}
+    ]
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [
+            cash_register_element(),
+            table_element("bookable-table", seats="6"),
+        ],
+        [
+            floor_element(),
+            cash_register_element(
+                floorId="floor-ground",
+                label="Front register",
+            ),
+            table_element(
+                "bookable-table",
+                seats="6",
+                floorId="floor-ground",
+            ),
+        ],
+    ],
+    ids=["legacy-layout", "floor-scoped-layout"],
+)
+def test_cash_register_does_not_affect_active_table_availability(
+    app_and_tables,
+    monkeypatch,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "bookable-table", "seats": 6}
+    ]
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [
+            floor_area_element(),
+            table_element("bookable-table", seats="6"),
+        ],
+        [
+            floor_element(),
+            floor_area_element(floorId="floor-ground"),
+            table_element(
+                "bookable-table",
+                seats="6",
+                floorId="floor-ground",
+            ),
+        ],
+    ],
+    ids=["legacy-layout", "floor-scoped-layout"],
+)
+def test_floor_area_does_not_affect_active_table_availability(
+    app_and_tables,
+    monkeypatch,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 200, {"accepted": True})
+    assert captured["tables"] == [
+        {"tableId": "bookable-table", "seats": 6}
+    ]
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        floor_area_element(name="Dining area"),
+        floor_area_element(level=Decimal("0")),
+        floor_area_element(shape="rect"),
+        floor_area_element(seats=Decimal("4")),
+        floor_area_element(zone="main"),
+        floor_area_element(label="Dining"),
+        floor_area_element(wallId="wall-id"),
+        floor_area_element(kind="entrance"),
+        floor_area_element(height=Decimal("0")),
+    ],
+    ids=[
+        "name",
+        "level",
+        "shape",
+        "seats",
+        "zone",
+        "label",
+        "wall-id",
+        "kind",
+        "invalid-geometry",
+    ],
+)
+def test_invalid_floor_area_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        cash_register_element(name="Front register"),
+        cash_register_element(level=Decimal("0")),
+        cash_register_element(shape="rect"),
+        cash_register_element(seats=Decimal("1")),
+        cash_register_element(zone="front"),
+        cash_register_element(wallId="wall-id"),
+        cash_register_element(kind="entrance"),
+        cash_register_element(label=1),
+        cash_register_element(label=""),
+        cash_register_element(label="   "),
+        cash_register_element(label="x" * 129),
+        cash_register_element(label=" Front register "),
+        cash_register_element(width=Decimal("0")),
+        cash_register_element(type="cashregister"),
+    ],
+    ids=[
+        "name",
+        "level",
+        "shape",
+        "seats",
+        "zone",
+        "wall-id",
+        "kind",
+        "label-non-string",
+        "label-empty",
+        "label-whitespace",
+        "label-too-long",
+        "label-untrimmed",
+        "invalid-geometry",
+        "wrong-type-casing",
+    ],
+)
+def test_invalid_cash_register_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[element]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), cash_register_element()],
+        [
+            floor_element(),
+            cash_register_element(floorId="missing-floor"),
+        ],
+        [cash_register_element(floorId="missing-floor")],
+    ],
+    ids=[
+        "missing-floor-id",
+        "unknown-floor-id",
+        "floor-id-without-floors",
+    ],
+)
+def test_invalid_cash_register_floor_relationship_returns_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), floor_area_element()],
+        [
+            floor_element(),
+            floor_area_element(floorId="missing-floor"),
+        ],
+        [floor_area_element(floorId="missing-floor")],
+    ],
+    ids=[
+        "missing-floor-id",
+        "unknown-floor-id",
+        "floor-id-without-floors",
+    ],
+)
+def test_invalid_floor_area_floor_relationship_returns_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        door_element(kind="service"),
+        door_element(kind=None),
+        wall_element() | {"kind": "entrance"},
+    ],
+    ids=["unknown-door-kind", "non-string-door-kind", "kind-on-wall"],
+)
+def test_invalid_door_kind_in_active_snapshot_returns_409(
+    app_and_tables,
+    element,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            elements=[element, table_element("bookable-table")],
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_empty_floor_is_valid_and_does_not_create_bookable_table(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[floor_element(level="-1")]),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["tables"] == []
+
+
+def test_location_and_snapshot_reads_are_strongly_consistent(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    successful_occupancy_boundary(app, monkeypatch)
+    location = Mock(wraps=tables["location"])
+    snapshot = Mock(wraps=tables["snapshot"])
+    real_table = app.engine.table
+
+    def table_factory(name):
+        if name == LOCATION_TABLE_NAME:
+            return location
+        if name == SNAPSHOT_TABLE_NAME:
+            return snapshot
+        return real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    location.get_item.assert_called_once_with(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOCATION_ID}"},
+        ConsistentRead=True,
+    )
+    assert snapshot.get_item.call_count == 3
+    assert all(
+        call.kwargs["ConsistentRead"] is True
+        for call in snapshot.get_item.call_args_list
+    )
+
+
+def test_missing_location_returns_404(app_and_tables, monkeypatch):
+    app, _ = app_and_tables
+    boundary = Mock()
+    monkeypatch.setattr(app, "_availability_from_occupancy", boundary)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+    boundary.assert_not_called()
+
+
+def test_no_active_layout_produces_no_tables(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables, state=False, snapshot=False)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["tables"] == []
+    assert captured["slots"]
+
+
+def test_closed_day_skips_layout_read(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    hours = business_hours()
+    hours["sunday"] = []
+    tables["location"].put_item(Item=location_item(hours=hours))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+    snapshot = Mock()
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert captured["slots"] == []
+    assert captured["tables"] == []
+    snapshot.get_item.assert_not_called()
+
+
+def test_past_date_is_rejected_before_layout_read(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    snapshot = Mock()
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-07"}),
+        None,
+    )
+
+    assert_response(response, 400, {"error": "date must not be in the past"})
+    snapshot.get_item.assert_not_called()
+
+
+def test_today_includes_only_slots_strictly_after_now(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-08"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    # now = 14:00 local; the first start is at least 30 minutes away
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("14:30", "20:00")
+
+
+def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-29"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("10:00", "14:00")
+
+
+def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    location = Mock(wraps=tables["location"])
+    snapshot = Mock()
+    real_table = app.engine.table
+
+    def table_factory(name):
+        if name == LOCATION_TABLE_NAME:
+            return location
+        if name == SNAPSHOT_TABLE_NAME:
+            return snapshot
+        return real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-30"}),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "date must not be more than 21 days ahead"},
+    )
+    location.get_item.assert_called_once()
+    snapshot.get_item.assert_not_called()
+
+
+def test_horizon_uses_location_date_but_exact_utc_elapsed_time(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        location=location_item(
+            duration="1",
+            hours=business_hours("00:00", "18:00"),
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": "2026-10-25"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert captured["slots"][-1]["startTime"] == "13:00"
+    assert "14:00" not in {
+        slot["startTime"] for slot in captured["slots"]
+    }
+
+
+def test_fractional_hour_duration_uses_exact_minute_grid(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables, location=location_item(duration="1.5"))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert [
+        (slot["startTime"], slot["endTime"])
+        for slot in captured["slots"]
+    ] == half_hours("10:00", "20:30", 90)
+
+
+@pytest.mark.parametrize(
+    ("date_value", "now"),
+    [
+        (
+            "2027-03-28",
+            datetime(2027, 3, 27, 12, 0, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-10-25",
+            datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc),
+        ),
+    ],
+)
+def test_dst_unsafe_intervals_are_omitted_without_failing_day(
+    app_and_tables,
+    monkeypatch,
+    date_value,
+    now,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        location=location_item(
+            duration="1",
+            hours=business_hours("00:00", "06:00"),
+        ),
+    )
+    monkeypatch.setattr(app, "_utc_now", lambda: now)
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(
+        make_event(query={"date": date_value}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    # starts/ends inside the skipped or repeated hour are left out
+    assert [slot["startTime"] for slot in captured["slots"]] == [
+        "00:00",
+        "00:30",
+        "03:00",
+        "03:30",
+        "04:00",
+        "04:30",
+        "05:00",
+    ]
+
+
+def test_each_business_interval_has_its_own_slot_grid(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    hours = business_hours()
+    hours["sunday"] = [
+        {"opensAt": "10:15", "closesAt": "12:15"},
+        {"opensAt": "17:30", "closesAt": "21:30"},
+    ]
+    put_stage_two_records(
+        tables,
+        location=location_item(duration="2", hours=hours),
+    )
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    # starts sit on the clock's half hours: 10:30 + 2 h passes 12:15
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("17:30", "19:30")
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        location_item(timezone="Not/A-Timezone"),
+        location_item(duration="0.333"),
+        location_item(gracePeriodHours=Decimal("-1")),
+        location_item(businessHours={}),
+    ],
+)
+def test_inconsistent_location_returns_409(app_and_tables, location):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "location record is inconsistent"},
+    )
+
+
+def test_activation_state_without_snapshot_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=activation_state())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        snapshot_item(isCurrent=False),
+        snapshot_item(effectiveFrom="2026-09-09T12:00:00Z"),
+        snapshot_item(effectiveTo="2026-09-08T12:00:00Z"),
+        snapshot_item(expiresAt="2026-09-08T12:00:00Z"),
+        snapshot_item(validPositions=[{}]),
+        snapshot_item(
+            elements=[table_element("duplicate"), table_element("duplicate")]
+        ),
+    ],
+)
+def test_inconsistent_active_snapshot_returns_409(
+    app_and_tables,
+    snapshot,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables, snapshot=snapshot)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "elements",
+    [
+        [floor_element(), table_element("table-id")],
+        [
+            floor_element(),
+            table_element("table-id", floorId="missing-floor"),
+        ],
+        [table_element("table-id", floorId="missing-floor")],
+        [
+            floor_element(),
+            table_element("not-a-floor", floorId="floor-ground"),
+            wall_element("wall-id") | {"floorId": "not-a-floor"},
+        ],
+    ],
+)
+def test_inconsistent_floor_relationships_return_409(
+    app_and_tables,
+    elements,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=elements),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [
+        floor_element(name=""),
+        floor_element(level="1.5"),
+        floor_element(floorId="floor-ground"),
+        floor_element(shape="rect"),
+    ],
+)
+def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[floor]),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_active_layout_read_retries_once_when_version_changes(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    state_one = activation_state("1")
+    state_two = activation_state("2", revision=Decimal("2"))
+    snapshot_one = snapshot_item("1")
+    snapshot_two = snapshot_item("2")
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": snapshot_one},
+        {"Item": state_two},
+        {"Item": state_two},
+        {"Item": snapshot_two},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
+
+    tables = app._active_tables(LOCATION_ID, NOW)
+
+    assert tables == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+    assert snapshot_table.get_item.call_count == 6
+
+
+def test_active_layout_read_rejects_persistent_version_race(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    state_one = activation_state("1")
+    state_two = activation_state("2", revision=Decimal("2"))
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": snapshot_item("1")},
+        {"Item": state_two},
+        {"Item": state_two},
+        {"Item": snapshot_item("2")},
+        {"Item": state_one},
+    ]
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
+
+    with pytest.raises(
+        app._AvailabilityConflict,
+        match="active layout changed; retry request",
+    ):
+        app._active_tables(LOCATION_ID, NOW)
+
+
+def test_scheduled_cutover_resolves_each_slot_to_effective_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert [
+        (
+            slot["startTime"],
+            slot["layoutVersion"],
+            slot["tables"],
+        )
+        for slot in response_body(response)["slots"]
+    ] == [
+        (start, 1, [{"tableId": "current-table", "seats": 2}])
+        for start in half_hours("10:00", "14:00")
+    ] + [
+        (start, 2, [{"tableId": "pending-table", "seats": 6}])
+        for start in half_hours("16:00", "20:00")
+    ]
+
+
+def test_same_table_id_preserves_capacity_from_each_effective_layout(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        current_elements=[table_element("shared-table", seats="2")],
+        pending_elements=[table_element("shared-table", seats="8")],
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = {
+        slot["startTime"]: slot for slot in response_body(response)["slots"]
+    }
+    assert slots["14:00"]["layoutVersion"] == 1
+    assert slots["14:00"]["tables"] == [
+        {"tableId": "shared-table", "seats": 2}
+    ]
+    assert slots["16:00"]["layoutVersion"] == 2
+    assert slots["16:00"]["tables"] == [
+        {"tableId": "shared-table", "seats": 8}
+    ]
+
+
+def test_slot_straddling_scheduled_cutover_is_omitted(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at="2026-09-20T13:00:00Z",
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = response_body(response)["slots"]
+    # cutover 15:00 local: 13:30-14:30 starts straddle it and are left out
+    before, after = half_hours("10:00", "13:00"), half_hours("15:00", "20:00")
+    assert [slot["startTime"] for slot in slots] == before + after
+    assert [slot["layoutVersion"] for slot in slots] == [1] * len(before) + [2] * len(after)
+
+
+def test_scheduling_transition_conflicts_when_slot_reaches_future_side(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(
+        Item=pending_activation_state(app, status="scheduling")
+    )
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {
+            "error": (
+                "layout activation is still being scheduled; retry request"
+            )
+        },
+    )
+
+
+def test_scheduling_transition_serves_slots_wholly_before_cutover(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(
+        Item=pending_activation_state(
+            app,
+            status="scheduling",
+            cutover_at="2026-09-21T08:00:00Z",
+        )
+    )
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert {
+        slot["layoutVersion"] for slot in response_body(response)["slots"]
+    } == {1}
+
+
+def test_layout_read_retries_when_pending_identity_changes(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T16:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_one,
+                expiresAt=cutover_one,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "2",
+                elements=[table_element("superseded-table")],
+                isCurrent=False,
+                effectiveFrom=cutover_one,
+            )
+        },
+        {"Item": state_two},
+        {"Item": state_two},
+        {
+            "Item": snapshot_item(
+                effectiveTo=cutover_two,
+                expiresAt=cutover_two,
+            )
+        },
+        {
+            "Item": snapshot_item(
+                "3",
+                elements=[table_element("final-table", seats="8")],
+                isCurrent=False,
+                effectiveFrom=cutover_two,
+            )
+        },
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
+    }
+
+    resolved, _ = app._layout_slots(LOCATION_ID, [slot], NOW)
+
+    assert resolved[0]["layoutVersion"] == 3
+    assert resolved[0]["tables"] == [
+        {"tableId": "final-table", "seats": 8}
+    ]
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_layout_read_rejects_persistent_pending_identity_race(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    cutover_one = "2026-09-20T14:00:00Z"
+    cutover_two = "2026-09-20T16:00:00Z"
+    state_one = pending_activation_state(
+        app,
+        pending_version=2,
+        cutover_at=cutover_one,
+        operation_revision=2,
+    )
+    state_two = pending_activation_state(
+        app,
+        pending_version=3,
+        cutover_at=cutover_two,
+        operation_revision=3,
+    )
+    current_one = snapshot_item(
+        effectiveTo=cutover_one,
+        expiresAt=cutover_one,
+    )
+    target_one = snapshot_item(
+        "2",
+        isCurrent=False,
+        effectiveFrom=cutover_one,
+    )
+    snapshot_table = Mock()
+    snapshot_table.get_item.side_effect = [
+        {"Item": state_one},
+        {"Item": current_one},
+        {"Item": target_one},
+        {"Item": state_two},
+        {"Item": state_one},
+        {"Item": current_one},
+        {"Item": target_one},
+        {"Item": state_two},
+    ]
+    monkeypatch.setattr(app.engine, "table", lambda _: snapshot_table)
+    slot = {
+        "startUtc": datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc),
+        "endUtc": datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc),
+    }
+
+    with pytest.raises(
+        app._AvailabilityConflict,
+        match="active layout changed; retry request",
+    ):
+        app._layout_slots(LOCATION_ID, [slot], NOW)
+
+    assert snapshot_table.get_item.call_count == 8
+
+
+def test_malformed_pending_target_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom=None,
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_current_snapshot_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(
+            archivedBy="owner-sub",
+            archivedAt="2026-09-02T10:00:00Z",
+        ),
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_incomplete_pending_activation_state_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    state.pop("scheduleArn")
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    tables["snapshot"].put_item(Item=snapshot_item())
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation state is inconsistent"},
+    )
+
+
+def test_invalid_environment_with_pending_state_returns_503(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    state = pending_activation_state(app)
+    tables["location"].put_item(Item=location_item())
+    tables["snapshot"].put_item(Item=state)
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+
+
+def test_pending_target_before_replacement_delay_returns_409(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom="2026-09-20T14:00:00Z",
+            createdAt="2026-09-20T13:58:00Z",
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_archived_pending_target_returns_409(app_and_tables):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element("pending-table")],
+            isCurrent=False,
+            effectiveFrom="2026-09-20T14:00:00Z",
+            archivedBy="owner-sub",
+            archivedAt="2026-09-10T10:00:00Z",
+        )
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "published layout record is inconsistent"},
+    )
+
+
+def test_overdue_scheduled_cutover_returns_409(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    cutover_at = "2026-09-20T14:00:00Z"
+    put_scheduled_layout_transition(app, tables, cutover_at=cutover_at)
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 9, 20, 14, 0, tzinfo=timezone.utc),
+    )
+
+    response = app.handler(
+        make_event(query={"date": "2026-09-20"}),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "layout activation cutover is overdue; retry request"},
+    )
+
+
+def test_snapshot_dependency_failure_is_sanitized(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())
+    snapshot = Mock()
+    snapshot.get_item.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "AccessDeniedException",
+                "Message": "sensitive snapshot detail",
+            }
+        },
+        "GetItem",
+    )
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return snapshot if name == SNAPSHOT_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+    assert "sensitive snapshot detail" not in response["body"]
+
+
+@pytest.mark.parametrize(
+    "aws_error",
+    [
+        ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "sensitive AWS detail",
+                }
+            },
+            "GetItem",
+        ),
+        EndpointConnectionError(endpoint_url="https://dynamodb.invalid"),
+    ],
+)
+def test_location_dependency_failure_is_sanitized(
+    app_and_tables,
+    monkeypatch,
+    aws_error,
+):
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item())  # the tenant check finds it
+    location = Mock()
+    location.get_item.side_effect = aws_error
+    monkeypatch.setattr(app.engine, "table", lambda _: location)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+
+
+def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "date": "2026-09-20",
+            "timezone": "Europe/Stockholm",
+            "slots": [
+                {
+                    "startTime": start,
+                    "endTime": end,
+                    "layoutVersion": 1,
+                    "tables": [
+                        {"tableId": "table-a", "seats": 2},
+                        {"tableId": "table-b", "seats": 4},
+                    ],
+                }
+                for start, end in half_hours("10:00", "20:00", 120)
+            ],
+        },
+    )
+    assert all(
+        "startUtc" not in slot and "endUtc" not in slot
+        for slot in response_body(response)["slots"]
+    )
+
+
+def test_occupancy_is_filtered_against_each_slots_layout(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_scheduled_layout_transition(app, tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(
+            "current-table",
+            start_time="10:00",
+            end_time="12:00",
+        )
+    )
+    tables["occupancy"].put_item(
+        Item=occupancy_item(
+            "pending-table",
+            start_time="18:00",
+            end_time="20:00",
+        )
+    )
+    occupancy = Mock(wraps=tables["occupancy"])
+    real_table = app.engine.table
+
+    def table_factory(name):
+        if name == OCCUPANCY_TABLE_NAME:
+            return occupancy
+        return real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slots = response_body(response)["slots"]
+    assert "10:00" not in {slot["startTime"] for slot in slots}
+    assert "18:00" not in {slot["startTime"] for slot in slots}
+    assert next(
+        slot for slot in slots if slot["startTime"] == "12:00"
+    ) == {
+        "startTime": "12:00",
+        "endTime": "14:00",
+        "layoutVersion": 1,
+        "tables": [{"tableId": "current-table", "seats": 2}],
+    }
+    assert next(
+        slot for slot in slots if slot["startTime"] == "16:00"
+    ) == {
+        "startTime": "16:00",
+        "endTime": "18:00",
+        "layoutVersion": 2,
+        "tables": [{"tableId": "pending-table", "seats": 6}],
+    }
+    occupancy.query.assert_called_once()
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_reservation_and_manual_hold_both_remove_table(
+    app_and_tables,
+    manual,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=occupancy_item(manual=manual))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    slot = next(
+        item
+        for item in response_body(response)["slots"]
+        if item["startTime"] == "18:00"
+    )
+    assert slot["tables"] == [{"tableId": "table-b", "seats": 4}]
+
+
+def test_fully_occupied_slot_is_omitted(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    for table_id in ("table-a", "table-b"):
+        tables["occupancy"].put_item(Item=occupancy_item(table_id))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert "18:00" not in {
+        slot["startTime"] for slot in response_body(response)["slots"]
+    }
+
+
+def test_overlapping_old_duration_hold_removes_every_overlapped_slot(
+    app_and_tables,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(start_time="17:00", end_time="19:00")
+    )
+
+    response = app.handler(make_event(), None)
+
+    slots = {
+        slot["startTime"]: slot
+        for slot in response_body(response)["slots"]
+    }
+    assert slots["16:00"]["tables"] == [
+        {"tableId": "table-b", "seats": 4}
+    ]
+    assert slots["18:00"]["tables"] == [
+        {"tableId": "table-b", "seats": 4}
+    ]
+
+
+def test_adjacent_hold_does_not_remove_table(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(start_time="08:00", end_time="10:00")
+    )
+
+    response = app.handler(make_event(), None)
+
+    first_slot = response_body(response)["slots"][0]
+    assert first_slot["startTime"] == "10:00"
+    assert first_slot["tables"] == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+
+
+def test_inactive_table_hold_does_not_change_availability(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=occupancy_item("removed-table"))
+
+    response = app.handler(make_event(), None)
+
+    slot = next(
+        item
+        for item in response_body(response)["slots"]
+        if item["startTime"] == "18:00"
+    )
+    assert slot["tables"] == [
+        {"tableId": "table-a", "seats": 2},
+        {"tableId": "table-b", "seats": 4},
+    ]
+
+
+def test_other_date_hold_is_not_returned_by_date_query(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(
+        Item=occupancy_item(date_value="2026-09-21")
+    )
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert len(response_body(response)["slots"]) == len(half_hours("10:00", "20:00"))
+
+
+def test_occupancy_query_is_single_and_strongly_consistent(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock(wraps=tables["occupancy"])
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    occupancy.query.assert_called_once()
+    query = occupancy.query.call_args.kwargs
+    assert query["ConsistentRead"] is True
+    assert "ExclusiveStartKey" not in query
+    occupancy.scan.assert_not_called()
+
+
+def test_occupancy_query_follows_all_pages(
+    app_and_tables,
+    monkeypatch,
+):
+    app, _ = app_and_tables
+    first = occupancy_item("table-a")
+    second = occupancy_item("table-b")
+    last_key = {"PK": first["PK"], "SK": first["SK"]}
+    occupancy = Mock()
+    occupancy.query.side_effect = [
+        {"Items": [first], "LastEvaluatedKey": last_key},
+        {"Items": [second]},
+    ]
+    monkeypatch.setattr(app.engine, "table", lambda _: occupancy)
+
+    items = app._query_occupancies(LOCATION_ID, "2026-09-20")
+
+    assert items == [first, second]
+    assert occupancy.query.call_count == 2
+    assert occupancy.query.call_args_list[1].kwargs["ExclusiveStartKey"] == (
+        last_key
+    )
+    assert all(
+        call.kwargs["ConsistentRead"] is True
+        for call in occupancy.query.call_args_list
+    )
+
+
+def test_no_slots_skips_occupancy_query(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    hours = business_hours()
+    hours["sunday"] = []
+    tables["location"].put_item(Item=location_item(hours=hours))
+    occupancy = Mock()
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        200,
+        {
+            "locationId": LOCATION_ID,
+            "date": "2026-09-20",
+            "timezone": "Europe/Stockholm",
+            "slots": [],
+        },
+    )
+    occupancy.query.assert_not_called()
+
+
+def test_no_active_tables_skips_occupancy_query(
+    app_and_tables,
+    monkeypatch,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(
+        tables,
+        snapshot=snapshot_item(elements=[wall_element()]),
+    )
+    occupancy = Mock()
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 200
+    assert response_body(response)["slots"] == []
+    occupancy.query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        occupancy_item(reservationId=None),
+        occupancy_item(ttl=Decimal("0")),
+        occupancy_item(source="reservation"),
+        occupancy_item(
+            reservationId="MANUAL_BLOCK#not-a-uuid",
+            source="manual_block",
+            createdBy="staff-sub",
+            createdAt="2026-09-08T12:00:00Z",
+        ),
+        occupancy_item(
+            reservationId=(
+                "MANUAL_BLOCK#11111111-1111-4111-8111-111111111111"
+            )
+        ),
+        occupancy_item(
+            SK="SLOT#2026-09-20#invalid-range#table-a"
+        ),
+    ],
+)
+def test_inconsistent_occupancy_returns_409(app_and_tables, item):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    tables["occupancy"].put_item(Item=item)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        409,
+        {"error": "slot occupancy record is inconsistent"},
+    )
+
+
+@pytest.mark.parametrize(
+    "query_result",
+    [
+        [],
+        {},
+        {"Items": None},
+        {
+            "Items": [],
+            "LastEvaluatedKey": {
+                "PK": f"LOCATION#{LOCATION_ID}",
+                "SK": "OTHER#key",
+            },
+        },
+    ],
+)
+def test_malformed_occupancy_response_returns_503(
+    app_and_tables,
+    monkeypatch,
+    query_result,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock()
+    occupancy.query.return_value = query_result
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+
+
+@pytest.mark.parametrize(
+    "aws_error",
+    [
+        ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": "sensitive occupancy detail",
+                }
+            },
+            "Query",
+        ),
+        EndpointConnectionError(endpoint_url="https://dynamodb.invalid"),
+    ],
+)
+def test_occupancy_dependency_failure_is_sanitized(
+    app_and_tables,
+    monkeypatch,
+    aws_error,
+):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    occupancy = Mock()
+    occupancy.query.side_effect = aws_error
+    real_table = app.engine.table
+
+    def table_factory(name):
+        return occupancy if name == OCCUPANCY_TABLE_NAME else real_table(name)
+
+    monkeypatch.setattr(app.engine, "table", table_factory)
+
+    response = app.handler(make_event(), None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "availability service unavailable"},
+    )
+    assert "sensitive occupancy detail" not in response["body"]
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_location_row_without_matching_id_is_not_found(app_and_tables):
+    """The location is resolved by its locationId (index); a row whose
+    attribute disagrees with its key is never served."""
+    app, tables = app_and_tables
+    tables["location"].put_item(Item=location_item(locationId="other"))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+@pytest.mark.parametrize("status", ["suspended", "offboarded", "provisioning"])
+def test_inactive_restaurant_has_no_availability(app_and_tables, status):
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status=status))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+def test_plan_without_reservations_has_no_availability(app_and_tables):
+    from shared import tenant as shared_tenant
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, features={"reservations": False, "ordering": True}))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 404, {"error": "location not found"})
+
+
+def test_first_start_is_at_least_thirty_minutes_away(app_and_tables, monkeypatch):
+    # 13:32 local: 14:00 is only 28 minutes away, so 14:30 is the first start.
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 32, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(query={"date": "2026-09-08"}), None)
+
+    assert response["statusCode"] == 200
+    assert captured["slots"][0]["startTime"] == "14:30"
+
+
+def test_exactly_thirty_minutes_ahead_is_bookable(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 30, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    app.handler(make_event(query={"date": "2026-09-08"}), None)
+
+    assert captured["slots"][0]["startTime"] == "14:00"
+
+
+def test_walk_in_list_includes_running_and_imminent_slots(app_and_tables, monkeypatch):
+    # 13:32 local: walk-ins may take the running 12:00-13:30 starts (11:30
+    # ended at 13:30) and 14:00 too - the guest is already there.
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+    monkeypatch.setattr(app, "_utc_now", lambda: datetime(2026, 9, 8, 11, 32, tzinfo=timezone.utc))
+    captured = successful_occupancy_boundary(app, monkeypatch)
+
+    response = app.handler(make_event(query={"date": "2026-09-08", "walkIn": "true"}), None)
+
+    assert response["statusCode"] == 200
+    assert [s["startTime"] for s in captured["slots"]][:6] == [
+        "12:00", "12:30", "13:00", "13:30", "14:00", "14:30",
+    ]
+
+
+def test_walk_in_flag_must_be_true(app_and_tables):
+    app, tables = app_and_tables
+    put_stage_two_records(tables)
+
+    response = app.handler(make_event(query={"date": "2026-09-20", "walkIn": "yes"}), None)
+
+    assert response["statusCode"] == 400

@@ -1,0 +1,1 @@
+# No third-party dependencies - stdlib + boto3 (in the Lambda runtime).

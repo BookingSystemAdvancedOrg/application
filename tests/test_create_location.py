@@ -1,0 +1,1444 @@
+import base64
+import importlib.util
+import json
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import Mock
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from moto import mock_aws
+
+from shared import dynamo as shared_dynamo
+from tenant_support import TENANT_A, TENANT_B, TENANT_TABLE, seed_tenancy, tenant_row
+
+
+APP_PATH = (
+    Path(__file__).parents[1]
+    / "functions"
+    / "create-location"
+    / "app.py"
+)
+TABLE_NAME = "test-location"
+WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+_UNSET = object()
+
+
+def valid_body():
+    return {
+        "name": "Södermalm",
+        "address": "Götgatan 1, Stockholm",
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
+        "timezone": "Europe/Stockholm",
+        "businessHours": {
+            day: []
+            for day in WEEKDAYS
+        },
+        "bookingDurationHours": 2,
+        "gracePeriodHours": 0.5,
+    }
+
+
+def location_item(
+    *,
+    location_id="location-id",
+    include_updated=True,
+    include_contacts=True,
+):
+    body = valid_body()
+    if not include_contacts:
+        del body["email"]
+        del body["phoneNumber"]
+    item = {
+        "PK": f"TENANT#{TENANT_A}",
+        "SK": f"LOCATION#{location_id}",
+        "tenantId": TENANT_A,
+        "locationId": location_id,
+        **body,
+        "bookingDurationHours": Decimal("2"),
+        "gracePeriodHours": Decimal("0.5"),
+        "createdBy": "creator-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+    }
+    if include_updated:
+        item.update(
+            {
+                "updatedBy": "previous-editor",
+                "updatedAt": "2026-08-21T10:00:00Z",
+            }
+        )
+    return item
+
+
+def public_location(item):
+    fields = (
+        "locationId",
+        "name",
+        "address",
+        "timezone",
+        "businessHours",
+        "bookingDurationHours",
+        "gracePeriodHours",
+        "createdBy",
+        "createdAt",
+    )
+    result = {field: item[field] for field in fields}
+    for field in ("email", "phoneNumber"):
+        if field in item:
+            result[field] = item[field]
+    if "updatedBy" in item and "updatedAt" in item:
+        result.update(
+            updatedBy=item["updatedBy"],
+            updatedAt=item["updatedAt"],
+        )
+    for field in ("bookingDurationHours", "gracePeriodHours"):
+        value = result[field]
+        if isinstance(value, Decimal):
+            result[field] = (
+                int(value)
+                if value == value.to_integral_value()
+                else float(value)
+            )
+    return result
+
+
+def put_location(location_table, item=None):
+    location_table.put_item(Item=item or location_item())
+
+
+def get_location(location_table, location_id="location-id"):
+    return location_table.get_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{location_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+
+
+def make_event(
+    body=None,
+    *,
+    method="POST",
+    groups='["owner_user"]',
+    sub="caller-sub",
+    location_id=_UNSET,
+    tenant_id=TENANT_A,
+):
+    if body is None:
+        body = valid_body()
+
+    claims = {"sub": sub, "cognito:groups": groups}
+    role = next((r for r in ("owner_user", "staff_user") if r in (groups or "")), None)
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
+    if role is not None:
+        claims["role"] = role
+    event = {
+        "requestContext": {
+            "http": {"method": method},
+            "authorizer": {
+                "jwt": {
+                    "claims": claims
+                }
+            },
+        },
+        "body": json.dumps(body),
+        "isBase64Encoded": False,
+    }
+    if location_id is not _UNSET:
+        event["pathParameters"] = {"locationId": location_id}
+    return event
+
+
+def table_items(table):
+    """The test tenant's location rows (tenant B's seed row is not part of
+    what a test of tenant A writes)."""
+    return [i for i in table.scan()["Items"] if i["PK"] == f"TENANT#{TENANT_A}"]
+
+
+def location_count(tenant_id=TENANT_A):
+    item = boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).get_item(
+        Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"})["Item"]
+    return int(item.get("locationCount", 0))
+
+
+@pytest.fixture
+def app_and_table(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("LOCATION_TABLE_NAME", TABLE_NAME)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+        resource = boto3.resource("dynamodb", region_name="eu-north-1")
+        seed_tenancy(monkeypatch, location_table=TABLE_NAME, user_table=None, locations_a=[])
+        location_table = resource.Table(TABLE_NAME)
+
+        spec = importlib.util.spec_from_file_location(
+            "create_location_app",
+            APP_PATH,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        yield module, location_table
+
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+
+def test_missing_claims_returns_401_without_writing(app_and_table):
+    app, location_table = app_and_table
+    event = make_event()
+    del event["requestContext"]["authorizer"]
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 401
+    assert json.loads(response["body"]) == {
+        "error": "no JWT claims on this request",
+    }
+    assert table_items(location_table) == []
+
+
+def test_missing_subject_returns_401_without_writing(app_and_table):
+    app, location_table = app_and_table
+
+    response = app.handler(make_event(sub=None), None)
+
+    assert response["statusCode"] == 401
+    assert json.loads(response["body"]) == {
+        "error": "JWT is missing a subject",
+    }
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(("groups", "error"), [
+    ('["staff_user"]', "owner_only"), ("", "no_tenant"), (None, "no_tenant"),
+])
+def test_wrong_group_returns_403_without_writing(app_and_table, groups, error):
+    app, location_table = app_and_table
+
+    response = app.handler(make_event(groups=groups), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": error}
+    assert table_items(location_table) == []
+
+
+def test_authorization_happens_before_body_validation(app_and_table):
+    app, location_table = app_and_table
+    event = make_event(groups='["staff_user"]')
+    event["body"] = "not JSON"
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "owner_only"}
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]'])
+def test_allowed_groups_can_create_locations(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, location_table = app_and_table
+    monkeypatch.setattr(app, "_new_location_id", lambda: "location-id")
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-20T10:00:00Z")
+
+    response = app.handler(make_event(groups=groups), None)
+
+    assert response["statusCode"] == 201
+    assert len(table_items(location_table)) == 1
+
+
+def test_non_post_method_returns_405_without_writing(app_and_table):
+    app, location_table = app_and_table
+
+    response = app.handler(make_event(method="GET"), None)
+
+    assert response["statusCode"] == 405
+    assert response["headers"]["Allow"] == "POST"
+    assert json.loads(response["body"]) == {"error": "method not allowed"}
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("raw_body", "expected_error"),
+    [
+        (None, "request body is required"),
+        ("", "request body is required"),
+        ("{", "request body must be valid JSON"),
+        ("[]", "request body must be a JSON object"),
+    ],
+)
+def test_rejects_invalid_request_body(
+    app_and_table,
+    raw_body,
+    expected_error,
+):
+    app, location_table = app_and_table
+    event = make_event()
+    event["body"] = raw_body
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    assert table_items(location_table) == []
+
+
+def test_accepts_base64_encoded_body(app_and_table, monkeypatch):
+    app, location_table = app_and_table
+    monkeypatch.setattr(app, "_new_location_id", lambda: "location-id")
+    event = make_event()
+    event["body"] = base64.b64encode(
+        event["body"].encode("utf-8")
+    ).decode("ascii")
+    event["isBase64Encoded"] = True
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 201
+    assert len(table_items(location_table)) == 1
+
+
+def test_rejects_invalid_base64_body(app_and_table):
+    app, location_table = app_and_table
+    event = make_event()
+    event["body"] = "not-base64!"
+    event["isBase64Encoded"] = True
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": "request body must be valid base64",
+    }
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("name", None, "name is required"),
+        ("name", "   ", "name is required"),
+        ("address", None, "address is required"),
+        ("address", 123, "address is required"),
+        ("email", None, "email is required"),
+        ("email", "invalid", "email must be valid"),
+        ("email", f"{'a' * 310}@example.com", "email must be valid"),
+        ("phoneNumber", None, "phoneNumber is required"),
+        (
+            "phoneNumber",
+            "0701234567",
+            "phoneNumber must use E.164 format",
+        ),
+        ("timezone", None, "timezone is required"),
+        (
+            "timezone",
+            "Europe/Not-A-Timezone",
+            "timezone must be a valid IANA timezone",
+        ),
+    ],
+)
+def test_rejects_invalid_string_fields(
+    app_and_table,
+    field,
+    value,
+    expected_error,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body[field] = value
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize("field", ["email", "phoneNumber"])
+def test_create_requires_location_contact_fields(app_and_table, field):
+    app, location_table = app_and_table
+    body = valid_body()
+    del body[field]
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": f"{field} is required",
+    }
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        (
+            "bookingDurationHours",
+            None,
+            "bookingDurationHours must be a number",
+        ),
+        (
+            "bookingDurationHours",
+            True,
+            "bookingDurationHours must be a number",
+        ),
+        (
+            "bookingDurationHours",
+            0,
+            "bookingDurationHours must be greater than zero",
+        ),
+        (
+            "bookingDurationHours",
+            -1,
+            "bookingDurationHours must be greater than zero",
+        ),
+        (
+            "gracePeriodHours",
+            "1",
+            "gracePeriodHours must be a number",
+        ),
+        (
+            "gracePeriodHours",
+            -1,
+            "gracePeriodHours must be zero or greater",
+        ),
+    ],
+)
+def test_rejects_invalid_booking_policy(
+    app_and_table,
+    field,
+    value,
+    expected_error,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body[field] = value
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    assert table_items(location_table) == []
+
+
+def test_requires_all_weekdays(app_and_table):
+    app, location_table = app_and_table
+    body = valid_body()
+    del body["businessHours"]["sunday"]
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": "businessHours is missing: sunday",
+    }
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("hours", "expected_error"),
+    [
+        (None, "businessHours must be an object"),
+        (
+            {**{day: [] for day in WEEKDAYS}, "holiday": []},
+            "businessHours has unsupported days: holiday",
+        ),
+        (
+            {**{day: [] for day in WEEKDAYS}, "monday": {}},
+            "businessHours.monday must be a list",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "monday": [{"opensAt": "09:00"}],
+            },
+            "businessHours.monday entries require opensAt and closesAt",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "monday": [{"opensAt": "9:00", "closesAt": "17:00"}],
+            },
+            "businessHours.monday times must use 24-hour HH:MM",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "monday": [{"opensAt": "17:00", "closesAt": "09:00"}],
+            },
+            "businessHours.monday opening time must precede closing time",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "monday": [
+                    {"opensAt": "09:00", "closesAt": "13:00"},
+                    {"opensAt": "12:00", "closesAt": "17:00"},
+                ],
+            },
+            "businessHours.monday entries must not overlap",
+        ),
+    ],
+)
+def test_rejects_invalid_business_hours(
+    app_and_table,
+    hours,
+    expected_error,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body["businessHours"] = hours
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": expected_error}
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "PK",
+        "SK",
+        "locationId",
+        "createdBy",
+        "createdAt",
+        "updatedBy",
+        "updatedAt",
+        "unknown",
+    ],
+)
+def test_rejects_caller_controlled_or_unknown_fields(
+    app_and_table,
+    field,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body[field] = "caller-value"
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "error": f"unsupported fields: {field}",
+    }
+    assert table_items(location_table) == []
+
+
+def test_creates_expected_location_item(app_and_table, monkeypatch):
+    app, location_table = app_and_table
+    monkeypatch.setattr(app, "_new_location_id", lambda: "location-id")
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-20T10:00:00Z")
+    body = valid_body()
+    body["email"] = "  bookings@sodermalm.example  "
+    body["phoneNumber"] = "  +46812345678  "
+    body["businessHours"]["monday"] = [
+        {"opensAt": "13:00", "closesAt": "17:00"},
+        {"opensAt": "09:00", "closesAt": "12:00"},
+    ]
+
+    response = app.handler(make_event(body), None)
+    response_body = json.loads(response["body"])
+
+    assert response["statusCode"] == 201
+    assert response["headers"]["Location"] == "/locations/location-id"
+    assert response_body == {
+        "locationId": "location-id",
+        "name": "Södermalm",
+        "address": "Götgatan 1, Stockholm",
+        "email": "bookings@sodermalm.example",
+        "phoneNumber": "+46812345678",
+        "timezone": "Europe/Stockholm",
+        "businessHours": {
+            **{day: [] for day in WEEKDAYS},
+            "monday": [
+                {"opensAt": "09:00", "closesAt": "12:00"},
+                {"opensAt": "13:00", "closesAt": "17:00"},
+            ],
+        },
+        "bookingDurationHours": 2,
+        "gracePeriodHours": 0.5,
+        "createdBy": "caller-sub",
+        "createdAt": "2026-08-20T10:00:00Z",
+        "updatedBy": "caller-sub",
+        "updatedAt": "2026-08-20T10:00:00Z",
+    }
+
+    stored = location_table.get_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#location-id"}
+    )["Item"]
+    assert stored == {
+        "PK": f"TENANT#{TENANT_A}",
+        "SK": "LOCATION#location-id",
+        "tenantId": TENANT_A,
+        **response_body,
+        "bookingDurationHours": Decimal("2"),
+        "gracePeriodHours": Decimal("0.5"),
+    }
+
+
+def test_location_id_collision_returns_409_without_overwriting(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    monkeypatch.setattr(app, "_new_location_id", lambda: "existing-id")
+    existing = {
+        "PK": f"TENANT#{TENANT_A}",
+        "SK": "LOCATION#existing-id",
+        "locationId": "existing-id",
+        "name": "Existing",
+    }
+    location_table.put_item(Item=existing)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location already exists",
+    }
+    stored = location_table.get_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#existing-id"}
+    )["Item"]
+    assert stored == existing
+
+
+def test_sanitizes_dynamodb_errors(app_and_table, monkeypatch):
+    app, _ = app_and_table
+    ddb = Mock()
+    ddb.transact_write_items.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "InternalServerError",
+                "Message": "sensitive AWS message",
+            }
+        },
+        "TransactWriteItems",
+    )
+    monkeypatch.setattr(shared_dynamo, "client", lambda: ddb)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"]) == {
+        "error": "location service unavailable",
+    }
+    assert "sensitive AWS message" not in response["body"]
+
+
+def test_maps_transport_errors_to_503(app_and_table, monkeypatch):
+    app, _ = app_and_table
+    ddb = Mock()
+    ddb.transact_write_items.side_effect = EndpointConnectionError(
+        endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+    )
+    monkeypatch.setattr(shared_dynamo, "client", lambda: ddb)
+
+    response = app.handler(make_event(), None)
+
+    # Retried once with the same idempotency token, then given up.
+    assert ddb.transact_write_items.call_count == 2
+    assert response["statusCode"] == 503
+    assert json.loads(response["body"]) == {
+        "error": "location service unavailable",
+    }
+
+
+@pytest.mark.parametrize("groups", ['["owner_user"]'])
+def test_allowed_groups_can_update_locations(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, location_table = app_and_table
+    put_location(location_table)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated location"},
+            method="PUT",
+            groups=groups,
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert response["headers"]["Cache-Control"] == "no-store"
+    assert json.loads(response["body"])["name"] == "Updated location"
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_staff_cannot_mutate_locations(app_and_table, method):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+
+    response = app.handler(
+        make_event(
+            {"name": "Must not change"},
+            method=method,
+            groups='["staff_user"]',
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    assert get_location(location_table) == original
+
+
+def test_collection_and_item_routes_return_route_specific_allow_headers(
+    app_and_table,
+):
+    app, location_table = app_and_table
+
+    collection = app.handler(make_event(method="GET"), None)
+    item = app.handler(
+        make_event(method="POST", location_id="location-id"),
+        None,
+    )
+
+    assert collection["statusCode"] == 405
+    assert collection["headers"]["Allow"] == "POST"
+    assert item["statusCode"] == 405
+    assert item["headers"]["Allow"] == "PUT, DELETE"
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize("location_id", [None, "", "   ", 123, "x" * 129])
+def test_mutation_rejects_invalid_location_id(
+    app_and_table,
+    location_id,
+):
+    app, location_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id=location_id,
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert table_items(location_table) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ({}, "at least one editable field is required"),
+        ({"name": ""}, "name is required"),
+        ({"createdBy": "caller"}, "unsupported fields: createdBy"),
+        (
+            {"businessHours": {"monday": []}},
+            "businessHours is missing: friday, saturday, sunday, thursday, tuesday, wednesday",
+        ),
+    ],
+)
+def test_update_rejects_invalid_partial_body(
+    app_and_table,
+    body,
+    error,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+
+    response = app.handler(
+        make_event(
+            body,
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": error}
+    assert get_location(location_table) == original
+
+
+def test_partial_update_preserves_creation_fields_and_sets_update_audit(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "  Central Bistro  ", "gracePeriodHours": 1.25},
+            method="PUT",
+            sub="editor-sub",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(stored)
+    assert stored["name"] == "Central Bistro"
+    assert stored["gracePeriodHours"] == Decimal("1.25")
+    assert stored["createdBy"] == original["createdBy"]
+    assert stored["createdAt"] == original["createdAt"]
+    assert stored["updatedBy"] == "editor-sub"
+    assert stored["updatedAt"] == "2026-08-22T10:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("field", "submitted", "expected"),
+    [
+        ("email", "  contact@example.com  ", "contact@example.com"),
+        ("phoneNumber", "  +46701234567  ", "+46701234567"),
+    ],
+)
+def test_partial_update_changes_location_contact_field(
+    app_and_table,
+    monkeypatch,
+    field,
+    submitted,
+    expected,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {field: submitted},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored[field] == expected
+    assert json.loads(response["body"])[field] == expected
+
+
+def test_legacy_location_can_be_updated_without_contact_fields(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item(include_contacts=False)
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Legacy location"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    body = json.loads(response["body"])
+    assert response["statusCode"] == 200
+    assert stored["name"] == "Legacy location"
+    assert "email" not in stored
+    assert "phoneNumber" not in stored
+    assert "email" not in body
+    assert "phoneNumber" not in body
+
+
+def test_location_may_get_only_an_email(app_and_table, monkeypatch):
+    """Contacts are independent: a location created by the operator with
+    only an email (or only a phone) is valid and can be edited."""
+    app, location_table = app_and_table
+    original = location_item(include_contacts=False)
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"email": "contact@example.com"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    stored = get_location(location_table)
+    assert stored["email"] == "contact@example.com" and "phoneNumber" not in stored
+    assert json.loads(response["body"])["email"] == "contact@example.com"
+
+
+def test_legacy_location_accepts_both_contacts_when_backfilled(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    put_location(location_table, location_item(include_contacts=False))
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {
+                "email": "contact@example.com",
+                "phoneNumber": "+46701234567",
+            },
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored["email"] == "contact@example.com"
+    assert stored["phoneNumber"] == "+46701234567"
+
+
+def test_update_accepts_a_legacy_record_and_adds_update_audit(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item(include_updated=False)
+    put_location(location_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"address": "New address"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    stored = get_location(location_table)
+    assert response["statusCode"] == 200
+    assert stored["updatedBy"] == "caller-sub"
+    assert stored["updatedAt"] == "2026-08-22T10:00:00Z"
+
+
+def test_noop_update_preserves_audit_and_skips_write(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    put_location(location_table, original)
+    table_spy = Mock(wraps=location_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: "must-not-be-used")
+
+    response = app.handler(
+        make_event(
+            {"name": original["name"], "bookingDurationHours": 2.0},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(original)
+    table_spy.put_item.assert_not_called()
+    assert get_location(location_table) == original
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_mutating_a_missing_location_returns_404(app_and_table, method):
+    app, location_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method=method,
+            location_id="missing",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 404
+    assert json.loads(response["body"]) == {"error": "location not found"}
+    assert table_items(location_table) == []
+
+
+def test_delete_removes_only_the_requested_location(app_and_table):
+    app, location_table = app_and_table
+    target = location_item()
+    other = location_item(location_id="other-location")
+    put_location(location_table, target)
+    put_location(location_table, other)
+
+    response = app.handler(
+        make_event(method="DELETE", location_id="location-id"),
+        None,
+    )
+
+    assert response == {
+        "statusCode": 204,
+        "headers": {"Cache-Control": "no-store"},
+        "body": "",
+    }
+    assert get_location(location_table) is None
+    assert get_location(location_table, "other-location") == other
+
+
+def test_inconsistent_stored_location_returns_409_without_mutation(
+    app_and_table,
+):
+    app, location_table = app_and_table
+    corrupt = location_item()
+    del corrupt["createdAt"]
+    put_location(location_table, corrupt)
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+    assert get_location(location_table) == corrupt
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("email", "invalid"),
+        ("phoneNumber", "0701234567"),
+    ],
+)
+def test_invalid_stored_contact_returns_409_without_mutation(
+    app_and_table,
+    field,
+    value,
+):
+    app, location_table = app_and_table
+    corrupt = location_item()
+    corrupt[field] = value
+    put_location(location_table, corrupt)
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location record is inconsistent",
+    }
+    assert get_location(location_table) == corrupt
+
+
+def test_concurrent_update_returns_409_and_preserves_winner(
+    app_and_table,
+    monkeypatch,
+):
+    app, location_table = app_and_table
+    original = location_item()
+    winner = {**original, "name": "Concurrent winner"}
+    put_location(location_table, original)
+    real_put = location_table.put_item
+    table_spy = Mock(wraps=location_table)
+
+    def racing_put(**kwargs):
+        real_put(Item=winner)
+        return real_put(**kwargs)
+
+    table_spy.put_item.side_effect = racing_put
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(
+            {"name": "Requested update"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert json.loads(response["body"]) == {
+        "error": "location changed; retry request",
+    }
+    assert get_location(location_table) == winner
+
+
+def test_ambiguous_committed_update_is_reconciled(
+    app_and_table,
+    monkeypatch,
+):
+    app, real_table = app_and_table
+    original = location_item()
+    put_location(real_table, original)  # the tenant check finds it
+    desired = {
+        **original,
+        "name": "Updated",
+        "updatedBy": "caller-sub",
+        "updatedAt": "2026-08-22T10:00:00Z",
+    }
+    location_table = Mock()
+    location_table.get_item.side_effect = [
+        {"Item": original},
+        {"Item": desired},
+    ]
+    location_table.put_item.side_effect = EndpointConnectionError(
+        endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+    )
+    monkeypatch.setattr(app, "table", lambda _: location_table)
+    monkeypatch.setattr(app, "_utc_now", lambda: "2026-08-22T10:00:00Z")
+
+    response = app.handler(
+        make_event(
+            {"name": "Updated"},
+            method="PUT",
+            location_id="location-id",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == public_location(desired)
+    assert location_table.put_item.call_count == 1
+
+
+@pytest.mark.parametrize("value", [10**126, 1e200, float("nan")])
+def test_create_rejects_numbers_outside_dynamodb_range(
+    app_and_table,
+    value,
+):
+    app, location_table = app_and_table
+    body = valid_body()
+    body["bookingDurationHours"] = value
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 400
+    assert table_items(location_table) == []
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+def test_new_location_belongs_to_the_callers_tenant_and_counts(app_and_table):
+    app, location_table = app_and_table
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201
+    (item,) = table_items(location_table)
+    assert item["PK"] == f"TENANT#{TENANT_A}" and item["tenantId"] == TENANT_A
+    assert location_count() == 1
+
+
+def test_tenant_in_body_is_ignored(app_and_table):
+    app, location_table = app_and_table
+    body = valid_body()
+    body["tenantId"] = TENANT_B
+
+    response = app.handler(make_event(body), None)
+
+    # Unknown field -> rejected; nothing is written for B either way.
+    assert response["statusCode"] == 400
+    assert all(i["PK"] != f"TENANT#{TENANT_B}" or i["locationId"] == "loc-b-1"
+               for i in location_table.scan()["Items"])
+
+
+def test_plan_limit_is_enforced(app_and_table):
+    app, location_table = app_and_table
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, max_locations=1))
+
+    first = app.handler(make_event(), None)
+    second = app.handler(make_event(), None)
+
+    assert first["statusCode"] == 201
+    assert second["statusCode"] == 409
+    assert json.loads(second["body"]) == {"error": "plan_limit_reached"}
+    assert len(table_items(location_table)) == 1 and location_count() == 1
+
+
+def test_inactive_tenant_cannot_create(app_and_table):
+    from shared import tenant as shared_tenant
+    app, location_table = app_and_table
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+    shared_tenant.reset_caches()
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert table_items(location_table) == []
+
+
+def test_delete_frees_the_plan_slot(app_and_table):
+    app, location_table = app_and_table
+    created = json.loads(app.handler(make_event(), None)["body"])
+
+    response = app.handler(
+        make_event(method="DELETE", location_id=created["locationId"]), None)
+
+    assert response["statusCode"] == 204
+    assert table_items(location_table) == [] and location_count() == 0
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_other_tenants_location_is_404_and_untouched(app_and_table, method):
+    app, location_table = app_and_table
+    put_location(location_table)  # tenant A's
+
+    response = app.handler(
+        make_event({"name": "Hijacked"}, method=method, location_id="location-id",
+                   tenant_id=TENANT_B, sub="owner-b"),
+        None,
+    )
+
+    assert response["statusCode"] == 404
+    assert get_location(location_table) == location_item()
+
+
+def _set_tenant(**fields):
+    from shared import tenant as shared_tenant
+    row = tenant_row(TENANT_A)
+    row.update(fields)
+    for key in [k for k, v in row.items() if v is _UNSET]:
+        del row[key]
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(Item=row)
+    shared_tenant.reset_caches()
+
+
+def test_transaction_tokens_fit_dynamodbs_36_characters(app_and_table, monkeypatch):
+    """DynamoDB rejects ClientRequestToken > 36 chars in AWS (moto doesn't)."""
+    app, _ = app_and_table
+    real = shared_dynamo.client()
+    tokens = []
+
+    class Spy:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def transact_write_items(self, **kwargs):
+            tokens.append(kwargs["ClientRequestToken"])
+            return real.transact_write_items(**kwargs)
+
+    monkeypatch.setattr(shared_dynamo, "client", lambda: Spy())
+    created = json.loads(app.handler(make_event(), None)["body"])
+    app.handler(make_event(method="DELETE", location_id=created["locationId"]), None)
+
+    assert len(tokens) == 2 and all(1 <= len(t) <= 36 for t in tokens)
+
+
+@pytest.mark.parametrize("max_locations", [None, _UNSET])
+def test_plan_without_a_location_limit_is_unlimited(app_and_table, max_locations):
+    app, location_table = app_and_table
+    _set_tenant(entitlements={"features": {"reservations": True}} if max_locations is _UNSET
+                else {"maxLocations": None, "features": {"reservations": True}}, locationCount=5)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 201 and location_count() == 6
+
+
+def test_missing_count_still_respects_a_zero_limit(app_and_table):
+    app, location_table = app_and_table
+    _set_tenant(entitlements={"maxLocations": 0, "features": {}}, locationCount=_UNSET)
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 409 and table_items(location_table) == []
+
+
+def test_delete_never_drives_the_count_below_zero(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    _set_tenant(locationCount=0)  # drifted
+
+    response = app.handler(make_event(method="DELETE", location_id="location-id"), None)
+
+    assert response["statusCode"] == 204
+    assert table_items(location_table) == [] and location_count() == 0
+
+
+def test_suspension_a_moment_ago_reads_as_inactive_not_quota(app_and_table):
+    """The cached tenant still says active; the refusal must re-read it."""
+    from shared import tenant as shared_tenant
+    app, _ = app_and_table
+    shared_tenant.get_tenant(TENANT_A)  # warm the cache with "active"
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(TENANT_TABLE).put_item(
+        Item=tenant_row(TENANT_A, status="suspended"))
+
+    response = app.handler(make_event(), None)
+
+    assert response["statusCode"] == 403
+    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+
+
+def test_owner_sets_and_removes_the_card_guarantee_and_online_party_cap(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    policy = {"enabled": True, "minPartySize": 4, "noShowFeePerPerson": 250,
+              "lateCancelFeePerPerson": 100, "cancelCutoffHours": 24}
+
+    response = app.handler(make_event({"guarantee": policy, "maxPartySizeOnline": 8},
+                                      method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200
+    body = json.loads(response["body"])
+    assert body["guarantee"] == policy and body["maxPartySizeOnline"] == 8
+    stored = get_location(location_table)
+    assert stored["guarantee"]["noShowFeePerPerson"] == 250 and stored["maxPartySizeOnline"] == 8
+
+    removed = app.handler(make_event({"guarantee": None, "maxPartySizeOnline": None},
+                                     method="PUT", location_id="location-id"), None)
+    assert removed["statusCode"] == 200
+    stored = get_location(location_table)
+    assert "guarantee" not in stored and "maxPartySizeOnline" not in stored
+
+
+def test_owner_sets_and_removes_the_ordering_policy(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    policy = {"enabled": True, "pickup": True, "table": False, "prepMinutes": 25, "lastOrderMinutes": 30}
+    response = app.handler(make_event({"ordering": policy}, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"])["ordering"] == policy
+    assert get_location(location_table)["ordering"]["prepMinutes"] == 25
+    removed = app.handler(make_event({"ordering": None}, method="PUT", location_id="location-id"), None)
+    assert removed["statusCode"] == 200 and "ordering" not in get_location(location_table)
+
+
+@pytest.mark.parametrize(("body", "error"), [
+    ({"ordering": {"enabled": True, "pickup": False, "table": False}}, "needs pickup or table"),
+    ({"ordering": {"enabled": True, "prepMinutes": 500}}, "between 5 and 180"),
+    ({"guarantee": {"enabled": True}}, "needs a no-show or late-cancellation fee"),
+    ({"guarantee": {"enabled": True, "noShowFeePerPerson": 9000}}, "between 0 and 5000"),
+    ({"maxPartySizeOnline": 0}, "between 1 and 50"),
+    ({"maxPartySizeOnline": 2.5}, "between 1 and 50"),
+])
+def test_rejects_invalid_booking_rules(app_and_table, body, error):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 400 and error in json.loads(response["body"])["error"]
+
+
+def _local_today():
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    return _dt.now(ZoneInfo("Europe/Stockholm")).date()
+
+
+def test_owner_sets_special_days_table_rules_and_combinations(app_and_table):
+    from datetime import timedelta
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    today = _local_today()
+    later = (today + timedelta(days=30)).isoformat()
+    past = (today - timedelta(days=1)).isoformat()
+    body = {
+        "specialDays": [
+            {"date": later, "kind": "hours", "note": " Kort dag ",
+             "intervals": [{"opensAt": "17:00", "closesAt": "22:00"}]},
+            {"date": past, "kind": "closed"},
+            {"date": today.isoformat(), "kind": "no_online"},
+        ],
+        "tableRules": {"t1": {"minParty": 1, "maxParty": 2, "online": True}},
+        "tableCombinations": [{"tableIds": ["t4", "t3"], "minParty": 5, "maxParty": 8}],
+    }
+
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200, response
+    saved = json.loads(response["body"])
+    assert saved["specialDays"] == [
+        {"date": today.isoformat(), "kind": "no_online"},
+        {"date": later, "kind": "hours", "note": "Kort dag",
+         "intervals": [{"opensAt": "17:00", "closesAt": "22:00"}]},
+    ]
+    assert saved["tableRules"] == {"t1": {"minParty": 1, "maxParty": 2, "online": True}}
+    assert saved["tableCombinations"] == [{"tableIds": ["t3", "t4"], "minParty": 5, "maxParty": 8}]
+    stored = get_location(location_table)
+    assert stored["specialDays"][0]["date"] == today.isoformat()
+    assert stored["tableCombinations"][0]["tableIds"] == ["t3", "t4"]
+
+    cleared = app.handler(make_event({"specialDays": [], "tableRules": None, "tableCombinations": None},
+                                     method="PUT", location_id="location-id"), None)
+    assert cleared["statusCode"] == 200
+    stored = get_location(location_table)
+    assert "specialDays" not in stored and "tableRules" not in stored and "tableCombinations" not in stored
+
+
+@pytest.mark.parametrize(("body", "error"), [
+    ({"specialDays": [{"date": "2026-13-01", "kind": "closed"}]}, "real calendar dates"),
+    ({"specialDays": [{"date": "2099-12-24", "kind": "closed"}]}, "within two years"),
+    ({"specialDays": [{"date": "2099-12-24", "kind": "open"}]}, "kind must be"),
+    ({"tableRules": {"t1": {"minParty": 4, "maxParty": 2, "online": True}}}, "must not be larger"),
+    ({"tableCombinations": [{"tableIds": ["t1"], "minParty": 1, "maxParty": 2}]}, "2 to 6 tables"),
+])
+def test_rejects_invalid_special_days_and_table_rules(app_and_table, body, error):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    response = app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 400 and error in json.loads(response["body"])["error"]
+    assert "specialDays" not in get_location(location_table)
+
+
+def test_other_updates_keep_the_rules_and_drop_passed_days(app_and_table):
+    from datetime import timedelta
+    app, location_table = app_and_table
+    today = _local_today()
+    item = location_item()
+    item["specialDays"] = [
+        {"date": (today - timedelta(days=3)).isoformat(), "kind": "closed"},
+        {"date": (today + timedelta(days=3)).isoformat(), "kind": "closed"},
+    ]
+    item["tableRules"] = {"t1": {"minParty": Decimal(1), "maxParty": Decimal(2), "online": True}}
+    put_location(location_table, item)
+
+    response = app.handler(make_event({"name": "Ny"}, method="PUT", location_id="location-id"), None)
+
+    assert response["statusCode"] == 200, response
+    stored = get_location(location_table)
+    assert stored["name"] == "Ny"
+    assert [d["date"] for d in stored["specialDays"]] == [(today + timedelta(days=3)).isoformat()]
+    assert stored["tableRules"]["t1"]["maxParty"] == 2

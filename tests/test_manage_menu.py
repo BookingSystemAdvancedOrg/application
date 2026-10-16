@@ -1,0 +1,1639 @@
+import base64
+import importlib.util
+import json
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import Mock
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from moto import mock_aws
+
+from shared import dynamo as shared_dynamo
+from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
+
+
+APP_PATH = (
+    Path(__file__).parents[1]
+    / "functions"
+    / "manage-menu"
+    / "app.py"
+)
+TABLE_NAME = "test-menu"
+LOCATION_ID = "location-id"
+OTHER_LOCATION_ID = "other-location-id"
+ITEM_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_ITEM_ID = "22222222-2222-4222-8222-222222222222"
+CALLER_SUB = "caller-sub"
+OTHER_CALLER_SUB = "other-caller-sub"
+CREATED_AT = "2026-08-21T10:00:00Z"
+UPDATED_AT = "2026-08-21T11:00:00Z"
+
+PUBLIC_FIELDS = (
+    "menuItemId",
+    "name",
+    "description",
+    "price",
+    "category",
+    "imageKey",
+    "active",
+    "createdBy",
+    "createdAt",
+    "updatedBy",
+    "updatedAt",
+)
+
+NO_BODY = object()
+
+
+def client_error(code, operation, message="sensitive AWS detail"):
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}},
+        operation,
+    )
+
+
+def endpoint_error():
+    return EndpointConnectionError(
+        endpoint_url="https://dynamodb.eu-north-1.amazonaws.com",
+    )
+
+
+def valid_body(**overrides):
+    body = {
+        "name": "Kottbullar",
+        "description": "Swedish meatballs with mash",
+        "price": 149.5,
+        "category": "mains",
+        "imageKey": f"menu-images/{TENANT_A}/locations/location-id/menu/kottbullar.webp",
+        "active": True,
+    }
+    body.update(overrides)
+    return body
+
+
+def body_with_price_literal(price_literal):
+    raw_body = json.dumps(
+        valid_body(price=0),
+        separators=(",", ":"),
+    )
+    marker = '"price":0'
+    assert marker in raw_body
+    return raw_body.replace(
+        marker,
+        f'"price":{price_literal}',
+        1,
+    )
+
+
+def make_event(
+    *,
+    method="GET",
+    proxy="items",
+    body=NO_BODY,
+    groups='["staff_user"]',
+    sub=CALLER_SUB,
+    location_id=LOCATION_ID,
+    base64_encoded=False,
+):
+    event = {
+        "requestContext": {
+            "http": {"method": method},
+            "authorizer": {
+                "jwt": {
+                    "claims": tenant_claims(sub, groups)
+                }
+            },
+        },
+        "pathParameters": {
+            "locationId": location_id,
+            "proxy": proxy,
+        },
+    }
+
+    if body is not NO_BODY:
+        raw_body = body if isinstance(body, str) else json.dumps(body)
+        if base64_encoded:
+            raw_body = base64.b64encode(raw_body.encode("utf-8")).decode()
+        event["body"] = raw_body
+        event["isBase64Encoded"] = base64_encoded
+
+    return event
+
+
+def menu_item(
+    *,
+    item_id=ITEM_ID,
+    location_id=LOCATION_ID,
+    name="Kottbullar",
+    description="Swedish meatballs with mash",
+    price=Decimal("149.5"),
+    category="mains",
+    image_key=f"menu-images/{TENANT_A}/locations/location-id/menu/kottbullar.webp",
+    active=True,
+    created_by=CALLER_SUB,
+    created_at=CREATED_AT,
+    updated_by=CALLER_SUB,
+    updated_at=CREATED_AT,
+    **extra,
+):
+    item = {
+        "PK": f"LOCATION#{location_id}",
+        "SK": f"MENU#{item_id}",
+        "menuItemId": item_id,
+        "name": name,
+        "description": description,
+        "price": price,
+        "category": category,
+        "imageKey": image_key,
+        "active": active,
+        "createdBy": created_by,
+        "createdAt": created_at,
+    }
+    item["updatedBy"] = updated_by
+    item["updatedAt"] = updated_at
+    item.update(extra)
+    return item
+
+
+def public_item(item):
+    return {
+        field: item[field]
+        for field in PUBLIC_FIELDS
+        if field in item
+    } | {"alcohol": item.get("alcohol") is True}
+
+
+def put_item(menu_table, item=None):
+    menu_table.put_item(Item=item or menu_item())
+
+
+def get_item(
+    menu_table,
+    *,
+    item_id=ITEM_ID,
+    location_id=LOCATION_ID,
+):
+    return menu_table.get_item(
+        Key={
+            "PK": f"LOCATION#{location_id}",
+            "SK": f"MENU#{item_id}",
+        },
+        ConsistentRead=True,
+    ).get("Item")
+
+
+def table_items(menu_table):
+    return menu_table.scan()["Items"]
+
+
+def response_body(response):
+    raw_body = response.get("body", "")
+    return None if raw_body == "" else json.loads(raw_body)
+
+
+def assert_response(response, status_code, body=NO_BODY):
+    assert response["statusCode"] == status_code
+    assert response["headers"]["Cache-Control"] == "no-store"
+    if status_code != 204:
+        assert response["headers"]["Content-Type"] == "application/json"
+    if body is not NO_BODY:
+        assert response_body(response) == body
+
+
+def assert_error(response, status_code):
+    assert_response(response, status_code)
+    body = response_body(response)
+    assert isinstance(body, dict)
+    assert set(body) == {"error"}
+    assert isinstance(body["error"], str)
+    assert body["error"]
+
+
+def captured_write(table_spy):
+    for method_name in ("put_item", "update_item"):
+        method = getattr(table_spy, method_name)
+        if method.call_count:
+            return method_name, method.call_args.kwargs
+    raise AssertionError("expected a DynamoDB write")
+
+
+def install_write_side_effects(table_spy, *, put=None, update=None):
+    if put is not None:
+        table_spy.put_item.side_effect = put
+    if update is not None:
+        table_spy.update_item.side_effect = update
+
+
+@pytest.fixture
+def app_and_table(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("MENU_TABLE_NAME", TABLE_NAME)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+
+    with mock_aws():
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+        install_tenancy(monkeypatch, [LOCATION_ID, OTHER_LOCATION_ID])
+        resource = boto3.resource("dynamodb", region_name="eu-north-1")
+        menu_table = resource.create_table(
+            TableName=TABLE_NAME,
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        spec = importlib.util.spec_from_file_location(
+            "manage_menu_app",
+            APP_PATH,
+        )
+        app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(app)
+
+        monkeypatch.setattr(
+            app,
+            "_new_menu_item_id",
+            lambda: ITEM_ID,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            app,
+            "_new_item_id",
+            lambda: ITEM_ID,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            app,
+            "_utc_now",
+            lambda: CREATED_AT,
+            raising=False,
+        )
+
+        yield app, menu_table
+
+        shared_dynamo._resource = None
+        shared_dynamo._client = None
+
+
+def test_missing_claims_returns_401_before_dispatch_or_dynamodb(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    event = make_event(method="POST", proxy="unknown")
+    del event["requestContext"]["authorizer"]
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "no JWT claims on this request"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("claims", [None, [], "invalid"])
+def test_malformed_claims_return_401_without_dynamodb(
+    app_and_table,
+    monkeypatch,
+    claims,
+):
+    app, _ = app_and_table
+    event = make_event(method="POST")
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = claims
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "no JWT claims on this request"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("sub", [None, "", "   ", 123])
+def test_missing_subject_returns_401_without_dynamodb(
+    app_and_table,
+    monkeypatch,
+    sub,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(method="POST", sub=sub), None)
+
+    assert_response(
+        response,
+        401,
+        {"error": "JWT is missing a subject"},
+    )
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [None, "", "[]", '["unknown"]', '["staff"]', 123],
+)
+def test_wrong_group_returns_403_without_dynamodb(
+    app_and_table,
+    monkeypatch,
+    groups,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(method="POST", groups=groups), None)
+
+    assert_response(response, 403, {"error": "no_tenant"})
+    table_factory.assert_not_called()
+
+
+def test_authorization_happens_before_route_path_and_body_validation(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    event = make_event(
+        method="POST",
+        proxy="unknown/route",
+        body="not JSON",
+        groups='["unknown"]',
+        location_id=None,
+    )
+
+    response = app.handler(event, None)
+
+    assert_response(response, 403, {"error": "no_tenant"})
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize(
+    "groups",
+    ['["staff_user"]', '["owner_user"]'],
+)
+def test_all_internal_groups_can_manage_menu(app_and_table, groups):
+    app, _ = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            groups=groups,
+            body=valid_body(),
+        ),
+        None,
+    )
+
+    assert_response(response, 201)
+
+
+@pytest.mark.parametrize(
+    ("method", "proxy", "expected_allow"),
+    [
+        ("GET", "items", "POST"),
+        ("PUT", "items", "POST"),
+        ("DELETE", "items", "POST"),
+        ("GET", f"items/{ITEM_ID}", "PUT, DELETE"),
+        ("POST", f"items/{ITEM_ID}", "PUT, DELETE"),
+        ("PATCH", f"items/{ITEM_ID}", "PUT, DELETE"),
+    ],
+)
+def test_known_route_wrong_method_returns_405(
+    app_and_table,
+    method,
+    proxy,
+    expected_allow,
+):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method=method, proxy=proxy, body=valid_body()),
+        None,
+    )
+
+    assert_response(response, 405, {"error": "method not allowed"})
+    assert response["headers"]["Allow"] == expected_allow
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "",
+        "unknown",
+        "categories",
+        "items/one/two",
+        f"categories/{ITEM_ID}",
+    ],
+)
+def test_unknown_route_returns_404_without_dynamodb(
+    app_and_table,
+    monkeypatch,
+    proxy,
+):
+    app, _ = app_and_table
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(make_event(method="POST", proxy=proxy), None)
+
+    assert_response(response, 404, {"error": "not found"})
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "path_parameters",
+    [
+        None,
+        {},
+        {"proxy": "items"},
+        {"locationId": None, "proxy": "items"},
+        {"locationId": "", "proxy": "items"},
+        {"locationId": "   ", "proxy": "items"},
+        {"locationId": 123, "proxy": "items"},
+    ],
+)
+def test_invalid_location_id_returns_400_without_dynamodb(
+    app_and_table,
+    monkeypatch,
+    path_parameters,
+):
+    app, _ = app_and_table
+    event = make_event(method="POST")
+    event["pathParameters"] = path_parameters
+    table_factory = Mock(side_effect=AssertionError("must not access table"))
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(event, None)
+
+    assert_error(response, 400)
+    table_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("raw_body", "expected_error"),
+    [
+        (NO_BODY, "request body is required"),
+        (None, "request body must be a JSON object"),
+        ("", "request body is required"),
+        ("   ", "request body is required"),
+        ("{", "request body must be valid JSON"),
+        ("[]", "request body must be a JSON object"),
+        ('"value"', "request body must be a JSON object"),
+    ],
+)
+@pytest.mark.parametrize("proxy", ["items", f"items/{ITEM_ID}"])
+def test_body_routes_reject_missing_or_invalid_json(
+    app_and_table,
+    raw_body,
+    expected_error,
+    proxy,
+):
+    app, menu_table = app_and_table
+    method = "POST" if proxy == "items" else "PUT"
+
+    response = app.handler(
+        make_event(method=method, proxy=proxy, body=raw_body),
+        None,
+    )
+
+    assert_response(response, 400, {"error": expected_error})
+    assert table_items(menu_table) == []
+
+
+def test_invalid_base64_body_returns_400_without_write(app_and_table):
+    app, menu_table = app_and_table
+    event = make_event(method="POST", body="not-base64!")
+    event["isBase64Encoded"] = True
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        400,
+        {"error": "request body must be valid base64"},
+    )
+    assert table_items(menu_table) == []
+
+
+def test_accepts_base64_encoded_create_body(app_and_table):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(),
+            base64_encoded=True,
+        ),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert len(table_items(menu_table)) == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["name", "description", "price", "category", "imageKey", "active"],
+)
+def test_create_requires_every_editable_field(app_and_table, field):
+    app, menu_table = app_and_table
+    body = valid_body()
+    del body[field]
+
+    response = app.handler(
+        make_event(method="POST", body=body),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", None),
+        ("name", ""),
+        ("name", "   "),
+        ("name", 123),
+        ("description", None),
+        ("description", 123),
+        ("imageKey", None),
+        ("imageKey", ""),
+        ("imageKey", "   "),
+        ("imageKey", 123),
+    ],
+)
+def test_rejects_invalid_string_fields(app_and_table, field, value):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(**{field: value})),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+def test_description_may_be_empty(app_and_table):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(description="")),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table)["description"] == ""
+
+
+@pytest.mark.parametrize(
+    "price",
+    [None, True, False, "12.50", -1, -0.01, float("nan"), float("inf")],
+)
+def test_rejects_invalid_prices(app_and_table, price):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(price=price)),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize("price", [0.001, 1.234, 149.999])
+def test_rejects_prices_with_more_than_two_decimal_places(
+    app_and_table,
+    price,
+):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(price=price)),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize("price", [0, 1, 1.2, 1.23, 149.5])
+def test_accepts_nonnegative_prices_with_at_most_two_decimals(
+    app_and_table,
+    price,
+):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(price=price)),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table)["price"] == Decimal(str(price))
+
+
+def test_large_price_cannot_bypass_decimal_place_validation(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    raw_body = body_with_price_literal(
+        "1234567890123456789012345678.123"
+    )
+
+    response = app.handler(
+        make_event(method="POST", body=raw_body),
+        None,
+    )
+
+    assert_response(
+        response,
+        400,
+        {"error": "price must have at most two decimal places"},
+    )
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize(
+    "price_literal",
+    [
+        "1e999999999",
+        "999999999999999999999999999999999999999",
+    ],
+)
+def test_price_outside_dynamodb_number_range_returns_400(
+    app_and_table,
+    price_literal,
+):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=body_with_price_literal(price_literal),
+        ),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert "decimal" not in response["body"].lower()
+    assert "overflow" not in response["body"].lower()
+    assert "inexact" not in response["body"].lower()
+    assert table_items(menu_table) == []
+
+
+def test_price_with_trailing_zeroes_is_safely_canonicalized(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=body_with_price_literal("1.2300"),
+        ),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert response_body(response)["price"] == 1.23
+    stored_price = get_item(menu_table)["price"]
+    assert stored_price.as_tuple() == Decimal("1.23").as_tuple()
+
+
+def test_price_above_the_limit_is_refused(app_and_table):
+    app, menu_table = app_and_table
+
+    for literal in ("10000.01", "3500000", "99999999999999999999999999999"):
+        response = app.handler(
+            make_event(method="POST", body=body_with_price_literal(literal)),
+            None,
+        )
+        assert_response(response, 400, {"error": "price may be at most 10000 kr"})
+    assert table_items(menu_table) == []
+
+
+def test_price_at_the_limit_is_accepted(app_and_table):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=body_with_price_literal("10000")),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table)["price"] == Decimal("10000")
+
+
+def test_dish_saved_above_the_limit_before_it_existed_still_lists_and_can_be_lowered(
+    app_and_table,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table, menu_item(price=Decimal("3500000")))
+
+    # Editing something else keeps working - the stored price isn't re-checked.
+    renamed = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"name": "Porsche"}),
+        None,
+    )
+    assert renamed["statusCode"] == 200
+
+    lowered = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"price": 189}),
+        None,
+    )
+    assert lowered["statusCode"] == 200
+    assert get_item(menu_table)["price"] == Decimal("189")
+
+
+@pytest.mark.parametrize(
+    "category",
+    [None, "", "starter", "Mains", "snacks", 123],
+)
+def test_rejects_invalid_categories(app_and_table, category):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(category=category),
+        ),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["starters", "mains", "desserts", "drinks"],
+)
+def test_accepts_each_supported_category(app_and_table, category):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="POST",
+            body=valid_body(category=category),
+        ),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table)["category"] == category
+
+
+@pytest.mark.parametrize("active", [None, 0, 1, "true", [], {}])
+def test_active_must_be_a_boolean(app_and_table, active):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(active=active)),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_accepts_active_boolean_values(app_and_table, active):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(active=active)),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table)["active"] is active
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "PK",
+        "SK",
+        "menuItemId",
+        "createdBy",
+        "createdAt",
+        "updatedBy",
+        "updatedAt",
+        "unknown",
+    ],
+)
+@pytest.mark.parametrize("operation", ["create", "update"])
+def test_rejects_server_controlled_and_unknown_fields(
+    app_and_table,
+    field,
+    operation,
+):
+    app, menu_table = app_and_table
+    if operation == "update":
+        put_item(menu_table)
+        method = "PUT"
+        proxy = f"items/{ITEM_ID}"
+        body = {"name": "Updated", field: "caller-value"}
+    else:
+        method = "POST"
+        proxy = "items"
+        body = valid_body(**{field: "caller-value"})
+
+    response = app.handler(
+        make_event(method=method, proxy=proxy, body=body),
+        None,
+    )
+
+    assert_error(response, 400)
+    if operation == "create":
+        assert table_items(menu_table) == []
+    else:
+        assert get_item(menu_table) == menu_item()
+
+
+def test_update_requires_at_least_one_editable_field(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+
+    response = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={}),
+        None,
+    )
+
+    assert_error(response, 400)
+    assert get_item(menu_table) == menu_item()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "stored_value"),
+    [
+        ("name", "Updated name", "Updated name"),
+        ("description", "", ""),
+        ("price", 0, Decimal("0")),
+        ("price", 25.75, Decimal("25.75")),
+        ("category", "desserts", "desserts"),
+        (
+            "imageKey",
+            f"menu-images/{TENANT_A}/locations/location-id/menu/new.webp",
+            f"menu-images/{TENANT_A}/locations/location-id/menu/new.webp",
+        ),
+        ("active", False, False),
+    ],
+)
+def test_partial_update_accepts_each_editable_field(
+    app_and_table,
+    monkeypatch,
+    field,
+    value,
+    stored_value,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={field: value},
+        ),
+        None,
+    )
+
+    assert_response(response, 200)
+    stored = get_item(menu_table)
+    assert stored[field] == stored_value
+    assert stored["updatedBy"] == CALLER_SUB
+    assert stored["updatedAt"] == UPDATED_AT
+
+
+def test_create_persists_and_returns_exact_logical_item(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    table_spy = Mock(wraps=menu_table)
+    monkeypatch.setattr(app, "table", Mock(return_value=table_spy))
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    expected_stored = menu_item()
+    expected_public = public_item(expected_stored)
+    assert_response(response, 201, expected_public)
+    assert response["headers"]["Location"] == (
+        f"/locations/{LOCATION_ID}/menu/items/{ITEM_ID}"
+    )
+    assert get_item(menu_table) == expected_stored
+    assert "PK" not in response_body(response)
+    assert "SK" not in response_body(response)
+
+    table_spy.put_item.assert_called_once()
+    write = table_spy.put_item.call_args.kwargs
+    assert write["Item"] == expected_stored
+    assert "ConditionExpression" in write
+    assert "attribute_not_exists" in str(write["ConditionExpression"])
+
+
+def test_create_uses_only_configured_menu_table(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    table_factory = Mock(return_value=menu_table)
+    monkeypatch.setattr(app, "table", table_factory)
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert table_factory.call_args_list
+    assert {
+        call.args[0]
+        for call in table_factory.call_args_list
+    } == {TABLE_NAME}
+
+
+def test_item_id_collision_returns_409_without_overwrite(app_and_table):
+    app, menu_table = app_and_table
+    existing = menu_item(name="Existing")
+    put_item(menu_table, existing)
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body(name="New")),
+        None,
+    )
+
+    assert_error(response, 409)
+    assert get_item(menu_table) == existing
+
+
+def test_same_item_id_may_exist_at_another_location(app_and_table):
+    app, menu_table = app_and_table
+    put_item(
+        menu_table,
+        menu_item(location_id=OTHER_LOCATION_ID),
+    )
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    assert_response(response, 201)
+    assert get_item(menu_table) == menu_item()
+    assert get_item(menu_table, location_id=OTHER_LOCATION_ID) is not None
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_mutations_reject_corrupt_stored_item_without_changing_it(
+    app_and_table,
+    method,
+):
+    app, menu_table = app_and_table
+    corrupt = menu_item(category="snacks")
+    put_item(menu_table, corrupt)
+    body = {"name": "Must not apply"} if method == "PUT" else NO_BODY
+
+    response = app.handler(
+        make_event(
+            method=method,
+            proxy=f"items/{ITEM_ID}",
+            body=body,
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        409,
+        {"error": "menu item record is inconsistent"},
+    )
+    assert get_item(menu_table) == corrupt
+
+
+def test_partial_update_preserves_omitted_and_created_fields(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item(internalNote="preserve-me")
+    put_item(menu_table, original)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Updated name", "active": False},
+            sub=OTHER_CALLER_SUB,
+        ),
+        None,
+    )
+
+    expected = {
+        **original,
+        "name": "Updated name",
+        "active": False,
+        "updatedBy": OTHER_CALLER_SUB,
+        "updatedAt": UPDATED_AT,
+    }
+    assert_response(response, 200, public_item(expected))
+    assert get_item(menu_table) == expected
+    assert get_item(menu_table)["createdBy"] == CALLER_SUB
+    assert get_item(menu_table)["createdAt"] == CREATED_AT
+    assert get_item(menu_table)["internalNote"] == "preserve-me"
+
+
+def test_update_missing_item_returns_404_without_creating(app_and_table):
+    app, menu_table = app_and_table
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Updated"},
+        ),
+        None,
+    )
+
+    assert_error(response, 404)
+    assert table_items(menu_table) == []
+
+
+def test_update_uses_strong_read_and_expected_state_condition(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item(
+        updated_by="previous",
+        updated_at="2026-08-21T09:00:00Z",
+    )
+    put_item(menu_table, original)
+    table_spy = Mock(wraps=menu_table)
+    table_factory = Mock(return_value=table_spy)
+    monkeypatch.setattr(app, "table", table_factory)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Updated"},
+        ),
+        None,
+    )
+
+    assert_response(response, 200)
+    table_spy.get_item.assert_called_once_with(
+        Key={
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": f"MENU#{ITEM_ID}",
+        },
+        ConsistentRead=True,
+    )
+    _, write = captured_write(table_spy)
+    assert "ConditionExpression" in write
+    condition = str(write["ConditionExpression"])
+    assert "attribute_exists" in condition
+    expected_values = write.get("ExpressionAttributeValues", {}).values()
+    assert (
+        original["updatedAt"] in expected_values
+        or original["name"] in expected_values
+    )
+
+
+def test_concurrent_update_returns_409_and_preserves_winner(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    table_spy = Mock(wraps=menu_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    def concurrent_change():
+        menu_table.update_item(
+            Key={
+                "PK": f"LOCATION#{LOCATION_ID}",
+                "SK": f"MENU#{ITEM_ID}",
+            },
+            UpdateExpression="SET #name = :name, updatedAt = :updatedAt",
+            ExpressionAttributeNames={"#name": "name"},
+            ExpressionAttributeValues={
+                ":name": "Concurrent winner",
+                ":updatedAt": "concurrent-time",
+            },
+        )
+
+    def conflicting_put(**kwargs):
+        concurrent_change()
+        return menu_table.put_item(**kwargs)
+
+    def conflicting_update(**kwargs):
+        concurrent_change()
+        return menu_table.update_item(**kwargs)
+
+    install_write_side_effects(
+        table_spy,
+        put=conflicting_put,
+        update=conflicting_update,
+    )
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Losing update"},
+        ),
+        None,
+    )
+
+    assert_error(response, 409)
+    stored = get_item(menu_table)
+    assert stored["name"] == "Concurrent winner"
+    assert stored["updatedAt"] == "concurrent-time"
+
+
+def test_delete_removes_only_target_and_returns_empty_204(app_and_table):
+    app, menu_table = app_and_table
+    target = menu_item()
+    other = menu_item(
+        item_id=OTHER_ITEM_ID,
+        name="Keep me",
+    )
+    put_item(menu_table, target)
+    put_item(menu_table, other)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert response["body"] == ""
+    assert get_item(menu_table) is None
+    assert get_item(menu_table, item_id=OTHER_ITEM_ID) == other
+
+
+def test_delete_missing_item_returns_404(app_and_table):
+    app, _ = app_and_table
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_error(response, 404)
+
+
+def test_delete_uses_strong_read_and_expected_state_condition(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item(
+        updated_by="previous",
+        updated_at="2026-08-21T09:00:00Z",
+    )
+    put_item(menu_table, original)
+    table_spy = Mock(wraps=menu_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_response(response, 204)
+    table_spy.get_item.assert_called_once_with(
+        Key={
+            "PK": f"LOCATION#{LOCATION_ID}",
+            "SK": f"MENU#{ITEM_ID}",
+        },
+        ConsistentRead=True,
+    )
+    write = table_spy.delete_item.call_args.kwargs
+    assert "ConditionExpression" in write
+    condition = str(write["ConditionExpression"])
+    assert "attribute_exists" in condition
+    expected_values = write.get("ExpressionAttributeValues", {}).values()
+    assert (
+        original["updatedAt"] in expected_values
+        or original["name"] in expected_values
+    )
+
+
+def test_concurrent_change_prevents_delete_and_preserves_winner(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    table_spy = Mock(wraps=menu_table)
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    def conflicting_delete(**kwargs):
+        menu_table.update_item(
+            Key={
+                "PK": f"LOCATION#{LOCATION_ID}",
+                "SK": f"MENU#{ITEM_ID}",
+            },
+            UpdateExpression="SET #name = :name, updatedAt = :updatedAt",
+            ExpressionAttributeNames={"#name": "name"},
+            ExpressionAttributeValues={
+                ":name": "Concurrent winner",
+                ":updatedAt": "concurrent-time",
+            },
+        )
+        return menu_table.delete_item(**kwargs)
+
+    table_spy.delete_item.side_effect = conflicting_delete
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_error(response, 409)
+    stored = get_item(menu_table)
+    assert stored["name"] == "Concurrent winner"
+    assert stored["updatedAt"] == "concurrent-time"
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+@pytest.mark.parametrize(
+    "aws_error",
+    [
+        client_error("InternalServerError", "Read"),
+        endpoint_error(),
+    ],
+)
+def test_mutation_read_failures_return_sanitized_503(
+    app_and_table,
+    monkeypatch,
+    method,
+    aws_error,
+):
+    app, _ = app_and_table
+    menu_table = Mock()
+    menu_table.get_item.side_effect = aws_error
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+    body = {"name": "Updated"} if method == "PUT" else NO_BODY
+
+    response = app.handler(
+        make_event(
+            method=method,
+            proxy=f"items/{ITEM_ID}",
+            body=body,
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+
+
+def test_create_nonconditional_dynamodb_error_is_sanitized(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    menu_table = Mock()
+    menu_table.put_item.side_effect = client_error(
+        "AccessDeniedException",
+        "PutItem",
+    )
+    monkeypatch.setattr(app, "table", lambda _: menu_table)
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+
+
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_existing_item_write_errors_are_sanitized(
+    app_and_table,
+    monkeypatch,
+    operation,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    table_spy = Mock(wraps=menu_table)
+    error = client_error("AccessDeniedException", "Write")
+    if operation == "update":
+        install_write_side_effects(
+            table_spy,
+            put=error,
+            update=error,
+        )
+        event = make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Updated"},
+        )
+    else:
+        table_spy.delete_item.side_effect = error
+        event = make_event(method="DELETE", proxy=f"items/{ITEM_ID}")
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    assert "sensitive AWS detail" not in response["body"]
+    assert get_item(menu_table) == menu_item()
+
+
+def test_uncommitted_ambiguous_create_retries_then_returns_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    table_spy = Mock(wraps=menu_table)
+    table_spy.put_item.side_effect = [endpoint_error(), endpoint_error()]
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    assert table_spy.put_item.call_count == 2
+    assert get_item(menu_table) is None
+
+
+def test_create_commit_then_transport_error_reconciles_as_success(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    table_spy = Mock(wraps=menu_table)
+
+    def commit_then_error(**kwargs):
+        menu_table.put_item(**kwargs)
+        raise endpoint_error()
+
+    table_spy.put_item.side_effect = commit_then_error
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(method="POST", body=valid_body()),
+        None,
+    )
+
+    assert_response(response, 201, public_item(menu_item()))
+    assert get_item(menu_table) == menu_item()
+
+
+def test_uncommitted_ambiguous_update_retries_then_returns_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item()
+    put_item(menu_table, original)
+    table_spy = Mock(wraps=menu_table)
+    put_errors = [endpoint_error(), endpoint_error()]
+    update_errors = [endpoint_error(), endpoint_error()]
+    install_write_side_effects(
+        table_spy,
+        put=put_errors,
+        update=update_errors,
+    )
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Updated"},
+        ),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    method_name, _ = captured_write(table_spy)
+    assert getattr(table_spy, method_name).call_count == 2
+    assert get_item(menu_table) == original
+
+
+def test_update_commit_then_transport_error_reconciles_as_success(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item()
+    put_item(menu_table, original)
+    table_spy = Mock(wraps=menu_table)
+
+    def commit_put_then_error(**kwargs):
+        menu_table.put_item(**kwargs)
+        raise endpoint_error()
+
+    def commit_update_then_error(**kwargs):
+        menu_table.update_item(**kwargs)
+        raise endpoint_error()
+
+    install_write_side_effects(
+        table_spy,
+        put=commit_put_then_error,
+        update=commit_update_then_error,
+    )
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+    monkeypatch.setattr(app, "_utc_now", lambda: UPDATED_AT)
+
+    response = app.handler(
+        make_event(
+            method="PUT",
+            proxy=f"items/{ITEM_ID}",
+            body={"name": "Committed update"},
+            sub=OTHER_CALLER_SUB,
+        ),
+        None,
+    )
+
+    expected = {
+        **original,
+        "name": "Committed update",
+        "updatedBy": OTHER_CALLER_SUB,
+        "updatedAt": UPDATED_AT,
+    }
+    assert_response(response, 200, public_item(expected))
+    assert get_item(menu_table) == expected
+
+
+def test_uncommitted_ambiguous_delete_retries_then_returns_503(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    original = menu_item()
+    put_item(menu_table, original)
+    table_spy = Mock(wraps=menu_table)
+    table_spy.delete_item.side_effect = [endpoint_error(), endpoint_error()]
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_response(
+        response,
+        503,
+        {"error": "menu service unavailable"},
+    )
+    assert table_spy.delete_item.call_count == 2
+    assert get_item(menu_table) == original
+
+
+def test_delete_commit_then_transport_error_reconciles_as_success(
+    app_and_table,
+    monkeypatch,
+):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    table_spy = Mock(wraps=menu_table)
+
+    def commit_then_error(**kwargs):
+        menu_table.delete_item(**kwargs)
+        raise endpoint_error()
+
+    table_spy.delete_item.side_effect = commit_then_error
+    monkeypatch.setattr(app, "table", lambda _: table_spy)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"items/{ITEM_ID}"),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert get_item(menu_table) is None
+
+
+
+# --- multi-tenancy -------------------------------------------------------------
+
+@pytest.mark.parametrize(("method", "proxy", "body"), [
+    ("POST", "items", {"name": "x"}),
+    ("PUT", f"items/{ITEM_ID}", {"name": "x"}),
+    ("DELETE", f"items/{ITEM_ID}", NO_BODY),
+])
+def test_other_tenants_location_is_404_without_touching_the_menu(app_and_table, method, proxy, body):
+    app, menu_table = app_and_table
+    before = menu_table.scan()["Items"]
+    event = make_event(method=method, proxy=proxy, body=body, location_id=LOC_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+    assert menu_table.scan()["Items"] == before
+
+
+def test_other_tenants_owner_cannot_reach_this_location(app_and_table):
+    app, menu_table = app_and_table
+    event = make_event(method="POST", proxy="items", body={"name": "x"})
+    event["requestContext"]["authorizer"]["jwt"]["claims"] = tenant_claims(
+        "owner-b", '["owner_user"]', TENANT_B)
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 404
+
+
+
+@pytest.mark.parametrize("image_key", [
+    "menu-images/01bbbbbbbbbbbbbbbbbbbbbbbb/locations/location-id/menu/x.webp",  # other tenant
+    f"menu-images/{TENANT_A}/locations/other-location-id/menu/x.webp",            # other location
+    f"menu-images/{TENANT_A}/locations/location-id/../../{TENANT_B}/x.webp",
+    "locations/location-id/menu/x.webp",                                          # legacy shape
+])
+def test_new_image_must_belong_to_this_tenant_and_location(app_and_table, image_key):
+    app, menu_table = app_and_table
+
+    response = app.handler(make_event(method="POST", body=valid_body(imageKey=image_key)), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {"error": "imageKey must be an image uploaded for this location"}
+    assert menu_table.scan()["Items"] == []
+
+
+def test_unchanged_legacy_image_may_stay_on_update(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(image_key="locations/location-id/menu/kottbullar.webp"))  # legacy
+
+    response = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}",
+                   body={"name": "Renamed", "imageKey": "locations/location-id/menu/kottbullar.webp"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+
+
+def test_alcohol_flag_is_stored_and_returned(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={**valid_body(), "alcohol": True}), None)
+    assert response_body(response)["alcohol"] is True
+    assert get_item(menu_table)["alcohol"] is True
+
+
+def test_alcohol_flag_must_be_a_boolean(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={**valid_body(), "alcohol": "yes"}), None)
+    assert_error(response, 400)
+    assert table_items(menu_table) == []

@@ -8,14 +8,13 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 
 ## Conventions that apply across all functions
 
-**Trigger types.** Every function is invoked one of four ways:
+**Trigger types.** Every function is invoked one of three ways:
 
 | Trigger | Functions | Event shape |
 |---|---|---|
-| API Gateway (HTTP API v2, Lambda proxy integration) | 17 functions | API Gateway v2 payload — see below |
+| API Gateway (HTTP API v2, Lambda proxy integration) | 18 functions | API Gateway v2 payload — see below |
 | DynamoDB Stream | `notification` | Stream record batch — see its section |
 | EventBridge Scheduler (one-time) | `no-show-check`, `expire-layout-version` | Plain JSON dict, whatever was passed as `Input` when the schedule was created |
-| Lambda Function URL (public, no API Gateway) | `stripe-webhook` | Same payload shape as API Gateway v2, but no `authorizer` block |
 
 **API Gateway event shape.** For all API-Gateway-triggered functions, regardless of route method, the Lambda always receives an API Gateway v2 (HTTP API) proxy event:
 - `event["requestContext"]["http"]["method"]` / `event["requestContext"]["http"]["path"]`
@@ -25,10 +24,10 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 - For `JWT`-authorized routes only: `event["requestContext"]["authorizer"]["jwt"]["claims"]` — the verified Cognito access token claims, including `sub` (Cognito user id) and `cognito:groups` (list, may be absent if the user has no group)
 
 **Authorization: JWT vs NONE is only "is there a caller at all."** API Gateway's native JWT authorizer only verifies the token is valid and signed by our Cognito user pool — it rejects the request entirely before Lambda runs if the token is missing/invalid on a `JWT` route. It does **not** check *which* Cognito group the caller is in, and it does not check whether the caller is allowed to act on the specific `locationId` in the path. Both of those checks are the Lambda's job, on every `JWT` route:
-1. Read `cognito:groups` from the claims. Valid groups: `staff`, `owner_user`, `super_user`.
+1. Read `cognito:groups` from the claims. Valid groups: `staff_user`, `owner_user`, `super_user`.
 2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` — see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
 
-**Routes that are `NONE`** (`get-menu`, `get-availability`, `create-pending-reservation`, `cancel-reservation`, `manage-auth`) are intentionally public — customers never have Cognito accounts. Don't add JWT checks to these.
+**Routes configured as `NONE`** are intentionally public — customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific. Mixed-auth Lambdas select their public branch only from the documented route identity: `get-location` and `list-layout-version` require an exact top-level API Gateway `routeKey`, while `get-menu` uses its documented `proxy` path-parameter contract. Never infer public access from an authorization header or from whether JWT claims happen to be present.
 
 **Reservation status state machine.** The `Reservation` table's `status` field drives most of the business logic and is what the `notification` stream filters key off of:
 
@@ -47,54 +46,140 @@ pending → reserved → arrived
 
 **Logging.** Every function can write to its own CloudWatch log group — not listed per-function below since it's not relevant to application logic.
 
-**Known gap — Stripe keys not yet wired.** `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_API_VERSION` exist as root Terraform variables (dev/prod values already in GitHub Secrets) but are **not yet added to any Lambda's environment block**. `stripe-webhook`, `create-pending-reservation`, and possibly `no-show-check` will need some subset of these once you start implementing Stripe calls. Flag this to whoever owns the infra repo before you get there — don't assume the env var will just appear.
+**Stripe configuration status.** Infrastructure now injects `STRIPE_SECRET_KEY` into `create-pending-reservation` and `cancel-reservation`, and injects the Terraform-created endpoint secret as `STRIPE_WEBHOOK_SECRET` into `stripe-webhook`. Those application handlers are still implementation stubs and do not consume the values yet. `no-show-check` still needs `STRIPE_SECRET_KEY` added before its off-session charge logic can be implemented. A Stripe publishable key belongs in frontend configuration rather than being returned as a Lambda secret.
 
 ---
 
 ## Locations & Menu
 
 ### 1. `create-location`
-**Trigger:** API Gateway — `POST /locations` — Auth: `JWT`
-**Purpose:** Creates a new restaurant location record (name, address, business hours, etc. — whatever fields the front-end form collects). Should be restricted in-handler to `owner_user`/`super_user` groups; regular `staff` shouldn't be able to create locations.
+**Triggers:** API Gateway — `POST /locations`, plus `PUT` and `DELETE /locations/{locationId}` — Auth: `JWT`
+**Purpose:** Creates, partially updates, and hard-deletes Location-table directory records. Every action is restricted in-handler to `owner_user`/`super_user`; a regular `staff_user` cannot mutate locations.
+
+**Dispatch and payload contract:**
+
+| Method | Path | Request | Success |
+|---|---|---|---|
+| `POST` | `/locations` | Complete editable location payload | `201` with the created logical location and `Location: /locations/<locationId>` |
+| `PUT` | `/locations/<locationId>` | One or more editable location fields | `200` with the updated or already-current logical location |
+| `DELETE` | `/locations/<locationId>` | No body | `204` with an empty body |
+
+The editable fields are `name`, `address`, `email`, `phoneNumber`, `timezone`, `businessHours`, `bookingDurationHours`, and `gracePeriodHours`. `email` is a non-empty address of at most 320 characters. `phoneNumber` uses E.164 format, for example `+46812345678`; local-format values such as `08-123456` are rejected rather than guessed. `timezone` is an IANA name such as `Europe/Stockholm`. `businessHours` contains every lowercase weekday mapped to a list of same-day `{opensAt, closesAt}` intervals in 24-hour `HH:MM` format; an empty list means closed. The intervals for each day are sorted and may not overlap. `bookingDurationHours` must be greater than zero and `gracePeriodHours` may be zero.
+
+`POST` requires all eight editable fields. It generates `locationId`, `createdBy`, and `createdAt`, and initializes `updatedBy`/`updatedAt` to the same caller and instant. `PUT` is intentionally a partial update despite using that method: at least one editable field is required, and `businessHours`, when present, must still contain all seven weekdays. Current records may update either contact field independently. Legacy records with neither contact field remain readable and may receive unrelated updates, but their first contact update must provide both `email` and `phoneNumber`; a record containing only one is inconsistent. Internal keys, IDs, and audit fields are server-controlled and rejected in request bodies. An effective update changes `updatedBy`/`updatedAt`; an idempotent no-op returns the stored record without changing those audit values. Legacy records that do not yet contain `updatedBy`/`updatedAt` remain readable and updatable.
+
+Updates and deletes first load the target with a strongly consistent `GetItem` and condition the write on the complete state that was read. A missing target returns `404`; an inconsistent stored record or concurrent change returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. Malformed paths, bodies, fields, or values return `400`; a recognized route with the wrong method returns `405` with `Allow`; and unexpected DynamoDB or transport failures return a sanitized `503`.
+
+All successful and error responses include `Cache-Control: no-store`.
+
+`DELETE` removes only `PK="PLATFORM", SK="LOCATION#<locationId>"`. It is deliberately hard and non-cascading: it does not inspect or remove assigned users, menus, layouts, reservations, or any other location-scoped records. Those records can remain orphaned, and Lambdas that lack Location-table access can continue to return them. Archival or cascading deletion requires a separate cross-table design.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | DynamoDB table to write the new location item to |
+| `LOCATION_TABLE_NAME` | DynamoDB table containing the location records to mutate |
 
 **AWS resource access:** Full `dynamodb:*` on the Location table only.
 
 ---
 
 ### 2. `get-location`
-**Trigger:** API Gateway — `GET /locations/{locationId}` — Auth: `JWT`
-**Purpose:** Returns full detail for a single location. JWT-gated per the user's explicit decision — even reading one location's detail requires a logged-in caller (staff-facing, not the public menu/booking flow).
+**Triggers:**
+- API Gateway — `GET /locations` and `GET /locations/{locationId}` — Auth: `JWT`
+- API Gateway — `GET /locations/{locationId}/public-info` — Auth: `NONE`
+
+**Purpose:** Returns the protected location directory or full detail for one location, plus a safe public location projection for the customer site.
+
+`GET /locations` is restricted to `owner_user`/`super_user`. It queries `PK="PLATFORM"` with `SK begins_with "LOCATION#"`, uses strongly consistent reads, follows every DynamoDB pagination key, and returns `200` with `{"items": [...]}`. An empty directory returns `{"items": []}` and item ordering is not guaranteed.
+
+`GET /locations/<locationId>` allows callers in `staff_user`, `owner_user`, or `super_user`. It performs one strongly consistent `GetItem` using `PK="PLATFORM"` and `SK="LOCATION#<locationId>"`, returning the logical location or `404` when it does not exist. Both actions omit internal `PK`/`SK` attributes and return stored `email` and `phoneNumber` contact details. New records contain both contact fields and `updatedBy`/`updatedAt`; the contact pair and audit pair may be absent on their respective legacy records.
+
+The exact `GET /locations/<locationId>/public-info` route is public and is selected only when the top-level API Gateway `routeKey` is `GET /locations/{locationId}/public-info`; this branch does not inspect JWT claims. It performs the same strongly consistent item read and returns exactly `locationId`, `name`, `address`, `timezone`, and `businessHours`, plus `email` and `phoneNumber` when the stored legacy-compatible contact pair is present. It omits booking-duration and grace-period policy, creation/update audit fields, DynamoDB keys, and unexpected stored attributes.
+
+Stored records are checked for the expected key, identifier, and complete logical shape before either projection is returned. A missing item returns `404`; an inconsistent record returns `409`; malformed location IDs return `400`; recognized routes with the wrong method return `405` with `Allow: GET`; and malformed DynamoDB responses or unexpected DynamoDB/transport failures return a sanitized `503`. Authentication failures (`401`) and group failures (`403`) apply only to the protected routes. This function has no User-table environment variable or permission, so it authorizes protected requests by Cognito group only; it cannot restrict a `staff_user` item read to their assigned location.
+
+All successful and error responses include `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | DynamoDB table to read from |
+| `LOCATION_TABLE_NAME` | DynamoDB table containing the location directory |
 
 **AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Location table.
+
+**Infrastructure routing note:** API Gateway needs explicit `GET /locations`, `POST /locations`, method-specific `GET`, `PUT`, and `DELETE /locations/{locationId}`, and `GET /locations/{locationId}/public-info` routes. All three `GET` routes integrate with `get-location`; `POST`, `PUT`, and `DELETE` integrate with `create-location`. The public-info route uses `NONE` auth; the directory/detail routes retain the JWT authorizer. Route-scoped Lambda invoke permissions must cover every method/path ARN. The `create-location` execution role needs full Location-table access for its writes; `get-location` remains read-only. CORS must allow `GET`, `POST`, `PUT`, and `DELETE` where applicable.
 
 ---
 
 ### 3. `get-menu`
-**Trigger:** API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
-**Purpose:** Public, unauthenticated menu read for the customer-facing site — returns the menu items for a given location.
+**Triggers:**
+- API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
+- API Gateway — `GET /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+
+**Purpose:** Read-only menu API. The exact `/menu` route returns active customer-facing items without authentication. The greedy GET route returns full staff-facing items after JWT and Cognito-group validation.
+
+**Authorization and dispatch:** The handler chooses the route family from `event["pathParameters"]`. Absence of the `proxy` key means the public exact route; the presence of that key always enters the protected branch, including malformed or unknown proxy values. It never decides from an `Authorization` header or merely from whether JWT claims happen to be present.
+
+Protected reads require a non-empty Cognito `sub` and membership in `staff_user`, `owner_user`, or `super_user` before location/path validation or DynamoDB access. Missing or malformed direct-invocation claims return `401`; a valid caller outside those groups returns `403`. The function has no User-table access, so it cannot restrict a `staff_user` to their assigned location.
+
+**Dispatch and response contract:**
+
+| Method | Route / `proxy` path | Auth | Success |
+|---|---|---|---|
+| `GET` | `/locations/<locationId>/menu` (no `proxy`) | `NONE` | `200` with `{"items": [...]}` containing active customer fields only |
+| `GET` | `items` | `JWT` | `200` with `{"items": [...]}` containing active and inactive staff items |
+| `GET` | `items/<menuItemId>` | `JWT` | `200` with one complete logical staff item |
+
+Every read requires a non-empty `locationId` of at most 128 characters. Collection reads use a strongly consistent Query scoped to `PK="LOCATION#<locationId>"` and `SK begins_with "MENU#"`, follow every valid DynamoDB pagination key, and do not scan. An empty partition returns `200` with `{"items": []}`; this also covers unknown locations because the function cannot read the Location table. No item ordering is promised.
+
+The public response includes exactly `menuItemId`, `name`, `description`, `price`, `category`, and `imageKey`. The handler returns the stored `imageKey` unchanged. For new uploads, clients store the complete key returned by `pre-signed-url`, including its `menu-images/` prefix (for example, `menu-images/locations/<locationId>/menu/<uuid>.webp`); legacy records may retain older key shapes. Only records whose `active` value is exactly `true` are returned. The response never exposes `active`, audit data, DynamoDB keys, or unexpected stored attributes.
+
+Protected collection reads include active and inactive records. Protected collection and item responses include exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal keys and unexpected attributes are omitted. Individual reads use a strongly consistent `GetItem` scoped to the requested location and return `404` when the item is absent.
+
+Invalid identifiers return `400`; unknown protected proxy paths return `404`; non-GET direct invocations return `405` with `Allow: GET`; inconsistent protected records return `409`; and malformed DynamoDB responses or unexpected DynamoDB/transport failures return a sanitized `503`. Corrupt public records also return a sanitized `503` rather than exposing partial data. All responses include `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `MENU_TABLE_NAME` | DynamoDB table to read from |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on the Menu table.
+**AWS resource access:** Read-only `GetItem` and `Query` on the Menu table. The function does not call Location, User, Cognito, or S3 services.
+
+**Infrastructure routing note:** The bare GET route must remain `NONE`-authorized, while `GET /locations/{locationId}/menu/{proxy+}` must use the JWT authorizer and integrate with this Lambda. The greedy path parameter must be named `proxy`; explicit routes that do not populate that key do not satisfy this dispatch contract. `POST`, `PUT`, and `DELETE` on the greedy route continue to integrate with `manage-menu`.
 
 ---
 
 ### 4. `manage-menu`
-**Trigger:** API Gateway — `ANY /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
-**Purpose:** Staff-facing CRUD for menu items (create/update/delete individual menu items or categories). The `{proxy+}` catch-all means this one function handles every sub-path under `/menu/...` (e.g. `/menu/items/{itemId}`) and every HTTP method (`ANY`) — your handler dispatches internally based on `event["requestContext"]["http"]["method"]` and the remaining path/payload, not on separate configured routes.
+**Triggers:** API Gateway — `POST`, `PUT`, and `DELETE /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+**Purpose:** Staff-facing menu-item writes. The `{proxy+}` catch-all dispatches create, update, and delete operations from the HTTP method and normalized `proxy` path. Protected GET routes are owned by the read-only `get-menu` Lambda.
+
+**Authorization:** Every action requires a caller in `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling DynamoDB. Missing or malformed direct-invocation claims return `401`; a valid token whose caller is not in one of those groups returns `403`.
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `POST` | `items` | Exactly `name`, `description`, `price`, `category`, `imageKey`, and `active` | `201` with the created logical item and a `Location` header |
+| `PUT` | `items/<menuItemId>` | One or more editable item fields | `200` with the updated logical item |
+| `DELETE` | `items/<menuItemId>` | No body | `204` with an empty body |
+
+`PUT` is intentionally a partial update. The editable fields are `name`, `description`, `price`, `category`, `imageKey`, and `active`; an empty object and unknown or server-controlled fields are rejected. `name` and `imageKey` are non-empty strings, `description` is a string, `price` is a finite non-negative JSON number with at most two decimal places, `active` is a boolean, and `category` is exactly one of `starters`, `mains`, `desserts`, or `drinks`. After a successful S3 upload, clients store the complete `imageKey` returned by `pre-signed-url`, including the `menu-images/` prefix; they must not strip or rebuild that key. Categories are fixed values on menu items, not separately stored resources, so this route family has no category CRUD paths.
+
+The handler generates `menuItemId` as a UUID and obtains all audit data from the verified request: `createdBy`/`updatedBy` are the caller's Cognito `sub`, and `createdAt`/`updatedAt` are UTC ISO8601 timestamps. On creation, both audit pairs have the same values. Updates preserve the creation audit fields and replace the update audit fields. Items are stored with `PK="LOCATION#<locationId>"` and `SK="MENU#<menuItemId>"`.
+
+The logical item returned by successful create and update actions contains exactly `menuItemId`, `name`, `description`, `price`, `category`, `imageKey`, `active`, `createdBy`, `createdAt`, `updatedBy`, and `updatedAt`; internal `PK`/`SK` attributes are never returned. All successful and error responses include `Cache-Control: no-store`.
+
+Creation conditionally requires both keys not to exist. Update and delete first load the item consistently, validate the stored logical record, and condition the write on the complete state that was loaded; a concurrent change returns `409` rather than being overwritten or deleted. A no-op update returns the existing item without changing its audit fields.
+
+For a DynamoDB `5xx`, timeout, or transport error, a single-item operation may already have committed. The handler reconciles the result with a strongly consistent read and performs at most one idempotent retry when the previous state is still present. If the desired state is present it returns success; if another state is present it returns `409`; and if the result cannot be determined it returns a sanitized `503`. Raw AWS messages are never returned.
+
+Malformed paths, JSON, fields, or values return `400`; a missing item or unknown proxy path returns `404`; a recognized path with the wrong method returns `405` with `Allow`; generated-ID collisions, inconsistent records, and concurrent changes return `409`; and unexpected DynamoDB or transport failures return `503`. Both the bare public GET and protected greedy GET routes belong to `get-menu`.
+
+This function has no User-table permission, so it can check the caller's group but cannot enforce that a `staff_user` is assigned to the `locationId` in the path. It also has no Location-table or S3 permission, so it cannot prove that the location exists, that `imageKey` exists, or that the image belongs to that location. It must not make incidental calls to those services. Enforcing location assignment requires adding `USER_TABLE_NAME` and read-only User-table access in a separate infrastructure/specification change.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -109,22 +194,123 @@ pending → reserved → arrived
 
 ### 5. `get-availability`
 **Trigger:** API Gateway — `GET /locations/{locationId}/availability` — Auth: `NONE`
-**Purpose:** Public — computes bookable time slots/tables for a location on a given date. Cross-references the location's business hours, the currently *active* published floor layout (which tables physically exist), and existing holds in Slot Occupancy to determine what's actually free.
+
+**Purpose:** Publicly computes the bookable local-time slots and free tables
+for one location and date. This route intentionally performs no JWT check;
+customers do not have Cognito accounts.
+
+**Request:** `GET /locations/{locationId}/availability?date=YYYY-MM-DD`.
+`locationId` must be nonblank, at most 128 characters, and may not contain
+`#`. `date` is the only accepted query parameter and must be a real calendar
+date in canonical form. Past dates return `400`. Returned slot starts satisfy
+the exact elapsed-time bound `now < slotStartUtc <= now + 21 days`. For the
+location's current local date, only slots whose start instant is strictly in
+the future are returned. The local date containing the upper UTC boundary is
+valid, but later slots on that partial cutoff date are filtered out. A local
+date wholly beyond that 504-hour cutoff returns `400` with
+`date must not be more than 21 days ahead`.
+
+The handler strongly consistently reads the Location record and derives a
+canonical slot grid from each same-day business-hours interval. The booking
+duration must resolve to a positive whole number of minutes below 24 hours;
+each interval has its own grid anchored at its opening time. Slots with an
+ambiguous or nonexistent local endpoint, or whose real duration crosses a
+timezone offset transition, are omitted without failing the rest of the day.
+
+When candidate slots exist, the handler strongly consistently reads layout
+activation state, the relevant current and scheduled-pending Published Layout
+Snapshots, and activation state again. It retries that complete sequence once
+if the state changes, so a response is never assembled across two transition
+states. With a valid `scheduled` replacement, a slot whose end instant is at
+or before `cutoverAt` uses the current version; a slot whose start instant is
+at or after `cutoverAt` uses the pending version. A slot crossing the boundary
+is omitted because no one version is effective for its whole interval. During
+the intermediate `scheduling` phase, only slots ending at or before the stored
+cutover can use the current version; a request containing relevant later slots
+returns `409`. An overdue scheduled cutover, inconsistent transition, or a
+second concurrent state change also returns `409` rather than exposing
+uncertain availability.
+
+If the activation-state item is absent on both reads, availability does not
+guess from a legacy snapshot that merely has `isCurrent=true`; it returns an
+empty `slots` list. Calling `activate-layout-version` for that legacy current
+version bootstraps the authoritative state item.
+
+The handler accepts both legacy flat snapshots and multi-floor snapshots and
+validates the same floor-reference invariant as publication. Floors and
+`floorId` values are used only to validate snapshot integrity. Every returned
+slot contains the positive `layoutVersion` effective for its complete
+interval. Validated `table` elements from that version are exposed as
+`tableId` plus `seats`, so each nested table object's shape remains unchanged.
+Layout geometry, floor metadata, floor-area and cash-register elements, and
+audit fields remain internal. Optional display `label` values on tables and
+cash registers are validated as snapshot content but are not returned by
+availability; `tableId` continues to be the table element's `elementId`.
+`floorArea` and `cashRegister` are renderable, non-bookable elements, so both
+are validated as part of the snapshot but ignored when availability is
+compiled. A corrupt floor relationship returns `409`. A location with no
+active layout, a relevant layout with no tables, or a closed day returns `200`
+with an empty `slots` list.
+
+One paginated, strongly consistent Slot Occupancy query reads every hold for
+the requested location/date. Both reservation and `manual_block` rows exclude
+the affected table. Interval overlap is used rather than exact-key matching,
+so a hold created under an older booking duration excludes every new slot it
+overlaps. Fully occupied slots are omitted. Slots are returned in ascending
+time order and tables in `tableId` order:
+
+```json
+{
+  "locationId": "154b5c59-3a7f-4248-895c-29ee980356f3",
+  "date": "2026-09-20",
+  "timezone": "Europe/Stockholm",
+  "slots": [
+    {
+      "startTime": "18:00",
+      "endTime": "20:00",
+      "layoutVersion": 2,
+      "tables": [
+        {"tableId": "table-4", "seats": 4}
+      ]
+    }
+  ]
+}
+```
+
+All responses use `Cache-Control: no-store`. Invalid input, including a local
+date wholly beyond the 21-day horizon, returns `400`; an unknown location
+returns `404`; inconsistent stored location/layout/occupancy state,
+unresolvable scheduling or overdue activation state, or a repeatedly changing
+activation state returns `409`; and dependency failures return a sanitized
+`503`. Invalid environment configuration while resolving pending state also
+returns that sanitized `503`. A non-GET direct invocation returns `405` with
+`Allow: GET`.
+
+Availability is advisory: an occupancy write can occur after this read.
+`create-pending-reservation` must validate the advertised layout version,
+table, time horizon, and occupancy again and conditionally acquire every
+requested table; clients must handle a booking-time conflict.
+
 **Environment variables:**
+
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | Business hours / booking rules |
-| `SLOT_OCCUPANCY_TABLE_NAME` | Existing holds (reservations + manual blocks) to exclude |
-| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | The active/published layout — defines which tables exist and their capacity |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
+| `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
+| `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Activation state and current/pending published tables and seat counts |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Location, Slot Occupancy, and Published Layout Snapshot tables.
+**AWS resource access:** Read-only on Location, Slot Occupancy, and Published
+Layout Snapshot tables. The implementation calls strongly consistent
+`GetItem` on Location and Published Layout Snapshot and a strongly consistent
+paginated `Query` on Slot Occupancy. It accesses no user identity or other AWS
+service.
 
 ---
 
 ### 6. `create-pending-reservation`
 **Trigger:** API Gateway — `POST /reservations` — Auth: `NONE`
-**Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the front-end can collect card details — see the Stripe keys gap noted above; you'll need `STRIPE_SECRET_KEY` added here to call Stripe, and likely want to return `STRIPE_PUBLISHABLE_KEY` in the response for the front-end to confirm the SetupIntent client-side.
+**Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the frontend can confirm it with Stripe.js. Infrastructure supplies the server-side `STRIPE_SECRET_KEY`; the publishable key should come from frontend environment configuration.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -134,8 +320,12 @@ pending → reserved → arrived
 | `SLOT_OCCUPANCY_TABLE_NAME` | Write the new hold here |
 | `RESERVATION_TABLE_NAME` | Write the new `pending` reservation here |
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Check for existing unpaid debt by phone number before allowing the booking |
+| `STRIPE_SECRET_KEY` | Create the card-on-file SetupIntent server-side |
+| `TURNSTILE_REQUIRED` | `true` when the guest sites show the platform's Turnstile widget - online bookings then need its token (`shared/turnstile.py`) |
+| `TURNSTILE_SECRET_ARN` | Secrets Manager secret `{"secretKey": "..."}` of that widget |
+| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`); manage-auth uses the same table for its per-IP forgot/reset password limits |
 
-**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables.
+**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `secretsmanager:GetSecretValue` on the Turnstile secret; `dynamodb:UpdateItem` on the request-guard table.
 
 **Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` — that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
 
@@ -187,41 +377,205 @@ pending → reserved → arrived
 
 ### 10. `block-table`
 **Trigger:** API Gateway — `POST /locations/{locationId}/tables/{tableId}/block` — Auth: `JWT`
-**Purpose:** Staff manually holds a table out of online booking (e.g. reserved for a private event, or physically unusable). Writes a Slot Occupancy row with `source: manual_block`; the same handler should support un-blocking by deleting that row.
+
+**Purpose:** Staff manually holds a table out of online booking (for example,
+for a private event or because it is physically unusable). The same operation
+removes a manual hold without ever overwriting or deleting a real reservation.
+
+**Authorization:** The caller must belong to exactly one of `staff_user`,
+`owner_user`, or `super_user`, and must have a matching active User-table
+mirror. A staff user may act only on their assigned location. Owner and
+super-user mirrors must use an empty `locationId`.
+
+**Request body:** The JSON object contains exactly these fields:
+
+```json
+{
+  "date": "2026-09-20",
+  "startTime": "18:00",
+  "blocked": true
+}
+```
+
+`date` is a real calendar date in `YYYY-MM-DD`, `startTime` is local 24-hour
+`HH:MM`, and `blocked` is a boolean. For `blocked: true`, the handler derives
+the end time from `bookingDurationHours`. The slot must be in the future,
+start on the location's booking grid, remain inside one business-hours
+interval, and map to one unambiguous real interval in the location's IANA
+timezone. Slots at ambiguous/nonexistent local times or crossing a daylight
+saving transition are rejected. The requested `tableId` must identify a
+`table` element in the Published Layout Snapshot effective for the slot's
+complete interval. For a valid scheduled replacement, a slot ending at or
+before `cutoverAt` uses the current version and a slot starting at or after it
+uses the pending version. A slot crossing the cutover returns `409`. While an
+activation is still in `scheduling`, only slots ending at or before its
+cutover can use the current version; later slots return `409`. An overdue
+cutover, inconsistent lifecycle, or repeatedly changing activation state also
+returns `409`. The handler accepts both legacy flat and multi-floor snapshots
+and validates the complete floor relationship before using the requested
+table. The `elementId` of a floor, floor area, or cash register cannot be used
+as a table ID, and corrupt floor relationships return `409`.
+
+Block creation also treats a missing activation-state item as no resolvable
+layout and returns table `404`; it never guesses from a legacy snapshot with
+`isCurrent=true`. Activating that legacy current version first bootstraps the
+authoritative state.
+
+The path's `tableId` is always the target table element's `elementId`, never
+an optional display `label`. A floor, floor area, or cash register cannot be
+blocked as a table. Labels therefore do not change Slot Occupancy keys, block
+request bodies, or block responses.
+
+`blocked: true` conditionally writes a Slot Occupancy row. A new hold returns
+`201` and stores the selected positive `layoutVersion` as internal
+creation-time provenance. An already-identical manual hold returns `200`
+without replacing or backfilling valid provenance, including a legacy hold
+without that field. Both responses contain exactly `locationId`, `tableId`,
+`date`, `startTime`, the derived `endTime`, and `blocked: true`;
+`layoutVersion` is neither accepted in the request nor returned, and no floor
+field is added. A reservation or overlapping hold returns `409` and is left
+unchanged.
+
+`blocked: false` looks up a manual hold by location, date, start time, and
+table rather than re-deriving its old end time. It performs no activation or
+snapshot read. This permits cleanup after the booking duration or published
+layout has changed and keeps legacy rows without `layoutVersion` removable.
+The conditional delete binds the stored provenance value when present, or its
+continued absence for a legacy row. Removing an existing manual hold and
+requesting removal when none exists both return `204` with an empty body. A
+reservation at that identity returns `409` and is never deleted.
+
+Every Lambda response uses `Cache-Control: no-store`. Invalid requests or
+slots return `400`; a missing location or a table absent from the published
+layout effective for the requested slot returns `404`; cutover-crossing slots,
+scheduling or overdue transitions, activation races, invalid stored state, and
+occupancy/concurrency conflicts return `409`; dependency or environment
+configuration failures return a sanitized `503`. Non-POST direct invocations
+return `405` with `Allow: POST`.
+
 **Environment variables:**
+
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
-| `LOCATION_TABLE_NAME` | Validates the location/table exists, business hours |
-| `USER_TABLE_NAME` | Confirms the caller is staff assigned to this location |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
+| `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
+| `USER_TABLE_NAME` | Caller role, status, and assigned location |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Where the manual block is written/deleted |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Slot-effective current/pending layout and table validation |
 
-**AWS resource access:** Read-only on Location and User tables; full `dynamodb:*` on Slot Occupancy.
+**AWS resource access:** Read-only on Location, User, and Published Layout
+Snapshot tables; full `dynamodb:*` on Slot Occupancy. The implementation uses
+strongly consistent activation-state and snapshot reads, conditional
+writes/deletes, and bounded read-after-error reconciliation for ambiguous
+DynamoDB outcomes.
 
 **Established authorization pattern (reuse this elsewhere):** before authorizing the block, do a single `GetItem` on the User table with `PK = USER#<sub>` (where `sub` comes from the verified JWT claims) to confirm the caller's role and which location they're assigned to. This is the reference pattern for any route that needs "is this staff member allowed to act on this specific location," since that assignment lives in the User table, not in the JWT itself.
+
+**Current key-model limitation:** the conditional write prevents replacement
+of an identical Slot Occupancy key, and the preceding consistent date query
+detects existing overlapping intervals. Because intervals with different end
+times have different sort keys, two concurrent cross-key writes cannot be
+made mutually exclusive by the current table key alone if the location's
+booking duration changes between them. A future schema that needs that level
+of serialization should add a canonical per-start guard item and write it in
+the same DynamoDB transaction.
 
 ---
 
 ## Floor Layout
 
-There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. Only one snapshot version is "active" at a time, and that active version is what `get-availability`/`create-pending-reservation` actually read to know which tables exist.
+There are two layout tables with distinct roles: **Live Layout Element** is the mutable working copy staff edit in the floor-plan editor; **Published Layout Snapshot** holds immutable, versioned snapshots taken from the live copy. A published version represents the location's complete layout, including every floor and all elements assigned to those floors. Only one whole snapshot version is "active" at a time; floors are not activated independently. Floor areas, cash registers, and optional labels on tables and cash registers follow this same draft → publish → activate → public-read lifecycle; they require no separate route, table, environment variable, or IAM permission. `get-availability` and block creation in `block-table` resolve the published version effective for each slot interval, including a valid scheduled pending version; the public active-layout route continues to expose only the current version. `create-pending-reservation` must enforce that same slot-effective version when implemented. None of these flows treats floor areas or cash registers as tables, and table identity remains the element's `elementId` rather than its display label.
+
+Because these independently deployed Lambdas each validate snapshot content,
+roll out additive element contracts in compatibility order: deploy
+`list-layout-version`, `get-availability`, and `block-table` first, followed by
+`publish-layout`, then `manage-layout-element`. An atomic update of all five is
+also safe. Deploying the writer before an older reader or publisher can make
+otherwise valid new records fail closed with `409` during a partial rollout.
 
 ### 11. `manage-layout-element`
 **Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
-**Purpose:** CRUD on individual floor-plan elements (tables, walls, decor — whatever the editor supports) in the live/draft layout. Same `{proxy+}`/`ANY` dispatch pattern as `manage-menu`.
+**Purpose:** Staff-facing CRUD for floor, floor-area, wall, door, window, table, and cash-register elements in the mutable live/draft layout. The `{proxy+}`/`ANY` route dispatches internally in the same way as `manage-menu`.
+
+**Authorization:** Every action requires `staff_user`, `owner_user`, or `super_user` through `shared.auth.require_group()`. Authentication and group membership are checked before request-body parsing or DynamoDB access. Missing or malformed direct-invocation claims return `401`; an authenticated caller outside the allowed groups receives `403`.
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `GET` | `items` | No body | `200` with `{"items": [...]}` |
+| `POST` | `items` | One complete, type-discriminated layout element | `201` with the created logical element and a `Location` header |
+| `GET` | `items/<elementId>` | No body | `200` with the logical element |
+| `PUT` | `items/<elementId>` | One or more editable fields; `type` is immutable | `200` with the resulting logical element |
+| `DELETE` | `items/<elementId>` | No body | `204` with an empty body |
+
+The supported `type` values are exactly `floor`, `floorArea`, `wall`, `door`, `window`, `table`, and `cashRegister`; casing is significant, and `decor` is not part of the current data model. Every created element requires finite JSON-number values for `x`, `y`, `z`, `width`, `height`, `depth`, and `rotationY`. Coordinates and rotation may be signed or zero, while all three dimensions must be greater than zero. A `floor` additionally requires a non-empty `name` and an integral `level`; `level` is signed, so basement, ground, and upper levels can be represented with negative, zero, and positive values. Floor names and levels need not be unique. A floor cannot contain `floorId`. Any non-floor element may contain a non-empty `floorId` referring to the `elementId` of its floor. The frontend creates a floor first, retains its returned `elementId`, and submits that value as `floorId` on elements drawn on the floor's canvas. A `table` additionally requires `shape` (`rect` or `round`), a positive integer `seats`, and a non-empty `zone`. A `door` or `window` additionally requires a non-empty `wallId`. A door may also contain optional `kind`, whose only accepted values are `entrance` and `kitchen`; `kind` is rejected on every other element type. A missing door `kind` is valid for backward compatibility and means legacy/unspecified rather than either enum value. A `floorArea` is the renderable surface inside a floor rather than the `floor` storey record; it contains common geometry and optional `floorId` only. A `cashRegister` likewise has no required type-specific fields beyond common geometry and optional `floorId`, although it may carry the optional display `label` described below. Neither type accepts `name`, `level`, `shape`, `seats`, `zone`, `wallId`, or `kind`. Variant fields that do not apply to the selected type, unknown fields, and server-controlled fields are rejected. Identifiers, `name`, `zone`, `label`, `floorId`, and `wallId` are bounded to 128 characters.
+
+The API and DynamoDB records use canonical 3D coordinates in metres; the
+Lambda does not know the editor's canvas scale. For the current editor, 50
+canvas units equal one metre: canvas `x / 50` becomes API `x`, canvas `y / 50`
+becomes API `z`, `w / 50` becomes `width`, and `h / 50` becomes `depth`.
+`floorArea` requests use API `y = 0` and `rotationY = 0`. Because all common
+dimensions are mandatory and positive, the frontend adapter must choose and
+send an explicit positive `height` in metres; the backend does not silently
+invent one.
+
+A `table` or `cashRegister` may also contain optional `label`. The handler
+trims surrounding whitespace and requires the resulting value to be nonblank
+and at most 128 characters; internal spaces, casing, and Unicode are
+preserved. The backend does not generate labels or require them to be unique.
+The frontend should send this field in the create/update payload and render
+the returned value instead of deriving a display name from list position. The
+element's `elementId` remains its stable identity. Legacy tables and cash
+registers without `label` remain valid, and `label` is rejected on every other
+element type.
+
+`PUT` is a strict partial update: the handler merges the submitted fields with the stored element and validates the complete resulting type-specific record. It can rename or renumber a floor, move a non-floor element (including a floor area or cash register) by replacing `floorId`, add or change a door's `kind`, and add or change a table or cash register's `label`; null, an empty string, or whitespace cannot clear an existing `floorId`, `kind`, or `label`. An empty object is invalid, and the element `type` cannot be changed. A no-op update returns the existing element without replacing its audit fields.
+
+The handler generates `elementId` as a UUID. It stores `updatedBy` from the verified JWT `sub` and `updatedAt` as a UTC ISO8601 timestamp on creation and each effective update. Records use `PK="LOCATION#<locationId>"` and `SK="LAYOUT#ELEMENT#<elementId>"`. Public responses contain only `elementId`, the applicable layout fields, `updatedBy`, and `updatedAt`; DynamoDB keys and unexpected stored attributes are not exposed.
+
+Collection reads query only the requested location partition and the `LAYOUT#ELEMENT#` prefix, follow every DynamoDB pagination key, and use strongly consistent reads. An empty partition returns `200` with `{"items": []}`; that can also represent an unknown location because this function cannot access the Location table. Individual reads are strongly consistent. Create, update, and delete use conditional writes. Update and delete condition on the state that was loaded, so a concurrent change returns `409`. Ambiguous DynamoDB write failures are reconciled with a consistent read and at most one idempotent retry.
+
+Malformed paths, JSON, fields, or values return `400`; missing elements and unknown proxy paths return `404`; a recognized path with the wrong method returns `405` with `Allow`; collisions, inconsistent records, and concurrent changes return `409`; and sanitized dependency failures return `503`. All responses include `Cache-Control: no-store`.
+
+The function has no User-table or Location-table permission. It therefore cannot verify that a location exists or that a `staff_user` is assigned to the requested location. Draft CRUD deliberately does not check that a submitted `floorId` currently identifies a floor, and deleting a floor does not cascade to its children; the complete floor relationship is checked when the draft is published. `wallId` is validated only as a bounded non-empty string; the current specification does not define parent-wall existence checks, geometry-containment rules, or delete cascades, so this Lambda does not invent them or access another service to enforce them.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `LIVE_LAYOUT_ELEMENT_TABLE_NAME` | DynamoDB table to read/write |
 
-**AWS resource access:** Full `dynamodb:*` on the Live Layout Element table.
+**AWS resource access:** Full `dynamodb:*` on the Live Layout Element table. Floor-area and cash-register CRUD and optional element labels use this existing access and add no AWS resource.
 
 ---
 
 ### 12. `publish-layout`
 **Trigger:** API Gateway — `POST /locations/{locationId}/layout/publish` — Auth: `JWT`
-**Purpose:** Takes the current state of the live layout and writes it as a new, immutable version in Published Layout Snapshot. Does not, by itself, change which version is active — that's `activate-layout-version`'s job (a newly published version is not necessarily made live automatically; confirm with product/frontend whether publish should also activate).
+**Purpose:** Takes the current state of the live layout and writes it as a new immutable-content version in Published Layout Snapshot. Publishing definitively does **not** activate the new version or change any existing version; activation belongs to `activate-layout-version`.
+
+**Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
+
+The handler consistently queries every page of Live Layout Element records under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#ELEMENT#"`. It validates each source key and logical floor, `floorArea`, wall, door, window, table, or `cashRegister` using the same type-specific field constraints as `manage-layout-element`. Floor records preserve `name` and signed integral `level`; non-floor records preserve `floorId` when present; floor areas preserve common geometry; doors preserve optional `kind` (`entrance` or `kitchen`); and tables and cash registers preserve optional `label` after canonical trimming. Legacy doors without `kind` and legacy labelled element types without `label` remain valid and publish without those fields. Internal keys and unexpected stored attributes are not copied.
+
+Publication then validates the complete floor relationship. A legacy flat draft with no floor records is valid only when all non-floor elements omit `floorId`. If at least one floor record exists, every non-floor element must have a `floorId` that identifies a floor element in the same draft. A floor may have no child elements, so creating and publishing an empty floor is valid. A dangling `floorId`, a `floorId` that identifies a non-floor element, or a mixture of floor records and unassigned non-floor elements returns `409` rather than producing a corrupt snapshot. This check does not add parent-wall existence or geometric-containment rules. An entirely empty draft is also publishable; because this Lambda has no Location-table permission, that can represent an unknown location.
+
+The next version is the numeric maximum across every existing `LAYOUT#v<N>` snapshot plus one; it is not based on lexical sort-key order. Existing snapshot keys and `version` attributes must agree. The new item uses `PK="LOCATION#<locationId>"`, `SK="LAYOUT#v<N>"`, and contains:
+
+- `version = N` and generated top-level snapshot `label = "Version N"` (distinct from an optional `label` nested in a table or cash-register element)
+- `isCurrent = false`, `effectiveFrom = null`, and `effectiveTo = null`
+- `expiresAt = publication time + 28 days` as the inactive snapshot's initial
+  safety deadline, not as its replacement activation cutoff
+- the sanitized logical records in `elements`
+- `validPositions = []` because the current model defines no position-compilation rule
+- `createdBy`, `updatedBy` from the JWT subject and identical UTC
+  creation/update timestamps; immutable `createdAt` is the publication time
+  from which replacement eligibility is calculated
+
+Creation uses a conditional put so an existing version is never overwritten. If another publisher takes the selected version concurrently, the handler re-reads the numeric maximum and retries once; another collision returns `409`. Ambiguous DynamoDB write failures are reconciled with a strongly consistent read and at most one idempotent retry. A successful response is `201` with the logical snapshot (never `PK`/`SK`), `Cache-Control: no-store`, and `Location: /locations/<locationId>/layout/versions/<N>`. The `Location` value identifies the version even though the current API exposes versions through the collection/list and activation routes rather than a dedicated single-version GET.
+
+Malformed paths return `400`; missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`; a wrong method returns `405` with `Allow: POST`; corrupt source/version records and exhausted allocation collisions return `409`; and sanitized dependency failures return `503`. Every Lambda response includes `Cache-Control: no-store`.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -229,85 +583,234 @@ There are two layout tables with distinct roles: **Live Layout Element** is the 
 | `LIVE_LAYOUT_ELEMENT_TABLE_NAME` | Read the current draft state from here |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Write the new version here |
 
-**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot.
+**AWS resource access:** Read-only on Live Layout Element; full `dynamodb:*` on Published Layout Snapshot. The implementation only calls `Query` on Live Layout Element and `Query`, `GetItem`, and conditional `PutItem` on Published Layout Snapshot. It accesses no Location/User table or other AWS service.
 
 ---
 
 ### 13. `list-layout-version`
-**Trigger:** API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
-**Purpose:** Lists past published layout versions for a location (for staff to browse/pick a version to activate).
+**Triggers:**
+- API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
+- API Gateway — `DELETE /locations/{locationId}/layout/versions/{versionId}` — Auth: `JWT`
+- API Gateway — `GET /locations/{locationId}/layout/active` — Auth: `NONE`
+
+**Purpose:** Lists complete published versions for authorized staff, soft-archives eligible versions for owners/super users, and returns a safe projection of the active version for the public customer site. Archiving preserves the immutable snapshot and version number; it never physically deletes the DynamoDB item.
+
+**Authorization and request:** Only the exact top-level API Gateway `routeKey` `GET /locations/{locationId}/layout/active` selects the public branch, which performs no JWT validation. The protected list branch requires a valid Cognito subject plus membership in `staff_user`, `owner_user`, or `super_user`; the exact top-level `DELETE /locations/{locationId}/layout/versions/{versionId}` route is limited to `owner_user` and `super_user`. Authentication and group membership are checked before DynamoDB access. Missing or malformed direct-invocation claims return `401`; an authenticated caller outside the applicable groups receives `403`. The routes have no request body and require a non-empty `locationId` of at most 128 characters. The delete route also requires a canonical positive integer `versionId` of at most 38 digits (`1`, not `01`). This Lambda has no User-table permission, so protected access is group-only and cannot restrict a caller to an assigned location.
+
+The list branch strongly consistently queries every page under `PK="LOCATION#<locationId>"` and `SK begins_with "LAYOUT#v"`. It returns `200` with `{"items": [...]}` containing complete, non-archived logical snapshots sorted by numeric `version` from newest to oldest. An empty partition, or one containing only valid archived snapshots, returns `{"items": []}`; this also covers an unknown location because the function has no Location-table permission. Archived rows are still validated and included in duplicate-version detection before being omitted from the response.
+
+Every snapshot must have a positive integral `version` matching its canonical `LAYOUT#v<N>` key and the documented lifecycle, element, compilation, and audit fields created by `publish-layout`. Embedded floor, `floorArea`, wall, door, window, table, and `cashRegister` records are checked with the same type-specific field constraints as the live-layout model. Floor responses preserve `name` and signed integral `level`, non-floor responses preserve `floorId` when stored, floor-area and cash-register responses preserve common geometry, and door responses preserve optional `kind` (`entrance` or `kitchen`). A missing door `kind` remains valid and means legacy/unspecified. The handler also rechecks the publication invariant: a legacy flat snapshot has no floors and no `floorId` values, while a multi-floor snapshot requires every non-floor element to reference a floor in that snapshot. Corrupt relationships return `409`. `validPositions` remains an empty list until a position-compilation rule is defined.
+
+A table or cash-register response preserves its optional nested `label`;
+absence remains valid for legacy snapshots. This element field is separate
+from the snapshot's required top-level version `label`. Element labels are
+validated as trimmed, nonblank strings of at most 128 characters, but are
+neither generated nor required to be unique.
+
+Lifecycle timestamps are nullable and may describe a published, active, pending, or retired snapshot. During a scheduled replacement, the outgoing snapshot remains the sole `isCurrent=true` record and has `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`; the pending target remains `isCurrent=false` with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. The separate coordination item at `SK="LAYOUT#ACTIVATION"` is excluded by the `SK begins_with "LAYOUT#v"` query and is never returned. DynamoDB keys and unexpected stored attributes are also not returned.
+
+The delete branch strongly consistently reads the requested snapshot and optional activation-state item. It rejects a version that is current according to either the snapshot or activation state, and rejects the pending target of a scheduled replacement. An eligible version is soft-archived in one DynamoDB transaction: the snapshot receives `archivedBy` and `archivedAt`, its `updatedBy` and `updatedAt` are changed to the same caller/time, and a condition check proves the activation state has not changed since it was read. The snapshot content and key remain intact, so historical version numbers are never reused. A successful archive returns `204` with an empty body. Repeating DELETE for an already valid archived version is idempotent and also returns `204`. Conditional or ambiguous write outcomes are reconciled through strongly consistent reads and one bounded retry; an unresolved concurrent change returns `409` rather than risking an active-version archive.
+
+The public branch treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It strongly consistently reads the activation state, reads the `LAYOUT#v<currentVersion>` snapshot it names, and then reads the state again. If the current version changed, it retries the complete sequence once; another change returns `409`. A future pending version is never selected. The resolved snapshot must match the state pointer, must not be archived, must have `isCurrent=true`, must have `effectiveFrom` no later than now, and must have every non-null `effectiveTo` or `expiresAt` later than now.
+
+A successful public response is `{"floors": [...], "elements": [...]}`. Floor records become exactly `floorId` (their element ID), `name`, and `level`. Non-floor records retain `elementId`, `type`, geometry (`x`, `y`, `z`, `width`, `height`, `depth`, `rotationY`), optional `floorId`, and their applicable table (`shape`, `seats`, `zone`, and optional `label`), cash-register (optional `label`), or door/window (`wallId`) fields. Floor areas appear in `elements` with common geometry and optional `floorId`; they are never placed in the `floors` metadata array. A door also retains its optional `kind` (`entrance` or `kitchen`) so the customer renderer can distinguish the two purposes; legacy/unspecified doors simply omit it. Legacy tables and cash registers simply omit `label`. The response omits element audit fields, snapshot version/top-level label/lifecycle/audit fields, `validPositions`, DynamoDB keys, unexpected attributes, and activation metadata. An empty active snapshot returns two empty arrays; a legacy flat snapshot returns `floors: []` and elements without `floorId`.
+
+Malformed paths return `400`. A recognized request with the wrong method returns `405` with `Allow: GET` for a read route or `Allow: DELETE` for the archive route. The public route returns `404` with `active layout not found` when no activation state exists; DELETE returns `404` when its version does not exist. Inconsistent activation state, malformed or partial archive metadata, snapshot content/lifecycle, duplicate content, a current/pending archive attempt, or an unresolved concurrent change returns `409`. Malformed DynamoDB results and unexpected DynamoDB or transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
-| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read from |
+| `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read and soft-archive versions in |
 
-**AWS resource access:** Read-only (`Scan`, `GetItem`, `Query`) on Published Layout Snapshot.
+**AWS resource access:** `GetItem`, `Query`, and `TransactWriteItems` on Published Layout Snapshot only. The protected listing calls `Query`; the public resolver calls strongly consistent `GetItem` for state/snapshot/state; archive performs strongly consistent `GetItem` calls followed by one transaction containing a snapshot update and an activation-state condition check. It accesses no other table or AWS service.
+
+**Infrastructure routing note:** API Gateway must expose the explicit `GET /locations/{locationId}/layout/active` route with `NONE` auth and the explicit `DELETE /locations/{locationId}/layout/versions/{versionId}` route with JWT auth, integrate both with `list-layout-version`, and grant the matching route-scoped Lambda invoke permissions. The versions collection route remains JWT-protected. The Lambda execution role must allow `dynamodb:TransactWriteItems` against Published Layout Snapshot. CORS must allow the customer frontend origin to call the public route and allow authorized admin origins to use DELETE.
 
 ---
 
 ### 14. `activate-layout-version`
-**Trigger:** API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-**Purpose:** Publishes/activates a specific layout version, with a delayed cutover rather than an instant flip — the version being replaced keeps serving traffic until a scheduled cutover time, at which point `expire-layout-version` (below) retires it. Full sequence:
-1. Compute `cutover = date(now + 4 weeks) at 01:00 UTC`.
-2. `TransactWriteItems` (atomic): the new version gets `effectiveFrom = cutover`, `expiresAt = None`, `isCurrent = true`; the version it's replacing gets `expiresAt = cutover` (its `isCurrent` stays `true` for now — it's still the one actually served until cutover fires).
-3. Look up any pending EventBridge schedule ARN stored on the version being superseded; if present, delete it. **Not currently possible — see known gap below.**
-4. Create a new one-time EventBridge schedule targeting `expire-layout-version`, firing at `cutover`, with the superseded version's key (`PK`/`SK`) as payload. Store the resulting schedule ARN back onto that version's item (this is what step 3 looks up on the *next* publish).
-5. **First-ever publish for a location** (no existing `isCurrent = true` item): skip all of the above — `effectiveFrom = now`, `expiresAt = None`, activation is immediate, no schedule is created.
+**Triggers:**
 
-Also validate the `version` value (from the path or body — confirm which with the front-end) against the target item's SK (`v<N>`) before writing anything; reject on mismatch.
+- API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
+- API Gateway — `PUT /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
+- API Gateway — `DELETE /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
+
+**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+
+**Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. Dispatch uses the exact API Gateway route and method: `POST` activates a selected version, `PUT` reschedules the singleton pending activation, and `DELETE` cancels it. `locationId` must be non-empty and at most 128 characters. On `POST`, `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
+
+The `POST` body is optional. An omitted body, an API Gateway `null` body, an empty
+string, or `{}` selects the default timing. For a replacement, define
+`eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev` or
+28 days in `prod`. The default activates immediately when server now is at or
+after `eligibleAt`; otherwise it schedules the earliest whole UTC minute at or
+after both `eligibleAt` and `now + 60 seconds`. Otherwise the body must be a
+JSON object containing only `effectiveFrom`:
+
+```json
+{"effectiveFrom":"2026-10-05T16:37:00+02:00"}
+```
+
+`effectiveFrom` must be a non-empty, timezone-aware ISO 8601 string; the literal `"now"`, a naive timestamp, extra fields, JSON `null`, and non-object JSON are invalid. Base64-encoded API Gateway bodies are decoded before JSON validation. The requested instant is normalized to UTC. If it is at or before the single server time captured for the request, it requests immediate replacement and uses that server time as the actual `effectiveFrom`, but it cannot bypass `eligibleAt`; a too-early request returns `409` with `layout version cannot activate before <timestamp>`. A future value starts a new scheduled transition only when it has whole-minute precision, is at least 60 seconds after the captured server time, and is at or after the whole-minute ceiling of `eligibleAt`. The minimum lead and eligibility checks do not retime an idempotent retry of an already-pending transition at the same exact stored instant.
+
+The handler strongly consistently reads every published snapshot and the internal `LAYOUT#ACTIVATION` state item. More than one current snapshot, malformed records, archived current/pending snapshots, or disagreement between the state and snapshots returns `409`; the handler never guesses which record should win. A valid archived inactive snapshot cannot be reactivated and returns `409` with `archived layout version cannot be activated`.
+
+**First activation:** With the body omitted or with an `effectiveFrom` at or before server now, one DynamoDB transaction creates the activation-state item and updates the requested snapshot to `isCurrent=true`, `effectiveFrom=server now`, `effectiveTo=null`, and `expiresAt=null`. A valid future `effectiveFrom` cannot be used when the location has no current version and returns `409` with `future activation requires a current layout version`. A successful first activation returns `200`:
+
+```json
+{"status":"active","version":1,"effectiveFrom":"2026-09-07T10:30:00Z"}
+```
+
+When no activation is pending, repeating a request for the current version is idempotent and returns the same response without creating a schedule. While a transition is pending, only a matching retry for its target is resumable; requesting the current version instead returns the pending-transition conflict. For a legacy current snapshot with no state item, requesting that current version normalizes the snapshot and bootstraps the state machine regardless of body timing. A request for a different version applies the replacement eligibility policy; an eligible immediate replacement creates state already pointing at the target in the same atomic transaction that swaps the snapshots.
+
+**Immediate replacement:** Once the target has reached `eligibleAt`, a default request or an explicit `effectiveFrom` at or before server now replaces it without Scheduler. One conditional DynamoDB transaction advances or creates the activation-state record, retires the outgoing snapshot with `isCurrent=false` and `effectiveTo=expiresAt=server now`, and activates the target with `isCurrent=true`, `effectiveFrom=server now`, and null end/expiry fields. An explicit past/current timestamp is therefore a mode selector, not a historical lifecycle boundary. Before eligibility that request returns `409` without writing. The operation returns `200` with the active response shape above. Ambiguous DynamoDB outcomes are reconciled with strongly consistent reads; a proven concurrent change returns `409`, while an unresolved dependency failure returns the sanitized `503` response.
+
+**Scheduled replacement:** With no `effectiveFrom` and a target that is not yet eligible, `cutoverAt` is the whole-minute ceiling of `max(eligibleAt, now + 60 seconds)`. With an explicit future `effectiveFrom`, `cutoverAt` is that exact UTC-normalized whole minute, provided it satisfies both the scheduler lead and eligibility boundaries. The operation is a recoverable two-phase saga because DynamoDB and EventBridge Scheduler cannot share one transaction:
+
+1. A conditional DynamoDB transaction increments the state revision and records a durable `scheduling` intent containing `pendingVersion`, `activationToken`, `cutoverAt`, a deterministic `scheduleName`, and `pendingTargetPreviousLifecycle`, which preserves the target's exact three lifecycle values before staging. Neither snapshot's serving lifecycle changes yet.
+2. Create a one-time EventBridge schedule in the `default` group. Its name is `expire-layout-version-` followed by the first 42 characters of the activation token, so it is IAM-compatible and never exceeds Scheduler's 64-character limit.
+3. A second conditional DynamoDB transaction changes the intent to `scheduled`, stores `scheduleArn`, gives the outgoing current snapshot `effectiveTo=cutoverAt` and `expiresAt=cutoverAt`, and gives the pending target `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`. Both `isCurrent` values remain unchanged: old is `true`, target is `false`.
+4. At cutover, `expire-layout-version` atomically retires the old snapshot, activates the target, advances the state, and clears all pending fields.
+
+A successfully staged or already-staged replacement returns `202`:
+
+```json
+{"status":"pending","version":2,"currentVersion":1,"cutoverAt":"2026-10-21T10:01:00Z"}
+```
+
+Only one target may be pending. A bodyless/empty `POST` for that same target resumes it, as does an explicit future `POST` whose UTC-normalized instant exactly equals the stored `cutoverAt`. A retry preserves that stored cutoff and does not recompute it from the current time or policy. An explicit immediate `POST`, a different future instant, or a different target cannot replace the pending transition and returns `409` with `another layout activation is pending`; moving the cutoff belongs to the dedicated `PUT` route below. A matching retry verifies an existing future schedule with `GetSchedule`, including its expression, enabled state, target, role, and payload. A matching `CreateSchedule` conflict is reconciled the same way. A disabled or mismatched schedule returns a sanitized dependency failure. If the expected schedule is missing while `cutoverAt` is still future, recovery deletes the validated stored name when present, renews the transition token/name, and recreates the schedule at the **same exact stored cutoff**. `ResourceNotFoundException` during recovery deletion is an expected no-op. Recovery never resumes a pending transition whose stored cutoff is at or before server now; it returns `409` with `layout activation cutover is overdue`. Ambiguous DynamoDB results are reconciled through bounded, strongly consistent state-snapshot-state reads before an error is returned.
+
+**Reschedule pending activation:** `PUT /locations/{locationId}/layout/pending-activation` takes exactly one required field:
+
+```json
+{"effectiveFrom":"2026-10-28T10:00:00Z"}
+```
+
+The value must be a future, timezone-aware ISO 8601 whole minute. For a changed cutoff it must be at least 60 seconds after the captured server time and no earlier than the whole-minute replacement-eligibility boundary. A semantically equal timestamp with another offset is normalized to the same UTC instant and is an idempotent retry, even if the existing cutoff is now inside the ordinary 60-second lead window. Omitting `effectiveFrom`, requesting immediate activation, or adding fields returns `400`. No pending transition returns `404` with `pending layout activation not found`; an overdue transition returns `409` and cannot be moved.
+
+Rescheduling retains the same pending target. For a changed cutoff, one conditional transaction rotates the revision/token/name and makes the previous schedule stale. If the prior phase is `scheduled`, it also restores the current snapshot to an open-ended lifecycle and the target's exact lifecycle from before the original scheduling attempt; a prior `scheduling` phase instead condition-checks the already-unstaged snapshots. The handler then creates the new schedule and atomically stages the new boundary before deleting the old schedule on a best-effort basis. An equal-cutoff PUT only resumes or verifies the existing transition and does not rotate it. A stale old schedule cannot mutate state because the worker validates the token. A dependency failure after reservation leaves a durable `scheduling` intent that an exact retry can finish. Normal or idempotent pending success returns `202` with the standard pending response. If reconciliation proves the worker completed this exact transition concurrently, it returns `200` with the active response instead of reporting a false failure.
+
+**Cancel pending activation:** `DELETE /locations/{locationId}/layout/pending-activation` does not read a request body. A conditional transaction clears every pending field and increments the revision. For `scheduled`, it also reopens the current snapshot and restores the inactive target's exact pre-scheduling lifecycle; for `scheduling`, it condition-checks the unchanged snapshots without rewriting them. Scheduler deletion happens only after DynamoDB is authoritative and is best effort; a missing schedule or cleanup failure does not undo cancellation because its token is stale. Cancellation is idempotent: no state item or no pending transition returns `204` without AWS Scheduler access. A due/overdue transition or a worker/finalizer race returns `409` rather than claiming cancellation.
+
+The `pendingTargetPreviousLifecycle` state field makes exact restoration possible. A legacy `scheduling` record without it can capture the still-unstaged target lifecycle while being rescheduled, and cancellation leaves its snapshots unchanged. A legacy `scheduled` record without it fails closed with `409` for both `PUT` and `DELETE`; its already-overwritten target lifecycle cannot be reconstructed safely.
+
+Malformed paths, malformed/unsupported `POST` or `PUT` bodies, invalid timestamps, sub-minute future timestamps, and insufficient lead time for a new or changed future transition return `400`; therefore a future first-activation request with insufficient lead also returns `400`. `DELETE` ignores any supplied body. Missing/malformed direct-invocation claims return `401`; valid callers outside the allowed groups receive `403`. A missing activation target, missing pending transition on `PUT`, or wrong method returns `404`/`405` as appropriate; `Allow` is route-specific (`POST`, `PUT`, or `DELETE`). Otherwise-valid requests that are too early, overdue, concurrent, legacy-unsafe, or inconsistent return `409`; sanitized DynamoDB/Scheduler/configuration failures return `503`. Scheduled or rescheduled success returns `202` with `status="pending"`; cancellation returns an empty `204`; first/immediate/idempotently active success and a proven concurrent cutover return `200` with `status="active"`. Every response produced by the Lambda includes `Cache-Control: no-store`.
 
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read/update |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` — the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 
-**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. `scheduler:*` (scoped to schedule names matching `expire-layout-version-*` in the `default` group, so this covers both `CreateSchedule` and `DeleteSchedule`) and `iam:PassRole` on the scheduler invoke role.
+**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. Scheduler `CreateSchedule`, `GetSchedule`, and `DeleteSchedule`, scoped to names matching `expire-layout-version-*` in the `default` group, plus `iam:PassRole` on the scheduler invoke role. It accesses no other table or AWS service.
 
-**Downstream — deleting the superseded version's pending schedule (step 3):**
-```python
-scheduler.delete_schedule(Name=f"expire-layout-version-{old_pk}-{old_sk}", GroupName="default")
-```
-Safe to call even if no schedule exists for that key (e.g. the version being superseded was never given one, such as the very first published version) — catch `scheduler.exceptions.ResourceNotFoundException` and treat it as a no-op.
+The pending-management routes do not inspect Reservation or Slot Occupancy.
+Once availability begins advertising the pending layout inside the 21-day
+booking horizon, cancelling, retiming, or replacing it can make an existing
+booking's stored layout-version/table assumptions stale. Production must
+define a separate reservation-impact policy before exposing late changes;
+possible policies include forbidding changes inside the booking horizon or
+adding reservation-aware migration. This Lambda's current resource contract
+does not authorize the latter.
 
-**Downstream — creating the cutover schedule:**
+**Infrastructure and rollout:** API Gateway must add the exact JWT-protected
+`PUT` and `DELETE /locations/{locationId}/layout/pending-activation` routes,
+integrate both with this same Lambda, and grant route-scoped invoke permission.
+HTTP API CORS must allow `PUT`, `DELETE`, `Authorization`, and `Content-Type`
+for the admin/Swagger origins; preflight remains unauthenticated. No new
+Lambda, table, environment variable, or execution-role permission is needed.
+
+Before enabling the controls, inspect activation-state items for a legacy
+`pendingStatus="scheduled"` transition without
+`pendingTargetPreviousLifecycle`. Let each such transition finish or remediate
+it deliberately; do not invent rollback values. Deploy compatible readers and
+the cutover worker before the updated `activate-layout-version`, then expose
+the new routes and frontend controls. To choose another pending version, call
+DELETE successfully and then call the existing POST activation route for the
+new version; that two-request change is intentionally not presented as one
+atomic operation.
+
+**Downstream schedule contract:**
+
 ```python
 import json, os, boto3
 scheduler = boto3.client("scheduler")
 
 scheduler.create_schedule(
-    Name=f"expire-layout-version-{superseded_pk}-{superseded_sk}",
+    Name="expire-layout-version-<42-character-token-prefix>",
     GroupName="default",
+    ClientToken=activation_token,
     ScheduleExpression=f"at({cutover.strftime('%Y-%m-%dT%H:%M:%S')})",
+    ScheduleExpressionTimezone="UTC",
     FlexibleTimeWindow={"Mode": "OFF"},
-    ActionAfterCompletion="DELETE",   # schedule deletes itself after firing once
+    ActionAfterCompletion="DELETE",
     Target={
         "Arn": os.environ["EXPIRE_LAYOUT_VERSION_FUNCTION_ARN"],
         "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
-        "Input": json.dumps({"PK": superseded_pk, "SK": superseded_sk}),
+        "Input": json.dumps({
+            "PK": outgoing_pk,
+            "SK": outgoing_sk,
+            "activationStateSK": "LAYOUT#ACTIVATION",
+            "activationToken": activation_token,
+            "targetSK": target_sk,
+        }),
     },
 )
 ```
-The schedule name must start with `expire-layout-version-` — that prefix is exactly what the IAM policy's resource pattern matches against; anything else gets denied at the `CreateSchedule` call.
+
+The actual input is serialized compactly with sorted keys. The schedule name must retain the `expire-layout-version-` prefix because the IAM policy is scoped to that resource pattern.
 
 ---
 
 ### 15. `expire-layout-version`
 **Trigger:** EventBridge Scheduler, one-time, created by `activate-layout-version` (above) — not API Gateway, no HTTP semantics. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
-```python
-{"PK": "...", "SK": "..."}
+```json
+{
+  "PK": "LOCATION#154b5c59-3a7f-4248-895c-29ee980356f3",
+  "SK": "LAYOUT#v1",
+  "activationStateSK": "LAYOUT#ACTIVATION",
+  "activationToken": "<64-character-token>",
+  "targetSK": "LAYOUT#v2"
+}
 ```
-**Purpose:** Runs once at a version's cutover time. Conditionally writes `isCurrent = false` on the version identified by the payload key — the update's `ConditionExpression` should require `isCurrent = true` (i.e. it's still the target version) before writing. Treat a `ConditionalCheckFailedException` as an expected no-op, not an error — it just means this already ran (e.g. a retried invocation), not that something's wrong.
+**Purpose:** Runs once at cutover and completes the transition reserved by `activate-layout-version`. The worker validates the exact five-field event, strongly reads the activation-state item and both snapshots, and then uses one conditional DynamoDB transaction to:
+
+1. set the outgoing snapshot's `isCurrent=false`, preserving its `effectiveFrom` and setting both `effectiveTo` and `expiresAt` to the stored `cutoverAt`;
+2. set the target snapshot's `isCurrent=true`, with `effectiveFrom=cutoverAt`, `effectiveTo=null`, and `expiresAt=null`;
+3. move `currentVersion` to the target, increment `revision`, update audit metadata, and remove every pending field from the state item.
+
+The normal `scheduled` phase requires the lifecycle timestamps to have already been staged by `activate-layout-version`. A due `scheduling` phase is also recoverable: it means Scheduler creation succeeded but the final DynamoDB staging transaction did not complete, so this worker applies the same lifecycle boundary while completing the cutover. The deterministic activation token binds environment, table, location, versions, revision, and cutoff to the event. Transaction conditions bind the stored phase, old/current version, target version, lifecycle timestamps, schedule metadata, audit version, and token to the values that were strongly read.
+
+`pendingTargetPreviousLifecycle` is rollback metadata for the HTTP management
+routes, not an input to the final active lifecycle. The worker removes it with
+all other pending fields. A legacy `scheduled` transition without that backup
+can still complete its already-staged cutover, but the HTTP `PUT` and `DELETE`
+routes reject it because they cannot safely reconstruct the inactive target's
+earlier lifecycle.
+
+Before writing, the worker independently revalidates that `cutoverAt` is not
+earlier than the target snapshot's `createdAt` plus five minutes in `dev` or
+28 days in `prod`. The transaction also binds each snapshot's immutable
+`createdAt` to the value that was read, so a concurrent or corrupt timestamp
+cannot bypass the policy. An invalid environment or a transition violating
+that delay raises for retry and does not activate the target.
+
+The worker must not complete the transition before the stored `cutoverAt`; late delivery is allowed, but the effective interval boundary remains the stored cutoff. Snapshot audit fields use the activation state's `updatedBy` and the worker execution time as `updatedAt`. Invalid event shapes and matching early, missing-snapshot, or corrupt transitions raise instead of being acknowledged.
+
+A missing state item, a state item with no pending transition, or a different authoritative token is a confirmed stale/orphaned invocation and returns `None` without writing. After any matching-path validation, conditional, transport, or ambiguous transaction failure, the worker strongly rereads state: it returns `None` only if that read proves the transition was completed or superseded; otherwise the original error propagates. EventBridge Scheduler invokes Lambda asynchronously, so a handler error is retried by Lambda's asynchronous invocation handling after Scheduler has delivered the event. Infrastructure should configure an on-failure destination or Lambda dead-letter queue for events that exhaust those retries; Scheduler retry/DLQ settings separately cover failures to deliver the event to Lambda. The worker must never retire a different current version or activate a superseded target. This atomic three-item cutover is required for the exactly-one-current invariant.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` or `prod` |
+| `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own — this function is the schedule's *target*, not the one creating/deleting schedules.
+
+**Deployment compatibility:** Deploy this five-field worker before deploying an `activate-layout-version` build that emits the event above. Any legacy one-time schedules containing only `PK` and `SK` are intentionally rejected and must be removed or recreated; they cannot safely perform the atomic replacement cutover.
 
 ---
 
@@ -315,21 +818,65 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 
 ### 16. `manage-auth`
 **Trigger:** API Gateway — `ANY /auth/{proxy+}` — Auth: `NONE`
-**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh — whatever sub-paths the front-end needs). Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner/super_user accounts exist in Cognito — customers never authenticate.
+**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh — whatever sub-paths the front-end needs) and "forgot password". Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner accounts exist in Cognito — customers never authenticate.
+
+**Forgot password:** `POST /auth/forgot-password {username}` runs Cognito `ForgotPassword` and always answers `202 {"status": "sent"}` — also for an address without an account, an account still on its invitation's temporary password, a disabled account or one without a verified email — so the form can't reveal which addresses have accounts (the reason is logged, never the address). Cognito emails a 6-digit code; when the user pool sends through SES its custom message trigger (infrastructure `compute/lambda/cognito-custom-message`) turns it into a link to the admin app's `/aterstall-losenord#code=…&email=…`. `POST /auth/reset-password {username, code, newPassword}` runs `ConfirmForgotPassword`: `200 {"status": "reset"}`, or `400` `invalid code` / `code expired` / `password does not meet requirements`, `403 account_disabled`, `429 too many attempts`. A broken reset email (trigger or SES error) is a `502`, never hidden. Per IP address: 5 reset emails and 10 new-password attempts per 15 minutes (`shared/request_guard.py`, `429` with `Retry-After`), on top of Cognito's per-account limits.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `COGNITO_USER_POOL_ID` | Target user pool for auth calls |
-| `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge` |
+| `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge`/`ForgotPassword`/`ConfirmForgotPassword` |
+| `COGNITO_CLIENT_SECRET` | App client secret used to calculate Cognito `SECRET_HASH` values |
+| `REQUEST_GUARD_TABLE_NAME` | Per-IP attempt counters for forgot/reset password (optional — unset means no per-IP limit) |
 
-**AWS resource access:** Cognito `InitiateAuth` and `RespondToAuthChallenge` only, scoped to the user pool. No DynamoDB access at all — this function only talks to Cognito.
+**AWS resource access:** Cognito `InitiateAuth`, `RespondToAuthChallenge`, `ForgotPassword` and `ConfirmForgotPassword`, scoped to the user pool; `dynamodb:UpdateItem` on the request-guard table only.
 
 ---
 
 ### 17. `manage-user`
-**Trigger:** API Gateway — `ANY /users/{proxy+}` — Auth: `JWT`
-**Purpose:** Full staff lifecycle management — invite/create a staff member, update their profile, deactivate/reactivate, remove them, assign/change their group (`staff`/`owner_user`/`super_user`). Should be restricted in-handler to `owner_user`/`super_user` callers. `{proxy+}`/`ANY` dispatch, same pattern as `manage-menu`.
+**Triggers:** API Gateway — `GET /list-users` and `ANY /users/{proxy+}` — Auth: `JWT`
+**Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the collection read uses the dedicated `/list-users` route and reaches the same handler without a `proxy` path parameter.
+
+**Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. A `super_user` may read every valid User-table mirror. An `owner_user` list contains staff records plus the caller's own record, and an owner may individually read only a staff record or their own record; another owner or super-user is hidden with `403`. The collection read deliberately uses the mirrored `role` without N+1 Cognito calls. A non-self owner read of one mirrored staff user verifies via `AdminListGroupsForUser` that the target's live managed membership is exactly `staff_user`; a mismatch returns `403`.
+
+For mutations, an `owner_user` may manage `staff_user` targets only. For non-self owner mutations, current Cognito membership is checked rather than trusting only the mirrored User-table role. Only a `super_user` may create a privileged user or manage a target whose current group is `owner_user` or `super_user`. Self-profile updates are allowed, but self-status changes, self-deletion, and self-group changes are forbidden. Missing/malformed direct-invocation claims return `401`; a valid caller without sufficient permissions returns `403`.
+
+The managed Cognito group names are `staff_user`, `owner_user`, and `super_user`. They deliberately map to the User-table `role` values as follows:
+
+| Cognito group | User-table `role` | Location rule |
+|---|---|---|
+| `staff_user` | `staff` | `locationId` is required and non-empty |
+| `owner_user` | `owner_user` | `locationId` is stored as an empty string |
+| `super_user` | `super_admin` | `locationId` is stored as an empty string |
+
+**Dispatch and payload contract:**
+
+| Method | `proxy` path | Request | Success |
+|---|---|---|---|
+| `GET` | Dedicated `/list-users` route; no proxy | No body | `200` with `{"items": [...]}` containing every user visible to the caller |
+| `POST` | `invite` | `name`, `email`, `phone`, `group`, plus conditional `locationId` | `201` with the logical user and `Location: /users/<cognitoSub>` |
+| `GET` | `<cognitoSub>` | No body | `200` with one visible logical user |
+| `PUT` | `<cognitoSub>` | One or more of `name`, `email`, `phone`, `locationId` | `200` with the updated logical user |
+| `POST` | `<cognitoSub>/deactivate` | No body | `200` with `status="disabled"` |
+| `POST` | `<cognitoSub>/reactivate` | No body | `200` with `status="active"` |
+| `DELETE` | `<cognitoSub>` | No body | `204` with an empty body |
+| `PUT` | `<cognitoSub>/group` | `group`, plus conditional `locationId` | `200` with the updated logical user |
+
+The invitation and an email change both set `email_verified=true` (in the same Cognito call): the owner vouches for the address, the reset link of "forgot password" only goes to a verified email, and Cognito doesn't send a verification code nobody can enter.
+
+`PUT /users/<cognitoSub>` is intentionally a partial update even though it uses `PUT`: the infrastructure's CORS configuration does not permit `PATCH`. At least one supported field is required. Server-controlled fields (`PK`, `SK`, `cognitoSub`, `role`, `status`, `createdBy`, and `createdAt`) and unknown fields are rejected. A group change uses the same location rule as creation: a target `staff_user` needs a non-empty `locationId`; privileged targets get an empty location.
+
+The logical user returned by successful non-delete actions contains `cognitoSub`, `role`, `locationId`, `name`, `email`, `phone`, `status`, `createdBy`, and `createdAt`; internal `PK`/`SK` attributes are never returned. The collection read performs a paginated, strongly consistent DynamoDB `Scan`, validates every mirror, applies the caller visibility rule, and returns an empty `items` array when no records are visible. Results are sorted case-insensitively by `name`, then by `cognitoSub`. The individual read uses one strongly consistent `GetItem` and applies the live-group check described above when needed. Because these responses contain staff PII, successful and error responses include `Cache-Control: no-store`.
+
+**AWS operation behavior:** Creating a user calls `AdminCreateUser`, then `AdminAddUserToGroup`, then conditionally writes `PK="USER#<cognitoSub>"`, `SK="PROFILE"` to the User table. If group assignment or a definite DynamoDB non-write fails after confirmed Cognito creation, the handler attempts `AdminDeleteUser` compensation and returns a sanitized service error. An ambiguous transport failure from `AdminCreateUser` is never followed by deletion because the handler cannot prove that this request created the account. Profile, status, and group changes first load the mirrored user consistently, mutate Cognito, and conditionally update DynamoDB against the complete state that was loaded so concurrent changes return `409` instead of being overwritten. Profile/status flows snapshot the live Cognito attributes or enabled state with `AdminGetUser` and only restore changes this request actually made. A group change uses `AdminListGroupsForUser`, ensures the requested managed group is present, and removes other managed groups before updating the mapped role/location. Delete loads the mirror, calls `AdminDeleteUser`, then conditionally deletes the exact mirrored state; `UserNotFoundException` is treated as an already-completed Cognito deletion so a retry can repair a stale mirror.
+
+For a DynamoDB `5xx`, timeout, or transport error, a single-item write may already have committed. The handler performs a strongly consistent read and one idempotent retry before deciding the outcome. If the desired state is present, it returns success without compensating Cognito. If the result remains uncertain, it returns a sanitized `503` and deliberately avoids a potentially destructive rollback.
+
+Malformed paths, JSON, or fields return `400`; missing targets and unknown proxy paths return `404`; recognized paths with the wrong method return `405` with `Allow`; inconsistent directory mirrors, duplicate identities, or conditional conflicts return `409`; throttling returns `429`; and malformed AWS responses or unexpected Cognito/DynamoDB/transport failures return a sanitized `503`. Raw AWS error messages are never returned.
+
+The function has no Location-table access, so it validates the shape of an assignment but cannot prove that a supplied `locationId` exists. Cognito disable/group changes also do not revoke an access token already accepted by API Gateway; with the current one-hour access-token lifetime and no `AdminUserGlobalSignOut` permission, old claims can remain usable until token expiry.
+
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -341,14 +888,14 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 - Full `dynamodb:*` on the User table.
 - Cognito, scoped to this specific action set on the user pool (not a wildcard): `AdminCreateUser`, `AdminDeleteUser`, `AdminDisableUser`, `AdminEnableUser`, `AdminUpdateUserAttributes`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminGetUser`, `AdminListGroupsForUser`.
 
-**Note:** creating a staff member is a two-step Cognito call — `AdminCreateUser` then `AdminAddUserToGroup` to assign them into `staff`/`owner_user`/`super_user`.
+**Infrastructure routing note:** keep `ANY /users/{proxy+}` and add an explicit `GET /list-users` route integrated with this Lambda, with the JWT authorizer and matching Lambda invoke permission. The dedicated route invokes the list action without a `proxy` path parameter. No new environment variable or AWS permission is needed for these reads because the existing role already has full access to the User table.
 
 ---
 
 ## Payments & Background Jobs
 
 ### 18. `stripe-webhook`
-**Trigger:** **Lambda Function URL** — public HTTPS endpoint called directly by Stripe, **not** API Gateway, **not** JWT-protected. Auth/trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET` (see the Stripe keys gap above — this env var still needs to be added). Event payload shape is the same as API Gateway v2 (`event["body"]` is the raw JSON Stripe sends, `event["headers"]["stripe-signature"]`), but there is no `requestContext.authorizer` block since there's no Cognito involved.
+**Trigger:** API Gateway — `POST /webhooks/stripe/reservation` — Auth: `NONE`. Stripe calls this route directly. Trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET`; the absence of Cognito authentication does not make an unverified payload trustworthy. API Gateway delivers its HTTP API v2 proxy event with the raw JSON in `event["body"]` and the signature in `event["headers"]["stripe-signature"]`.
 **Purpose:** Receives Stripe webhook events. The two events you need to handle at minimum:
 - `setup_intent.succeeded` — the customer's card-on-file setup for a pending reservation completed. Transition the matching Reservation from `pending` → `reserved` (this is what fires the booking-confirmed notification, see `notification` below), then create a one-time EventBridge Scheduler schedule targeting `no-show-check` for that reservation's no-show check time.
 - Any event related to an off-session charge outcome you trigger elsewhere (e.g. from `no-show-check`) — used to reconcile final reservation/payment state if you're not handling that synchronously.
@@ -362,8 +909,9 @@ The schedule name must start with `expire-layout-version-` — that prefix is ex
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Full access — write debt records here if a charge triggered from this function fails |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as the `RoleArn` — this is the role EventBridge Scheduler assumes to invoke `no-show-check` on your behalf |
 | `NO_SHOW_CHECK_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
+| `STRIPE_WEBHOOK_SECRET` | Verify the reservation endpoint's `Stripe-Signature`; supplied from the Terraform-managed Stripe endpoint |
 
-*(Still needed once you implement Stripe API calls here: `STRIPE_SECRET_KEY` to call Stripe, `STRIPE_WEBHOOK_SECRET` to verify the signature — not yet in this function's Terraform env block, see gap note at top.)*
+The handler must reject missing or invalid signatures before parsing or acting on the event. This requirement applies even though API Gateway intentionally uses `NONE` auth for Stripe compatibility.
 
 **AWS resource access:** Read-only on Location; full `dynamodb:*` on Reservation and Payment Delinquency. `scheduler:CreateSchedule` (scoped to schedule names matching `no-show-check-*` in the `default` group) and `iam:PassRole` on the scheduler invoke role.
 
@@ -451,14 +999,43 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 
 ### 21. `pre-signed-url`
 **Trigger:** API Gateway — `GET /menu-images/presigned-url` — Auth: `JWT`
-**Purpose:** Generates a presigned S3 URL (PUT, for upload) so the admin front-end can upload a menu item image directly to S3 without routing the binary through API Gateway/Lambda. After a successful replace, this function should also invalidate the relevant CloudFront distribution's cache for that object path so the new image is served immediately rather than the stale cached one.
+**Purpose:** Generates a short-lived presigned S3 URL (PUT, for upload) so the admin front-end can upload a menu item image directly to S3 without routing the binary through API Gateway/Lambda. Every upload uses a new immutable object key; replacing an image means updating the menu item's `imageKey` after the PUT succeeds, so CloudFront sees a new path instead of serving a stale cached object.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `MENU_IMAGES_BUCKET_NAME` | S3 bucket to generate the presigned URL against |
 
-**AWS resource access:** Full `s3:*` on the Menu Images bucket (bucket + objects). `cloudfront:CreateInvalidation` — currently scoped to `Resource: "*"` (both distributions) rather than specific distribution ARNs; this is a known-loose grant flagged for tightening once distribution ARNs are wired through, not something to worry about from the application code side.
+**Authorization:** The caller must have a valid subject and belong to `owner_user` or `super_user`, following the least-privilege group example in the original stub. Missing/malformed direct-invocation claims return `401`; a valid caller outside those groups, including `staff_user`, receives `403`.
+
+The request accepts only `GET` with exactly two query parameters: `locationId` and `contentType`. `locationId` is 1–128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. `contentType` is exactly `image/avif`, `image/jpeg`, `image/png`, or `image/webp` after case normalization. The handler generates `menu-images/locations/<locationId>/menu/<uuid>.<extension>` itself; callers cannot select an arbitrary bucket key or CloudFront distribution. The `menu-images/` prefix matches the CloudFront behavior path and is part of the S3 object key, not merely a public URL prefix.
+
+The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 300 seconds, and binds the selected content type. A successful `200` response contains exactly `uploadUrl`, `imageKey`, `expiresIn`, and `requiredHeaders`; `imageKey` is the full generated value (for example, `menu-images/locations/<locationId>/menu/<uuid>.webp`) and must be stored unchanged on the menu item after the upload succeeds. The uploader must send the returned `Content-Type` header with its S3 `PUT`. Malformed input returns `400`, a wrong method returns `405` with `Allow: GET`, and signing failures return a sanitized `503`. All responses include `Cache-Control: no-store` because the URL carries temporary upload authority.
+
+**AWS resource access:** URL generation locally signs the permitted S3 `PutObject` operation; it does not call S3 to inspect or write an object and it does not call any other AWS service. The existing `cloudfront:CreateInvalidation` grant is unused. Correct post-upload invalidation would require both a CloudFront distribution ID and an S3 upload-completion trigger/callback, neither of which is present in this function's trigger or allowed environment-variable contract. If same-key replacement is introduced later, infra and this specification must add those inputs rather than accepting a client-supplied distribution ID or invalidating before the upload succeeds.
+
+---
+
+## Food orders
+
+Full details: `docs/ORDERS.md`.
+
+### 22. `payment-intent`
+**Trigger:** API Gateway — `POST /order` — Auth: `NONE`
+**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, checkoutUrl, statusToken, totalAmount}`. Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
+**AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
+
+### 23. `webhook-payment-intent`
+**Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) — Auth: Stripe signature
+**Purpose:** `checkout.session.completed` / `async_payment_succeeded` with `payment_status=paid` → order `confirmed` (daily number, ready estimate, `order_confirmed` notice); `expired` / `async_payment_failed` → `failed`; `charge.refunded` → refund recorded. Matched by metadata + connected account + session id and amount; all writes conditional.
+
+### 24. `get-order`
+**Trigger:** API Gateway — `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) — Auth: `NONE`
+**Purpose:** Open/closed right now (and a QR code's table), and the guest's order. A pending order is checked with Stripe so the return page shows `confirmed` without waiting for the webhook.
+
+### 25. `manage-order`
+**Trigger:** API Gateway — `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` — Auth: `JWT` (owner, staff of the location)
+**Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
 
 ---
 
@@ -466,10 +1043,10 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 
 | # | Function | Trigger | Auth |
 |---|---|---|---|
-| 1 | `create-location` | API GW `POST /locations` | JWT |
-| 2 | `get-location` | API GW `GET /locations/{locationId}` | JWT |
-| 3 | `get-menu` | API GW `GET /locations/{locationId}/menu` | NONE |
-| 4 | `manage-menu` | API GW `ANY /locations/{locationId}/menu/{proxy+}` | JWT |
+| 1 | `create-location` | API GW `POST /locations`; `PUT`/`DELETE /locations/{locationId}` | JWT |
+| 2 | `get-location` | API GW `GET /locations`; `GET /locations/{locationId}`; `GET /locations/{locationId}/public-info` | JWT on directory/detail; NONE on public-info |
+| 3 | `get-menu` | API GW `GET /locations/{locationId}/menu`; `GET /locations/{locationId}/menu/{proxy+}` | NONE on bare route; JWT on greedy route |
+| 4 | `manage-menu` | API GW `POST`/`PUT`/`DELETE /locations/{locationId}/menu/{proxy+}` | JWT |
 | 5 | `get-availability` | API GW `GET /locations/{locationId}/availability` | NONE |
 | 6 | `create-pending-reservation` | API GW `POST /reservations` | NONE |
 | 7 | `get-reservation` | API GW `GET /reservations/{reservationId}` | JWT |
@@ -478,12 +1055,16 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 | 10 | `block-table` | API GW `POST /locations/{locationId}/tables/{tableId}/block` | JWT |
 | 11 | `manage-layout-element` | API GW `ANY /locations/{locationId}/layout-elements/{proxy+}` | JWT |
 | 12 | `publish-layout` | API GW `POST /locations/{locationId}/layout/publish` | JWT |
-| 13 | `list-layout-version` | API GW `GET /locations/{locationId}/layout/versions` | JWT |
-| 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate` | JWT |
+| 13 | `list-layout-version` | API GW `GET /locations/{locationId}/layout/versions`; `DELETE /locations/{locationId}/layout/versions/{versionId}`; `GET /locations/{locationId}/layout/active` | JWT on versions/archive; NONE on active |
+| 14 | `activate-layout-version` | API GW `POST /locations/{locationId}/layout/versions/{versionId}/activate`; `PUT`/`DELETE /locations/{locationId}/layout/pending-activation` | JWT |
 | 15 | `expire-layout-version` | EventBridge Scheduler (one-time, per-version cutover) | n/a |
 | 16 | `manage-auth` | API GW `ANY /auth/{proxy+}` | NONE |
-| 17 | `manage-user` | API GW `ANY /users/{proxy+}` | JWT |
-| 18 | `stripe-webhook` | Lambda Function URL (public, Stripe-signed) | Stripe signature, not JWT |
+| 17 | `manage-user` | API GW `GET /list-users`; `ANY /users/{proxy+}` | JWT |
+| 18 | `stripe-webhook` | API GW `POST /webhooks/stripe/reservation` | Stripe signature, not JWT |
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
-| 20 | `notification` | DynamoDB Stream (Reservation table, filtered) | n/a |
+| 20 | `notification` | DynamoDB Streams (Reservation and Order tables, filtered on a notice) | n/a |
 | 21 | `pre-signed-url` | API GW `GET /menu-images/presigned-url` | JWT |
+| 22 | `payment-intent` | API GW `POST /order` | NONE |
+| 23 | `webhook-payment-intent` | Function URL (Stripe order payments) | Stripe signature |
+| 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |
+| 25 | `manage-order` | API GW `GET /locations/{locationId}/orders`; `ANY /locations/{locationId}/orders/{proxy+}` | JWT |

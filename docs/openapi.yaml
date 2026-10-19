@@ -58,6 +58,8 @@ tags:
     description: The signed-in restaurant's own account, plan and Stripe onboarding.
   - name: Reservations
     description: Guest table bookings, the guest manage link, and staff booking management.
+  - name: Marketing
+    description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
 
 paths:
   /auth/login:
@@ -3839,6 +3841,140 @@ paths:
           $ref: '#/components/responses/OrderBadRequest'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /t:
+    post:
+      tags:
+        - Marketing
+      summary: Count a visit or page view on a restaurant site
+      operationId: marketingTrack
+      description: |
+        Cookieless: no visitor id, nothing stored on the device, no IP
+        address kept. Only daily counters per location, channel and campaign.
+        Always answers 204 (bots, unknown sites and plans without marketing
+        are silently ignored).
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, type]
+              properties:
+                locationId: {type: string}
+                type: {type: string, enum: [visit, page]}
+                path: {type: string}
+                referrer: {type: string}
+                source: {type: string}
+                medium: {type: string}
+                campaign: {type: string}
+                campaignId: {type: string}
+      responses:
+        '204':
+          description: Counted (or ignored).
+        '400':
+          description: Malformed request.
+
+  /m/c/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Click on a link in a marketing email
+      operationId: marketingClick
+      description: Signed link; records the click once and redirects to the campaign's frozen link.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '302':
+          description: Redirect to the link.
+        '404':
+          description: Invalid link (HTML page).
+
+  /m/u/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Unsubscribe page
+      operationId: marketingUnsubscribePage
+      description: Shows a button; a GET alone never unsubscribes (mail scanners follow links).
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+    post:
+      tags:
+        - Marketing
+      summary: Unsubscribe (button or RFC 8058 one-click)
+      operationId: marketingUnsubscribe
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation; the address gets no more campaigns.
+
+  /marketing/{proxy}:
+    parameters:
+      - {name: proxy, in: path, required: true, schema: {type: string}}
+    get:
+      tags:
+        - Marketing
+      summary: Marketing reads (overview, templates, campaigns, audience, subscribers)
+      operationId: marketingRead
+      security:
+        - bearerAuth: []
+      description: |
+        Owner only, plan feature "marketing". See the function docstring
+        (functions/marketing/app.py) for every sub-path.
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+        '403':
+          description: Not the owner, or marketing is not in the plan.
+    post:
+      tags:
+        - Marketing
+      summary: Create templates and campaigns, preview, test, send, cancel, unsubscribe a subscriber
+      operationId: marketingWrite
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+        '201':
+          description: Created
+    put:
+      tags:
+        - Marketing
+      summary: Update a template or a draft campaign
+      operationId: marketingUpdate
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+    delete:
+      tags:
+        - Marketing
+      summary: Delete a template, a draft campaign or a subscriber (erase)
+      operationId: marketingDelete
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted
 
 components:
   securitySchemes:

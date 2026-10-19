@@ -40,7 +40,7 @@ from datetime import timedelta
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import http, request_guard, tenant, turnstile
+from shared import http, marketing, request_guard, tenant, turnstile
 from shared import reservations as r
 
 logger = logging.getLogger()
@@ -49,7 +49,8 @@ logger.setLevel(logging.INFO)
 _PATH = "/locations/{locationId}/catering/requests"
 _FIELDS = {"items", "customerType", "name", "email", "phone", "companyName", "orgNumber",
            "invoiceReference", "deliveryDate", "deliveryTime", "fulfilment", "deliveryZone",
-           "deliveryAddress", "guests", "notes", "language", "acceptTerms", "turnstileToken"}
+           "deliveryAddress", "guests", "notes", "language", "acceptTerms", "turnstileToken",
+           "attribution"}
 IP_LIMIT = (5, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
 
@@ -157,6 +158,9 @@ def _create(event):
             "updatedAt": c.iso(now),
             "notice": c.notice(c.N_REQUEST_RECEIVED, now),
         }
+        attribution = marketing.validate_attribution(data.get("attribution"))
+        if attribution:
+            item["attribution"] = attribution
         token = c.token_for(item)
         c.transact([
             {"Put": {"TableName": c.requests_table(), "Item": c.serialize(item),

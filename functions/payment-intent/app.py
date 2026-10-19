@@ -43,7 +43,8 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, manage_link, order_payments, request_guard, site, tenant, turnstile
+from shared import dynamo, http, manage_link, marketing, order_payments, request_guard, site
+from shared import tenant, turnstile
 from shared import orders as o
 from shared import reservations as r
 from shared import stripe_client as stripe
@@ -53,7 +54,7 @@ logger.setLevel(logging.INFO)
 
 _PATH = "/order"
 _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email", "notes",
-           "language", "acceptTerms", "turnstileToken"}
+           "language", "acceptTerms", "turnstileToken", "attribution"}
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 _NOTES_MAX = 300
@@ -97,6 +98,9 @@ def _create(event):
         raise ValueError("acceptTerms must be true")
     wanted = o.validate_lines(data.get("items"))
     guest = _guest(data)
+    attribution = marketing.validate_attribution(data.get("attribution"))
+    if attribution:
+        guest["attribution"] = attribution
     now = o.now_utc()
 
     counted = _guard(event, data, guest, now)

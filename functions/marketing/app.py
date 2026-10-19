@@ -21,6 +21,8 @@ TRIGGER:
     POST   /marketing/campaigns/{id}/send              {scheduledAt?} freeze and queue
     POST   /marketing/campaigns/{id}/cancel            scheduled or sending
     POST   /marketing/campaigns/{id}/resume            continue after the monthly limit (new month)
+    GET    /marketing/offer                            welcome offer settings + results
+    PUT    /marketing/offer                            save the settings
     GET    /marketing/subscribers?status=&cursor=
     GET    /marketing/subscribers/export               CSV
     POST   /marketing/subscribers/{id}/unsubscribe
@@ -59,6 +61,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, http, marketing as m, marketing_mail, site, tenant
+from shared import marketing_offer as offer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -538,6 +541,39 @@ def _campaigns(ctx, method, rest, event):
     return http.error(405, "method not allowed")
 
 
+# --- welcome offer ---------------------------------------------------------------------
+
+def _offer(ctx, method, event):
+    table = _table()
+    key = offer.offer_key(ctx.tenant_id)
+    if method == "GET":
+        return _ok(200, offer.settings_view(table.get_item(Key=key).get("Item")))
+    if method != "PUT":
+        return http.error(405, "method not allowed")
+    data = offer.validate_settings(http.body(event))
+    image_url = dish_name = None
+    if data["imageMenuItemId"]:
+        # The card shows one of the restaurant's own dishes; resolved now so
+        # the public card never reads the menu.
+        if not tenant.get_location(ctx.tenant_id, data["imageLocationId"]):
+            raise ValueError("imageLocationId is not one of the restaurant's locations")
+        dish = _dishes(ctx, {"blocks": [{"type": "dish", "menuItemId": data["imageMenuItemId"],
+                                         "locationId": data["imageLocationId"]}]}).get(data["imageMenuItemId"])
+        if not dish:
+            raise ValueError("imageMenuItemId is not on the menu")
+        image_url, dish_name = dish.get("imageUrl"), dish.get("name")
+    values = {**data, "imageUrl": image_url, "dishName": dish_name}
+    names = {f"#{k}": k for k in values}
+    exprs = [f"#{k} = :{k}" for k in values] + ["updatedAt = :u", "updatedBy = :by"]
+    out = table.update_item(
+        Key=key, UpdateExpression="SET " + ", ".join(exprs),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={**{f":{k}": v for k, v in values.items()}, ":u": m.now_iso(), ":by": ctx.sub},
+        ReturnValues="ALL_NEW")
+    logger.info(json.dumps({"marketing": "offer_saved", "tenantId": ctx.tenant_id, "enabled": data["enabled"]}))
+    return _ok(200, offer.settings_view(out["Attributes"]))
+
+
 # --- subscribers --------------------------------------------------------------------------
 
 def _sub_view(item):
@@ -560,7 +596,7 @@ def _subscribers(ctx, method, rest, event):
         params = {"KeyConditionExpression": Key("PK").eq(m.sub_pk(ctx.tenant_id)), "Limit": 100}
         status = query.get("status")
         if status:
-            if status not in ("subscribed", "unsubscribed", "bounced", "complained"):
+            if status not in ("subscribed", "pending", "unsubscribed", "bounced", "complained"):
                 raise ValueError("status is invalid")
             params.update(FilterExpression="#st = :s", ExpressionAttributeNames={"#st": "status"},
                           ExpressionAttributeValues={":s": status})
@@ -637,6 +673,8 @@ def handler(event, context):
             return _audience(ctx, http.query(event))
         if head == "campaigns":
             return _campaigns(ctx, method, rest, event)
+        if head == "offer" and not rest:
+            return _offer(ctx, method, event)
         if head == "subscribers":
             return _subscribers(ctx, method, rest, event)
         return http.error(404, "not found")

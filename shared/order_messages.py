@@ -49,6 +49,7 @@ _TEXT = {
         "qty": "Antal",
         "amount": "Belopp",
         "total": "Totalt",
+        "discount": "Rabatt {percent} % med kod {code} (ingår i priserna)",
         "vat": "Moms {rate} %",
         "net": "Netto",
         "payment": "Betalning",
@@ -88,6 +89,7 @@ _TEXT = {
         "qty": "Qty",
         "amount": "Amount",
         "total": "Total",
+        "discount": "Discount {percent} % with code {code} (included in the prices)",
         "vat": "VAT {rate} %",
         "net": "Net",
         "payment": "Payment",
@@ -220,6 +222,10 @@ def email(kind, item, tenant_row, location, link):
     if show_receipt:
         text += [f"{_t(lang, 'receipt')} - {_t(lang, 'order')} #{number}", f"{_t(lang, 'date')}: {when}", ""]
         text += [f"{line['quantity']} x {line['name']}  {money(line['total'])}" for line in lines]
+        discount = item.get("discount") or {}
+        if discount.get("code"):
+            text += ["", f"{_t(lang, 'discount', percent=discount.get('percent'), code=discount['code'])}: "
+                         f"-{money(discount.get('amount') or 0)}"]
         text += ["", f"{_t(lang, 'total')}: {money(item.get('totalAmount') or 0)}"]
         text += [f"{_t(lang, 'vat', rate=v['rate'])}: {money(v['vat'])} ({_t(lang, 'net')} {money(v['net'])})"
                  for v in vat]
@@ -244,6 +250,12 @@ def email(kind, item, tenant_row, location, link):
             f'<tr><td style="padding:4px 12px 4px 0">{e(str(line["quantity"]))} &times; {e(line["name"])}</td>'
             f'<td style="padding:4px 0;text-align:right;white-space:nowrap">{e(money(line["total"]))}</td></tr>'
             for line in lines)
+        discount = item.get("discount") or {}
+        if discount.get("code"):
+            label = _t(lang, "discount", percent=discount.get("percent"), code=discount["code"])
+            rows += (f'<tr><td style="padding:4px 12px 4px 0;color:#2c6a3f">{e(label)}</td>'
+                     f'<td style="padding:4px 0;text-align:right;white-space:nowrap;color:#2c6a3f">'
+                     f'-{e(money(discount.get("amount") or 0))}</td></tr>')
         vat_rows = "".join(
             f'<tr><td style="padding:2px 12px 2px 0;color:#6b6b6b">{e(_t(lang, "vat", rate=v["rate"]))} '
             f'({e(_t(lang, "net"))} {e(money(v["net"]))})</td>'

@@ -18,6 +18,8 @@ PURPOSE:
           -> the subscriber's last visit (for "visited within / not since")
       order payment turns paid
           -> +1 order and its total for its channel and campaign
+          -> its welcome-offer code is used up (offer results)
+          -> guest ticked "offers" when ordering: subscribed
       SES bounce (permanent) or complaint for a marketing email
           -> the address is suppressed for good; campaign counters
     Only tenants whose plan has "marketing" get statistics and subscribers.
@@ -42,6 +44,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, marketing as m, tenant
+from shared import marketing_offer as offer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -86,7 +89,8 @@ def _reservation(new, old):
         return
     table = _table()
     status, was = new.get("status"), (old or {}).get("status")
-    if status == "reserved" and was not in _COUNTED and new.get("source") == "online":
+    if status == "reserved" and was not in _COUNTED and new.get("source") == "online" \
+            and m.first_time(table, tenant_id, "BOOKING", new.get("reservationId")):
         channel, campaign, campaign_id = _attr(new)
         day = m.local_day(new.get("createdAt"), new.get("timezone"))
         guests = int(new.get("partySize") or 0)
@@ -96,47 +100,11 @@ def _reservation(new, old):
         _subscriber(table, tenant_row, new, opted_in=bool(new.get("marketingOptIn")) and was not in _COUNTED)
 
 
-def _subscriber(table, tenant_row, item, *, opted_in):
-    tenant_id = item["tenantId"]
-    email = item["customerEmail"].strip().lower()
-    key = m.sub_key(tenant_id, m.subscriber_id(tenant_id, email))
-    visit = item.get("date")
-    location = item.get("locationId")
-    now = m.now_iso()
-    restaurant = (tenant_row.get("name") or "")[:120]
-    if opted_in:
-        # A ticked box is consent: subscribe (again), except addresses that
-        # bounced or complained - those stay suppressed.
-        try:
-            table.update_item(
-                Key=key,
-                UpdateExpression=("SET email = :e, #n = :n, #st = :s, consentAt = :now, consentSource = :src, "
-                                  "consentReservationId = :rid, restaurantName = :r, updatedAt = :now, "
-                                  "createdAt = if_not_exists(createdAt, :now), "
-                                  "lastVisit = if_not_exists(lastVisit, :v) "
-                                  "REMOVE unsubscribedAt, unsubscribedVia "
-                                  "ADD locations :loc"),
-                ConditionExpression="attribute_not_exists(#st) OR NOT #st IN (:b, :c)",
-                ExpressionAttributeNames={"#n": "name", "#st": "status"},
-                ExpressionAttributeValues={":e": email, ":n": (item.get("customerName") or "")[:120],
-                                           ":s": "subscribed", ":now": now, ":src": "booking",
-                                           ":rid": item.get("reservationId") or "", ":r": restaurant,
-                                           ":v": visit, ":loc": {location}, ":b": "bounced",
-                                           ":c": "complained"})
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-    # Last visit, for existing subscribers only (never creates a row).
-    if visit:
-        try:
-            table.update_item(
-                Key=key,
-                UpdateExpression="SET lastVisit = :v ADD locations :loc",
-                ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(lastVisit) OR lastVisit < :v)",
-                ExpressionAttributeValues={":v": visit, ":loc": {location}})
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
+def _subscriber(table, tenant_row, item, *, opted_in, source="booking"):
+    m.upsert_subscriber(table, tenant_id=item["tenantId"], restaurant=tenant_row.get("name"),
+                        email=item["customerEmail"], name=item.get("customerName"), source=source,
+                        ref_id=item.get("reservationId") or item.get("orderId") or "",
+                        location_id=item.get("locationId"), visit=item.get("date"), opted_in=opted_in)
 
 
 # --- orders ---------------------------------------------------------------------------
@@ -145,14 +113,37 @@ def _order(new, old):
     if new.get("paymentStatus") != "paid" or (old or {}).get("paymentStatus") == "paid":
         return
     tenant_id = new.get("tenantId")
-    if not _has_marketing(tenant_id):
-        return
     table = _table()
-    channel, campaign, campaign_id = _attr(new)
     total = int(new.get("totalAmount") or 0)
-    day = m.local_day(new.get("createdAt"), new.get("timezone"))
-    m.bump_stats(table, tenant_id, day, new.get("locationId"), channel, campaign, orders=1, revenueOre=total)
-    m.bump_campaign(table, tenant_id, campaign_id, orders=1, revenueOre=total)
+    discount = new.get("discount") or {}
+    if discount.get("code") and tenant_id:
+        # Always, even if the plan lost marketing meanwhile: the code is used.
+        _redeem(table, tenant_id, new, discount, total)
+    tenant_row = _has_marketing(tenant_id)
+    if not tenant_row:
+        return
+    if m.first_time(table, tenant_id, "ORDER", new.get("orderId")):
+        channel, campaign, campaign_id = _attr(new)
+        day = m.local_day(new.get("createdAt"), new.get("timezone"))
+        m.bump_stats(table, tenant_id, day, new.get("locationId"), channel, campaign, orders=1, revenueOre=total)
+        m.bump_campaign(table, tenant_id, campaign_id, orders=1, revenueOre=total)
+    if m.valid_email(new.get("customerEmail")):
+        _subscriber(table, tenant_row, new, opted_in=bool(new.get("marketingOptIn")), source="order")
+
+
+def _redeem(table, tenant_id, order, discount, total):
+    outcome = offer.redeem_code(table, tenant_id, discount["code"], order.get("orderId"), total,
+                                int(discount.get("amount") or 0))
+    if outcome == "other":
+        # Two paid orders on one code: should never happen (checkout holds
+        # it). Logged as an error so the alarm on errors catches it.
+        logger.error(json.dumps({"marketing": "code_used_twice", "tenantId": tenant_id, "code": discount["code"],
+                                 "orderId": order.get("orderId")}))
+        return
+    code_item = table.get_item(Key=offer.code_key(tenant_id, discount["code"])).get("Item") or {}
+    if code_item.get("subscriberId"):
+        # Using the code proves the address is theirs: a pending sign-up counts as confirmed.
+        m.confirm_subscriber(table, tenant_id, code_item["subscriberId"], via="code_used")
 
 
 # --- SES events -------------------------------------------------------------------------

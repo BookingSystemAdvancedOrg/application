@@ -9,7 +9,8 @@ Data (one table, MARKETING_TABLE_NAME, PK/SK):
 
     TENANT#<t>#STATS     DAY#<date>#<loc>#<channel>#<campaign>   daily counters
     TENANT#<t>#STATS     CAMPAIGNS#<date>                         campaign tags seen that day (cap, TTL)
-    TENANT#<t>#SUB       SUB#<sha256(tenant|email)[:24]>          subscriber
+    TENANT#<t>#SUB       SUB#<sha256(tenant|email)[:24]>          subscriber (pending/subscribed/unsubscribed/...)
+    TENANT#<t>#SEEN      ORDER#<id> / BOOKING#<id>                stream records already counted (TTL)
     TENANT#<t>#TPL       TPL#<id>                                 email template
     TENANT#<t>#CMP       CMP#<id>                                 campaign
     TENANT#<t>#USAGE     MONTH#<yyyy-mm>                          emails sent
@@ -544,6 +545,16 @@ def render_email(template, *, tenant_row, restaurant, values, menu_items, site_u
                 + (f'<div style="color:#6b6b6b;font-size:14px;margin-top:4px">{e(item.get("description") or "")}</div>' if item.get("description") else "")
                 + '</td></tr></table>')
             parts_text += [f"{item.get('name')}{' - ' + price_text if price_text else ''}", ""]
+        elif kind == "code":
+            # Only built by the platform (welcome offer email), never by a template.
+            code = block["code"]
+            parts_html.append(
+                f'<div style="margin:4px 0 20px;padding:18px;border:2px dashed {color};border-radius:8px;text-align:center">'
+                f'<div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#6b6b6b">{e(block.get("label") or "Din kod")}</div>'
+                f'<div style="font:700 28px/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;color:#1a1a1a">{e(code)}</div>'
+                + (f'<div style="font-size:13px;color:#6b6b6b;margin-top:6px">{e(block["note"])}</div>' if block.get("note") else "")
+                + '</div>')
+            parts_text += [f"{block.get('label') or 'Din kod'}: {code}", block.get("note") or "", ""]
         elif kind == "divider":
             parts_html.append('<hr style="border:0;border-top:1px dashed #d9d4c8;margin:20px 0">')
             parts_text += ["----", ""]
@@ -629,6 +640,94 @@ def bump_stats(table, tenant_id, day, location_id, channel, campaign, **counts):
                                   "#cg": "campaign"},
         ExpressionAttributeValues=values,
     )
+
+
+def upsert_subscriber(table, *, tenant_id, restaurant, email, name, source, ref_id="", location_id=None,
+                      visit=None, opted_in=True):
+    """A guest who gave consent (ticked "offers" when booking, ordering or
+    asking for catering, or signed up for the welcome offer) is subscribed,
+    again if they had unsubscribed: a new ticked box is a new consent.
+    Bounced and complained addresses stay suppressed. Without consent only
+    an existing subscriber's last visit is updated; no row is ever created.
+    Returns the subscriber id."""
+    from botocore.exceptions import ClientError
+    email = email.strip().lower()
+    sid = subscriber_id(tenant_id, email)
+    key = sub_key(tenant_id, sid)
+    now = now_iso()
+    if opted_in:
+        sets = ("SET email = :e, #n = :n, #st = :s, consentAt = :now, consentSource = :src, consentRef = :ref, "
+                "restaurantName = :r, updatedAt = :now, createdAt = if_not_exists(createdAt, :now) "
+                "REMOVE unsubscribedAt, unsubscribedVia")
+        values = {":e": email, ":n": (name or "")[:120], ":s": "subscribed", ":now": now, ":src": source,
+                  ":ref": ref_id or "", ":r": (restaurant or "")[:120], ":b": "bounced", ":c": "complained"}
+        if visit:
+            sets = sets.replace("createdAt = if_not_exists(createdAt, :now)",
+                                "createdAt = if_not_exists(createdAt, :now), lastVisit = if_not_exists(lastVisit, :v)")
+            values[":v"] = visit
+        if location_id:
+            sets += " ADD locations :loc"
+            values[":loc"] = {location_id}
+        try:
+            table.update_item(Key=key, UpdateExpression=sets,
+                              ConditionExpression="attribute_not_exists(#st) OR NOT #st IN (:b, :c)",
+                              ExpressionAttributeNames={"#n": "name", "#st": "status"},
+                              ExpressionAttributeValues=values)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+    if visit:
+        expr, values = "SET lastVisit = :v", {":v": visit}
+        if location_id:
+            expr += " ADD locations :loc"
+            values[":loc"] = {location_id}
+        try:
+            table.update_item(Key=key, UpdateExpression=expr,
+                              ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(lastVisit) OR lastVisit < :v)",
+                              ExpressionAttributeValues=values)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+    return sid
+
+
+def first_time(table, tenant_id, kind, ref_id, days=3):
+    """True the first time (kind, ref_id) is seen: stream records are
+    delivered at least once, so counters are bumped only after this."""
+    from botocore.exceptions import ClientError
+    if not ref_id:
+        return True
+    try:
+        table.put_item(Item={"PK": f"TENANT#{tenant_id}#SEEN", "SK": f"{kind}#{ref_id}",
+                             "ttl": int(datetime.now(timezone.utc).timestamp()) + days * 86400},
+                       ConditionExpression="attribute_not_exists(PK)")
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def confirm_subscriber(table, tenant_id, sid, *, via):
+    """A pending sign-up (welcome offer) becomes subscribed: its owner
+    confirmed from the email, or used the code. The pending consent becomes
+    the consent on record."""
+    from botocore.exceptions import ClientError
+    try:
+        table.update_item(
+            Key=sub_key(tenant_id, sid),
+            UpdateExpression=("SET #st = :s, consentAt = :now, consentSource = :src, consentText = pendingConsent.#t, "
+                              "consentVersion = pendingConsent.version, confirmedVia = :via, updatedAt = :now "
+                              "REMOVE pendingConsent, pendingAt, unsubscribedAt, unsubscribedVia"),
+            ConditionExpression="#st = :pending AND attribute_exists(pendingConsent)",
+            ExpressionAttributeNames={"#st": "status", "#t": "text"},
+            ExpressionAttributeValues={":s": "subscribed", ":pending": "pending", ":now": now_iso(),
+                                       ":src": "welcome_offer", ":via": via})
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 def bump_campaign(table, tenant_id, campaign_id, **counts):

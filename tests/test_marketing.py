@@ -3,6 +3,7 @@ campaigns, sending, clicks, unsubscribe and SES suppression."""
 
 import importlib.util
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -518,3 +519,191 @@ def test_csv_export_neutralises_formulas(env):
     sync.handler(stream(RES_TABLE, booking(customerEmail="evil@example.se", customerName="=HYPERLINK(1)")), None)
     out = admin(fn, "GET", "/marketing/subscribers/export")["body"]
     assert "'=HYPERLINK" in out
+
+
+# --- welcome offer ---------------------------------------------------------------------------
+
+from shared import marketing_offer as offer  # noqa: E402
+
+OFFER = {"enabled": True, "percent": 15, "minOrderOre": 20000, "validDays": 30,
+         "headline": "15 % på nästa beställning", "text": "Lämna din e-post.", "buttonLabel": "Skicka koden",
+         "delaySeconds": 10, "scrollPercent": 30, "pages": "menu", "frequency": "visit", "showOnMobile": True,
+         "imageMenuItemId": "dish-1", "imageLocationId": LOC_A}
+
+
+def public_get(public, path, query=None):
+    return public.handler({"routeKey": f"GET {path}", "queryStringParameters": query,
+                           "requestContext": {"http": {"method": "GET", "sourceIp": "1.2.3.4"}}}, None)
+
+
+def public_post(public, path, body):
+    return public.handler({"routeKey": f"POST {path}", "body": json.dumps(body), "headers": {},
+                           "requestContext": {"http": {"method": "POST", "sourceIp": "1.2.3.4"}}}, None)
+
+
+def save_offer(env, fn, **extra):
+    env.menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "MENU#dish-1", "menuItemId": "dish-1",
+                            "name": "Pumpasoppa", "price": Decimal(145), "imageKey": "menu-images/a.jpg",
+                            "active": True})
+    return admin(fn, "PUT", "/marketing/offer", {**OFFER, **extra})
+
+
+def signup(public, email="ny@example.se", **extra):
+    return public_post(public, "/m/signup", {"locationId": LOC_A, "email": email, "name": "Nils Ny",
+                                             "consent": True, **extra})
+
+
+def test_offer_settings_are_owner_only_and_resolve_the_dish(env):
+    fn = load("marketing")
+    assert body_of(admin(fn, "GET", "/marketing/offer"))["enabled"] is False  # defaults before saving
+    saved = body_of(save_offer(env, fn))
+    assert saved["imageUrl"] == "https://cdn.example/menu-images/a.jpg" and saved["dishName"] == "Pumpasoppa"
+    assert saved["stats"] == {"views": 0, "signups": 0, "redeemed": 0, "revenueOre": 0, "discountOre": 0}
+    assert admin(fn, "PUT", "/marketing/offer", OFFER, role="staff_user")["statusCode"] == 403
+    assert save_offer(env, fn, percent=80)["statusCode"] == 400
+    assert save_offer(env, fn, imageMenuItemId="nope")["statusCode"] == 400
+    assert save_offer(env, fn, activeFrom="2026-12-01", activeTo="2026-11-01")["statusCode"] == 400
+
+
+def test_public_offer_only_when_live(env):
+    fn, public = load("marketing"), load("marketing-public")
+    assert body_of(public_get(public, "/m/offer", {"locationId": LOC_A})) == {"offer": None}
+    save_offer(env, fn)
+    out = public_get(public, "/m/offer", {"locationId": LOC_A})
+    assert out["headers"]["Cache-Control"] == "public, max-age=120"
+    card = body_of(out)["offer"]
+    assert card["percent"] == 15 and card["pages"] == "menu" and "imageMenuItemId" not in card
+    assert save_offer(env, fn, headline="10 % rabatt")["statusCode"] == 400  # says 10 %, gives 15 %
+    assert body_of(save_offer(env, fn, headline="{procent} % rabatt"))["headline"] == "{procent} % rabatt"
+    assert body_of(public_get(public, "/m/offer", {"locationId": LOC_A}))["offer"]["headline"] == "15 % rabatt"
+    save_offer(env, fn, activeTo="2020-01-01")
+    assert body_of(public_get(public, "/m/offer", {"locationId": LOC_A})) == {"offer": None}
+    assert body_of(public_get(public, "/m/offer", {"locationId": "unknown"})) == {"offer": None}
+
+
+def code_in(mail):
+    return re.search(r"[A-Z2-9]{4}-[A-Z2-9]{4}", mail["text"]).group(0)
+
+
+def test_signup_is_pending_until_confirmed_and_mails_one_code_per_person(env):
+    fn, public = load("marketing"), load("marketing-public")
+    save_offer(env, fn)
+    assert signup(public, consent=False)["statusCode"] == 400
+    assert signup(public, email="nope")["statusCode"] == 400
+    out = signup(public)
+    assert out["statusCode"] == 200 and body_of(out) == {"sent": True}
+    sub = subscriber(env, "ny@example.se")
+    # Double opt-in: nothing is sent to a pending address by campaigns.
+    assert sub["status"] == "pending" and sub["pendingConsent"]["version"] == "welcome_offer_v1"
+    assert "Bistro Linnea" in sub["pendingConsent"]["text"]
+    (mail,) = outbox(env)
+    code = code_in(mail)
+    assert mail["to"] == "ny@example.se" and "15 %" in mail["subject"] and mail["listUnsubscribe"]
+    assert f"kod={code}" in mail["html"] and "/m/s/" in mail["html"]
+    item = env.table.get_item(Key=offer.code_key(TENANT_A, code))["Item"]
+    assert item["percent"] == 15 and item["minOrderOre"] == 20000 and item["status"] == "issued"
+    assert item["ownerKey"] == offer.owner_key(TENANT_A, "ny@example.se")
+    # The same person (Gmail-style alias) gets the same code again, never a second one.
+    signup(public, email="NY+extra@example.se")
+    assert len(outbox(env)) == 2 and code_in(outbox(env)[1]) == code
+    codes = env.table.query(KeyConditionExpression="PK = :p AND begins_with(SK, :c)",
+                            ExpressionAttributeValues={":p": offer.code_pk(TENANT_A), ":c": "CODE#"})["Items"]
+    assert len(codes) == 1
+    assert body_of(admin(fn, "GET", "/marketing/offer"))["stats"]["signups"] == 1
+    check = public_post(public, "/m/code", {"locationId": LOC_A, "code": code.lower().replace("-", " ")})
+    assert body_of(check) == {"code": code, "percent": 15, "minOrderOre": 20000, "expiresAt": item["expiresAt"]}
+    assert public_post(public, "/m/code", {"locationId": LOC_A, "code": "AAAA-BBBB"})["statusCode"] == 404
+
+    # Confirming: GET shows a button, POST confirms.
+    token = re.search(r"/m/s/([^\"<\s]+)", mail["html"]).group(1)
+    page = public.handler({"routeKey": "GET /m/s/{token}", "pathParameters": {"token": token},
+                           "requestContext": {"http": {"method": "GET"}}}, None)
+    assert page["statusCode"] == 200 and subscriber(env, "ny@example.se")["status"] == "pending"
+    public.handler({"routeKey": "POST /m/s/{token}", "pathParameters": {"token": token},
+                    "requestContext": {"http": {"method": "POST"}}}, None)
+    sub = subscriber(env, "ny@example.se")
+    assert sub["status"] == "subscribed" and sub["consentSource"] == "welcome_offer"
+    assert sub["consentVersion"] == "welcome_offer_v1" and "pendingConsent" not in sub
+
+
+def test_signup_never_resubscribes_or_reveals_anything(env):
+    fn, public, sync = load("marketing"), load("marketing-public"), load("marketing-sync")
+    save_offer(env, fn)
+    sync.handler(stream(RES_TABLE, booking(customerEmail="gone@example.se")), None)
+    env.table.update_item(Key=m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "gone@example.se")),
+                          UpdateExpression="SET #s = :u", ExpressionAttributeNames={"#s": "status"},
+                          ExpressionAttributeValues={":u": "unsubscribed"})
+    assert body_of(signup(public, email="gone@example.se")) == {"sent": True}
+    assert subscriber(env, "gone@example.se")["status"] == "pending"  # not subscribed by a stranger
+    env.table.update_item(Key=m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "bad@example.se")),
+                          UpdateExpression="SET #s = :b", ExpressionAttributeNames={"#s": "status"},
+                          ExpressionAttributeValues={":b": "bounced"})
+    before = len(outbox(env))
+    assert body_of(signup(public, email="bad@example.se")) == {"sent": True}
+    assert len(outbox(env)) == before  # bounced: no mail at all
+
+
+def test_used_code_blocks_a_new_one(env):
+    fn, public, sync = load("marketing"), load("marketing-public"), load("marketing-sync")
+    save_offer(env, fn)
+    signup(public)
+    code = code_in(outbox(env)[-1])
+    paid = {"tenantId": TENANT_A, "locationId": LOC_A, "orderId": "o1", "paymentStatus": "paid",
+            "totalAmount": 25500, "createdAt": "2026-10-19T10:00:00Z", "timezone": "Europe/Stockholm",
+            "date": "2026-10-19", "customerEmail": "ny@example.se", "customerName": "Nils Ny",
+            "discount": {"code": code, "percent": 15, "amount": 4500, "subtotal": 30000}}
+    sync.handler(stream(ORDER_TABLE, paid, {**paid, "paymentStatus": "processing"}), None)
+    assert env.table.get_item(Key=offer.code_key(TENANT_A, code))["Item"]["status"] == "redeemed"
+    stats = body_of(admin(fn, "GET", "/marketing/offer"))["stats"]
+    assert stats["redeemed"] == 1 and stats["revenueOre"] == 25500 and stats["discountOre"] == 4500
+    # Using the code confirms the sign-up.
+    assert subscriber(env, "ny@example.se")["status"] == "subscribed"
+    # A retried stream record counts nothing twice.
+    sync.handler(stream(ORDER_TABLE, paid, {**paid, "paymentStatus": "processing"}), None)
+    assert body_of(admin(fn, "GET", "/marketing/offer"))["stats"]["redeemed"] == 1
+    orders = [r for r in stats_rows(env) if r.get("orders")]
+    assert sum(int(r["orders"]) for r in orders) == 1
+    # Signing up again: same answer, an email explaining it, no new code.
+    assert body_of(signup(public)) == {"sent": True}
+    assert "redan använt" in outbox(env)[0]["text"]  # newest first
+    assert public_post(public, "/m/code", {"locationId": LOC_A, "code": code})["statusCode"] == 409
+
+
+def test_signup_needs_a_live_offer_and_counts_views(env):
+    fn, public = load("marketing"), load("marketing-public")
+    assert signup(public)["statusCode"] == 404
+    save_offer(env, fn)
+    assert track(public, {"locationId": LOC_A, "type": "offer"})["statusCode"] == 204
+    assert body_of(admin(fn, "GET", "/marketing/offer"))["stats"]["views"] == 1
+    assert stats_rows(env) == []  # a card view is not a visit
+
+
+def test_paid_order_with_opt_in_subscribes(env):
+    sync = load("marketing-sync")
+    paid = {"tenantId": TENANT_A, "locationId": LOC_A, "orderId": "o9", "paymentStatus": "paid",
+            "totalAmount": 10000, "createdAt": "2026-10-19T10:00:00Z", "timezone": "Europe/Stockholm",
+            "date": "2026-10-19", "customerEmail": "orda@example.se", "customerName": "Orda Ordersson",
+            "marketingOptIn": True}
+    sync.handler(stream(ORDER_TABLE, paid, {**paid, "paymentStatus": "processing"}), None)
+    sub = subscriber(env, "orda@example.se")
+    assert sub["status"] == "subscribed" and sub["consentSource"] == "order" and sub["lastVisit"] == "2026-10-19"
+    no = {**paid, "orderId": "o10", "customerEmail": "nej@example.se", "marketingOptIn": False}
+    sync.handler(stream(ORDER_TABLE, no, {**no, "paymentStatus": "processing"}), None)
+    assert subscriber(env, "nej@example.se") is None
+
+
+def test_owner_template_cannot_use_the_code_block():
+    with pytest.raises(ValueError):
+        m.validate_template({"name": "x", "subject": "y", "blocks": [{"type": "code", "code": "AAAA-BBBB"}]})
+
+
+def test_discount_math_rounds_per_unit():
+    lines = [{"unitPrice": 12500, "quantity": 2, "total": 25000, "vatRate": 12},
+             {"unitPrice": 999, "quantity": 3, "total": 2997, "vatRate": 25}]
+    out, total, saved = offer.apply_discount(lines, 15)
+    assert [(line["listPrice"], line["unitPrice"], line["total"]) for line in out] == [(12500, 10625, 21250),
+                                                                                    (999, 849, 2547)]
+    assert total == 23797 and saved == 25000 + 2997 - 23797
+    assert offer.normalize_code(" abcd-efgh ") == "ABCD-EFGH" and offer.normalize_code("ABCD-EFG0") is None
+    assert offer.canonical_email("A.n.N.a+x@GoogleMail.com") == "anna@gmail.com"
+    assert offer.canonical_email("anna.b+tag@example.se") == "anna.b@example.se"

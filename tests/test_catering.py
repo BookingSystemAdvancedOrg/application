@@ -655,3 +655,28 @@ def test_bankid_rp_api_calls(env, monkeypatch):
     done = body_of(guest(env, "POST", "/sign/status", rid, token))
     assert done["status"] == "complete" and done["request"]["signedBy"] == "Anna Svensson"
     assert c.load(LOC_A, rid)["signature"]["personalNumberMasked"] == "19900101-****"
+
+
+def test_catering_opt_in_subscribes_and_counts_for_marketing_restaurants(env):
+    from shared import marketing as mk
+    env.monkeypatch.setenv("MARKETING_TABLE_NAME", "test-marketing")
+    env.res.create_table(
+        TableName="test-marketing",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST")
+    table = env.res.Table("test-marketing")
+    sid = mk.subscriber_id(TENANT_A, "anna@example.se")
+    # Without marketing in the plan nothing is written.
+    assert create(env, marketingOptIn=True)["statusCode"] == 201
+    assert table.scan()["Items"] == []
+    env.res.Table(TENANT_TABLE).put_item(Item=tenant_row(
+        TENANT_A, name="Roma", slug="roma", stripe={"accountId": ACCOUNT, "chargesEnabled": True},
+        features={"catering": True, "marketing": True}))
+    shared_tenant.reset_caches()
+    assert create(env, marketingOptIn=True, email="anna@example.se")["statusCode"] == 201
+    sub = table.get_item(Key=mk.sub_key(TENANT_A, sid))["Item"]
+    assert sub["status"] == "subscribed" and sub["consentSource"] == "catering"
+    stats = [i for i in table.scan()["Items"] if i["SK"].startswith("DAY#")]
+    assert len(stats) == 1 and stats[0]["catering"] == 1
+    assert create(env, marketingOptIn="yes")["statusCode"] == 400

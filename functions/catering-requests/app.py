@@ -28,19 +28,21 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DISCOUNT_TIERS_TABLE_NAME, MENU_TABLE_NAME, LINK_SIGNING_KEY_SECRET_ARN,
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME
+    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
+    MARKETING_TABLE_NAME (optional: catering statistics and "offers" opt-in)
 
 Full details: infrastructure docs/CATERING-FLOW.md
 """
 
 import json
 import logging
+import os
 from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import http, marketing, request_guard, tenant, turnstile
+from shared import dynamo, http, marketing, request_guard, tenant, turnstile
 from shared import reservations as r
 
 logger = logging.getLogger()
@@ -50,7 +52,7 @@ _PATH = "/locations/{locationId}/catering/requests"
 _FIELDS = {"items", "customerType", "name", "email", "phone", "companyName", "orgNumber",
            "invoiceReference", "deliveryDate", "deliveryTime", "fulfilment", "deliveryZone",
            "deliveryAddress", "guests", "notes", "language", "acceptTerms", "turnstileToken",
-           "attribution"}
+           "attribution", "marketingOptIn"}
 IP_LIMIT = (5, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
 
@@ -120,6 +122,9 @@ def _create(event):
     if not settings["enabled"]:
         raise c.Unavailable("catering_disabled")
     data = http.body(event, allowed=_FIELDS)
+    opt_in = data.pop("marketingOptIn", False)
+    if not isinstance(opt_in, bool):
+        raise ValueError("marketingOptIn must be true or false")
     fields = _validate(data, settings)
     wanted = c.validate_wanted(data.get("items"))
     now = c.now_utc()
@@ -172,8 +177,32 @@ def _create(event):
         raise
     logger.info(json.dumps({"catering": "requested", "requestId": request_id, "tenantId": ctx.tenant_id,
                             "portions": priced["portions"], "total": priced["total"]}))
+    _marketing(ctx, item, opt_in)
     return http.respond(201, {"requestId": request_id, "locationId": location_id, "token": token,
                               "status": c.REQUESTED, "request": priced})
+
+
+def _marketing(ctx, item, opt_in):
+    """Restaurants with marketing: the request counts in the statistics (its
+    channel and campaign), and a guest who ticked "offers" is subscribed.
+    Best effort: never fails a request the guest already sent."""
+    name = os.environ.get("MARKETING_TABLE_NAME")
+    features = (ctx.tenant.get("entitlements") or {}).get("features") or {}
+    if not name or not features.get("marketing"):
+        return
+    try:
+        table = dynamo.table(name)
+        a = item.get("attribution") or {}
+        day = marketing.local_day(item.get("createdAt"), ctx.location.get("timezone") or marketing.STOCKHOLM)
+        marketing.bump_stats(table, ctx.tenant_id, day, item["locationId"], a.get("channel") or "direct",
+                             a.get("campaign"), catering=1)
+        if opt_in and marketing.valid_email(item.get("customerEmail")):
+            marketing.upsert_subscriber(table, tenant_id=ctx.tenant_id, restaurant=ctx.tenant.get("name"),
+                                        email=item["customerEmail"], name=item.get("customerName"),
+                                        source="catering", ref_id=item["requestId"],
+                                        location_id=item["locationId"])
+    except (BotoCoreError, ClientError):
+        logger.exception("catering marketing update failed")
 
 
 def _list(event):

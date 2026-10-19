@@ -3864,7 +3864,7 @@ paths:
               required: [locationId, type]
               properties:
                 locationId: {type: string}
-                type: {type: string, enum: [visit, page]}
+                type: {type: string, enum: [visit, page, offer]}
                 path: {type: string}
                 referrer: {type: string}
                 source: {type: string}
@@ -3920,6 +3920,112 @@ paths:
       responses:
         '200':
           description: HTML confirmation; the address gets no more campaigns.
+
+  /m/offer:
+    get:
+      tags:
+        - Marketing
+      summary: The welcome offer card for a restaurant site
+      operationId: marketingOffer
+      description: The offer's public settings when it is switched on and inside its date window, else null.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: locationId, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '{offer: {...} | null}'
+
+  /m/signup:
+    post:
+      tags:
+        - Marketing
+      summary: Sign up for the welcome offer
+      operationId: marketingSignup
+      description: |
+        Consent to marketing (required) and a single-use discount code by
+        email. Double opt-in: the address is "pending" until confirmed from
+        the email (/m/s/{token}) or the code is used. One code per person
+        (canonical address), ever; signing up again re-sends it. Always
+        answers {sent: true} so the form can't reveal who signed up.
+        Turnstile (action "signup") and per-IP / per-address limits.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, email, consent]
+              properties:
+                locationId: {type: string}
+                email: {type: string}
+                name: {type: string}
+                consent: {type: boolean, enum: [true]}
+                turnstileToken: {type: string}
+      responses:
+        '200':
+          description: '{sent: true}'
+        '400':
+          description: Invalid email or no consent.
+        '404':
+          description: No live offer.
+        '429':
+          description: Too many attempts.
+
+  /m/code:
+    post:
+      tags:
+        - Marketing
+      summary: Check a discount code before paying
+      operationId: marketingCheckCode
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, code]
+              properties:
+                locationId: {type: string}
+                code: {type: string}
+      responses:
+        '200':
+          description: '{code, percent, minOrderOre, expiresAt}'
+        '404':
+          description: discount_invalid
+        '409':
+          description: discount_used / discount_expired
+
+  /m/s/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Confirm a welcome-offer sign-up (page)
+      operationId: marketingConfirmPage
+      description: Double opt-in. Shows a button; a GET alone never confirms (mail scanners follow links).
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+    post:
+      tags:
+        - Marketing
+      summary: Confirm a welcome-offer sign-up
+      operationId: marketingConfirm
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation; the address is subscribed.
 
   /marketing/{proxy}:
     parameters:
@@ -4925,6 +5031,19 @@ components:
             - true
         turnstileToken:
           type: string
+        attribution:
+          type: object
+          description: Campaign tags from the visit (dropped silently when malformed).
+        discountCode:
+          type: string
+          description: |
+            Welcome-offer code (ABCD-EFGH), personal to the address it was
+            sent to. Lowers every line by its percent; 409 discount_invalid /
+            discount_expired / discount_used / discount_min_order /
+            discount_other_email when it can't be used.
+        marketingOptIn:
+          type: boolean
+          description: The guest ticked "send me offers" (subscribed when the order is paid).
 
     OrderCreated:
       type: object

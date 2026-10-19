@@ -576,6 +576,8 @@ def guest_view(item, location=None):
         "tableLabel": item.get("tableLabel"),
         "lines": _lines_view(item),
         "totalAmount": item["totalAmount"],
+        # Welcome-offer code: percent, saved amount (the lines are already discounted).
+        "discount": item.get("discount"),
         "vat": item.get("vat") or [],
         "currency": item.get("currency", CURRENCY),
         "customerName": item.get("customerName"),

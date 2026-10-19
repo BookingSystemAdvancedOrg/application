@@ -1051,14 +1051,14 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 
 ### 26. `marketing`
 **Trigger:** API Gateway `GET|POST|PUT|DELETE /marketing/{proxy+}` - Auth: `JWT` (owner only)
-**Purpose:** The admin app's Marknadsföring section: overview statistics, templates, campaigns (preview, test to the owner, send/schedule, cancel, resume after the monthly limit), audiences and subscribers (unsubscribe, erase, CSV export). Sending freezes the content on the campaign. Sub-paths are listed in the function docstring.
+**Purpose:** The admin app's Marknadsföring section: overview statistics, templates, campaigns (preview, test to the owner, send/schedule, cancel, resume after the monthly limit), the welcome offer settings and results, audiences and subscribers (unsubscribe, erase, CSV export). Sending freezes the content on the campaign. Sub-paths are listed in the function docstring.
 
 ### 27. `marketing-public`
-**Trigger:** API Gateway `POST /t`, `GET /m/c/{token}`, `GET|POST /m/u/{token}` - Auth: `NONE`
-**Purpose:** Visit counting from restaurant sites; signed click redirects (to the campaign's frozen links only) and the unsubscribe page / RFC 8058 one-click.
+**Trigger:** API Gateway `POST /t`, `GET /m/c/{token}`, `GET|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET|POST /m/s/{token}` - Auth: `NONE`
+**Purpose:** Visit counting from restaurant sites; signed click redirects (to the campaign's frozen links only) and the unsubscribe page / RFC 8058 one-click. The welcome offer: the card's settings, sign-up (double opt-in: pending until confirmed from the email or the code is used; a personal single-use discount code; Turnstile and per-IP/per-address limits) and the code check before checkout (`shared/marketing_offer.py`).
 
 ### 28. `marketing-send`
-**Trigger:** EventBridge Scheduler every 2 minutes, reserved concurrency 1
+**Trigger:** EventBridge Scheduler every 2 minutes (overlapping runs are safe: campaign lease + per-recipient claim)
 **Purpose:** Sends due campaigns through SES (raw email with List-Unsubscribe), once per recipient, paced, within the monthly limit (`MARKETING_MONTHLY_LIMIT`); resumes from a cursor.
 
 ### 29. `marketing-sync`
@@ -1097,6 +1097,6 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 | 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |
 | 25 | `manage-order` | API GW `GET /locations/{locationId}/orders`; `ANY /locations/{locationId}/orders/{proxy+}` | JWT |
 | 26 | `marketing` | API GW `GET\|POST\|PUT\|DELETE /marketing/{proxy+}` | JWT (owner) |
-| 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}` | NONE (signed links) |
+| 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET\|POST /m/s/{token}` | NONE (signed links, Turnstile) |
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |

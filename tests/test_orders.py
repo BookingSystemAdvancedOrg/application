@@ -85,6 +85,9 @@ class FakeStripe:
                             "metadata": params["metadata"], "amount_total": total, "currency": "sek",
                             "payment_status": "unpaid", "status": "open", "payment_intent": None}
             return dict(self.session)
+        if path.startswith("/v1/checkout/sessions/") and path.endswith("/expire"):
+            self.session = dict(self.session, status="expired")
+            return dict(self.session)
         if path.startswith("/v1/checkout/sessions/"):
             return dict(self.session)
         if path == "/v1/refunds":
@@ -791,3 +794,128 @@ def test_receipt_escapes_what_the_guest_typed():
             "confirmedAt": "2026-09-08T12:00:00Z", "readyEstimate": "2026-09-08T12:20:00Z"}
     _, _, html_body = order_messages.email("order_confirmed", item, {"name": "R"}, {}, None)
     assert "<script>" not in html_body and "<b>Eve" not in html_body
+
+
+# --- welcome-offer discount codes ------------------------------------------------------------
+
+def _with_codes(env, features=None):
+    from shared import marketing_offer as offer
+    env["monkeypatch"].setenv("MARKETING_TABLE_NAME", "test-marketing")
+    env["res"].create_table(
+        TableName="test-marketing",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}, {"AttributeName": "SK", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST")
+    env["res"].Table(TENANT_TABLE).put_item(Item=tenant_row(
+        TENANT_A, name="Roma", slug="roma", stripe={"accountId": ACCOUNT, "chargesEnabled": True},
+        features=features or {"ordering": True, "marketing": True}, notifications={"sms": False}))
+    shared_tenant.reset_caches()
+    table = env["res"].Table("test-marketing")
+
+    def code(value="ABCD-EFGH", **extra):
+        table.put_item(Item={**offer.code_key(TENANT_A, value), "code": value, "tenantId": TENANT_A,
+                             "subscriberId": "s" * 24, "percent": 10, "minOrderOre": 0,
+                             "expiresAt": "2026-10-01T00:00:00Z", "status": "issued", **extra})
+    return table, code
+
+
+def test_discount_code_lowers_every_line_and_is_held_for_the_order(env):
+    from shared import marketing_offer as offer
+    table, code = _with_codes(env)
+    code()
+    response = post_order(env, discountCode="abcd efgh", marketingOptIn=True)
+    assert response["statusCode"] == 201, response
+    body = body_of(response)
+    item = stored(env, body["orderId"])
+    # 125 kr -> 112.50, 35.50 -> 31.95 (per unit, VAT stays per rate)
+    assert [(line["listPrice"], line["unitPrice"]) for line in item["lines"]] == [(12500, 11250), (3550, 3195)]
+    assert body["totalAmount"] == item["totalAmount"] == 2 * 11250 + 3195
+    assert item["discount"] == {"code": "ABCD-EFGH", "percent": 10, "amount": 2 * 1250 + 355, "subtotal": 28550}
+    assert item["marketingOptIn"] is True
+    assert env["stripe"].session["amount_total"] == item["totalAmount"]
+    held = table.get_item(Key=offer.code_key(TENANT_A, "ABCD-EFGH"))["Item"]
+    assert held["status"] == "reserved" and held["orderId"] == body["orderId"]
+    # Another guest can't use it while this one is paying.
+    again = post_order(env, discountCode="ABCD-EFGH", email="bertil@example.se", phone="070-765 43 21")
+    assert again["statusCode"] == 409 and body_of(again) == {"error": "discount_used"}
+
+
+def test_discount_code_refusals(env):
+    table, code = _with_codes(env)
+    code("EXPD-CODE", expiresAt="2026-09-01T00:00:00Z")
+    code("MINI-MUMS", minOrderOre=50000)
+    code("USED-CODE", status="redeemed")
+    for value, error in (("NOPE-NOPE", "discount_invalid"), ("EXPD-CODE", "discount_expired"),
+                         ("MINI-MUMS", "discount_min_order"), ("USED-CODE", "discount_used"), ("x", "discount_invalid")):
+        response = post_order(env, discountCode=value)
+        assert response["statusCode"] == 409 and body_of(response) == {"error": error}, value
+    assert env["stripe"].calls == []
+
+
+def test_abandoned_hold_frees_the_code(env):
+    from shared import marketing_offer as offer
+    table, code = _with_codes(env)
+    code(status="reserved", orderId="other", reservedUntil="2026-09-08T11:00:00Z")
+    assert post_order(env, discountCode="ABCD-EFGH")["statusCode"] == 201
+    assert table.get_item(Key=offer.code_key(TENANT_A, "ABCD-EFGH"))["Item"]["orderId"] != "other"
+
+
+def test_code_released_when_checkout_fails(env):
+    from shared import marketing_offer as offer
+    table, code = _with_codes(env)
+    code()
+    env["stripe"].fail = stripe_client.StripeError(400, {"message": "bad", "code": "x"})
+    assert post_order(env, discountCode="ABCD-EFGH")["statusCode"] == 503
+    held = table.get_item(Key=offer.code_key(TENANT_A, "ABCD-EFGH"))["Item"]
+    assert held["status"] == "issued" and "orderId" not in held
+
+
+def test_codes_need_marketing_in_the_plan(env):
+    _, code = _with_codes(env, features={"ordering": True})
+    code()
+    response = post_order(env, discountCode="ABCD-EFGH")
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_invalid"}
+
+
+def test_code_is_personal(env):
+    from shared import marketing_offer as offer
+    _, code = _with_codes(env)
+    code(ownerKey=offer.owner_key(TENANT_A, "someone@else.se"))
+    response = post_order(env, discountCode="ABCD-EFGH")
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_other_email"}
+    code("WXYZ-WXYZ", ownerKey=offer.owner_key(TENANT_A, "anna@example.se"))
+    assert post_order(env, discountCode="WXYZ-WXYZ", email="Anna+x@example.se")["statusCode"] == 201
+
+
+def test_back_from_stripe_the_same_guest_gets_the_code_again(env):
+    from shared import marketing_offer as offer
+    table, code = _with_codes(env)
+    code(ownerKey=offer.owner_key(TENANT_A, "anna@example.se"))
+    first = body_of(post_order(env, discountCode="ABCD-EFGH"))
+    # The guest pressed back in Stripe and orders again with the same code.
+    second = post_order(env, discountCode="ABCD-EFGH")
+    assert second["statusCode"] == 201, second
+    assert any(c["path"].endswith("/expire") for c in env["stripe"].calls)  # the first checkout can't be paid now
+    assert stored(env, first["orderId"])["status"] == "failed"
+    held = table.get_item(Key=offer.code_key(TENANT_A, "ABCD-EFGH"))["Item"]
+    assert held["orderId"] == body_of(second)["orderId"]
+
+
+def test_code_held_by_a_paid_or_open_order_is_refused(env):
+    table, code = _with_codes(env)
+    code()
+    first = body_of(post_order(env, discountCode="ABCD-EFGH"))
+    # Someone else (no personal code: legacy) can't take it over while it can still be paid.
+    other = post_order(env, discountCode="ABCD-EFGH", email="bertil@example.se", phone="070-765 43 21")
+    assert other["statusCode"] == 409 and body_of(other) == {"error": "discount_used"}
+    webhook(env, stripe_event("checkout.session.completed", paid_session(env, first["orderId"])))
+    again = post_order(env, discountCode="ABCD-EFGH")
+    assert again["statusCode"] == 409
+
+
+def test_discount_never_goes_under_stripes_minimum(env):
+    _, code = _with_codes(env)
+    code(percent=50)
+    env["res"].Table(MENU_TABLE).put_item(Item=menu_item(LOC_A, "mint", "Mint", "5"))
+    response = post_order(env, discountCode="ABCD-EFGH", items=[{"menuItemId": "mint", "quantity": 1}])
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_min_order"}

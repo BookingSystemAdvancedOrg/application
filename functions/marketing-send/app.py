@@ -2,7 +2,8 @@
 
 TRIGGER:
     EventBridge Scheduler, every 2 minutes ({"source": "schedule"}).
-    Reserved concurrency 1: never two runs at once.
+    Overlapping runs are safe: a campaign is leased by one run at a time and
+    every recipient is claimed before the email is sent.
 
 PURPOSE:
     Sends the campaigns that are due (SCHEDULE#... items written by the

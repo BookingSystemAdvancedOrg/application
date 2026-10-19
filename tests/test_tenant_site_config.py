@@ -83,7 +83,7 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     body = json.loads(response["body"])
     assert body["tenant"]["name"] == "Roma" and body["tenant"]["slug"] == "roma"
     assert body["tenant"]["features"] == {"reservations": True, "ordering": True,
-                                          "catering": True, "terminal": True}
+                                          "catering": True, "terminal": True, "marketing": False}
     assert body["tenant"]["branding"] == {"primaryColor": "#aa3300",
                                           "logoUrl": "https://cdn.roma.se/logo.png", "tagline": "Pizza"}
     assert body["legal"]["legalName"] == "Roma AB" and body["legal"]["orgNumber"] == "556677-8899"

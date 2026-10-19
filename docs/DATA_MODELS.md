@@ -1,8 +1,8 @@
 # DynamoDB Data Models
 
-Authoritative attribute-level schema for every table referenced in `docs/LAMBDA_REFERENCE.md`. That document says *which* table a function touches and *why* — this one says exactly what's in it. Read both before implementing a handler; neither replaces the other.
+Authoritative attribute-level schema for every table referenced in `docs/LAMBDA_REFERENCE.md`. That document says *which* table a function touches and *why* - this one says exactly what's in it. Read both before implementing a handler; neither replaces the other.
 
-Table names themselves are never hardcoded — each function gets its table's real (environment-prefixed) name via an env var, per `docs/LAMBDA_REFERENCE.md`. The names below (`Menu`, `Users`, etc.) are just how this doc refers to them.
+Table names themselves are never hardcoded - each function gets its table's real (environment-prefixed) name via an env var, per `docs/LAMBDA_REFERENCE.md`. The names below (`Menu`, `Users`, etc.) are just how this doc refers to them.
 
 ---
 
@@ -32,9 +32,9 @@ After the direct S3 PUT succeeds, store the returned `imageKey` exactly as provi
 
 ## Users
 
-Directory of all registered internal users (staff / owner-user / super-admin). Staff are scoped to one location; owner-users and super-admins have access to all locations. Mirrors Cognito identities for listing/editing — Cognito remains the auth source of truth.
+Directory of all registered internal users (staff / owner-user / super-admin). Staff are scoped to one location; owner-users and super-admins have access to all locations. Mirrors Cognito identities for listing/editing - Cognito remains the auth source of truth.
 
-Keyed by `cognitoSub` rather than location, because the frequent operation is "look up the calling user's role/location from their token" (used by `block-table` and anything else doing per-request authorization) — a direct `GetItem`, no `Query`, no GSI. Directory listing uses a paginated, strongly consistent `Scan` — cheap enough given this table's realistic size (a staff directory, not millions of rows) — and sorts results case-insensitively by `name`, then `cognitoSub`. A `super_user` may read every valid mirror; an `owner_user` may read staff mirrors plus their own record, but not another owner or super-user. The collection view uses the mirror without N+1 Cognito calls. A non-self owner read of one staff record additionally verifies that the target's current managed Cognito membership is exactly `staff_user`.
+Keyed by `cognitoSub` rather than location, because the frequent operation is "look up the calling user's role/location from their token" (used by `block-table` and anything else doing per-request authorization) - a direct `GetItem`, no `Query`, no GSI. Directory listing uses a paginated, strongly consistent `Scan` - cheap enough given this table's realistic size (a staff directory, not millions of rows) - and sorts results case-insensitively by `name`, then `cognitoSub`. A `super_user` may read every valid mirror; an `owner_user` may read staff mirrors plus their own record, but not another owner or super-user. The collection view uses the mirror without N+1 Cognito calls. A non-self owner read of one staff record additionally verifies that the target's current managed Cognito membership is exactly `staff_user`.
 
 | Attribute | Type |
 |---|---|
@@ -52,7 +52,7 @@ Keyed by `cognitoSub` rather than location, because the frequent operation is "l
 
 **Lookup pattern (the one this table is optimized for):** `GetItem(PK=f"USER#{sub}", SK="PROFILE")` where `sub` comes from the verified JWT claims (`shared.auth.get_sub`). This is the `block-table` pattern referenced throughout `LAMBDA_REFERENCE.md` for "is this staff member allowed to act on this location."
 
-Note: `role` values here are `staff|owner_user|super_admin`, while the Cognito group names established elsewhere are `staff_user|owner_user|super_user` — check which the caller actually has (`cognito:groups` from the JWT) rather than assuming this table's `role` string always matches it verbatim.
+Note: `role` values here are `staff|owner_user|super_admin`, while the Cognito group names established elsewhere are `staff_user|owner_user|super_user` - check which the caller actually has (`cognito:groups` from the JWT) rather than assuming this table's `role` string always matches it verbatim.
 
 ---
 
@@ -71,7 +71,7 @@ Per-table availability marker for a specific date and time slot. Written atomica
 | `createdBy` | String (Cognito `sub`, manual holds only) |
 | `createdAt` | String (ISO8601, manual holds only) |
 
-`SK` is composite and self-describing — `date`, the `start-end` time range,
+`SK` is composite and self-describing - `date`, the `start-end` time range,
 and `tableId` are all embedded in it, not stored as separate attributes. A
 manual hold created by `block-table` uses
 `reservationId = MANUAL_BLOCK#<UUIDv4>`, `source = manual_block`, and creation
@@ -102,7 +102,7 @@ guard item if that stronger invariant becomes necessary.
 ## Published Layout Snapshot
 
 Compiled, versioned snapshot of the layout that customers read and
-reservations or manual holds may reference. Uses SCD Type 2 — every version is
+reservations or manual holds may reference. Uses SCD Type 2 - every version is
 retained with an effective date range, so privileged users can list or
 reactivate non-archived old versions without changing their compiled content.
 The snapshot's top-level `label` is its generated version name (`Version <N>`);
@@ -136,7 +136,7 @@ current, including while a replacement is pending.
 | `archivedBy` | String, archived snapshots only |
 | `archivedAt` | String (ISO8601), archived snapshots only |
 
-On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus 28 days. That value is a pre-activation safety deadline, not the replacement activation cutoff and not immutable content; activation replaces it as described below. Immutable `createdAt` is the publication timestamp used to calculate replacement eligibility. `elements` contains only validated logical layout fields—never the source records' `PK`, `SK`, or unexpected attributes—and preserves floor `name`/`level`, child `floorId`, floor-area and cash-register geometry, an optional door `kind`, and each table's or cash register's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table or cash register without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
+On initial publication, `publish-layout` assigns the numeric maximum existing version plus one, including archived versions in that maximum, generates the snapshot's top-level `label` as `Version <N>`, and stores `isCurrent=false`, `effectiveFrom=null`, and `effectiveTo=null`. It initially sets `expiresAt` to the UTC publication time plus 28 days. That value is a pre-activation safety deadline, not the replacement activation cutoff and not immutable content; activation replaces it as described below. Immutable `createdAt` is the publication timestamp used to calculate replacement eligibility. `elements` contains only validated logical layout fields-never the source records' `PK`, `SK`, or unexpected attributes-and preserves floor `name`/`level`, child `floorId`, floor-area and cash-register geometry, an optional door `kind`, and each table's or cash register's optional nested `label`. The only persisted door-kind values are `entrance` and `kitchen`; a legacy door without `kind` remains valid and the field remains absent. A legacy table or cash register without a nested `label` is likewise valid and the field remains absent. A multi-floor snapshot contains every floor and child element for the location and is activated as one unit; activation is not per floor. `validPositions` is currently `[]`; no rule for compiling that reserved field has been specified yet. Publishing an empty `elements` list is allowed because this Lambda has no Location-table access with which to distinguish an empty draft from an unknown location.
 
 **Lifecycle fields:**
 
@@ -349,7 +349,7 @@ does not make a cash register bookable.
 
 `publish-layout` reads every item in this table for a location (`Query` on `PK`,
 `SK begins_with "LAYOUT#ELEMENT#"`) and writes them into a new Published Layout
-Snapshot version's `elements` list—that's the "compile" step referenced above.
+Snapshot version's `elements` list-that's the "compile" step referenced above.
 The compile step preserves every `floorArea` and `cashRegister`, their
 canonical geometry, a valid door `kind`, and each table's or cash register's
 optional `label`; staff version reads and the public active-layout projection
@@ -396,9 +396,9 @@ permission.
 
 ## Reservations
 
-Full customer booking record, including the reserved amount and the layout version referenced at booking time. The customer selects only a start time; the occupancy end time is derived from the location's `bookingDurationHours` **at booking time** and frozen on the record — a later change to the location's policy never retroactively changes an existing reservation's `endsAt`.
+Full customer booking record, including the reserved amount and the layout version referenced at booking time. The customer selects only a start time; the occupancy end time is derived from the location's `bookingDurationHours` **at booking time** and frozen on the record - a later change to the location's policy never retroactively changes an existing reservation's `endsAt`.
 
-No charge happens at booking — the card is saved via a Stripe SetupIntent instead. It's only charged if the customer cancels less than 24 hours before the booked time, or doesn't show up; never charged if they arrive or cancel 24+ hours in advance.
+No charge happens at booking - the card is saved via a Stripe SetupIntent instead. It's only charged if the customer cancels less than 24 hours before the booked time, or doesn't show up; never charged if they arrive or cancel 24+ hours in advance.
 
 | Attribute | Type |
 |---|---|
@@ -417,7 +417,7 @@ No charge happens at booking — the card is saved via a Stripe SetupIntent inst
 | `endsAt` | String (ISO8601) |
 | `stripeCustomerId` | String |
 | `stripePaymentMethodId` | String |
-| `stripePaymentIntentId` | String — only set if a charge actually occurs |
+| `stripePaymentIntentId` | String - only set if a charge actually occurs |
 | `ttl` | Number (Unix epoch) |
 
 `status` is exactly the state machine in `LAMBDA_REFERENCE.md`'s "Reservation status state machine" section, and `notification`'s DynamoDB Stream filters key off this same field. The "24 hours before booked time" cutoff compares against `bookedFor`, not `endsAt`.
@@ -446,7 +446,7 @@ Directory of all restaurant locations, created by an owner or super-admin when o
 | `updatedBy` | String |
 | `updatedAt` | String (ISO8601) |
 
-`PK` is the fixed literal string `PLATFORM` for every item in this table — every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
+`PK` is the fixed literal string `PLATFORM` for every item in this table - every location lives in one partition. Listing all locations is a `Query` on `PK = "PLATFORM"`, `SK begins_with "LOCATION#"`; fetching one is a direct `GetItem` on `PK="PLATFORM", SK=f"LOCATION#{locationId}"`.
 
 New records require a valid contact `email` of at most 320 characters and an E.164 `phoneNumber`, for example `+46812345678`. Existing records created before contact details were introduced may omit both fields and remain readable. A legacy record's first contact update supplies both fields; storing only one is inconsistent.
 
@@ -478,20 +478,20 @@ One record per failed charge, keyed by phone number so you can look up "does thi
 | `locationId` | String |
 | `customerEmail` | String |
 | `customerPhone` | String |
-| `stripeCustomerId` | String — needed to issue the retry charge/Checkout Session against Stripe |
+| `stripeCustomerId` | String - needed to issue the retry charge/Checkout Session against Stripe |
 | `amount` | Number |
 | `reason` | String (`no_show`\|`late_cancellation`) |
 | `attemptCount` | Number |
 | `lastAttemptAt` | String (ISO8601) |
 | `nextRetryAt` | String (ISO8601) |
-| `paymentLinkUrl` | String — set once retries are exhausted |
+| `paymentLinkUrl` | String - set once retries are exhausted |
 | `paymentLinkSentAt` | String (ISO8601) |
 | `status` | String (`retrying`\|`payment_link_sent`\|`paid`\|`written_off`) |
 | `paid` | Boolean |
 | `paidAt` | String (ISO8601), only set once paid |
-| `stripePaymentIntentId` | String — whichever attempt actually succeeded |
+| `stripePaymentIntentId` | String - whichever attempt actually succeeded |
 | `createdAt` | String (ISO8601) |
 
-**Phone number normalization matters here** — `PK` is keyed on a *normalized* phone number, so `create-pending-reservation`'s delinquency check and whatever writes this table on charge failure (`no-show-check` / `stripe-webhook`) both need to normalize the same way (e.g. E.164) before building the key, or lookups will silently miss real matches.
+**Phone number normalization matters here** - `PK` is keyed on a *normalized* phone number, so `create-pending-reservation`'s delinquency check and whatever writes this table on charge failure (`no-show-check` / `stripe-webhook`) both need to normalize the same way (e.g. E.164) before building the key, or lookups will silently miss real matches.
 
 `reason` values (`no_show`\|`late_cancellation`) map onto the Reservation `status` values that create a delinquency record: `no_show_charge_failed` → `reason="no_show"`; `cancelled_charge_failed` → `reason="late_cancellation"`.

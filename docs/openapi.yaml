@@ -58,6 +58,8 @@ tags:
     description: The signed-in restaurant's own account, plan and Stripe onboarding.
   - name: Reservations
     description: Guest table bookings, the guest manage link, and staff booking management.
+  - name: Marketing
+    description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
 
 paths:
   /auth/login:
@@ -153,11 +155,22 @@ paths:
       summary: Refresh Cognito tokens
       operationId: authRefresh
       description: |
-        Starts Cognito `REFRESH_TOKEN_AUTH`. `sub` is the Cognito subject used
-        to calculate the confidential app client's secret hash. Cognito does
-        not normally return a new refresh token from this flow.
+        Cognito `GetTokensFromRefreshToken` (works with refresh token
+        rotation). Two ways to call it:
+
+        - Cookie session (admin app): header `X-Booqy-Session: cookie`, body
+          `{}`. The refresh token is read from the HttpOnly
+          `__Secure-booqy_rt` cookie and, when Cognito rotates it, the new
+          one is set in the same cookie. The Origin must be allowed. A 401
+          also clears the cookie.
+        - Legacy: body `{refreshToken}` (a `sub` is accepted and ignored).
+
+        With the session header, login and challenge also return the refresh
+        token as that cookie instead of in the body.
       security: []
       x-required-groups: []
+      parameters:
+        - $ref: '#/components/parameters/BooqySessionHeader'
       requestBody:
         required: true
         content:
@@ -166,7 +179,6 @@ paths:
               $ref: '#/components/schemas/RefreshRequest'
             example:
               refreshToken: existing-refresh-token
-              sub: staff-user-sub
       responses:
         '200':
           $ref: '#/components/responses/AuthSuccess'
@@ -180,6 +192,43 @@ paths:
           $ref: '#/components/responses/AuthTooManyRequests'
         '502':
           $ref: '#/components/responses/AuthBadGateway'
+
+  /auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Sign out a cookie session
+      operationId: authLogout
+      description: |
+        Revokes the refresh token in the `__Secure-booqy_rt` cookie (Cognito
+        `RevokeToken`) and clears the cookie. Requires
+        `X-Booqy-Session: cookie` and the Origin of the admin app itself. Always clears the
+        cookie, even if the revoke call fails.
+      security: []
+      x-required-groups: []
+      parameters:
+        - $ref: '#/components/parameters/BooqySessionHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example: {}
+      responses:
+        '200':
+          description: Signed out; the cookie is cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [signed_out]
+        '403':
+          $ref: '#/components/responses/AuthForbidden'
 
   /auth/forgot-password:
     post:
@@ -3793,6 +3842,246 @@ paths:
         '404':
           $ref: '#/components/responses/OrderNotFound'
 
+  /t:
+    post:
+      tags:
+        - Marketing
+      summary: Count a visit or page view on a restaurant site
+      operationId: marketingTrack
+      description: |
+        Cookieless: no visitor id, nothing stored on the device, no IP
+        address kept. Only daily counters per location, channel and campaign.
+        Always answers 204 (bots, unknown sites and plans without marketing
+        are silently ignored).
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, type]
+              properties:
+                locationId: {type: string}
+                type: {type: string, enum: [visit, page, offer]}
+                path: {type: string}
+                referrer: {type: string}
+                source: {type: string}
+                medium: {type: string}
+                campaign: {type: string}
+                campaignId: {type: string}
+      responses:
+        '204':
+          description: Counted (or ignored).
+        '400':
+          description: Malformed request.
+
+  /m/c/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Click on a link in a marketing email
+      operationId: marketingClick
+      description: Signed link; records the click once and redirects to the campaign's frozen link.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '302':
+          description: Redirect to the link.
+        '404':
+          description: Invalid link (HTML page).
+
+  /m/u/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Unsubscribe page
+      operationId: marketingUnsubscribePage
+      description: Shows a button; a GET alone never unsubscribes (mail scanners follow links).
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+    post:
+      tags:
+        - Marketing
+      summary: Unsubscribe (button or RFC 8058 one-click)
+      operationId: marketingUnsubscribe
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation; the address gets no more campaigns.
+
+  /m/offer:
+    get:
+      tags:
+        - Marketing
+      summary: The welcome offer card for a restaurant site
+      operationId: marketingOffer
+      description: The offer's public settings when it is switched on and inside its date window, else null.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: locationId, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '{offer: {...} | null}'
+
+  /m/signup:
+    post:
+      tags:
+        - Marketing
+      summary: Sign up for the welcome offer
+      operationId: marketingSignup
+      description: |
+        Consent to marketing (required) and a single-use discount code by
+        email. Double opt-in: the address is "pending" until confirmed from
+        the email (/m/s/{token}) or the code is used. One code per person
+        (canonical address), ever; signing up again re-sends it. Always
+        answers {sent: true} so the form can't reveal who signed up.
+        Turnstile (action "signup") and per-IP / per-address limits.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, email, consent]
+              properties:
+                locationId: {type: string}
+                email: {type: string}
+                name: {type: string}
+                consent: {type: boolean, enum: [true]}
+                turnstileToken: {type: string}
+      responses:
+        '200':
+          description: '{sent: true}'
+        '400':
+          description: Invalid email or no consent.
+        '404':
+          description: No live offer.
+        '429':
+          description: Too many attempts.
+
+  /m/code:
+    post:
+      tags:
+        - Marketing
+      summary: Check a discount code before paying
+      operationId: marketingCheckCode
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId, code]
+              properties:
+                locationId: {type: string}
+                code: {type: string}
+      responses:
+        '200':
+          description: '{code, percent, minOrderOre, expiresAt}'
+        '404':
+          description: discount_invalid
+        '409':
+          description: discount_used / discount_expired
+
+  /m/s/{token}:
+    get:
+      tags:
+        - Marketing
+      summary: Confirm a welcome-offer sign-up (page)
+      operationId: marketingConfirmPage
+      description: Double opt-in. Shows a button; a GET alone never confirms (mail scanners follow links).
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+    post:
+      tags:
+        - Marketing
+      summary: Confirm a welcome-offer sign-up
+      operationId: marketingConfirm
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation; the address is subscribed.
+
+  /marketing/{proxy}:
+    parameters:
+      - {name: proxy, in: path, required: true, schema: {type: string}}
+    get:
+      tags:
+        - Marketing
+      summary: Marketing reads (overview, templates, campaigns, audience, subscribers)
+      operationId: marketingRead
+      security:
+        - bearerAuth: []
+      description: |
+        Owner only, plan feature "marketing". See the function docstring
+        (functions/marketing/app.py) for every sub-path.
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+        '403':
+          description: Not the owner, or marketing is not in the plan.
+    post:
+      tags:
+        - Marketing
+      summary: Create templates and campaigns, preview, test, send, cancel, unsubscribe a subscriber
+      operationId: marketingWrite
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+        '201':
+          description: Created
+    put:
+      tags:
+        - Marketing
+      summary: Update a template or a draft campaign
+      operationId: marketingUpdate
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+    delete:
+      tags:
+        - Marketing
+      summary: Delete a template, a draft campaign or a subscriber (erase)
+      operationId: marketingDelete
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3804,6 +4093,14 @@ components:
         In Swagger UI, paste the token itself; the UI adds the `Bearer` prefix.
 
   parameters:
+    BooqySessionHeader:
+      name: X-Booqy-Session
+      in: header
+      required: false
+      description: Set to `cookie` to keep the refresh token in an HttpOnly cookie.
+      schema:
+        type: string
+        enum: [cookie]
     CognitoSub:
       name: cognitoSub
       in: path
@@ -4734,6 +5031,19 @@ components:
             - true
         turnstileToken:
           type: string
+        attribution:
+          type: object
+          description: Campaign tags from the visit (dropped silently when malformed).
+        discountCode:
+          type: string
+          description: |
+            Welcome-offer code (ABCD-EFGH), personal to the address it was
+            sent to. Lowers every line by its percent; 409 discount_invalid /
+            discount_expired / discount_used / discount_min_order /
+            discount_other_email when it can't be used.
+        marketingOptIn:
+          type: boolean
+          description: The guest ticked "send me offers" (subscribed when the order is paid).
 
     OrderCreated:
       type: object
@@ -5062,9 +5372,7 @@ components:
     RefreshRequest:
       type: object
       additionalProperties: true
-      required:
-        - refreshToken
-        - sub
+      description: Empty for a cookie session; refreshToken for the legacy flow.
       properties:
         refreshToken:
           allOf:
@@ -5073,7 +5381,7 @@ components:
         sub:
           allOf:
             - $ref: '#/components/schemas/NonBlankString'
-          description: Cognito subject used to calculate SECRET_HASH.
+          description: Ignored; kept so older clients stay valid.
 
     AuthenticationResult:
       type: object

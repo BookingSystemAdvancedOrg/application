@@ -102,7 +102,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from shared import availability, booking_rules, guarantee, http, manage_link, request_guard, tenant, turnstile
+from shared import availability, booking_rules, guarantee, http, manage_link, marketing
+from shared import request_guard, tenant, turnstile
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -115,8 +116,10 @@ _HOLD_FIELDS = {"date", "startTime", "tableIds", "partySize", "turnstileToken"}
 _ONLINE_FIELDS = {
     "date", "startTime", "tableIds", "partySize", "name", "email", "phone",
     "notes", "language", "marketingOptIn", "acceptTerms", "turnstileToken", "holdId",
+    "attribution",
 }
-_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn", "turnstileToken", "holdId"}) | {
+_MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn", "turnstileToken", "holdId",
+                                    "attribution"}) | {
     "source", "notifyGuest",
 }
 # Online booking attempts: (max attempts, window seconds) per client.
@@ -161,6 +164,12 @@ def _create(event, *, staff):
     table_ids = r.validate_table_ids(data.get("tableIds"))
     party_size = r.validate_party_size(data.get("partySize"))
     guest = r.validate_guest(data, require_contact=not staff)
+    if not staff:
+        # Which campaign / channel brought the guest (marketing statistics).
+        # Never blocks a booking: anything malformed is just dropped.
+        attribution = marketing.validate_attribution(data.get("attribution"))
+        if attribution:
+            guest["attribution"] = attribution
     if staff:
         source = data.get("source", "phone")
         if source not in r.SOURCES - {"online"}:

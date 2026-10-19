@@ -102,7 +102,7 @@ authorizer remain owned by the separate `infrastructure` repository.
 `GET /locations/{locationId}/public-info` and
 `GET /locations/{locationId}/layout/active` are public (`NONE` auth) customer
 routes. The first returns only `locationId`, `name`, `address`, `timezone`,
-`businessHours`, and—when present as a valid pair—`email` and `phoneNumber`.
+`businessHours`, and-when present as a valid pair-`email` and `phoneNumber`.
 It never exposes booking policy, audit fields, DynamoDB keys, or unexpected
 stored attributes.
 

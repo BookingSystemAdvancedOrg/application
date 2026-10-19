@@ -40,7 +40,7 @@ from shared import booking_rules, catering, dynamo, guarantee, http, orders, ten
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _CACHE = "public, max-age=300"
-_FEATURES = ("reservations", "ordering", "catering", "terminal")
+_FEATURES = ("reservations", "ordering", "catering", "terminal", "marketing")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
                      "about", "faviconUrl", "instagramUrl", "facebookUrl")
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")

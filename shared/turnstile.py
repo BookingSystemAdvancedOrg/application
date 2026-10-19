@@ -38,6 +38,7 @@ VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 ACTION = "booking"
 ORDER_ACTION = "order"
 CATERING_ACTION = "catering"
+SIGNUP_ACTION = "signup"
 _TIMEOUT = 5
 _TOKEN_MAX = 2048
 _cache = {"secret": None}

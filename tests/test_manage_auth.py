@@ -543,36 +543,26 @@ def test_refresh_requires_refresh_token(app, refresh_token):
     assert json.loads(response["body"]) == {
         "error": "refreshToken is required",
     }
-    cognito.initiate_auth.assert_not_called()
+    cognito.get_tokens_from_refresh_token.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "user_sub",
-    [None, "", "   ", 123],
-)
-def test_refresh_requires_sub(app, user_sub):
+def test_refresh_no_longer_needs_sub(app):
     cognito = Mock()
+    cognito.get_tokens_from_refresh_token.return_value = {
+        "AuthenticationResult": {"AccessToken": "a", "ExpiresIn": 3600, "TokenType": "Bearer"}
+    }
     app._cognito_client = cognito
     event = make_event(proxy="refresh")
-    event["body"] = json.dumps(
-        {
-            "refreshToken": "existing-refresh-token",
-            "sub": user_sub,
-        }
-    )
+    event["body"] = json.dumps({"refreshToken": "existing-refresh-token"})
 
     response = app.handler(event, None)
 
-    assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "sub is required",
-    }
-    cognito.initiate_auth.assert_not_called()
+    assert response["statusCode"] == 200
 
 
 def test_refresh_calls_cognito(app):
     cognito = Mock()
-    cognito.initiate_auth.return_value = {
+    cognito.get_tokens_from_refresh_token.return_value = {
         "AuthenticationResult": {
             "AccessToken": "new-access-token",
             "IdToken": "new-id-token",
@@ -604,21 +594,17 @@ def test_refresh_calls_cognito(app):
         },
     }
     assert response["headers"]["Cache-Control"] == "no-store"
-    cognito.initiate_auth.assert_called_once_with(
-        AuthFlow="REFRESH_TOKEN_AUTH",
+    assert "cookies" not in response
+    cognito.get_tokens_from_refresh_token.assert_called_once_with(
+        RefreshToken="existing-refresh-token",
         ClientId="local-test-client",
-        AuthParameters={
-            "REFRESH_TOKEN": "existing-refresh-token",
-            "SECRET_HASH": (
-                "0vd97YxqmNjyvyn+varg/zNl6VbGqTq+wfj5bpgPYi8="
-            ),
-        },
+        ClientSecret="local-test-secret",
     )
 
 
 def test_refresh_maps_cognito_errors(app):
     cognito = Mock()
-    cognito.initiate_auth.side_effect = ClientError(
+    cognito.get_tokens_from_refresh_token.side_effect = ClientError(
         {
             "Error": {
                 "Code": "NotAuthorizedException",
@@ -649,7 +635,7 @@ def test_refresh_maps_cognito_errors(app):
 
 def test_refresh_maps_transport_errors_to_502(app):
     cognito = Mock()
-    cognito.initiate_auth.side_effect = EndpointConnectionError(
+    cognito.get_tokens_from_refresh_token.side_effect = EndpointConnectionError(
         endpoint_url="https://cognito-idp.eu-north-1.amazonaws.com",
     )
     app._cognito_client = cognito

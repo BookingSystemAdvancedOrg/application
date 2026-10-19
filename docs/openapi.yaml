@@ -1123,7 +1123,9 @@ paths:
         return `409` rather than expose uncertain availability.
 
         Slots start every 30 minutes on the clock's half hours (14:00, 14:30)
-        inside opening hours, the whole booking before closing. Past dates are
+        inside opening hours, the whole booking before closing and the last
+        start at least 2 hours before closing (or the booking length, if
+        longer). An existing booking keeps its own time. Past dates are
         rejected; a slot must start at least 30 minutes after the request time
         (at 13:32 the first start is 14:30). `walkIn=true` (the staff drop-in
         list) also returns slots inside those 30 minutes and ones that have

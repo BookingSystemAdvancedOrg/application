@@ -1393,7 +1393,7 @@ def test_fractional_hour_duration_uses_exact_minute_grid(
     assert [
         (slot["startTime"], slot["endTime"])
         for slot in captured["slots"]
-    ] == half_hours("10:00", "20:30", 90)
+    ] == half_hours("10:00", "20:00", 90)  # last start 2 h before 22:00 closing
 
 
 @pytest.mark.parametrize(
@@ -1438,9 +1438,7 @@ def test_dst_unsafe_intervals_are_omitted_without_failing_day(
         "00:30",
         "03:00",
         "03:30",
-        "04:00",
-        "04:30",
-        "05:00",
+        "04:00",  # last start 2 h before 06:00 closing
     ]
 
 

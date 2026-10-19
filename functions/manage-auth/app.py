@@ -20,6 +20,23 @@ PURPOSE:
     Both are limited per IP address (shared/request_guard.py, 429) on top of
     Cognito's own per-user limits.
 
+    Cookie sessions (the admin app, served with the API under /api on the
+    same address):
+      A request with the header "X-Booqy-Session: cookie" gets the refresh
+      token in an HttpOnly cookie instead of the JSON body, so no script on
+      the page can ever read it. The access and ID tokens still come back in
+      the body and are kept in memory only.
+      POST /auth/refresh {}  -> reads the cookie, rotates it
+      POST /auth/logout  {}  -> revokes the refresh token, clears the cookie
+      CSRF: the cookie is SameSite=Strict and host-only, both routes require
+      the custom header (a cross-site form can't send it, and the API's CORS
+      setup doesn't allow it cross-origin), and the Origin must be the host
+      the browser used (from the admin app's CloudFront) or one of
+      COOKIE_ALLOWED_ORIGINS.
+      Requests without the header keep the old body-based flow
+      ({refreshToken, sub}) so an older admin build keeps working during a
+      rollout.
+
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
     COGNITO_USER_POOL_ID -- Target user pool for auth calls
@@ -27,10 +44,18 @@ ENV_VARS:
     COGNITO_CLIENT_SECRET -- App client secret used to calculate SECRET_HASH
     REQUEST_GUARD_TABLE_NAME -- attempt counters (optional; unset = no
                                 per-IP limits)
+    AUTH_COOKIE_PATH -- browser path of the auth routes (default /api/auth)
+    REFRESH_COOKIE_MAX_AGE -- seconds; match the refresh token validity
+                              (default 43200 = 12 h)
+    COOKIE_ALLOWED_ORIGINS -- extra origins allowed to use the cookie
+                              routes, comma-separated (optional; local dev)
+    CLOUDFRONT_EDGE_SECRET -- trusts the viewer IP and host passed by the
+                              admin app's CloudFront (shared/http.py)
 
 AWS RESOURCE ACCESS:
-    Cognito InitiateAuth, RespondToAuthChallenge, ForgotPassword and
-    ConfirmForgotPassword, scoped to the user pool. DynamoDB UpdateItem on
+    Cognito InitiateAuth, RespondToAuthChallenge, GetTokensFromRefreshToken,
+    RevokeToken, ForgotPassword and ConfirmForgotPassword, scoped to the user
+    pool. DynamoDB UpdateItem on
     the request-guard table only.
 
 Full details: docs/LAMBDA_REFERENCE.md
@@ -51,7 +76,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import request_guard
-from shared.http import source_ip
+from shared.http import edge_header, header, source_ip
 from shared.responses import error_response, json_response
 
 logger = logging.getLogger(__name__)
@@ -60,6 +85,21 @@ ENVIRONMENT = os.environ["ENVIRONMENT"]
 COGNITO_USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 COGNITO_CLIENT_ID = os.environ["COGNITO_CLIENT_ID"]
 COGNITO_CLIENT_SECRET = os.environ["COGNITO_CLIENT_SECRET"]
+
+# The refresh token cookie. __Secure- (not __Host-) because __Host- forces
+# Path=/, which would send the refresh token with every page, script and
+# image request. Host-only (no Domain) + Path=/api/auth gives the same lock
+# to this one host while only the auth routes ever receive it.
+REFRESH_COOKIE = "__Secure-booqy_rt"
+AUTH_COOKIE_PATH = os.environ.get("AUTH_COOKIE_PATH") or "/api/auth"
+REFRESH_COOKIE_MAX_AGE = int(os.environ.get("REFRESH_COOKIE_MAX_AGE") or 12 * 60 * 60)
+COOKIE_ALLOWED_ORIGINS = frozenset(
+    o.strip().rstrip("/")
+    for o in (os.environ.get("COOKIE_ALLOWED_ORIGINS") or "").split(",")
+    if o.strip()
+)
+SESSION_HEADER = "x-booqy-session"
+_COOKIE_VALUE = re.compile(r"[A-Za-z0-9._~+/=-]+")
 
 _COGNITO_ERROR_MAPPING = {
     "NotAuthorizedException": (
@@ -85,6 +125,11 @@ _COGNITO_ERROR_MAPPING = {
     "InvalidParameterException": (
         HTTPStatus.BAD_REQUEST.value,
         "invalid authentication request",
+    ),
+    # A rotated-away refresh token used again after the grace period.
+    "RefreshTokenReuseException": (
+        HTTPStatus.UNAUTHORIZED.value,
+        "invalid username or password",
     ),
     "CodeMismatchException": (
         HTTPStatus.BAD_REQUEST.value,
@@ -262,15 +307,95 @@ def _cognito_error_response(exc):
     return _auth_error_response(status_code, message)
 
 
-def _cognito_auth_response(response, challenge_username=None):
+def _cookie_mode(event):
+    return (header(event, SESSION_HEADER) or "").strip().lower() == "cookie"
+
+
+def _refresh_cookie(value, max_age):
+    return (
+        f"{REFRESH_COOKIE}={value}; Path={AUTH_COOKIE_PATH}; Max-Age={max_age}; "
+        "Secure; HttpOnly; SameSite=Strict"
+    )
+
+
+_AMBIGUOUS = object()
+
+
+def _read_refresh_cookie(event):
+    """The refresh token from the request's cookies (HTTP API v2 `cookies`).
+
+    Returns None if absent and _AMBIGUOUS if the name appears more than once:
+    a second copy can only come from a sibling subdomain planting one with a
+    wider Domain (cookie tossing), so neither copy is trusted.
+    """
+    cookies = event.get("cookies") if isinstance(event, dict) else None
+    if not isinstance(cookies, list):
+        raw = header(event, "cookie") or ""
+        cookies = raw.split(";")
+    found = []
+    for item in cookies:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        name, value = item.strip().split("=", 1)
+        if name == REFRESH_COOKIE:
+            found.append(value)
+    if not found:
+        return None
+    if len(found) > 1 or not _COOKIE_VALUE.fullmatch(found[0]):
+        return _AMBIGUOUS
+    return found[0]
+
+
+def _origin_allowed(event):
+    """The page calling us must be the admin app itself.
+
+    Through the admin app's CloudFront the edge tells us which host the
+    browser used (trusted via the edge secret), and the Origin must be that
+    same host: works on restaurant.<domain> and on the *.cloudfront.net
+    address alike. COOKIE_ALLOWED_ORIGINS adds extra origins (local dev).
+    """
+    origin = (header(event, "origin") or "").strip().rstrip("/")
+    if not origin:
+        return False
+    if origin in COOKIE_ALLOWED_ORIGINS:
+        return True
+    viewer_host = edge_header(event, "x-booqy-viewer-host")
+    return bool(viewer_host) and origin == f"https://{viewer_host.lower()}"
+
+
+def _check_cookie_request(event):
+    """CSRF guard for the routes that act on the cookie alone."""
+    if not _cookie_mode(event):
+        return _auth_error_response(HTTPStatus.FORBIDDEN.value, "missing session header")
+    if not _origin_allowed(event):
+        return _auth_error_response(HTTPStatus.FORBIDDEN.value, "origin not allowed")
+    return None
+
+
+def _with_cookies(response, cookies):
+    if cookies:
+        response["cookies"] = list(cookies)
+    return response
+
+
+def _cognito_auth_response(response, challenge_username=None, cookie_mode=False):
     if "AuthenticationResult" in response:
-        return json_response(
-            HTTPStatus.OK.value,
-            {
-                "status": "authenticated",
-                "authenticationResult": response["AuthenticationResult"],
-            },
-            headers={"Cache-Control": "no-store"},
+        result = dict(response["AuthenticationResult"])
+        cookies = []
+        if cookie_mode:
+            refresh_token = result.pop("RefreshToken", None)
+            if refresh_token:
+                cookies.append(_refresh_cookie(refresh_token, REFRESH_COOKIE_MAX_AGE))
+        return _with_cookies(
+            json_response(
+                HTTPStatus.OK.value,
+                {
+                    "status": "authenticated",
+                    "authenticationResult": result,
+                },
+                headers={"Cache-Control": "no-store"},
+            ),
+            cookies,
         )
 
     if "ChallengeName" in response:
@@ -302,7 +427,9 @@ def _cognito_auth_response(response, challenge_username=None):
     )
 
 
-_ROUTES = frozenset({"login", "challenge", "refresh", "forgot-password", "reset-password"})
+_ROUTES = frozenset(
+    {"login", "challenge", "refresh", "logout", "forgot-password", "reset-password"}
+)
 
 
 def handler(event, context):
@@ -325,11 +452,16 @@ def handler(event, context):
     try:
         body = _parse_json_body(event)
 
+        cookie_mode = _cookie_mode(event)
+
         if proxy_path == "login":
-            return handle_login(body)
+            return handle_login(body, cookie_mode)
 
         if proxy_path == "challenge":
-            return handle_challenge(body)
+            return handle_challenge(body, cookie_mode)
+
+        if proxy_path == "logout":
+            return handle_logout(event)
 
         if proxy_path == "forgot-password":
             return handle_forgot_password(body, source_ip(event))
@@ -337,7 +469,7 @@ def handler(event, context):
         if proxy_path == "reset-password":
             return handle_reset_password(body, source_ip(event))
 
-        return handle_refresh(body)
+        return handle_refresh(body, event)
 
     except ValueError as exc:
         return error_response(400, str(exc))
@@ -349,7 +481,7 @@ def handler(event, context):
         )
 
 
-def handle_challenge(body):
+def handle_challenge(body, cookie_mode=False):
     challenge_name = _required_string(body, "challengeName")
     session = _required_string(body, "session")
     username = _required_string(body, "username")
@@ -374,31 +506,80 @@ def handle_challenge(body):
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response, username)
+    return _cognito_auth_response(response, username, cookie_mode)
 
 
-def handle_refresh(body):
-    refresh_token = _required_string(body, "refreshToken")
-    user_sub = _required_string(body, "sub")
+def handle_refresh(body, event=None):
+    """New tokens from a refresh token: the cookie (admin) or the body (legacy).
+
+    GetTokensFromRefreshToken rather than InitiateAuth REFRESH_TOKEN_AUTH:
+    it is the call that works with refresh token rotation (a new refresh
+    token on every use, the old one stops working), and it takes the client
+    secret directly, so the user's sub is no longer needed.
+    """
+    cookie_mode = _cookie_mode(event or {})
+    if cookie_mode:
+        refused = _check_cookie_request(event)
+        if refused:
+            return refused
+        refresh_token = _read_refresh_cookie(event)
+        if refresh_token is _AMBIGUOUS:
+            return _with_cookies(
+                _auth_error_response(HTTPStatus.UNAUTHORIZED.value, "not signed in"),
+                [_refresh_cookie("", 0)],
+            )
+        if not refresh_token:
+            return _auth_error_response(HTTPStatus.UNAUTHORIZED.value, "not signed in")
+    else:
+        refresh_token = _required_string(body, "refreshToken")
 
     try:
-        response = _get_cognito_client().initiate_auth(
-            AuthFlow="REFRESH_TOKEN_AUTH",
+        response = _get_cognito_client().get_tokens_from_refresh_token(
+            RefreshToken=refresh_token,
             ClientId=COGNITO_CLIENT_ID,
-            AuthParameters={
-                "REFRESH_TOKEN": refresh_token,
-                "SECRET_HASH": _secret_hash(user_sub),
-            },
+            ClientSecret=COGNITO_CLIENT_SECRET,
         )
     except ClientError as exc:
-        return _cognito_error_response(exc)
+        failed = _cognito_error_response(exc)
+        if cookie_mode and failed["statusCode"] == HTTPStatus.UNAUTHORIZED.value:
+            # Expired or revoked: drop the dead cookie so the app shows login.
+            return _with_cookies(failed, [_refresh_cookie("", 0)])
+        return failed
     except BotoCoreError:
         return _auth_error_response(
             HTTPStatus.BAD_GATEWAY.value,
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response)
+    return _cognito_auth_response(response, cookie_mode=cookie_mode)
+
+
+def handle_logout(event):
+    """Revokes the cookie's refresh token and clears the cookie."""
+    refused = _check_cookie_request(event)
+    if refused:
+        return refused
+    refresh_token = _read_refresh_cookie(event)
+    if refresh_token and refresh_token is not _AMBIGUOUS:
+        try:
+            _get_cognito_client().revoke_token(
+                Token=refresh_token,
+                ClientId=COGNITO_CLIENT_ID,
+                ClientSecret=COGNITO_CLIENT_SECRET,
+            )
+        except (ClientError, BotoCoreError) as exc:
+            # The cookie is cleared regardless; an unrevoked token still
+            # expires on its own (REFRESH_COOKIE_MAX_AGE).
+            code = _error_code(exc) if isinstance(exc, ClientError) else "transport"
+            logger.warning(json.dumps({"logout": "revoke_failed", "code": code}))
+    return _with_cookies(
+        json_response(
+            HTTPStatus.OK.value,
+            {"status": "signed_out"},
+            headers={"Cache-Control": "no-store"},
+        ),
+        [_refresh_cookie("", 0)],
+    )
 
 _cognito_client = None
 
@@ -412,7 +593,7 @@ def _get_cognito_client():
     return _cognito_client
 
 
-def handle_login(body):
+def handle_login(body, cookie_mode=False):
     username = _required_string(body, "username")
     password = _required_string(body, "password")
 
@@ -434,7 +615,7 @@ def handle_login(body):
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response, username)
+    return _cognito_auth_response(response, username, cookie_mode)
 
 
 def _email(body, field):

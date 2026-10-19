@@ -2,7 +2,9 @@
 
 import base64
 import binascii
+import hmac
 import json
+import os
 from decimal import Decimal
 
 from shared.responses import json_response
@@ -37,8 +39,31 @@ def query(event):
     return value
 
 
+def edge_header(event, name):
+    """A header set by the admin app's CloudFront, or None.
+
+    Behind CloudFront (/api/* on the admin app's address) the edge adds the
+    viewer's IP and host (x-booqy-viewer-ip, x-booqy-viewer-host) plus a
+    shared secret in x-booqy-edge. Those headers are only trusted when the
+    secret matches CLOUDFRONT_EDGE_SECRET, so a caller going straight to API
+    Gateway can't set them itself.
+    """
+    secret = os.environ.get("CLOUDFRONT_EDGE_SECRET") or ""
+    if not secret:
+        return None
+    edge = header(event, "x-booqy-edge") or ""
+    if not edge or not hmac.compare_digest(edge.encode(), secret.encode()):
+        return None
+    value = (header(event, name) or "").strip()
+    return value or None
+
+
 def source_ip(event):
-    """The caller's IP address as API Gateway saw it (None if absent)."""
+    """The caller's IP address (None if absent): the viewer's when the
+    request came through the admin app's CloudFront, else API Gateway's."""
+    viewer = edge_header(event, "x-booqy-viewer-ip")
+    if viewer:
+        return viewer
     context = event.get("requestContext") if isinstance(event, dict) else None
     http = (context or {}).get("http") if isinstance(context, dict) else None
     value = (http or {}).get("sourceIp") if isinstance(http, dict) else None

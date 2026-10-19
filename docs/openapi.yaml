@@ -153,11 +153,22 @@ paths:
       summary: Refresh Cognito tokens
       operationId: authRefresh
       description: |
-        Starts Cognito `REFRESH_TOKEN_AUTH`. `sub` is the Cognito subject used
-        to calculate the confidential app client's secret hash. Cognito does
-        not normally return a new refresh token from this flow.
+        Cognito `GetTokensFromRefreshToken` (works with refresh token
+        rotation). Two ways to call it:
+
+        - Cookie session (admin app): header `X-Booqy-Session: cookie`, body
+          `{}`. The refresh token is read from the HttpOnly
+          `__Secure-booqy_rt` cookie and, when Cognito rotates it, the new
+          one is set in the same cookie. The Origin must be allowed. A 401
+          also clears the cookie.
+        - Legacy: body `{refreshToken}` (a `sub` is accepted and ignored).
+
+        With the session header, login and challenge also return the refresh
+        token as that cookie instead of in the body.
       security: []
       x-required-groups: []
+      parameters:
+        - $ref: '#/components/parameters/BooqySessionHeader'
       requestBody:
         required: true
         content:
@@ -166,7 +177,6 @@ paths:
               $ref: '#/components/schemas/RefreshRequest'
             example:
               refreshToken: existing-refresh-token
-              sub: staff-user-sub
       responses:
         '200':
           $ref: '#/components/responses/AuthSuccess'
@@ -180,6 +190,43 @@ paths:
           $ref: '#/components/responses/AuthTooManyRequests'
         '502':
           $ref: '#/components/responses/AuthBadGateway'
+
+  /auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Sign out a cookie session
+      operationId: authLogout
+      description: |
+        Revokes the refresh token in the `__Secure-booqy_rt` cookie (Cognito
+        `RevokeToken`) and clears the cookie. Requires
+        `X-Booqy-Session: cookie` and the Origin of the admin app itself. Always clears the
+        cookie, even if the revoke call fails.
+      security: []
+      x-required-groups: []
+      parameters:
+        - $ref: '#/components/parameters/BooqySessionHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example: {}
+      responses:
+        '200':
+          description: Signed out; the cookie is cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [signed_out]
+        '403':
+          $ref: '#/components/responses/AuthForbidden'
 
   /auth/forgot-password:
     post:
@@ -3804,6 +3851,14 @@ components:
         In Swagger UI, paste the token itself; the UI adds the `Bearer` prefix.
 
   parameters:
+    BooqySessionHeader:
+      name: X-Booqy-Session
+      in: header
+      required: false
+      description: Set to `cookie` to keep the refresh token in an HttpOnly cookie.
+      schema:
+        type: string
+        enum: [cookie]
     CognitoSub:
       name: cognitoSub
       in: path
@@ -5062,9 +5117,7 @@ components:
     RefreshRequest:
       type: object
       additionalProperties: true
-      required:
-        - refreshToken
-        - sub
+      description: Empty for a cookie session; refreshToken for the legacy flow.
       properties:
         refreshToken:
           allOf:
@@ -5073,7 +5126,7 @@ components:
         sub:
           allOf:
             - $ref: '#/components/schemas/NonBlankString'
-          description: Cognito subject used to calculate SECRET_HASH.
+          description: Ignored; kept so older clients stay valid.
 
     AuthenticationResult:
       type: object

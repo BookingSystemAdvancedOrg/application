@@ -1,2 +1,5 @@
 # boto3 is already present in the public.ecr.aws/lambda/python base image.
 # Add this function's third-party dependencies here.
+# GetTokensFromRefreshToken (refresh token rotation) needs a recent boto3;
+# pinned so the image never depends on how old the base image's copy is.
+boto3>=1.38.0

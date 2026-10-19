@@ -1,8 +1,8 @@
 # Lambda Function Reference
 
-This is the single source of truth for backend implementation: what each Lambda does, what it's allowed to touch in AWS, what env vars it has, and how it's invoked / what it calls downstream. You should not need to read the Terraform to write the Python handlers — if something here is ambiguous or missing, that's a doc bug, flag it.
+This is the single source of truth for backend implementation: what each Lambda does, what it's allowed to touch in AWS, what env vars it has, and how it's invoked / what it calls downstream. You should not need to read the Terraform to write the Python handlers - if something here is ambiguous or missing, that's a doc bug, flag it.
 
-All functions are Python. Runtime env vars are read with `os.environ["NAME"]` — every variable listed under a function is guaranteed present at runtime for that function (and only that function; env vars are not shared/global).
+All functions are Python. Runtime env vars are read with `os.environ["NAME"]` - every variable listed under a function is guaranteed present at runtime for that function (and only that function; env vars are not shared/global).
 
 ---
 
@@ -12,22 +12,22 @@ All functions are Python. Runtime env vars are read with `os.environ["NAME"]` �
 
 | Trigger | Functions | Event shape |
 |---|---|---|
-| API Gateway (HTTP API v2, Lambda proxy integration) | 18 functions | API Gateway v2 payload — see below |
-| DynamoDB Stream | `notification` | Stream record batch — see its section |
+| API Gateway (HTTP API v2, Lambda proxy integration) | 18 functions | API Gateway v2 payload - see below |
+| DynamoDB Stream | `notification` | Stream record batch - see its section |
 | EventBridge Scheduler (one-time) | `no-show-check`, `expire-layout-version` | Plain JSON dict, whatever was passed as `Input` when the schedule was created |
 
 **API Gateway event shape.** For all API-Gateway-triggered functions, regardless of route method, the Lambda always receives an API Gateway v2 (HTTP API) proxy event:
 - `event["requestContext"]["http"]["method"]` / `event["requestContext"]["http"]["path"]`
-- `event["pathParameters"]` — dict of path params, e.g. `{"locationId": "..."}`
-- `event["queryStringParameters"]` — dict or `None`
-- `event["body"]` — string (may be base64-encoded if `event["isBase64Encoded"]` is true); JSON-decode it yourself
-- For `JWT`-authorized routes only: `event["requestContext"]["authorizer"]["jwt"]["claims"]` — the verified Cognito access token claims, including `sub` (Cognito user id) and `cognito:groups` (list, may be absent if the user has no group)
+- `event["pathParameters"]` - dict of path params, e.g. `{"locationId": "..."}`
+- `event["queryStringParameters"]` - dict or `None`
+- `event["body"]` - string (may be base64-encoded if `event["isBase64Encoded"]` is true); JSON-decode it yourself
+- For `JWT`-authorized routes only: `event["requestContext"]["authorizer"]["jwt"]["claims"]` - the verified Cognito access token claims, including `sub` (Cognito user id) and `cognito:groups` (list, may be absent if the user has no group)
 
-**Authorization: JWT vs NONE is only "is there a caller at all."** API Gateway's native JWT authorizer only verifies the token is valid and signed by our Cognito user pool — it rejects the request entirely before Lambda runs if the token is missing/invalid on a `JWT` route. It does **not** check *which* Cognito group the caller is in, and it does not check whether the caller is allowed to act on the specific `locationId` in the path. Both of those checks are the Lambda's job, on every `JWT` route:
+**Authorization: JWT vs NONE is only "is there a caller at all."** API Gateway's native JWT authorizer only verifies the token is valid and signed by our Cognito user pool - it rejects the request entirely before Lambda runs if the token is missing/invalid on a `JWT` route. It does **not** check *which* Cognito group the caller is in, and it does not check whether the caller is allowed to act on the specific `locationId` in the path. Both of those checks are the Lambda's job, on every `JWT` route:
 1. Read `cognito:groups` from the claims. Valid groups: `staff_user`, `owner_user`, `super_user`.
-2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` — see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
+2. If the action needs to be scoped to a specific location (e.g. only staff assigned to that location can block a table there), look up the caller's assignment from the User table by `sub` - see `block-table` below for the established pattern (`GetItem` on `PK = USER#<sub>`).
 
-**Routes configured as `NONE`** are intentionally public — customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific. Mixed-auth Lambdas select their public branch only from the documented route identity: `get-location` and `list-layout-version` require an exact top-level API Gateway `routeKey`, while `get-menu` uses its documented `proxy` path-parameter contract. Never infer public access from an authorization header or from whether JWT claims happen to be present.
+**Routes configured as `NONE`** are intentionally public - customers never have Cognito accounts. Don't add JWT checks to those route branches. Authorization is route-specific, not necessarily Lambda-specific. Mixed-auth Lambdas select their public branch only from the documented route identity: `get-location` and `list-layout-version` require an exact top-level API Gateway `routeKey`, while `get-menu` uses its documented `proxy` path-parameter contract. Never infer public access from an authorization header or from whether JWT claims happen to be present.
 
 **Reservation status state machine.** The `Reservation` table's `status` field drives most of the business logic and is what the `notification` stream filters key off of:
 
@@ -42,9 +42,9 @@ pending → reserved → arrived
 
 `pending` is set by `create-pending-reservation` before the card-on-file setup completes. `reserved` is set once Stripe confirms the SetupIntent succeeded. Everything after `reserved` is terminal.
 
-**Naming / env values are environment-relative.** `ENVIRONMENT` is `"dev"` or `"prod"` (present on every function). Never hardcode table names, bucket names, or ARNs — always read them from env vars, since the same code runs against differently-named dev/prod resources.
+**Naming / env values are environment-relative.** `ENVIRONMENT` is `"dev"` or `"prod"` (present on every function). Never hardcode table names, bucket names, or ARNs - always read them from env vars, since the same code runs against differently-named dev/prod resources.
 
-**Logging.** Every function can write to its own CloudWatch log group — not listed per-function below since it's not relevant to application logic.
+**Logging.** Every function can write to its own CloudWatch log group - not listed per-function below since it's not relevant to application logic.
 
 **Stripe configuration status.** Infrastructure now injects `STRIPE_SECRET_KEY` into `create-pending-reservation` and `cancel-reservation`, and injects the Terraform-created endpoint secret as `STRIPE_WEBHOOK_SECRET` into `stripe-webhook`. Those application handlers are still implementation stubs and do not consume the values yet. `no-show-check` still needs `STRIPE_SECRET_KEY` added before its off-session charge logic can be implemented. A Stripe publishable key belongs in frontend configuration rather than being returned as a Lambda secret.
 
@@ -53,7 +53,7 @@ pending → reserved → arrived
 ## Locations & Menu
 
 ### 1. `create-location`
-**Triggers:** API Gateway — `POST /locations`, plus `PUT` and `DELETE /locations/{locationId}` — Auth: `JWT`
+**Triggers:** API Gateway - `POST /locations`, plus `PUT` and `DELETE /locations/{locationId}` - Auth: `JWT`
 **Purpose:** Creates, partially updates, and hard-deletes Location-table directory records. Every action is restricted in-handler to `owner_user`/`super_user`; a regular `staff_user` cannot mutate locations.
 
 **Dispatch and payload contract:**
@@ -86,8 +86,8 @@ All successful and error responses include `Cache-Control: no-store`.
 
 ### 2. `get-location`
 **Triggers:**
-- API Gateway — `GET /locations` and `GET /locations/{locationId}` — Auth: `JWT`
-- API Gateway — `GET /locations/{locationId}/public-info` — Auth: `NONE`
+- API Gateway - `GET /locations` and `GET /locations/{locationId}` - Auth: `JWT`
+- API Gateway - `GET /locations/{locationId}/public-info` - Auth: `NONE`
 
 **Purpose:** Returns the protected location directory or full detail for one location, plus a safe public location projection for the customer site.
 
@@ -115,8 +115,8 @@ All successful and error responses include `Cache-Control: no-store`.
 
 ### 3. `get-menu`
 **Triggers:**
-- API Gateway — `GET /locations/{locationId}/menu` — Auth: `NONE`
-- API Gateway — `GET /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+- API Gateway - `GET /locations/{locationId}/menu` - Auth: `NONE`
+- API Gateway - `GET /locations/{locationId}/menu/{proxy+}` - Auth: `JWT`
 
 **Purpose:** Read-only menu API. The exact `/menu` route returns active customer-facing items without authentication. The greedy GET route returns full staff-facing items after JWT and Cognito-group validation.
 
@@ -153,7 +153,7 @@ Invalid identifiers return `400`; unknown protected proxy paths return `404`; no
 ---
 
 ### 4. `manage-menu`
-**Triggers:** API Gateway — `POST`, `PUT`, and `DELETE /locations/{locationId}/menu/{proxy+}` — Auth: `JWT`
+**Triggers:** API Gateway - `POST`, `PUT`, and `DELETE /locations/{locationId}/menu/{proxy+}` - Auth: `JWT`
 **Purpose:** Staff-facing menu-item writes. The `{proxy+}` catch-all dispatches create, update, and delete operations from the HTTP method and normalized `proxy` path. Protected GET routes are owned by the read-only `get-menu` Lambda.
 
 **Authorization:** Every action requires a caller in `staff_user`, `owner_user`, or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling DynamoDB. Missing or malformed direct-invocation claims return `401`; a valid token whose caller is not in one of those groups returns `403`.
@@ -193,7 +193,7 @@ This function has no User-table permission, so it can check the caller's group b
 ## Availability & Reservations
 
 ### 5. `get-availability`
-**Trigger:** API Gateway — `GET /locations/{locationId}/availability` — Auth: `NONE`
+**Trigger:** API Gateway - `GET /locations/{locationId}/availability` - Auth: `NONE`
 
 **Purpose:** Publicly computes the bookable local-time slots and free tables
 for one location and date. This route intentionally performs no JWT check;
@@ -309,7 +309,7 @@ service.
 ---
 
 ### 6. `create-pending-reservation`
-**Trigger:** API Gateway — `POST /reservations` — Auth: `NONE`
+**Trigger:** API Gateway - `POST /reservations` - Auth: `NONE`
 **Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the frontend can confirm it with Stripe.js. Infrastructure supplies the server-side `STRIPE_SECRET_KEY`; the publishable key should come from frontend environment configuration.
 **Environment variables:**
 | Name | Meaning |
@@ -327,12 +327,12 @@ service.
 
 **AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `secretsmanager:GetSecretValue` on the Turnstile secret; `dynamodb:UpdateItem` on the request-guard table.
 
-**Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` — that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
+**Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` - that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
 
 ---
 
 ### 7. `get-reservation`
-**Trigger:** API Gateway — `GET /reservations/{reservationId}` — Auth: `JWT`
+**Trigger:** API Gateway - `GET /reservations/{reservationId}` - Auth: `JWT`
 **Purpose:** Staff-facing single-reservation lookup (dashboard view).
 **Environment variables:**
 | Name | Meaning |
@@ -345,8 +345,8 @@ service.
 ---
 
 ### 8. `cancel-reservation`
-**Trigger:** API Gateway — `POST /reservations/{reservationId}/cancel` — Auth: `NONE`
-**Purpose:** Customer-facing cancellation (no login — presumably reached via a link, e.g. from a confirmation email). Releases the Slot Occupancy hold and transitions the reservation to one of the terminal `cancelled_*` statuses.
+**Trigger:** API Gateway - `POST /reservations/{reservationId}/cancel` - Auth: `NONE`
+**Purpose:** Customer-facing cancellation (no login - presumably reached via a link, e.g. from a confirmation email). Releases the Slot Occupancy hold and transitions the reservation to one of the terminal `cancelled_*` statuses.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -354,14 +354,14 @@ service.
 | `LOCATION_TABLE_NAME` | Read the location's cancellation policy/cutoff window to decide which `cancelled_*` status applies |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Release the held slot |
 | `RESERVATION_TABLE_NAME` | Update reservation status |
-| `STRIPE_SECRET_KEY` | Charge the card on file when the location's cancellation policy says a late cancellation is chargeable — sets `cancelled_charged` on success |
+| `STRIPE_SECRET_KEY` | Charge the card on file when the location's cancellation policy says a late cancellation is chargeable - sets `cancelled_charged` on success |
 
-**AWS resource access:** Read-only on Location; full `dynamodb:*` on Slot Occupancy and Reservation. (Stripe calls need no AWS IAM grant — auth is the API key itself, not SigV4.)
+**AWS resource access:** Read-only on Location; full `dynamodb:*` on Slot Occupancy and Reservation. (Stripe calls need no AWS IAM grant - auth is the API key itself, not SigV4.)
 
 ---
 
 ### 9. `mark-arrived`
-**Trigger:** API Gateway — `POST /reservations/{reservationId}/arrive` — Auth: `JWT`
+**Trigger:** API Gateway - `POST /reservations/{reservationId}/arrive` - Auth: `JWT`
 **Purpose:** Staff marks a guest as having shown up. Sets `status = "arrived"`.
 **Environment variables:**
 | Name | Meaning |
@@ -371,12 +371,12 @@ service.
 
 **AWS resource access:** Full `dynamodb:*` on the Reservation table.
 
-**Note:** This function has no Scheduler permissions, so it cannot cancel the one-time no-show-check schedule that was created for this reservation when it moved to `reserved`. That's fine by design — the schedule will still fire later, but `no-show-check` is expected to no-op if the reservation is no longer in `reserved` status by then (see `no-show-check` below). Also note `reserved → arrived` is **not** one of the transitions `notification` listens for, so marking someone arrived does not send any notification.
+**Note:** This function has no Scheduler permissions, so it cannot cancel the one-time no-show-check schedule that was created for this reservation when it moved to `reserved`. That's fine by design - the schedule will still fire later, but `no-show-check` is expected to no-op if the reservation is no longer in `reserved` status by then (see `no-show-check` below). Also note `reserved → arrived` is **not** one of the transitions `notification` listens for, so marking someone arrived does not send any notification.
 
 ---
 
 ### 10. `block-table`
-**Trigger:** API Gateway — `POST /locations/{locationId}/tables/{tableId}/block` — Auth: `JWT`
+**Trigger:** API Gateway - `POST /locations/{locationId}/tables/{tableId}/block` - Auth: `JWT`
 
 **Purpose:** Staff manually holds a table out of online booking (for example,
 for a private event or because it is physically unusable). The same operation
@@ -494,7 +494,7 @@ also safe. Deploying the writer before an older reader or publisher can make
 otherwise valid new records fail closed with `409` during a partial rollout.
 
 ### 11. `manage-layout-element`
-**Trigger:** API Gateway — `ANY /locations/{locationId}/layout-elements/{proxy+}` — Auth: `JWT`
+**Trigger:** API Gateway - `ANY /locations/{locationId}/layout-elements/{proxy+}` - Auth: `JWT`
 **Purpose:** Staff-facing CRUD for floor, floor-area, wall, door, window, table, and cash-register elements in the mutable live/draft layout. The `{proxy+}`/`ANY` route dispatches internally in the same way as `manage-menu`.
 
 **Authorization:** Every action requires `staff_user`, `owner_user`, or `super_user` through `shared.auth.require_group()`. Authentication and group membership are checked before request-body parsing or DynamoDB access. Missing or malformed direct-invocation claims return `401`; an authenticated caller outside the allowed groups receives `403`.
@@ -551,7 +551,7 @@ The function has no User-table or Location-table permission. It therefore cannot
 ---
 
 ### 12. `publish-layout`
-**Trigger:** API Gateway — `POST /locations/{locationId}/layout/publish` — Auth: `JWT`
+**Trigger:** API Gateway - `POST /locations/{locationId}/layout/publish` - Auth: `JWT`
 **Purpose:** Takes the current state of the live layout and writes it as a new immutable-content version in Published Layout Snapshot. Publishing definitively does **not** activate the new version or change any existing version; activation belongs to `activate-layout-version`.
 
 **Authorization and request:** The caller must have a valid subject and belong to `owner_user` or `super_user`, checked before path validation or DynamoDB access. The only accepted method is `POST`; this operation defines and reads no request body. `locationId` is a non-empty path value of at most 128 characters.
@@ -589,9 +589,9 @@ Malformed paths return `400`; missing/malformed direct-invocation claims return 
 
 ### 13. `list-layout-version`
 **Triggers:**
-- API Gateway — `GET /locations/{locationId}/layout/versions` — Auth: `JWT`
-- API Gateway — `DELETE /locations/{locationId}/layout/versions/{versionId}` — Auth: `JWT`
-- API Gateway — `GET /locations/{locationId}/layout/active` — Auth: `NONE`
+- API Gateway - `GET /locations/{locationId}/layout/versions` - Auth: `JWT`
+- API Gateway - `DELETE /locations/{locationId}/layout/versions/{versionId}` - Auth: `JWT`
+- API Gateway - `GET /locations/{locationId}/layout/active` - Auth: `NONE`
 
 **Purpose:** Lists complete published versions for authorized staff, soft-archives eligible versions for owners/super users, and returns a safe projection of the active version for the public customer site. Archiving preserves the immutable snapshot and version number; it never physically deletes the DynamoDB item.
 
@@ -632,9 +632,9 @@ Malformed paths return `400`. A recognized request with the wrong method returns
 ### 14. `activate-layout-version`
 **Triggers:**
 
-- API Gateway — `POST /locations/{locationId}/layout/versions/{versionId}/activate` — Auth: `JWT`
-- API Gateway — `PUT /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
-- API Gateway — `DELETE /locations/{locationId}/layout/pending-activation` — Auth: `JWT`
+- API Gateway - `POST /locations/{locationId}/layout/versions/{versionId}/activate` - Auth: `JWT`
+- API Gateway - `PUT /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
+- API Gateway - `DELETE /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
 
 **Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
 
@@ -702,7 +702,7 @@ Malformed paths, malformed/unsupported `POST` or `PUT` bodies, invalid timestamp
 |---|---|
 | `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read/update |
-| `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` — the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
+| `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` - the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. Scheduler `CreateSchedule`, `GetSchedule`, and `DeleteSchedule`, scoped to names matching `expire-layout-version-*` in the `default` group, plus `iam:PassRole` on the scheduler invoke role. It accesses no other table or AWS service.
@@ -766,7 +766,7 @@ The actual input is serialized compactly with sorted keys. The schedule name mus
 ---
 
 ### 15. `expire-layout-version`
-**Trigger:** EventBridge Scheduler, one-time, created by `activate-layout-version` (above) — not API Gateway, no HTTP semantics. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
+**Trigger:** EventBridge Scheduler, one-time, created by `activate-layout-version` (above) - not API Gateway, no HTTP semantics. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
 ```json
 {
   "PK": "LOCATION#154b5c59-3a7f-4248-895c-29ee980356f3",
@@ -808,7 +808,7 @@ A missing state item, a state item with no pending transition, or a different au
 | `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 28 days |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
-**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own — this function is the schedule's *target*, not the one creating/deleting schedules.
+**AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own - this function is the schedule's *target*, not the one creating/deleting schedules.
 
 **Deployment compatibility:** Deploy this five-field worker before deploying an `activate-layout-version` build that emits the event above. Any legacy one-time schedules containing only `PK` and `SK` are intentionally rejected and must be removed or recreated; they cannot safely perform the atomic replacement cutover.
 
@@ -817,10 +817,10 @@ A missing state item, a state item with no pending transition, or a different au
 ## Auth & Users
 
 ### 16. `manage-auth`
-**Trigger:** API Gateway — `ANY /auth/{proxy+}` — Auth: `NONE`
-**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh — whatever sub-paths the front-end needs) and "forgot password". Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner accounts exist in Cognito — customers never authenticate.
+**Trigger:** API Gateway - `ANY /auth/{proxy+}` - Auth: `NONE`
+**Purpose:** Handles the staff login flow itself (sign-in, MFA/challenge responses, token refresh - whatever sub-paths the front-end needs) and "forgot password". Necessarily `NONE`-auth: you can't require a valid JWT to obtain one. Only staff/owner accounts exist in Cognito - customers never authenticate.
 
-**Forgot password:** `POST /auth/forgot-password {username}` runs Cognito `ForgotPassword` and always answers `202 {"status": "sent"}` — also for an address without an account, an account still on its invitation's temporary password, a disabled account or one without a verified email — so the form can't reveal which addresses have accounts (the reason is logged, never the address). Cognito emails a 6-digit code; when the user pool sends through SES its custom message trigger (infrastructure `compute/lambda/cognito-custom-message`) turns it into a link to the admin app's `/aterstall-losenord#code=…&email=…`. `POST /auth/reset-password {username, code, newPassword}` runs `ConfirmForgotPassword`: `200 {"status": "reset"}`, or `400` `invalid code` / `code expired` / `password does not meet requirements`, `403 account_disabled`, `429 too many attempts`. A broken reset email (trigger or SES error) is a `502`, never hidden. Per IP address: 5 reset emails and 10 new-password attempts per 15 minutes (`shared/request_guard.py`, `429` with `Retry-After`), on top of Cognito's per-account limits.
+**Forgot password:** `POST /auth/forgot-password {username}` runs Cognito `ForgotPassword` and always answers `202 {"status": "sent"}` - also for an address without an account, an account still on its invitation's temporary password, a disabled account or one without a verified email - so the form can't reveal which addresses have accounts (the reason is logged, never the address). Cognito emails a 6-digit code; when the user pool sends through SES its custom message trigger (infrastructure `compute/lambda/cognito-custom-message`) turns it into a link to the admin app's `/aterstall-losenord#code=…&email=…`. `POST /auth/reset-password {username, code, newPassword}` runs `ConfirmForgotPassword`: `200 {"status": "reset"}`, or `400` `invalid code` / `code expired` / `password does not meet requirements`, `403 account_disabled`, `429 too many attempts`. A broken reset email (trigger or SES error) is a `502`, never hidden. Per IP address: 5 reset emails and 10 new-password attempts per 15 minutes (`shared/request_guard.py`, `429` with `Retry-After`), on top of Cognito's per-account limits.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -828,14 +828,20 @@ A missing state item, a state item with no pending transition, or a different au
 | `COGNITO_USER_POOL_ID` | Target user pool for auth calls |
 | `COGNITO_CLIENT_ID` | App client ID to use with `InitiateAuth`/`RespondToAuthChallenge`/`ForgotPassword`/`ConfirmForgotPassword` |
 | `COGNITO_CLIENT_SECRET` | App client secret used to calculate Cognito `SECRET_HASH` values |
-| `REQUEST_GUARD_TABLE_NAME` | Per-IP attempt counters for forgot/reset password (optional — unset means no per-IP limit) |
+| `REQUEST_GUARD_TABLE_NAME` | Per-IP attempt counters for forgot/reset password (optional - unset means no per-IP limit) |
+| `AUTH_COOKIE_PATH` | Browser path of the auth routes, the refresh cookie's `Path` (default `/api/auth`) |
+| `REFRESH_COOKIE_MAX_AGE` | Cookie lifetime in seconds, equal to the refresh token validity (default `43200`) |
+| `COOKIE_ALLOWED_ORIGINS` | Extra origins allowed to use the cookie routes, comma-separated (optional; local dev) |
+| `CLOUDFRONT_EDGE_SECRET` | Lets the function trust the viewer IP and host passed by the admin app's CloudFront (`shared/http.py` `edge_header`) |
 
-**AWS resource access:** Cognito `InitiateAuth`, `RespondToAuthChallenge`, `ForgotPassword` and `ConfirmForgotPassword`, scoped to the user pool; `dynamodb:UpdateItem` on the request-guard table only.
+**Cookie sessions:** with the header `X-Booqy-Session: cookie` (the admin app, which reaches the API at `/api` on its own address), login/challenge/refresh put the refresh token in the `__Secure-booqy_rt` cookie (HttpOnly, Secure, SameSite=Strict, host-only, `Path=/api/auth`) instead of the body. `POST /auth/refresh {}` reads and rotates it, `POST /auth/logout {}` revokes it and clears it. Both require the header, and the Origin must be the host the browser used (passed by the admin app's CloudFront) or an extra allowed origin. Refresh uses `GetTokensFromRefreshToken`, which works with refresh token rotation.
+
+**AWS resource access:** Cognito `InitiateAuth`, `RespondToAuthChallenge`, `GetTokensFromRefreshToken`, `RevokeToken`, `ForgotPassword` and `ConfirmForgotPassword`, scoped to the user pool; `dynamodb:UpdateItem` on the request-guard table only.
 
 ---
 
 ### 17. `manage-user`
-**Triggers:** API Gateway — `GET /list-users` and `ANY /users/{proxy+}` — Auth: `JWT`
+**Triggers:** API Gateway - `GET /list-users` and `ANY /users/{proxy+}` - Auth: `JWT`
 **Purpose:** Provides the internal-user directory and full staff lifecycle management: list/get, invite/create, profile update, deactivate/reactivate, remove, and Cognito group assignment/change. `{proxy+}`/`ANY` dispatches internally on the HTTP method and normalized `proxy` path; the collection read uses the dedicated `/list-users` route and reaches the same handler without a `proxy` path parameter.
 
 **Authorization:** Every action requires a caller in `owner_user` or `super_user`, checked with `shared.auth.require_group()` before parsing a request body or calling AWS. A `super_user` may read every valid User-table mirror. An `owner_user` list contains staff records plus the caller's own record, and an owner may individually read only a staff record or their own record; another owner or super-user is hidden with `403`. The collection read deliberately uses the mirrored `role` without N+1 Cognito calls. A non-self owner read of one mirrored staff user verifies via `AdminListGroupsForUser` that the target's live managed membership is exactly `staff_user`; a mismatch returns `403`.
@@ -895,10 +901,10 @@ The function has no Location-table access, so it validates the shape of an assig
 ## Payments & Background Jobs
 
 ### 18. `stripe-webhook`
-**Trigger:** API Gateway — `POST /webhooks/stripe/reservation` — Auth: `NONE`. Stripe calls this route directly. Trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET`; the absence of Cognito authentication does not make an unverified payload trustworthy. API Gateway delivers its HTTP API v2 proxy event with the raw JSON in `event["body"]` and the signature in `event["headers"]["stripe-signature"]`.
+**Trigger:** API Gateway - `POST /webhooks/stripe/reservation` - Auth: `NONE`. Stripe calls this route directly. Trust comes entirely from verifying the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET`; the absence of Cognito authentication does not make an unverified payload trustworthy. API Gateway delivers its HTTP API v2 proxy event with the raw JSON in `event["body"]` and the signature in `event["headers"]["stripe-signature"]`.
 **Purpose:** Receives Stripe webhook events. The two events you need to handle at minimum:
-- `setup_intent.succeeded` — the customer's card-on-file setup for a pending reservation completed. Transition the matching Reservation from `pending` → `reserved` (this is what fires the booking-confirmed notification, see `notification` below), then create a one-time EventBridge Scheduler schedule targeting `no-show-check` for that reservation's no-show check time.
-- Any event related to an off-session charge outcome you trigger elsewhere (e.g. from `no-show-check`) — used to reconcile final reservation/payment state if you're not handling that synchronously.
+- `setup_intent.succeeded` - the customer's card-on-file setup for a pending reservation completed. Transition the matching Reservation from `pending` → `reserved` (this is what fires the booking-confirmed notification, see `notification` below), then create a one-time EventBridge Scheduler schedule targeting `no-show-check` for that reservation's no-show check time.
+- Any event related to an off-session charge outcome you trigger elsewhere (e.g. from `no-show-check`) - used to reconcile final reservation/payment state if you're not handling that synchronously.
 
 **Environment variables:**
 | Name | Meaning |
@@ -906,8 +912,8 @@ The function has no Location-table access, so it validates the shape of an assig
 | `ENVIRONMENT` | `dev` or `prod` |
 | `LOCATION_TABLE_NAME` | Read location config as needed |
 | `RESERVATION_TABLE_NAME` | Update reservation status |
-| `PAYMENT_DELINQUENCY_TABLE_NAME` | Full access — write debt records here if a charge triggered from this function fails |
-| `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as the `RoleArn` — this is the role EventBridge Scheduler assumes to invoke `no-show-check` on your behalf |
+| `PAYMENT_DELINQUENCY_TABLE_NAME` | Full access - write debt records here if a charge triggered from this function fails |
+| `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as the `RoleArn` - this is the role EventBridge Scheduler assumes to invoke `no-show-check` on your behalf |
 | `NO_SHOW_CHECK_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 | `STRIPE_WEBHOOK_SECRET` | Verify the reservation endpoint's `Stripe-Signature`; supplied from the Terraform-managed Stripe endpoint |
 
@@ -915,7 +921,7 @@ The handler must reject missing or invalid signatures before parsing or acting o
 
 **AWS resource access:** Read-only on Location; full `dynamodb:*` on Reservation and Payment Delinquency. `scheduler:CreateSchedule` (scoped to schedule names matching `no-show-check-*` in the `default` group) and `iam:PassRole` on the scheduler invoke role.
 
-**Downstream — creating the no-show check schedule:**
+**Downstream - creating the no-show check schedule:**
 ```python
 import json, os, boto3
 scheduler = boto3.client("scheduler")
@@ -933,17 +939,17 @@ scheduler.create_schedule(
     },
 )
 ```
-`run_at` should be whatever point past the reservation time counts as "didn't show" per the location's grace period. The `Input` you pass here is exactly what `no-show-check` receives as its event — see below.
+`run_at` should be whatever point past the reservation time counts as "didn't show" per the location's grace period. The `Input` you pass here is exactly what `no-show-check` receives as its event - see below.
 
 ---
 
 ### 19. `no-show-check`
-**Trigger:** **EventBridge Scheduler**, one-time, created by `stripe-webhook` (above) — not API Gateway, no HTTP semantics at all. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
+**Trigger:** **EventBridge Scheduler**, one-time, created by `stripe-webhook` (above) - not API Gateway, no HTTP semantics at all. The event your handler receives is the plain JSON dict passed as `Input` when the schedule was created:
 ```python
 {"reservation_id": "..."}
 ```
-There is no `event["body"]`, no `pathParameters`, no `requestContext` — just that dict directly.
-**Purpose:** Runs once at the reservation's no-show cutoff time. **First thing the handler must do: check whether `status` is still `"reserved"`.** If the guest already arrived (`mark-arrived` set `"arrived"`) or the reservation was cancelled, exit immediately — do nothing. If it's still `"reserved"`, this is a genuine no-show: attempt an off-session Stripe charge (needs `STRIPE_SECRET_KEY`, not yet wired — see gap note). On success, set `status = "no_show_charged"` and release the Slot Occupancy hold. On failure, set `status = "no_show_charge_failed"`, release the slot, and write a debt record to Payment Delinquency keyed by the customer's phone number.
+There is no `event["body"]`, no `pathParameters`, no `requestContext` - just that dict directly.
+**Purpose:** Runs once at the reservation's no-show cutoff time. **First thing the handler must do: check whether `status` is still `"reserved"`.** If the guest already arrived (`mark-arrived` set `"arrived"`) or the reservation was cancelled, exit immediately - do nothing. If it's still `"reserved"`, this is a genuine no-show: attempt an off-session Stripe charge (needs `STRIPE_SECRET_KEY`, not yet wired - see gap note). On success, set `status = "no_show_charged"` and release the Slot Occupancy hold. On failure, set `status = "no_show_charge_failed"`, release the slot, and write a debt record to Payment Delinquency keyed by the customer's phone number.
 **Environment variables:**
 | Name | Meaning |
 |---|---|
@@ -953,14 +959,14 @@ There is no `event["body"]`, no `pathParameters`, no `requestContext` — just t
 | `RESERVATION_TABLE_NAME` | Read the reservation, update its terminal status |
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Write a debt record on charge failure |
 
-*(Still needed once you implement the Stripe charge: `STRIPE_SECRET_KEY` — not yet in this function's Terraform env block.)*
+*(Still needed once you implement the Stripe charge: `STRIPE_SECRET_KEY` - not yet in this function's Terraform env block.)*
 
 **AWS resource access:** Read-only on Location; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency.
 
 ---
 
 ### 20. `notification`
-**Trigger:** **DynamoDB Stream** on the Reservation table — not API Gateway, no synchronous response expected/used. AWS invokes this in batches (`batch_size = 10`). Filtering is done at the event-source-mapping level (before Lambda is even invoked), so you will **only ever** receive `MODIFY` records matching one of these two transitions:
+**Trigger:** **DynamoDB Stream** on the Reservation table - not API Gateway, no synchronous response expected/used. AWS invokes this in batches (`batch_size = 10`). Filtering is done at the event-source-mapping level (before Lambda is even invoked), so you will **only ever** receive `MODIFY` records matching one of these two transitions:
 
 | # | Old `status` | New `status` |
 |---|---|---|
@@ -969,9 +975,9 @@ There is no `event["body"]`, no `pathParameters`, no `requestContext` — just t
 
 Every other status change (including `reserved → arrived`) is filtered out upstream and this function will never see it.
 
-**Purpose:** Send the customer the appropriate notification for whichever transition occurred — booking confirmed (case 1), or a cancellation/no-show notice with the specific outcome (case 2, branch on the new status to word the message correctly, e.g. "your card was charged" vs "charge failed, you owe...").
+**Purpose:** Send the customer the appropriate notification for whichever transition occurred - booking confirmed (case 1), or a cancellation/no-show notice with the specific outcome (case 2, branch on the new status to word the message correctly, e.g. "your card was charged" vs "charge failed, you owe...").
 
-**Important — this function cannot query DynamoDB.** Its only DynamoDB permissions are stream-read actions (`DescribeStream`, `GetRecords`, `GetShardIterator`, `ListStreams`) — no `GetItem`/`Query`/`Scan` on the table itself. You must get everything you need (customer phone, email, name, reservation time, etc.) from the stream record's images directly:
+**Important - this function cannot query DynamoDB.** Its only DynamoDB permissions are stream-read actions (`DescribeStream`, `GetRecords`, `GetShardIterator`, `ListStreams`) - no `GetItem`/`Query`/`Scan` on the table itself. You must get everything you need (customer phone, email, name, reservation time, etc.) from the stream record's images directly:
 ```python
 for record in event["Records"]:
     old_image = record["dynamodb"].get("OldImage", {})
@@ -980,7 +986,7 @@ for record in event["Records"]:
     new_status = new_image["status"]["S"]
     # ... build and send the notification from new_image's fields
 ```
-If a field you need for the message isn't present in the DynamoDB item (and therefore isn't in the stream image), it needs to be added to the Reservation item schema — this function has no way to look it up elsewhere.
+If a field you need for the message isn't present in the DynamoDB item (and therefore isn't in the stream image), it needs to be added to the Reservation item schema - this function has no way to look it up elsewhere.
 
 **Environment variables:**
 | Name | Meaning |
@@ -991,14 +997,14 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 **AWS resource access:**
 - Stream-read only on the Reservation table's stream (no table access).
 - `ses:SendEmail`, scoped to the verified SES identity.
-- `sns:Publish` for direct-to-phone-number SMS — scoped to `Resource: "*"`, which is an AWS requirement for this specific action (SNS doesn't support resource-level ARNs for ad-hoc phone number publishes), not an oversight.
+- `sns:Publish` for direct-to-phone-number SMS - scoped to `Resource: "*"`, which is an AWS requirement for this specific action (SNS doesn't support resource-level ARNs for ad-hoc phone number publishes), not an oversight.
 
 ---
 
 ## Media
 
 ### 21. `pre-signed-url`
-**Trigger:** API Gateway — `GET /menu-images/presigned-url` — Auth: `JWT`
+**Trigger:** API Gateway - `GET /menu-images/presigned-url` - Auth: `JWT`
 **Purpose:** Generates a short-lived presigned S3 URL (PUT, for upload) so the admin front-end can upload a menu item image directly to S3 without routing the binary through API Gateway/Lambda. Every upload uses a new immutable object key; replacing an image means updating the menu item's `imageKey` after the PUT succeeds, so CloudFront sees a new path instead of serving a stale cached object.
 **Environment variables:**
 | Name | Meaning |
@@ -1021,20 +1027,20 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 Full details: `docs/ORDERS.md`.
 
 ### 22. `payment-intent`
-**Trigger:** API Gateway — `POST /order` — Auth: `NONE`
+**Trigger:** API Gateway - `POST /order` - Auth: `NONE`
 **Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, checkoutUrl, statusToken, totalAmount}`. Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
 **AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
 
 ### 23. `webhook-payment-intent`
-**Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) — Auth: Stripe signature
+**Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) - Auth: Stripe signature
 **Purpose:** `checkout.session.completed` / `async_payment_succeeded` with `payment_status=paid` → order `confirmed` (daily number, ready estimate, `order_confirmed` notice); `expired` / `async_payment_failed` → `failed`; `charge.refunded` → refund recorded. Matched by metadata + connected account + session id and amount; all writes conditional.
 
 ### 24. `get-order`
-**Trigger:** API Gateway — `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) — Auth: `NONE`
+**Trigger:** API Gateway - `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) - Auth: `NONE`
 **Purpose:** Open/closed right now (and a QR code's table), and the guest's order. A pending order is checked with Stripe so the return page shows `confirmed` without waiting for the webhook.
 
 ### 25. `manage-order`
-**Trigger:** API Gateway — `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` — Auth: `JWT` (owner, staff of the location)
+**Trigger:** API Gateway - `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` - Auth: `JWT` (owner, staff of the location)
 **Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
 
 ---

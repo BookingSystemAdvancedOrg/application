@@ -265,4 +265,4 @@ require JWT authorization.
   from the documented route identity (`routeKey` or path parameter), never
   from the presence of an authorization header or JWT claims.
 - Never hardcode table/bucket names - always read them from env vars, since
-  the same image runs unmodified against dev and prod resources.
+  the same image runs unmodified against dev and production resources.

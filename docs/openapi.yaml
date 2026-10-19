@@ -3441,8 +3441,8 @@ paths:
         booking site needs to render it: name, branding, enabled features,
         locations (address, contact, opening hours, booking rules), legal
         entity and the public Stripe / Turnstile keys. Pass exactly one of
-        `host` (production) or `slug` (outside prod only - for
-        `*.cloudfront.net` / localhost). Unknown, pending or inactive: 404.
+        `host` or `slug` (dev only - for `*.cloudfront.net` /
+        localhost). Unknown, pending or inactive: 404.
       security: []
       x-required-groups: []
       parameters:

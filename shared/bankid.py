@@ -74,7 +74,7 @@ def _config():
         if not isinstance(config, dict) or config.get("provider") not in ("bankid", "simulator"):
             raise SigningUnavailable("signing provider is not configured")
         if config["provider"] == "simulator" and os.environ.get("ENVIRONMENT") == "prod":
-            raise SigningUnavailable("the signing simulator is not allowed in prod")
+            raise SigningUnavailable("the signing simulator only runs in dev")
         _cache.update(config=config, at=now, context=None)
     return _cache["config"]
 

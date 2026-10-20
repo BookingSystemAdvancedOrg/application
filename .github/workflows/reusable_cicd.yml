@@ -11,10 +11,10 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-24.04
     # Deploys (push to dev/main) run in the GitHub environment named like the
-    # target - "prod" has required reviewers, so nothing reaches prod without
-    # an approval. The environment also puts ":environment:<env>" in the OIDC
+    # target - "prod" only accepts main (no approval step), so a merge to main
+    # deploys at once. The environment also puts ":environment:<env>" in the OIDC
     # token's sub, which the AWS deploy roles can trust. PR runs (tests /
-    # plan only) use no environment, so they never wait for approval.
+    # plan only) use no environment.
     environment: ${{ github.event_name == 'push' && inputs.environment || '' }}
     # Never two releases of one environment at once; a queued one waits.
     concurrency:
@@ -114,8 +114,8 @@ jobs:
         # Publishes each new image as a version and moves the function's
         # "live" alias to it through CodeDeploy - prod: 10% for 5 minutes,
         # rolled back automatically if the function's alarms fire; dev: all at
-        # once. Failures/rollbacks are emailed per function; one summary
-        # email is sent at the end. Releases run 6 at a time; a failure fails
+        # once. Failures/rollbacks are emailed per function, plus one summary
+        # email if anything failed - success sends nothing. Releases run 6 at a time; a failure fails
         # the job only after every release has finished.
         if: github.event_name == 'push'
         env:
@@ -143,7 +143,7 @@ jobs:
           sort release-results.txt
           failed=$(grep -c '^FAILED' release-results.txt || true)
           subject="[$ENVIRONMENT] application release $SHORT_SHA: $([ "$failed" = 0 ] && echo SUCCESS || echo "$failed FAILED")"
-          aws sns publish --topic-arn "$ALERT_TOPIC_ARN" --subject "$subject" \
+          [ "$failed" = 0 ] || aws sns publish --topic-arn "$ALERT_TOPIC_ARN" --subject "$subject" \
             --message "$(printf 'Commit: %s\nRun: %s/%s/actions/runs/%s\n\n%s\n' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(sort release-results.txt)")" \
             >/dev/null || echo "::warning::could not send the summary email"
           exit $status

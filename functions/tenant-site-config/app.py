@@ -2,7 +2,7 @@
 
 TRIGGER:
     API Gateway -- GET /site-config?host=<hostname>   -- Auth: NONE
-                   GET /site-config?slug=<slug>       (outside prod only)
+                   GET /site-config?slug=<slug>       (dev only)
 
 PURPOSE:
     Bootstrap of a restaurant's public website. One booking-site build is
@@ -219,7 +219,7 @@ def handler(event, context):
     try:
         config = _site_config(http.query(event))
     except ValueError:
-        return http.respond(400, {"error": "pass host=<hostname> (or slug= outside prod)"},
+        return http.respond(400, {"error": "pass host=<hostname> (or slug= in dev)"},
                             {"Cache-Control": "no-store"})
     except (BotoCoreError, ClientError):
         return http.respond(503, {"error": "site configuration unavailable"},

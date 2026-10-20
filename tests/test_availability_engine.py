@@ -75,3 +75,25 @@ def test_keep_start_still_respects_the_lead_time():
     slots = engine.candidate_slots({"date": "2026-09-20"}, loc, AT_13_32, include_started=True,
                                    keep_start="13:45")
     assert "13:45" in starts(slots)
+
+
+def test_no_start_less_than_two_hours_before_closing():
+    # 75-minute bookings would fit until 20:45, but the last start is 20:00.
+    loc = location(duration=75, opens="11:00", closes="22:00")
+    slots = engine.candidate_slots({"date": "2026-09-21"}, loc, AT_13_32)
+    assert starts(slots)[-1] == "20:00"
+    assert slots[-1]["endTime"] == "21:15"
+
+
+def test_a_longer_booking_length_still_wins():
+    slots = engine.candidate_slots({"date": "2026-09-21"}, location(duration=180), AT_13_32)
+    assert starts(slots)[-1] == "19:00"  # 19:00 + 3 h = closing
+
+
+def test_an_existing_booking_keeps_its_late_own_time():
+    # Booked before the rule (20:30, 75 min, ends 21:45): editing it must not
+    # lose its time.
+    loc = location(duration=75, opens="11:00", closes="22:00")
+    slots = engine.candidate_slots({"date": "2026-09-21"}, loc, AT_13_32, keep_start="20:30")
+    assert "20:30" in starts(slots)
+    assert "20:30" not in starts(engine.candidate_slots({"date": "2026-09-21"}, loc, AT_13_32))

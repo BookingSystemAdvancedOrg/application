@@ -77,7 +77,7 @@ reminders, the guest routes verify it in constant time. Bumping a booking's
 before signed links keep their `manageTokenHash` and old token.
 
 The link host is the tenant's active domain (`primaryDomain` first); in dev
-without one it is `CUSTOMER_SITE_URL` + `?restaurang=<slug>`, in prod
+without one it is `CUSTOMER_SITE_URL` + `?restaurang=<slug>`, in production
 without one the message has no link.
 
 ## Messages (M3)

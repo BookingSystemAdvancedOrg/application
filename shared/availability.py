@@ -140,6 +140,11 @@ _BOOKING_HORIZON = timedelta(days=21)
 # alike. Only staff walk-ins (the guest is standing there) skip the lead time.
 SLOT_STEP_MINUTES = 30
 LEAD_TIME = timedelta(minutes=30)
+# No booking may START less than this before closing, even when the booking
+# length is shorter (the owner's rule: the kitchen and the room need the last
+# guests seated two hours before closing). With a longer booking length that
+# length wins, since the whole booking must fit before closing anyway.
+LAST_START_BEFORE_CLOSE_MINUTES = 120
 
 
 class _AvailabilityServiceFailure(Exception):
@@ -359,10 +364,12 @@ def _first_step(minute):
 
 
 def _interval_starts(opens_at, closes_at, duration, keep_start):
-    """Start minutes inside one opening interval: the half-hour grid, plus
-    ``keep_start`` (an existing booking's own time, which may predate the
-    grid) when it fits the interval."""
-    starts = list(range(_first_step(opens_at), closes_at - duration + 1, SLOT_STEP_MINUTES))
+    """Start minutes inside one opening interval: the half-hour grid up to
+    LAST_START_BEFORE_CLOSE_MINUTES (or the booking length, if longer) before
+    closing, plus ``keep_start`` (an existing booking's own time, which may
+    predate the grid or the rule) when the booking fits the interval."""
+    last_start = closes_at - max(duration, LAST_START_BEFORE_CLOSE_MINUTES)
+    starts = list(range(_first_step(opens_at), last_start + 1, SLOT_STEP_MINUTES))
     if (
         keep_start is not None
         and opens_at <= keep_start <= closes_at - duration

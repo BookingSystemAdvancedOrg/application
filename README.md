@@ -50,6 +50,50 @@ Dockerfile `COPY`s both `shared/` and its own `functions/<name>/`:
 docker build -f functions/get-location/Dockerfile -t get-location:latest .
 ```
 
+## CI/CD
+
+`.github/workflows/dev.yml` (branch `dev`) and `prod.yml` (`main`) run
+`reusable_cicd.yml`: tests, image builds, a push to ECR, a blue/green
+release of each function through CodeDeploy (production: 10 % of the
+traffic for 5 minutes, rolled back automatically if the function's alarms
+fire; dev: all at once) and a smoke test. The infrastructure repo's
+`docs/RELEASES.md` has the whole picture.
+
+A push builds, pushes and releases only the functions whose code differs
+from what is live. `scripts/changed-functions.sh` reads the image behind
+each function's `live` alias (every image is tagged with the commit it was
+built from) and asks git whether `functions/<name>/`, `shared/` or
+`requirements.txt` differ between that commit and the pushed one. The
+table it prints is also in the run's summary.
+
+- `functions/<name>/**` changed: that function is released.
+- `shared/**` or `requirements.txt` changed: every function is released.
+- Released regardless: a new function folder, a function whose live image
+  carries no commit tag (the placeholder image from the infrastructure
+  repo's first deploy), a live commit that is not in the clone (rewritten
+  history) and a function the script cannot read.
+- Comparing against the live commit, not the push range, also covers a
+  push whose release failed, a "Redeploy a commit" run and a configuration
+  release from the infrastructure repo.
+- Pull requests build every image; nothing is released.
+- Images are pushed four at a time and released 14 at a time; the release
+  script waits for a running release of the same function instead of
+  failing.
+- Tests run in parallel (`pytest -n auto`, pytest-xdist). Every test brings
+  its own moto mock and sets env vars with `monkeypatch`, so new tests must
+  do the same: no module-level AWS state, no shared files, no fixed ports.
+
+To force a full release: Actions, the environment's workflow ("Dev
+Application CI/CD" or "Prod Application CI/CD"), "Run workflow" from `dev`
+or `main` with "all" ticked. A commit that changes a file under `shared/`
+does the same on the next push (an empty commit does not: nothing differs).
+
+Locally, with credentials for the environment,
+`ENVIRONMENT=dev bash scripts/changed-functions.sh` prints the table and
+writes `functions.txt` without releasing anything;
+`bash scripts/changed-functions-test.sh` tests the script against a fake
+`aws` and a throwaway git repository.
+
 ## Local dev
 
 ```bash
@@ -64,7 +108,7 @@ environment and install the repository's development requirements:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q -n auto
 ```
 
 `shared/` is a plain Python package (`shared/__init__.py` exists) - as long

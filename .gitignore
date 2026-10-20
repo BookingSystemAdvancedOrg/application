@@ -217,3 +217,7 @@ __marimo__/
 
 # Streamlit 
 .streamlit/secrets.toml
+
+# Written by scripts/changed-functions.sh and the pipeline
+functions.txt
+release-list.txt

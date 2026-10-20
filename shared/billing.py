@@ -225,6 +225,7 @@ def invoice_row(tenant_id, invoice, event_created):
         "hostedInvoiceUrl": invoice.get("hosted_invoice_url"),
         "invoicePdf": invoice.get("invoice_pdf"),
         "paidOutOfBand": bool(invoice.get("paid_out_of_band")),
+        "collectionMethod": invoice.get("collection_method"),
         "eventCreated": int(event_created),
         "updatedAt": now_iso(),
     }

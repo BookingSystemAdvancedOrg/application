@@ -165,6 +165,10 @@ jobs:
           CODEDEPLOY_APP: ${{ inputs.environment == 'prod' && env.CODEDEPLOY_APP_PROD || env.CODEDEPLOY_APP_DEV }}
           ALERT_TOPIC_ARN: ${{ inputs.environment == 'prod' && env.ALERT_TOPIC_ARN_PROD || env.ALERT_TOPIC_ARN_DEV }}
           ENVIRONMENT: ${{ inputs.environment }}
+          # Every release hits the Lambda and CodeDeploy APIs at the same
+          # moment: let the CLI back off and retry instead of failing on a throttle.
+          AWS_RETRY_MODE: adaptive
+          AWS_MAX_ATTEMPTS: "10"
         run: |
           # Actions runs this with `bash -e`: capture the release status
           # instead of letting a failed release abort before the summary.
@@ -173,7 +177,7 @@ jobs:
           export SHORT_SHA
           touch release-results.txt
           status=0
-          xargs -r -P 14 -L 1 bash -c '
+          xargs -r -P "$(wc -l < release-list.txt)" -L 1 bash -c '
             if bash .github/scripts/lambda-release.sh --function "$0" --image "$1" \
                  --app "$CODEDEPLOY_APP" --topic "$ALERT_TOPIC_ARN" --environment "$ENVIRONMENT" \
                  --source "application@$SHORT_SHA" --notify failure > "release-$0.log" 2>&1; then

@@ -1065,6 +1065,12 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** DynamoDB Streams (reservation, order) and EventBridge SES events (configuration set `marketing`)
 **Purpose:** Bookings and paid orders into the statistics per channel and campaign (their `attribution`); subscribers from opted-in bookings and last-visit dates; bounce/complaint suppression.
 
+## Tenant lifecycle
+
+### 30. `tenant-purge`
+**Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
+**Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
+
 ---
 
 ## Quick index
@@ -1100,3 +1106,4 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 | 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET\|POST /m/s/{token}` | NONE (signed links, Turnstile) |
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
+| 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |

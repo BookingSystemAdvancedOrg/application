@@ -27,6 +27,7 @@ never changes, so it is cached for the container's lifetime.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,21 @@ from boto3.dynamodb.conditions import Key
 
 from shared import dynamo
 from shared.responses import json_response
+
+# One line per request that resolved to a tenant. finance-rollup counts
+# these lines per restaurant with a CloudWatch Logs Insights query, which
+# is how shared AWS cost (Lambda, API Gateway, DynamoDB, CloudFront) is
+# split between customers - nothing is written on the request path. The
+# logger's own level is set so the line appears whatever the function's
+# root logger level is.
+_request_log = logging.getLogger("shared.tenant.requests")
+_request_log.setLevel(logging.INFO)
+REQUEST_LOG_PREFIX = "TENANT_REQUEST tenant="
+
+
+def _log_request(tenant_id: str, kind: str) -> None:
+    _request_log.info("%s%s kind=%s", REQUEST_LOG_PREFIX, tenant_id, kind)
+
 
 ROLES = ("owner_user", "staff_user")
 FEATURES = ("reservations", "ordering", "catering", "terminal")
@@ -265,6 +281,7 @@ def for_jwt(
             assigned = _staff_location(sub, tenant_id)
             if assigned is not None and assigned != location_id:
                 raise _not_found()
+    _log_request(tenant_id, "jwt")
     return TenantContext(tenant_id, tenant_row, role, sub, location, claims)
 
 
@@ -288,6 +305,7 @@ def for_public(location_id: str, *, feature: Optional[str] = None) -> TenantCont
     location = get_location(tenant_id, location_id, consistent=False)
     if not location:
         raise _not_found()
+    _log_request(tenant_id, "public")
     return TenantContext(tenant_id, tenant_row, None, None, location)
 
 

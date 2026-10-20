@@ -172,11 +172,13 @@ def test_test_event_in_prod_is_ignored(app, monkeypatch):
     assert json.loads(res["body"])["result"] == "ignored:livemode"
 
 
-def test_billing_events_are_acknowledged(app):
+def test_billing_events_for_unknown_customers_are_acknowledged(app):
+    # The real billing handling is in test_finance_billing.py; here only
+    # that /billing verifies with its own secret and answers 200.
     evt = {"id": "evt_b", "type": "customer.subscription.updated", "created": 1, "livemode": False,
-           "data": {"object": {"id": "sub_1"}}}
+           "data": {"object": {"id": "sub_1", "customer": "cus_unknown"}}}
     res = app.handler(_event(evt, path="/billing", secret=BILLING_SECRET), None)
-    assert res["statusCode"] == 200 and json.loads(res["body"])["result"] == "ignored"
+    assert res["statusCode"] == 200 and json.loads(res["body"])["result"] == "ignored:unknown_customer"
 
 
 def test_other_event_types_are_ignored(app):

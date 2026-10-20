@@ -1073,6 +1073,27 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 
 ---
 
+### 31. `finance-rollup`
+
+**Trigger:** EventBridge Scheduler, nightly (`finance_rollup_schedule`, 04:30
+UTC); Booqy Console's Rebuild with `{"from", "to"}`; itself near its timeout.
+
+**Purpose:** the figures behind Booqy Console's Finance page. Pulls the
+account's cost per service from Cost Explorer (last 7 days, restated by
+AWS), counts each customer's usage for the last 3 days (API requests from
+the `TENANT_REQUEST tenant=<id>` line `shared/tenant.py` logs, via Logs
+Insights; bookings and orders per location; emails, SMS and marketing
+emails from the counters `notification` and `marketing-send` bump through
+`shared/finance.py`), allocates the cost (baseline equally, SES by emails,
+SNS by SMS, the rest by requests) and writes `TENANT#<id> / DAY#<day>`,
+`PLATFORM / COST#<day>`, `PLATFORM / DAY#<day>` and `PLATFORM / JOB#latest`
+in the finance table. Warnings (Cost Explorer not enabled, a failed log
+query) go to the alert topic. Design: infrastructure `docs/FINANCE.md`.
+
+**Also in this area:** `platform-stripe-webhook` `/billing` handles the
+subscription and invoice events (`shared/billing.py`: `PROFILE.billing`,
+the invoice ledger and the day's revenue, ex VAT).
+
 ## Quick index
 
 | # | Function | Trigger | Auth |
@@ -1107,3 +1128,4 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
+| 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |

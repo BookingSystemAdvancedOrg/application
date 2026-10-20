@@ -49,8 +49,8 @@ _request_log.setLevel(logging.INFO)
 REQUEST_LOG_PREFIX = "TENANT_REQUEST tenant="
 
 
-def _log_request(tenant_id: str, kind: str) -> None:
-    _request_log.info("%s%s kind=%s", REQUEST_LOG_PREFIX, tenant_id, kind)
+def _log_request(tenant_id: str, kind: str, location_id: Optional[str] = None) -> None:
+    _request_log.info("%s%s loc=%s kind=%s", REQUEST_LOG_PREFIX, tenant_id, location_id or "-", kind)
 
 
 ROLES = ("owner_user", "staff_user")
@@ -281,7 +281,7 @@ def for_jwt(
             assigned = _staff_location(sub, tenant_id)
             if assigned is not None and assigned != location_id:
                 raise _not_found()
-    _log_request(tenant_id, "jwt")
+    _log_request(tenant_id, "jwt", location_id)
     return TenantContext(tenant_id, tenant_row, role, sub, location, claims)
 
 
@@ -305,7 +305,7 @@ def for_public(location_id: str, *, feature: Optional[str] = None) -> TenantCont
     location = get_location(tenant_id, location_id, consistent=False)
     if not location:
         raise _not_found()
-    _log_request(tenant_id, "public")
+    _log_request(tenant_id, "public", location_id)
     return TenantContext(tenant_id, tenant_row, None, None, location)
 
 

@@ -35,10 +35,14 @@ PURPOSE:
       4. Per customer and day: TENANT#<id> / DAY#<day> gets requests,
          bookings, orders, costSek (+ the split per bucket), mrrSek (the
          subscription that day, from PROFILE.billing), planId and active.
-         The counters and the revenue fields other writers own are never
-         touched. PLATFORM / DAY#<day> gets the totals and PLATFORM /
-         JOB#latest the run (warnings included: e.g. Cost Explorer not
-         enabled yet).
+         Per location and day: TENANT#<id> / LOC#<locationId>#DAY#<day> gets
+         that location's requests (the log line carries loc=), bookings,
+         orders and its share of the customer's cost (by requests, else by
+         bookings and orders, else equally); the Finance page's location
+         filter reads these. The counters and the revenue fields other
+         writers own are never touched. PLATFORM / DAY#<day> gets the
+         totals and PLATFORM / JOB#latest the run (warnings included: e.g.
+         Cost Explorer not enabled yet).
 
     A customer is "active on a day" from its createdAt until the day it was
     offboarded (suspended customers count: the platform still serves them).
@@ -82,8 +86,8 @@ MAX_RANGE_DAYS = 92
 HANDOVER_MS = 90_000            # re-invoke when less than this remains
 LOGS_CHUNK = 20                 # log groups per Logs Insights query
 LOGS_WAIT_SECONDS = 90
-REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=*" as tenant | filter ispresent(tenant) '
-                  '| stats count(*) as n by tenant')
+REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=*" as tenant, loc | filter ispresent(tenant) '
+                  '| stats count(*) as n by tenant, loc')
 NOT_A_BOOKING = ("held", "pending", "expired")
 NOT_AN_ORDER = ("pending_payment", "failed", "cancelled")
 CENTS = Decimal("0.01")
@@ -238,11 +242,13 @@ def _count_rows(table_name, location_id, prefix, excluded):
 
 
 def count_bookings_and_orders(location_ids, day):
-    bookings = orders = 0
+    """{location_id: (bookings, orders)} for the day."""
+    out = {}
     for location_id in location_ids:
-        bookings += _count_rows(os.environ["RESERVATION_TABLE_NAME"], location_id, f"RESERVATION#{day}#", NOT_A_BOOKING)
-        orders += _count_rows(os.environ["ORDER_TABLE_NAME"], location_id, f"ORDER#{day}#", NOT_AN_ORDER)
-    return bookings, orders
+        out[location_id] = (
+            _count_rows(os.environ["RESERVATION_TABLE_NAME"], location_id, f"RESERVATION#{day}#", NOT_A_BOOKING),
+            _count_rows(os.environ["ORDER_TABLE_NAME"], location_id, f"ORDER#{day}#", NOT_AN_ORDER))
+    return out
 
 
 # --- requests (Logs Insights) -----------------------------------------------------------
@@ -294,15 +300,18 @@ def _run_query(groups, start, end, warnings):
     for row in result.get("results", []):
         fields = {f.get("field"): f.get("value") for f in row}
         tenant_id, n = fields.get("tenant"), fields.get("n")
+        loc = (fields.get("loc") or "-").strip()
         if tenant_id and n:
             try:
-                counts[tenant_id] = counts.get(tenant_id, 0) + int(float(n))
+                key = (tenant_id, loc if loc and loc != "-" else None)
+                counts[key] = counts.get(key, 0) + int(float(n))
             except ValueError:
                 continue
     return counts
 
 
 def count_requests(day, warnings):
+    """{(tenant_id, location_id or None): requests} for the day."""
     groups = _log_groups()
     if not groups:
         return {}
@@ -315,8 +324,8 @@ def count_requests(day, warnings):
         except (BotoCoreError, ClientError) as exc:
             warnings.append(f"request count failed for {day}: {exc}")
             return counts
-        for tenant_id, n in part.items():
-            counts[tenant_id] = counts.get(tenant_id, 0) + n
+        for key, n in part.items():
+            counts[key] = counts.get(key, 0) + n
     return counts
 
 
@@ -425,6 +434,44 @@ def _day_rows(tenant_ids, day):
     return rows
 
 
+def _location_rows(tenant_id, location_ids, day):
+    """The existing LOC rows (counters) of a tenant's locations, by location id."""
+    table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
+    rows = {}
+    for location_id in location_ids:
+        item = table.get_item(Key={"PK": finance.tenant_pk(tenant_id),
+                                   "SK": finance.location_sk(location_id, day)}).get("Item")
+        rows[location_id] = item or {}
+    return rows
+
+
+def split_by_location(total, usage_by_location):
+    """A tenant's cost over its locations: by requests, else by bookings and
+    orders, else equally. {location_id: sek}."""
+    ids = list(usage_by_location)
+    if not ids:
+        return {}
+    for keys in (("requests",), ("bookings", "orders")):
+        weights = {loc: Decimal(sum(int(usage_by_location[loc].get(k) or 0) for k in keys)) for loc in ids}
+        denominator = sum(weights.values(), Decimal(0))
+        if denominator > 0:
+            break
+    else:
+        weights = {loc: Decimal(1) for loc in ids}
+        denominator = Decimal(len(ids))
+    return {loc: _q(Decimal(total) * weights[loc] / denominator, MICRO) for loc in ids}
+
+
+def write_location_day(tenant_id, location_id, day, usage, cost):
+    dynamo.table(os.environ["FINANCE_TABLE_NAME"]).update_item(
+        Key={"PK": finance.tenant_pk(tenant_id), "SK": finance.location_sk(location_id, day)},
+        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, locationId = :l, #d = :d, computedAt = :now",
+        ExpressionAttributeNames={"#r": "requests", "#d": "day"},
+        ExpressionAttributeValues={":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
+                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost), ":l": location_id,
+                                   ":d": day, ":now": _iso(now_utc())})
+
+
 def write_tenant_day(tenant, day, usage, cost, mrr, active):
     table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
     table.update_item(
@@ -460,20 +507,26 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings):
     ids = [t["tenantId"] for t in active]
     requests = count_requests(day, warnings)
     rows = _day_rows(ids, day)
-    usage = {}
+    usage, by_location = {}, {}
     for t in active:
         tenant_id = t["tenantId"]
         try:
-            bookings, orders = count_bookings_and_orders(list_locations(tenant_id), day)
+            location_ids = list_locations(tenant_id)
+            per_location = count_bookings_and_orders(location_ids, day)
         except (BotoCoreError, ClientError) as exc:
             warnings.append(f"bookings/orders for {tenant_id} on {day}: {exc}")
-            bookings, orders = 0, 0
+            location_ids, per_location = [], {}
         row = rows.get(tenant_id) or {}
+        tenant_requests = sum(n for (tid, _loc), n in requests.items() if tid == tenant_id)
         usage[tenant_id] = {
-            "requests": int(requests.get(tenant_id, 0)), "bookings": bookings, "orders": orders,
+            "requests": int(tenant_requests),
+            "bookings": sum(b for b, _o in per_location.values()), "orders": sum(o for _b, o in per_location.values()),
             "emails": int(row.get("emails") or 0), "sms": int(row.get("sms") or 0),
             "marketingEmails": int(row.get("marketingEmails") or 0),
         }
+        by_location[tenant_id] = {
+            loc: {"requests": int(requests.get((tenant_id, loc), 0)), "bookings": b, "orders": o}
+            for loc, (b, o) in per_location.items()}
     totals = bucket_totals(cost_by_service, rate, allocation)
     split = allocate(totals, usage)
     platform = {"activeTenants": len(active),
@@ -490,6 +543,9 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings):
         tenant_id = t["tenantId"]
         mrr = mrr_on(t)
         write_tenant_day(t, day, usage[tenant_id], split[tenant_id], mrr, True)
+        location_cost = split_by_location(split[tenant_id].get("total", Decimal(0)), by_location[tenant_id])
+        for loc, loc_usage in by_location[tenant_id].items():
+            write_location_day(tenant_id, loc, day, loc_usage, location_cost.get(loc, Decimal(0)))
         platform["mrrSek"] += mrr
         for k in ("requests", "bookings", "orders", "emails", "sms", "marketingEmails"):
             platform[k] += usage[tenant_id][k]

@@ -65,7 +65,10 @@ class FakeLogs:
         return {"queryId": "q-" + str(len(self.started))}
 
     def get_query_results(self, queryId):
-        rows = [[{"field": "tenant", "value": t}, {"field": "n", "value": str(n)}] for t, n in self.counts.items()]
+        rows = []
+        for key, n in self.counts.items():
+            tenant_id, loc = key if isinstance(key, tuple) else (key, "-")
+            rows.append([{"field": "tenant", "value": tenant_id}, {"field": "loc", "value": loc}, {"field": "n", "value": str(n)}])
         return {"status": "Complete", "results": rows}
 
     def stop_query(self, queryId):
@@ -133,6 +136,7 @@ def env(monkeypatch):
         tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": "DAY#2026-10-18", "emails": 30, "sms": 0,
                                          "invoicedSek": Decimal("1990")})
         tables["finance"].put_item(Item={"PK": f"TENANT#{B}", "SK": "DAY#2026-10-18", "emails": 10, "sms": 5})
+        tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-18", "emails": 30})
 
         spec = importlib.util.spec_from_file_location("finance_rollup_app", APP)
         module = importlib.util.module_from_spec(spec)
@@ -141,7 +145,8 @@ def env(monkeypatch):
         fakes = {"ce": FakeCE({"2026-10-18": {"AWS Lambda": "6", "Amazon Route 53": "2", "Amazon Simple Email Service": "1",
                                               "Amazon Simple Notification Service": "0.5"},
                                "2026-10-19": {"AWS Lambda": "1"}}),
-                 "logs": FakeLogs({A: 300, B: 100, "stray": 7}), "sns": FakeClient(), "lambda": FakeClient()}
+                 "logs": FakeLogs({(A, LOC_A): 240, (A, "-"): 60, (B, LOC_B): 100, ("stray", "-"): 7}),
+                 "sns": FakeClient(), "lambda": FakeClient()}
         module._clients[("ce", "us-east-1")] = fakes["ce"]
         module._clients[("logs", None)] = fakes["logs"]
         module._clients[("sns", None)] = fakes["sns"]
@@ -177,6 +182,11 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     assert b["costSplitSek"] == {"requests": Decimal("15"), "baseline": Decimal("10"), "email": Decimal("2.5"), "sms": Decimal("5")}
     assert a["costSek"] == Decimal("62.50") and b["costSek"] == Decimal("32.50")
     assert a["mrrSek"] == Decimal("1990") and b["mrrSek"] == Decimal("990") and a["planId"] == "growth"
+    # per location: A has one location that took 240 of its 300 requests and all its bookings; the
+    # whole tenant cost lands on it (only location); the senders' counter on the row is kept
+    loc = _row(env, f"TENANT#{A}", f"LOC#{LOC_A}#DAY#2026-10-18")
+    assert loc["requests"] == 240 and loc["bookings"] == 3 and loc["orders"] == 2 and loc["emails"] == 30
+    assert loc["costSek"] == Decimal("62.50") and loc["locationId"] == LOC_A
     assert a["invoicedSek"] == Decimal("1990")  # untouched revenue field
     # the offboarded and the provisioning tenants are not customers on the 18th
     assert _row(env, f"TENANT#{GONE}", "DAY#2026-10-18") is None
@@ -240,6 +250,17 @@ def test_no_customers_leaves_cost_unallocated(env):
     env["app"].handler({"from": "2026-10-18", "to": "2026-10-18"}, Context())
     platform = _row(env, "PLATFORM", "DAY#2026-10-18")
     assert platform["activeTenants"] == 0 and platform["unallocatedSek"] == Decimal("95.00")
+
+
+def test_cost_split_by_location(env):
+    app = env["app"]
+    split = app.split_by_location(Decimal("100"), {"x": {"requests": 30}, "y": {"requests": 10}})
+    assert split == {"x": Decimal("75.0000"), "y": Decimal("25.0000")}
+    split = app.split_by_location(Decimal("100"), {"x": {"requests": 0, "bookings": 1, "orders": 1}, "y": {"requests": 0, "bookings": 2}})
+    assert split == {"x": Decimal("50.0000"), "y": Decimal("50.0000")}
+    split = app.split_by_location(Decimal("90"), {"x": {}, "y": {}, "z": {}})
+    assert split["x"] == Decimal("30.0000")
+    assert app.split_by_location(Decimal("90"), {}) == {}
 
 
 def test_allocation_falls_back_to_equal_split_without_usage(env):

@@ -38,6 +38,9 @@ def test_count_adds_to_the_day_row(aws, monkeypatch):
     assert finance.count(TENANT_A, emails=2, sms=1, day="2026-10-19") is True
     row = aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DAY#2026-10-19"})["Item"]
     assert row["emails"] == 3 and row["sms"] == 1 and row["countedAt"]
+    assert finance.count(TENANT_A, emails=1, day="2026-10-19", location_id=LOC_A) is True
+    assert aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DAY#2026-10-19"})["Item"]["emails"] == 4
+    assert aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-19"})["Item"]["emails"] == 1
 
 
 def test_count_is_off_without_a_table(aws, monkeypatch):
@@ -57,7 +60,10 @@ def test_resolved_requests_log_the_tenant(aws, caplog):
     tenant.for_jwt(with_tenant_claims({}, TENANT_A), location_id=LOC_A)
     tenant.for_public(LOC_A)
     lines = [r.getMessage() for r in caplog.records if r.name == "shared.tenant.requests"]
-    assert lines == [f"TENANT_REQUEST tenant={TENANT_A} kind=jwt", f"TENANT_REQUEST tenant={TENANT_A} kind=public"]
+    assert lines == [f"TENANT_REQUEST tenant={TENANT_A} loc={LOC_A} kind=jwt",
+                     f"TENANT_REQUEST tenant={TENANT_A} loc={LOC_A} kind=public"]
+    tenant.for_jwt(with_tenant_claims({}, TENANT_A))
+    assert caplog.records[-1].getMessage() == f"TENANT_REQUEST tenant={TENANT_A} loc=- kind=jwt"
 
 
 def test_refused_requests_log_nothing(aws, caplog):

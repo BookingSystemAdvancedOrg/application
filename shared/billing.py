@@ -121,7 +121,7 @@ def subscription_state(subscription, *, deleted=False):
         "subscriptionId": _id(subscription.get("id")),
         "status": "canceled" if deleted else (subscription.get("status") or "unknown"),
         "priceId": _id(price.get("id")),
-        "planId": metadata.get("planId") or price.get("lookup_key") or None,
+        "planId": metadata.get("planId") or (subscription.get("metadata") or {}).get("planId") or price.get("lookup_key") or None,
         "mrrSek": Decimal(0) if deleted else monthly_sek(subscription),
         "collectionMethod": subscription.get("collection_method") or None,
         "currentPeriodStart": _iso(first.get("current_period_start") or subscription.get("current_period_start")),

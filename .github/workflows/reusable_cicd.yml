@@ -6,6 +6,11 @@ on:
       environment:
         required: true
         type: string
+      ref:
+        description: Commit to build and release instead of the branch head (used by "Redeploy a commit")
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build-and-deploy:
@@ -15,10 +20,10 @@ jobs:
     # deploys at once. The environment also puts ":environment:<env>" in the OIDC
     # token's sub, which the AWS deploy roles can trust. PR runs (tests /
     # plan only) use no environment.
-    environment: ${{ github.event_name == 'push' && inputs.environment || '' }}
+    environment: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && inputs.environment || '' }}
     # Never two releases of one environment at once; a queued one waits.
     concurrency:
-      group: ${{ github.event_name == 'push' && format('release-{0}', inputs.environment) || github.run_id }}
+      group: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('release-{0}', inputs.environment) || github.run_id }}
       cancel-in-progress: false
     permissions:
       id-token: write
@@ -26,6 +31,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Load shared project config
         run: |
@@ -57,7 +64,7 @@ jobs:
       - name: Configure AWS credentials
         # Only needed from here down (ECR push + Lambda deploy) - a PR
         # build has no reason to hold AWS credentials at all.
-        if: github.event_name == 'push'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ inputs.environment == 'prod' && env.OIDC_ROLE_ARN_PROD || env.OIDC_ROLE_ARN_DEV }}
@@ -78,11 +85,11 @@ jobs:
           done
 
       - name: Resolve AWS account ID
-        if: github.event_name == 'push'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
 
       - name: Log in to ECR
-        if: github.event_name == 'push'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
             | docker login --username AWS --password-stdin "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
@@ -90,7 +97,7 @@ jobs:
       - name: Push every function to ECR
         # Each image is pushed under the commit SHA (immutable, what gets
         # released) and :latest (what Terraform's image_uri points at).
-        if: github.event_name == 'push'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           set -euo pipefail
           : > release-list.txt
@@ -117,7 +124,7 @@ jobs:
         # once. Failures/rollbacks are emailed per function, plus one summary
         # email if anything failed - success sends nothing. Releases run 6 at a time; a failure fails
         # the job only after every release has finished.
-        if: github.event_name == 'push'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         env:
           CODEDEPLOY_APP: ${{ inputs.environment == 'prod' && env.CODEDEPLOY_APP_PROD || env.CODEDEPLOY_APP_DEV }}
           ALERT_TOPIC_ARN: ${{ inputs.environment == 'prod' && env.ALERT_TOPIC_ARN_PROD || env.ALERT_TOPIC_ARN_DEV }}
@@ -147,3 +154,17 @@ jobs:
             --message "$(printf 'Commit: %s\nRun: %s/%s/actions/runs/%s\n\n%s\n' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(sort release-results.txt)")" \
             >/dev/null || echo "::warning::could not send the summary email"
           exit $status
+
+      - name: Smoke test (API, admin app, customer site)
+        # After every function is live: the API answers GET /site-config and
+        # the apps serve their script bundle. A failure fails this job and
+        # emails the alerts topic (scripts/smoke-test.sh); success sends
+        # nothing. Values come from project.env (SMOKE_*, API_BASE_URL_*).
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          SUFFIX: ${{ inputs.environment == 'prod' && 'PROD' || 'DEV' }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SOURCE: application@${{ github.sha }}
+        run: |
+          for k in API_BASE_URL SMOKE_HOST SMOKE_SITES ALERT_TOPIC_ARN; do v="${k}_${SUFFIX}"; export "$k=${!v:-}"; done
+          bash scripts/smoke-test.sh

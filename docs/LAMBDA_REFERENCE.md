@@ -1065,7 +1065,34 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** DynamoDB Streams (reservation, order) and EventBridge SES events (configuration set `marketing`)
 **Purpose:** Bookings and paid orders into the statistics per channel and campaign (their `attribution`); subscribers from opted-in bookings and last-visit dates; bounce/complaint suppression.
 
+## Tenant lifecycle
+
+### 30. `tenant-purge`
+**Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
+**Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
+
 ---
+
+### 31. `finance-rollup`
+
+**Trigger:** EventBridge Scheduler, nightly (`finance_rollup_schedule`, 04:30
+UTC); Booqy Console's Rebuild with `{"from", "to"}`; itself near its timeout.
+
+**Purpose:** the figures behind Booqy Console's Finance page. Pulls the
+account's cost per service from Cost Explorer (last 7 days, restated by
+AWS), counts each customer's usage for the last 3 days (API requests from
+the `TENANT_REQUEST tenant=<id>` line `shared/tenant.py` logs, via Logs
+Insights; bookings and orders per location; emails, SMS and marketing
+emails from the counters `notification` and `marketing-send` bump through
+`shared/finance.py`), allocates the cost (baseline equally, SES by emails,
+SNS by SMS, the rest by requests) and writes `TENANT#<id> / DAY#<day>`,
+`PLATFORM / COST#<day>`, `PLATFORM / DAY#<day>` and `PLATFORM / JOB#latest`
+in the finance table. Warnings (Cost Explorer not enabled, a failed log
+query) go to the alert topic. Design: infrastructure `docs/FINANCE.md`.
+
+**Also in this area:** `platform-stripe-webhook` `/billing` handles the
+subscription and invoice events (`shared/billing.py`: `PROFILE.billing`,
+the invoice ledger and the day's revenue, ex VAT).
 
 ## Quick index
 
@@ -1100,3 +1127,5 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 | 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET\|POST /m/s/{token}` | NONE (signed links, Turnstile) |
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
+| 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
+| 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |

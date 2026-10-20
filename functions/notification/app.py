@@ -77,12 +77,15 @@ DEV MAIL OUTBOX:
     outbox/<inverted epoch ms>-<id>.json so a listing is newest first.
     ENVIRONMENT=prod ignores the setting.
 
+    FINANCE_TABLE_NAME -- finance table: +1 emails / sms on the restaurant's
+        day row per message sent (shared/finance.py). Unset: not counted.
+
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
     GetItem on locations (tenant-context policy); ses:SendEmail on the
     no-reply identity; sns:Publish (SMS, Resource "*" by AWS design);
-    GetSecretValue on the link signing key; dev only: s3:PutObject on the
-    mail outbox's outbox/* prefix.
+    GetSecretValue on the link signing key; UpdateItem on the finance table
+    (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
 """
 
 import json
@@ -98,7 +101,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import catering, catering_messages, dynamo, manage_link, messages, order_messages, orders, tenant
+from shared import catering, catering_messages, dynamo, finance, manage_link, messages, order_messages, orders, tenant
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -215,11 +218,12 @@ def _to_outbox(bucket, entry):
     logger.info("saved %s to the dev mail outbox: %s", entry.get("channel"), message_id)
 
 
-def _send_email(to, subject, text, html_body, *, source, reply_to):
+def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=None, location_id=None):
     bucket = _outbox_bucket()
     if bucket:
         _to_outbox(bucket, {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
                             "subject": subject, "text": text, "html": html_body})
+        finance.count(tenant_id, emails=1, location_id=location_id)
         return
     message = {"Subject": {"Data": subject, "Charset": "UTF-8"},
                "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}}
@@ -229,6 +233,7 @@ def _send_email(to, subject, text, html_body, *, source, reply_to):
         Source=source, Destination={"ToAddresses": [to]}, Message=message,
         ReplyToAddresses=reply_to,
     )
+    finance.count(tenant_id, emails=1, location_id=location_id)
 
 
 def _sms_prefixes():
@@ -243,13 +248,14 @@ def sms_allowed(phone):
     return isinstance(phone, str) and phone.startswith(_sms_prefixes())
 
 
-def _send_sms(phone, text, tenant_row):
+def _send_sms(phone, text, tenant_row, location_id=None):
     attributes = {"AWS.SNS.SMS.SMSType": {"DataType": "String", "StringValue": "Transactional"}}
     sender = (tenant_row.get("senderName") or "").strip()
     # Alphanumeric sender id: 1-11 letters/digits, at least one letter.
     if _SENDER_ID.fullmatch(sender) and re.search(r"[A-Za-z]", sender):
         attributes["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender.replace(" ", "")}
     _client("sns").publish(PhoneNumber=phone, Message=text, MessageAttributes=attributes)
+    finance.count(tenant_row.get("tenantId"), sms=1, location_id=location_id)
     bucket = _outbox_bucket()
     if bucket:
         # A copy for the outbox - best effort, the SMS itself already went out.
@@ -308,7 +314,8 @@ def _reservation(record):
     if email:
         subject, text, html_body = messages.guest_email(kind, new, tenant_row, location, link)
         try:
-            _send_email(email, subject, text, html_body, source=source, reply_to=reply_to)
+            _send_email(email, subject, text, html_body, source=source, reply_to=reply_to, tenant_id=tenant_id,
+                        location_id=location_id)
             sent.append("guest_email")
         except (BotoCoreError, ClientError) as exc:
             if _retryable(exc):
@@ -323,7 +330,7 @@ def _reservation(record):
         phone = None
     if phone and settings["sms"]:
         try:
-            _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row)
+            _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row, location_id)
             sent.append("guest_sms")
         except (BotoCoreError, ClientError) as exc:
             if not sent and _retryable(exc):
@@ -344,7 +351,7 @@ def _reservation(record):
                                                  os.environ.get("ADMIN_DASHBOARD_URL"))
             guest_email = new.get("customerEmail")
             _send_email(staff_to, subject, text, None, source=source,
-                        reply_to=[guest_email] if guest_email else [])
+                        reply_to=[guest_email] if guest_email else [], tenant_id=tenant_id, location_id=location_id)
             sent.append("staff_email")
         except Exception as exc:  # noqa: BLE001 - the guest part is done; log, don't retry
             logger.error(json.dumps({"failed": "staff_email", "reservationId": new.get("reservationId"),
@@ -426,10 +433,11 @@ def _order(record):
         try:
             if step == "email":
                 subject, text, html_body = order_messages.email(kind, new, tenant_row, location, link)
-                _send_email(new["customerEmail"], subject, text, html_body, source=source, reply_to=reply_to)
+                _send_email(new["customerEmail"], subject, text, html_body, source=source, reply_to=reply_to,
+                            tenant_id=tenant_row.get("tenantId"), location_id=location_id)
                 sent.append("guest_email")
             else:
-                _send_sms(phone, order_messages.sms(kind, new, tenant_row, location, link), tenant_row)
+                _send_sms(phone, order_messages.sms(kind, new, tenant_row, location, link), tenant_row, location_id)
                 sent.append("guest_sms")
         except (BotoCoreError, ClientError) as exc:
             if not sent and _retryable(exc):
@@ -486,17 +494,18 @@ def _catering(record):
     if guest_mail and new.get("customerEmail"):
         steps.append(("guest_email", lambda: _send_email(
             new["customerEmail"], *catering_messages.guest_email(kind, new, tenant_row, location, guest_link),
-            source=source, reply_to=_reply_to(tenant_row, location))))
+            source=source, reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)))
     if guest_sms and phone:
         steps.append(("guest_sms", lambda: _send_sms(
-            phone, catering_messages.guest_sms(kind, new, tenant_row, location, guest_link), tenant_row)))
+            phone, catering_messages.guest_sms(kind, new, tenant_row, location, guest_link), tenant_row, location_id)))
     if owner_mail and owner_email:
         steps.append(("owner_email", lambda: _send_email(
             owner_email, *catering_messages.owner_email(kind, new, tenant_row, location, admin_link),
-            source=source, reply_to=[new["customerEmail"]] if new.get("customerEmail") else [])))
+            source=source, reply_to=[new["customerEmail"]] if new.get("customerEmail") else [], tenant_id=tenant_id,
+            location_id=location_id)))
     if owner_sms and owner_phone:
         steps.append(("owner_sms", lambda: _send_sms(
-            owner_phone, catering_messages.owner_sms(kind, new, tenant_row, location, admin_link), tenant_row)))
+            owner_phone, catering_messages.owner_sms(kind, new, tenant_row, location, admin_link), tenant_row, location_id)))
     sent = []
     for name, send in steps:
         try:

@@ -27,8 +27,23 @@ PURPOSE:
     guarantee order). Test-mode events reaching prod, and live ones
     reaching dev, are ignored.
 
-    /billing (SaaS plans) is verified and acknowledged; plans are not sold
-    through Stripe Billing yet (M6).
+    /billing: the restaurants' SaaS subscriptions on the platform account
+    (Booqy Console starts them, payments/billing is the catalog):
+
+      customer.subscription.created/updated/deleted -> PROFILE.billing
+                                           (status, price, plan, MRR, period,
+                                           pause, past due since)
+      invoice.finalized/paid/payment_failed/voided/marked_uncollectible
+                                        -> finance table: the invoice row and
+                                           the day's invoicedSek / paidSek
+                                           (ex VAT), past-due bookkeeping on
+                                           PROFILE.billing
+      credit_note.created               -> finance table: creditedSek
+
+    The customer resolves to its tenant through STRIPE_CUSTOMER#<cus> /
+    TENANT (written by the console), and every PROFILE write is conditional
+    on billing.customerId still being that customer. Revenue is booked once
+    per invoice and kind (shared/billing.py), so redeliveries are harmless.
 
     Answers 200 for anything handled or deliberately ignored, 400 for a bad
     signature, 404 for an unknown path, 500 for a transient failure (Stripe
@@ -39,10 +54,12 @@ ENV_VARS:
     TENANT_TABLE_NAME -- tenant table (PROFILE + STRIPE_ACCOUNT# rows)
     CONNECT_WEBHOOK_SECRET_ARN -- whsec_ of the /connect endpoint (plain string)
     BILLING_WEBHOOK_SECRET_ARN -- whsec_ of the /billing endpoint (plain string)
+    FINANCE_TABLE_NAME -- finance table (invoice ledger, revenue per day)
     STRIPE_SECRET_ARN / STRIPE_API_VERSION -- unused for now (no API calls)
 
 AWS RESOURCE ACCESS:
-    Tenant table GetItem (STRIPE_ACCOUNT# rows) and UpdateItem (PROFILE);
+    Tenant table GetItem (STRIPE_ACCOUNT# and STRIPE_CUSTOMER# rows) and
+    UpdateItem (PROFILE); finance table GetItem/PutItem/UpdateItem;
     GetSecretValue on the two signing secrets.
 """
 
@@ -55,7 +72,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import stripe_accounts
+from shared import billing, stripe_accounts
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -131,6 +148,36 @@ def _connect(evt):
     return "applied" if applied else "ignored:stale"
 
 
+def _billing(evt):
+    kind = evt.get("type") or ""
+    obj = (evt.get("data") or {}).get("object") or {}
+    created = evt.get("created")
+    if not isinstance(created, int):
+        return "ignored"
+    customer_id = obj.get("customer")
+    if isinstance(customer_id, dict):
+        customer_id = customer_id.get("id")
+    tenant_id = billing.tenant_of_customer(customer_id)
+    if tenant_id is None:
+        logger.warning(json.dumps({"ignored": "unknown_customer", "customer": customer_id, "type": kind}))
+        return "ignored:unknown_customer"
+    if kind.startswith("customer.subscription."):
+        state = billing.subscription_state(obj, deleted=kind.endswith(".deleted"))
+        applied = billing.store_subscription(tenant_id, customer_id, state, created)
+        return "applied" if applied else "ignored:stale"
+    if kind.startswith("invoice."):
+        result = billing.record_invoice(tenant_id, obj, created)
+        when = billing.now_iso()
+        if kind == "invoice.paid":
+            billing.mark_payment(tenant_id, customer_id, paid=True, when=when)
+        elif kind == "invoice.payment_failed":
+            billing.mark_payment(tenant_id, customer_id, paid=False, when=when)
+        return result
+    if kind == "credit_note.created":
+        return billing.record_credit_note(tenant_id, obj, created)
+    return "ignored"
+
+
 def handler(event, context):
     path = _path(event)
     if path not in _SECRET_ENV:
@@ -150,12 +197,8 @@ def handler(event, context):
         logger.warning(json.dumps({"ignored": "livemode_mismatch", "id": evt.get("id")}))
         return _respond(200, {"received": True, "result": "ignored:livemode"})
 
-    if path == "/billing":
-        logger.info(json.dumps({"event": evt.get("id"), "type": evt.get("type"), "result": "ignored:billing"}))
-        return _respond(200, {"received": True, "result": "ignored"})
-
     try:
-        result = _connect(evt)
+        result = _billing(evt) if path == "/billing" else _connect(evt)
     except (BotoCoreError, ClientError):
         logger.exception(json.dumps({"event": evt.get("id"), "type": evt.get("type")}))
         return _respond(500, {"error": "temporarily unavailable"})

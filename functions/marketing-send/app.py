@@ -28,6 +28,8 @@ PURPOSE:
     links, sender), so editing a template afterwards changes nothing.
 
 ENV_VARS:
+    FINANCE_TABLE_NAME -- finance table: +1 marketingEmails on the
+        restaurant's day row per email sent (shared/finance.py).
     ENVIRONMENT, MARKETING_TABLE_NAME, MARKETING_LINK_KEY_SECRET_ARN,
     MARKETING_LINK_BASE (https://restaurant.<domain>/api), NO_REPLY_EMAIL_ADDRESS,
     MARKETING_CONFIGURATION_SET, MARKETING_MONTHLY_LIMIT (default 5000),
@@ -49,7 +51,7 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, marketing as m, marketing_mail
+from shared import dynamo, finance, marketing as m, marketing_mail
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -199,6 +201,7 @@ def _deliver(table, campaign, subscriber):
                       ExpressionAttributeValues={":s": "sent", ":id": message_id})
     table.put_item(Item={"PK": f"MSG#{message_id}", "SK": "MSG", "tenantId": tenant_id,
                          "campaignId": campaign_id, "subscriberId": sid, "ttl": ttl})
+    finance.count(tenant_id, marketingEmails=1)
     return "sent"
 
 

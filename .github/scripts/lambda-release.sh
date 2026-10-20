@@ -8,32 +8,36 @@
 #
 #   --image   new image to release (app pipelines). Omit to release whatever
 #             is on $LATEST now (this repo's pipeline, after an apply changed
-#             a function's configuration).
-#   --notify  always (default): email every result. failure: email only
-#             rollbacks/failures - for pipelines releasing many functions at
-#             once, which send one summary email themselves.
+#             a function's configuration). Without --image the traffic shift
+#             is all-at-once even in prod: a configuration-only release
+#             (environment variables, memory, timeout, role) needs no canary -
+#             the gradual shift and its alarm rollback are for new code.
+#   --notify  failure (default): email only failures and rollbacks - a
+#             successful release (or manual rollback) sends nothing. always:
+#             email every result.
 #   --source  free text recorded on the version and in the email,
 #             e.g. "application@1a2b3c4".
 #   --to-version
 #             manual rollback: point "live" straight at an existing version N
 #             (no CodeDeploy - its alarms are usually firing when you roll
-#             back and would undo it), email the result, and put N's image
+#             back and would undo it), and put N's image
 #             back on :latest and $LATEST.
 #
 # Steps: put the image on $LATEST -> publish version N (green) -> CodeDeploy
-# shifts the "live" alias from blue to N (canary in prod, all-at-once in
-# dev), rolling back on its own if an alarm fires -> email the result.
+# shifts the "live" alias from blue to N (code releases: canary in prod,
+# all-at-once in dev; configuration releases: all-at-once everywhere),
+# rolling back on its own if an alarm fires -> email if it failed.
 # On failure the previous image is also put back on :latest and $LATEST, so
 # nothing that invokes the function unqualified, and no later Terraform
 # apply, picks up the broken image.
 #
 # Exit code: 0 = released (or nothing to release), 1 = failed / rolled back.
 #
-# COPY of infrastructure/ci/lambda-release.sh - change it there first, then
-# copy it here unchanged.
+# Source of truth: infrastructure/ci/lambda-release.sh. The app repos carry a
+# copy - keep them in sync.
 set -euo pipefail
 
-FN="" APP="" TOPIC="" ENVIRONMENT="" IMAGE="" SOURCE="" TO_VERSION="" NOTIFY="always"
+FN="" APP="" TOPIC="" ENVIRONMENT="" IMAGE="" SOURCE="" TO_VERSION="" NOTIFY="failure"
 ALIAS="live"
 TIMEOUT_SECONDS="${RELEASE_TIMEOUT_SECONDS:-1800}"
 
@@ -95,6 +99,7 @@ if [ -n "$TO_VERSION" ]; then
     --routing-config '{"AdditionalVersionWeights": {}}' >/dev/null
   if restore_image "$green_image"; then restored="yes"; else restored="NO - put $green_image on :latest by hand"; fi
   log "ROLLED BACK - live -> version $green (image restored: $restored)"
+  [ "$NOTIFY" = always ] && \
   notify "[$ENVIRONMENT] ROLLBACK DONE: $FN is on v$green" \
 "$FN ($ENVIRONMENT): the manual rollback finished - 100% of traffic is on version $green.
 
@@ -116,11 +121,57 @@ else
   green=$(aws lambda publish-version --function-name "$FN" \
     --description "${SOURCE:-release} $(date -u +%Y-%m-%dT%H:%MZ)" \
     --query Version --output text)
-  aws lambda wait published-version-active --function-name "$FN" --qualifier "$green" 2>/dev/null || true
 
   if [ "$green" = "$blue" ]; then
     log "nothing to release - live is already on version $green"
     exit 0
+  fi
+
+  # Only a version that is still being created (Pending) is worth waiting
+  # for, and only briefly. Do NOT use "aws lambda wait
+  # published-version-active": a function nobody has invoked for a while is
+  # Inactive (Lambda drops its image cache), stays Inactive until it is
+  # invoked, and the waiter then blocks for 26 minutes per function. The
+  # alias can point at an Inactive version; the first call reactivates it.
+  for _ in $(seq 1 24); do
+    state=$(aws lambda get-function-configuration --function-name "$FN" --qualifier "$green" \
+      --query State --output text 2>/dev/null) || state="Unknown"
+    [ "$state" = "Pending" ] || break
+    sleep 5
+  done
+  log "version $green state: $state"
+
+  # CodeDeploy runs one deployment per function at a time. Another release of
+  # this function (an app pipeline's canary, or this repo's apply racing one)
+  # may still be shifting traffic: wait for it instead of failing, then
+  # release from whatever it left live.
+  active_waited=0
+  while :; do
+    active=$(aws deploy list-deployments --application-name "$APP" --deployment-group-name "$FN" \
+      --include-only-statuses Created Queued InProgress Baking Ready \
+      --query 'deployments[0]' --output text 2>/dev/null) || active="None"
+    if [ -z "$active" ] || [ "$active" = "None" ]; then break; fi
+    if [ "$active_waited" -ge "$TIMEOUT_SECONDS" ]; then
+      log "deployment $active is still running after ${TIMEOUT_SECONDS}s - trying anyway"
+      break
+    fi
+    [ "$active_waited" -eq 0 ] && log "waiting for deployment $active (another release of $FN) to finish"
+    sleep 15
+    active_waited=$((active_waited + 15))
+  done
+  if [ "$active_waited" -gt 0 ]; then
+    live_now=$(aws lambda get-alias --function-name "$FN" --name "$ALIAS" --query FunctionVersion --output text)
+    if [ "$live_now" != "$blue" ]; then
+      log "the other release moved live from version $blue to $live_now"
+      blue="$live_now"
+      blue_image=$(aws lambda get-function --function-name "$FN" --qualifier "$blue" --query Code.ResolvedImageUri --output text)
+    fi
+    # A version is a snapshot of $LATEST when it was published: a newer live
+    # version already contains everything in ours, so going back would undo it.
+    if [ "$green" -le "$blue" ]; then
+      log "nothing to release - live is already on version $blue (this release is version $green)"
+      exit 0
+    fi
   fi
 fi
 log "releasing version $blue -> $green"
@@ -131,9 +182,18 @@ appspec=$(printf '{"version":0.0,"Resources":[{"target":{"Type":"AWS::Lambda::Fu
   "$FN" "$ALIAS" "$blue" "$green")
 revision=$(jq -nc --arg c "$appspec" '{revisionType: "AppSpecContent", appSpecContent: {content: $c}}')
 
+# Configuration-only release (no --image): skip the canary, the group's
+# deployment config (canary in prod) is only for new code.
+shift_override=()
+if [ -z "$IMAGE" ]; then
+  shift_override=(--deployment-config-name CodeDeployDefault.LambdaAllAtOnce)
+  log "configuration release - shifting all at once"
+fi
+
 status="" reason="" waited=0 console="n/a"
 if deployment=$(aws deploy create-deployment --application-name "$APP" --deployment-group-name "$FN" \
       --revision "$revision" --description "${SOURCE:-release}: v$blue -> v$green" \
+      "${shift_override[@]}" \
       --query deploymentId --output text); then
   console="https://console.aws.amazon.com/codesuite/codedeploy/deployments/$deployment?region=${AWS_REGION:-eu-north-1}"
   log "deployment $deployment - $console"

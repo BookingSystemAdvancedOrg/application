@@ -1,0 +1,55 @@
+# Rollback for the API: rebuild and release an older commit, one click.
+#
+# Actions -> Redeploy a commit -> Run workflow: pick the environment's branch
+# (dev for dev, main for prod - the prod GitHub environment only deploys
+# from main), the environment, and the full SHA of the commit to go back to
+# (the last green run's commit on the Actions page). The commit must be on
+# that branch. The normal pipeline then runs for that commit: tests, image
+# build, blue/green release of every function, smoke test. To move one
+# function back without a rebuild use lambda-release.sh --to-version. See
+# the infrastructure repo's docs/RELEASES.md.
+name: Redeploy a commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to redeploy
+        type: choice
+        options: [dev, prod]
+        required: true
+      sha:
+        description: Full SHA of the commit to rebuild and release (must be on dev / main respectively)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: The commit must be on the environment's branch
+        env:
+          SHA: ${{ inputs.sha }}
+          BRANCH: ${{ inputs.environment == 'prod' && 'main' || 'dev' }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$SHA^{commit}" || { echo "::error::$SHA is not a commit in this repository"; exit 1; }
+          git merge-base --is-ancestor "$SHA" "origin/$BRANCH" || { echo "::error::$SHA is not on $BRANCH - a redeploy only deploys code that was released from $BRANCH"; exit 1; }
+          echo "redeploying $(git log -1 --format='%h %s (%ci)' "$SHA") to ${{ inputs.environment }}"
+
+  redeploy:
+    needs: check
+    uses: ./.github/workflows/reusable_cicd.yml
+    secrets: inherit
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      environment: ${{ inputs.environment }}
+      ref: ${{ inputs.sha }}

@@ -269,3 +269,28 @@ def test_allocation_falls_back_to_equal_split_without_usage(env):
     assert totals == {"baseline": Decimal("10"), "requests": Decimal("10"), "email": Decimal("0"), "sms": Decimal("0")}
     split = app.allocate(totals, {A: {"requests": 0}, B: {"requests": 0}})
     assert split[A]["total"] == Decimal("10.00") and split[B]["requests"] == Decimal("5")
+
+
+def test_days_older_than_the_log_retention_are_not_queried(env):
+    out = env["app"].handler({"from": "2026-09-01", "to": "2026-09-03"}, Context())
+    assert out["days"] == ["2026-09-01", "2026-09-02", "2026-09-03"]
+    assert env["logs"].started == []
+    skipped = [w for w in out["warnings"] if w.startswith("request counts not available")]
+    assert skipped == [w for w in skipped if "2026-09-01 to 2026-09-03 (3 day(s))" in w] and len(skipped) == 1
+    assert not any(w.startswith("request count failed") for w in out["warnings"])
+
+
+def test_logs_before_the_log_groups_existed_count_as_skipped(env, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    def refuse(**kwargs):
+        raise ClientError({"Error": {"Code": "MalformedQueryException", "Message":
+                          "Query's end date and time is either before the log groups creation time or exceeds "
+                          "the log groups log retention settings"}}, "StartQuery")
+
+    monkeypatch.setattr(env["logs"], "start_query", refuse)
+    out = env["app"].handler({"from": "2026-10-18", "to": "2026-10-18"}, Context())
+    assert out["days"] == ["2026-10-18"]
+    assert [w for w in out["warnings"] if "request count" in w] == [
+        w for w in out["warnings"] if w.startswith("request counts not available for 2026-10-18 (1 day(s))")]
+    assert _row(env, f"TENANT#{A}", "DAY#2026-10-18")["requests"] == 0

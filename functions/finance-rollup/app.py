@@ -54,7 +54,8 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, FINANCE_TABLE_NAME, TENANT_TABLE_NAME, TENANT_LIST_INDEX_NAME,
     LOCATION_TABLE_NAME, RESERVATION_TABLE_NAME, ORDER_TABLE_NAME,
-    LAMBDA_LOG_GROUPS (JSON list of log group names), COST_DAYS, USAGE_DAYS,
+    LAMBDA_LOG_GROUPS (JSON list of log group names), LOG_RETENTION_DAYS
+    (their retention, default 30: older days are not queried), COST_DAYS, USAGE_DAYS,
     USD_TO_SEK, COST_ALLOCATION (JSON {baseline, email, sms}: service lists),
     ALERT_TOPIC_ARN
 
@@ -310,10 +311,34 @@ def _run_query(groups, start, end, warnings):
     return counts
 
 
-def count_requests(day, warnings):
-    """{(tenant_id, location_id or None): requests} for the day."""
+def logs_cover(day, today=None):
+    """Whether the Lambda logs still hold this day: they keep
+    LOG_RETENTION_DAYS (30) days, so an older day (a Rebuild of last month)
+    has nothing to count and Logs Insights refuses the query."""
+    today = today or now_utc().date()
+    return _parse_day(day) > today - timedelta(days=_env_int("LOG_RETENTION_DAYS", 30))
+
+
+def _logs_unavailable(exc):
+    """Logs Insights' answer for a time range before the log groups existed
+    or past their retention: not an error, just nothing to count."""
+    error = exc.response.get("Error", {}) if isinstance(exc, ClientError) else {}
+    message = str(error.get("Message") or "")
+    return error.get("Code") == "MalformedQueryException" and (
+        "creation time" in message or "retention" in message)
+
+
+def count_requests(day, warnings, skipped=None):
+    """{(tenant_id, location_id or None): requests} for the day. A day the
+    logs no longer cover counts as no requests (that day's request-based
+    cost then falls back to an equal split) and goes into `skipped`, which
+    the run reports once instead of one warning per day."""
     groups = _log_groups()
     if not groups:
+        return {}
+    if not logs_cover(day):
+        if skipped is not None:
+            skipped.append(day)
         return {}
     start = int(datetime.combine(_parse_day(day), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     end = start + 86_400
@@ -322,6 +347,10 @@ def count_requests(day, warnings):
         try:
             part = _run_query(groups[i:i + LOGS_CHUNK], start, end, warnings)
         except (BotoCoreError, ClientError) as exc:
+            if _logs_unavailable(exc):
+                if skipped is not None:
+                    skipped.append(day)
+                return counts
             warnings.append(f"request count failed for {day}: {exc}")
             return counts
         for key, n in part.items():
@@ -502,10 +531,10 @@ def write_job(started, days, warnings, done):
 
 # --- one day --------------------------------------------------------------------------------
 
-def process_day(day, tenants, cost_by_service, rate, allocation, warnings):
+def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipped=None):
     active = [t for t in tenants if active_on(t, day)]
     ids = [t["tenantId"] for t in active]
-    requests = count_requests(day, warnings)
+    requests = count_requests(day, warnings, skipped)
     rows = _day_rows(ids, day)
     usage, by_location = {}, {}
     for t in active:
@@ -586,7 +615,7 @@ def handler(event, context):
     started = now_utc()
     usage_days, cost_days = window(event, started.date())
     round_no = int(event.get("round") or 0)
-    warnings, done = [], []
+    warnings, done, skipped = [], [], []
     rate, allocation = _rate(), _allocation()
 
     cost = fetch_cost(cost_days, warnings)
@@ -610,12 +639,18 @@ def handler(event, context):
                 warnings.append(f"no cost known for {day} (Cost Explorer unavailable); cost set to 0")
                 by_service, day_rate = {}, rate
         try:
-            process_day(day, tenants, by_service, day_rate, allocation, warnings)
+            process_day(day, tenants, by_service, day_rate, allocation, warnings, skipped)
             done.append(day)
         except (BotoCoreError, ClientError) as exc:
             warnings.append(f"{day}: {exc}")
             logger.exception("finance-rollup failed on %s", day)
 
+    if skipped:
+        skipped = sorted(set(skipped))
+        span = skipped[0] if len(skipped) == 1 else f"{skipped[0]} to {skipped[-1]}"
+        warnings.append(f"request counts not available for {span} ({len(skipped)} day(s)): older than the "
+                        f"{_env_int('LOG_RETENTION_DAYS', 30)}-day log retention or before the logs existed; "
+                        "cost, bookings and orders for those days are complete")
     write_job(started, usage_days, warnings, done)
     summary = {"days": done, "warnings": warnings, "round": round_no, "handedOver": handed_over}
     logger.info(json.dumps(summary, default=str))

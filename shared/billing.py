@@ -2,16 +2,15 @@
 account) as the webhook sees them: what to store on the tenant's
 PROFILE.billing and how an invoice becomes revenue in the finance table.
 
-Booqy Console (booqy-console/api, billing.py) creates the Stripe customer
-and subscription and writes the first PROFILE.billing with customerId;
-from then on platform-stripe-webhook keeps it truthful through this module.
+Booqy Console (booqy-console/api, billing.py) creates the Stripe customer,
+keeps the agreement (terms, prices, start and end) on PROFILE.billing and
+builds one invoice per restaurant and period (25th to 24th) in arrears;
+platform-stripe-webhook keeps the ledger and the past-due state truthful
+through this module.
 
-    TENANT#<id> / PROFILE.billing   customerId, subscriptionId, status,
-                                    priceId, planId, mrrSek, collectionMethod,
-                                    currentPeriodStart/End, cancelAt,
-                                    pauseCollection, pastDueSince,
-                                    lastPaidAt, lastPaymentFailedAt,
-                                    eventCreated, updatedAt
+    TENANT#<id> / PROFILE.billing   customerId, pastDueSince, lastPaidAt,
+                                    lastPaymentFailedAt (this module); the
+                                    agreement fields (console)
     STRIPE_CUSTOMER#<cus> / TENANT  tenantId (written by the console)
 
 Finance table (shared/finance.py has the day rows):
@@ -36,10 +35,6 @@ from botocore.exceptions import ClientError
 from shared import dynamo
 from shared import finance
 
-SUBSCRIPTION_FIELDS = ("subscriptionId", "status", "priceId", "planId", "mrrSek", "collectionMethod",
-                       "currentPeriodStart", "currentPeriodEnd", "cancelAt", "canceledAt", "pauseCollection",
-                       "trialEnd")
-PAST_DUE_STATUSES = ("past_due", "unpaid")
 
 
 def _tenant_table():
@@ -88,84 +83,7 @@ def tenant_of_customer(customer_id):
     return tenant_id if isinstance(tenant_id, str) and tenant_id else None
 
 
-# --- subscriptions -----------------------------------------------------------------------
-
-def monthly_sek(subscription):
-    """MRR of a subscription: every item's price per month, times quantity."""
-    total = Decimal(0)
-    for item in ((subscription.get("items") or {}).get("data") or []):
-        price = item.get("price") or {}
-        recurring = price.get("recurring") or {}
-        amount = sek(price.get("unit_amount")) * Decimal(int(item.get("quantity") or 1))
-        interval, count = recurring.get("interval"), int(recurring.get("interval_count") or 1)
-        if interval == "year":
-            amount = amount / Decimal(12 * count)
-        elif interval == "month":
-            amount = amount / Decimal(count)
-        elif interval == "week":
-            amount = amount * Decimal(52) / Decimal(12 * count)
-        elif interval == "day":
-            amount = amount * Decimal(365) / Decimal(12 * count)
-        total += amount
-    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-def subscription_state(subscription, *, deleted=False):
-    """The PROFILE.billing fields a subscription object maps to."""
-    items = ((subscription.get("items") or {}).get("data") or [])
-    first = items[0] if items else {}
-    price = first.get("price") or {}
-    metadata = price.get("metadata") or {}
-    pause = subscription.get("pause_collection")
-    return {
-        "subscriptionId": _id(subscription.get("id")),
-        "status": "canceled" if deleted else (subscription.get("status") or "unknown"),
-        "priceId": _id(price.get("id")),
-        "planId": metadata.get("planId") or (subscription.get("metadata") or {}).get("planId") or price.get("lookup_key") or None,
-        "mrrSek": Decimal(0) if deleted else monthly_sek(subscription),
-        "collectionMethod": subscription.get("collection_method") or None,
-        "currentPeriodStart": _iso(first.get("current_period_start") or subscription.get("current_period_start")),
-        "currentPeriodEnd": _iso(first.get("current_period_end") or subscription.get("current_period_end")),
-        "cancelAt": _iso(subscription.get("cancel_at")),
-        "canceledAt": _iso(subscription.get("canceled_at")),
-        "pauseCollection": bool(pause) if not deleted else False,
-        "trialEnd": _iso(subscription.get("trial_end")),
-    }
-
-
-def store_subscription(tenant_id, customer_id, state, event_created):
-    """Writes the subscription state on PROFILE.billing unless the tenant's
-    billing points at another customer or a newer event was applied.
-    Returns False when skipped."""
-    names = {"#b": "billing", "#c": "customerId", "#e": "eventCreated", "#u": "updatedAt", "#p": "pastDueSince"}
-    values = {":cus": customer_id, ":c": int(event_created), ":now": now_iso()}
-    sets = ["#b.#e = :c", "#b.#u = :now"]
-    removes = []
-    for i, key in enumerate(SUBSCRIPTION_FIELDS):
-        names[f"#f{i}"] = key
-        value = state.get(key)
-        if value is None:
-            removes.append(f"#b.#f{i}")
-        else:
-            values[f":v{i}"] = value
-            sets.append(f"#b.#f{i} = :v{i}")
-    if state.get("status") in PAST_DUE_STATUSES:
-        sets.append("#b.#p = if_not_exists(#b.#p, :now)")
-    elif state.get("status") in ("active", "trialing", "canceled"):
-        removes.append("#b.#p")
-    expression = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
-    try:
-        _tenant_table().update_item(
-            Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
-            UpdateExpression=expression,
-            ConditionExpression="#b.#c = :cus AND (attribute_not_exists(#b.#e) OR #b.#e <= :c)",
-            ExpressionAttributeNames=names, ExpressionAttributeValues=values)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
+# --- past due on the profile ------------------------------------------------------------
 
 def mark_payment(tenant_id, customer_id, *, paid, when):
     """invoice.paid clears past due (and remembers the date); a failed
@@ -202,6 +120,7 @@ def _ex_vat(amount_minor, invoice):
 def invoice_row(tenant_id, invoice, event_created):
     """The ledger row for an invoice (without the booking flags)."""
     transitions = invoice.get("status_transitions") or {}
+    metadata = invoice.get("metadata") or {}
     created_day = _day(invoice.get("created")) or finance.day_key()
     return {
         "PK": finance.tenant_pk(tenant_id), "SK": f"INVOICE#{created_day}#{invoice['id']}",
@@ -220,8 +139,10 @@ def invoice_row(tenant_id, invoice, event_created):
         "voidedAt": _iso(transitions.get("voided_at")),
         "uncollectibleAt": _iso(transitions.get("marked_uncollectible_at")),
         "dueDate": _iso(invoice.get("due_date")),
-        "periodStart": _iso(invoice.get("period_start")),
-        "periodEnd": _iso(invoice.get("period_end")),
+        # The console puts the billed period (25th to 24th) in the metadata;
+        # Stripe's own period_start/end of a one-off invoice is its creation.
+        "periodStart": metadata.get("periodStart") or _iso(invoice.get("period_start")),
+        "periodEnd": metadata.get("periodEnd") or _iso(invoice.get("period_end")),
         "hostedInvoiceUrl": invoice.get("hosted_invoice_url"),
         "invoicePdf": invoice.get("invoice_pdf"),
         "paidOutOfBand": bool(invoice.get("paid_out_of_band")),

@@ -77,8 +77,11 @@ DEV MAIL OUTBOX:
     outbox/<inverted epoch ms>-<id>.json so a listing is newest first.
     ENVIRONMENT=prod ignores the setting.
 
-    FINANCE_TABLE_NAME -- finance table: +1 emails / sms on the restaurant's
-        day row per message sent (shared/finance.py). Unset: not counted.
+    FINANCE_TABLE_NAME -- finance table: +1 emails per email, and per SMS +1
+        sms plus the message's parts (smsParts and by type: smsBooking,
+        smsReminder, smsOrder, smsCatering; shared/sms.py) on the
+        restaurant's and the location's day rows (shared/finance.py). The
+        parts are what the restaurant is invoiced for. Unset: not counted.
 
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
@@ -101,7 +104,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import catering, catering_messages, dynamo, finance, manage_link, messages, order_messages, orders, tenant
+from shared import catering, catering_messages, dynamo, finance, manage_link, messages, order_messages, orders, sms, tenant
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -248,14 +251,15 @@ def sms_allowed(phone):
     return isinstance(phone, str) and phone.startswith(_sms_prefixes())
 
 
-def _send_sms(phone, text, tenant_row, location_id=None):
+def _send_sms(phone, text, tenant_row, location_id=None, kind="booking"):
     attributes = {"AWS.SNS.SMS.SMSType": {"DataType": "String", "StringValue": "Transactional"}}
     sender = (tenant_row.get("senderName") or "").strip()
     # Alphanumeric sender id: 1-11 letters/digits, at least one letter.
     if _SENDER_ID.fullmatch(sender) and re.search(r"[A-Za-z]", sender):
         attributes["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender.replace(" ", "")}
     _client("sns").publish(PhoneNumber=phone, Message=text, MessageAttributes=attributes)
-    finance.count(tenant_row.get("tenantId"), sms=1, location_id=location_id)
+    # Counted in parts (what the restaurant is invoiced for) and by type.
+    finance.count(tenant_row.get("tenantId"), location_id=location_id, **finance.sms_counters(sms.parts(text), kind))
     bucket = _outbox_bucket()
     if bucket:
         # A copy for the outbox - best effort, the SMS itself already went out.
@@ -330,7 +334,8 @@ def _reservation(record):
         phone = None
     if phone and settings["sms"]:
         try:
-            _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row, location_id)
+            _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row, location_id,
+                      kind="reminder" if kind == "reminder" else "booking")
             sent.append("guest_sms")
         except (BotoCoreError, ClientError) as exc:
             if not sent and _retryable(exc):
@@ -437,7 +442,7 @@ def _order(record):
                             tenant_id=tenant_row.get("tenantId"), location_id=location_id)
                 sent.append("guest_email")
             else:
-                _send_sms(phone, order_messages.sms(kind, new, tenant_row, location, link), tenant_row, location_id)
+                _send_sms(phone, order_messages.sms(kind, new, tenant_row, location, link), tenant_row, location_id, kind="order")
                 sent.append("guest_sms")
         except (BotoCoreError, ClientError) as exc:
             if not sent and _retryable(exc):
@@ -497,7 +502,7 @@ def _catering(record):
             source=source, reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)))
     if guest_sms and phone:
         steps.append(("guest_sms", lambda: _send_sms(
-            phone, catering_messages.guest_sms(kind, new, tenant_row, location, guest_link), tenant_row, location_id)))
+            phone, catering_messages.guest_sms(kind, new, tenant_row, location, guest_link), tenant_row, location_id, kind="catering")))
     if owner_mail and owner_email:
         steps.append(("owner_email", lambda: _send_email(
             owner_email, *catering_messages.owner_email(kind, new, tenant_row, location, admin_link),
@@ -505,7 +510,7 @@ def _catering(record):
             location_id=location_id)))
     if owner_sms and owner_phone:
         steps.append(("owner_sms", lambda: _send_sms(
-            owner_phone, catering_messages.owner_sms(kind, new, tenant_row, location, admin_link), tenant_row, location_id)))
+            owner_phone, catering_messages.owner_sms(kind, new, tenant_row, location, admin_link), tenant_row, location_id, kind="catering")))
     sent = []
     for name, send in steps:
         try:

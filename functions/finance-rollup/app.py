@@ -39,7 +39,10 @@ PURPOSE:
          that location's requests (the log line carries loc=), bookings,
          orders and its share of the customer's cost (by requests, else by
          bookings and orders, else equally); the Finance page's location
-         filter reads these. The counters and the revenue fields other
+         filter reads these. Both rows also get smsRevenueSek = the SMS
+         parts the senders counted x the customer's SMS price, and the
+         customer row mrrSek = the monthly price of a running agreement
+         (own price or the plan's). The counters and the revenue fields other
          writers own are never touched. PLATFORM / DAY#<day> gets the
          totals and PLATFORM / JOB#latest the run (warnings included: e.g.
          Cost Explorer not enabled yet).
@@ -57,7 +60,8 @@ ENV_VARS:
     LAMBDA_LOG_GROUPS (JSON list of log group names), LOG_RETENTION_DAYS
     (their retention, default 30: older days are not queried), COST_DAYS, USAGE_DAYS,
     USD_TO_SEK, COST_ALLOCATION (JSON {baseline, email, sms}: service lists),
-    ALERT_TOPIC_ARN
+    SMS_PRICE_SEK (default price per SMS part; a customer's own
+    PROFILE.billing.smsPriceSek wins), ALERT_TOPIC_ARN
 
 AWS RESOURCE ACCESS:
     ce:GetCostAndUsage; logs:StartQuery/StopQuery on the listed log groups
@@ -202,14 +206,40 @@ def active_on(tenant, day):
     return True
 
 
-def mrr_on(tenant):
+def list_plans():
+    """{planId: priceSek} from the PLAN# rows."""
+    table = dynamo.table(os.environ["TENANT_TABLE_NAME"])
+    page = table.query(IndexName=os.environ.get("TENANT_LIST_INDEX_NAME", "GSI1"),
+                       KeyConditionExpression=Key("GSI1PK").eq("PLAN"))
+    return {p["planId"]: Decimal(p.get("priceSek") or 0) for p in page.get("Items", []) if p.get("planId")}
+
+
+def mrr_on(tenant, plans, day=None):
+    """The monthly price of a customer whose agreement runs on `day`: their
+    own price or the plan's (PROFILE.billing: status, startsAt, endsAt,
+    priceSek), as invoiced in arrears for the period the day falls in."""
     billing = tenant.get("billing") if isinstance(tenant.get("billing"), dict) else {}
-    if billing.get("status") in ("active", "past_due") and not billing.get("pauseCollection"):
-        try:
-            return _q(billing.get("mrrSek") or 0)
-        except ArithmeticError:
+    if billing.get("status") not in ("active", "ending"):
+        return Decimal(0)
+    if day:
+        if (billing.get("startsAt") or "")[:10] > day or (billing.get("endsAt") and (billing.get("endsAt") or "")[:10] < day):
             return Decimal(0)
-    return Decimal(0)
+    try:
+        if billing.get("priceSek") is not None:
+            return _q(billing["priceSek"])
+        return _q(plans.get(tenant.get("planId") or "", Decimal(0)))
+    except ArithmeticError:
+        return Decimal(0)
+
+
+def sms_price_on(tenant):
+    billing = tenant.get("billing") if isinstance(tenant.get("billing"), dict) else {}
+    try:
+        if billing.get("smsPriceSek") is not None:
+            return Decimal(billing["smsPriceSek"])
+        return Decimal(os.environ.get("SMS_PRICE_SEK") or "0.70")
+    except ArithmeticError:
+        return Decimal("0.70")
 
 
 def list_locations(tenant_id):
@@ -491,29 +521,30 @@ def split_by_location(total, usage_by_location):
     return {loc: _q(Decimal(total) * weights[loc] / denominator, MICRO) for loc in ids}
 
 
-def write_location_day(tenant_id, location_id, day, usage, cost):
+def write_location_day(tenant_id, location_id, day, usage, cost, sms_revenue):
     dynamo.table(os.environ["FINANCE_TABLE_NAME"]).update_item(
         Key={"PK": finance.tenant_pk(tenant_id), "SK": finance.location_sk(location_id, day)},
-        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, locationId = :l, #d = :d, computedAt = :now",
+        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, smsRevenueSek = :sr, locationId = :l, "
+                         "#d = :d, computedAt = :now",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
-                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost), ":l": location_id,
-                                   ":d": day, ":now": _iso(now_utc())})
+                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost), ":sr": sms_revenue,
+                                   ":l": location_id, ":d": day, ":now": _iso(now_utc())})
 
 
-def write_tenant_day(tenant, day, usage, cost, mrr, active):
+def write_tenant_day(tenant, day, usage, cost, mrr, active, sms_revenue):
     table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
     table.update_item(
         Key={"PK": finance.tenant_pk(tenant["tenantId"]), "SK": finance.day_sk(day)},
         UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, costSplitSek = :s, "
-                         "mrrSek = :m, planId = :p, active = :a, computedAt = :now, #d = :d",
+                         "mrrSek = :m, smsRevenueSek = :sr, planId = :p, active = :a, computedAt = :now, #d = :d",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={
             ":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
             ":o": Decimal(usage.get("orders") or 0),
             ":c": cost.get("total", Decimal(0)),
             ":s": {k: v for k, v in cost.items() if k != "total"},
-            ":m": mrr, ":p": tenant.get("planId") or "-", ":a": active, ":now": _iso(now_utc()), ":d": day})
+            ":m": mrr, ":sr": sms_revenue, ":p": tenant.get("planId") or "-", ":a": active, ":now": _iso(now_utc()), ":d": day})
 
 
 def write_platform_day(day, totals):
@@ -531,7 +562,8 @@ def write_job(started, days, warnings, done):
 
 # --- one day --------------------------------------------------------------------------------
 
-def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipped=None):
+def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipped=None, plans=None):
+    plans = plans if plans is not None else list_plans()
     active = [t for t in tenants if active_on(t, day)]
     ids = [t["tenantId"] for t in active]
     requests = count_requests(day, warnings, skipped)
@@ -551,6 +583,7 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
             "requests": int(tenant_requests),
             "bookings": sum(b for b, _o in per_location.values()), "orders": sum(o for _b, o in per_location.values()),
             "emails": int(row.get("emails") or 0), "sms": int(row.get("sms") or 0),
+            "smsParts": int(row.get("smsParts") or 0),
             "marketingEmails": int(row.get("marketingEmails") or 0),
         }
         by_location[tenant_id] = {
@@ -564,19 +597,25 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
                 "mrrSek": Decimal(0), "costSek": _q(sum(totals.values(), Decimal(0))),
                 "costSplitSek": {k: _q(v) for k, v in totals.items()},
                 "unallocatedSek": Decimal(0),
-                "requests": 0, "bookings": 0, "orders": 0, "emails": 0, "sms": 0, "marketingEmails": 0,
+                "requests": 0, "bookings": 0, "orders": 0, "emails": 0, "sms": 0, "smsParts": 0, "marketingEmails": 0,
+                "smsRevenueSek": Decimal(0),
                 "invoicedSek": Decimal(0), "paidSek": Decimal(0), "creditedSek": Decimal(0)}
     if not active:
         platform["unallocatedSek"] = platform["costSek"]
     for t in active:
         tenant_id = t["tenantId"]
-        mrr = mrr_on(t)
-        write_tenant_day(t, day, usage[tenant_id], split[tenant_id], mrr, True)
+        mrr = mrr_on(t, plans, day)
+        sms_price = sms_price_on(t)
+        sms_revenue = _q(Decimal(usage[tenant_id]["smsParts"]) * sms_price)
+        write_tenant_day(t, day, usage[tenant_id], split[tenant_id], mrr, True, sms_revenue)
         location_cost = split_by_location(split[tenant_id].get("total", Decimal(0)), by_location[tenant_id])
+        location_rows = _location_rows(tenant_id, list(by_location[tenant_id]), day)
         for loc, loc_usage in by_location[tenant_id].items():
-            write_location_day(tenant_id, loc, day, loc_usage, location_cost.get(loc, Decimal(0)))
+            loc_parts = Decimal(int((location_rows.get(loc) or {}).get("smsParts") or 0))
+            write_location_day(tenant_id, loc, day, loc_usage, location_cost.get(loc, Decimal(0)), _q(loc_parts * sms_price))
         platform["mrrSek"] += mrr
-        for k in ("requests", "bookings", "orders", "emails", "sms", "marketingEmails"):
+        platform["smsRevenueSek"] += sms_revenue
+        for k in ("requests", "bookings", "orders", "emails", "sms", "smsParts", "marketingEmails"):
             platform[k] += usage[tenant_id][k]
         row = rows.get(tenant_id) or {}
         for k in ("invoicedSek", "paidSek", "creditedSek"):
@@ -624,6 +663,7 @@ def handler(event, context):
             store_cost(day, cost[day], rate)
 
     tenants = list_tenants()
+    plans = list_plans()
     handed_over = None
     for i, day in enumerate(usage_days):
         if i and _remaining_ms(context) < HANDOVER_MS:
@@ -639,7 +679,7 @@ def handler(event, context):
                 warnings.append(f"no cost known for {day} (Cost Explorer unavailable); cost set to 0")
                 by_service, day_rate = {}, rate
         try:
-            process_day(day, tenants, by_service, day_rate, allocation, warnings, skipped)
+            process_day(day, tenants, by_service, day_rate, allocation, warnings, skipped, plans)
             done.append(day)
         except (BotoCoreError, ClientError) as exc:
             warnings.append(f"{day}: {exc}")

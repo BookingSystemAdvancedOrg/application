@@ -27,12 +27,11 @@ PURPOSE:
     guarantee order). Test-mode events reaching prod, and live ones
     reaching dev, are ignored.
 
-    /billing: the restaurants' SaaS subscriptions on the platform account
-    (Booqy Console starts them, payments/billing is the catalog):
+    /billing: the platform account's invoices to the restaurants, built in
+    arrears by platform-tenants on the 25th for the period 25th to 24th
+    (monthly price plus SMS parts). No Stripe subscriptions are used; a
+    customer.subscription.* event is acknowledged and ignored.
 
-      customer.subscription.created/updated/deleted -> PROFILE.billing
-                                           (status, price, plan, MRR, period,
-                                           pause, past due since)
       invoice.finalized/paid/payment_failed/voided/marked_uncollectible
                                         -> finance table: the invoice row and
                                            the day's invoicedSek / paidSek
@@ -161,10 +160,6 @@ def _billing(evt):
     if tenant_id is None:
         logger.warning(json.dumps({"ignored": "unknown_customer", "customer": customer_id, "type": kind}))
         return "ignored:unknown_customer"
-    if kind.startswith("customer.subscription."):
-        state = billing.subscription_state(obj, deleted=kind.endswith(".deleted"))
-        applied = billing.store_subscription(tenant_id, customer_id, state, created)
-        return "applied" if applied else "ignored:stale"
     if kind.startswith("invoice."):
         result = billing.record_invoice(tenant_id, obj, created)
         when = billing.now_iso()

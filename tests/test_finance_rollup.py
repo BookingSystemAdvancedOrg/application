@@ -104,6 +104,7 @@ def env(monkeypatch):
               "RESERVATION_TABLE_NAME": "test-reservation", "ORDER_TABLE_NAME": "test-order",
               "LAMBDA_LOG_GROUPS": json.dumps(["/aws/lambda/dev-a", "/aws/lambda/dev-b"]),
               "COST_DAYS": "3", "USAGE_DAYS": "2", "USD_TO_SEK": "10", "COST_ALLOCATION": json.dumps(ALLOCATION),
+              "SMS_PRICE_SEK": "0.70",
               "ALERT_TOPIC_ARN": "arn:aws:sns:eu-north-1:123456789012:alerts"}
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -114,10 +115,13 @@ def env(monkeypatch):
         tables = {"finance": _table(res, "test-finance"), "tenant": _table(res, "test-tenant", [("GSI1", "GSI1PK", "GSI1SK")]),
                   "location": _table(res, "test-location"), "reservation": _table(res, "test-reservation"),
                   "order": _table(res, "test-order")}
+        for plan_id, price in (("starter", "990"), ("growth", "1990")):
+            tables["tenant"].put_item(Item={"PK": f"PLAN#{plan_id}", "SK": "PLAN", "GSI1PK": "PLAN", "GSI1SK": plan_id,
+                                            "planId": plan_id, "priceSek": Decimal(price)})
         for tenant_id, extra in ((A, {"createdAt": "2026-09-01T10:00:00Z", "planId": "growth",
-                                      "billing": {"status": "active", "mrrSek": Decimal("1990")}}),
+                                      "billing": {"status": "active", "startsAt": "2026-09-01", "smsPriceSek": Decimal("0.5")}}),
                                  (B, {"createdAt": "2026-10-01T10:00:00Z", "planId": "starter", "status": "suspended",
-                                      "billing": {"status": "past_due", "mrrSek": Decimal("990")}}),
+                                      "billing": {"status": "active", "startsAt": "2026-10-01", "priceSek": Decimal("890")}}),
                                  (GONE, {"createdAt": "2026-01-01T10:00:00Z", "status": "offboarded",
                                          "offboardedAt": "2026-10-18T08:00:00Z"}),
                                  (NEW, {"createdAt": "2026-10-19T12:00:00Z", "status": "provisioning"})):
@@ -134,9 +138,9 @@ def env(monkeypatch):
         tables["reservation"].put_item(Item={"PK": f"LOCATION#{LOC_B}", "SK": "RESERVATION#2026-10-19#r9", "status": "reserved"})
         # counters the senders wrote
         tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": "DAY#2026-10-18", "emails": 30, "sms": 0,
-                                         "invoicedSek": Decimal("1990")})
-        tables["finance"].put_item(Item={"PK": f"TENANT#{B}", "SK": "DAY#2026-10-18", "emails": 10, "sms": 5})
-        tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-18", "emails": 30})
+                                         "smsParts": 10, "invoicedSek": Decimal("1990")})
+        tables["finance"].put_item(Item={"PK": f"TENANT#{B}", "SK": "DAY#2026-10-18", "emails": 10, "sms": 5, "smsParts": 7})
+        tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-18", "emails": 30, "smsParts": 4})
 
         spec = importlib.util.spec_from_file_location("finance_rollup_app", APP)
         module = importlib.util.module_from_spec(spec)
@@ -181,12 +185,15 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     assert a["costSplitSek"] == {"requests": Decimal("45"), "baseline": Decimal("10"), "email": Decimal("7.5"), "sms": Decimal("0")}
     assert b["costSplitSek"] == {"requests": Decimal("15"), "baseline": Decimal("10"), "email": Decimal("2.5"), "sms": Decimal("5")}
     assert a["costSek"] == Decimal("62.50") and b["costSek"] == Decimal("32.50")
-    assert a["mrrSek"] == Decimal("1990") and b["mrrSek"] == Decimal("990") and a["planId"] == "growth"
+    assert a["mrrSek"] == Decimal("1990") and b["mrrSek"] == Decimal("890") and a["planId"] == "growth"
+    # SMS revenue = parts x the customer's price (A has its own 0,50; B the default 0,70)
+    assert a["smsRevenueSek"] == Decimal("5.00") and b["smsRevenueSek"] == Decimal("4.90")
     # per location: A has one location that took 240 of its 300 requests and all its bookings; the
     # whole tenant cost lands on it (only location); the senders' counter on the row is kept
     loc = _row(env, f"TENANT#{A}", f"LOC#{LOC_A}#DAY#2026-10-18")
     assert loc["requests"] == 240 and loc["bookings"] == 3 and loc["orders"] == 2 and loc["emails"] == 30
     assert loc["costSek"] == Decimal("62.50") and loc["locationId"] == LOC_A
+    assert loc["smsParts"] == 4 and loc["smsRevenueSek"] == Decimal("2.00")
     assert a["invoicedSek"] == Decimal("1990")  # untouched revenue field
     # the offboarded and the provisioning tenants are not customers on the 18th
     assert _row(env, f"TENANT#{GONE}", "DAY#2026-10-18") is None
@@ -194,8 +201,9 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
 
     platform = _row(env, "PLATFORM", "DAY#2026-10-18")
     assert platform["activeTenants"] == 2 and platform["costSek"] == Decimal("95.00")
-    assert platform["mrrSek"] == Decimal("2980") and platform["requests"] == 400 and platform["bookings"] == 3
+    assert platform["mrrSek"] == Decimal("2880") and platform["requests"] == 400 and platform["bookings"] == 3
     assert platform["invoicedSek"] == Decimal("1990") and platform["emails"] == 40
+    assert platform["smsParts"] == 17 and platform["smsRevenueSek"] == Decimal("9.90")
     job = _row(env, "PLATFORM", "JOB#latest")
     assert job["done"] == ["2026-10-18", "2026-10-19"] and job["warnings"] == []
     assert env["sns"].calls == []
@@ -294,3 +302,14 @@ def test_logs_before_the_log_groups_existed_count_as_skipped(env, monkeypatch):
     assert [w for w in out["warnings"] if "request count" in w] == [
         w for w in out["warnings"] if w.startswith("request counts not available for 2026-10-18 (1 day(s))")]
     assert _row(env, f"TENANT#{A}", "DAY#2026-10-18")["requests"] == 0
+
+
+def test_mrr_follows_the_agreement_not_stripe(env):
+    app = env["app"]
+    plans = {"starter": Decimal("990")}
+    assert app.mrr_on({"planId": "starter", "billing": {"status": "active", "startsAt": "2026-10-01"}}, plans, "2026-10-18") == Decimal("990.00")
+    assert app.mrr_on({"planId": "starter", "billing": {"status": "active", "startsAt": "2026-10-01", "priceSek": 790}}, plans, "2026-10-18") == Decimal("790.00")
+    assert app.mrr_on({"planId": "starter", "billing": {"status": "ending", "startsAt": "2026-10-01", "endsAt": "2026-10-24"}}, plans, "2026-10-25") == Decimal("0")
+    assert app.mrr_on({"planId": "starter", "billing": {"status": "active", "startsAt": "2026-10-20"}}, plans, "2026-10-18") == Decimal("0")
+    assert app.mrr_on({"planId": "starter", "billing": {"status": "ended"}}, plans, "2026-10-18") == Decimal("0")
+    assert app.mrr_on({"planId": "starter"}, plans, "2026-10-18") == Decimal("0")

@@ -11,6 +11,11 @@ on:
         required: false
         type: string
         default: ""
+      all:
+        description: Release every function, not only the ones whose code differs from what is live
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-and-deploy:
@@ -33,6 +38,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
+          # The whole history: scripts/changed-functions.sh diffs HEAD against
+          # the commit each live function was built from.
+          fetch-depth: 0
 
       - name: Load shared project config
         run: |
@@ -54,7 +62,10 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m pytest -q
+        # pytest-xdist spreads the suite over every runner core. Each test
+        # brings its own moto mock and env vars (monkeypatch), so neither the
+        # order nor the worker matters.
+        run: python -m pytest -q -n auto
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -71,14 +82,31 @@ jobs:
           aws-region: "${{ env.AWS_REGION }}"
           role-session-name: gha-${{ inputs.environment }}-${{ github.run_id }}
 
-      - name: Build every function
-        # Runs on every PR and push - proves every function's image still
-        # builds before anything is pushed to ECR or deployed. No AWS
-        # credentials needed for a local build, so this step doesn't wait
-        # on (or need) the OIDC role at all.
+      - name: Pick the functions to build and release
+        # A push builds and releases only the functions whose code (their
+        # folder, shared/ or requirements.txt) differs from the commit their
+        # live version was built from; scripts/changed-functions.sh lists the
+        # cases that are always released (placeholder image, unknown commit).
+        # A PR build takes every function: nothing is released, but every
+        # image must still build. The "all" input forces everything.
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_ALL: ${{ (github.event_name == 'pull_request' || inputs.all) && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          for fn in $(ls functions); do
+          bash scripts/changed-functions.sh --output functions.txt
+          # The commit that is checked out: on a "Redeploy a commit" run
+          # GITHUB_SHA is the branch head, not inputs.ref. Images are tagged
+          # with this one, so the next run compares against the right commit.
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build the functions to release
+        # Every function on a PR, the picked ones on a push - proves each
+        # image still builds before anything is pushed to ECR or deployed. No
+        # AWS credentials needed for a local build.
+        run: |
+          set -euo pipefail
+          for fn in $(cat functions.txt); do
             echo "::group::docker build $fn"
             docker build --platform linux/arm64 -f "functions/$fn/Dockerfile" -t "$fn:latest" .
             echo "::endgroup::"
@@ -94,50 +122,62 @@ jobs:
           aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
             | docker login --username AWS --password-stdin "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
 
-      - name: Push every function to ECR
+      - name: Push the functions to release to ECR
         # Each image is pushed under the commit SHA (immutable, what gets
-        # released) and :latest (what Terraform's image_uri points at).
+        # released, and what scripts/changed-functions.sh reads back later)
+        # and :latest (what Terraform's image_uri points at). Four pushes at a
+        # time; a failed push fails the step once the others have finished.
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
           : > release-list.txt
-          for fn in $(ls functions); do
-            if [ "${{ inputs.environment }}" = "prod" ]; then
-              resource_name="$fn"
+          PREFIX=""; [ "$ENVIRONMENT" = prod ] || PREFIX="$ENVIRONMENT-"
+          export REGISTRY PREFIX RELEASE_SHA
+          xargs -r -P 4 -L 1 bash -c '
+            set -euo pipefail
+            repo_url="$REGISTRY/$PREFIX$0"
+            docker tag "$0:latest" "$repo_url:$RELEASE_SHA"
+            docker tag "$0:latest" "$repo_url:latest"
+            if docker push "$repo_url:$RELEASE_SHA" > "push-$0.log" 2>&1 && docker push "$repo_url:latest" >> "push-$0.log" 2>&1; then
+              echo "pushed $0 -> $PREFIX$0:$RELEASE_SHA"
+              echo "$PREFIX$0 $repo_url:$RELEASE_SHA" >> release-list.txt
             else
-              resource_name="${{ inputs.environment }}-$fn"
-            fi
-            repo_url="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${resource_name}"
-            echo "::group::push $fn -> $resource_name"
-            docker tag "$fn:latest" "$repo_url:${GITHUB_SHA}"
-            docker tag "$fn:latest" "$repo_url:latest"
-            docker push "$repo_url:${GITHUB_SHA}"
-            docker push "$repo_url:latest"
-            echo "::endgroup::"
-            echo "$resource_name $repo_url:${GITHUB_SHA}" >> release-list.txt
-          done
+              echo "::error::push failed: $0"; cat "push-$0.log"; exit 1
+            fi' < functions.txt
+          sort -o release-list.txt release-list.txt
+          echo "$(wc -l < release-list.txt | tr -d ' ') image(s) to release:"
+          cat release-list.txt
 
       - name: Release every function (blue/green)
         # Publishes each new image as a version and moves the function's
         # "live" alias to it through CodeDeploy - prod: 10% for 5 minutes,
         # rolled back automatically if the function's alarms fire; dev: all at
         # once. Failures/rollbacks are emailed per function, plus one summary
-        # email if anything failed - success sends nothing. Releases run 6 at a time; a failure fails
-        # the job only after every release has finished.
+        # email if anything failed - success sends nothing. Releases run 14 at
+        # a time (the script waits for a running release of the same function
+        # instead of failing); a failure fails the job only after every release
+        # has finished.
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         env:
           CODEDEPLOY_APP: ${{ inputs.environment == 'prod' && env.CODEDEPLOY_APP_PROD || env.CODEDEPLOY_APP_DEV }}
           ALERT_TOPIC_ARN: ${{ inputs.environment == 'prod' && env.ALERT_TOPIC_ARN_PROD || env.ALERT_TOPIC_ARN_DEV }}
           ENVIRONMENT: ${{ inputs.environment }}
+          # Every release hits the Lambda and CodeDeploy APIs at the same
+          # moment: let the CLI back off and retry instead of failing on a throttle.
+          AWS_RETRY_MODE: adaptive
+          AWS_MAX_ATTEMPTS: "10"
         run: |
           # Actions runs this with `bash -e`: capture the release status
           # instead of letting a failed release abort before the summary.
           set -uo pipefail
-          SHORT_SHA="${GITHUB_SHA::7}"
+          SHORT_SHA="${RELEASE_SHA::7}"
           export SHORT_SHA
           touch release-results.txt
           status=0
-          xargs -P 6 -L 1 bash -c '
+          xargs -r -P "$(wc -l < release-list.txt)" -L 1 bash -c '
             if bash .github/scripts/lambda-release.sh --function "$0" --image "$1" \
                  --app "$CODEDEPLOY_APP" --topic "$ALERT_TOPIC_ARN" --environment "$ENVIRONMENT" \
                  --source "application@$SHORT_SHA" --notify failure > "release-$0.log" 2>&1; then
@@ -151,7 +191,7 @@ jobs:
           failed=$(grep -c '^FAILED' release-results.txt || true)
           subject="[$ENVIRONMENT] application release $SHORT_SHA: $([ "$failed" = 0 ] && echo SUCCESS || echo "$failed FAILED")"
           [ "$failed" = 0 ] || aws sns publish --topic-arn "$ALERT_TOPIC_ARN" --subject "$subject" \
-            --message "$(printf 'Commit: %s\nRun: %s/%s/actions/runs/%s\n\n%s\n' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(sort release-results.txt)")" \
+            --message "$(printf 'Commit: %s\nRun: %s/%s/actions/runs/%s\n\n%s\n' "$RELEASE_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(sort release-results.txt)")" \
             >/dev/null || echo "::warning::could not send the summary email"
           exit $status
 

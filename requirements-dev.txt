@@ -1,5 +1,6 @@
 -r requirements.txt
 pytest
+pytest-xdist
 moto[dynamodb,cognitoidp,s3,route53]
 tzdata
 openapi-spec-validator==0.9.0

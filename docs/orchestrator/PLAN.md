@@ -1,6 +1,6 @@
 # Restaurant features plan (Phase 1, 2026-10-22)
 
-Status: waiting for the owner's answers (section 8). No implementation until approved.
+Status: approved 2026-10-22 with every recommendation in section 8, except C1: the provider (Scrive or SEB direct) is chosen after vendor meetings; see `CATERING-SIGNING-HANDOFF.md`.
 Inputs: `docs/ORCHESTRATOR.md` (Appendix A briefs), `CONVENTIONS.md`, five read-only plan agents, three research agents (sources in section 7).
 
 ## 1. Summary

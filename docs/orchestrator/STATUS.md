@@ -9,14 +9,14 @@ Updated: 2026-10-22
 
 | # | Issue | Priority | Phase | Branch | Agent | Status | Blockers |
 |---|-------|----------|-------|--------|-------|--------|----------|
-| 5 | Catering | 1 | 1 Planned | dev | none | waiting for owner | C1-C8 |
-| 3 | Booking time limits | 2 | 1 Planned | dev | none | waiting for owner | none |
-| 2 | Kitchen printing | 3 | 1 Planned | dev | none | waiting for owner | printer hardware (owner) |
-| 4 | Cookies and email marketing | 4 | 1 Planned | dev | none | waiting for owner | none |
-| 1 | Scheduled dishes | 5 | 1 Planned | dev | none | waiting for owner | none |
+| 5 | Catering | 1 | 2 Implementing (M1) | dev | impl agent | in progress | provider adapter waits for Scrive/SEB decision |
+| 3 | Booking time limits | 2 | 1 Approved | dev | none | queued after catering | none |
+| 2 | Kitchen printing | 3 | 1 Approved | dev | none | queued after catering | none (Star mC-Print3, Ethernet, 80 mm) |
+| 4 | Cookies and email marketing | 4 | 1 Approved | dev | none | queued after catering | none |
+| 1 | Scheduled dishes | 5 | 1 Approved | dev | none | queued after catering | none |
 
 Phase 0 (recon, `CONVENTIONS.md`): done.
-Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md section 8). No implementation started.
+Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md section 8). Approved 2026-10-22.
 
 ## Decisions (dated)
 
@@ -24,6 +24,12 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 - 2026-10-22: booqy-console has uncommitted work from another session (billing restart fix, 6 files). Left untouched; this work does not touch booqy-console.
 - 2026-10-22: No AWS calls at all (including `terraform plan`) until the owner switches the shell to a dev profile. The active credentials are an IAM user in account 388343452097, which is neither dev (877653167825) nor prod (343695380960).
 - 2026-10-22: Extra branches deleted on the owner's request: infrastructure `backup` (local only, 664f959, catering snapshot from 2026-09-26 superseded by dev), `feat/lambda-blue-green` (local and remote, merged), remote `dev-sync-test` (merged); application `feature/multi-tenancy` (local and remote, merged), remote `15-task-15-implement-lambda-create-pending-reservation` (merged). Only `dev` and `main` remain in every repo.
+
+- 2026-10-22: Owner approved PLAN.md with every recommended answer in section 8, except C1.
+- 2026-10-22: C1 changed: the signing provider is chosen after meetings with Scrive and SEB (direct BankID RP); Idura is not on the shortlist. Build everything provider-neutral now with the simulator in dev; the adapter starts on the owner's trigger, see `CATERING-SIGNING-HANDOFF.md`.
+- 2026-10-22: Printer for issue 2: Star mC-Print3, Ethernet, 80 mm.
+- 2026-10-22: Owner: build all catering parts first (issue 5 M1-M5 minus the provider adapter), then the other issues. Bug fixes outside catering wait.
+- 2026-10-22: Execution: one implementation agent at a time (shared checkout, `git add .`), milestone by milestone; infra pushed and its dev CI finished before application is pushed; pushes to dev deploy to the dev account only.
 
 ## Rule changes
 

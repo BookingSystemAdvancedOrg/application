@@ -8,7 +8,7 @@ these fields.
 
     from shared import finance
     finance.count(tenant_id, emails=1)       # today (UTC)
-    finance.count(tenant_id, sms=1, day="2026-10-19", location_id=loc)
+    finance.count(tenant_id, location_id=loc, **finance.sms_counters(2, "reminder"))
 
 With a location the same ADD also goes on the location's row
 (LOC#<locationId>#DAY#<day> in the restaurant's partition), which is what
@@ -33,7 +33,16 @@ from shared import dynamo
 
 logger = logging.getLogger(__name__)
 
-COUNTERS = ("emails", "sms", "marketingEmails")
+# sms = messages (the cost split), smsParts = what the invoice charges, by type:
+# booking (confirmed, changed, cancelled, fee charged), reminder, order, catering.
+COUNTERS = ("emails", "sms", "marketingEmails", "smsParts", "smsBooking", "smsReminder", "smsOrder", "smsCatering")
+SMS_TYPES = ("booking", "reminder", "order", "catering")
+
+
+def sms_counters(part_count, kind):
+    """The counters one SMS of `kind` adds: messages, parts and parts by type."""
+    kind = kind if kind in SMS_TYPES else "booking"
+    return {"sms": 1, "smsParts": part_count, "sms" + kind.capitalize(): part_count}
 
 
 def day_key(when=None):

@@ -115,62 +115,20 @@ def _invoice(customer=CUS_A, *, status="open", created=1_800_000_000, invoice_id
            "amount_due": total, "amount_paid": amount_paid, "amount_remaining": total - amount_paid,
            "period_start": 1_790_000_000, "period_end": 1_792_600_000, "paid_out_of_band": False,
            "hosted_invoice_url": "https://invoice.stripe.com/i/x", "invoice_pdf": "https://pay.stripe.com/x.pdf",
+           "metadata": {"tenantId": "x", "periodStart": "2026-09-25", "periodEnd": "2026-10-24"},
            "status_transitions": {"finalized_at": finalized_at, "paid_at": paid_at, "voided_at": voided_at,
                                   "marked_uncollectible_at": None}}
     return {"id": f"evt_{kind}_{created}", "type": kind, "created": created, "livemode": False, "data": {"object": inv}}
 
 
-def test_subscription_updates_profile_billing(app):
-    assert _send(app, _subscription()) == "applied"
-    b = _billing(TENANT_A)
-    assert b["customerId"] == CUS_A and b["subscriptionId"] == SUB_A and b["status"] == "active"
-    assert b["planId"] == "growth" and b["priceId"] == "price_growth" and b["mrrSek"] == Decimal("990.00")
-    assert b["currentPeriodEnd"].startswith("2026-") and b["pauseCollection"] is False
-    assert "pastDueSince" not in b
-    assert _billing(TENANT_B) == {"customerId": CUS_B}
-
-
-def test_yearly_price_is_monthly_mrr(app):
-    _send(app, _subscription(amount=1_188_000, interval="year"))
-    assert _billing(TENANT_A)["mrrSek"] == Decimal("990.00")
-
-
-def test_older_subscription_event_is_stale(app):
-    _send(app, _subscription(created=1_800_000_100, status="active"))
-    assert _send(app, _subscription(created=1_800_000_050, status="past_due")) == "ignored:stale"
-    assert _billing(TENANT_A)["status"] == "active"
-
-
-def test_past_due_starts_the_clock_once_and_paying_clears_it(app):
-    _send(app, _subscription(created=1_800_000_100, status="past_due"))
-    since = _billing(TENANT_A)["pastDueSince"]
-    _send(app, _subscription(created=1_800_000_200, status="past_due"))
-    assert _billing(TENANT_A)["pastDueSince"] == since
-    _send(app, _subscription(created=1_800_000_300, status="active"))
-    assert "pastDueSince" not in _billing(TENANT_A)
-
-
-def test_deleted_subscription_is_canceled_with_zero_mrr(app):
-    _send(app, _subscription(created=1_800_000_100))
-    _send(app, _subscription(created=1_800_000_200, kind="customer.subscription.deleted"))
-    b = _billing(TENANT_A)
-    assert b["status"] == "canceled" and b["mrrSek"] == Decimal("0")
-
-
-def test_paused_collection_is_stored(app):
-    _send(app, _subscription(pause={"behavior": "void"}))
-    assert _billing(TENANT_A)["pauseCollection"] is True
+def test_subscription_events_are_acknowledged_and_ignored(app):
+    # Invoicing is done in arrears by the console; Stripe subscriptions are not used.
+    assert _send(app, _subscription()) == "ignored"
+    assert _billing(TENANT_A) == {"customerId": CUS_A, "startedAt": "2026-10-01T00:00:00Z"}
 
 
 def test_unknown_customer_is_ignored(app):
     assert _send(app, _subscription(customer="cus_UNKNOWN0000000")) == "ignored:unknown_customer"
-
-
-def test_customer_claimed_by_another_tenant_cannot_cross(app):
-    boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
-        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
-        UpdateExpression="SET billing.customerId = :c", ExpressionAttributeValues={":c": "cus_OTHER000000000"})
-    assert _send(app, _subscription()) == "ignored:stale"
 
 
 def test_finalized_invoice_books_ex_vat_revenue_once(app):
@@ -178,6 +136,7 @@ def test_finalized_invoice_books_ex_vat_revenue_once(app):
     row = _fin(finance.tenant_pk(TENANT_A), "INVOICE#2027-01-14#in_1")
     assert row["status"] == "open" and row["subtotalSek"] == Decimal("990.00") and row["taxSek"] == Decimal("247.50")
     assert row["totalSek"] == Decimal("1237.50") and row["bookedInvoiced"] == "2027-01-15"
+    assert row["periodStart"] == "2026-09-25" and row["periodEnd"] == "2026-10-24"
     assert _day(TENANT_A, "2027-01-15")["invoicedSek"] == Decimal("990.00")
     # redelivered: nothing changes
     assert _send(app, _invoice()) == "applied"
@@ -185,8 +144,9 @@ def test_finalized_invoice_books_ex_vat_revenue_once(app):
 
 
 def test_paid_invoice_books_collected_revenue_and_clears_past_due(app):
-    _send(app, _subscription(created=1_800_000_000, status="past_due"))
     _send(app, _invoice())
+    _send(app, _invoice(status="open", created=1_800_050_000, kind="invoice.payment_failed"))
+    assert _billing(TENANT_A)["pastDueSince"]
     paid = _invoice(status="paid", created=1_800_100_000, paid_at=1_800_100_000, amount_paid=123_750, kind="invoice.paid")
     assert _send(app, paid) == "applied:paid"
     day = _day(TENANT_A, "2027-01-16")
@@ -198,7 +158,6 @@ def test_paid_invoice_books_collected_revenue_and_clears_past_due(app):
 
 
 def test_payment_failed_starts_past_due(app):
-    _send(app, _subscription())
     failed = _invoice(status="open", created=1_800_100_000, kind="invoice.payment_failed")
     assert _send(app, failed).startswith("applied")
     b = _billing(TENANT_A)
@@ -226,6 +185,6 @@ def test_credit_note_reduces_revenue_once(app):
 
 
 def test_live_event_in_dev_is_ignored(app):
-    evt = _subscription()
+    evt = _invoice()
     evt["livemode"] = True
     assert _send(app, evt) == "ignored:livemode"

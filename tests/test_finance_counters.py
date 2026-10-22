@@ -43,6 +43,18 @@ def test_count_adds_to_the_day_row(aws, monkeypatch):
     assert aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-19"})["Item"]["emails"] == 1
 
 
+def test_sms_counters_count_parts_by_type(aws, monkeypatch):
+    monkeypatch.setenv("FINANCE_TABLE_NAME", TABLE)
+    assert finance.sms_counters(2, "reminder") == {"sms": 1, "smsParts": 2, "smsReminder": 2}
+    assert finance.sms_counters(1, "weird") == {"sms": 1, "smsParts": 1, "smsBooking": 1}
+    finance.count(TENANT_A, day="2026-10-19", location_id=LOC_A, **finance.sms_counters(2, "reminder"))
+    finance.count(TENANT_A, day="2026-10-19", location_id=LOC_A, **finance.sms_counters(1, "order"))
+    row = aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DAY#2026-10-19"})["Item"]
+    assert row["sms"] == 2 and row["smsParts"] == 3 and row["smsReminder"] == 2 and row["smsOrder"] == 1
+    loc = aws.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-19"})["Item"]
+    assert loc["smsParts"] == 3 and loc["smsReminder"] == 2
+
+
 def test_count_is_off_without_a_table(aws, monkeypatch):
     monkeypatch.delenv("FINANCE_TABLE_NAME", raising=False)
     assert finance.count(TENANT_A, emails=1) is False

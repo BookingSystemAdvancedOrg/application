@@ -38,21 +38,21 @@ def test_booking_without_consent_works_and_logs_nothing(env, log):  # noqa: F811
     assert booking(env)["marketingOptIn"] is False
 
 
-def test_ticked_box_writes_one_grant_per_channel(env, log):  # noqa: F811
+def test_ticked_box_writes_one_email_grant(env, log):  # noqa: F811
     response = online_attempt(env, marketingConsent=CURRENT)
     assert response["statusCode"] == 201
-    email, sms = records(log)
-    assert email["identifier"] == "anna@example.se" and sms["identifier"] == "+46701234567"
+    (email,) = records(log)  # SMS is not offered (M3), even if an old page sends it
+    assert email["identifier"] == "anna@example.se"
     assert email["ref"] == body_of(response)["reservationId"]
     assert email["source"] == "booking" and email["locationId"]
     assert email["text"] == consent.render(consent.CURRENT, "Roma")
-    assert consent.may_send(log, TENANT_A, "sms", "+46701234567")
+    assert not consent.may_send(log, TENANT_A, "sms", "+46701234567")
     assert booking(env)["marketingOptIn"] is True  # the subscriber list follows the e-mail channel
 
 
-def test_sms_only_consent_does_not_subscribe_the_email(env, log):  # noqa: F811
+def test_sms_only_consent_records_nothing(env, log):  # noqa: F811
     online_attempt(env, marketingConsent={"channels": ["sms"], "textVersion": consent.CURRENT})
-    assert [r["channel"] for r in records(log)] == ["sms"]
+    assert records(log) == []
     assert booking(env)["marketingOptIn"] is False
 
 

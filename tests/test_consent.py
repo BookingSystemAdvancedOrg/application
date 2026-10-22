@@ -42,9 +42,12 @@ def test_no_box_ticked_means_no_consent():
     assert consent.parse_request(None, email="a@b.se", legacy_opt_in=False) is None
 
 
-def test_new_field_keeps_only_channels_with_a_contact_detail():
+def test_new_field_keeps_only_offered_channels_with_a_contact_detail():
     raw = {"channels": ["email", "sms"], "textVersion": consent.CURRENT}
-    assert consent.parse_request(raw, email="a@b.se", phone="+46701234567") == (consent.CURRENT, ["email", "sms"])
+    # SMS is not offered (M3): an old cached page sending it records e-mail only.
+    assert consent.parse_request(raw, email="a@b.se", phone="+46701234567") == (consent.CURRENT, ["email"])
+    assert consent.parse_request({"channels": ["sms"], "textVersion": consent.CURRENT}, email="a@b.se",
+                                 phone="+46701234567") is None
     assert consent.parse_request(raw, email="a@b.se", phone=None) == (consent.CURRENT, ["email"])
     assert consent.parse_request({"channels": ["sms"], "textVersion": consent.CURRENT}, email="a@b.se") is None
 
@@ -142,4 +145,4 @@ def test_public_text_matches_the_stored_wording():
     text = consent.public_text("Roma")
     assert text["version"] == consent.CURRENT
     assert text["label"] == consent.render(consent.CURRENT, "Roma")
-    assert [c["value"] for c in text["channels"]] == ["email", "sms"]
+    assert [c["value"] for c in text["channels"]] == ["email"]

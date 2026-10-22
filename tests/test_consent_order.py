@@ -35,8 +35,7 @@ def test_order_with_consent_is_logged_with_its_id(env, log):  # noqa: F811
     response = post_order(env, marketingConsent=CURRENT)
     order_id = body_of(response)["orderId"]
     items = sorted(log.scan()["Items"], key=lambda i: i["channel"])
-    assert [(i["channel"], i["source"], i["ref"]) for i in items] == [("email", "order", order_id),
-                                                                        ("sms", "order", order_id)]
+    assert [(i["channel"], i["source"], i["ref"]) for i in items] == [("email", "order", order_id)]
     assert stored(env, order_id)["marketingOptIn"] is True
 
 

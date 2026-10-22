@@ -982,6 +982,14 @@ def test_dish_outside_its_schedule_is_refused(env, schedule):
     assert env["stripe"].calls == []
 
 
+def test_dish_with_a_corrupt_schedule_is_unavailable(env):
+    env["res"].Table(MENU_TABLE).put_item(Item={**menu_item(LOC_A, "pizza", "Margherita", "125"),
+                                                "availableUntil": "2026-09-08 12:00"})
+    response = post_order(env)
+    assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}
+    assert env["stripe"].calls == []
+
+
 def test_dish_inside_its_schedule_can_be_ordered(env):
     env["res"].Table(MENU_TABLE).put_item(Item={**menu_item(LOC_A, "pizza", "Margherita", "125"),
                                                 "availableFrom": "2026-09-08T12:00:00Z",

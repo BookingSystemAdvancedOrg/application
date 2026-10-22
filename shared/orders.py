@@ -408,8 +408,13 @@ def price_lines(location_id, wanted, mode, on_date):
     lines = []
     for item_id, quantity in wanted:
         item = found.get(item_id)
-        # A malformed schedule raises ValueError, also menu_item_unavailable.
-        if not item or item.get("SK") != f"MENU#{item_id}" or not menu.is_available(item, now):
+        if not item or item.get("SK") != f"MENU#{item_id}":
+            raise ValueError("menu_item_unavailable")
+        try:
+            available = menu.is_available(item, now)
+        except ValueError:
+            available = False  # a corrupt stored bound is unavailable, not a 400 with its text
+        if not available:
             raise ValueError("menu_item_unavailable")
         try:
             unit = _price_ore(item.get("price"))

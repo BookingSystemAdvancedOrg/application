@@ -674,6 +674,9 @@ def test_get_availability_contract_matches_handler(openapi_document):
     assert set(slot["required"]) == {
         "startTime",
         "endTime",
+        "durationMinutes",
+        "extendable",
+        "ruleName",
         "layoutVersion",
         "tables",
     }

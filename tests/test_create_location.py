@@ -1456,3 +1456,56 @@ def test_owner_sets_the_lunch_split_for_statistik(app_and_table):
         assert refused["statusCode"] == 400
     removed = app.handler(make_event({"lunchUntil": None}, method="PUT", location_id="location-id"), None)
     assert removed["statusCode"] == 200 and "lunchUntil" not in get_location(location_table)
+
+
+# --- booking time rules (issue 3) --------------------------------------------------------
+
+TIME_RULES = {
+    "defaultMinutes": 90, "extension": {"allowed": True, "maxMinutes": 30},
+    "windows": [{"id": "buffet", "name": "Lunchbuffé", "weekdays": ["monday", "friday"],
+                 "startTime": "11:00", "endTime": "14:00", "durationMinutes": 60,
+                 "extension": {"allowed": False}, "priority": 0}],
+}
+
+
+def put_rules(app, body):
+    return app.handler(make_event(body, method="PUT", location_id="location-id"), None)
+
+
+def test_booking_time_rules_are_saved_normalized(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    response = put_rules(app, {"bookingTimeRules": TIME_RULES, "bookingDurationHours": 1.5})
+    assert response["statusCode"] == 200, response
+    stored = get_location(location_table)["bookingTimeRules"]
+    assert stored["lastSeatingMinutes"] == 120
+    assert stored["windows"][0]["extension"] == {"allowed": False, "maxMinutes": 0}
+    assert json.loads(response["body"])["bookingTimeRules"]["defaultMinutes"] == 90
+    # null removes them again: back to bookingDurationHours
+    assert put_rules(app, {"bookingTimeRules": None})["statusCode"] == 200
+    assert "bookingTimeRules" not in get_location(location_table)
+
+
+def test_overlapping_windows_with_the_same_priority_are_refused_on_save(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    rules = {**TIME_RULES, "windows": TIME_RULES["windows"] + [
+        {**TIME_RULES["windows"][0], "id": "brunch", "name": "Brunch", "startTime": "13:00",
+         "endTime": "15:00"}]}
+    response = put_rules(app, {"bookingTimeRules": rules})
+    assert response["statusCode"] == 400
+    assert "same priority" in json.loads(response["body"])["error"]
+
+
+def test_grace_period_must_be_shorter_than_the_shortest_booking(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    rules = {**TIME_RULES, "windows": [{**TIME_RULES["windows"][0], "durationMinutes": 30}]}
+    response = put_rules(app, {"bookingTimeRules": rules})  # grace 0.5 h = 30 min
+    assert response["statusCode"] == 400
+    assert "gracePeriodHours" in json.loads(response["body"])["error"]
+    assert put_rules(app, {"bookingTimeRules": rules, "gracePeriodHours": 0.25})["statusCode"] == 200
+    assert put_rules(app, {"gracePeriodHours": 2})["statusCode"] == 400
+    body = valid_body()
+    body["gracePeriodHours"] = 2
+    assert app.handler(make_event(body), None)["statusCode"] == 400

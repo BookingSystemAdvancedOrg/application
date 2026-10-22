@@ -399,7 +399,8 @@ super-user mirrors must use an empty `locationId`.
 
 `date` is a real calendar date in `YYYY-MM-DD`, `startTime` is local 24-hour
 `HH:MM`, and `blocked` is a boolean. For `blocked: true`, the handler derives
-the end time from `bookingDurationHours`. The slot must be in the future,
+the end time from the booking time rule of the start (`bookingTimeRules`,
+else `bookingDurationHours`), like a booking's. The slot must be in the future,
 start on the location's booking grid, remain inside one business-hours
 interval, and map to one unambiguous real interval in the location's IANA
 timezone. Slots at ambiguous/nonexistent local times or crossing a daylight

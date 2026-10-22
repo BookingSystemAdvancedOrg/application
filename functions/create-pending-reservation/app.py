@@ -50,6 +50,11 @@ PURPOSE:
     Staff bookings may omit email/phone and may book the slot that is
     already running (walk-ins).
 
+    Booking length (shared/booking_rules.py bookingTimeRules): the rule of
+    the local start time sets the end; the rule is snapshotted on the hold
+    and the booking (bookingRule, extendedMinutes) so later rule changes
+    never move existing bookings.
+
     Online bookings follow the location's booking rules
     (shared/booking_rules.py): the chosen table(s) must be one of the
     options the availability response offered that party - one table whose
@@ -283,6 +288,8 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "seats": seats,
         "partySize": party_size,
         "layoutVersion": slot["layoutVersion"],
+        "bookingRule": slot["rule"],
+        "extendedMinutes": 0,
         **{k: v for k, v in guest.items() if v is not None},
         "source": source,
         "status": r.RESERVED,
@@ -381,6 +388,9 @@ def _hold(event):
         "seats": seats,
         "partySize": party_size,
         "layoutVersion": slot["layoutVersion"],
+        # The rule of the start time, kept by the booking made from the hold.
+        "bookingRule": slot["rule"],
+        "extendedMinutes": 0,
         "source": "online",
         "status": r.HELD,
         "holdOnly": True,
@@ -422,6 +432,9 @@ def _hold(event):
         "endTime": slot["endTime"],
         "tableIds": table_ids,
         "partySize": party_size,
+        "durationMinutes": slot["durationMinutes"],
+        "extendable": slot["rule"]["extensionAllowed"],
+        "ruleName": slot["rule"].get("name"),
         "cardRequired": guarantee.required(ctx.location, ctx.tenant, party_size),
     })
 

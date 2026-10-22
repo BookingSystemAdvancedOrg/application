@@ -187,7 +187,9 @@ def _draft(event):
         raise c.InvalidState("not_editable")
     now = c.now_utc()
     draft = _offer_from(http.body(event), item, c.settings_of(ctx.location), ctx.location, now)
-    c.transact([c.head_update(item, sets=["draft = :d", "updatedAt = :now"],
+    # reviewedAt: the restaurant has started on it ("Under granskning"; status stays requested).
+    c.transact([c.head_update(item, sets=["draft = :d", "updatedAt = :now",
+                                          "reviewedAt = if_not_exists(reviewedAt, :now)"],
                               values={":d": draft, ":now": c.iso(now)})])
     return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
 

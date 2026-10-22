@@ -3616,7 +3616,10 @@ paths:
               acceptTerms: true
       responses:
         '201':
-          description: Created; send the guest to checkoutUrl.
+          description: |
+            Created. Hosted: send the guest to checkoutUrl. Embedded
+            (`embedded: true`): confirm clientSecret with Stripe's Payment
+            Element (Checkout Sessions, ui_mode elements) on stripeAccount.
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
@@ -5234,13 +5237,18 @@ components:
         marketingOptIn:
           type: boolean
           description: The guest ticked "send me offers" (subscribed when the order is paid).
+        embedded:
+          type: boolean
+          description: |
+            The site pays on its own page with Stripe's Payment Element: the
+            response carries clientSecret and stripeAccount instead of
+            checkoutUrl.
 
     OrderCreated:
       type: object
       required:
         - orderId
         - locationId
-        - checkoutUrl
         - statusToken
         - totalAmount
       properties:
@@ -5251,6 +5259,13 @@ components:
         checkoutUrl:
           type: string
           format: uri
+          description: Hosted Checkout (requests without `embedded`).
+        clientSecret:
+          type: string
+          description: Checkout Session client secret (embedded requests).
+        stripeAccount:
+          type: string
+          description: The restaurant's connected account (acct_...) for Stripe.js (embedded requests).
         statusToken:
           type: string
         totalAmount:

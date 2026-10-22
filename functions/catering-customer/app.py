@@ -8,7 +8,9 @@ TRIGGER:
     GET  /locations/{locationId}/catering/requests/{requestId}/customer
     POST .../customer/sign             start BankID signing of the current offer version
     POST .../customer/sign/status      poll the signing (QR code, hints, result)
-    POST .../customer/checkout         private guest: pay the signed offer (Stripe Checkout)
+    POST .../customer/checkout         private guest: pay the signed offer (Stripe Checkout);
+                                       {"embedded": true} -> {clientSecret, stripeAccount}
+                                       for the site's Payment Element, else {checkoutUrl}
     POST .../customer/change           {"message"} ask the restaurant to change the offer
     POST .../customer/reject           {"reason"} decline the offer
     GET  .../customer/documents/signature   5-minute link to the signature evidence
@@ -43,7 +45,7 @@ from zoneinfo import ZoneInfo
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import bankid, http, site, tenant
+from shared import bankid, http, payment_domains, site, tenant
 from shared import catering as c
 from shared import catering_stripe as cs
 from shared import orders as o
@@ -198,9 +200,28 @@ def _sign_status(event):
                               "request": _view_of(ctx, c.load(item["locationId"], item["requestId"]))})
 
 
+def _expire_previous(item):
+    """One payable session per request: a new attempt first expires the
+    previous one, so two open sessions (two tabs, a reload) can never both
+    take the money. A session that already completed is being settled by
+    the webhook - no new attempt then."""
+    previous, account = item.get("checkoutSessionId"), item.get("stripeAccountId")
+    if not previous or not account:
+        return
+    try:
+        stripe.request("POST", f"/v1/checkout/sessions/{previous}/expire", account=account)
+    except stripe.StripeError:
+        session = stripe.request("GET", f"/v1/checkout/sessions/{previous}", account=account)
+        if session.get("status") == "complete":
+            raise c.InvalidState("payment_in_progress") from None
+
+
 def _checkout(event):
     ctx, item = _context(event)
-    http.body(event, allowed=set(), required=False)
+    data = http.body(event, allowed={"embedded"}, required=False) or {}
+    embedded = data.get("embedded", False)
+    if not isinstance(embedded, bool):
+        raise ValueError("embedded must be true or false")
     if item["status"] != c.SIGNED or item.get("customerType") != c.PRIVATE:
         raise c.InvalidState("not_payable")
     now = c.now_utc()
@@ -217,14 +238,19 @@ def _checkout(event):
     page = site.page(base, slug, f"/catering/{item['locationId']}/{item['requestId']}")
     join = "&" if slug else "?"
     attempt = int(item.get("checkoutAttempts") or 0) + 1
+    _expire_previous(item)
+    if embedded:
+        payment_domains.ensure(account, lambda: site.hosts(ctx.tenant_id, ctx.tenant))
     session = cs.checkout(item, offer, account, f"{page}{join}betalning=klar", f"{page}{join}betalning=avbruten",
-                          now, attempt)
+                          now, attempt, embedded=embedded)
     c.transact([
         c.head_update(item, sets=["checkoutSessionId = :s", "checkoutAttempts = :a", "updatedAt = :now",
                                   "stripeAccountId = :acct"],
                       values={":s": session["id"], ":a": attempt, ":now": c.iso(now), ":acct": account}),
         c.audit_put(item["requestId"], "checkout_started", "guest", now, session=session["id"]),
     ])
+    if embedded:
+        return http.respond(200, {"clientSecret": session["client_secret"], "stripeAccount": account})
     return http.respond(200, {"checkoutUrl": session["url"]})
 
 

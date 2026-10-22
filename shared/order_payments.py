@@ -5,6 +5,11 @@
              the order record) - idempotency key checkout-<orderId>. The
              session's metadata carries locationId/orderId/date/tenantId so
              the webhook finds the order without a lookup.
+             embedded: ui_mode "elements" - the site shows Stripe's Payment
+             Element on its own page (card data stays in Stripe's iframes)
+             and confirms with the session's client_secret. The session,
+             its events and the settling below are the same as hosted
+             Checkout; only the page the guest pays on differs.
     settle   paid  -> status confirmed, paymentStatus paid, daily number,
                       ready estimate, order_confirmed notice (SMS + receipt)
              failed -> status failed (checkout expired, async payment failed)
@@ -27,7 +32,7 @@ from shared import stripe_client as stripe
 _LOCALES = {"sv": "sv", "en": "en"}
 
 
-def create_checkout(item, account, success_url, cancel_url, now):
+def create_checkout(item, account, success_url, cancel_url, now, *, embedded=False):
     metadata = {"orderId": item["orderId"], "locationId": item["locationId"],
                 "tenantId": item["tenantId"], "date": item["date"]}
     params = {
@@ -46,16 +51,19 @@ def create_checkout(item, account, success_url, cancel_url, now):
         # Link account, not the number in the order. With it off, the only
         # SMS about the order go to the number the guest typed (ours).
         "wallet_options": {"link": {"display": "never"}},
-        "locale": _LOCALES.get(item.get("language"), "sv"),
         "metadata": metadata,
         "payment_intent_data": {"metadata": metadata,
                                 "description": f"Beställning {item['date']} ({item['orderId'][:8]})"},
         # Stripe's minimum is 30 minutes; a minute more so clock skew never
         # makes the request invalid.
         "expires_at": int((now + timedelta(minutes=o.CHECKOUT_MINUTES + 1)).timestamp()),
-        "success_url": success_url,
-        "cancel_url": cancel_url,
     }
+    if embedded:
+        # Swish, Klarna and 3-D Secure redirects come back to the status page.
+        params.update({"ui_mode": "elements", "return_url": success_url})
+    else:
+        params.update({"locale": _LOCALES.get(item.get("language"), "sv"),
+                       "success_url": success_url, "cancel_url": cancel_url})
     return stripe.request("POST", "/v1/checkout/sessions", params, account=account,
                           idempotency_key=f"checkout-{item['orderId']}")
 

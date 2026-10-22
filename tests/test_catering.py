@@ -20,7 +20,7 @@ import pytest
 from boto3.dynamodb.types import TypeSerializer
 from moto import mock_aws
 
-from shared import bankid, catering as c, catering_stripe, manage_link, stripe_client
+from shared import bankid, catering as c, catering_stripe, manage_link, payment_domains, stripe_client
 from shared import dynamo as shared_dynamo
 from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_A2, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE, create_tables,
@@ -80,6 +80,7 @@ class FakeStripe:
     def __init__(self):
         self.calls = []
         self.invoice_status = "open"
+        self.session_status = "open"
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -91,7 +92,15 @@ class FakeStripe:
         if path == "/v1/coupons":
             return {"id": "co_1"}
         if path == "/v1/checkout/sessions":
-            return {"id": "cs_cat_1", "url": "https://checkout.stripe.com/c/cs_cat_1"}
+            n = sum(1 for x in self.calls if x["path"] == "/v1/checkout/sessions")
+            return {"id": f"cs_cat_{n}", "url": f"https://checkout.stripe.com/c/cs_cat_{n}",
+                    "client_secret": f"cs_cat_{n}_secret_x"}
+        if path.startswith("/v1/checkout/sessions/") and path.endswith("/expire"):
+            if self.session_status != "open":
+                raise stripe_client.StripeError(400, {"code": "checkout_session_not_open"})
+            return {"id": path.split("/")[4], "status": "expired"}
+        if path.startswith("/v1/checkout/sessions/"):
+            return {"id": path.split("/")[4], "status": self.session_status}
         if path == "/v1/customers":
             return {"id": "cus_1"}
         if path == "/v1/invoices":
@@ -107,6 +116,8 @@ class FakeStripe:
             return {"id": "in_1", "status": self.invoice_status, "payment_intent": "pi_inv"}
         if path == "/v1/refunds":
             return {"id": "re_1"}
+        if path == "/v1/payment_method_domains":
+            return {"data": []} if method == "GET" else {"id": "pmd_1"}
         raise AssertionError(path)
 
 
@@ -147,6 +158,7 @@ def env(monkeypatch):
         c.reset_cache()
         bankid.reset_cache()
         manage_link.reset_cache()
+        payment_domains.reset_cache()
         catering_stripe._tax_cache.clear()
         sm = boto3.client("secretsmanager", region_name=REGION)
         monkeypatch.setenv("LINK_SIGNING_KEY_SECRET_ARN", sm.create_secret(Name="cat-link", SecretString="c" * 64)["ARN"])
@@ -487,6 +499,48 @@ def test_failed_payment_keeps_the_signature(env):
     guest(env, "POST", "/checkout", rid, token)
     keys = [x["key"] for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions"]
     assert keys == [f"checkout-{rid}-1", f"checkout-{rid}-2"]
+
+
+def test_private_guest_pays_on_the_site_with_the_payment_element(env):
+    rid, token = signed(env)
+    body = body_of(guest(env, "POST", "/checkout", rid, token, {"embedded": True}))
+    assert body == {"clientSecret": "cs_cat_1_secret_x", "stripeAccount": ACCOUNT}
+    params = next(x for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions")["params"]
+    assert params["ui_mode"] == "elements" and params["invoice_creation"]["enabled"] is True
+    assert params["return_url"].endswith(f"/catering/{LOC_A}/{rid}?restaurang=roma&betalning=klar")
+    assert not {"success_url", "cancel_url", "locale"} & set(params)
+    (domain,) = [x for x in env.stripe.calls if x["path"] == "/v1/payment_method_domains" and x["method"] == "POST"]
+    assert domain["account"] == ACCOUNT and domain["params"] == {"domain_name": "dev123.cloudfront.net"}
+    session = {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+               "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "checkout.session.completed", session))["result"] == "confirmed"
+
+
+def test_a_new_attempt_expires_the_open_session_first(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    body = body_of(guest(env, "POST", "/checkout", rid, token, {"embedded": True}))
+    assert body["clientSecret"] == "cs_cat_2_secret_x"
+    paths = [x["path"] for x in env.stripe.calls if "/checkout/sessions" in x["path"]]
+    assert paths == ["/v1/checkout/sessions", "/v1/checkout/sessions/cs_cat_1/expire", "/v1/checkout/sessions"]
+    assert c.load(LOC_A, rid)["checkoutSessionId"] == "cs_cat_2"
+    # The first session is no longer the request's: its events are ignored.
+    late = {"id": "cs_cat_1", "payment_status": "paid", "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "checkout.session.completed", late))["result"] != "confirmed"
+
+
+def test_no_new_attempt_while_a_completed_session_settles(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    env.stripe.session_status = "complete"
+    response = guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "payment_in_progress"}
+
+
+def test_checkout_rejects_unknown_fields(env):
+    rid, token = signed(env)
+    response = guest(env, "POST", "/checkout", rid, token, {"embedded": "ja"})
+    assert response["statusCode"] == 400
 
 
 def test_guest_asks_for_changes_and_owner_sends_a_new_version(env):

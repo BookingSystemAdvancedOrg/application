@@ -20,8 +20,14 @@ ordered 1-20 times; an order has at most 30 lines.
 2. **Order:** `POST /order` (payment-intent). Prices, names and VAT come from
    the menu table; the request only names dishes and quantities. The order is
    written `pending_payment` with a TTL backstop, then the Checkout Session
-   is created; the browser goes to `checkoutUrl`.
-3. **Paid:** Stripe redirects to `/bestallning/<locationId>/<orderId>`. The
+   is created. The site sends `embedded: true`: the session is `ui_mode:
+   elements` and the answer carries `clientSecret` + `stripeAccount`; the
+   site's own "Betala" step shows Stripe's Payment Element (card data stays
+   in Stripe's iframes, PCI SAQ A) styled with the site's tokens, and
+   confirms it there. Without `embedded` (older sites) the browser goes to
+   hosted Checkout at `checkoutUrl`. Same session, events and settling.
+3. **Paid:** the site (or Stripe, after a redirect method such as Swish,
+   Klarna or a 3-D Secure redirect) opens `/bestallning/<locationId>/<orderId>`. The
    page polls `GET /locations/{id}/order-status/{orderId}` with the status
    token; while pending, get-order asks Stripe itself. The webhook
    (`checkout.session.completed`, `payment_status=paid`) does the same - the

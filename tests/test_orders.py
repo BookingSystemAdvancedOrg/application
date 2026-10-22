@@ -19,7 +19,7 @@ from boto3.dynamodb.types import TypeSerializer
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
-from shared import manage_link, order_messages, stripe_client
+from shared import manage_link, order_messages, payment_domains, stripe_client
 from shared import orders as o
 from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_A2, LOC_B, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE,
@@ -73,6 +73,7 @@ class FakeStripe:
         self.calls = []
         self.session = {}
         self.fail = None
+        self.domains = []
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -82,6 +83,7 @@ class FakeStripe:
         if path == "/v1/checkout/sessions":
             total = sum(li["price_data"]["unit_amount"] * li["quantity"] for li in params["line_items"])
             self.session = {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1",
+                            "client_secret": "cs_test_1_secret_x", "ui_mode": params.get("ui_mode", "hosted_page"),
                             "metadata": params["metadata"], "amount_total": total, "currency": "sek",
                             "payment_status": "unpaid", "status": "open", "payment_intent": None}
             return dict(self.session)
@@ -92,6 +94,10 @@ class FakeStripe:
             return dict(self.session)
         if path == "/v1/refunds":
             return {"id": "re_1", "amount": 25000, "status": "succeeded"}
+        if path == "/v1/payment_method_domains":
+            if self.domains is None:
+                raise stripe_client.StripeUnavailable("down")
+            return {"data": list(self.domains)} if method == "GET" else {"id": "pmd_1", **params}
         raise AssertionError(path)
 
 
@@ -121,6 +127,7 @@ def env(monkeypatch):
         shared_dynamo._resource = None
         shared_dynamo._client = None
         manage_link.reset_cache()
+        payment_domains.reset_cache()
         sm = boto3.client("secretsmanager", region_name=REGION)
         monkeypatch.setenv("RESERVATION_LINK_KEY_SECRET_ARN",
                            sm.create_secret(Name="link", SecretString="k" * 64)["ARN"])
@@ -327,6 +334,49 @@ def test_pickup_order_is_priced_from_the_menu_and_sent_to_checkout(env):
     assert params["success_url"] == (f"https://dev123.cloudfront.net/bestallning/{LOC_A}/{body['orderId']}"
                                      "?restaurang=roma")
     assert params["cancel_url"] == f"https://dev123.cloudfront.net/bestall?restaurang=roma&avbruten={body['orderId']}"
+    assert "ui_mode" not in params and "clientSecret" not in body
+
+
+def test_embedded_order_gets_a_client_secret_for_the_payment_element(env):
+    response = post_order(env, embedded=True)
+    assert response["statusCode"] == 201, response
+    body = body_of(response)
+    assert body["clientSecret"] == "cs_test_1_secret_x" and body["stripeAccount"] == ACCOUNT
+    assert "checkoutUrl" not in body
+    domain_get, domain_post, call = env["stripe"].calls
+    # Apple Pay, Google Pay and Klarna need the site's domain on the restaurant's account.
+    assert (domain_get["method"], domain_get["path"], domain_get["account"]) == (
+        "GET", "/v1/payment_method_domains", ACCOUNT)
+    assert domain_get["params"]["domain_name"] == "dev123.cloudfront.net"
+    assert domain_post["params"] == {"domain_name": "dev123.cloudfront.net"} and domain_post["account"] == ACCOUNT
+    params = call["params"]
+    assert call["account"] == ACCOUNT and call["key"] == f"checkout-{body['orderId']}"
+    assert params["ui_mode"] == "elements"
+    assert params["return_url"] == f"https://dev123.cloudfront.net/bestallning/{LOC_A}/{body['orderId']}?restaurang=roma"
+    assert not {"success_url", "cancel_url", "locale"} & set(params)
+    assert params["metadata"]["orderId"] == body["orderId"]
+    assert stored(env, body["orderId"])["checkoutSessionId"] == "cs_test_1"
+    # The same session events settle it.
+    webhook(env, stripe_event("checkout.session.completed", paid_session(env, body["orderId"])))
+    assert stored(env, body["orderId"])["status"] == "confirmed"
+
+
+def test_payment_domain_is_checked_once_and_never_blocks_the_order(env):
+    env["stripe"].domains = [{"id": "pmd_1", "domain_name": "dev123.cloudfront.net", "enabled": True}]
+    post_order(env, embedded=True)
+    post_order(env, embedded=True, phone="0707654321", email="bo@example.se")
+    domain_calls = [c for c in env["stripe"].calls if c["path"] == "/v1/payment_method_domains"]
+    assert [c["method"] for c in domain_calls] == ["GET"]  # already there; cached for the warm Lambda
+    payment_domains.reset_cache()
+    env["stripe"].domains = None  # Stripe can't answer: cards still work, the order goes on
+    response = post_order(env, embedded=True, phone="0701112233", email="cy@example.se")
+    assert response["statusCode"] == 201 and body_of(response)["clientSecret"]
+
+
+def test_embedded_must_be_a_boolean(env):
+    response = post_order(env, embedded="yes")
+    assert response["statusCode"] == 400
+    assert body_of(response) == {"error": "embedded must be true or false"}
 
 
 def test_table_order_needs_this_locations_qr_code(env):

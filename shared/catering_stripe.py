@@ -4,6 +4,8 @@ charges, platform key + Stripe-Account header, shared/stripe_client.py).
     private guest   Checkout (card / Swish / Klarna as the account allows)
                     right after signing; Stripe also creates a paid receipt
                     invoice in the account's invoice numbering series.
+                    embedded: ui_mode "elements", paid with Stripe's Payment
+                    Element on the site's own page (same session and events).
     company         Stripe Invoice (send_invoice, due in paymentTermsDays),
                     created and sent when the offer is signed; Stripe e-mails
                     it and the overdue reminders.
@@ -51,7 +53,7 @@ def _amount_lines(offer):
     return out
 
 
-def checkout(item, offer, account, success_url, cancel_url, now, attempt):
+def checkout(item, offer, account, success_url, cancel_url, now, attempt, *, embedded=False):
     """Checkout for a private guest. The tier discount is a Checkout
     discount via a one-off coupon (Checkout has no negative lines)."""
     rate = tax_rate(account)
@@ -71,11 +73,13 @@ def checkout(item, offer, account, success_url, cancel_url, now, attempt):
         "payment_intent_data": {"metadata": _metadata(item, offer),
                                 "description": f"Catering {item.get('deliveryDate')} ({item['requestId'][:8]})"},
         "invoice_creation": {"enabled": True, "invoice_data": {"metadata": _metadata(item, offer)}},
-        "locale": "sv",
         "expires_at": int(now.timestamp()) + 31 * 60,
-        "success_url": success_url,
-        "cancel_url": cancel_url,
     }
+    if embedded:
+        # Swish, Klarna and 3-D Secure redirects come back to the request page.
+        params.update({"ui_mode": "elements", "return_url": success_url})
+    else:
+        params.update({"locale": "sv", "success_url": success_url, "cancel_url": cancel_url})
     discount = int(offer["totals"].get("discount") or 0)
     if discount:
         coupon = stripe.request("POST", "/v1/coupons", {

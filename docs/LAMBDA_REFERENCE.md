@@ -1028,7 +1028,7 @@ Full details: `docs/ORDERS.md`.
 
 ### 22. `payment-intent`
 **Trigger:** API Gateway - `POST /order` - Auth: `NONE`
-**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, checkoutUrl, statusToken, totalAmount}`. Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
+**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
 **AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
 
 ### 23. `webhook-payment-intent`

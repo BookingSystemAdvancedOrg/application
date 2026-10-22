@@ -11,6 +11,7 @@ ENV_VARS:
 """
 
 import os
+from urllib.parse import urlparse
 
 from boto3.dynamodb.conditions import Key
 
@@ -33,6 +34,23 @@ def base(tenant_id, tenant_row):
     if url and os.environ.get("ENVIRONMENT") != "prod" and tenant_row.get("slug"):
         return url.rstrip("/"), tenant_row["slug"]
     return None, None
+
+
+def hosts(tenant_id, tenant_row):
+    """Every host the tenant's site is served on: its active domains, or
+    outside prod the shared dev site's host."""
+    rows = dynamo.table(os.environ["TENANT_TABLE_NAME"]).query(
+        KeyConditionExpression=Key("PK").eq(tenant.tenant_pk(tenant_id))
+        & Key("SK").begins_with("DOMAIN#")
+    ).get("Items") or []
+    found = sorted(r["domain"] for r in rows if r.get("status") == "active" and isinstance(r.get("domain"), str))
+    if found:
+        return found
+    url = os.environ.get("CUSTOMER_SITE_URL")
+    if url and os.environ.get("ENVIRONMENT") != "prod" and tenant_row.get("slug"):
+        host = urlparse(url).hostname
+        return [host] if host else []
+    return []
 
 
 def page(base_url, slug, path):

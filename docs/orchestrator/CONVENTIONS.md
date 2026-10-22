@@ -34,7 +34,7 @@ Project rules: `CLAUDE.md` (root) and `application/docs/orchestrator/STATUS.md` 
 - Feature-scoped files are preferred where they exist (`privacy-*.tf`, `marketing/`), to keep `config.tf` edits to a few lines.
 - EventBridge Scheduler for recurring and one-time jobs (`security/iam/scheduler-invoke-<name>`), DLQs in `storage/sqs/dead-letter` drained by `dlq-replay`, SNS `platform-alerts`, alarms in `monitoring/alerts`, blue/green via CodeDeploy (`orchestration/lambda-releases`).
 - SES: `network/ses` (DKIM), `network/platform-domain` (MAIL FROM, SPF, DMARC `p=none`). Marketing configuration set in `marketing/`; transactional mail (`functions/notification`) has no configuration set.
-- Allowed: `terraform fmt`, `validate` (scratch copy with `init -backend=false`). `plan` only with dev credentials; `apply` never without approval.
+- Locally only `terraform fmt` and `validate` (scratch copy with `init -backend=false`). `plan` and `apply` run only in CI: push infrastructure to dev and follow the run with `gh run watch <id> --exit-status` before pushing application.
 
 ## Frontends (`admin-front-end`, `customer-front-end`)
 - React 19, Vite 8, TypeScript 6, react-router-dom 7. No data library, no component library, no i18n library: Swedish copy hardcoded. Plain CSS per feature with CSS variables.

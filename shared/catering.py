@@ -1040,7 +1040,20 @@ _GUEST_FIELDS = ("requestId", "locationId", "status", "customerType", "customerN
                  "deliveryZone", "deliveryAddress", "guests", "notes", "request", "createdAt",
                  "currentOfferVersion", "validUntil", "signedAt", "signedOfferVersion", "paid",
                  "invoiceNumber", "invoiceUrl", "invoiceStatus", "declineReason", "cancelReason",
-                 "changeMessage", "delivered", "equipmentReturn")
+                 "changeMessage", "delivered", "equipmentReturn", "serviceIncluded", "restaurantSignedAt",
+                 "signatory")
+_SIGNER_FIELDS = ("name", "role", "method", "signedAt")
+
+
+def _signing_view(item):
+    """Who has signed the current version, without evidence keys or provider state."""
+    s = item.get("signing") or {}
+    if not s.get("order"):
+        return None
+    sigs = s.get("signatures") or {}
+    return {"offerVersion": int(s["offerVersion"]), "pdfSha256": s.get("pdfSha256"),
+            **{role: {k: sigs[role].get(k) for k in _SIGNER_FIELDS if sigs[role].get(k) is not None}
+               for role in ("restaurant", "customer") if sigs.get(role)}}
 
 
 def guest_view(item, offer=None, location=None, settings=None):
@@ -1048,6 +1061,7 @@ def guest_view(item, offer=None, location=None, settings=None):
     signer = (item.get("signature") or {}).get("name")
     if signer:
         view["signedBy"] = signer
+        view["signedMethod"] = (item.get("signature") or {}).get("method") or "bankid"
     if offer:
         view["offer"] = {
             "version": int(offer["version"]),
@@ -1064,8 +1078,14 @@ def guest_view(item, offer=None, location=None, settings=None):
         view["location"] = {k: location.get(k) for k in ("name", "address", "phoneNumber", "email")}
     if settings and item.get("customerType") == COMPANY:
         view["paymentTermsDays"] = settings.get("paymentTermsDays")
-    view["canSign"] = item.get("status") == OFFER_SENT
+    signing_view = _signing_view(item)
+    current = bool(signing_view) and signing_view["offerVersion"] == int(item.get("currentOfferVersion") or 0)
+    # The guest signs after the restaurant, the current version only (offers sent before
+    # issue 5 M4 have no signing order: the restaurant sends them again).
+    view["canSign"] = item.get("status") == OFFER_SENT and current and "restaurant" in signing_view
+    view["canAccept"] = view["canSign"] and bool((settings or {}).get("allowSimpleAcceptance"))
     view["canPay"] = item.get("status") == SIGNED and item.get("customerType") == PRIVATE
+    view["documents"] = [d for d, ok in (("offer", current), ("signed", bool(item.get("signedPdfKey")))) if ok]
     return view
 
 
@@ -1074,5 +1094,9 @@ def staff_view(item):
     view.pop("signature", None)
     sig = item.get("signature") or {}
     if sig:
-        view["signature"] = {k: sig.get(k) for k in ("name", "personalNumberMasked", "signedAt", "documentHash")}
+        view["signature"] = {k: sig.get(k) for k in ("name", "personalNumberMasked", "signedAt", "documentHash",
+                                                     "method", "role", "pdfSha256") if sig.get(k) is not None}
+    signing_view = _signing_view(item)
+    if signing_view:
+        view["signing"] = signing_view
     return view

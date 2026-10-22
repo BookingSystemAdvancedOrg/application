@@ -5,6 +5,7 @@ lifecycle (company invoice, expiry timers), the Stripe webhook and the
 notifications. DynamoDB, S3 and Secrets Manager are moto; Stripe, SES, SNS
 and EventBridge Scheduler are recording fakes."""
 
+import base64
 import hashlib
 import hmac
 import importlib.util
@@ -149,6 +150,8 @@ def env(monkeypatch):
         "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net", "ADMIN_DASHBOARD_URL": "https://admin.example.se",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "SCHEDULE_GROUP_NAME": "dev-catering",
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::1:role/sched", "SCHEDULER_DLQ_ARN": "arn:aws:sqs:x:1:dlq",
+        "DOCUMENT_LOCK_MODE": "GOVERNANCE", "DOCUMENT_LOCK_DAYS": "1",
+        "SIGNING_WEBHOOK_URL": "https://api.example.se/webhooks/signing/catering",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
@@ -197,7 +200,18 @@ def env(monkeypatch):
         monkeypatch.setattr(c.geo, "distance_km", lambda origin, destination: distance["km"])
         monkeypatch.setattr(c.geo, "position", lambda text: None if "okänd" in text else [18.07, 59.31])
         mods = {name: load(f"catering-{name}", f"cat_{name.replace('-', '_')}") for name in
-                ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle")}
+                ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle",
+                 "document", "signing-webhook")}
+        # The PDF: catering-document's real handler and S3 write; only WeasyPrint is replaced.
+        mods["document"].render_pdf = lambda page: b"%PDF-1.7 " + page.encode("utf-8")
+        import base64 as _b64
+
+        def render(ctx, item, version, document):
+            out = mods["document"].handler({"tenantId": ctx.tenant_id, "requestId": item["requestId"],
+                                            "version": version, "document": c.plain(document),
+                                            "restaurant": {"name": "Södermalm"}}, None)
+            return {"key": out["key"], "sha256": out["sha256"], "bytes": _b64.b64decode(out["pdf"])}
+        mods["offer"]._render_pdf = render
         sched = FakeClient()
         mods["lifecycle"]._clients["scheduler"] = sched
         yield SimpleNamespace(m=mods, res=res, stripe=fake, sched=sched, monkeypatch=monkeypatch, distance=distance)
@@ -253,10 +267,18 @@ OFFER = {"lines": [{"name": "Laxtallrik", "unitPrice": 140, "quantity": 20, "men
          "discountPercent": 5, "deliveryFee": 395, "message": "Välkomna!"}
 
 
-def sent_offer(env, **extra):
+def restaurant_signs(env, rid):
+    assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "pending"
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+
+
+def sent_offer(env, sign=True, **extra):
     created = body_of(create(env, **extra))
     rid = created["requestId"]
     assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)["statusCode"] == 200
+    if sign:
+        restaurant_signs(env, rid)
     return rid, created["token"]
 
 
@@ -394,13 +416,19 @@ def test_send_offer_versions_and_capacity(env):
     assert sent["status"] == "offer_sent" and sent["currentOfferVersion"] == 1 and "draft" not in sent
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 65
     item = c.load(LOC_A, rid)
-    assert item["notice"]["type"] == "catering_offer_sent" and len(item["offer"]["documentHash"]) == 64
+    # the guest hears about it only once the restaurant has signed
+    assert item["notice"]["type"] == "catering_request_received" and len(item["offer"]["documentHash"]) == 64
+    assert item["signing"]["pdfKey"] == f"{TENANT_A}/offers/{rid}/v0001.pdf" and len(item["signing"]["pdfSha256"]) == 64
+    restaurant_signs(env, rid)
+    item = c.load(LOC_A, rid)
+    assert item["notice"]["type"] == "catering_offer_sent" and item["restaurantSignedAt"]
     smaller = {**OFFER, "lines": [{"name": "Laxtallrik", "unitPrice": 140, "quantity": 20, "menuItemId": "lax"}]}
     assert body_of(staff(env, "POST", "/offer/send", body=smaller, request_id=rid))["currentOfferVersion"] == 2
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 80
     view = body_of(staff(env, "GET", request_id=rid))
     assert [o["version"] for o in view["offers"]] == [1, 2]
-    assert [h["action"] for h in view["history"]][:3] == ["offer_sent", "offer_sent", "requested"]
+    assert [h["action"] for h in view["history"]][:3] == ["offer_sent", "signed_restaurant", "signing_started_restaurant"]
+    assert "restaurant" not in view["signing"] and view["signing"]["offerVersion"] == 2
 
 
 def test_offer_capacity_full_and_validation(env):
@@ -447,28 +475,44 @@ def test_bankid_signing_with_the_simulator(env):
     done = body_of(guest(env, "POST", "/sign/status", rid, token))
     assert done["status"] == "complete" and done["request"]["status"] == "signed"
     assert done["request"]["canPay"] is True and done["request"]["signedBy"] == "Test Testsson"
+    assert done["request"]["documents"] == ["offer", "signed"]
     item = c.load(LOC_A, rid)
     assert item["signature"]["personalNumberMasked"] == "19000000-****" and item["notice"]["type"] == "catering_signed"
-    evidence = boto3.client("s3", region_name=REGION).get_object(Bucket=BUCKET, Key=item["signature"]["evidenceKey"])
-    data = json.loads(evidence["Body"].read())
-    assert data["documentHash"] == item["offer"]["documentHash"] and data["signer"]["personalNumber"] == "190000000000"
-    assert c.document_hash(data["document"]) == data["documentHash"]
+    s3 = boto3.client("s3", region_name=REGION)
+    prefix = f"{TENANT_A}/signed/{rid}/v0001/"
+    keys = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)["Contents"])
+    assert keys == [prefix + n for n in ("customer-bankid.json", "manifest.json", "offer.pdf", "restaurant-bankid.json")]
+    evidence = json.loads(s3.get_object(Bucket=BUCKET, Key=item["signature"]["evidenceKey"])["Body"].read())
+    assert evidence["pdfSha256"] == item["signing"]["pdfSha256"] and evidence["user"]["personalNumber"] == "190000000000"
+    pdf = s3.get_object(Bucket=BUCKET, Key=item["signedPdfKey"])["Body"].read()
+    assert hashlib.sha256(pdf).hexdigest() == item["signing"]["pdfSha256"]
+    manifest = json.loads(s3.get_object(Bucket=BUCKET, Key=prefix + "manifest.json")["Body"].read())
+    assert manifest["files"]["offer.pdf"] == item["signing"]["pdfSha256"]
+    assert set(manifest["signatures"]) == {"restaurant", "customer"}
+    # every evidence object carries its own lock (no bucket default, C7)
+    assert s3.head_object(Bucket=BUCKET, Key=item["signedPdfKey"])["ObjectLockMode"] == "GOVERNANCE"
+    assert "ObjectLockMode" not in s3.head_object(Bucket=BUCKET, Key=item["signing"]["pdfKey"])
+    assert s3.get_object_tagging(Bucket=BUCKET, Key=item["signing"]["pdfKey"])["TagSet"] == \
+        [{"Key": "retention", "Value": "offer"}]
 
 
 def test_simulator_is_refused_in_prod(env):
     env.monkeypatch.setenv("ENVIRONMENT", "prod")
     bankid.reset_cache()
-    rid, token = sent_offer(env)
-    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "signing_unavailable"}
+    rid = body_of(create(env))["requestId"]
+    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)) == {"error": "signing_unavailable"}
+    assert c.load(LOC_A, rid)["status"] == "requested"
 
 
 def test_a_new_offer_version_during_signing_is_not_signed(env):
     rid, token = sent_offer(env)
     guest(env, "POST", "/sign", rid, token)
     staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
-    guest(env, "POST", "/sign/status", rid, token)
     assert body_of(guest(env, "POST", "/sign/status", rid, token))["status"] == "none"
     assert c.load(LOC_A, rid)["status"] == "offer_sent"
+    # v2 needs the restaurant's signature again before the guest can sign
+    assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "awaiting_restaurant"}
 
 
 def test_bankid_qr_code_format():
@@ -558,6 +602,8 @@ def test_guest_asks_for_changes_and_owner_sends_a_new_version(env):
     assert body["status"] == "change_requested" and body["canSign"] is False
     assert c.load(LOC_A, rid)["notice"]["type"] == "catering_change_requested"
     assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))["currentOfferVersion"] == 2
+    assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
+    restaurant_signs(env, rid)
     assert body_of(guest(env, "GET", "", rid, token))["canSign"] is True
 
 
@@ -706,16 +752,20 @@ def test_bankid_rp_api_calls(env, monkeypatch):
             "signature": "PFNpZz4=", "ocspResponse": "MII=", "bankIdIssueDate": "2024-01-01"}}
 
     monkeypatch.setattr(bankid, "_call", fake_call)
-    rid, token = sent_offer(env)
+    rid, token = sent_offer(env, sign=False)
+    assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+    restaurant_text = base64.b64decode(calls[0][1]["userVisibleData"]).decode()
+    assert "Restaurangen godkänner offerten." in restaurant_text
+    calls.clear()
     start = body_of(guest(env, "POST", "/sign", rid, token))
     assert start["autoStartToken"] == "ast" and start["qrData"].startswith("bankid.qst.")
     path, body = calls[0]
     assert path == "sign" and body["endUserIp"] == "203.0.113.9" and body["userVisibleDataFormat"] == "simpleMarkdownV1"
-    import base64
     visible = base64.b64decode(body["userVisibleData"]).decode()
-    assert "Säljare: Roma AB" in visible and "Offertversion: 1" in visible
+    assert "Säljare: Roma AB" in visible and "Offertversion: 1" in visible and "Jag godkänner" in visible
     item = c.load(LOC_A, rid)
-    assert base64.b64decode(body["userNonVisibleData"]).decode() == f"sha256:{item['offer']['documentHash']}"
+    assert base64.b64decode(body["userNonVisibleData"]).decode() == f"sha256:{item['signing']['pdfSha256']}"
     done = body_of(guest(env, "POST", "/sign/status", rid, token))
     assert done["status"] == "complete" and done["request"]["signedBy"] == "Anna Svensson"
     assert c.load(LOC_A, rid)["signature"]["personalNumberMasked"] == "19900101-****"

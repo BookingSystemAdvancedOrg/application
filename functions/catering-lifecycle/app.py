@@ -21,6 +21,16 @@ PURPOSE:
     - a schedule firing: requested / offer_sent / change_requested / signed
       (unpaid) -> expired, held capacity released, notice catering_expired.
       A schedule for a request that moved on is a no-op.
+    - reminders (issue 5, M5), each a one-time schedule, each a notice when
+      it fires and still applies (catering_messages.py sends it):
+        owner-reminder-<id>  requested + ownerReminderHours: the request is
+                             still unanswered -> owner e-mail + SMS
+        sign-reminder-<id>   the restaurant signed: 10:00 local time,
+                             signReminderDaysBefore days before validUntil,
+                             the guest has not signed -> guest e-mail + SMS
+        day-before-<id>      confirmed: 10:00 local time the day before the
+                             delivery, if dayBeforeReminder -> guest e-mail
+      A reminder time already passed is skipped. Leaving the state deletes it.
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
@@ -32,7 +42,7 @@ ENV_VARS:
 import json
 import logging
 import os
-from datetime import datetime, time as dtime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -49,6 +59,8 @@ logger.setLevel(logging.INFO)
 
 _clients = {}
 EXPIRABLE = {"request": (c.REQUESTED,), "offer": (c.OFFER_SENT, c.CHANGE_REQUESTED, c.SIGNED)}
+REMINDERS = {"owner": "owner-reminder", "sign": "sign-reminder", "day": "day-before"}
+_NOTICE = {"owner": c.N_OWNER_REMINDER, "sign": c.N_SIGN_REMINDER, "day": c.N_DAY_BEFORE}
 
 
 def _scheduler():
@@ -61,12 +73,16 @@ def _name(kind, request_id):
     return f"{kind}-expiry-{request_id}"
 
 
-def _delete_schedule(kind, request_id):
+def _delete(name):
     try:
-        _scheduler().delete_schedule(Name=_name(kind, request_id), GroupName=os.environ["SCHEDULE_GROUP_NAME"])
+        _scheduler().delete_schedule(Name=name, GroupName=os.environ["SCHEDULE_GROUP_NAME"])
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
             raise
+
+
+def _delete_schedule(kind, request_id):
+    _delete(_name(kind, request_id))
 
 
 def _schedule(kind, item, at, function_arn):
@@ -76,17 +92,38 @@ def _schedule(kind, item, at, function_arn):
     if at <= now:
         _expire({"kind": kind, "locationId": item["locationId"], "requestId": item["requestId"]})
         return
-    _delete_schedule(kind, item["requestId"])
+    _create(_name(kind, item["requestId"]), at, {"action": "expire", "kind": kind, "locationId": item["locationId"],
+                                                  "requestId": item["requestId"]}, function_arn)
+
+
+def _remind_at(kind, item, at, function_arn):
+    """A reminder schedule; a time already passed is skipped (no late reminders)."""
+    name = f"{REMINDERS[kind]}-{item['requestId']}"
+    if at <= c.now_utc():
+        _delete(name)
+        return False
+    _create(name, at, {"action": "remind", "kind": kind, "locationId": item["locationId"],
+                       "requestId": item["requestId"]}, function_arn)
+    return True
+
+
+def _local(day, hour, tz_name):
+    """`hour`:00 on a local calendar day, as UTC (DST-safe: zoneinfo picks the offset of that day)."""
+    local = datetime.combine(day, dtime(hour, 0), tzinfo=ZoneInfo(tz_name or "Europe/Stockholm"))
+    return local.astimezone(timezone.utc)
+
+
+def _create(name, at, payload, function_arn):
+    _delete(name)
     target = {
         "Arn": function_arn,
         "RoleArn": os.environ["SCHEDULER_INVOKE_ROLE_ARN"],
-        "Input": json.dumps({"action": "expire", "kind": kind, "locationId": item["locationId"],
-                             "requestId": item["requestId"]}),
+        "Input": json.dumps(payload),
     }
     if os.environ.get("SCHEDULER_DLQ_ARN"):
         target["DeadLetterConfig"] = {"Arn": os.environ["SCHEDULER_DLQ_ARN"]}
     _scheduler().create_schedule(
-        Name=_name(kind, item["requestId"]),
+        Name=name,
         GroupName=os.environ["SCHEDULE_GROUP_NAME"],
         ScheduleExpression=f"at({at.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')})",
         ScheduleExpressionTimezone="UTC",
@@ -161,6 +198,67 @@ def _expire(payload):
     return "expired"
 
 
+def _remind(payload):
+    """A reminder firing: a notice when it still applies, else a no-op."""
+    kind = payload.get("kind")
+    if kind not in REMINDERS:
+        return "unknown"
+    try:
+        item = c.load(payload.get("locationId") or "", payload.get("requestId") or "")
+    except c.NotFound:
+        return "gone"
+    customer_signed = bool(((item.get("signing") or {}).get("signatures") or {}).get("customer"))
+    applies = {"owner": item["status"] == c.REQUESTED,
+               "sign": item["status"] == c.OFFER_SENT and bool(item.get("restaurantSignedAt")) and not customer_signed,
+               "day": item["status"] == c.CONFIRMED}[kind]
+    if not applies:
+        return "moved_on"
+    now = c.now_utc()
+    try:
+        c.transact([
+            c.head_update(item, sets=["notice = :n", "updatedAt = :now"],
+                          values={":n": c.notice(_NOTICE[kind], now), ":now": c.iso(now)}),
+            c.audit_put(item["requestId"], f"reminder_{kind}", "system", now),
+        ])
+    except c.InvalidState:
+        return "moved_on"
+    return "reminded"
+
+
+def _reminders(new, old, function_arn):
+    """Creates and deletes the reminder schedules for this change."""
+    status, before = new.get("status"), old.get("status")
+    request_id = new["requestId"]
+    done = []
+    if status == c.REQUESTED and before != c.REQUESTED:
+        _, location = _context(new)
+        hours = c.settings_of(location)["ownerReminderHours"]
+        if hours and new.get("createdAt"):
+            if _remind_at("owner", new, c.parse_iso(new["createdAt"]) + timedelta(hours=hours), function_arn):
+                done.append("owner")
+    if before == c.REQUESTED and status != c.REQUESTED:
+        _delete(f"{REMINDERS['owner']}-{request_id}")
+    if status == c.OFFER_SENT and new.get("restaurantSignedAt") and \
+            new.get("restaurantSignedAt") != old.get("restaurantSignedAt") and new.get("validUntil"):
+        _, location = _context(new)
+        days = c.settings_of(location)["signReminderDaysBefore"]
+        if days:
+            day = date.fromisoformat(new["validUntil"]) - timedelta(days=days)
+            if _remind_at("sign", new, _local(day, 10, location.get("timezone")), function_arn):
+                done.append("sign")
+    if before in (c.OFFER_SENT, c.CHANGE_REQUESTED) and status != c.OFFER_SENT:
+        _delete(f"{REMINDERS['sign']}-{request_id}")
+    if status == c.CONFIRMED and before != c.CONFIRMED and new.get("deliveryDate"):
+        _, location = _context(new)
+        if c.settings_of(location)["dayBeforeReminder"]:
+            day = date.fromisoformat(new["deliveryDate"]) - timedelta(days=1)
+            if _remind_at("day", new, _local(day, 10, location.get("timezone")), function_arn):
+                done.append("day")
+    if before == c.CONFIRMED and status == c.CANCELLED:
+        _delete(f"{REMINDERS['day']}-{request_id}")
+    return done
+
+
 def _record(record, function_arn):
     new = c.deserialize(record["dynamodb"].get("NewImage"))
     old = c.deserialize(record["dynamodb"].get("OldImage"))
@@ -168,6 +266,9 @@ def _record(record, function_arn):
         return "skip"
     status, before = new.get("status"), old.get("status")
     request_id = new["requestId"]
+    reminded = _reminders(new, old, function_arn)
+    if reminded:
+        logger.info(json.dumps({"reminders": reminded, "requestId": request_id}))
 
     if status == c.SIGNED and new.get("customerType") == c.COMPANY and not new.get("stripeInvoiceId"):
         return f"invoiced:{_invoice_company(new)}"
@@ -195,6 +296,10 @@ def handler(event, context):
     if isinstance(event, dict) and event.get("action") == "expire":
         result = _expire(event)
         logger.info(json.dumps({"expire": event.get("requestId"), "kind": event.get("kind"), "result": result}))
+        return {"result": result}
+    if isinstance(event, dict) and event.get("action") == "remind":
+        result = _remind(event)
+        logger.info(json.dumps({"remind": event.get("requestId"), "kind": event.get("kind"), "result": result}))
         return {"result": result}
     if isinstance(event, dict) and event.get("action") == "reconcile":
         logger.warning(json.dumps({"reconcile": "requested", "source": event.get("source")}))

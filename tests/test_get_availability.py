@@ -2116,6 +2116,9 @@ def test_returns_all_slots_when_no_tables_are_occupied(app_and_tables):
                 {
                     "startTime": start,
                     "endTime": end,
+                    "durationMinutes": 120,
+                    "extendable": False,
+                    "ruleName": None,
                     "layoutVersion": 1,
                     "tables": [
                         {"tableId": "table-a", "seats": 2},
@@ -2173,6 +2176,9 @@ def test_occupancy_is_filtered_against_each_slots_layout(
     ) == {
         "startTime": "12:00",
         "endTime": "14:00",
+        "durationMinutes": 120,
+        "extendable": False,
+        "ruleName": None,
         "layoutVersion": 1,
         "tables": [{"tableId": "current-table", "seats": 2}],
     }
@@ -2181,6 +2187,9 @@ def test_occupancy_is_filtered_against_each_slots_layout(
     ) == {
         "startTime": "16:00",
         "endTime": "18:00",
+        "durationMinutes": 120,
+        "extendable": False,
+        "ruleName": None,
         "layoutVersion": 2,
         "tables": [{"tableId": "pending-table", "seats": 6}],
     }

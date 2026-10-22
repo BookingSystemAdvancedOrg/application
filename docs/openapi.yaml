@@ -1200,6 +1200,9 @@ paths:
                 slots:
                   - startTime: '18:00'
                     endTime: '20:00'
+                    durationMinutes: 120
+                    extendable: true
+                    ruleName: null
                     layoutVersion: 2
                     tables:
                       - tableId: table-4
@@ -3237,7 +3240,10 @@ paths:
       operationId: updateReservation
       description: |
         Guest details, notes, party size, and/or a move to another `date`,
-        `startTime` or `tableIds`. A move is re-validated against
+        `startTime` or `tableIds`; or, on its own, a new `endTime` (staff
+        extend or shorten, see ReservationUpdateRequest). A move to a new
+        time takes that time's booking rule; keeping the time keeps the
+        booking's own end. A move is re-validated against
         availability (ignoring the booking's own holds) and committed
         atomically; a taken table answers 409 `table_taken`. A new time must
         be on the half-hour grid and at least 30 minutes ahead, except for a
@@ -3487,6 +3493,9 @@ paths:
                   endTime: {type: string}
                   tableIds: {type: array, items: {type: string}}
                   partySize: {type: integer}
+                  durationMinutes: {type: integer}
+                  extendable: {type: boolean}
+                  ruleName: {type: string, nullable: true}
                   cardRequired: {type: boolean}
         '409':
           $ref: '#/components/responses/ReservationConflict'
@@ -5152,6 +5161,20 @@ components:
         notifyGuest:
           type: boolean
           description: Tell the guest about a new date/time (default true). Table-only changes never notify.
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: |
+            Extend or shorten a reserved/arrived booking (on its own, with
+            no other change). 15-minute steps, at least 15 minutes, never
+            past closing, free on every table. Longer than the rule needs the
+            rule to allow it, within its maxExtensionMinutes and not into a
+            window without extension; otherwise 409 `not_extendable`,
+            `extension_too_long` or `window_not_extendable` unless
+            overrideRule. 409 `after_closing`, `table_taken`, `already_ended`.
+        overrideRule:
+          type: boolean
+          description: Staff override of the extension rule (logged in history as override).
 
     ReservationStatusRequest:
       type: object
@@ -5245,6 +5268,11 @@ components:
         pendingExpiresAt:
           type: string
           format: date-time
+        bookingRule:
+          $ref: '#/components/schemas/BookingRuleSnapshot'
+        extendedMinutes:
+          type: integer
+          description: Minutes beyond (negative = before) the rule's length after staff changed the end.
 
     ReservationList:
       type: object
@@ -5287,6 +5315,14 @@ components:
           type: string
         cancellable:
           type: boolean
+        durationMinutes:
+          type: integer
+        extendable:
+          type: boolean
+          description: The restaurant may extend the booking on site if the table is free.
+        ruleName:
+          type: string
+          nullable: true
         location:
           type: object
           properties:
@@ -6543,6 +6579,15 @@ components:
           description: Tables guests may book together online; staff may combine any tables. null removes them.
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          allOf:
+            - $ref: '#/components/schemas/BookingTimeRules'
+          nullable: true
+          description: |
+            Booking length per start time and extension rules. null removes
+            them (the location then books bookingDurationHours, no
+            extension). gracePeriodHours must stay shorter than the
+            shortest booking length.
 
     LocationUpdateRequest:
       type: object
@@ -6628,6 +6673,15 @@ components:
           description: Tables guests may book together online; staff may combine any tables. null removes them.
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          allOf:
+            - $ref: '#/components/schemas/BookingTimeRules'
+          nullable: true
+          description: |
+            Booking length per start time and extension rules. null removes
+            them (the location then books bookingDurationHours, no
+            extension). gracePeriodHours must stay shorter than the
+            shortest booking length.
 
     Location:
       type: object
@@ -6693,6 +6747,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          $ref: '#/components/schemas/BookingTimeRules'
         createdBy:
           type: string
         createdAt:
@@ -6709,6 +6765,119 @@ components:
           description: |
             Creation or last effective-update time. Optional only for legacy
             records created before update auditing.
+
+    BookingExtension:
+      type: object
+      additionalProperties: false
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+        maxMinutes:
+          type: integer
+          minimum: 0
+          maximum: 240
+          multipleOf: 15
+          description: Longest extension (staff), required when allowed; 0 when not.
+
+    BookingTimeWindow:
+      type: object
+      additionalProperties: false
+      required: [name, weekdays, startTime, endTime, durationMinutes, extension]
+      description: |
+        A special rule (e.g. lunch buffet) for bookings STARTING in
+        [startTime, endTime) local time on these weekdays (and dates). No
+        midnight crossing. A window with a date range beats a recurring one,
+        then the higher priority wins; an unresolvable overlap is refused.
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: Assigned on save when missing.
+        name:
+          type: string
+          maxLength: 40
+          description: Shown to guests ("Lunchbuffé").
+        weekdays:
+          type: array
+          minItems: 1
+          maxItems: 7
+          items:
+            type: string
+            enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        startTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: 15-minute steps.
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: 15-minute steps, after startTime.
+        dateFrom:
+          type: string
+          format: date
+        dateTo:
+          type: string
+          format: date
+        durationMinutes:
+          type: integer
+          minimum: 15
+          maximum: 480
+          multipleOf: 15
+        extension:
+          $ref: '#/components/schemas/BookingExtension'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 0
+
+    BookingTimeRules:
+      type: object
+      additionalProperties: false
+      required: [defaultMinutes, extension]
+      description: |
+        Booking length by local start time (shared/booking_rules.py). The
+        rule of a booking's start is snapshotted on the booking.
+      properties:
+        defaultMinutes:
+          type: integer
+          minimum: 15
+          maximum: 480
+          multipleOf: 15
+        extension:
+          $ref: '#/components/schemas/BookingExtension'
+        lastSeatingMinutes:
+          type: integer
+          minimum: 0
+          maximum: 480
+          multipleOf: 15
+          default: 120
+          description: No booking starts less than this before closing.
+        windows:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/BookingTimeWindow'
+
+    BookingRuleSnapshot:
+      type: object
+      required: [durationMinutes, extensionAllowed, maxExtensionMinutes]
+      description: |
+        The rule taken when the booking was made; windowId and name only for
+        a window. Bookings from before snapshots report their own length and
+        no extension.
+      properties:
+        windowId:
+          type: string
+        name:
+          type: string
+        durationMinutes:
+          type: integer
+        extensionAllowed:
+          type: boolean
+        maxExtensionMinutes:
+          type: integer
 
     PublicLocationInfo:
       type: object
@@ -6779,6 +6948,9 @@ components:
       required:
         - startTime
         - endTime
+        - durationMinutes
+        - extendable
+        - ruleName
         - layoutVersion
         - tables
       properties:
@@ -6788,6 +6960,16 @@ components:
         endTime:
           type: string
           pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        durationMinutes:
+          type: integer
+          description: Booking length for this start (its booking time rule).
+        extendable:
+          type: boolean
+          description: Staff may extend a booking of this start if the table is free.
+        ruleName:
+          type: string
+          nullable: true
+          description: The special window's name ("Lunchbuffé"), null for the default rule.
         layoutVersion:
           type: integer
           minimum: 1
@@ -8785,7 +8967,9 @@ components:
       description: |
         `table_taken` (pick another table/time), `availability_changed`,
         `changed_retry`, or a status-transition code (`too_early`,
-        `grace_period_not_over`, `not_cancellable`, `already_started`, ...).
+        `grace_period_not_over`, `not_cancellable`, `already_started`,
+        `not_extendable`, `extension_too_long`, `window_not_extendable`,
+        `after_closing`, ...).
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'

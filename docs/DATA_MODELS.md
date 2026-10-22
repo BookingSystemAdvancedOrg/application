@@ -396,7 +396,7 @@ permission.
 
 ## Reservations
 
-Full customer booking record, including the reserved amount and the layout version referenced at booking time. The customer selects only a start time; the occupancy end time is derived from the location's `bookingDurationHours` **at booking time** and frozen on the record - a later change to the location's policy never retroactively changes an existing reservation's `endsAt`.
+Full customer booking record, including the reserved amount and the layout version referenced at booking time. The customer selects only a start time; the occupancy end time is derived from the booking time rule of the start (`bookingTimeRules`, else `bookingDurationHours`) **at booking time** and frozen on the record together with the rule (`bookingRule`, `extendedMinutes`) - a later change to the location's policy never retroactively changes an existing reservation's `endsAt`. Only staff change it afterwards (extend or shorten, docs/RESERVATIONS.md).
 
 No charge happens at booking - the card is saved via a Stripe SetupIntent instead. It's only charged if the customer cancels less than 24 hours before the booked time, or doesn't show up; never charged if they arrive or cancel 24+ hours in advance.
 
@@ -441,6 +441,7 @@ Directory of all restaurant locations, created by an owner or super-admin when o
 | `businessHours` | Map (lowercase weekday to a list of `{opensAt, closesAt}` maps) |
 | `bookingDurationHours` | Number |
 | `gracePeriodHours` | Number |
+| `bookingTimeRules` | Map, optional (booking length per start time, extension; shared/booking_rules.py) |
 | `createdBy` | String |
 | `createdAt` | String (ISO8601) |
 | `updatedBy` | String |

@@ -546,7 +546,7 @@ _STAFF_FIELDS = (
     "endsAt", "timezone", "tableIds", "seats", "partySize", "layoutVersion",
     "customerName", "customerEmail", "customerPhone", "notes", "language",
     "marketingOptIn", "source", "status", "createdAt", "createdBy", "updatedAt",
-    "updatedBy", "history", "guarantee", "payment", "pendingExpiresAt",
+    "updatedBy", "history", "guarantee", "payment", "pendingExpiresAt", "extendedMinutes",
 )
 
 
@@ -554,9 +554,27 @@ def _card_on_file(item):
     return bool(item.get("stripePaymentMethodId"))
 
 
+def booking_rule(item):
+    """The booking time rule snapshot taken when the booking was made
+    ({windowId?, name?, durationMinutes, extensionAllowed,
+    maxExtensionMinutes}). Bookings from before the snapshot keep their own
+    length and can't be extended (staff may override)."""
+    rule = item.get("bookingRule")
+    if isinstance(rule, dict):
+        out = {"durationMinutes": int(rule["durationMinutes"]),
+               "extensionAllowed": bool(rule.get("extensionAllowed")),
+               "maxExtensionMinutes": int(rule.get("maxExtensionMinutes") or 0)}
+        out.update({k: rule[k] for k in ("windowId", "name") if rule.get(k)})
+        return out
+    minutes = int((parse_iso(item["endsAt"]) - parse_iso(item["bookedFor"])).total_seconds() // 60)
+    return {"durationMinutes": minutes, "extensionAllowed": False, "maxExtensionMinutes": 0}
+
+
 def staff_view(item):
     view = {f: item.get(f) for f in _STAFF_FIELDS if f in item}
     view["cardOnFile"] = _card_on_file(item)
+    if item.get("bookedFor") and item.get("endsAt"):
+        view["bookingRule"] = booking_rule(item)
     return view
 
 
@@ -574,6 +592,12 @@ def guest_view(item, location=None, *, now=None):
         "customerName": item.get("customerName"),
         "cancellable": item["status"] in ACTIVE and parse_iso(item["bookedFor"]) > now,
     }
+    rule = booking_rule(item)
+    view.update({
+        "durationMinutes": int((parse_iso(item["endsAt"]) - parse_iso(item["bookedFor"])).total_seconds() // 60),
+        "extendable": rule["extensionAllowed"],
+        "ruleName": rule.get("name"),
+    })
     snap = item.get("guarantee")
     if isinstance(snap, dict):
         from shared import guarantee  # local: guarantee imports this module

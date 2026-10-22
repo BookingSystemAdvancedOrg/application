@@ -5,8 +5,9 @@ TRIGGER:
     API Gateway -- GET /locations/{locationId}/menu/{proxy+} -- Auth: JWT
 
 PURPOSE:
-    Read-only menu endpoints. The public route returns active customer-facing
-    fields without requiring a JWT. Protected ``items`` and
+    Read-only menu endpoints. The public route returns the dishes a guest
+    can order now (toggle on and inside the optional availableFrom /
+    availableUntil window, shared/menu.py) without requiring a JWT. Protected ``items`` and
     ``items/{menuItemId}`` routes return the complete staff-facing menu-item
     representation after validating the caller's Cognito group.
 
@@ -36,7 +37,7 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import menu, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -169,8 +170,11 @@ def _public_item(item, location_id):
     ):
         raise _MenuServiceFailure
 
-    if not item["active"]:
-        return None
+    try:
+        if not menu.is_available(item, datetime.now(timezone.utc)):
+            return None
+    except ValueError:
+        raise _MenuServiceFailure from None
 
     if (
         not isinstance(item.get("name"), str)
@@ -250,8 +254,16 @@ def _management_item(item, location_id, expected_item_id=None):
         or not _valid_utc_timestamp(item.get("updatedAt"))
     ):
         raise _MenuConflict("menu item record is inconsistent")
+    try:
+        menu.validate_schedule(item)
+    except ValueError:
+        raise _MenuConflict("menu item record is inconsistent") from None
 
-    return {**{field: item[field] for field in _MANAGEMENT_FIELDS}, "alcohol": item.get("alcohol") is True}
+    return {
+        **{field: item[field] for field in _MANAGEMENT_FIELDS},
+        "alcohol": item.get("alcohol") is True,
+        **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
+    }
 
 
 def _query_items(location_id, item_converter):

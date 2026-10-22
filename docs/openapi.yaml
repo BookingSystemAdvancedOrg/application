@@ -1358,7 +1358,9 @@ paths:
       summary: Get the public menu for a location
       operationId: getPublicMenu
       description: |
-        Returns only active menu items in a customer-facing shape. Audit
+        Returns only the menu items a guest can order now (`active` and
+        inside the optional availableFrom/availableUntil window, evaluated
+        per request) in a customer-facing shape. Audit
         fields and internal DynamoDB keys are not exposed. An empty menu and
         an unknown location both produce an empty list because this Lambda is
         not permitted to read the Location table. Item ordering is not
@@ -7091,6 +7093,24 @@ components:
         alcohol:
           type: boolean
           description: Contains alcohol - 25 % VAT, not orderable for pickup. Optional (false).
+        availableFrom:
+          $ref: '#/components/schemas/MenuScheduleBound'
+        availableUntil:
+          $ref: '#/components/schemas/MenuScheduleBound'
+
+    MenuScheduleBound:
+      type: string
+      format: date-time
+      nullable: true
+      pattern: 'Z$'
+      example: '2026-11-01T10:00:00Z'
+      description: |
+        Optional schedule bound in UTC (must end in `Z`; stored to the
+        second). Omitted or null = no bound; null in a PUT clears it. The dish
+        is shown and orderable when `active` is true and
+        availableFrom <= now < availableUntil (end exclusive). When both are
+        set, availableUntil must be after availableFrom, also against the
+        stored value in a partial PUT (400).
 
     MenuItemCreateRequest:
       allOf:
@@ -7109,7 +7129,7 @@ components:
         - $ref: '#/components/schemas/MenuItemEditableFields'
         - type: object
           minProperties: 1
-      description: At least one of the six editable fields is required.
+      description: At least one editable field is required.
 
     MenuItem:
       type: object
@@ -7146,6 +7166,10 @@ components:
           type: boolean
         alcohol:
           type: boolean
+        availableFrom:
+          $ref: '#/components/schemas/MenuScheduleBound'
+        availableUntil:
+          $ref: '#/components/schemas/MenuScheduleBound'
         createdBy:
           type: string
         createdAt:

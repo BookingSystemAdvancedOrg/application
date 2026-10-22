@@ -379,3 +379,13 @@ def test_outbox_is_ignored_in_prod(env, monkeypatch):
 
     assert len(ses.calls) == 2
     assert _saved(s3) == []
+
+
+def test_transactional_email_uses_its_own_configuration_set(env, monkeypatch):
+    module, ses, _ = env
+    run(module, record(booking(), event_name="INSERT"))
+    assert all("ConfigurationSetName" not in c for c in ses.calls)
+    ses.calls.clear()
+    monkeypatch.setenv("SES_CONFIGURATION_SET", "dev-transactional")
+    run(module, record(booking(reservationId="b" * 32), event_name="INSERT", seq="2"))
+    assert ses.calls and all(c["ConfigurationSetName"] == "dev-transactional" for c in ses.calls)

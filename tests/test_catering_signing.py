@@ -159,3 +159,68 @@ def test_signing_attempts_are_limited(guarded):
         assert guest(guarded, "POST", "/sign", rid, token)["statusCode"] == 200
     limited = guest(guarded, "POST", "/sign", rid, token)
     assert limited["statusCode"] == 429 and body_of(limited) == {"error": "too_many_requests"}
+
+
+# --- reminders (M5) -------------------------------------------------------------------------
+
+def _lifecycle(env, item, old):  # noqa: F811
+    from types import SimpleNamespace
+    from test_catering import stream_record
+    return env.m["lifecycle"].handler({"Records": [stream_record(item, old=old)]},
+                                      SimpleNamespace(invoked_function_arn="arn:fn"))
+
+
+def test_owner_reminder_fires_only_while_unanswered(env):  # noqa: F811
+    rid = body_of(create(env))["requestId"]
+    ctx = None
+    remind = {"action": "remind", "kind": "owner", "locationId": LOC_A, "requestId": rid}
+    assert env.m["lifecycle"].handler(remind, ctx) == {"result": "reminded"}
+    assert c.load(LOC_A, rid)["notice"]["type"] == "catering_owner_reminder"
+    sent_offer_rid = sent_offer(env, phone="0701234568", email="b@example.se")[0]
+    assert env.m["lifecycle"].handler({**remind, "requestId": sent_offer_rid}, ctx) == {"result": "moved_on"}
+
+
+def test_sign_reminder_is_scheduled_when_the_restaurant_signs(env):  # noqa: F811
+    rid, token = sent_offer(env, sign=False)
+    before = c.load(LOC_A, rid)
+    restaurant_signs(env, rid)
+    item = c.load(LOC_A, rid)
+    _lifecycle(env, item, before)
+    created = {x[1]["Name"]: x[1] for x in env.sched.calls if x[0] == "create"}
+    # validUntil 2026-10-08 (7 days), 2 days before at 10:00 Stockholm (CEST) = 08:00 UTC
+    assert created[f"sign-reminder-{rid}"]["ScheduleExpression"] == "at(2026-10-06T08:00:00)"
+    assert json.loads(created[f"sign-reminder-{rid}"]["Target"]["Input"])["action"] == "remind"
+    remind = {"action": "remind", "kind": "sign", "locationId": LOC_A, "requestId": rid}
+    assert env.m["lifecycle"].handler(remind, None) == {"result": "reminded"}
+    assert c.load(LOC_A, rid)["notice"]["type"] == "catering_sign_reminder"
+    guest(env, "POST", "/sign", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    assert env.m["lifecycle"].handler(remind, None) == {"result": "moved_on"}
+    signed = c.load(LOC_A, rid)
+    _lifecycle(env, signed, item)
+    assert ("delete", {"Name": f"sign-reminder-{rid}", "GroupName": "dev-catering"}) in env.sched.calls
+
+
+def test_day_before_reminder_after_confirmation_is_dst_safe(env):  # noqa: F811
+    rid, _ = sent_offer(env)
+    item = c.load(LOC_A, rid)
+    confirmed = {**item, "status": "confirmed", "deliveryDate": "2026-10-26"}
+    _lifecycle(env, confirmed, {**item, "status": "signed"})
+    created = {x[1]["Name"]: x[1] for x in env.sched.calls if x[0] == "create"}
+    # 2026-10-25 is the autumn DST change: 10:00 Stockholm (CET) = 09:00 UTC
+    assert created[f"day-before-{rid}"]["ScheduleExpression"] == "at(2026-10-25T09:00:00)"
+
+
+def test_reminder_messages():
+    from shared import catering_messages as m
+    item = {"customerName": "Anna Svensson", "deliveryDate": "2026-10-20", "deliveryTime": "12:00", "guests": 40,
+            "fulfilment": "delivery", "offer": {"totals": {"total": 1000000}, "validUntil": "2026-10-08"},
+            "signature": {"method": "simple_acceptance"}}
+    tenant_row, location = {"name": "Roma"}, {"name": "Södermalm"}
+    assert "väntar på din signatur" in m.guest_email("catering_sign_reminder", item, tenant_row, location, "L")[1]
+    assert "i morgon" in m.guest_email("catering_day_before", item, tenant_row, location, "L")[1]
+    assert "40 gäster" in m.owner_email("catering_owner_reminder", item, tenant_row, location, "A")[1]
+    assert "godkänd" in m.guest_email("catering_signed", item, tenant_row, location, "L")[0]
+    assert m.guest_sms("catering_sign_reminder", item, tenant_row, location, "L").endswith(": L")
+    assert set(m.ROUTING) == set(c.NOTICE_TYPES)

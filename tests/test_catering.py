@@ -651,8 +651,12 @@ def test_lifecycle_timers_and_expiry(env):
     item = c.load(LOC_A, rid)
     ctx = SimpleNamespace(invoked_function_arn="arn:fn:live")
     env.m["lifecycle"].handler({"Records": [stream_record(item, old={})]}, ctx)
-    (kind, call), = [x for x in env.sched.calls if x[0] == "create"]
-    assert call["Name"] == f"request-expiry-{rid}" and call["ScheduleExpression"] == "at(2026-10-04T10:00:00)"
+    created = {x[1]["Name"]: x[1] for x in env.sched.calls if x[0] == "create"}
+    assert set(created) == {f"request-expiry-{rid}", f"owner-reminder-{rid}"}
+    call = created[f"request-expiry-{rid}"]
+    assert call["ScheduleExpression"] == "at(2026-10-04T10:00:00)"
+    # default ownerReminderHours 24
+    assert created[f"owner-reminder-{rid}"]["ScheduleExpression"] == "at(2026-10-02T10:00:00)"
     assert json.loads(call["Target"]["Input"]) == {"action": "expire", "kind": "request", "locationId": LOC_A,
                                                     "requestId": rid}
     assert env.m["lifecycle"].handler({"action": "expire", "kind": "offer", "locationId": LOC_A, "requestId": rid},

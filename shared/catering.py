@@ -91,8 +91,11 @@ N_SIGNED = "catering_signed"
 N_CONFIRMED = "catering_confirmed"
 N_CANCELLED = "catering_cancelled"
 N_EXPIRED = "catering_expired"
+N_OWNER_REMINDER = "catering_owner_reminder"  # issue 5 M5: lifecycle reminders
+N_SIGN_REMINDER = "catering_sign_reminder"
+N_DAY_BEFORE = "catering_day_before"
 NOTICE_TYPES = (N_REQUEST_RECEIVED, N_OFFER_SENT, N_CHANGE_REQUESTED, N_REJECTED, N_DECLINED,
-                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED)
+                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED, N_OWNER_REMINDER, N_SIGN_REMINDER, N_DAY_BEFORE)
 
 _ID = re.compile(r"[0-9a-f]{32}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")

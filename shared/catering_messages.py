@@ -10,6 +10,9 @@
     catering_confirmed          e-mail                       e-mail
     catering_cancelled          e-mail + SMS                 -
     catering_expired            e-mail                       e-mail
+    catering_owner_reminder     -                            SMS + e-mail
+    catering_sign_reminder      e-mail + SMS (link)          -
+    catering_day_before         e-mail                       -
 
 Pure functions: request + tenant + location in, (subject, text, html) /
 SMS text out. Everything the guest typed is escaped in HTML.
@@ -31,7 +34,21 @@ ROUTING = {
     "catering_confirmed": (True, False, True, False),
     "catering_cancelled": (True, True, False, False),
     "catering_expired": (True, False, True, False),
+    "catering_owner_reminder": (False, False, True, True),
+    "catering_sign_reminder": (True, True, False, False),
+    "catering_day_before": (True, False, False, False),
 }
+
+
+def _signed_how(item):
+    return "godkänd" if (item.get("signature") or {}).get("method") == "simple_acceptance" else "signerad"
+
+
+def _guests(item):
+    guests = item.get("guests") or (item.get("request") or {}).get("guests")
+    if guests:
+        return f"{guests} gäster"
+    return f"{(item.get('request') or {}).get('portions')} portioner"
 
 
 def _who(item):
@@ -67,21 +84,34 @@ def guest_email(kind, item, tenant_row, location, link):
             "Visa din förfrågan"),
         "catering_offer_sent": (
             f"Din cateringoffert från {name}",
-            f"Här är offerten för catering {when}, totalt {total} inkl. moms. Du godkänner den genom att "
-            f"signera med BankID - eller ber om ändringar - via länken nedan. Offerten gäller till och med "
+            f"Här är offerten för catering {when}, totalt {total} inkl. moms. Restaurangen har signerat den. "
+            f"Du godkänner den genom att signera med BankID - eller ber om ändringar - via länken nedan. "
+            f"Offerten gäller till och med {(item.get('offer') or {}).get('validUntil') or item.get('validUntil')}. "
+            "Priset är bindande först när du har signerat.",
+            "Visa och signera offerten"),
+        "catering_sign_reminder": (
+            f"Påminnelse: din cateringoffert från {name}",
+            f"Offerten för catering {when} ({total} inkl. moms) väntar på din signatur. Den gäller till och med "
             f"{(item.get('offer') or {}).get('validUntil') or item.get('validUntil')}.",
             "Visa och signera offerten"),
+        "catering_day_before": (
+            f"I morgon: din catering från {name}",
+            f"Påminnelse: din catering {'levereras' if item.get('fulfilment') == 'delivery' else 'hämtas'} "
+            f"i morgon, {when}. Kontakta restaurangen om något har ändrats.",
+            "Visa beställningen"),
         "catering_declined": (
             f"Din cateringförfrågan - {name}",
             "Tyvärr kan restaurangen inte ta emot din cateringbeställning den här gången."
             + (f" Meddelande från restaurangen: {item.get('declineReason')}" if item.get("declineReason") else ""),
             None),
         "catering_signed": (
-            f"Offerten är signerad - {name}",
-            ("Tack! Offerten är signerad med BankID. Fakturan skickas till dig via e-post från restaurangens "
-             "betalsystem (Stripe).") if signed_company else
-            ("Tack! Offerten är signerad med BankID. Sista steget är betalningen - betala via länken nedan "
-             "så är beställningen bekräftad."),
+            f"Offerten är {_signed_how(item)} - {name}",
+            (f"Tack! Offerten är {_signed_how(item)} av er och restaurangen och avtalet är bindande. Fakturan "
+             "skickas till dig via e-post från restaurangens betalsystem (Stripe). Den signerade offerten "
+             "kan du ladda ner via länken nedan.") if signed_company else
+            (f"Tack! Offerten är {_signed_how(item)} av dig och restaurangen och avtalet är bindande. Sista "
+             "steget är betalningen - betala via länken nedan så är beställningen bekräftad. Där kan du också "
+             "ladda ner den signerade offerten."),
             "Visa beställningen" if signed_company else "Betala beställningen"),
         "catering_confirmed": (
             f"Din catering är bekräftad - {name}",
@@ -111,6 +141,8 @@ def guest_sms(kind, item, tenant_row, location, link):
     texts = {
         "catering_offer_sent": f"{name}: Din cateringoffert ({_when(item)}, {_total(item)}) är klar. "
                                f"Signera med BankID: {link}",
+        "catering_sign_reminder": f"{name}: Påminnelse - din cateringoffert ({_when(item)}) väntar på din "
+                                  f"signatur: {link}",
         "catering_declined": f"{name}: Tyvärr kan vi inte ta emot din cateringbeställning {_when(item)}. "
                              "Se mejlet för mer information.",
         "catering_cancelled": f"{name}: Tyvärr har vi behövt avboka din catering {_when(item)}. "
@@ -122,11 +154,10 @@ def guest_sms(kind, item, tenant_row, location, link):
 def owner_email(kind, item, tenant_row, location, admin_link):
     name = restaurant_name(tenant_row, location)
     who, when, total = _who(item), _when(item), _total(item)
-    portions = (item.get("request") or {}).get("portions")
     texts = {
         "catering_request_received": (
             f"Ny cateringförfrågan {item.get('deliveryDate')} - {who}",
-            f"{who} har skickat en cateringförfrågan: {portions} portioner, {when}, "
+            f"{who} har skickat en cateringförfrågan: {_guests(item)}, {when}, "
             f"{'leverans' if item.get('fulfilment') == 'delivery' else 'avhämtning'}, enligt kalkylen {total}. "
             "Öppna förfrågan för att skicka en offert eller tacka nej."),
         "catering_change_requested": (
@@ -138,9 +169,13 @@ def owner_email(kind, item, tenant_row, location, admin_link):
             f"Cateringofferten avböjdes - {who}",
             f"{who} har avböjt offerten för {when}."
             + (" Anledningen finns i förfrågan i admin." if item.get("rejectReason") else "")),
+        "catering_owner_reminder": (
+            f"Obesvarad cateringförfrågan - {who}",
+            f"Cateringförfrågan från {who} ({_guests(item)}, {when}) väntar fortfarande på en offert. "
+            "Den går ut om ni inte svarar."),
         "catering_signed": (
-            f"Cateringofferten är signerad - {who}",
-            f"{who} har signerat offerten för {when} ({total}) med BankID. "
+            f"Cateringofferten är {_signed_how(item)} - {who}",
+            f"{who} har {_signed_how(item)} offerten för {when} ({total}). Avtalet är bindande. "
             + ("Fakturan skapas och skickas automatiskt." if item.get("customerType") == COMPANY
                else "Gästen betalar nu online; du får besked när betalningen är klar.")),
         "catering_confirmed": (
@@ -162,7 +197,8 @@ def owner_sms(kind, item, tenant_row, location, admin_link):
         "catering_request_received": f"Ny cateringförfrågan från {who} ({when}). Öppna: {admin_link}",
         "catering_change_requested": f"{who} vill ändra cateringofferten ({when}). Öppna: {admin_link}",
         "catering_rejected": f"{who} avböjde cateringofferten ({when}). {admin_link}",
-        "catering_signed": f"{who} har signerat cateringofferten ({when}, {_total(item)}). {admin_link}",
+        "catering_signed": f"{who} har {_signed_how(item)} cateringofferten ({when}, {_total(item)}). {admin_link}",
+        "catering_owner_reminder": f"Påminnelse: cateringförfrågan från {who} ({when}) är obesvarad. {admin_link}",
     }
     return texts[kind]
 

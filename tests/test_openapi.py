@@ -104,6 +104,31 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/catering/menu/dishes/{dishId}": frozenset({"put", "delete"}),
     "/locations/{locationId}/catering/menu/packages": frozenset({"get", "post"}),
     "/locations/{locationId}/catering/menu/packages/{packageId}": frozenset({"put", "delete"}),
+    "/locations/{locationId}/catering/settings": frozenset({'get', 'put'}),
+    "/locations/{locationId}/catering/discount-tiers": frozenset({'get', 'post'}),
+    "/locations/{locationId}/catering/discount-tiers/{tierId}": frozenset({'delete', 'put'}),
+    "/locations/{locationId}/catering/quote": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests": frozenset({'get', 'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}": frozenset({'get'}),
+    "/locations/{locationId}/catering/requests/{requestId}/documents/{docId}": frozenset({'get'}),
+    "/locations/{locationId}/catering/requests/{requestId}/offer": frozenset({'put'}),
+    "/locations/{locationId}/catering/requests/{requestId}/offer/send": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/restaurant-sign": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/decline": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/cancel": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/delivered": frozenset({'post'}),
+    "/locations/{locationId}/catering/invoices": frozenset({'get'}),
+    "/locations/{locationId}/catering/invoices/{invoiceId}/mark-paid": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer": frozenset({'get'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/sign": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/sign/status": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/accept": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/checkout": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/change": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/reject": frozenset({'post'}),
+    "/locations/{locationId}/catering/requests/{requestId}/customer/documents/{docId}": frozenset({'get'}),
+    "/webhooks/signing/catering": frozenset({'post'}),
 }
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -139,6 +164,19 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/ordering", "get"),
         ("/locations/{locationId}/order-status/{orderId}", "get"),
         ("/locations/{locationId}/catering/menu", "get"),
+        ("/locations/{locationId}/catering/discount-tiers", "get"),
+        ("/locations/{locationId}/catering/quote", "post"),
+        ("/locations/{locationId}/catering/requests", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer", "get"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/accept", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/change", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/checkout", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/documents/{docId}", "get"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/reject", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/sign", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/customer/sign/status", "post"),
+        ("/locations/{locationId}/catering/settings", "get"),
+        ("/webhooks/signing/catering", "post"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]
@@ -183,6 +221,10 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/orders/{orderId}/status", "put"),
         ("/locations/{locationId}/orders/pause", "put"),
         ("/locations/{locationId}/orders/table-codes", "post"),
+        ("/locations/{locationId}/catering/requests", "get"),
+        ("/locations/{locationId}/catering/requests/{requestId}", "get"),
+        ("/locations/{locationId}/catering/requests/{requestId}/delivered", "post"),
+        ("/locations/{locationId}/catering/requests/{requestId}/documents/{docId}", "get"),
     }
 )
 

@@ -115,7 +115,7 @@ def _consented(tenant_id, subscriber):
     subscriber row is only the list; the consent log decides."""
     name = consent.table_name()
     if not name:
-        return True  # before the consent table exists (rollout order: infrastructure first)
+        return False  # fail closed: no consent log, no proof of consent, no email
     return consent.may_send(dynamo.table(name), tenant_id, consent.EMAIL, subscriber.get("email"))
 
 

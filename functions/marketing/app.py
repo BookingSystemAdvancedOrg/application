@@ -62,6 +62,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, http, marketing as m, marketing_mail, site, tenant
 from shared import marketing_offer as offer
+from shared import menu as menu_rules
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -248,8 +249,11 @@ def _templates(ctx, method, rest, event):
 
 # --- rendering ---------------------------------------------------------------------------
 
-def _dishes(ctx, template):
-    """menuItemId -> {name, description, price, imageUrl} for the dish blocks."""
+def _dishes(ctx, template, at=None):
+    """menuItemId -> {name, description, price, imageUrl} for the dish blocks
+    whose dish a guest can order at `at` (default now): active and inside its
+    schedule (shared/menu.is_available)."""
+    at = at or datetime.now(timezone.utc)
     out = {}
     menu = dynamo.table(os.environ["MENU_TABLE_NAME"])
     image_base = (os.environ.get("MENU_IMAGE_BASE_URL") or "").rstrip("/")
@@ -260,8 +264,11 @@ def _dishes(ctx, template):
             continue  # another restaurant's location: never rendered
         item = menu.get_item(Key={"PK": f"LOCATION#{block['locationId']}",
                                   "SK": f"MENU#{block['menuItemId']}"}).get("Item")
-        if not item:
-            continue
+        try:
+            if not item or not menu_rules.is_available(item, at):
+                continue
+        except ValueError:
+            continue  # corrupt schedule: treated as unavailable, like the menu
         image_key = item.get("imageKey")
         out[block["menuItemId"]] = {
             "name": item.get("name") or "", "description": item.get("description") or "",
@@ -271,19 +278,18 @@ def _dishes(ctx, template):
     return out
 
 
-def _sender_snapshot(ctx, template):
+def _sender_snapshot(ctx, template, at=None):
     base, slug = site.base(ctx.tenant_id, ctx.tenant)
     branding = ctx.tenant.get("branding") or {}
     return {
         "template": template,
         "restaurant": ctx.tenant.get("name") or "Restaurangen",
         "branding": {k: branding.get(k) for k in ("primaryColor", "logoUrl") if branding.get(k)},
-        "dishes": _dishes(ctx, template),
+        "dishes": _dishes(ctx, template, at),
         "siteUrl": base,
         "siteQuery": {"restaurang": slug} if slug else {},
         "replyTo": ctx.tenant.get("replyToEmail") or ctx.tenant.get("contactEmail"),
-        "postalAddress": ((ctx.tenant.get("legal") or {}).get("address") or "") if isinstance(
-            (ctx.tenant.get("legal") or {}).get("address"), str) else "",
+        "postalAddress": marketing_mail.sender_identity(ctx.tenant),
     }
 
 
@@ -413,7 +419,7 @@ def _campaign_action(ctx, campaign, action, event):
             if when < now - timedelta(minutes=1) or when > now + timedelta(days=90):
                 raise ValueError("scheduledAt must be between now and 90 days ahead")
         template = _frozen_template(ctx, campaign)
-        snapshot = _sender_snapshot(ctx, template)
+        snapshot = _sender_snapshot(ctx, template, when)
         if not snapshot["siteUrl"] and any(b["type"] == "button" and b.get("destination") != "custom"
                                            for b in template["blocks"]):
             raise ValueError("the restaurant has no website address yet for the buttons")

@@ -178,13 +178,12 @@ def _mail(ctx, sid, email, name, template):
     """One email from the restaurant (code, or why there is none)."""
     restaurant = ctx.tenant.get("name") or "Restaurangen"
     branding = ctx.tenant.get("branding") or {}
-    legal = ctx.tenant.get("legal") or {}
     unsubscribe_url = _signed_link("m/u", {"k": "u", "t": ctx.tenant_id, "s": sid, "c": None})
     subject, text, html_body = m.render_email(
         template, tenant_row={"branding": {k: branding.get(k) for k in ("primaryColor", "logoUrl") if branding.get(k)}},
         restaurant=restaurant, values={"förnamn": m.first_name(name) or "där", "restaurang": restaurant},
         menu_items={}, site_url=None, link_for=lambda i, url: url, unsubscribe_url=unsubscribe_url,
-        postal_address=legal.get("address") if isinstance(legal.get("address"), str) else "")
+        postal_address=marketing_mail.sender_identity(ctx.tenant))
     message_id = marketing_mail.send(
         to=email, subject=subject, text=text, html_body=html_body, sender=marketing_mail.from_address(restaurant),
         reply_to=ctx.tenant.get("replyToEmail") or ctx.tenant.get("contactEmail"),

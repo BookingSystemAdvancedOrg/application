@@ -1094,6 +1094,37 @@ query) go to the alert topic. Design: infrastructure `docs/FINANCE.md`.
 subscription and invoice events (`shared/billing.py`: `PROFILE.billing`,
 the invoice ledger and the day's revenue, ex VAT).
 
+## Statistik
+
+A restaurant's own figures (the admin app's Statistik). Table
+`INSIGHTS_TABLE_NAME`, one row per location and day (`LOCATION#<id> /
+DAY#<date>`), no personal data; row layout and sums in `shared/insights.py`,
+reads and writes in `shared/insights_store.py`. Separate from the finance
+table (the operator's figures never reach a restaurant).
+
+### 32. `insights-rollup`
+**Trigger:** EventBridge Scheduler, nightly (`insights_rollup_schedule`,
+02:30 UTC); `{"from", "to"}` (optionally `tenantId`) by hand; itself near its
+timeout (`{"after", "round"}`).
+**Purpose:** For every served location: a backfill from its creation (at
+most 395 days) when it has no rows yet, otherwise the last 8 days up to
+yesterday plus any missed days. Bookings per start hour and source (kept,
+guests, arrived, no-shows, cancelled, late cancellations, card on file,
+lead time, party size, fees), table minutes booked and open (opening hours
+x the published layout), paid orders per hour (revenue, table/pickup, prep
+time, late), dishes per hour, dish pairs, catering (requests, offers,
+accepted, delivered revenue, reply hours) and website visits per channel.
+Rows are overwritten whole: idempotent.
+
+### 33. `insights`
+**Trigger:** API Gateway `GET /insights` - Auth: `JWT` (owner; staff when the owner allows it)
+**Purpose:** The figures for a period and its compare period (`previous`,
+`year`, `none`), filtered by location (`all` = the tenant's own), service
+(lunch before the location's `lunchUntil`, 15:00 by default) and booking
+source. Days after the last rollup (today) are computed live with the same
+code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
+= `none` answers 403.
+
 ## Quick index
 
 | # | Function | Trigger | Auth |
@@ -1129,3 +1160,5 @@ the invoice ledger and the day's revenue, ex VAT).
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
 | 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |
+| 32 | `insights-rollup` | EventBridge Scheduler (nightly), by hand (`{from, to}`) | - |
+| 33 | `insights` | API GW `GET /insights` | JWT (owner, staff without amounts) |

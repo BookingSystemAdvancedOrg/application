@@ -1442,3 +1442,17 @@ def test_other_updates_keep_the_rules_and_drop_passed_days(app_and_table):
     assert stored["name"] == "Ny"
     assert [d["date"] for d in stored["specialDays"]] == [(today + timedelta(days=3)).isoformat()]
     assert stored["tableRules"]["t1"]["maxParty"] == 2
+
+
+def test_owner_sets_the_lunch_split_for_statistik(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table, location_item())
+    response = app.handler(make_event({"lunchUntil": "16:00"}, method="PUT", location_id="location-id"), None)
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"])["lunchUntil"] == "16:00"
+    assert get_location(location_table)["lunchUntil"] == "16:00"
+    for bad in ("16:30", "09:00", "21:00", 16):
+        refused = app.handler(make_event({"lunchUntil": bad}, method="PUT", location_id="location-id"), None)
+        assert refused["statusCode"] == 400
+    removed = app.handler(make_event({"lunchUntil": None}, method="PUT", location_id="location-id"), None)
+    assert removed["statusCode"] == 200 and "lunchUntil" not in get_location(location_table)

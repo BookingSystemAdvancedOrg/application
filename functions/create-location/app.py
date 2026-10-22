@@ -79,9 +79,12 @@ _EDITABLE_FIELDS = {
     "tableCombinations",
     # Food ordering policy (shared/orders.py).
     "ordering",
+    # Statistik: the hour dinner starts ("15:00"; shared/insights.py).
+    "lunchUntil",
 }
 _OPTIONAL_RULE_FIELDS = (
     "ordering",
+    "lunchUntil",
     "guarantee",
     "maxPartySizeOnline",
     "specialDays",
@@ -340,6 +343,13 @@ def _optional_rules(source, timezone_name):
         rules["guarantee"] = guarantee.validate_policy(source["guarantee"])
     if "ordering" in source:
         rules["ordering"] = orders.validate_policy(source["ordering"])
+    if "lunchUntil" in source:
+        value = source["lunchUntil"]
+        if value is not None and (
+            not isinstance(value, str) or not re.fullmatch(r"(1[0-9]|20):00", value)
+        ):
+            raise ValueError("lunchUntil must be a whole hour between 10:00 and 20:00")
+        rules["lunchUntil"] = value
     if "maxPartySizeOnline" in source:
         value = source["maxPartySizeOnline"]
         if value is not None:

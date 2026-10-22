@@ -12,7 +12,7 @@ PURPOSE:
     work with (GET - owner and staff; staff see only their assigned
     location), the
     few fields an owner may edit themselves (PATCH: senderName,
-    replyToEmail, branding, notifications) and a fresh Stripe onboarding link (POST, owner).
+    replyToEmail, branding, notifications, insights) and a fresh Stripe onboarding link (POST, owner).
     Everything else about the tenant is managed by operators in Booqy Console.
 
     Multi-tenant: the tenant is the token's tenant_id claim - there is no
@@ -33,7 +33,7 @@ AWS RESOURCE ACCESS:
     Tenant table GetItem/Query; location table Query on the caller's own
     TENANT# partition / GetItem; user table GetItem of the caller's own
     profile (staff); UpdateItem limited by IAM to senderName,
-    replyToEmail, branding, notifications, updatedAt, updatedBy with ReturnValues
+    replyToEmail, branding, notifications, insights, updatedAt, updatedBy with ReturnValues
     NONE/UPDATED_*; GetSecretValue on the platform Stripe key.
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.2
@@ -68,10 +68,14 @@ _ROUTES = {
     ("PATCH", "/tenant"),
     ("POST", "/tenant/stripe/account-link"),
 }
-_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications")
+_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications", "insights")
 # Guest/restaurant messages (functions/notification, reservation-reminders).
 _REMINDER_HOURS = (0, 2, 3, 6, 12, 24, 48)
 NOTIFICATION_DEFAULTS = {"sms": False, "staffEmails": True, "reminderHours": 24}
+# Statistik (functions/insights): what staff may see. "operations" = the
+# figures without amounts, "none" = nothing; owners always see everything.
+INSIGHTS_STAFF_ACCESS = ("operations", "none")
+INSIGHTS_DEFAULTS = {"staffAccess": "operations"}
 # SMS sender ids: max 11 characters, letters/digits/space only.
 _SENDER_NAME = re.compile(r"[A-Za-z0-9 ]{1,11}")
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -196,6 +200,7 @@ def _public_tenant(ctx, row):
         "replyToEmail": row.get("replyToEmail"),
         "branding": row.get("branding") or {},
         "notifications": _notifications(row.get("notifications")),
+        "insights": _insights(row.get("insights")),
         "role": role,
         "locations": _locations(ctx),
     }
@@ -282,6 +287,25 @@ def _validated_notifications(value, current):
     return merged
 
 
+def _insights(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    out = dict(INSIGHTS_DEFAULTS)
+    if raw.get("staffAccess") in INSIGHTS_STAFF_ACCESS:
+        out["staffAccess"] = raw["staffAccess"]
+    return out
+
+
+def _validated_insights(value):
+    if not isinstance(value, dict):
+        raise ValueError("insights must be an object")
+    unknown = sorted(set(value) - set(INSIGHTS_DEFAULTS))
+    if unknown:
+        raise ValueError(f"unsupported insights fields: {', '.join(unknown)}")
+    if "staffAccess" in value and value["staffAccess"] not in INSIGHTS_STAFF_ACCESS:
+        raise ValueError("insights.staffAccess must be operations or none")
+    return {**INSIGHTS_DEFAULTS, **value}
+
+
 def _validated_edit(body, current=None):
     """None or "" removes a field (falls back to the platform default)."""
     unknown = sorted(set(body) - set(_EDITABLE))
@@ -325,6 +349,8 @@ def _validated_edit(body, current=None):
     if "notifications" in body:
         fields["notifications"] = _validated_notifications(
             body["notifications"], (current or {}).get("notifications"))
+    if "insights" in body:
+        fields["insights"] = _validated_insights(body["insights"])
     return fields
 
 

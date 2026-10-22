@@ -60,6 +60,8 @@ tags:
     description: Guest table bookings, the guest manage link, and staff booking management.
   - name: Marketing
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
+  - name: Insights
+    description: The restaurant's own figures for a period (Statistik in the admin app).
 
 paths:
   /auth/login:
@@ -2809,8 +2811,8 @@ paths:
       operationId: updateTenant
       description: |
         Owner only. Only `senderName` (1-11 letters, digits or spaces - the
-        SMS sender), `replyToEmail`, `branding` and `notifications` may be
-        changed; `null` or `""` removes a value (the platform default is
+        SMS sender), `replyToEmail`, `branding`, `notifications` and
+        `insights` (staff access to Statistik) may be changed; `null` or `""` removes a value (the platform default is
         used). Everything else is managed by operators.
       security:
         - bearerAuth: []
@@ -2843,6 +2845,100 @@ paths:
           $ref: '#/components/responses/NoStoreForbidden'
         '503':
           $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /insights:
+    get:
+      tags:
+        - Insights
+      summary: The restaurant's figures for a period
+      operationId: getInsights
+      description: |
+        Statistik in the admin app. Sums the restaurant's own per-day rows
+        (insights table, rebuilt nightly by insights-rollup for the last 8
+        days) and computes the days after the last rollup (today) live from
+        bookings, orders and catering requests. `previous` is the compare
+        period (`compare`). A location without rows yet is computed live for
+        its last 31 days and `pending` is true.
+
+        Bookings kept = reserved, arrived and no-shows (holds, unfinished
+        card guarantees and expired holds never count); cancellations and
+        late cancellations (charged, or cancelled by the guest at most 24 h
+        before) are counted apart. Occupancy = table minutes booked / table
+        minutes open (opening hours x the published layout's tables). Lunch
+        = start hour before the location's `lunchUntil` (15:00 by default).
+
+        Tenant isolation: the tenant comes from the token; `locationId` must
+        be one of its locations (another tenant's answers 404) and `all` is
+        its own locations. Owners see everything. Staff see only their
+        assigned location and never an amount (every revenue, fee and price
+        field is left out, `money` is false); with the owner's setting
+        `insights.staffAccess` = `none` they get 403 `staff_no_access`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: At most 731 days after `from`; days after today are left out.
+          schema:
+            type: string
+            format: date
+        - name: locationId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: all
+        - name: service
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, lunch, dinner]
+            default: all
+        - name: channel
+          in: query
+          required: false
+          description: Booking source; filters the booking figures only.
+          schema:
+            type: string
+            enum: [all, online, phone, onsite]
+            default: all
+        - name: compare
+          in: query
+          required: false
+          description: The equally long period before, the same days a year earlier, or none.
+          schema:
+            type: string
+            enum: [previous, year, none]
+            default: previous
+      responses:
+        '200':
+          description: The figures.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsightsResponse'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
 
   /tenant/stripe/account-link:
     post:
@@ -4835,6 +4931,8 @@ components:
           additionalProperties: true
         notifications:
           $ref: '#/components/schemas/TenantNotifications'
+        insights:
+          $ref: '#/components/schemas/TenantInsightsSettings'
         role:
           type: string
           enum: [owner_user, staff_user]
@@ -4857,6 +4955,82 @@ components:
               timezone:
                 type: string
                 nullable: true
+
+    InsightsResponse:
+      type: object
+      required: [range, compare, filters, locations, money, pending, current]
+      properties:
+        range:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        compare:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum: [previous, year, none]
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        filters:
+          type: object
+          additionalProperties: true
+        locations:
+          type: array
+          items:
+            type: object
+            properties:
+              locationId:
+                type: string
+              name:
+                type: string
+                nullable: true
+              lunchUntil:
+                type: string
+        money:
+          type: boolean
+          description: False for staff - every amount is left out.
+        pending:
+          type: boolean
+          description: A location has no rolled-up rows yet (the nightly run builds them).
+        builtAt:
+          type: string
+          nullable: true
+        current:
+          $ref: '#/components/schemas/InsightsSummary'
+        previous:
+          allOf:
+            - $ref: '#/components/schemas/InsightsSummary'
+          nullable: true
+
+    InsightsSummary:
+      type: object
+      additionalProperties: true
+      description: |
+        Counts, rates (percent, null when there is nothing to divide by) and
+        amounts in öre (owners only): bookings, guests, avgParty, arrived,
+        noShows, noShowPct, cancelled, cancelledPct, lateCancels,
+        lateCancelPct, cardOnFilePct, occupancy, seatFill, sources {online,
+        phone, onsite}, lead [{label, bookings}] (days ahead: 0, 1, 2-6,
+        7-13, 14+), party [{size, bookings}] (8 = 8+), bySize [{size,
+        occupancy}], feesCharged, feeCount, feesFailed, feesRefunded,
+        orders, orderRevenue, tableRevenue, pickupRevenue, tableOrders,
+        avgOrder, prepMinutes, latePct, cateringRevenue, revenue, catering
+        {requests, offers, won, delivered, cateringRevenue, replyHours,
+        conversionPct, avgCatering}, web {visits, pageviews, bookings,
+        orders, catering, conversionPct, channels[]}, dishes [{id, name,
+        quantity, revenue, previousQuantity}], pairs [{a, b, orders}],
+        byHour, byWeekday (0 = Monday), byDay, heat [{weekday, hour,
+        occupancy}].
 
     TenantUpdateRequest:
       type: object
@@ -4886,6 +5060,20 @@ components:
             reminderHours:
               type: integer
               enum: [0, 2, 3, 6, 12, 24, 48]
+        insights:
+          $ref: '#/components/schemas/TenantInsightsSettings'
+
+    TenantInsightsSettings:
+      type: object
+      additionalProperties: false
+      description: |
+        What staff see on Statistik (GET /insights). `operations` (default)
+        = their own location's figures without any amounts; `none` = no
+        access. Owners always see everything.
+      properties:
+        staffAccess:
+          type: string
+          enum: [operations, none]
 
     TenantNotifications:
       type: object
@@ -5711,6 +5899,11 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        lunchUntil:
+          type: string
+          pattern: '^(1[0-9]|20):00$'
+          nullable: true
+          description: The hour dinner starts in Statistik (lunch before it); null = 15:00.
         specialDays:
           type: array
           nullable: true
@@ -5791,6 +5984,11 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        lunchUntil:
+          type: string
+          pattern: '^(1[0-9]|20):00$'
+          nullable: true
+          description: The hour dinner starts in Statistik (lunch before it); null = 15:00.
         specialDays:
           type: array
           nullable: true
@@ -5867,6 +6065,9 @@ components:
           $ref: '#/components/schemas/GuaranteePolicy'
         maxPartySizeOnline:
           type: integer
+        lunchUntil:
+          type: string
+          description: The hour dinner starts in Statistik ("15:00" when not set).
         specialDays:
           type: array
           items:

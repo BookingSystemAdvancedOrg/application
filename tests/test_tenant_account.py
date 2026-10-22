@@ -364,3 +364,20 @@ def test_notification_settings_default_and_merge(app):
     assert body_of(second)["notifications"] == {"sms": True, "staffEmails": True, "reminderHours": 2}
     row = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]
     assert row["notifications"] == {"sms": True, "staffEmails": True, "reminderHours": 2}
+
+
+def test_statistik_staff_access_defaults_to_operations_and_is_owner_only(app):
+    module, tenants = app
+    assert body_of(module.handler(make_event(), None))["insights"] == {"staffAccess": "operations"}
+    assert body_of(module.handler(make_event(role="staff_user"), None))["insights"] == {"staffAccess": "operations"}
+
+    changed = module.handler(make_event("PATCH", body={"insights": {"staffAccess": "none"}}), None)
+    assert changed["statusCode"] == 200 and body_of(changed)["insights"] == {"staffAccess": "none"}
+    row = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]
+    assert row["insights"] == {"staffAccess": "none"}
+
+    assert module.handler(make_event("PATCH", body={"insights": {"staffAccess": "all"}}), None)["statusCode"] == 400
+    assert module.handler(make_event("PATCH", body={"insights": {"x": 1}}), None)["statusCode"] == 400
+    staff = module.handler(make_event("PATCH", body={"insights": {"staffAccess": "operations"}}, role="staff_user"),
+                           None)
+    assert staff["statusCode"] == 403

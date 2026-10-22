@@ -52,8 +52,8 @@ ordered 1-20 times; an order has at most 30 lines.
        Roma: Beställning #12 bekräftad. Serveras till bord 5.
        Roma: Beställning #12 är klar att hämta. Adress: Götgatan 1, Stockholm
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
-   orders. Two clicks: "Påbörja – skicka sms" (`preparing`, the
-   confirmation SMS) and "Klar – skicka sms" (`ready`, pickup) / "Klar att
+   orders. Two clicks: "Påbörja - skicka sms" (`preparing`, the
+   confirmation SMS) and "Klar - skicka sms" (`ready`, pickup) / "Klar att
    servera" (table), then `completed`; or `cancelled` (refunds the whole
    order with Stripe).
 

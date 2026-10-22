@@ -75,14 +75,14 @@ Tillämpa från projektmappen med `patch -p1 < integritet.diff` efter att ha kop
          <h2>Vilka delar vi uppgifterna med?</h2>
          <ul>
            <li><strong>Restaurangen</strong> du bokar eller beställer hos.</li>
--          <li><strong>Amazon Web Services</strong> – drift och lagring i AWS region Stockholm (eu-north-1), samt utskick av e-post och sms.</li>
--          <li><strong>Stripe</strong> – betalningar, på restaurangens eget Stripe-konto.</li>
--          <li><strong>BankID-tjänst</strong> – vid signering av cateringoffert.</li>
--          <li><strong>Cloudflare Turnstile</strong> – skydd mot automatiserade bokningar.</li>
-+          <li><strong>Amazon Web Services</strong> (Amazon Web Services EMEA SARL) – drift och lagring i AWS region Stockholm (eu-north-1), samt utskick av e-post (Amazon SES) och sms (Amazon SNS).</li>
-+          <li><strong>Stripe</strong> (Stripe Payments Europe Ltd) – betalningar och kortgarantier, på restaurangens eget Stripe-konto.</li>
-+          <li><strong>BankID</strong> (Finansiell ID-Teknik BID AB) – vid signering av cateringoffert.</li>
-+          <li><strong>Cloudflare</strong> (Cloudflare, Inc.) – Turnstile, skydd mot automatiserade bokningar, beställningar och cateringförfrågningar.</li>
+-          <li><strong>Amazon Web Services</strong> - drift och lagring i AWS region Stockholm (eu-north-1), samt utskick av e-post och sms.</li>
+-          <li><strong>Stripe</strong> - betalningar, på restaurangens eget Stripe-konto.</li>
+-          <li><strong>BankID-tjänst</strong> - vid signering av cateringoffert.</li>
+-          <li><strong>Cloudflare Turnstile</strong> - skydd mot automatiserade bokningar.</li>
++          <li><strong>Amazon Web Services</strong> (Amazon Web Services EMEA SARL) - drift och lagring i AWS region Stockholm (eu-north-1), samt utskick av e-post (Amazon SES) och sms (Amazon SNS).</li>
++          <li><strong>Stripe</strong> (Stripe Payments Europe Ltd) - betalningar och kortgarantier, på restaurangens eget Stripe-konto.</li>
++          <li><strong>BankID</strong> (Finansiell ID-Teknik BID AB) - vid signering av cateringoffert.</li>
++          <li><strong>Cloudflare</strong> (Cloudflare, Inc.) - Turnstile, skydd mot automatiserade bokningar, beställningar och cateringförfrågningar.</li>
          </ul>
 +        <p>
 +          Uppgifterna lagras inom EU. Stripe och Cloudflare kan behandla uppgifter i USA; det sker med stöd av EU-kommissionens
@@ -121,7 +121,7 @@ Tillämpa från projektmappen med `patch -p1 < integritet.diff` efter att ha kop
 +
          <h2 id="demo">När du bokar en demo</h2>
          <p>
-           Bokar du en demo på booqy.se skickar vi det du fyller i – namn, företag, e-postadress, telefonnummer om du anger det,
+           Bokar du en demo på booqy.se skickar vi det du fyller i - namn, företag, e-postadress, telefonnummer om du anger det,
 @@ -113,9 +140,10 @@
  
          <h2 id="cookies">Cookies och lagring på booqy.se</h2>

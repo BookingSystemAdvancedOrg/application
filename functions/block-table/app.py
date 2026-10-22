@@ -8,9 +8,10 @@ PURPOSE:
     Lets authorized staff create or remove one manual hold for a canonical
     booking slot: a start on the clock's half hours, like every booking.
     The exact request body is ``date``, ``startTime``, and the
-    desired ``blocked`` boolean. The slot end is derived from the location's
-    booking duration. Creation validates the table against the published
-    layout effective for the complete slot and records that layout version.
+    desired ``blocked`` boolean. The slot end is derived from the booking
+    time rule of the start (shared/booking_rules.py), like a booking's.
+    Creation validates the table against the published layout effective
+    for the complete slot and records that layout version.
     A manual hold must never overwrite or delete a real reservation hold.
 
     Multi-tenant (shared/tenant.py): the caller's tenant (token tenant_id)
@@ -21,7 +22,7 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
-    LOCATION_TABLE_NAME -- Location timezone, hours, and booking duration
+    LOCATION_TABLE_NAME -- Location timezone, hours, and booking time rules
     USER_TABLE_NAME -- Caller role, status, and assigned location
     SLOT_OCCUPANCY_TABLE_NAME -- Manual hold storage
     PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- Slot-effective layout/table
@@ -377,6 +378,7 @@ def _validate_location(item, location_id):
         ):
             raise ValueError
         special_days = booking_rules.validate_special_days(item.get("specialDays"))
+        time_rules = booking_rules.validate_booking_time_rules(item.get("bookingTimeRules"))
     except (ArithmeticError, TypeError, ValueError):
         raise _BlockConflict("location record is inconsistent") from None
 
@@ -384,6 +386,7 @@ def _validate_location(item, location_id):
         "item": item,
         "businessHours": business_hours,
         "durationMinutes": int(duration_minutes),
+        "bookingTimeRules": time_rules,
         "timezone": location_timezone,
         "specialDays": booking_rules.special_days_by_date(special_days),
     }
@@ -428,7 +431,10 @@ def _slot_details(request_details, location, now):
 
     requested_date = date.fromisoformat(request_details["date"])
     start_minute = _minute_of_day(request_details["startTime"])
-    duration_minutes = location["durationMinutes"]
+    # The same length a booking starting then gets (shared/booking_rules.py).
+    duration_minutes = booking_rules.resolve_booking_rule(
+        location["bookingTimeRules"], location["durationMinutes"], requested_date, start_minute,
+    )["durationMinutes"]
     end_minute = start_minute + duration_minutes
 
     weekday = _WEEKDAYS[requested_date.weekday()]

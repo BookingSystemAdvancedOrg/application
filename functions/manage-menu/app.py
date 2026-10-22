@@ -36,7 +36,7 @@ from http import HTTPStatus
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import prices, tenant
+from shared import menu, prices, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -55,6 +55,9 @@ _EDITABLE_FIELDS = {
     # Optional: true for drinks with alcohol - 25 % VAT on food orders
     # (shared/orders.py). Missing = false.
     "alcohol",
+    # Optional UTC schedule window (shared/menu.py); null clears.
+    "availableFrom",
+    "availableUntil",
 }
 _PUBLIC_FIELDS = (
     "menuItemId",
@@ -237,6 +240,7 @@ def _menu_fields(event, *, partial):
         if not isinstance(body["alcohol"], bool):
             raise ValueError("alcohol must be a boolean")
         fields["alcohol"] = body["alcohol"]
+    fields.update(menu.validate_schedule(body))
     return fields
 
 
@@ -304,10 +308,15 @@ def _public_item(item):
                 raise ValueError
         if "alcohol" in item and not isinstance(item["alcohol"], bool):
             raise ValueError
+        menu.validate_schedule(item)
     except (OverflowError, TypeError, ValueError):
         raise _MenuConflict("menu item record is inconsistent") from None
 
-    return {**{field: item[field] for field in _PUBLIC_FIELDS}, "alcohol": item.get("alcohol") is True}
+    return {
+        **{field: item[field] for field in _PUBLIC_FIELDS},
+        "alcohol": item.get("alcohol") is True,
+        **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
+    }
 
 
 def _validate_stored_item(item, location_id, menu_item_id):
@@ -539,7 +548,7 @@ def _create_item(event, location_id, caller_sub, tenant_id):
     item = {
         **_key(location_id, menu_item_id),
         "menuItemId": menu_item_id,
-        **fields,
+        **{field: value for field, value in fields.items() if value is not None},
         "createdBy": caller_sub,
         "createdAt": timestamp,
         "updatedBy": caller_sub,
@@ -562,6 +571,10 @@ def _update_item(event, location_id, menu_item_id, caller_sub, tenant_id):
     item = _load_item(location_id, menu_item_id)
     if item is None:
         return _menu_error(HTTPStatus.NOT_FOUND.value, "menu item not found")
+    # A partial PUT must still leave end after start with the stored bound.
+    menu.validate_schedule(
+        {f: v for f, v in updates.items() if f in menu.SCHEDULE_FIELDS}, item
+    )
     _require_own_image(updates, tenant_id, location_id, previous=item)
 
     changed = {
@@ -573,8 +586,8 @@ def _update_item(event, location_id, menu_item_id, caller_sub, tenant_id):
         return _menu_response(HTTPStatus.OK.value, _public_item(item))
 
     updated = {
-        **item,
-        **changed,
+        **{field: value for field, value in item.items() if field not in changed},
+        **{field: value for field, value in changed.items() if value is not None},
         "updatedBy": caller_sub,
         "updatedAt": _utc_now(),
     }

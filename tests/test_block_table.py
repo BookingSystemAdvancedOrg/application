@@ -2758,3 +2758,19 @@ def test_special_hours_decide_what_can_be_blocked(app_and_tables):
 
     assert early["statusCode"] == 400
     assert late["statusCode"] == 201, late
+
+
+def test_block_takes_the_length_of_the_booking_rule_of_its_start(app_and_tables):
+    app, tables = app_and_tables
+    rules = {
+        "defaultMinutes": Decimal(90), "extension": {"allowed": True, "maxMinutes": Decimal(30)},
+        "lastSeatingMinutes": Decimal(120),
+        "windows": [{"id": "eve", "name": "Middag", "weekdays": ["sunday"], "startTime": "17:00",
+                     "endTime": "19:00", "durationMinutes": Decimal(150),
+                     "extension": {"allowed": False, "maxMinutes": Decimal(0)}, "priority": Decimal(0)}],
+    }
+    put_prerequisites(tables, location=location_item(bookingTimeRules=rules))
+
+    assert response_body(app.handler(make_event(), None))["endTime"] == "20:30"
+    saturday = app.handler(make_event(valid_body(date="2026-09-19")), None)
+    assert response_body(saturday)["endTime"] == "19:30"  # default 90 min

@@ -77,6 +77,9 @@ _EDITABLE_FIELDS = {
     "specialDays",
     "tableRules",
     "tableCombinations",
+    # Booking length per start time and extension rules
+    # (shared/booking_rules.py); None keeps bookingDurationHours.
+    "bookingTimeRules",
     # Food ordering policy (shared/orders.py).
     "ordering",
     # Statistik: the hour dinner starts ("15:00"; shared/insights.py).
@@ -90,6 +93,7 @@ _OPTIONAL_RULE_FIELDS = (
     "specialDays",
     "tableRules",
     "tableCombinations",
+    "bookingTimeRules",
 )
 _PUBLIC_REQUIRED_FIELDS = (
     "locationId",
@@ -370,7 +374,21 @@ def _optional_rules(source, timezone_name):
         rules["tableCombinations"] = booking_rules.validate_table_combinations(
             source["tableCombinations"]
         )
+    if "bookingTimeRules" in source:
+        rules["bookingTimeRules"] = booking_rules.validate_booking_time_rules(
+            source["bookingTimeRules"]
+        )
     return rules
+
+
+def _check_grace_period(fields):
+    """On save: a no-show can only be marked while the booking runs, so the
+    grace period must be shorter than the shortest booking length."""
+    shortest = booking_rules.shortest_duration_minutes(
+        fields.get("bookingTimeRules"), fields["bookingDurationHours"] * 60
+    )
+    if fields["gracePeriodHours"] * 60 >= shortest:
+        raise ValueError("gracePeriodHours must be shorter than the shortest booking length")
 
 
 def _validated_location_fields(source, *, require_contacts=False):
@@ -788,6 +806,7 @@ def _create_location(event, ctx):
         _request_body(event, partial=False),
         require_contacts=True,
     )
+    _check_grace_period(fields)
     location_id = _new_location_id()
     timestamp = _utc_now()
     item = {
@@ -823,6 +842,8 @@ def _update_location(event, ctx):
     }
     candidate.update(updates)
     fields = _validated_location_fields(candidate)
+    if {"gracePeriodHours", "bookingDurationHours", "bookingTimeRules"} & set(updates):
+        _check_grace_period(fields)
     changed = {
         field: fields[field]
         for field in updates

@@ -51,7 +51,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
-from shared import booking_rules, dynamo, manage_link
+from shared import booking_rules, dynamo, manage_link, menu
 
 _deserializer = TypeDeserializer()
 
@@ -386,8 +386,8 @@ def _price_ore(value):
 
 
 def price_lines(location_id, wanted, mode, on_date):
-    """Reads the dishes from the menu and prices the order. Unknown or
-    inactive dishes -> ValueError("menu_item_unavailable")."""
+    """Reads the dishes from the menu and prices the order. Unknown,
+    inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable")."""
     menu_table = os.environ["MENU_TABLE_NAME"]
     keys = [{"PK": {"S": location_pk(location_id)}, "SK": {"S": f"MENU#{item_id}"}}
             for item_id, _ in wanted]
@@ -404,10 +404,12 @@ def price_lines(location_id, wanted, mode, on_date):
     else:
         raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException",
                                      "Message": "menu read incomplete"}}, "BatchGetItem")
+    now = now_utc()
     lines = []
     for item_id, quantity in wanted:
         item = found.get(item_id)
-        if not item or item.get("active") is not True or item.get("SK") != f"MENU#{item_id}":
+        # A malformed schedule raises ValueError, also menu_item_unavailable.
+        if not item or item.get("SK") != f"MENU#{item_id}" or not menu.is_available(item, now):
             raise ValueError("menu_item_unavailable")
         try:
             unit = _price_ore(item.get("price"))

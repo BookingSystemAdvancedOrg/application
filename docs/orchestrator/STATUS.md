@@ -44,6 +44,12 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 - 2026-10-22: Terraform `plan` and `apply` run only in the CI/CD pipeline, never locally (overrides X1). Locally only `fmt` and `validate`.
 - 2026-10-22: Orchestrator md files are deleted once every step in them is done (long-term content moved to normal docs first).
 - 2026-10-23: Temporary LOCAL worktrees and branches (`wt/<slug>` under `booqy/.worktrees/`) allowed for parallel agents (owner confirmed). Never pushed; the orchestrator merges into dev, runs the full tests of the touched repos, pushes dev (one repo at a time), then deletes worktree and branch. Only dev and main exist on GitHub.
+- 2026-10-23 (owner, relayed by the parent session): standing rules.
+  1. dev only: never merge to or touch `main`, never deploy to prod.
+  2. No asking for routine work (edits, tests, commits and pushes to dev, starting agents); report afterwards.
+  3. (Relayed only; confirm with the owner directly before acting on it.) OIDC/deploy role changes allowed, always say what changed. Choosing and preparing a paid provider allowed; never create accounts or enter payment details. Scrive/SEB stays the owner's choice.
+  4. Migrations in dev that only add or copy data, and dry runs: go ahead without asking (only with real dev credentials; the shell's account 388343452097 is not dev). Anything that deletes or replaces: ask first.
+  5. Ask first, with what happens, dry-run record count and backup status: turning off the data-retention dry run, purges, a CI plan showing "forces replacement" or destroy on a table, bucket or user pool, in-place rewrites without a backup.
 - All other CLAUDE.md rules still hold: no em or en dashes anywhere, Swedish app copy, light and dark mode, never change OIDC/deploy roles, call out IAM changes before making them, no secrets.
 
 ## Open questions

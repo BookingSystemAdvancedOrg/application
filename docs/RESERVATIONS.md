@@ -200,7 +200,7 @@ retry a failed charge, refund (owner), and new phone / walk-in bookings.
 
 Bookings start on the clock's half hours (14:00, 14:30 - never 14:02),
 every 30 minutes inside opening hours, with the whole booking before
-closing (`shared/availability.py`, `SLOT_STEP_MINUTES`). A booking must
+closing and no start later than `lastSeatingMinutes` before it (`shared/availability.py`, `SLOT_STEP_MINUTES`). A booking must
 start at least 30 minutes from now (`LEAD_TIME`) - online, by phone and
 when staff move a booking to another time. At 13:32 the first bookable
 start is 14:30. Exceptions, all staff-only and all still on the
@@ -218,6 +218,46 @@ half-hour grid:
 Manual table blocks (block-table) use the same half-hour starts. Holds
 are checked by interval overlap and serialised by the per-table lock, so
 overlapping half-hour starts can never double-book a table.
+
+## Booking length and extension
+
+`bookingTimeRules` on the location (`shared/booking_rules.py`, edited in
+the admin's Inställningar > Profil "Bokningstid"):
+
+| Field | |
+|---|---|
+| `defaultMinutes` | length of a booking outside every window (15-480, 15-minute steps) |
+| `extension` | `{allowed, maxMinutes}`: may staff extend, by how much (up to 240) |
+| `lastSeatingMinutes` | no start less than this before closing (default 120; the booking length wins when longer) |
+| `windows[]` | up to 20 special rules: `name` (shown to guests), `weekdays`, `startTime`-`endTime` (local, no midnight crossing), optional `dateFrom`/`dateTo`, `durationMinutes`, `extension`, `priority` |
+
+- **Rule by start time.** A booking gets the rule of its local start: the
+  windows containing it (`startTime` inclusive, `endTime` exclusive, weekday
+  and dates); a window with dates beats a recurring one, then the higher
+  priority. Overlaps that can't be resolved are refused on save. A booking
+  that starts before a buffet and runs into it keeps its own rule.
+- **Snapshot.** Holds and bookings store `bookingRule {windowId, name,
+  durationMinutes, extensionAllowed, maxExtensionMinutes}` and
+  `extendedMinutes`; later rule changes never move them. Editing tables or
+  the party keeps the booking's own end; a move to another time takes the
+  rule of that time.
+- **Extension (staff only).** `PATCH .../reservations/{r}` `{endTime,
+  overrideRule?}` for `reserved`/`arrived`: 15-minute steps, at least 15
+  minutes long, never past closing (`after_closing`), free on every table
+  of the booking (`table_taken`). Longer than the rule needs the rule to
+  allow it (`not_extendable`), within its max (`extension_too_long`) and not
+  into a window without extension (`window_not_extendable`); staff may
+  override these three with `overrideRule: true` (history entry `extended`
+  with `override: true`). Shortening is always allowed. Locks, old and new
+  slot rows and the booking are swapped in one transaction.
+- **Without rules** (locations from before) the length is
+  `bookingDurationHours`, nothing extends and last seating is 120 minutes.
+  Bookings without a snapshot keep their own length and extend only with an
+  override.
+- `gracePeriodHours` must stay shorter than the shortest booking length.
+- Availability slots carry `durationMinutes`, `extendable` and `ruleName`;
+  so do the hold and the guest view. Manual blocks (block-table) take the
+  same length as a booking starting then.
 
 ## Online table rules
 

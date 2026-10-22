@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
@@ -78,7 +79,10 @@ def public_item(item):
 
 
 def management_item(item):
-    return {field: item[field] for field in MANAGEMENT_FIELDS} | {"alcohol": item.get("alcohol") is True}
+    return {field: item[field] for field in MANAGEMENT_FIELDS} | {"alcohol": item.get("alcohol") is True} | {
+        "availableFrom": item.get("availableFrom"),
+        "availableUntil": item.get("availableUntil"),
+    }
 
 
 def make_event(
@@ -1059,3 +1063,34 @@ def test_protected_dynamodb_failures_return_sanitized_503(
     assert response["statusCode"] == 503
     assert response_body(response) == {"error": "menu service unavailable"}
     assert "sensitive AWS message" not in response["body"]
+
+
+def test_public_menu_hides_scheduled_and_expired_dishes(app_and_table):
+    app, menu_table = app_and_table
+    now = datetime.now(timezone.utc)
+    stamp = lambda delta: (now + delta).isoformat(timespec="seconds").replace("+00:00", "Z")  # noqa: E731
+    visible = menu_item(item_id="in-window", availableFrom=stamp(-timedelta(hours=1)),
+                        availableUntil=stamp(timedelta(hours=1)))
+    for item in (
+        visible,
+        menu_item(item_id="later", availableFrom=stamp(timedelta(hours=1))),
+        menu_item(item_id="ended", availableUntil=stamp(-timedelta(seconds=1))),
+        menu_item(item_id="off", active=False, availableFrom=stamp(-timedelta(hours=1))),
+    ):
+        menu_table.put_item(Item=item)
+
+    body = response_body(app.handler(make_event(), None))
+    assert body == {"items": [public_item(visible)]}
+    assert "availableFrom" not in body["items"][0]
+
+    staff = response_body(app.handler(make_event(proxy="items", groups='["staff_user"]'), None))
+    assert {item["menuItemId"] for item in staff["items"]} == {"in-window", "later", "ended", "off"}
+    assert next(i for i in staff["items"] if i["menuItemId"] == "later")["availableUntil"] is None
+
+
+def test_malformed_stored_schedule_is_rejected(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(availableFrom="2026-11-01 10:00"))
+    assert app.handler(make_event(), None)["statusCode"] == 503
+    response = app.handler(make_event(proxy=f"items/{ITEM_ID}", groups='["staff_user"]'), None)
+    assert response["statusCode"] == 409

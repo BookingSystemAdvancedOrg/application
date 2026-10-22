@@ -5272,7 +5272,8 @@ components:
           $ref: '#/components/schemas/BookingRuleSnapshot'
         extendedMinutes:
           type: integer
-          description: Minutes beyond (negative = before) the rule's length after staff changed the end.
+          minimum: 0
+          description: Minutes beyond the rule's length after staff extended the end (0 when not extended or shortened).
 
     ReservationList:
       type: object

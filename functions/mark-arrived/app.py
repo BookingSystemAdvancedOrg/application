@@ -313,15 +313,17 @@ def _extend(ctx, item, end_time, override, now):
         ops.append({"Delete": {
             "TableName": r.occupancy_table(),
             "Key": r.serialize(r.slot_key(location_id, date_str, item["startTime"], item["endTime"], t)),
-            "ConditionExpression": "reservationId = :rid",
+            # TTL may already have removed the row (extending after the old end).
+            "ConditionExpression": "attribute_not_exists(PK) OR reservationId = :rid",
             "ExpressionAttributeValues": r.serialize({":rid": item["reservationId"]}),
         }})
     ops += r.hold_items(location_id, date_str, item["startTime"], new_end, tables,
                         item["reservationId"], ends_at, now=now)
-    entry = r.history_entry("extended", ctx.sub, now, previous=item["endTime"], endTime=new_end,
+    action = "extended" if end > availability.minute_of_day(item["endTime"]) else "shortened"
+    entry = r.history_entry(action, ctx.sub, now, previous=item["endTime"], endTime=new_end,
                             override=True if overridden else None)
     version = int(item.get("version", 0))
-    new_item = {**item, "endTime": new_end, "endsAt": r.iso(ends_at), "extendedMinutes": extended,
+    new_item = {**item, "endTime": new_end, "endsAt": r.iso(ends_at), "extendedMinutes": max(extended, 0),
                 "ttl": r.retention_ttl(ends_at), "updatedAt": r.iso(now), "updatedBy": ctx.sub,
                 "version": version + 1, "history": (item.get("history") or []) + [entry]}
     if "bookingRule" not in item:

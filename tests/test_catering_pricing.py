@@ -201,3 +201,10 @@ def test_draft_marks_the_request_under_review(env):  # noqa: F811
     from tenant_support import with_tenant_claims
     row = body_of(env.m["requests"].handler(with_tenant_claims(event), None))["requests"][0]
     assert row["reviewedAt"] == first and row["guests"] == 35
+
+
+def test_legacy_menu_item_follows_its_schedule(env):  # noqa: F811
+    from test_catering import MENU_TABLE, menu_item
+    env.res.Table(MENU_TABLE).put_item(Item=menu_item("later", "Julbord", "300", availableFrom="2026-12-01T00:00:00Z"))
+    response = create(env, items=[{"menuItemId": "later", "quantity": 20}])
+    assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}

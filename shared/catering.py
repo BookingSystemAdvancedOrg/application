@@ -48,6 +48,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from shared import dynamo, geo, orders
+from shared import menu as menu_rules
 
 CURRENCY = "sek"
 VAT_RATE = 12
@@ -670,7 +671,7 @@ def validate_selection(data, guests):
     return out
 
 
-def _lines(location_id, selection):
+def _lines(location_id, selection, now):
     lines = []
     if selection["packages"] or selection["dishes"]:
         menu = list_catering_menu(location_id, active_only=True)
@@ -695,9 +696,9 @@ def _lines(location_id, selection):
         menu = read_menu(location_id, [i for i, _ in selection["items"]])
         for item_id, qty in selection["items"]:
             item = menu.get(item_id)
-            if not item or item.get("active") is not True or item.get("alcohol") is True:
-                raise ValueError("menu_item_unavailable")
             try:
+                if not item or not menu_rules.is_available(item, now) or item.get("alcohol") is True:
+                    raise ValueError("menu_item_unavailable")
                 unit = kronor_to_ore(item.get("price"), "price")
             except ValueError:
                 raise ValueError("menu_item_unavailable") from None
@@ -740,14 +741,15 @@ def price_request(location_id, settings, tiers, location, selection, guests, ful
     dishes x portions), the tier discount by guests, the delivery band from
     the road distance, the cleaning fee and the VAT per line. `day` is the
     delivery date (VAT), today when the guest has not picked one yet."""
-    lines = _lines(location_id, selection)
+    now = now or now_utc()
+    lines = _lines(location_id, selection, now)
     portions = sum(line["quantity"] for line in lines)
     if portions > settings["maxPortions"]:
         raise ValueError(f"at most {settings['maxPortions']} portions")
     tier = tier_for(tiers, guests)
     fee, km, band = delivery_quote(settings, location, fulfilment, address)
     service = bool(settings["defaultServiceIncluded"])
-    rate = vat_rate_for(service, day or local_today(location, now or now_utc()))
+    rate = vat_rate_for(service, day or local_today(location, now))
     for line in lines:
         line["vatRate"] = rate
     result = totals(lines, tier["discountPercent"] if tier else 0, fee or 0, cleaning_fee(settings, equipment), rate)

@@ -187,3 +187,17 @@ def test_settings_report_whether_the_delivery_origin_is_found(env):  # noqa: F81
     assert put({"originAddress": "Götgatan 1, Stockholm"})["originFound"] is True
     assert put({"originAddress": "okänd plats"})["originFound"] is False
     assert put({"delivery": False})["originFound"] is None
+
+
+def test_draft_marks_the_request_under_review(env):  # noqa: F811
+    rid = body_of(create(env))["requestId"]
+    assert "reviewedAt" not in c.load(LOC_A, rid)
+    staff(env, "PUT", "/offer", body=OFFER, request_id=rid)
+    first = c.load(LOC_A, rid)["reviewedAt"]
+    staff(env, "PUT", "/offer", body=OFFER, request_id=rid)
+    item = c.load(LOC_A, rid)
+    assert item["reviewedAt"] == first and item["status"] == "requested"
+    event = {"routeKey": "GET /locations/{locationId}/catering/requests", "pathParameters": {"locationId": LOC_A}}
+    from tenant_support import with_tenant_claims
+    row = body_of(env.m["requests"].handler(with_tenant_claims(event), None))["requests"][0]
+    assert row["reviewedAt"] == first and row["guests"] == 35

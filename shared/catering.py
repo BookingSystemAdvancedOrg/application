@@ -241,7 +241,7 @@ DEFAULT_SETTINGS = {
     "leadTimeRules": [],  # [{fromGuests, toGuests|null, days}]; empty = advanceDays
     "deliveryBands": [],  # [{upToKm, price}]; empty = derived from the flat prices
     "maxDeliveryKm": None,  # always the last band's upToKm
-    "defaultServiceIncluded": False,
+    "defaultServiceIncluded": True,  # 12 % as today until the accountant confirms 6 % for food only
     "ownerReminderHours": 24,  # 0 = off
     "signReminderDaysBefore": 2,  # 0 = off
     "dayBeforeReminder": True,
@@ -292,13 +292,17 @@ def validate_settings(raw, *, phone_normalizer=None):
     out["minGuests"] = whole(s["minGuests"], 1, 5000, "minGuests")
     out["leadTimeRules"] = _lead_time_rules(s["leadTimeRules"])
     _delivery_bands(s, out)
-    # Checked against the expiry only once set: a stored location without
-    # them must still load (settings_of) even with a short expiry.
+    # A default reminder is clamped inside a short expiry, so settings that
+    # never set it (older locations, partial saves) always stay valid.
+    if "ownerReminderHours" not in raw:
+        s["ownerReminderHours"] = min(s["ownerReminderHours"], out["requestExpiryHours"] - 1)
+    if "signReminderDaysBefore" not in raw:
+        s["signReminderDaysBefore"] = min(s["signReminderDaysBefore"], out["offerValidDays"] - 1)
     out["ownerReminderHours"] = whole(s["ownerReminderHours"], 0, 168, "ownerReminderHours")
-    if "ownerReminderHours" in raw and out["ownerReminderHours"] >= out["requestExpiryHours"]:
+    if out["ownerReminderHours"] >= out["requestExpiryHours"]:
         raise ValueError("ownerReminderHours must be less than requestExpiryHours")
     out["signReminderDaysBefore"] = whole(s["signReminderDaysBefore"], 0, 59, "signReminderDaysBefore")
-    if "signReminderDaysBefore" in raw and out["signReminderDaysBefore"] >= out["offerValidDays"]:
+    if out["signReminderDaysBefore"] >= out["offerValidDays"]:
         raise ValueError("signReminderDaysBefore must be less than offerValidDays")
     return out
 
@@ -513,12 +517,16 @@ def _menu_view(item, prefix, id_field):
     return {id_field: item["SK"].removeprefix(prefix), **out}
 
 
+_GUEST_DISH = ("dishId", "name", "description", "pricePerPortion", "allergens", "dietary")
+_GUEST_PACKAGE = ("packageId", "name", "description", "pricePerGuest", "dishIds", "minGuests")
+
+
 def list_catering_menu(location_id, *, active_only=False):
     """{dishes, packages} sorted by sort then name. Active only = what a
-    guest may order: active dishes, and active packages whose dishes are
-    all active."""
+    guest may order (guest fields only): active dishes, and active packages
+    whose dishes are all active."""
     table = dynamo.table(menu_table())
-    request = {"KeyConditionExpression": Key("PK").eq(location_pk(location_id)), "ConsistentRead": True}
+    request = {"KeyConditionExpression": Key("PK").eq(location_pk(location_id)), "ConsistentRead": not active_only}
     items = []
     while True:
         page = table.query(**request)
@@ -533,7 +541,11 @@ def list_catering_menu(location_id, *, active_only=False):
         live = {d["dishId"] for d in dishes}
         packages = [p for p in packages if p.get("active") is True and set(p.get("dishIds") or []) <= live]
     order = lambda x: (int(x.get("sort") or 0), str(x.get("name") or "").lower())  # noqa: E731
-    return {"dishes": sorted(dishes, key=order), "packages": sorted(packages, key=order)}
+    dishes, packages = sorted(dishes, key=order), sorted(packages, key=order)
+    if active_only:
+        dishes = [{k: d[k] for k in _GUEST_DISH if k in d} for d in dishes]
+        packages = [{k: p[k] for k in _GUEST_PACKAGE if k in p} for p in packages]
+    return {"dishes": dishes, "packages": packages}
 
 
 # --- pricing ---------------------------------------------------------------------------------

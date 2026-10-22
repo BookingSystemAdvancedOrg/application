@@ -4344,7 +4344,7 @@ paths:
         - Catering
       summary: The guest's catering menu
       operationId: getCateringMenu
-      description: Active dishes and active packages whose dishes are all active, sorted by sort then name.
+      description: Active dishes and active packages whose dishes are all active, sorted by sort then name. 404 while catering is switched off.
       security: []
       x-required-groups: []
       responses:
@@ -4819,10 +4819,33 @@ components:
             packageId: {type: string}
     CateringMenu:
       type: object
+      description: Guest fields only (no version, sort or sourceMenuItemId).
       required: [dishes, packages]
       properties:
-        dishes: {type: array, items: {$ref: '#/components/schemas/CateringDish'}}
-        packages: {type: array, items: {$ref: '#/components/schemas/CateringPackage'}}
+        dishes:
+          type: array
+          items:
+            type: object
+            required: [dishId, name, description, pricePerPortion, allergens, dietary]
+            properties:
+              dishId: {type: string}
+              name: {type: string}
+              description: {type: string}
+              pricePerPortion: {type: number}
+              allergens: {type: array, items: {type: string}}
+              dietary: {type: array, items: {type: string}}
+        packages:
+          type: array
+          items:
+            type: object
+            required: [packageId, name, description, pricePerGuest, dishIds]
+            properties:
+              packageId: {type: string}
+              name: {type: string}
+              description: {type: string}
+              pricePerGuest: {type: number}
+              dishIds: {type: array, items: {type: string}}
+              minGuests: {type: integer}
     MarketingConsent:
       type: object
       description: |

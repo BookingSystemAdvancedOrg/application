@@ -10,8 +10,8 @@ TRIGGER:
         current ones; shared/catering.py validates). Answers the full
         settings, including the owner's notification contacts.
     GET    /locations/{locationId}/catering/menu                         -- Auth: NONE
-        The guest's catering menu: active dishes and active packages whose
-        dishes are all active.
+        The guest's catering menu (guest fields only): active dishes and
+        active packages whose dishes are all active. 404 while catering is off.
     GET    /locations/{locationId}/catering/menu/dishes                  -- Auth: JWT (owner)
     POST   /locations/{locationId}/catering/menu/dishes                  -- Auth: JWT (owner)
     PUT    /locations/{locationId}/catering/menu/dishes/{dishId}         -- Auth: JWT (owner)
@@ -88,7 +88,9 @@ def _menu(event, method, path):
     if path == _MENU:
         if method != "GET":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET"})
-        tenant.for_public(location_id, feature="catering")
+        ctx = tenant.for_public(location_id, feature="catering")
+        if not c.settings_of(ctx.location)["enabled"]:
+            return http.error(404, "not found")  # catering switched off: nothing to show the guest
         return http.respond(200, c.list_catering_menu(location_id, active_only=True))
     collection = next(k for k, v in _KINDS.items() if path in (k, v[0]))
     item_path, prefix, id_field, list_key, limit = _KINDS[collection]
@@ -101,6 +103,8 @@ def _menu(event, method, path):
         if method != "POST":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET, POST"})
         item = _validate(prefix, http.body(event), menu)
+        # shortcut: count read before the write, so two parallel POSTs can pass the limit by one;
+        # fine for one owner per location, use a counter item if writers multiply.
         if len(menu[list_key]) >= limit:
             raise ValueError(f"at most {limit} {list_key}")
         item_id = c.new_id()
@@ -112,6 +116,9 @@ def _menu(event, method, path):
     if not c.valid_id(item_id):
         return http.error(404, "not found")
     if method == "DELETE":
+        # shortcut: a package saved with this dish between the check and the delete keeps a
+        # dangling id (guests then don't see that package; the owner re-saves it); fine for one
+        # owner per location, move to a transaction with a package version item if that changes.
         if prefix == c.DISH and any(item_id in p.get("dishIds", []) for p in menu["packages"]):
             return http.error(409, "dish_in_package")
         table.delete_item(Key=c.menu_key(location_id, prefix, item_id))

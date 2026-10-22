@@ -12,7 +12,8 @@ and `sourceMenuItemId`. It is a copy: later menu edits do not reach it.
 
 Idempotent: the dish id is derived from the location and menu item id and
 written only if missing, so a second run (or a dish the owner already edited)
-is skipped. Nothing is ever deleted or overwritten.
+is skipped. A menu item the owner already copied with "Hämta från menyn"
+(same sourceMenuItemId) is skipped too. Nothing is ever deleted or overwritten.
 
 Prints counts only. Uses your current AWS credentials; check the account
 first:
@@ -68,12 +69,18 @@ def run(ddb, location_table, menu_table, catering_menu_table, apply=False):
                     & Attr("cateringSettings.enabled").eq(True)):
         location_id = loc["SK"].removeprefix("LOCATION#")
         counts["locations"] += 1
+        # Dishes the owner already copied with "Hämta från menyn" (random ids).
+        copied = {d.get("sourceMenuItemId") for d in _all(
+            target.query, KeyConditionExpression=Key("PK").eq(c.location_pk(location_id)) & Key("SK").begins_with(c.DISH))}
         for item in _all(menu.query, KeyConditionExpression=Key("PK").eq(c.location_pk(location_id))
                          & Key("SK").begins_with("MENU#")):
             counts["menuItems"] += 1
             dish = dish_of(item)
             if dish is None:
                 counts["skipped"] += 1
+                continue
+            if item["menuItemId"] in copied:
+                counts["alreadyCopied"] += 1
                 continue
             key = c.menu_key(location_id, c.DISH, dish_id(location_id, item["menuItemId"]))
             if not apply:

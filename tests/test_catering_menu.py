@@ -95,7 +95,18 @@ def test_public_menu_shows_only_what_a_guest_may_order(env):
     public = body_of(call(env, "GET", "", public=True))
     assert [d["dishId"] for d in public["dishes"]] == [late["dishId"], on["dishId"]]
     assert [p["name"] for p in public["packages"]] == ["Bra"]
+    assert set(public["dishes"][0]) == {"dishId", "name", "description", "pricePerPortion", "allergens", "dietary"}
+    assert set(public["packages"][0]) == {"packageId", "name", "description", "pricePerGuest", "dishIds"}
     assert len(body_of(call(env, "GET", "/packages"))["packages"]) == 3
+
+
+def test_public_menu_is_hidden_while_catering_is_off(env):
+    dish(env)
+    env.res.Table(LOCATION_TABLE).update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+                                              UpdateExpression="SET cateringSettings.enabled = :f",
+                                              ExpressionAttributeValues={":f": False})
+    assert call(env, "GET", "", public=True)["statusCode"] == 404
+    assert call(env, "GET", "/dishes")["statusCode"] == 200  # the owner still edits it
 
 
 def test_owner_only_and_tenant_isolation(env):
@@ -121,6 +132,7 @@ def test_new_settings_defaults_and_legacy_delivery_mapping():
     s = c.validate_settings({"maxDistanceKm": 25, "priceWithinLimit": 395, "priceBeyondLimit": 795,
                              "allowOutsideArea": True})
     assert s["minGuests"] == 15 and s["leadTimeRules"] == [] and s["allowSimpleAcceptance"] is False
+    assert s["defaultServiceIncluded"] is True
     assert s["deliveryBands"] == [{"upToKm": 25, "price": 395}, {"upToKm": 1000, "price": 795}]
     assert s["maxDeliveryKm"] == 1000
     only = c.validate_settings({"maxDistanceKm": 30, "priceWithinLimit": 300, "allowOutsideArea": False})
@@ -152,6 +164,22 @@ def test_bands_drive_the_flat_prices():
 def test_settings_validation_rejects(change):
     with pytest.raises(ValueError):
         c.validate_settings(change)
+
+
+def test_partial_save_with_a_short_expiry_keeps_catering_on(env):
+    loc = env.res.Table(LOCATION_TABLE)
+    key = {"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"}
+    loc.update_item(Key=key, UpdateExpression="SET cateringSettings = :s",
+                    ExpressionAttributeValues={":s": {**SETTINGS, "requestExpiryHours": 24, "offerValidDays": 2}})
+    put = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+           "body": json.dumps({"terms": "x"})}
+    saved = body_of(env.m["settings"].handler(with_tenant_claims(put), None))
+    assert saved["ownerReminderHours"] == 23 and saved["signReminderDaysBefore"] == 1
+    stored = loc.get_item(Key=key)["Item"]
+    assert c.settings_of(stored)["enabled"] is True and c.settings_of(stored)["terms"] == "x"
+    # an explicit reminder past the expiry is still refused
+    bad = dict(put, body=json.dumps({"ownerReminderHours": 24}))
+    assert env.m["settings"].handler(with_tenant_claims(bad), None)["statusCode"] == 400
 
 
 def test_older_settings_with_a_short_expiry_still_load():
@@ -206,3 +234,11 @@ def test_migration_is_a_dry_run_by_default_and_idempotent(env):
     assert lax["pricePerPortion"] == Decimal("145") and lax["sourceMenuItemId"] == "lax" and lax["version"] == 1
     listed = body_of(call(env, "GET", "/dishes"))["dishes"]
     assert {d["name"] for d in listed} == {"Laxtallrik", "Vegetarisk buffé"}
+
+
+def test_migration_skips_dishes_copied_in_the_admin(env):
+    dish(env, name="Lax (egen)", sourceMenuItemId="lax")
+    counts = _migration().run(env.res, LOCATION_TABLE, MENU_TABLE, CATERING_MENU_TABLE, apply=True)
+    assert counts["written"] == 1 and counts["alreadyCopied"] == 1
+    names = {r["name"] for r in env.res.Table(CATERING_MENU_TABLE).scan()["Items"]}
+    assert names == {"Lax (egen)", "Vegetarisk buffé"}

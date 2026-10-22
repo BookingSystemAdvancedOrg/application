@@ -1981,7 +1981,7 @@ def test_repeated_block_is_idempotent(app_and_tables):
         },
     )
     items = tables["occupancy"].scan(ConsistentRead=True)["Items"]
-    assert items == [manual_item()]
+    assert [i for i in items if i["SK"].startswith("SLOT#")] == [manual_item()]
 
 
 @pytest.mark.parametrize(
@@ -2408,7 +2408,8 @@ def test_adjacent_hold_does_not_prevent_block(app_and_tables):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 201
-    assert len(tables["occupancy"].scan(ConsistentRead=True)["Items"]) == 2
+    items = tables["occupancy"].scan(ConsistentRead=True)["Items"]
+    assert len([i for i in items if i["SK"].startswith("SLOT#")]) == 2
 
 
 def test_conditional_write_race_cannot_overwrite_reservation(
@@ -2419,7 +2420,7 @@ def test_conditional_write_race_cannot_overwrite_reservation(
     put_prerequisites(tables)
     reservation = reservation_item()
 
-    def collide(_item):
+    def collide(_item, _versions):
         tables["occupancy"].put_item(Item=reservation)
         raise ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException"}},
@@ -2441,7 +2442,7 @@ def test_ambiguous_committed_write_is_reconciled(
     app, tables = app_and_tables
     put_prerequisites(tables)
 
-    def commit_then_timeout(item):
+    def commit_then_timeout(item, _versions):
         tables["occupancy"].put_item(Item=item)
         raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
 
@@ -2462,14 +2463,14 @@ def test_ambiguous_uncommitted_write_retries_once(
     original_put = app._put_manual_item
     calls = 0
 
-    def timeout_once(item):
+    def timeout_once(item, versions):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise EndpointConnectionError(
                 endpoint_url="https://dynamodb.invalid"
             )
-        original_put(item)
+        original_put(item, versions)
 
     monkeypatch.setattr(app, "_put_manual_item", timeout_once)
 
@@ -2774,3 +2775,32 @@ def test_block_takes_the_length_of_the_booking_rule_of_its_start(app_and_tables)
     assert response_body(app.handler(make_event(), None))["endTime"] == "20:30"
     saturday = app.handler(make_event(valid_body(date="2026-09-19")), None)
     assert response_body(saturday)["endTime"] == "19:30"  # default 90 min
+
+
+def lock_item(version):
+    return {"PK": f"LOCATION#{LOCATION_ID}", "SK": f"LOCK#2026-09-20#{TABLE_ID}",
+            "version": Decimal(version), "ttl": Decimal(1900000000)}
+
+
+def test_block_bumps_the_table_lock_like_a_booking(app_and_tables):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    tables["occupancy"].put_item(Item=lock_item(3))
+
+    assert app.handler(make_event(), None)["statusCode"] == 201
+    lock = tables["occupancy"].get_item(Key={"PK": f"LOCATION#{LOCATION_ID}",
+                                            "SK": f"LOCK#2026-09-20#{TABLE_ID}"})["Item"]
+    assert lock["version"] == 4
+
+
+def test_block_loses_to_a_booking_that_took_the_lock_meanwhile(app_and_tables, monkeypatch):
+    app, tables = app_and_tables
+    put_prerequisites(tables)
+    # A booking/extension bumped the lock between our read and our write.
+    monkeypatch.setattr(app, "_lock_versions", lambda slot: {TABLE_ID: 0})
+    tables["occupancy"].put_item(Item=lock_item(1))
+
+    response = app.handler(make_event(), None)
+
+    assert_response(response, 409, {"error": "slot changed; retry request"})
+    assert "Item" not in tables["occupancy"].get_item(Key=slot_key())

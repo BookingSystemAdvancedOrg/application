@@ -51,7 +51,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, tenant
+from shared import booking_rules, dynamo, tenant
+from shared import reservations as r
 from shared.availability import SLOT_STEP_MINUTES, _live_occupancies
 from shared.auth import (
     Unauthorized,
@@ -1350,17 +1351,44 @@ def _existing_block_for_slot(slot):
     return existing_manual
 
 
-def _put_manual_item(item):
+def _lock_versions(slot):
+    """The table's lock version for the date, read BEFORE the occupancy
+    check: bookings, moves and extensions bump it, so a block committed with
+    it can never overlap one of them (shared/reservations.py)."""
+    return r.read_lock_versions(
+        slot["PK"].removeprefix("LOCATION#"), slot["date"], [slot["tableId"]]
+    )
+
+
+def _put_manual_item(item, versions):
     # The row of a table hold whose time ran out may be taken over, like a
-    # booking does (shared/reservations.py hold_items).
-    table(SLOT_OCCUPANCY_TABLE_NAME).put_item(
-        Item=item,
-        ConditionExpression=(
+    # booking does (shared/reservations.py hold_items). The table's lock is
+    # bumped in the same transaction (409 when another writer got there first).
+    location_id, date_str = item["PK"].removeprefix("LOCATION#"), item["SK"].split("#")[1]
+    put = {"Put": {
+        "TableName": SLOT_OCCUPANCY_TABLE_NAME,
+        "Item": r.serialize(item),
+        "ConditionExpression": (
             "(attribute_not_exists(PK) AND attribute_not_exists(SK)) "
             "OR holdExpiresAt <= :now"
         ),
-        ExpressionAttributeValues={":now": int(_utc_now().timestamp())},
-    )
+        "ExpressionAttributeValues": r.serialize({":now": int(_utc_now().timestamp())}),
+    }}
+    try:
+        dynamo.client().transact_write_items(
+            TransactItems=r.lock_updates(location_id, date_str, versions) + [put]
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise
+        codes = [reason.get("Code") for reason in exc.response.get("CancellationReasons") or []]
+        if codes and codes[-1] == "ConditionalCheckFailed":
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem"
+            ) from None
+        if any(code in ("ConditionalCheckFailed", "TransactionConflict") for code in codes):
+            raise _BlockConflict("slot changed; retry request") from None
+        raise
 
 
 def _is_conditional_failure(exc):
@@ -1386,6 +1414,7 @@ def _is_ambiguous_dynamo_error(exc):
 
 
 def _reconcile_put(slot, item, *, retry):
+    versions = _lock_versions(slot)
     existing = _existing_block_for_slot(slot)
     if existing is not None:
         return False
@@ -1393,7 +1422,7 @@ def _reconcile_put(slot, item, *, retry):
         raise _BlockServiceFailure
 
     try:
-        _put_manual_item(item)
+        _put_manual_item(item, versions)
         return True
     except (BotoCoreError, ClientError) as exc:
         if not _is_conditional_failure(exc) and not _is_ambiguous_dynamo_error(
@@ -1407,12 +1436,13 @@ def _reconcile_put(slot, item, *, retry):
 
 
 def _create_manual_block(slot, item):
+    versions = _lock_versions(slot)
     existing = _existing_block_for_slot(slot)
     if existing is not None:
         return False
 
     try:
-        _put_manual_item(item)
+        _put_manual_item(item, versions)
         return True
     except (BotoCoreError, ClientError) as exc:
         if _is_conditional_failure(exc) or _is_ambiguous_dynamo_error(exc):

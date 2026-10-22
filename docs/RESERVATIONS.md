@@ -138,9 +138,9 @@ iff unchanged + put holds (`attribute_not_exists`) + write the booking. Two
 writers to the same table and date can never both commit, even with
 different start times or durations. The loser gets 409 `table_taken`.
 
-Known gap: manual blocks (`block-table`) don't take the lock, so a manual
-block and a booking for overlapping but different intervals committed in the
-same instant could both succeed. Staff see both in the day list.
+Manual blocks (`block-table`) read and bump the same per-table lock in the
+transaction that writes the block, so a block and a booking, move or
+extension can never both commit for overlapping times.
 
 ## Status
 
@@ -248,8 +248,10 @@ the admin's Inställningar > Profil "Bokningstid"):
   allow it (`not_extendable`), within its max (`extension_too_long`) and not
   into a window without extension (`window_not_extendable`); staff may
   override these three with `overrideRule: true` (history entry `extended`
-  with `override: true`). Shortening is always allowed. Locks, old and new
-  slot rows and the booking are swapped in one transaction.
+  with `override: true`). Shortening is always allowed (history entry
+  `shortened`, `extendedMinutes` never below 0). Locks, old and new slot
+  rows and the booking are swapped in one transaction; manual blocks take
+  the same table lock, so a block can't overlap an extension or booking.
 - **Without rules** (locations from before) the length is
   `bookingDurationHours`, nothing extends and last seating is 120 minutes.
   Bookings without a snapshot keep their own length and extend only with an

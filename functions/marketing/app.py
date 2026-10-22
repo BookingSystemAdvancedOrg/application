@@ -23,7 +23,8 @@ TRIGGER:
     POST   /marketing/campaigns/{id}/resume            continue after the monthly limit (new month)
     GET    /marketing/offer                            welcome offer settings + results
     PUT    /marketing/offer                            save the settings
-    GET    /marketing/subscribers?status=&cursor=
+    GET    /marketing/subscribers?status=&cursor=      status "suppressed" = bounced + complained
+    GET    /marketing/subscribers?email=               one subscriber by address (exact, any case)
     GET    /marketing/subscribers/export               CSV
     POST   /marketing/subscribers/{id}/unsubscribe
     DELETE /marketing/subscribers/{id}                 erase (GDPR)
@@ -586,7 +587,8 @@ def _sub_view(item):
     return {"subscriberId": item["SK"].split("#", 1)[1], "email": item.get("email"), "name": item.get("name"),
             "status": item.get("status"), "consentAt": item.get("consentAt"),
             "consentSource": item.get("consentSource"), "lastVisit": item.get("lastVisit"),
-            "locations": sorted(item.get("locations") or []), "unsubscribedAt": item.get("unsubscribedAt")}
+            "locations": sorted(item.get("locations") or []), "unsubscribedAt": item.get("unsubscribedAt"),
+            "suppressedAt": item.get("suppressedAt")}
 
 
 def _csv_cell(value):
@@ -598,10 +600,19 @@ def _csv_cell(value):
 def _subscribers(ctx, method, rest, event):
     table = _table()
     query = http.query(event)
+    if not rest and method == "GET" and query.get("email") is not None:
+        email = str(query["email"]).strip().lower()
+        if not m.valid_email(email):
+            raise ValueError("email is invalid")
+        item = table.get_item(Key=m.sub_key(ctx.tenant_id, m.subscriber_id(ctx.tenant_id, email))).get("Item")
+        return _ok(200, {"subscribers": [_sub_view(item)] if item else [], "cursor": None})
     if not rest and method == "GET":
         params = {"KeyConditionExpression": Key("PK").eq(m.sub_pk(ctx.tenant_id)), "Limit": 100}
         status = query.get("status")
-        if status:
+        if status == "suppressed":
+            params.update(FilterExpression="#st IN (:b, :c)", ExpressionAttributeNames={"#st": "status"},
+                          ExpressionAttributeValues={":b": "bounced", ":c": "complained"})
+        elif status:
             if status not in ("subscribed", "pending", "unsubscribed", "bounced", "complained"):
                 raise ValueError("status is invalid")
             params.update(FilterExpression="#st = :s", ExpressionAttributeNames={"#st": "status"},

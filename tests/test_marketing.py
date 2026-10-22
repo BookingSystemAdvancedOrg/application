@@ -769,3 +769,19 @@ def test_send_fails_closed_without_consent_log(env, monkeypatch):
     admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
     sender.handler({"source": "schedule"}, SimpleNamespace(get_remaining_time_in_millis=lambda: 120000))
     assert outbox(env) == []
+
+
+def test_subscriber_lookup_by_email_and_suppressed_group(env):
+    fn = load("marketing")
+    make_subscribers(env, 3)
+    for email, status in (("guest1@example.se", "bounced"), ("guest2@example.se", "complained")):
+        env.table.update_item(Key=m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, email)),
+                              UpdateExpression="SET #s = :v", ExpressionAttributeNames={"#s": "status"},
+                              ExpressionAttributeValues={":v": status})
+    found = body_of(admin(fn, "GET", "/marketing/subscribers", query={"email": " Guest0@Example.se"}))
+    assert [s["email"] for s in found["subscribers"]] == ["guest0@example.se"]
+    assert body_of(admin(fn, "GET", "/marketing/subscribers", query={"email": "nobody@example.se"}))[
+        "subscribers"] == []
+    assert admin(fn, "GET", "/marketing/subscribers", query={"email": "nope"})["statusCode"] == 400
+    blocked = body_of(admin(fn, "GET", "/marketing/subscribers", query={"status": "suppressed"}))
+    assert sorted(s["status"] for s in blocked["subscribers"]) == ["bounced", "complained"]

@@ -162,7 +162,10 @@ def public_item(item):
         field: item[field]
         for field in PUBLIC_FIELDS
         if field in item
-    } | {"alcohol": item.get("alcohol") is True}
+    } | {"alcohol": item.get("alcohol") is True} | {
+        "availableFrom": item.get("availableFrom"),
+        "availableUntil": item.get("availableUntil"),
+    }
 
 
 def put_item(menu_table, item=None):
@@ -1637,3 +1640,71 @@ def test_alcohol_flag_must_be_a_boolean(app_and_table):
     response = app.handler(make_event(method="POST", body={**valid_body(), "alcohol": "yes"}), None)
     assert_error(response, 400)
     assert table_items(menu_table) == []
+
+
+# --- scheduled availability (issue 1) ---------------------------------------------------
+
+SCHED_FROM = "2026-11-01T10:00:00Z"
+SCHED_UNTIL = "2026-11-01T13:00:00Z"
+
+
+def test_create_stores_a_normalized_schedule(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={
+        **valid_body(), "availableFrom": "2026-11-01T10:00:00.000Z", "availableUntil": None}), None)
+    assert response["statusCode"] == 201
+    body = response_body(response)
+    assert body["availableFrom"] == SCHED_FROM and body["availableUntil"] is None
+    stored = menu_table.scan()["Items"][0]
+    assert stored["availableFrom"] == SCHED_FROM and "availableUntil" not in stored
+
+
+def test_create_without_schedule_returns_null_bounds(app_and_table):
+    app, menu_table = app_and_table
+    body = response_body(app.handler(make_event(method="POST", body=valid_body()), None))
+    assert body["availableFrom"] is None and body["availableUntil"] is None
+    assert "availableFrom" not in menu_table.scan()["Items"][0]
+
+
+@pytest.mark.parametrize("schedule, error", [
+    ({"availableFrom": "2026-11-01T11:00:00+01:00"}, "availableFrom must be a UTC date-time ending in Z or null"),
+    ({"availableUntil": "soon"}, "availableUntil must be a UTC date-time ending in Z or null"),
+    ({"availableFrom": SCHED_UNTIL, "availableUntil": SCHED_FROM}, "availableUntil must be after availableFrom"),
+])
+def test_create_rejects_invalid_schedule(app_and_table, schedule, error):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body={**valid_body(), **schedule}), None)
+    assert_response(response, 400, {"error": error})
+    assert menu_table.scan()["Items"] == []
+
+
+def test_partial_update_checks_end_against_the_stored_start(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table, menu_item(availableFrom=SCHED_UNTIL))
+    response = app.handler(make_event(method="PUT", proxy=f"items/{ITEM_ID}",
+                                      body={"availableUntil": SCHED_FROM}), None)
+    assert_response(response, 400, {"error": "availableUntil must be after availableFrom"})
+    assert "availableUntil" not in get_item(menu_table)
+
+
+def test_update_sets_and_null_clears_the_schedule(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table, menu_item(availableFrom=SCHED_FROM))
+    event = make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"availableUntil": SCHED_UNTIL})
+    assert app.handler(event, None)["statusCode"] == 200
+    assert get_item(menu_table)["availableUntil"] == SCHED_UNTIL
+
+    event = make_event(method="PUT", proxy=f"items/{ITEM_ID}",
+                       body={"availableFrom": None, "availableUntil": None})
+    body = response_body(app.handler(event, None))
+    assert body["availableFrom"] is None and body["availableUntil"] is None
+    stored = get_item(menu_table)
+    assert "availableFrom" not in stored and "availableUntil" not in stored
+
+
+def test_clearing_an_absent_schedule_is_a_no_op(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    event = make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"availableFrom": None})
+    assert app.handler(event, None)["statusCode"] == 200
+    assert get_item(menu_table) == menu_item()

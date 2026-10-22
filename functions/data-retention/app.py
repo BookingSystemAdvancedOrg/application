@@ -24,7 +24,12 @@ PURPOSE:
       * consent records: after a withdrawal, the full records are replaced by
         one suppression record without the guest's address or number; the
         suppression record is deleted when its period is over (and the
-        guest's marketing subscriber row with it)
+        guest's marketing subscriber row with it, unless it is bounced or
+        complained: those follow their own rule below)
+      * marketing subscriber rows: unconfirmed sign-ups (pending) deleted
+        after RETENTION_PENDING_DAYS; bounced/complained rows lose the
+        address after the consent history period and are deleted after the
+        suppression period (the hashed key keeps the block until then)
 
     Never touched: Booqy's own invoicing (finance table), Stripe, catering
     PDFs (S3 Object Lock), tenant profiles, statistics without personal data.
@@ -47,8 +52,8 @@ AWS RESOURCE ACCESS:
     Query on the tenant table (list index) and the location table;
     Query/UpdateItem/DeleteItem/BatchWriteItem on the reservation, order,
     catering request and history tables; Query/PutItem/DeleteItem/
-    BatchWriteItem on the consent table and its index; DeleteItem on the
-    marketing table; sns:Publish on the alert topic; lambda:InvokeFunction
+    BatchWriteItem on the consent table and its index; Query/UpdateItem/
+    DeleteItem on the marketing table; sns:Publish on the alert topic; lambda:InvokeFunction
     on itself (continuation).
 """
 
@@ -273,13 +278,51 @@ def _consent(tenant_id, policy, now, counts, budget):
         if email and os.environ.get("MARKETING_TABLE_NAME"):
             sub_key = marketing.sub_key(tenant_id, marketing.subscriber_id(tenant_id, email))
             try:
+                # Bounced/complained rows stay: _subscribers strips them and keeps the block.
                 dynamo.table(os.environ["MARKETING_TABLE_NAME"]).delete_item(
-                    Key=sub_key, ConditionExpression="attribute_not_exists(#s) OR #s <> :sub",
-                    ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":sub": "subscribed"})
+                    Key=sub_key, ConditionExpression="attribute_not_exists(#s) OR NOT #s IN (:sub, :b, :c)",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={":sub": "subscribed", ":b": "bounced", ":c": "complained"})
                 counts["subscribersDeleted"] += 1
             except ClientError as exc:
                 if not _missing(exc):
                     raise
+
+
+def _subscribers(tenant_id, policy, now, counts, budget):
+    name = os.environ.get("MARKETING_TABLE_NAME")
+    if not name:
+        return
+    table = dynamo.table(name)
+    for item in _query(name, Key("PK").eq(marketing.sub_pk(tenant_id)) & Key("SK").begins_with("SUB#")):
+        action = retention.subscriber_action(item, now, policy)
+        if action is None:
+            continue
+        status = item.get("status")
+        if status == "pending":
+            counts["subscribersPendingDeleted"] += 1
+        else:
+            counts["subscribersSuppressedDeleted" if action == "delete" else "subscribersSuppressedStripped"] += 1
+        if dry_run():
+            continue
+        budget.check()
+        key = {"PK": item["PK"], "SK": item["SK"]}
+        names, values = {"#s": "status"}, {":s": status}
+        try:
+            # Conditional on the status: a sign-up confirmed meanwhile stays.
+            if action == "delete":
+                table.delete_item(Key=key, ConditionExpression="#s = :s", ExpressionAttributeNames=names,
+                                  ExpressionAttributeValues=values)
+                continue
+            removes = [k for k in item if k not in retention.SUBSCRIBER_KEEP]
+            names.update({f"#r{i}": k for i, k in enumerate(removes)}, **{"#a": "anonymisedAt"})
+            values[":a"] = _iso(now)
+            table.update_item(Key=key, ConditionExpression="#s = :s", ExpressionAttributeNames=names,
+                              ExpressionAttributeValues=values,
+                              UpdateExpression="SET #a = :a REMOVE " + ", ".join(f"#r{i}" for i in range(len(removes))))
+        except ClientError as exc:
+            if not _missing(exc):
+                raise
 
 
 # ----------------------------------------------------------------- sweep
@@ -310,6 +353,7 @@ def run_tenant(tenant_id, policy, now, counts, budget):
         _orders(location_id, policy, today, now, counts, budget)
         _catering(location_id, policy, today, now, counts, budget)
     _consent(tenant_id, policy, now, counts, budget)
+    _subscribers(tenant_id, policy, now, counts, budget)
 
 
 def _continue(context, event):

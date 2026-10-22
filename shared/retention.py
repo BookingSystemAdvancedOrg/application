@@ -21,6 +21,12 @@ Per data type (docs/privacy.md has the full inventory):
                                     records go at RETENTION_CONSENT_HISTORY_DAYS and a
                                     suppression record (no identifier) is kept for
                                     RETENTION_SUPPRESSION_MONTHS
+    marketing subscriber row        unconfirmed sign-up (pending) deleted at
+                                    RETENTION_PENDING_DAYS; bounced or complained:
+                                    like a withdrawn consent, the address goes at
+                                    RETENTION_CONSENT_HISTORY_DAYS (the row key is
+                                    already a hash, so the block stays), the row at
+                                    RETENTION_SUPPRESSION_MONTHS
 
 "The accounting period ends" = 31 December of the year of the sale plus
 RETENTION_ACCOUNTING_YEARS (bokföringslagen 7 kap. 2 §: seven years after the
@@ -39,6 +45,7 @@ DEFAULTS = {
     "RETENTION_ACCOUNTING_YEARS": 7,
     "RETENTION_SUPPRESSION_MONTHS": 36,
     "RETENTION_CONSENT_HISTORY_DAYS": 30,
+    "RETENTION_PENDING_DAYS": 30,
 }
 
 ANONYMISED_NAME = "Anonymiserad"
@@ -66,6 +73,7 @@ class Policy:
     accounting_years: int
     suppression_months: int
     consent_history_days: int
+    pending_days: int = DEFAULTS["RETENTION_PENDING_DAYS"]
 
 
 def _int_env(name):
@@ -85,6 +93,7 @@ def policy():
         accounting_years=_int_env("RETENTION_ACCOUNTING_YEARS"),
         suppression_months=_int_env("RETENTION_SUPPRESSION_MONTHS"),
         consent_history_days=_int_env("RETENTION_CONSENT_HISTORY_DAYS"),
+        pending_days=_int_env("RETENTION_PENDING_DAYS"),
     )
 
 
@@ -210,9 +219,37 @@ def consent_action(records, now, p):
         if at <= months_before(now, p.suppression_months):
             return "delete"
         return None
-    # withdrawn: after the grace period keep only a suppression record
-    if at + timedelta(days=p.consent_history_days) <= now:
+    # withdrawn: after the grace period keep only a suppression record; an
+    # erasure request (guest-privacy) has no grace period
+    if latest.get("source") == "erasure" or at + timedelta(days=p.consent_history_days) <= now:
         return ("suppress", latest)
+    return None
+
+
+SUBSCRIBER_SUPPRESSED = ("bounced", "complained")
+# What a bounced/complained row keeps once its address is gone: the hashed key
+# (blocks a new sign-up of the same address) and why and when.
+SUBSCRIBER_KEEP = ("PK", "SK", "status", "suppressedAt", "anonymisedAt")
+
+
+def subscriber_action(item, now, p):
+    """A marketing subscriber row -> None, "delete" or "strip" (remove the
+    address and every other personal field, keep the block)."""
+    status = item.get("status")
+    if status == "pending":
+        at = _parse_ts(item.get("pendingAt") or item.get("createdAt"))
+        if at and at + timedelta(days=p.pending_days) <= now:
+            return "delete"
+        return None
+    if status not in SUBSCRIBER_SUPPRESSED:
+        return None
+    at = _parse_ts(item.get("suppressedAt") or item.get("updatedAt"))
+    if not at:
+        return None
+    if at <= months_before(now, p.suppression_months):
+        return "delete"
+    if at + timedelta(days=p.consent_history_days) <= now and any(k not in SUBSCRIBER_KEEP for k in item):
+        return "strip"
     return None
 
 

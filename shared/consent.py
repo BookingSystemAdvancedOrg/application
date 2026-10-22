@@ -31,7 +31,7 @@ EMAIL, SMS = "email", "sms"
 CHANNELS = (EMAIL, SMS)
 GRANT, WITHDRAW, SUPPRESSED = "grant", "withdraw", "suppressed"
 SOURCES = ("booking", "order", "catering", "welcome_offer", "withdraw_page", "unsubscribe_link", "admin",
-           "complaint", "legacy")
+           "complaint", "legacy", "erasure")
 TENANT_INDEX = "byTenant"
 WITHDRAW_LINK_DAYS = 90
 

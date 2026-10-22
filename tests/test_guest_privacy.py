@@ -124,3 +124,109 @@ def test_lookup_and_withdraw_on_the_guests_behalf(env):
 def test_lookup_needs_a_contact_detail(env):
     assert call(env, "GET", "/privacy/consents", query={})[0] == 400
     assert call(env, "POST", "/privacy/consents/withdraw", {"email": "a@b.se", "channels": ["fax"]})[0] == 400
+
+
+# --- export and erasure ---------------------------------------------------------------------
+
+from decimal import Decimal  # noqa: E402
+
+from shared import marketing_offer as offer  # noqa: E402
+from tenant_support import LOC_B  # noqa: E402
+
+ANNA = {"customerName": "Anna Gäst", "customerEmail": "Anna@Example.se", "customerPhone": "+46701234567",
+        "notes": "nötallergi"}
+
+
+@pytest.fixture
+def guest(env, monkeypatch):
+    res = boto3.resource("dynamodb", region_name=REGION)
+    tables = {}
+    for kind, name in (("reservation", "test-reservation"), ("order", "test-order"), ("catering", "test-catering")):
+        res.create_table(TableName=name, BillingMode="PAY_PER_REQUEST",
+                         KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"},
+                                    {"AttributeName": "SK", "KeyType": "RANGE"}],
+                         AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"},
+                                               {"AttributeName": "SK", "AttributeType": "S"}])
+        tables[kind] = res.Table(name)
+    monkeypatch.setenv("RESERVATION_TABLE_NAME", "test-reservation")
+    monkeypatch.setenv("ORDER_TABLE_NAME", "test-order")
+    monkeypatch.setenv("CATERING_TABLE_NAME", "test-catering")
+    pk = f"LOCATION#{LOC_A}"
+    r = tables["reservation"]
+    r.put_item(Item={"PK": pk, "SK": "RESERVATION#2025-01-10#old", "reservationId": "old", "date": "2025-01-10",
+                     "status": "arrived", "manageTokenHash": "h", **ANNA})
+    r.put_item(Item={"PK": pk, "SK": "RESERVATION#2999-01-10#next", "reservationId": "next", "date": "2999-01-10",
+                     "status": "reserved", **ANNA})
+    r.put_item(Item={"PK": pk, "SK": "RESERVATION#2025-01-10#other", "reservationId": "other",
+                     "date": "2025-01-10", "status": "arrived", "customerName": "Bo", "customerEmail": "bo@x.se"})
+    r.put_item(Item={"PK": f"LOCATION#{LOC_B}", "SK": "RESERVATION#2025-01-10#b", "reservationId": "b",
+                     "date": "2025-01-10", "status": "arrived", **ANNA})  # another restaurant's guest record
+    tables["order"].put_item(Item={"PK": pk, "SK": "ORDER#2025-02-01#o1", "orderId": "o1", "date": "2025-02-01",
+                                   "status": "completed", "paymentStatus": "paid", "totalAmount": 12900,
+                                   "lines": [{"name": "Soppa", "qty": 1}], **ANNA, "customerEmail": "anna@example.se"})
+    tables["catering"].put_item(Item={"PK": pk, "SK": "REQUEST#q1", "requestId": "q1", "status": "closed",
+                                      "customerType": "company", "companyName": "Firma AB",
+                                      "deliveryAddress": {"street": "G 1"}, "signature": {"name": "Anna Gäst"},
+                                      "invoiceNumber": "F-1", **ANNA})
+    consent.grant(env["log"], tenant_id=TENANT_A, restaurant="Bistro Linnea", version=consent.CURRENT,
+                  channels=["email"], email="anna@example.se", source="booking")
+    mk = env["marketing"]
+    mk.put_item(Item={**m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "anna@example.se")),
+                      "email": "anna@example.se", "status": "subscribed", "locations": {LOC_A}})
+    mk.put_item(Item={**offer.email_key(TENANT_A, offer.owner_key(TENANT_A, "anna@example.se")), "code": "ABCD-EFGH"})
+    mk.put_item(Item={**offer.code_key(TENANT_A, "ABCD-EFGH"), "code": "ABCD-EFGH", "status": "issued",
+                      "percent": Decimal(10)})
+    return tables
+
+
+def test_export_lists_everything_about_the_guest_in_this_restaurant(env, guest):
+    status, body = call(env, "GET", "/privacy/guests", query={"email": "ANNA@example.se "})
+    assert status == 200
+    assert sorted(b["reservationId"] for b in body["bookings"]) == ["next", "old"]  # not LOC_B, not Bo
+    assert "manageTokenHash" not in body["bookings"][0] and "PK" not in body["bookings"][0]
+    assert [o["orderId"] for o in body["orders"]] == ["o1"]
+    assert [c["requestId"] for c in body["cateringRequests"]] == ["q1"]
+    assert body["subscriber"]["status"] == "subscribed" and body["subscriber"]["locations"] == [LOC_A]
+    assert body["welcomeOfferCode"] == {"code": "ABCD-EFGH", "percent": 10, "status": "issued"}
+    assert body["consents"]["email"]["state"] == "granted"
+    by_phone = call(env, "GET", "/privacy/guests", query={"phone": "070-123 45 67"})[1]
+    assert len(by_phone["bookings"]) == 2
+
+
+def test_export_needs_owner_and_a_contact(env, guest):
+    assert call(env, "GET", "/privacy/guests", query={"email": "a@b.se"}, role="staff_user")[0] == 403
+    assert call(env, "GET", "/privacy/guests", query={})[0] == 400
+
+
+def test_erase_anonymises_keeps_receipts_and_coming_bookings(env, guest):
+    status, body = call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se", "phone": "0701234567"})
+    assert status == 200
+    assert body["consentWithdrawn"] == ["email"] and body["marketingRowsDeleted"] == 3 and body["anonymised"] == 3
+    assert body["kept"] == [{"kind": "booking", "locationId": LOC_A, "status": "reserved", "date": "2999-01-10",
+                             "id": "next"}]
+    pk = f"LOCATION#{LOC_A}"
+    old = guest["reservation"].get_item(Key={"PK": pk, "SK": "RESERVATION#2025-01-10#old"})["Item"]
+    assert old["customerName"] == "Anonymiserad" and "customerEmail" not in old and "notes" not in old
+    nxt = guest["reservation"].get_item(Key={"PK": pk, "SK": "RESERVATION#2999-01-10#next"})["Item"]
+    assert nxt["customerEmail"] == "Anna@Example.se"
+    other = guest["reservation"].get_item(Key={"PK": f"LOCATION#{LOC_B}", "SK": "RESERVATION#2025-01-10#b"})["Item"]
+    assert other["customerEmail"] == "Anna@Example.se"  # another restaurant's data is never touched
+    order = guest["order"].get_item(Key={"PK": pk, "SK": "ORDER#2025-02-01#o1"})["Item"]
+    assert "customerPhone" not in order and order["totalAmount"] == 12900 and order["lines"]
+    req = guest["catering"].get_item(Key={"PK": pk, "SK": "REQUEST#q1"})["Item"]
+    assert "customerEmail" not in req and req["companyName"] == "Firma AB" and req["invoiceNumber"] == "F-1"
+    assert req["signature"] == {"name": "Anna Gäst"} and req["deliveryAddress"] == {"street": "G 1"}
+    assert env["marketing"].scan()["Items"] == []
+    assert not consent.may_send(env["log"], TENANT_A, "email", "anna@example.se")
+    latest = consent.latest(env["log"], TENANT_A, consent.subject(TENANT_A, "email", "anna@example.se"))
+    assert latest["source"] == "erasure"
+    # Again: nothing new to anonymise, nothing breaks.
+    again = call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[1]
+    assert again["anonymised"] == 0 and again["marketingRowsDeleted"] == 0
+
+
+def test_erase_keeps_a_code_used_at_checkout(env, guest):
+    env["marketing"].update_item(Key=offer.code_key(TENANT_A, "ABCD-EFGH"), UpdateExpression="SET #s = :r",
+                                 ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":r": "redeemed"})
+    assert call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[1]["marketingRowsDeleted"] == 2
+    assert [i["SK"] for i in env["marketing"].scan()["Items"]] == ["CODE#ABCD-EFGH"]

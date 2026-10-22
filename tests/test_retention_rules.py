@@ -139,3 +139,35 @@ def test_suppression_deleted_after_its_period():
 def test_new_grant_after_a_suppression_is_kept():
     records = [_rec("grant", "2026-01-01T00:00:00Z"), _rec("suppressed", "2020-01-01T00:00:00Z")]
     assert r.consent_action(records, NOW, P) is None
+
+
+# --- marketing subscriber rows
+
+def _sub(status, **fields):
+    return {"PK": "TENANT#t#SUB", "SK": "SUB#abc", "status": status, "email": "a@b.se", "name": "Anna", **fields}
+
+
+def test_unconfirmed_sign_up_deleted_after_30_days():
+    assert r.subscriber_action(_sub("pending", pendingAt="2026-09-23T04:00:00Z"), NOW, P) is None
+    assert r.subscriber_action(_sub("pending", pendingAt="2026-09-22T02:00:00Z"), NOW, P) == "delete"
+
+
+@pytest.mark.parametrize("status", ["subscribed", "unsubscribed"])
+def test_other_subscribers_are_left_to_the_consent_rules(status):
+    assert r.subscriber_action(_sub(status, pendingAt="2020-01-01T00:00:00Z"), NOW, P) is None
+
+
+@pytest.mark.parametrize("status", ["bounced", "complained"])
+def test_suppressed_row_loses_the_address_then_goes_after_36_months(status):
+    assert r.subscriber_action(_sub(status, suppressedAt="2026-10-01T00:00:00Z"), NOW, P) is None
+    assert r.subscriber_action(_sub(status, suppressedAt="2026-09-01T00:00:00Z"), NOW, P) == "strip"
+    stripped = {"PK": "TENANT#t#SUB", "SK": "SUB#abc", "status": status, "suppressedAt": "2026-09-01T00:00:00Z",
+                "anonymisedAt": "2026-10-01T00:00:00Z"}
+    assert r.subscriber_action(stripped, NOW, P) is None
+    assert r.subscriber_action({**stripped, "suppressedAt": "2023-10-21T00:00:00Z"}, NOW, P) == "delete"
+    assert r.subscriber_action(_sub(status), NOW, P) is None  # no date: never guessed
+
+
+def test_erasure_withdrawal_is_suppressed_at_the_next_run():
+    records = [{**_rec("withdraw", "2026-10-22T02:00:00Z"), "source": "erasure"}]
+    assert r.consent_action(records, NOW, P) == ("suppress", records[0])

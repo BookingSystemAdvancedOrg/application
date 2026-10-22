@@ -99,6 +99,11 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/orders/{orderId}/status": frozenset({"put"}),
     "/locations/{locationId}/orders/pause": frozenset({"put"}),
     "/locations/{locationId}/orders/table-codes": frozenset({"post"}),
+    "/locations/{locationId}/catering/menu": frozenset({"get"}),
+    "/locations/{locationId}/catering/menu/dishes": frozenset({"get", "post"}),
+    "/locations/{locationId}/catering/menu/dishes/{dishId}": frozenset({"put", "delete"}),
+    "/locations/{locationId}/catering/menu/packages": frozenset({"get", "post"}),
+    "/locations/{locationId}/catering/menu/packages/{packageId}": frozenset({"put", "delete"}),
 }
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -133,6 +138,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/order", "post"),
         ("/locations/{locationId}/ordering", "get"),
         ("/locations/{locationId}/order-status/{orderId}", "get"),
+        ("/locations/{locationId}/catering/menu", "get"),
     }
 )
 BEARER_SECURITY = [{"bearerAuth": []}]

@@ -32,6 +32,7 @@ REQ_TABLE = "test-catering-requests"
 HIST_TABLE = "test-catering-history"
 TIERS_TABLE = "test-catering-tiers"
 MENU_TABLE = "test-menu"
+CATERING_MENU_TABLE = "test-catering-menu"
 BUCKET = "test-catering-docs"
 NOW = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
 DAY = "2026-10-20"
@@ -144,7 +145,7 @@ def env(monkeypatch):
         "ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "t", "AWS_SECRET_ACCESS_KEY": "t", "AWS_SESSION_TOKEN": "t",
         "AWS_DEFAULT_REGION": REGION, "CATERING_REQUESTS_TABLE_NAME": REQ_TABLE,
         "CATERING_REQUEST_HISTORY_TABLE_NAME": HIST_TABLE, "CATERING_DISCOUNT_TIERS_TABLE_NAME": TIERS_TABLE,
-        "MENU_TABLE_NAME": MENU_TABLE, "CATERING_DOCUMENTS_BUCKET_NAME": BUCKET, "USER_TABLE_NAME": "test-user",
+        "MENU_TABLE_NAME": MENU_TABLE, "CATERING_MENU_TABLE_NAME": CATERING_MENU_TABLE, "CATERING_DOCUMENTS_BUCKET_NAME": BUCKET, "USER_TABLE_NAME": "test-user",
         "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net", "ADMIN_DASHBOARD_URL": "https://admin.example.se",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "SCHEDULE_GROUP_NAME": "dev-catering",
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::1:role/sched", "SCHEDULER_DLQ_ARN": "arn:aws:sqs:x:1:dlq",
@@ -168,7 +169,7 @@ def env(monkeypatch):
                            sm.create_secret(Name="signing", SecretString=json.dumps({"provider": "simulator"}))["ARN"])
         monkeypatch.setenv("CATERING_STRIPE_WEBHOOK_SECRET_ARN", sm.create_secret(Name="whsec", SecretString=WHSEC)["ARN"])
         res = boto3.resource("dynamodb", region_name=REGION)
-        for name in (REQ_TABLE, HIST_TABLE, TIERS_TABLE, MENU_TABLE):
+        for name in (REQ_TABLE, HIST_TABLE, TIERS_TABLE, MENU_TABLE, CATERING_MENU_TABLE):
             _table(res, name)
         boto3.client("s3", region_name=REGION).create_bucket(
             Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION}, ObjectLockEnabledForBucket=True)

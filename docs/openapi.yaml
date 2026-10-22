@@ -64,6 +64,8 @@ tags:
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
   - name: Insights
     description: The restaurant's own figures for a period (Statistik in the admin app).
+  - name: Catering
+    description: Catering menu (dishes and packages, plan feature "catering"). Other catering routes are listed in infrastructure ROUTES.md.
 
 paths:
   /auth/login:
@@ -4334,6 +4336,242 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentLookup'}
 
+  /locations/{locationId}/catering/menu:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: The guest's catering menu
+      operationId: getCateringMenu
+      description: Active dishes and active packages whose dishes are all active, sorted by sort then name.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringMenu'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/dishes:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: All catering dishes (owner)
+      operationId: listCateringDishs
+      description: Active and inactive dishes.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [dishes], properties: {dishes: {type: array, items: {$ref: '#/components/schemas/CateringDish'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a catering dish
+      operationId: createCateringDish
+      description: New dish with version 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringDishInput'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringDish'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/dishes/{dishId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: dishId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a catering dish
+      operationId: updateCateringDish
+      description: Send the `version` you read; the answer has version + 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringDishInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringDish'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a catering dish
+      operationId: deleteCateringDish
+      description: Idempotent. A dish in a package answers 409 dish_in_package.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/packages:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: All catering packages (owner)
+      operationId: listCateringPackages
+      description: Active and inactive packages.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [packages], properties: {packages: {type: array, items: {$ref: '#/components/schemas/CateringPackage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a catering package
+      operationId: createCateringPackage
+      description: New package with version 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringPackageInput'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringPackage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/packages/{packageId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: packageId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a catering package
+      operationId: updateCateringPackage
+      description: Send the `version` you read; the answer has version + 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringPackageInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringPackage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a catering package
+      operationId: deleteCateringPackage
+      description: Idempotent.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
   /marketing/{proxy}:
     parameters:
       - {name: proxy, in: path, required: true, schema: {type: string}}
@@ -4534,6 +4772,57 @@ components:
           - no-store
 
   schemas:
+    CateringDishInput:
+      type: object
+      additionalProperties: false
+      required: [name, pricePerPortion]
+      properties:
+        name: {type: string, maxLength: 120}
+        description: {type: string, maxLength: 500}
+        pricePerPortion: {type: number, minimum: 0, maximum: 10000, description: 'Kronor incl. VAT, at most two decimals.'}
+        allergens:
+          type: array
+          items: {type: string, enum: [gluten, crustaceans, eggs, fish, peanuts, soy, milk, nuts, celery, mustard, sesame, sulphites, lupin, molluscs]}
+        dietary:
+          type: array
+          items: {type: string, enum: [vegetarian, vegan, gluten_free, lactose_free]}
+        active: {type: boolean, default: true}
+        sort: {type: integer, minimum: 0, maximum: 10000, default: 0}
+        sourceMenuItemId: {type: string, maxLength: 128, description: The regular menu dish it was copied from.}
+        version: {type: integer, minimum: 1, description: Required on PUT.}
+    CateringDish:
+      allOf:
+        - $ref: '#/components/schemas/CateringDishInput'
+        - type: object
+          required: [dishId, version, active, allergens, dietary, sort]
+          properties:
+            dishId: {type: string}
+    CateringPackageInput:
+      type: object
+      additionalProperties: false
+      required: [name, pricePerGuest, dishIds]
+      properties:
+        name: {type: string, maxLength: 120}
+        description: {type: string, maxLength: 500}
+        pricePerGuest: {type: number, minimum: 0, maximum: 10000, description: 'Kronor incl. VAT, at most two decimals.'}
+        dishIds: {type: array, minItems: 1, maxItems: 40, uniqueItems: true, items: {type: string}}
+        minGuests: {type: integer, minimum: 1, maximum: 5000}
+        active: {type: boolean, default: true}
+        sort: {type: integer, minimum: 0, maximum: 10000, default: 0}
+        version: {type: integer, minimum: 1, description: Required on PUT.}
+    CateringPackage:
+      allOf:
+        - $ref: '#/components/schemas/CateringPackageInput'
+        - type: object
+          required: [packageId, version, active, sort]
+          properties:
+            packageId: {type: string}
+    CateringMenu:
+      type: object
+      required: [dishes, packages]
+      properties:
+        dishes: {type: array, items: {$ref: '#/components/schemas/CateringDish'}}
+        packages: {type: array, items: {$ref: '#/components/schemas/CateringPackage'}}
     MarketingConsent:
       type: object
       description: |

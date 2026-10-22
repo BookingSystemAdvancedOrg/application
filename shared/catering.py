@@ -236,7 +236,19 @@ DEFAULT_SETTINGS = {
     "terms": "",
     "notifyEmail": None,
     "notifyPhone": None,
+    # Issue 5 M1: stored and edited; pricing and date checks use them from M2/M3.
+    "minGuests": 15,
+    "leadTimeRules": [],  # [{fromGuests, toGuests|null, days}]; empty = advanceDays
+    "deliveryBands": [],  # [{upToKm, price}]; empty = derived from the flat prices
+    "maxDeliveryKm": None,  # always the last band's upToKm
+    "defaultServiceIncluded": False,
+    "ownerReminderHours": 24,  # 0 = off
+    "signReminderDaysBefore": 2,  # 0 = off
+    "dayBeforeReminder": True,
+    "allowSimpleAcceptance": False,
 }
+MAX_LEAD_TIME_RULES = 10
+MAX_DELIVERY_BANDS = 10
 
 
 def validate_settings(raw, *, phone_normalizer=None):
@@ -248,7 +260,8 @@ def validate_settings(raw, *, phone_normalizer=None):
         raise ValueError(f"unsupported catering settings: {', '.join(unknown)}")
     s = {**DEFAULT_SETTINGS, **raw}
     out = {}
-    for flag in ("enabled", "pickup", "delivery", "allowOutsideArea"):
+    for flag in ("enabled", "pickup", "delivery", "allowOutsideArea", "defaultServiceIncluded",
+                 "dayBeforeReminder", "allowSimpleAcceptance"):
         if not isinstance(s[flag], bool):
             raise ValueError(f"{flag} must be true or false")
         out[flag] = s[flag]
@@ -276,7 +289,73 @@ def validate_settings(raw, *, phone_normalizer=None):
     out["notifyPhone"] = phone_normalizer(phone) if phone and phone_normalizer else phone
     if out["enabled"] and not (out["pickup"] or out["delivery"]):
         raise ValueError("enabled catering needs pickup or delivery")
+    out["minGuests"] = whole(s["minGuests"], 1, 5000, "minGuests")
+    out["leadTimeRules"] = _lead_time_rules(s["leadTimeRules"])
+    _delivery_bands(s, out)
+    # Checked against the expiry only once set: a stored location without
+    # them must still load (settings_of) even with a short expiry.
+    out["ownerReminderHours"] = whole(s["ownerReminderHours"], 0, 168, "ownerReminderHours")
+    if "ownerReminderHours" in raw and out["ownerReminderHours"] >= out["requestExpiryHours"]:
+        raise ValueError("ownerReminderHours must be less than requestExpiryHours")
+    out["signReminderDaysBefore"] = whole(s["signReminderDaysBefore"], 0, 59, "signReminderDaysBefore")
+    if "signReminderDaysBefore" in raw and out["signReminderDaysBefore"] >= out["offerValidDays"]:
+        raise ValueError("signReminderDaysBefore must be less than offerValidDays")
     return out
+
+
+def _lead_time_rules(raw):
+    """Contiguous guest ranges, ascending; only the last may be open (toGuests null)."""
+    if not isinstance(raw, list) or len(raw) > MAX_LEAD_TIME_RULES:
+        raise ValueError(f"leadTimeRules must be a list of at most {MAX_LEAD_TIME_RULES} rules")
+    rules = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) - {"fromGuests", "toGuests", "days"}:
+            raise ValueError("each lead time rule needs fromGuests, toGuests and days")
+        rule = {"fromGuests": whole(entry.get("fromGuests"), 1, 5000, "fromGuests"),
+                "toGuests": None if entry.get("toGuests") is None else whole(entry["toGuests"], 1, 5000, "toGuests"),
+                "days": whole(entry.get("days"), 0, 90, "days")}
+        if rule["toGuests"] is not None and rule["toGuests"] < rule["fromGuests"]:
+            raise ValueError("toGuests must not be less than fromGuests")
+        rules.append(rule)
+    rules.sort(key=lambda r: r["fromGuests"])
+    for prev, nxt in zip(rules, rules[1:]):
+        if prev["toGuests"] is None or nxt["fromGuests"] != prev["toGuests"] + 1:
+            raise ValueError("leadTimeRules must not overlap or leave gaps")
+    return rules
+
+
+def _delivery_bands(s, out):
+    """deliveryBands + maxDeliveryKm. Without bands (older settings) the flat
+    prices become one band, or two when delivery beyond the limit was allowed
+    (then without an upper limit, i.e. up to 1000 km). The flat fields are
+    then derived back from the bands, so the current request pricing
+    (within/beyond zone) stays in step until it moves to bands."""
+    raw = s["deliveryBands"]
+    if not isinstance(raw, list) or len(raw) > MAX_DELIVERY_BANDS:
+        raise ValueError(f"deliveryBands must be a list of at most {MAX_DELIVERY_BANDS} bands")
+    if not raw:
+        raw = [{"upToKm": max(1, out["maxDistanceKm"]), "price": out["priceWithinLimit"]}]
+        if out["allowOutsideArea"] and raw[0]["upToKm"] < 1000:
+            raw.append({"upToKm": 1000, "price": out["priceBeyondLimit"]})
+        maximum = raw[-1]["upToKm"]
+    else:
+        maximum = s["maxDeliveryKm"]
+    bands = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) != {"upToKm", "price"}:
+            raise ValueError("each delivery band needs upToKm and price")
+        bands.append({"upToKm": whole(entry["upToKm"], 1, 1000, "upToKm"),
+                      "price": whole(entry["price"], 0, 100000, "price")})
+    if any(b["upToKm"] <= a["upToKm"] for a, b in zip(bands, bands[1:])):
+        raise ValueError("deliveryBands must be in ascending order of upToKm")
+    if maximum is not None and whole(maximum, 1, 1000, "maxDeliveryKm") != bands[-1]["upToKm"]:
+        raise ValueError("maxDeliveryKm must be the last band's upToKm")
+    out["deliveryBands"] = bands
+    out["maxDeliveryKm"] = bands[-1]["upToKm"]
+    out["maxDistanceKm"] = bands[0]["upToKm"]
+    out["priceWithinLimit"] = bands[0]["price"]
+    out["priceBeyondLimit"] = bands[-1]["price"]
+    out["allowOutsideArea"] = len(bands) > 1
 
 
 def settings_of(location):
@@ -290,7 +369,8 @@ def settings_of(location):
 def public_settings(settings):
     keys = ("enabled", "minPortions", "maxPortions", "advanceDays", "pickup", "delivery", "deliveryArea",
             "maxDistanceKm", "priceWithinLimit", "priceBeyondLimit", "allowOutsideArea", "cleaningFee", "terms",
-            "offerValidDays", "paymentTermsDays")
+            "offerValidDays", "paymentTermsDays", "minGuests", "leadTimeRules", "deliveryBands", "maxDeliveryKm",
+            "defaultServiceIncluded", "allowSimpleAcceptance")
     return {k: settings[k] for k in keys}
 
 
@@ -346,6 +426,114 @@ def tier_for(tiers, portions):
         if best is None or tier["discountPercent"] > best["discountPercent"]:
             best = tier
     return best
+
+
+# --- catering menu (catering-menu table: DISH# and PACKAGE# per location) ------------------
+
+# EU 1169/2011 annex II (the 14 allergens) and the dietary labels the admin offers.
+ALLERGENS = ("gluten", "crustaceans", "eggs", "fish", "peanuts", "soy", "milk", "nuts", "celery", "mustard",
+             "sesame", "sulphites", "lupin", "molluscs")
+DIETARY = ("vegetarian", "vegan", "gluten_free", "lactose_free")
+MAX_DISHES = 200
+MAX_PACKAGES = 50
+MAX_PACKAGE_DISHES = 40
+MAX_MENU_PRICE = 10000  # kronor per portion / guest - typo guard
+DISH = "DISH#"
+PACKAGE = "PACKAGE#"
+_DISH_FIELDS = ("name", "description", "pricePerPortion", "allergens", "dietary", "active", "sort",
+                "sourceMenuItemId")
+_PACKAGE_FIELDS = ("name", "description", "pricePerGuest", "dishIds", "minGuests", "active", "sort")
+
+
+def menu_table():
+    return os.environ["CATERING_MENU_TABLE_NAME"]
+
+
+def menu_key(location_id, prefix, item_id):
+    return {"PK": location_pk(location_id), "SK": f"{prefix}{item_id}"}
+
+
+def _price(value, field):
+    kronor_to_ore(value, field)  # at least 0, at most two decimals
+    if Decimal(value) > MAX_MENU_PRICE:
+        raise ValueError(f"{field} may be at most {MAX_MENU_PRICE}")
+    return Decimal(value)
+
+
+def _codes(value, allowed, field):
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(v not in allowed for v in value):
+        raise ValueError(f"{field} must be a list of: {', '.join(allowed)}")
+    return [v for v in allowed if v in value]
+
+
+def _common(raw, fields):
+    if not isinstance(raw, dict):
+        raise ValueError("body must be an object")
+    unknown = sorted(set(raw) - set(fields) - {"version"})
+    if unknown:
+        raise ValueError(f"unsupported fields: {', '.join(unknown)}")
+    active = raw.get("active", True)
+    if not isinstance(active, bool):
+        raise ValueError("active must be true or false")
+    return {"name": text(raw.get("name"), "name", required=True, max_length=120),
+            "description": text(raw.get("description"), "description", max_length=500) or "",
+            "active": active, "sort": whole(raw.get("sort", 0), 0, 10000, "sort")}
+
+
+def validate_dish(raw):
+    dish = _common(raw, _DISH_FIELDS)
+    dish["pricePerPortion"] = _price(raw.get("pricePerPortion"), "pricePerPortion")
+    dish["allergens"] = _codes(raw.get("allergens"), ALLERGENS, "allergens")
+    dish["dietary"] = _codes(raw.get("dietary"), DIETARY, "dietary")
+    source = text(raw.get("sourceMenuItemId"), "sourceMenuItemId", max_length=128)
+    if source:
+        dish["sourceMenuItemId"] = source
+    return dish
+
+
+def validate_package(raw, dish_ids):
+    """`dish_ids`: the location's existing dish ids (a package only lists those)."""
+    package = _common(raw, _PACKAGE_FIELDS)
+    package["pricePerGuest"] = _price(raw.get("pricePerGuest"), "pricePerGuest")
+    wanted = raw.get("dishIds")
+    if not isinstance(wanted, list) or not wanted or len(wanted) > MAX_PACKAGE_DISHES:
+        raise ValueError(f"dishIds must list 1 to {MAX_PACKAGE_DISHES} dishes")
+    if len(set(wanted)) != len(wanted) or any(d not in dish_ids for d in wanted):
+        raise ValueError("dishIds must be distinct dishes of this location")
+    package["dishIds"] = list(wanted)
+    if raw.get("minGuests") is not None:
+        package["minGuests"] = whole(raw["minGuests"], 1, 5000, "minGuests")
+    return package
+
+
+def _menu_view(item, prefix, id_field):
+    out = {k: v for k, v in item.items() if k not in ("PK", "SK")}
+    return {id_field: item["SK"].removeprefix(prefix), **out}
+
+
+def list_catering_menu(location_id, *, active_only=False):
+    """{dishes, packages} sorted by sort then name. Active only = what a
+    guest may order: active dishes, and active packages whose dishes are
+    all active."""
+    table = dynamo.table(menu_table())
+    request = {"KeyConditionExpression": Key("PK").eq(location_pk(location_id)), "ConsistentRead": True}
+    items = []
+    while True:
+        page = table.query(**request)
+        items += page.get("Items") or []
+        if "LastEvaluatedKey" not in page:
+            break
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    dishes = [_menu_view(i, DISH, "dishId") for i in items if i["SK"].startswith(DISH)]
+    packages = [_menu_view(i, PACKAGE, "packageId") for i in items if i["SK"].startswith(PACKAGE)]
+    if active_only:
+        dishes = [d for d in dishes if d.get("active") is True]
+        live = {d["dishId"] for d in dishes}
+        packages = [p for p in packages if p.get("active") is True and set(p.get("dishIds") or []) <= live]
+    order = lambda x: (int(x.get("sort") or 0), str(x.get("name") or "").lower())  # noqa: E731
+    return {"dishes": sorted(dishes, key=order), "packages": sorted(packages, key=order)}
 
 
 # --- pricing ---------------------------------------------------------------------------------

@@ -9,11 +9,11 @@ Updated: 2026-10-22
 
 | # | Issue | Priority | Phase | Branch | Agent | Status | Blockers |
 |---|-------|----------|-------|--------|-------|--------|----------|
-| 5 | Catering | 1 | 2 Implementing (M1 done, in review) | dev | review agent | in progress | provider adapter waits for Scrive/SEB decision |
-| 3 | Booking time limits | 2 | 1 Approved | dev | none | queued after catering | none |
-| 2 | Kitchen printing | 3 | 1 Approved | dev | none | queued after catering | none (Star mC-Print3, Ethernet, 80 mm) |
-| 4 | Cookies and email marketing | 4 | 1 Approved | dev | none | queued after catering | none |
-| 1 | Scheduled dishes | 5 | 1 Approved | dev | none | queued after catering | none |
+| 5 | Catering | 1 | 2 Implementing (M2-M5) | wt/issue-5-catering (local) | impl agent | in progress | provider adapter waits for Scrive/SEB decision |
+| 3 | Booking time limits | 2 | 2 Implementing | wt/issue-3-booking-limits (local) | impl agent | in progress | none |
+| 2 | Kitchen printing | 3 | 1 Approved | dev | none | starts after 1 and 3 merge | none (Star mC-Print3, Ethernet, 80 mm) |
+| 4 | Cookies and email marketing | 4 | 1 Approved | dev | none | starts after 1 and 3 merge | none |
+| 1 | Scheduled dishes | 5 | 2 Implementing | wt/issue-1-scheduled-dishes (local) | impl agent | in progress | none |
 
 Phase 0 (recon, `CONVENTIONS.md`): done.
 Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md section 8). Approved 2026-10-22.
@@ -33,15 +33,20 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 
 - 2026-10-23: Issue 5 M1 shipped to dev: infrastructure 77a1695, b27272f (CI 39854058365 ok); application b2d6e1a (CI 39861092948 ok); admin 78ee3c2 (CI 39862567469 ok). Migration script `scripts/migrate_catering_menu.py` written, not yet run.
 
+- 2026-10-23: M1 review fixes on dev: application dda8a08 (CI 39864076823 ok), admin 076dcfa (CI 39865892508 ok). Races in menu CRUD documented as `shortcut:`.
+- 2026-10-23: M1-Q1 answered: `defaultServiceIncluded` = true (12 % VAT) until the accountant confirms. M1-Q2 answered: the owner runs `migrate_catering_menu.py --apply` with their dev profile.
+- 2026-10-23: Faster plan approved by the owner (relayed, then confirmed here): catering M2-M5, issue 1 and issue 3 in parallel; issues 2 and 4 after 1 and 3 are merged; one review per issue (catering after M5); catering infrastructure for M2-M5 pushed ahead in one go. Supersedes "one implementation agent at a time" and "all of catering first".
+- 2026-10-23: File ownership for parallel work: issue 1 owns shared/menu.py, get-menu, manage-menu, shared/orders.py, admin meny, customer bestall; issue 3 owns availability, booking_rules, reservations, booking functions, create/get-location, admin installningar profil + bokningar, customer boka/bokning; catering owns everything catering incl. shared/catering.py and all infrastructure. openapi.yaml and test_openapi.py: each edits only its own sections.
+
 ## Rule changes
 
 - 2026-10-22: Git. Overrides CLAUDE.md "git read only, owner commits" and the brief's per-issue branches, worktrees and `integration/restaurant-features`. Work only on `dev` in every repo; Claude commits and pushes directly to `origin/dev`. No other branches. Implementation agents run without worktree isolation, one writer at a time per repo/file set. Merging to `main` stays the owner's call. A push to `dev` runs the dev deploy pipeline (dev account only).
 - 2026-10-22: Terraform `plan` and `apply` run only in the CI/CD pipeline, never locally (overrides X1). Locally only `fmt` and `validate`.
 - 2026-10-22: Orchestrator md files are deleted once every step in them is done (long-term content moved to normal docs first).
+- 2026-10-23: Temporary LOCAL worktrees and branches (`wt/<slug>` under `booqy/.worktrees/`) allowed for parallel agents (owner confirmed). Never pushed; the orchestrator merges into dev, runs the full tests of the touched repos, pushes dev (one repo at a time), then deletes worktree and branch. Only dev and main exist on GitHub.
 - All other CLAUDE.md rules still hold: no em or en dashes anywhere, Swedish app copy, light and dark mode, never change OIDC/deploy roles, call out IAM changes before making them, no secrets.
 
 ## Open questions
 
 All batched in `PLAN.md` section 8 (owner), 9 (end customer), 10 (legal advisor).
-- M1-Q1: default for `defaultServiceIncluded` (false = 6 % food VAT from M2, true = keep 12 %). Rec: true until the accountant confirms.
-- M1-Q2: running `migrate_catering_menu.py --apply` needs credentials for dev; how should it run (owner locally, or a one-off CI job)?
+

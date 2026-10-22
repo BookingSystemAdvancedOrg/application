@@ -10,8 +10,9 @@ charges, platform key + Stripe-Account header, shared/stripe_client.py).
                     created and sent when the offer is signed; Stripe e-mails
                     it and the overdue reminders.
 
-Every line carries the account's 12 % VAT rate (inclusive - prices on the
-offer include VAT); the rate is found or created once per account.
+Every line carries the account's inclusive tax rate for the offer's VAT rate
+(12 % or 6 %, shared/catering.py vat_rate_for; prices on the offer include
+VAT); each rate is found or created once per account.
 Idempotency keys make every create safe to retry.
 """
 
@@ -21,22 +22,28 @@ from shared import stripe_client as stripe
 _tax_cache = {}
 
 
-def tax_rate(account):
-    """The account's active, inclusive 12 % tax rate (created if missing)."""
-    if account in _tax_cache:
-        return _tax_cache[account]
+def tax_rate(account, percent=c.VAT_RATE):
+    """The account's active, inclusive tax rate of `percent` (created if missing)."""
+    percent = int(percent)
+    if (account, percent) in _tax_cache:
+        return _tax_cache[(account, percent)]
     found = stripe.request("GET", "/v1/tax_rates", {"active": True, "inclusive": True, "limit": 100},
                            account=account)
     for rate in found.get("data") or []:
-        if float(rate.get("percentage") or 0) == c.VAT_RATE and (rate.get("country") in (None, "SE")):
-            _tax_cache[account] = rate["id"]
+        if float(rate.get("percentage") or 0) == percent and (rate.get("country") in (None, "SE")):
+            _tax_cache[(account, percent)] = rate["id"]
             return rate["id"]
     rate = stripe.request("POST", "/v1/tax_rates", {
-        "display_name": "Moms", "percentage": c.VAT_RATE, "inclusive": True, "country": "SE",
-        "jurisdiction": "SE", "description": "Moms catering 12 %",
-    }, account=account, idempotency_key=f"tax-rate-se-{c.VAT_RATE}-incl")
-    _tax_cache[account] = rate["id"]
+        "display_name": "Moms", "percentage": percent, "inclusive": True, "country": "SE",
+        "jurisdiction": "SE", "description": f"Moms catering {percent} %",
+    }, account=account, idempotency_key=f"tax-rate-se-{percent}-incl")
+    _tax_cache[(account, percent)] = rate["id"]
     return rate["id"]
+
+
+def _offer_rate(account, offer):
+    """Offers from before per-line VAT carry no vatRate: 12 % then."""
+    return tax_rate(account, int(offer["totals"].get("vatRate") or c.VAT_RATE))
 
 
 def _metadata(item, offer):
@@ -58,7 +65,7 @@ def _amount_lines(offer):
 def checkout(item, offer, account, success_url, cancel_url, now, attempt, *, embedded=False):
     """Checkout for a private guest. The tier discount is a Checkout
     discount via a one-off coupon (Checkout has no negative lines)."""
-    rate = tax_rate(account)
+    rate = _offer_rate(account, offer)
     params = {
         "mode": "payment",
         "line_items": [{
@@ -98,7 +105,7 @@ def invoice(item, offer, account, settings):
     """Creates, finalizes and sends the company's invoice. Returns the
     finalized invoice object."""
     rid = item["requestId"]
-    rate = tax_rate(account)
+    rate = _offer_rate(account, offer)
     customer = stripe.request("POST", "/v1/customers", {
         "name": item.get("companyName") or item.get("customerName"),
         "email": item.get("customerEmail"),

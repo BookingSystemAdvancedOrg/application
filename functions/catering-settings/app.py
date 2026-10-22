@@ -8,7 +8,10 @@ TRIGGER:
     PUT /locations/{locationId}/catering/settings   -- Auth: JWT (owner)
         Saves the location's `cateringSettings` (fields merged over the
         current ones; shared/catering.py validates). Answers the full
-        settings, including the owner's notification contacts.
+        settings, including the owner's notification contacts, and
+        `originFound`: whether the address deliveries start from (originAddress,
+        else the location's address) can be located for road distances
+        (true / false; null when delivery is off or the map service is down).
     GET    /locations/{locationId}/catering/menu                         -- Auth: NONE
         The guest's catering menu (guest fields only): active dishes and
         active packages whose dishes are all active. 404 while catering is off.
@@ -36,6 +39,7 @@ ENV_VARS:
 AWS RESOURCE ACCESS:
     location table: GetItem, Query, UpdateItem (cateringSettings only)
     catering-menu table: GetItem, Query, PutItem, DeleteItem
+    Amazon Location: geo-places:Geocode (the delivery origin)
 """
 
 import os
@@ -43,7 +47,7 @@ import os
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import dynamo, http, tenant
+from shared import dynamo, geo, http, tenant
 from shared.reservations import normalize_phone
 
 _PATH = "/locations/{locationId}/catering/settings"
@@ -74,7 +78,19 @@ def _put(event):
         ConditionExpression="attribute_exists(PK)",
         ExpressionAttributeValues={":s": settings},
     )
-    return http.respond(200, settings)
+    return http.respond(200, {**settings, "originFound": _origin_found(settings, ctx.location)})
+
+
+def _origin_found(settings, location):
+    if not settings["delivery"]:
+        return None
+    origin = settings["originAddress"] or (location or {}).get("address")
+    if not origin:
+        return False
+    try:
+        return geo.position(origin) is not None
+    except (BotoCoreError, ClientError):
+        return None
 
 
 def _validate(prefix, body, menu):

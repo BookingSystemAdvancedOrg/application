@@ -193,11 +193,14 @@ def env(monkeypatch):
         fake = FakeStripe()
         monkeypatch.setattr(stripe_client, "request", fake)
         monkeypatch.setattr(c, "now_utc", lambda: NOW)
+        distance = {"km": 10.0}
+        monkeypatch.setattr(c.geo, "distance_km", lambda origin, destination: distance["km"])
+        monkeypatch.setattr(c.geo, "position", lambda text: None if "okänd" in text else [18.07, 59.31])
         mods = {name: load(f"catering-{name}", f"cat_{name.replace('-', '_')}") for name in
                 ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle")}
         sched = FakeClient()
         mods["lifecycle"]._clients["scheduler"] = sched
-        yield SimpleNamespace(m=mods, res=res, stripe=fake, sched=sched, monkeypatch=monkeypatch)
+        yield SimpleNamespace(m=mods, res=res, stripe=fake, sched=sched, monkeypatch=monkeypatch, distance=distance)
         shared_dynamo._resource = None
         shared_dynamo._client = None
         shared_tenant.reset_caches()
@@ -336,7 +339,8 @@ def test_request_is_priced_on_the_server(env):
 
 @pytest.mark.parametrize("change, status, error", [
     ({"deliveryDate": "2026-10-04"}, 409, "catering_too_soon"),
-    ({"items": [{"menuItemId": "lax", "quantity": 5}]}, 400, "at least 10 portions"),
+    ({"guests": 10}, 400, "at least 15 guests"),
+    ({"guests": None}, 400, "guests is required"),
     ({"items": [{"menuItemId": "vin", "quantity": 20}]}, 400, "menu_item_unavailable"),
     ({"items": [{"menuItemId": "old", "quantity": 20}]}, 400, "menu_item_unavailable"),
     ({"customerType": "company"}, 400, "orgNumber is required"),
@@ -350,10 +354,14 @@ def test_request_rules(env, change, status, error):
 
 
 def test_company_request_and_pickup(env):
+    no_signatory = create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234")
+    assert body_of(no_signatory) == {"error": "signatoryAuthority must be true"}
     body = body_of(create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234",
-                          invoiceReference="Kalle", fulfilment="pickup", deliveryAddress=None))
+                          invoiceReference="Kalle", fulfilment="pickup", deliveryAddress=None,
+                          signatoryName="Karl Ek", signatoryRole="VD", signatoryAuthority=True))
     item = c.load(LOC_A, body["requestId"])
     assert item["orgNumber"] == "556000-1234" and item["request"]["deliveryFee"] == 0
+    assert item["signatory"] == {"name": "Karl Ek", "role": "VD", "authorityConfirmed": True}
     assert "deliveryAddress" not in item
 
 
@@ -562,7 +570,8 @@ def test_guest_rejects_the_offer(env):
 
 # --- company: lifecycle invoices ------------------------------------------------------------------------
 
-COMPANY = dict(customerType="company", companyName="Acme AB", orgNumber="556000-1234", invoiceReference="Kalle")
+COMPANY = dict(customerType="company", companyName="Acme AB", orgNumber="556000-1234", invoiceReference="Kalle",
+               signatoryName="Karl Ek", signatoryRole="VD", signatoryAuthority=True)
 
 
 def test_company_is_invoiced_by_the_lifecycle(env):

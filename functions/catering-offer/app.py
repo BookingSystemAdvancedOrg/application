@@ -74,7 +74,8 @@ _ROUTES = {
 }
 _EDITABLE = (c.REQUESTED, c.CHANGE_REQUESTED, c.OFFER_SENT)
 _OFFER_FIELDS = {"lines", "discountPercent", "deliveryFee", "equipmentReturn", "cleaningFee", "message",
-                 "validUntil"}
+                 "validUntil", "serviceIncluded"}
+_LINE_REFS = ("menuItemId", "dishId", "packageId")
 
 
 
@@ -106,15 +107,16 @@ def _offer_from(data, item, settings, location, now):
         raise ValueError(f"lines must be a list of 1-{c.MAX_LINES} lines")
     lines = []
     for raw in raw_lines:
-        if not isinstance(raw, dict) or set(raw) - {"name", "unitPrice", "quantity", "menuItemId"}:
+        if not isinstance(raw, dict) or set(raw) - {"name", "unitPrice", "quantity", *_LINE_REFS}:
             raise ValueError("each line needs name, unitPrice (kr) and quantity")
         line = {
             "name": c.text(raw.get("name"), "line name", required=True, max_length=120),
             "unitPrice": _unit_price(raw.get("unitPrice")),
             "quantity": c.whole(raw.get("quantity"), 1, c.MAX_LINE_QTY, "quantity"),
         }
-        if raw.get("menuItemId"):
-            line["menuItemId"] = c.text(raw["menuItemId"], "menuItemId", max_length=128)
+        for ref in _LINE_REFS:  # where the line came from: counts towards the day's capacity
+            if raw.get(ref):
+                line[ref] = c.text(raw[ref], ref, max_length=128)
         lines.append(line)
     discount = c.whole(data.get("discountPercent", 0), 0, 50, "discountPercent")
     fee = c.kronor_to_ore(data.get("deliveryFee", 0), "deliveryFee")
@@ -127,13 +129,19 @@ def _offer_from(data, item, settings, location, now):
         cleaning = c.kronor_to_ore(data["cleaningFee"], "cleaningFee")
     if cleaning > prices.MAX_ITEM_PRICE_ORE:
         raise ValueError(prices.TOO_HIGH)
-    totals = c.totals(lines, discount, fee, cleaning)
+    service = data.get("serviceIncluded", item.get("serviceIncluded", settings["defaultServiceIncluded"]))
+    if not isinstance(service, bool):
+        raise ValueError("serviceIncluded must be true or false")
+    tz = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
+    today = now.astimezone(tz).date()
+    rate = c.vat_rate_for(service, date.fromisoformat(item["deliveryDate"]) if item.get("deliveryDate") else today)
+    for line in lines:
+        line["vatRate"] = rate
+    totals = c.totals(lines, discount, fee, cleaning, rate)
     if totals["total"] <= 0:
         raise ValueError("offer total must be more than 0 kr")
     if totals["total"] > c.MAX_TOTAL_ORE:
         raise ValueError(f"offer total may be at most {c.MAX_TOTAL_ORE // 100} kr")
-    tz = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
-    today = now.astimezone(tz).date()
     valid = data.get("validUntil") or (today + timedelta(days=settings["offerValidDays"])).isoformat()
     try:
         valid_day = date.fromisoformat(valid)
@@ -147,7 +155,8 @@ def _offer_from(data, item, settings, location, now):
         "lines": lines,
         "totals": totals,
         "equipmentReturn": equipment,
-        "portions": sum(line["quantity"] for line in lines if line.get("menuItemId")),
+        "serviceIncluded": service,
+        "portions": sum(line["quantity"] for line in lines if any(line.get(r) for r in _LINE_REFS)),
         "message": c.text(data.get("message"), "message", max_length=c.MESSAGE_MAX) or "",
         "validUntil": valid,
     }

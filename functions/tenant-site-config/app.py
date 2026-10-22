@@ -23,7 +23,8 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY
+    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY, RETENTION_* (the periods the
+    privacy notice shows, shared/retention.py)
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.3
 """
@@ -35,7 +36,8 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, catering, dynamo, guarantee, http, orders, tenant
+from shared import booking_rules, catering, consent, dynamo, guarantee, http, orders, privacy_notice, retention
+from shared import tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -207,6 +209,13 @@ def _site_config(params):
             "accountId": (row.get("stripe") or {}).get("accountId"),
         },
         "turnstile": {"siteKey": os.environ.get("TURNSTILE_SITE_KEY") or None},
+        # The guest notice on the forms, the restaurant's own privacy notice
+        # and the marketing checkbox wording (null without marketing).
+        "privacy": {
+            "notice": privacy_notice.public(row),
+            "retention": retention.public_periods(),
+            "marketingConsent": consent.public_text(row.get("name")) if features.get("marketing") else None,
+        },
     }
 
 

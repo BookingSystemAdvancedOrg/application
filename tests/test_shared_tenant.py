@@ -195,3 +195,20 @@ def test_fresh_read_and_invalidate(aws):
     assert tenant.get_tenant(TENANT_A, fresh=True)["name"] == "Renamed"
     tenant.invalidate(TENANT_A)
     assert tenant.get_tenant(TENANT_A)["name"] == "Renamed"
+
+
+def test_new_tenant_goes_live_only_after_accepting_the_dpa(aws):
+    res = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
+    res.put_item(Item=tenant_row(TENANT_B, dpaRequired=True))
+    tenant.reset_caches()
+    assert err(tenant.for_public, LOC_B) == (404, "not found")
+    assert tenant.for_jwt(ev(TENANT_B)).tenant_id == TENANT_B  # the owner can still log in
+    res.put_item(Item=tenant_row(TENANT_B, dpaRequired=True,
+                                 dpa={"version": "2026-10-v1", "acceptedAt": "2026-10-22T10:00:00.000Z"}))
+    tenant.reset_caches()
+    assert tenant.for_public(LOC_B).tenant_id == TENANT_B
+
+
+def test_existing_tenant_without_the_flag_is_never_gated(aws):
+    assert "dpaRequired" not in tenant.get_tenant(TENANT_B, fresh=True)
+    assert tenant.for_public(LOC_B).tenant_id == TENANT_B

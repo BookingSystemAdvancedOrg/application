@@ -131,12 +131,13 @@ def owner_email(kind, item, tenant_row, location, admin_link):
             "Öppna förfrågan för att skicka en offert eller tacka nej."),
         "catering_change_requested": (
             f"Ändringar önskas i cateringofferten - {who}",
-            f"{who} vill ändra offerten för {when}: \"{item.get('changeMessage') or ''}\". "
-            "Öppna förfrågan och skicka en ny version."),
+            # The guest's own words stay in admin, not in a forwardable e-mail.
+            f"{who} vill ändra offerten för {when}. "
+            "Läs önskemålen i förfrågan och skicka en ny version."),
         "catering_rejected": (
             f"Cateringofferten avböjdes - {who}",
             f"{who} har avböjt offerten för {when}."
-            + (f" Anledning: {item.get('rejectReason')}" if item.get("rejectReason") else "")),
+            + (" Anledningen finns i förfrågan i admin." if item.get("rejectReason") else "")),
         "catering_signed": (
             f"Cateringofferten är signerad - {who}",
             f"{who} har signerat offerten för {when} ({total}) med BankID. "

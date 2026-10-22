@@ -20,7 +20,13 @@ restaurant should hear about sets `notice` on the head item; the table's
 stream delivers it to the notification function (same contract as
 reservations and orders).
 
-Amounts are öre. Prices include VAT (12 % - catering is a restaurant service).
+Amounts are öre. Prices include VAT (12 % - catering is a restaurant service;
+the delivery and cleaning fees follow the food).
+
+Equipment return: the guest chooses to bring dishes and equipment back
+cleaned (free) or not cleaned (the location's `cleaningFee`). The request and
+every offer version keep the choice and the fee (öre), so a signed
+version never changes when the owner changes the fee later.
 """
 
 import base64
@@ -69,6 +75,9 @@ PRIVATE = "private"
 COMPANY = "company"
 PICKUP = "pickup"
 DELIVERY = "delivery"
+CLEANED = "cleaned"
+NOT_CLEANED = "not_cleaned"
+EQUIPMENT_RETURNS = (CLEANED, NOT_CLEANED)
 
 # notice types (guest and/or owner messages, shared/catering_messages.py)
 N_REQUEST_RECEIVED = "catering_request_received"
@@ -220,6 +229,7 @@ DEFAULT_SETTINGS = {
     "priceWithinLimit": 395,
     "priceBeyondLimit": 795,
     "allowOutsideArea": False,
+    "cleaningFee": 0,
     "offerValidDays": 7,
     "paymentTermsDays": 30,
     "requestExpiryHours": 72,
@@ -253,6 +263,7 @@ def validate_settings(raw, *, phone_normalizer=None):
     out["maxDistanceKm"] = whole(s["maxDistanceKm"], 0, 1000, "maxDistanceKm")
     out["priceWithinLimit"] = whole(s["priceWithinLimit"], 0, 100000, "priceWithinLimit")
     out["priceBeyondLimit"] = whole(s["priceBeyondLimit"], 0, 100000, "priceBeyondLimit")
+    out["cleaningFee"] = whole(s["cleaningFee"], 0, 100000, "cleaningFee")
     out["offerValidDays"] = whole(s["offerValidDays"], 1, 60, "offerValidDays")
     out["paymentTermsDays"] = whole(s["paymentTermsDays"], 0, 90, "paymentTermsDays")
     out["requestExpiryHours"] = whole(s["requestExpiryHours"], 12, 720, "requestExpiryHours")
@@ -278,7 +289,7 @@ def settings_of(location):
 
 def public_settings(settings):
     keys = ("enabled", "minPortions", "maxPortions", "advanceDays", "pickup", "delivery", "deliveryArea",
-            "maxDistanceKm", "priceWithinLimit", "priceBeyondLimit", "allowOutsideArea", "terms",
+            "maxDistanceKm", "priceWithinLimit", "priceBeyondLimit", "allowOutsideArea", "cleaningFee", "terms",
             "offerValidDays", "paymentTermsDays")
     return {k: settings[k] for k in keys}
 
@@ -339,13 +350,15 @@ def tier_for(tiers, portions):
 
 # --- pricing ---------------------------------------------------------------------------------
 
-def totals(lines, discount_percent, delivery_fee):
-    """{subtotal, discountPercent, discount, deliveryFee, total, vat} in öre."""
+def totals(lines, discount_percent, delivery_fee, cleaning_fee=0):
+    """{subtotal, discountPercent, discount, deliveryFee, cleaningFee, total, vat}
+    in öre. The discount is on the dishes only, not on the fees."""
     subtotal = sum(int(line["unitPrice"]) * int(line["quantity"]) for line in lines)
     discount = int((Decimal(subtotal) * int(discount_percent) / 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
-    total = subtotal - discount + int(delivery_fee)
+    total = subtotal - discount + int(delivery_fee) + int(cleaning_fee)
     return {"subtotal": subtotal, "discountPercent": int(discount_percent), "discount": discount,
-            "deliveryFee": int(delivery_fee), "total": total, "vat": vat_of(total), "vatRate": VAT_RATE}
+            "deliveryFee": int(delivery_fee), "cleaningFee": int(cleaning_fee), "total": total,
+            "vat": vat_of(total), "vatRate": VAT_RATE}
 
 
 def delivery_fee(settings, fulfilment, zone):
@@ -356,6 +369,19 @@ def delivery_fee(settings, fulfilment, zone):
             raise Unavailable("catering_outside_area")
         return settings["priceBeyondLimit"] * 100
     return settings["priceWithinLimit"] * 100
+
+
+def equipment_return(value):
+    """The guest's choice; a request without one (an older site) is cleaned."""
+    if value is None:
+        return CLEANED
+    if value not in EQUIPMENT_RETURNS:
+        raise ValueError("equipmentReturn must be cleaned or not_cleaned")
+    return value
+
+
+def cleaning_fee(settings, choice):
+    return settings["cleaningFee"] * 100 if choice == NOT_CLEANED else 0
 
 
 def read_menu(location_id, item_ids):
@@ -395,9 +421,9 @@ def validate_wanted(raw):
     return [(i, quantities[i]) for i in order]
 
 
-def price_request(location_id, settings, tiers, wanted, fulfilment, zone):
+def price_request(location_id, settings, tiers, wanted, fulfilment, zone, equipment=CLEANED):
     """Lines from the menu (alcohol excluded), the tier discount on total
-    portions and the delivery fee."""
+    portions, the delivery fee and the cleaning fee."""
     menu = read_menu(location_id, [i for i, _ in wanted])
     lines = []
     for item_id, qty in wanted:
@@ -416,10 +442,12 @@ def price_request(location_id, settings, tiers, wanted, fulfilment, zone):
     if portions > settings["maxPortions"]:
         raise ValueError(f"at most {settings['maxPortions']} portions")
     tier = tier_for(tiers, portions)
-    result = totals(lines, tier["discountPercent"] if tier else 0, delivery_fee(settings, fulfilment, zone))
+    result = totals(lines, tier["discountPercent"] if tier else 0, delivery_fee(settings, fulfilment, zone),
+                    cleaning_fee(settings, equipment))
     if result["total"] > MAX_TOTAL_ORE:
         raise ValueError("order total is too large")
-    return {"lines": lines, "portions": portions, "tierName": tier["name"] if tier else None, **result}
+    return {"lines": lines, "portions": portions, "tierName": tier["name"] if tier else None,
+            "equipmentReturn": equipment, **result}
 
 
 def check_date(settings, location, day, now):
@@ -637,12 +665,22 @@ def offer_document(item, offer, tenant_row, location, settings):
         "lines": [{"name": line["name"], "unitPrice": int(line["unitPrice"]), "quantity": int(line["quantity"])}
                   for line in offer["lines"]],
         "totals": {k: int(offer["totals"][k]) for k in ("subtotal", "discount", "deliveryFee", "total", "vat")},
+        **_equipment_terms(offer),
         "currency": CURRENCY,
         "validUntil": offer["validUntil"],
         "paymentTermsDays": int(settings.get("paymentTermsDays") or 0) if item.get("customerType") == COMPANY else 0,
         "terms": offer.get("terms") or "",
         "message": offer.get("message") or "",
     }
+
+
+def _equipment_terms(offer):
+    """Signed with the offer. Left out of offers sent before the choice
+    existed, so their document (and its hash) reads as it did."""
+    if not offer.get("equipmentReturn"):
+        return {}
+    return {"equipmentReturn": offer["equipmentReturn"],
+            "cleaningFee": int(offer["totals"].get("cleaningFee") or 0)}
 
 
 def plain(value):
@@ -674,7 +712,7 @@ _GUEST_FIELDS = ("requestId", "locationId", "status", "customerType", "customerN
                  "deliveryZone", "deliveryAddress", "guests", "notes", "request", "createdAt",
                  "currentOfferVersion", "validUntil", "signedAt", "signedOfferVersion", "paid",
                  "invoiceNumber", "invoiceUrl", "invoiceStatus", "declineReason", "cancelReason",
-                 "changeMessage", "delivered")
+                 "changeMessage", "delivered", "equipmentReturn")
 
 
 def guest_view(item, offer=None, location=None, settings=None):
@@ -687,6 +725,7 @@ def guest_view(item, offer=None, location=None, settings=None):
             "version": int(offer["version"]),
             "lines": offer["lines"],
             "totals": offer["totals"],
+            "equipmentReturn": offer.get("equipmentReturn"),
             "validUntil": offer["validUntil"],
             "message": offer.get("message"),
             "terms": offer.get("terms"),

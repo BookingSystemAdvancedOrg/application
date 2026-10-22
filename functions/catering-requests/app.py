@@ -8,7 +8,8 @@ TRIGGER:
 PURPOSE:
     POST: a guest sends a catering request from the calculator - dishes and
     portions, date (and time), pickup or delivery, private person or company,
-    contact details. The server prices it again from the menu, the discount
+    contact details, and how equipment comes back (cleaned, or not cleaned
+    with the location's cleaning fee). The server prices it again from the menu, the discount
     tiers and the delivery prices (shared/catering.py) - what the browser
     showed is never trusted - and checks the rules: catering on, lead time,
     portion limits, closed days and the day's capacity (checked here, held
@@ -29,7 +30,8 @@ ENV_VARS:
     USER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DISCOUNT_TIERS_TABLE_NAME, MENU_TABLE_NAME, LINK_SIGNING_KEY_SECRET_ARN,
     TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
-    MARKETING_TABLE_NAME (optional: catering statistics and "offers" opt-in)
+    MARKETING_TABLE_NAME (optional: catering statistics and "offers" opt-in),
+    CONSENT_TABLE_NAME (optional: the marketing consent log, shared/consent.py)
 
 Full details: infrastructure docs/CATERING-FLOW.md
 """
@@ -42,7 +44,7 @@ from datetime import timedelta
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import dynamo, http, marketing, request_guard, tenant, turnstile
+from shared import consent, dynamo, http, marketing, request_guard, tenant, turnstile
 from shared import reservations as r
 
 logger = logging.getLogger()
@@ -52,7 +54,7 @@ _PATH = "/locations/{locationId}/catering/requests"
 _FIELDS = {"items", "customerType", "name", "email", "phone", "companyName", "orgNumber",
            "invoiceReference", "deliveryDate", "deliveryTime", "fulfilment", "deliveryZone",
            "deliveryAddress", "guests", "notes", "language", "acceptTerms", "turnstileToken",
-           "attribution", "marketingOptIn"}
+           "attribution", "marketingOptIn", "marketingConsent", "equipmentReturn"}
 IP_LIMIT = (5, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
 
@@ -110,6 +112,7 @@ def _validate(data, settings):
         "deliveryZone": zone,
         "deliveryAddress": _address(data.get("deliveryAddress")) if fulfilment == c.DELIVERY else None,
         "deliveryTime": time_,
+        "equipmentReturn": c.equipment_return(data.get("equipmentReturn")),
         "guests": None if data.get("guests") in (None, "") else c.whole(data["guests"], 1, 5000, "guests"),
         "notes": c.text(data.get("notes"), "notes", max_length=c.NOTES_MAX),
     }
@@ -125,7 +128,12 @@ def _create(event):
     opt_in = data.pop("marketingOptIn", False)
     if not isinstance(opt_in, bool):
         raise ValueError("marketingOptIn must be true or false")
+    raw_consent = data.pop("marketingConsent", None)
     fields = _validate(data, settings)
+    # Marketing consent: voluntary, never needed for the request (shared/consent.py).
+    ticked = consent.parse_request(raw_consent, email=fields.get("customerEmail"), phone=fields.get("customerPhone"),
+                                   legacy_opt_in=opt_in, source="catering")
+    opt_in = bool(ticked and consent.EMAIL in ticked[1])
     wanted = c.validate_wanted(data.get("items"))
     now = c.now_utc()
     day = data.get("deliveryDate")
@@ -141,7 +149,7 @@ def _create(event):
     ], now)
     try:
         priced = c.price_request(location_id, settings, c.list_tiers(location_id), wanted,
-                                 fields["fulfilment"], fields["deliveryZone"])
+                                 fields["fulfilment"], fields["deliveryZone"], fields["equipmentReturn"])
         left = c.capacity_left(location_id, settings, day)
         if left is not None and left < priced["portions"]:
             raise c.Unavailable("catering_day_full")
@@ -178,6 +186,9 @@ def _create(event):
     logger.info(json.dumps({"catering": "requested", "requestId": request_id, "tenantId": ctx.tenant_id,
                             "portions": priced["portions"], "total": priced["total"]}))
     _marketing(ctx, item, opt_in)
+    consent.record_from_form(ctx.tenant, ctx.tenant_id, parsed=ticked, email=fields.get("customerEmail"),
+                             phone=fields.get("customerPhone"), location_id=location_id, source="catering",
+                             ref=request_id)
     return http.respond(201, {"requestId": request_id, "locationId": location_id, "token": token,
                               "status": c.REQUESTED, "request": priced})
 
@@ -216,7 +227,7 @@ def _list(event):
     items.sort(key=lambda i: i.get("createdAt") or "", reverse=True)
     summary = ("requestId", "status", "customerType", "customerName", "companyName", "deliveryDate",
                "deliveryTime", "fulfilment", "createdAt", "updatedAt", "currentOfferVersion", "paid",
-               "validUntil", "invoiceStatus")
+               "validUntil", "invoiceStatus", "equipmentReturn")
     out = []
     for item in items:
         row = {k: item.get(k) for k in summary if item.get(k) is not None}

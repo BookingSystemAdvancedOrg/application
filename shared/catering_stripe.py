@@ -45,11 +45,13 @@ def _metadata(item, offer):
 
 
 def _amount_lines(offer):
-    """(name, unit öre, quantity) incl. discount and delivery as own lines."""
+    """(name, unit öre, quantity) incl. delivery and cleaning as own lines."""
     out = [(line["name"], int(line["unitPrice"]), int(line["quantity"])) for line in offer["lines"]]
     totals = offer["totals"]
     if int(totals.get("deliveryFee") or 0):
         out.append(("Leverans", int(totals["deliveryFee"]), 1))
+    if int(totals.get("cleaningFee") or 0):
+        out.append(("Rengöring av utrustning", int(totals["cleaningFee"]), 1))
     return out
 
 

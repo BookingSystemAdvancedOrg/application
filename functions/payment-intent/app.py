@@ -55,7 +55,8 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, manage_link, marketing, order_payments, payment_domains, request_guard, site
+from shared import consent, dynamo, http, manage_link, marketing, order_payments, payment_domains, request_guard
+from shared import site
 from shared import marketing_offer as offer
 from shared import tenant, turnstile
 from shared import orders as o
@@ -68,7 +69,7 @@ logger.setLevel(logging.INFO)
 _PATH = "/order"
 _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email", "notes",
            "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn",
-           "embedded"}
+           "embedded", "marketingConsent"}
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 _NOTES_MAX = 300
@@ -118,7 +119,10 @@ def _create(event):
     opt_in = data.get("marketingOptIn", False)
     if not isinstance(opt_in, bool):
         raise ValueError("marketingOptIn must be true or false")
-    guest["orderMarketingOptIn"] = opt_in
+    # Marketing consent: voluntary, never needed for the order (shared/consent.py).
+    ticked = consent.parse_request(data.get("marketingConsent"), email=guest.get("customerEmail"),
+                                   phone=guest.get("customerPhone"), legacy_opt_in=opt_in, source="order")
+    guest["orderMarketingOptIn"] = bool(ticked and consent.EMAIL in ticked[1])
     if data.get("discountCode") not in (None, "") and not isinstance(data.get("discountCode"), str):
         raise ValueError("discountCode must be text")
     if not isinstance(data.get("embedded", False), bool):
@@ -127,10 +131,14 @@ def _create(event):
 
     counted = _guard(event, data, guest, now)
     try:
-        return _place(ctx, location_id, mode, data, wanted, guest, now)
+        response = _place(ctx, location_id, mode, data, wanted, guest, now)
     except Exception:
         request_guard.refund(counted)
         raise
+    consent.record_from_form(ctx.tenant, ctx.tenant_id, parsed=ticked, email=guest.get("customerEmail"),
+                             phone=guest.get("customerPhone"), location_id=location_id, source="order",
+                             ref=consent.ref_from_response(response, "orderId"))
+    return response
 
 
 def _place(ctx, location_id, mode, data, wanted, guest, now):

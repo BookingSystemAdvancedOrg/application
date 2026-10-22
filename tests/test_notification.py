@@ -123,13 +123,24 @@ def test_online_booking_confirms_to_guest_and_tells_the_restaurant(env):
     assert "3 personer" in text and "Götgatan 1" in text
     assert staff["Destination"] == {"ToAddresses": ["soder@roma.se"]}
     assert staff["Message"]["Subject"]["Data"].startswith("Ny bokning 2026-09-20 18:00")
-    assert staff["ReplyToAddresses"] == ["anna@example.se"]
-    assert "https://admin.example.se/bokningar?date=2026-09-20" in staff["Message"]["Body"]["Text"]["Data"]
+    assert staff["ReplyToAddresses"] == []
+    staff_text = staff["Message"]["Body"]["Text"]["Data"]
+    assert "https://admin.example.se/bokningar?date=2026-09-20" in staff_text
+    # Data minimisation: no guest contact details or free text in the shared inbox.
+    assert "anna@example.se" not in staff_text and "+46701234567" not in staff_text
     (sms,) = sns.calls
     assert sms["PhoneNumber"] == "+46701234567" and "söndag 20 september kl 18:00" in sms["Message"]
     assert sms["Message"].startswith("Roma Södermalm: Hej Anna! Ditt bord är bokat")
     assert "/bokning/" in sms["Message"]
     assert sms["MessageAttributes"]["AWS.SNS.SMS.SenderID"]["StringValue"] == "Roma"
+
+
+def test_staff_email_flags_a_guest_message_without_quoting_it(env):
+    module, ses, _ = env
+    run(module, record(booking(notes="Nötallergi, rullstol"), event_name="INSERT"))
+    staff = [c for c in ses.calls if c["Destination"]["ToAddresses"] == ["soder@roma.se"]]
+    text = staff[0]["Message"]["Body"]["Text"]["Data"]
+    assert "Nötallergi" not in text and "Gästen har lämnat ett meddelande" in text
 
 
 def test_the_tenants_own_domain_is_used_for_the_link(env):

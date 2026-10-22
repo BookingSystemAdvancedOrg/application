@@ -42,6 +42,8 @@ servers:
         description: AWS region containing the HTTP API.
 
 tags:
+  - name: Privacy
+    description: Guest privacy (docs/privacy.md) - the restaurant's privacy notice, marketing consent lookup and withdrawal.
   - name: Authentication
     description: Public Cognito sign-in, challenge, and token-refresh flows.
   - name: Users
@@ -2975,6 +2977,55 @@ paths:
         '503':
           $ref: '#/components/responses/AccountServiceUnavailable'
 
+  /tenant/dpa/accept:
+    post:
+      tags:
+        - Account
+      summary: Accept the current personuppgiftsbiträdesavtal (DPA)
+      operationId: acceptTenantDpa
+      description: |
+        Owner only. Records that the caller accepted `version`, which must be
+        the current DPA version (409 `dpa_version_outdated` with
+        `currentVersion` otherwise). Each acceptance is an append-only row
+        (version, time, accepting user); the response is the tenant with an
+        updated `dpa`. A new tenant (`dpa.required`) serves no public routes
+        until a version is accepted.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version:
+                  type: string
+      responses:
+        '200':
+          description: Accepted; the tenant as GET /tenant returns it.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
   /locations/{locationId}/reservations:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -4128,6 +4179,161 @@ paths:
         '200':
           description: HTML confirmation; the address is subscribed.
 
+  /m/w/{token}:
+    get:
+      tags:
+        - Privacy
+      summary: Withdraw marketing consent (page)
+      operationId: consentWithdrawPage
+      description: |
+        The guest's own withdrawal link (shared/consent.py withdraw_link):
+        HMAC-signed, expires after 90 days. Shows the channels the guest
+        has consented to and a button; a GET alone never withdraws. Marketing
+        only: booking and order messages are not affected.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+        '404':
+          description: HTML page; the link is invalid or expired.
+    post:
+      tags:
+        - Privacy
+      summary: Withdraw marketing consent
+      operationId: consentWithdraw
+      description: Writes a withdrawal record per channel in the link (never an overwrite) and unsubscribes the e-mail.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation.
+        '404':
+          description: HTML page; the link is invalid or expired.
+
+  /privacy/notice:
+    get:
+      tags:
+        - Privacy
+      summary: The restaurant's privacy notice for guests and the filled template
+      operationId: privacyNoticeGet
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notice, template]
+                properties:
+                  notice: {$ref: '#/components/schemas/PrivacyNotice'}
+                  template: {type: string}
+        '403':
+          description: Not the owner.
+    put:
+      tags:
+        - Privacy
+      summary: Save a new version of the privacy notice
+      operationId: privacyNoticeSave
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              additionalProperties: false
+              properties:
+                body:
+                  type: string
+                  maxLength: 20000
+                  description: Plain text. "## " starts a heading, "- " a list item.
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notice: {$ref: '#/components/schemas/PrivacyNotice'}
+        '400':
+          description: Empty, too long or not plain text.
+    delete:
+      tags:
+        - Privacy
+      summary: Go back to the template
+      operationId: privacyNoticeReset
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The template is used again.
+
+  /privacy/consents:
+    get:
+      tags:
+        - Privacy
+      summary: One guest's marketing consent state and history
+      operationId: privacyConsentLookup
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: email, in: query, required: false, schema: {type: string}}
+        - {name: phone, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: Per channel (email, sms) the state and the records, newest first.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentLookup'}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
+  /privacy/consents/withdraw:
+    post:
+      tags:
+        - Privacy
+      summary: Withdraw a guest's marketing consent on their behalf
+      operationId: privacyConsentWithdraw
+      description: A new withdrawal record per channel (actor = the owner). Marketing only.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channels]
+              additionalProperties: false
+              properties:
+                email: {type: string}
+                phone: {type: string}
+                channels:
+                  type: array
+                  minItems: 1
+                  items: {type: string, enum: [email, sms]}
+      responses:
+        '200':
+          description: The channels withdrawn and the new state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentLookup'}
+
   /marketing/{proxy}:
     parameters:
       - {name: proxy, in: path, required: true, schema: {type: string}}
@@ -4328,6 +4534,60 @@ components:
           - no-store
 
   schemas:
+    MarketingConsent:
+      type: object
+      description: |
+        The guest's voluntary consent to offers (shared/consent.py). Leave it
+        out when the box is not ticked; a booking or order never needs it.
+        The wording is the server's (GET /site-config privacy.marketingConsent);
+        only its version comes back here. Channels without a contact detail
+        are dropped.
+      required: [channels, textVersion]
+      additionalProperties: false
+      properties:
+        channels:
+          type: array
+          minItems: 1
+          items: {type: string, enum: [email, sms]}
+        textVersion:
+          type: string
+          description: The current wording version (400 for any other).
+    PrivacyNotice:
+      type: object
+      required: [body, version, custom]
+      properties:
+        body: {type: string}
+        version: {type: integer, description: 0 = the template}
+        updatedAt: {type: string, nullable: true}
+        custom: {type: boolean}
+    ConsentLookup:
+      type: object
+      properties:
+        withdrawn:
+          type: array
+          items: {type: string, enum: [email, sms]}
+          description: Only in the withdraw answer.
+        email: {$ref: '#/components/schemas/ChannelConsent'}
+        sms: {$ref: '#/components/schemas/ChannelConsent'}
+    ChannelConsent:
+      type: object
+      required: [state, history]
+      properties:
+        state: {type: string, enum: [granted, withdrawn, none]}
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              at: {type: string}
+              action: {type: string, enum: [grant, withdraw, suppressed]}
+              channel: {type: string, enum: [email, sms]}
+              source: {type: string}
+              text: {type: string}
+              textVersion: {type: string}
+              locationId: {type: string}
+              ref: {type: string}
+              by: {type: string, enum: [guest, restaurant, system]}
     GuideState:
       type: object
       additionalProperties: false
@@ -4489,6 +4749,9 @@ components:
           enum: [sv, en]
         marketingOptIn:
           type: boolean
+          description: Older sites only. true = consent to offers by e-mail (legacy wording). Prefer marketingConsent.
+        marketingConsent:
+          $ref: '#/components/schemas/MarketingConsent'
         acceptTerms:
           type: boolean
           enum: [true]
@@ -4936,6 +5199,25 @@ components:
           $ref: '#/components/schemas/TenantNotifications'
         insights:
           $ref: '#/components/schemas/TenantInsightsSettings'
+        dpa:
+          type: object
+          additionalProperties: false
+          description: Personuppgiftsbiträdesavtal status. Added later; older backends omit it.
+          properties:
+            currentVersion:
+              type: string
+            acceptedVersion:
+              type: string
+              nullable: true
+            acceptedAt:
+              type: string
+              format: date-time
+              nullable: true
+            required:
+              type: boolean
+              description: A new tenant - its public routes answer 404 until a version is accepted.
+            upToDate:
+              type: boolean
         role:
           type: string
           enum: [owner_user, staff_user]
@@ -5234,6 +5516,8 @@ components:
             sent to. Lowers every line by its percent; 409 discount_invalid /
             discount_expired / discount_used / discount_min_order /
             discount_other_email when it can't be used.
+        marketingConsent:
+          $ref: '#/components/schemas/MarketingConsent'
         marketingOptIn:
           type: boolean
           description: The guest ticked "send me offers" (subscribed when the order is paid).

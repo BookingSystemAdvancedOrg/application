@@ -354,9 +354,9 @@ def _reservation(record):
         try:
             subject, text = messages.staff_email(kind, new, tenant_row, location,
                                                  os.environ.get("ADMIN_DASHBOARD_URL"))
-            guest_email = new.get("customerEmail")
+            # No guest address in Reply-To either: contact details are in admin.
             _send_email(staff_to, subject, text, None, source=source,
-                        reply_to=[guest_email] if guest_email else [], tenant_id=tenant_id, location_id=location_id)
+                        reply_to=[], tenant_id=tenant_id, location_id=location_id)
             sent.append("staff_email")
         except Exception as exc:  # noqa: BLE001 - the guest part is done; log, don't retry
             logger.error(json.dumps({"failed": "staff_email", "reservationId": new.get("reservationId"),

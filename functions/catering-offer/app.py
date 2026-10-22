@@ -16,8 +16,11 @@ PURPOSE:
     The restaurant's side of a catering request (shared/catering.py):
 
     - The owner adjusts the offer freely (lines, prices, discount, delivery
-      fee, message, valid-until) and sends it: every send is a new,
-      immutable OFFER#vN in the history; the guest can only sign the latest.
+      fee, equipment return and cleaning fee, message, valid-until) and
+      sends it: every send is a new, immutable OFFER#vN in the history; the
+      guest can only sign the latest. The version keeps its own copy of the
+      return choice and the fee, so changing the location's cleaning fee
+      never touches an offer already sent or signed.
       Sending holds the portions on the day (capacity) - the difference
       when a new version replaces an older one.
     - Decline (before signing) releases the capacity and tells the guest.
@@ -70,7 +73,8 @@ _ROUTES = {
     ("POST", "/locations/{locationId}/catering/invoices/{invoiceId}/mark-paid"): "mark_paid",
 }
 _EDITABLE = (c.REQUESTED, c.CHANGE_REQUESTED, c.OFFER_SENT)
-_OFFER_FIELDS = {"lines", "discountPercent", "deliveryFee", "message", "validUntil"}
+_OFFER_FIELDS = {"lines", "discountPercent", "deliveryFee", "equipmentReturn", "cleaningFee", "message",
+                 "validUntil"}
 
 
 
@@ -114,7 +118,16 @@ def _offer_from(data, item, settings, location, now):
         lines.append(line)
     discount = c.whole(data.get("discountPercent", 0), 0, 50, "discountPercent")
     fee = c.kronor_to_ore(data.get("deliveryFee", 0), "deliveryFee")
-    totals = c.totals(lines, discount, fee)
+    equipment = c.equipment_return(data.get("equipmentReturn", item.get("equipmentReturn")))
+    if equipment == c.CLEANED:
+        cleaning = 0
+    elif data.get("cleaningFee") is None:
+        cleaning = c.cleaning_fee(settings, equipment)  # the fee in force when the owner sends
+    else:
+        cleaning = c.kronor_to_ore(data["cleaningFee"], "cleaningFee")
+    if cleaning > prices.MAX_ITEM_PRICE_ORE:
+        raise ValueError(prices.TOO_HIGH)
+    totals = c.totals(lines, discount, fee, cleaning)
     if totals["total"] <= 0:
         raise ValueError("offer total must be more than 0 kr")
     if totals["total"] > c.MAX_TOTAL_ORE:
@@ -133,6 +146,7 @@ def _offer_from(data, item, settings, location, now):
     return {
         "lines": lines,
         "totals": totals,
+        "equipmentReturn": equipment,
         "portions": sum(line["quantity"] for line in lines if line.get("menuItemId")),
         "message": c.text(data.get("message"), "message", max_length=c.MESSAGE_MAX) or "",
         "validUntil": valid,
@@ -146,8 +160,8 @@ def _view(event):
     for v in range(1, int(item.get("currentOfferVersion") or 0) + 1):
         try:
             offer = c.load_offer(item["requestId"], v)
-            offers.append({k: offer.get(k) for k in ("version", "lines", "totals", "validUntil", "message",
-                                                      "documentHash", "createdAt", "createdBy")})
+            offers.append({k: offer.get(k) for k in ("version", "lines", "totals", "equipmentReturn", "validUntil",
+                                                      "message", "documentHash", "createdAt", "createdBy")})
         except c.NotFound:
             pass
     settings = c.settings_of(ctx.location)
@@ -193,14 +207,17 @@ def _send(event):
                   "document": document, "createdAt": c.iso(now), "createdBy": ctx.sub}
     summary = {k: offer[k] for k in ("version", "lines", "totals", "validUntil", "message", "portions")}
     summary["documentHash"] = doc_hash
+    equipment = offer.get("equipmentReturn") or c.equipment_return(item.get("equipmentReturn"))
+    summary["equipmentReturn"] = equipment
     c.transact([
         {"Put": {"TableName": c.history_table(), "Item": c.serialize(offer_item),
                  "ConditionExpression": "attribute_not_exists(SK)"}},
         c.head_update(item, to_status=c.OFFER_SENT, sets=[
             "currentOfferVersion = :v", "offer = :o", "validUntil = :valid", "capacityHeld = :held",
-            "notice = :n", "updatedAt = :now", "offerSentAt = :now"],
+            "notice = :n", "updatedAt = :now", "offerSentAt = :now", "equipmentReturn = :eq"],
             removes=["draft", "changeMessage", "signing", "expiresAt"],
             values={":v": version, ":o": summary, ":valid": offer["validUntil"], ":held": int(offer["portions"]),
+                    ":eq": equipment,
                     ":n": c.notice(c.N_OFFER_SENT, now, version=version), ":now": c.iso(now)}),
         c.capacity_change(location_id, settings, item["deliveryDate"], delta),
         c.audit_put(item["requestId"], "offer_sent", ctx.sub, now, version=version,

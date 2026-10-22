@@ -734,3 +734,119 @@ def test_catering_opt_in_subscribes_and_counts_for_marketing_restaurants(env):
     stats = [i for i in table.scan()["Items"] if i["SK"].startswith("DAY#")]
     assert len(stats) == 1 and stats[0]["catering"] == 1
     assert create(env, marketingOptIn="yes")["statusCode"] == 400
+
+
+# --- equipment return and cleaning fee ---------------------------------------------------------
+
+def set_cleaning_fee(env, kronor):
+    put = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+           "body": json.dumps({"cleaningFee": kronor})}
+    response = env.m["settings"].handler(with_tenant_claims(put), None)
+    assert response["statusCode"] == 200, response
+    shared_tenant.reset_caches()
+    return body_of(response)
+
+
+def test_cleaning_fee_setting(env):
+    assert set_cleaning_fee(env, 300)["cleaningFee"] == 300
+    get = env.m["settings"].handler({"routeKey": "GET /locations/{locationId}/catering/settings",
+                                     "pathParameters": {"locationId": LOC_A}}, None)
+    assert body_of(get)["cleaningFee"] == 300
+    for bad in (-1, 12.5, "300", 100001):
+        put = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+               "body": json.dumps({"cleaningFee": bad})}
+        assert env.m["settings"].handler(with_tenant_claims(put), None)["statusCode"] == 400
+    assert c.settings_of({})["cleaningFee"] == 0
+
+
+def test_not_cleaned_adds_the_cleaning_fee_as_its_own_amount(env):
+    set_cleaning_fee(env, 300)
+    priced = body_of(create(env, equipmentReturn="not_cleaned"))["request"]
+    # 4700 kr dishes - 5 % (dishes only) + 395 kr delivery + 300 kr cleaning
+    assert priced["equipmentReturn"] == "not_cleaned" and priced["cleaningFee"] == 30000
+    assert priced["discount"] == 23500 and priced["total"] == 486000 + 30000
+    assert priced["vat"] == 55286  # 5160 kr x 12/112, rounded half up
+    cleaned = body_of(create(env, equipmentReturn="cleaned", phone="0701234568", email="b@example.se"))["request"]
+    assert cleaned["cleaningFee"] == 0 and cleaned["total"] == 486000
+    # an older site without the field: cleaned, no fee
+    older = body_of(create(env, phone="0701234569", email="c@example.se"))
+    assert older["request"]["cleaningFee"] == 0
+    assert c.load(LOC_A, older["requestId"])["equipmentReturn"] == "cleaned"
+    bad = create(env, equipmentReturn="dirty", phone="0701234560", email="d@example.se")
+    assert bad["statusCode"] == 400 and "equipmentReturn" in body_of(bad)["error"]
+
+
+def test_vat_on_the_cleaning_fee():
+    lines = [{"unitPrice": 100000, "quantity": 1}]
+    t = c.totals(lines, 0, 0, 30000)
+    assert t["total"] == 130000 and t["cleaningFee"] == 30000 and t["vat"] == 13929 and t["vatRate"] == 12
+    # the discount is on the dishes only
+    t = c.totals(lines, 10, 39500, 30000)
+    assert t["discount"] == 10000 and t["total"] == 159500 and t["vat"] == c.vat_of(159500) == 17089
+    assert c.totals(lines, 0, 0)["cleaningFee"] == 0
+
+
+def test_offer_carries_the_choice_and_its_own_fee(env):
+    set_cleaning_fee(env, 300)
+    rid = body_of(create(env, equipmentReturn="not_cleaned"))["requestId"]
+    rows_event = {"routeKey": "GET /locations/{locationId}/catering/requests", "pathParameters": {"locationId": LOC_A}}
+    row = body_of(env.m["requests"].handler(with_tenant_claims(rows_event), None))["requests"][0]
+    assert row["equipmentReturn"] == "not_cleaned"
+    # no fee in the body: the location's fee in force when the owner sends
+    sent = body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))
+    assert sent["offer"]["totals"]["cleaningFee"] == 30000 and sent["offer"]["equipmentReturn"] == "not_cleaned"
+    # the owner sets a fee for this offer, or switches to cleaned (no fee whatever the body says)
+    v2 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "cleaningFee": 250}, request_id=rid))
+    assert v2["offer"]["totals"]["cleaningFee"] == 25000
+    v3 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "equipmentReturn": "cleaned", "cleaningFee": 250},
+                       request_id=rid))
+    assert v3["offer"]["totals"]["cleaningFee"] == 0 and v3["equipmentReturn"] == "cleaned"
+    assert staff(env, "PUT", "/offer", body={**OFFER, "equipmentReturn": "x"}, request_id=rid)["statusCode"] == 400
+    view = body_of(staff(env, "GET", request_id=rid))
+    assert [(o["equipmentReturn"], o["totals"]["cleaningFee"]) for o in view["offers"]] == \
+        [("not_cleaned", 30000), ("not_cleaned", 25000), ("cleaned", 0)]
+
+
+def test_signed_offer_keeps_its_price_after_a_fee_change(env):
+    set_cleaning_fee(env, 300)
+    rid, token = signed(env, equipmentReturn="not_cleaned")
+    item = c.load(LOC_A, rid)
+    signed_total = int(item["offer"]["totals"]["total"])
+    offer = c.load_offer(rid, 1)
+    assert offer["document"]["cleaningFee"] == 30000 and offer["document"]["equipmentReturn"] == "not_cleaned"
+    assert c.document_hash(offer["document"]) == item["signature"]["documentHash"]
+
+    set_cleaning_fee(env, 500)
+    view = body_of(guest(env, "GET", "", rid, token))
+    assert view["offer"]["totals"]["cleaningFee"] == 30000 and view["offer"]["totals"]["total"] == signed_total
+    assert view["offer"]["equipmentReturn"] == "not_cleaned"
+    guest(env, "POST", "/checkout", rid, token)
+    params = next(x for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions")["params"]
+    names = [(li["price_data"]["product_data"]["name"], li["price_data"]["unit_amount"]) for li in params["line_items"]]
+    assert names[-1] == ("Rengöring av utrustning", 30000)
+    charged = sum(li["price_data"]["unit_amount"] * li["quantity"] for li in params["line_items"]) \
+        - int(item["offer"]["totals"]["discount"])
+    assert charged == signed_total
+    # a new request or an unsigned offer sent now gets the new fee
+    assert body_of(create(env, equipmentReturn="not_cleaned", phone="0701234568",
+                          email="b@example.se"))["request"]["cleaningFee"] == 50000
+
+
+def test_company_invoice_has_the_cleaning_line(env):
+    set_cleaning_fee(env, 300)
+    rid, _ = signed(env, equipmentReturn="not_cleaned", **COMPANY)
+    item = c.load(LOC_A, rid)
+    env.m["lifecycle"].handler({"Records": [stream_record(item, old={**item, "status": "offer_sent"})]},
+                               SimpleNamespace(invoked_function_arn="arn:fn"))
+    items = [x["params"] for x in env.stripe.calls if x["path"] == "/v1/invoiceitems"]
+    assert {"description": "Rengöring av utrustning", "unit_amount": 30000} in \
+        [{k: i[k] for k in ("description", "unit_amount")} for i in items]
+    assert sum(i["unit_amount"] * i["quantity"] for i in items) == int(item["offer"]["totals"]["total"])
+
+
+def test_offers_sent_before_the_choice_hash_as_before():
+    item = {"requestId": "r", "customerType": "private"}
+    old = {"version": 1, "lines": [{"name": "A", "unitPrice": 100, "quantity": 1}], "validUntil": "2026-10-10",
+           "totals": {"subtotal": 100, "discount": 0, "deliveryFee": 0, "total": 100, "vat": 11}}
+    document = c.offer_document(item, old, {}, {}, {})
+    assert "cleaningFee" not in document and "equipmentReturn" not in document

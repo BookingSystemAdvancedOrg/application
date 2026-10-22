@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import boto3
+from boto3.dynamodb.conditions import Key
 import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
@@ -381,3 +382,43 @@ def test_statistik_staff_access_defaults_to_operations_and_is_owner_only(app):
     staff = module.handler(make_event("PATCH", body={"insights": {"staffAccess": "operations"}}, role="staff_user"),
                            None)
     assert staff["statusCode"] == 403
+
+
+def test_owner_accepts_the_current_dpa_and_it_is_recorded(app):
+    module, tenants = app
+    before = body_of(module.handler(make_event(), None))["dpa"]
+    assert before["acceptedVersion"] is None and before["upToDate"] is False
+
+    response = module.handler(make_event("POST", "/tenant/dpa/accept",
+                                         body={"version": module.dpa.CURRENT_VERSION}), None)
+
+    assert response["statusCode"] == 200
+    status = body_of(response)["dpa"]
+    assert status["upToDate"] is True and status["acceptedVersion"] == module.dpa.CURRENT_VERSION
+    (record,) = tenants.query(
+        KeyConditionExpression=Key("PK").eq(f"DPA#{TENANT_A}"))["Items"]
+    assert record["version"] == module.dpa.CURRENT_VERSION and record["acceptedAt"] == status["acceptedAt"]
+    assert record["acceptedBy"] == {"sub": OWNER_A_SUB, "email": "owner@a.example", "name": "Owner A"}
+    profile = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]
+    assert profile["dpa"]["acceptedBySub"] == OWNER_A_SUB
+    assert profile["senderName"] == "Roma"  # the rest of the profile is untouched
+
+
+def test_accepting_an_old_dpa_version_is_409(app):
+    module, _ = app
+    response = module.handler(make_event("POST", "/tenant/dpa/accept", body={"version": "1999-v0"}), None)
+    assert response["statusCode"] == 409 and body_of(response)["currentVersion"] == module.dpa.CURRENT_VERSION
+
+
+def test_staff_cannot_accept_the_dpa(app):
+    module, _ = app
+    response = module.handler(make_event("POST", "/tenant/dpa/accept", role="staff_user",
+                                         body={"version": module.dpa.CURRENT_VERSION}), None)
+    assert response["statusCode"] == 403
+
+
+def test_dpa_accept_rejects_extra_fields(app):
+    module, _ = app
+    response = module.handler(make_event("POST", "/tenant/dpa/accept",
+                                         body={"version": module.dpa.CURRENT_VERSION, "acceptedBy": "x"}), None)
+    assert response["statusCode"] == 400

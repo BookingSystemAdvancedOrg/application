@@ -53,6 +53,7 @@ _TEXT = {
         "manage.reminder": "Kan du inte komma? Avboka här, så kan någon annan få bordet",
         "contact": "Frågor? Kontakta {restaurant}: {contact}",
         "footer": "Du får det här mejlet för att du har bokat bord hos {restaurant}.",
+        "withdraw": "Vill du inte längre få erbjudanden från {restaurant}? Ta tillbaka ditt samtycke här: {link}",
         "sms.confirmed": "{restaurant}: {greeting}Ditt bord är bokat {when}, {guests}.",
         "sms.changed": "{restaurant}: {greeting}Din bokning är ändrad till {when}, {guests}.",
         "sms.cancelled_by_guest": "{restaurant}: {greeting}Din bokning {when} är avbokad.",
@@ -93,6 +94,7 @@ _TEXT = {
         "manage.reminder": "Can't make it? Cancel here so someone else can have the table",
         "contact": "Questions? Contact {restaurant}: {contact}",
         "footer": "You are receiving this email because you booked a table at {restaurant}.",
+        "withdraw": "No longer want offers from {restaurant}? Withdraw your consent here: {link}",
         "sms.confirmed": "{restaurant}: {greeting}Your table is booked {when}, {guests}.",
         "sms.changed": "{restaurant}: {greeting}Your booking is now {when}, {guests}.",
         "sms.cancelled_by_guest": "{restaurant}: {greeting}Your booking {when} is cancelled.",
@@ -170,6 +172,23 @@ def _brand_color(tenant_row):
     return color if isinstance(color, str) and _COLOR.fullmatch(color) else _DEFAULT_COLOR
 
 
+def _withdraw_link(item):
+    """The guest's own withdrawal link (shared/consent.py) on the booking
+    confirmation of a guest who ticked "offers". None when the function has
+    no marketing link key (MARKETING_LINK_BASE unset) or signing fails: the
+    confirmation is always sent, with or without the link."""
+    import os
+    base = os.environ.get("MARKETING_LINK_BASE")
+    if not base or not item.get("marketingOptIn") or not item.get("tenantId"):
+        return None
+    try:
+        from shared import consent
+        return consent.withdraw_link(base, item["tenantId"], email=item.get("customerEmail"),
+                                     phone=item.get("customerPhone"))
+    except Exception:  # noqa: BLE001 - never block a confirmation
+        return None
+
+
 def guest_email(kind, item, tenant_row, location, link):
     """(subject, text, html) for a guest notice."""
     lang = _lang(item)
@@ -194,6 +213,9 @@ def guest_email(kind, item, tenant_row, location, link):
     show_link = bool(link) and kind in _WITH_LINK
     contact_text = _t(lang, "contact", restaurant=name, contact=contact) if contact else ""
     footer = _t(lang, "footer", restaurant=name)
+    withdraw = _withdraw_link(item) if kind == "confirmed" else None
+    if withdraw:
+        footer += " " + _t(lang, "withdraw", restaurant=name, link=withdraw)
 
     text_lines = [hello, "", lead, ""]
     text_lines += [f"{label}: {value}" for label, value in rows]
@@ -260,7 +282,11 @@ def guest_sms(kind, item, tenant_row, location, link):
 
 def staff_email(kind, item, tenant_row, location, admin_url):
     """(subject, text) for the restaurant: a new online booking or a guest
-    cancellation. Swedish - the admin is Swedish."""
+    cancellation. Swedish - the admin is Swedish.
+
+    Data minimisation: a shared restaurant inbox gets the name and the slot,
+    never the guest's phone, e-mail or free text (allergies can be health
+    data). Those stay behind the login in admin."""
     name = restaurant_name(tenant_row, location)
     tables = ", ".join(item.get("tableIds") or [])
     lines = [
@@ -269,11 +295,9 @@ def staff_email(kind, item, tenant_row, location, admin_url):
         f"Tid: {item['startTime']}-{item['endTime']}",
         f"Antal: {_guests(item, 'sv')}",
         f"Bord: {tables or '-'}",
-        f"Telefon: {item.get('customerPhone') or '-'}",
-        f"E-post: {item.get('customerEmail') or '-'}",
     ]
     if item.get("notes"):
-        lines.append(f"Meddelande: {item['notes']}")
+        lines.append("Gästen har lämnat ett meddelande. Läs det i bokningen i admin.")
     if kind == "fee_failed":
         fee_label, amount = _fee(item, "sv")
         error = (item.get("payment") or {}).get("error") or "okänt fel"

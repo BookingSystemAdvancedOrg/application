@@ -28,11 +28,13 @@ PURPOSE:
     Export and erasure cover the marketing subscriber and welcome-offer
     rows, the consent log, and the guest's bookings, orders and catering
     requests in every location of the restaurant. Erasure:
-      * consent: a withdrawal (source "erasure") on every channel with
-        records; data-retention turns it into a bare suppression record at
+      * consent: a withdrawal (source "erasure", by subject: the address is
+        not written again) on every channel with records; data-retention turns it into a bare suppression record at
         its next run (this function stays append-only on the log)
       * subscriber row and the welcome-offer address/code rows: deleted
-        (a code reserved by a checkout or redeemed stays: it holds no address)
+        (a code reserved by a checkout or redeemed stays: it holds no address);
+        a bounced/complained subscriber row loses the address but keeps the
+        hashed block, like data-retention does
       * bookings, orders, catering requests: anonymised with the retention
         rules (shared/retention.anonymise_update): receipt fields, company
         invoice details and catering signatures stay (bokföringslagen,
@@ -46,13 +48,15 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, CONSENT_TABLE_NAME, MARKETING_TABLE_NAME (optional),
-    RESERVATION_TABLE_NAME, ORDER_TABLE_NAME, CATERING_TABLE_NAME
+    RESERVATION_TABLE_NAME, ORDER_TABLE_NAME, CATERING_TABLE_NAME,
+    CATERING_REQUEST_HISTORY_TABLE_NAME (export: the guest's signing events)
 
 AWS RESOURCE ACCESS:
     GetItem/UpdateItem on the tenant table (PROFILE); Query/PutItem on the
     consent table; GetItem/UpdateItem/DeleteItem/Query on the marketing
     table; Query on the location table (own partition); Query/UpdateItem on
-    the reservation, order and catering-requests tables.
+    the reservation, order and catering-requests tables; Query on the
+    catering-request-history table (export only).
 """
 
 import json
@@ -203,6 +207,21 @@ def _export_view(item):
             if k not in ("PK", "SK", "ttl") and not k.endswith("Hash")}
 
 
+_GUEST_EVENT_FIELDS = ("action", "at", "ip", "method", "version", "pdfSha256")
+
+
+def _catering_export(item):
+    """A catering request as staff see it (signature: name, masked personal
+    number, signedAt; no provider state or evidence keys) plus the guest's own
+    events from the history (signing with IP and method)."""
+    view = _export_view(catering.staff_view(item))
+    request_id = item.get("requestId")
+    if request_id and os.environ.get("CATERING_REQUEST_HISTORY_TABLE_NAME"):
+        view["events"] = [{k: _plain(e[k]) for k in _GUEST_EVENT_FIELDS if e.get(k) is not None}
+                          for e in catering.history(request_id) if e.get("by") in ("guest", "customer")]
+    return view
+
+
 def _matches(item, email, phone):
     stored_email = item.get("customerEmail")
     if email and isinstance(stored_email, str) and stored_email.strip().lower() == email:
@@ -260,7 +279,7 @@ def _export(ctx, email, phone):
                                if code else None)
     keys = {kind: key for kind, _, _, key in _GUEST_ROWS}
     for kind, _, item in _guest_rows(ctx, email, phone):
-        out[keys[kind]].append(_export_view(item))
+        out[keys[kind]].append(_catering_export(item) if kind == "catering" else _export_view(item))
     out["exportedAt"] = consent.now_iso()
     logger.info(json.dumps({"guestData": "exported", "tenantId": ctx.tenant_id,
                             "rows": sum(len(out[k]) for k in keys.values())}))
@@ -294,6 +313,18 @@ def _delete_marketing(tenant_id, email):
     sub, address, code = _marketing_rows(tenant_id, email)
     table = dynamo.table(os.environ["MARKETING_TABLE_NAME"]) if (sub or address) else None
     deleted = 0
+    if sub and sub.get("status") in retention.SUBSCRIBER_SUPPRESSED:
+        # Bounced/complained: keep the hashed block (as data-retention does), drop the address.
+        expr, names, values = retention.subscriber_strip_update(sub, consent.now_iso())
+        try:
+            table.update_item(Key={"PK": sub["PK"], "SK": sub["SK"]}, UpdateExpression=expr,
+                              ConditionExpression="#s = :s", ExpressionAttributeNames=names,
+                              ExpressionAttributeValues=values)
+            deleted += 1
+        except ClientError as exc:
+            if not consent.conditional_failed(exc):
+                raise
+        sub = None
     for row in (sub, address):
         if row:
             table.delete_item(Key={"PK": row["PK"], "SK": row["SK"]})
@@ -321,7 +352,9 @@ def _erase(ctx, email, phone):
         for channel, identifier in ((consent.EMAIL, email), (consent.SMS, phone)):
             if identifier and consent.history(table, ctx.tenant_id, consent.subject(ctx.tenant_id, channel,
                                                                                     identifier), limit=1):
-                consent.withdraw(table, tenant_id=ctx.tenant_id, channel=channel, identifier=identifier,
+                # By subject only: the erasure itself must not write the address again.
+                consent.withdraw(table, tenant_id=ctx.tenant_id, channel=channel,
+                                 subject_id=consent.subject(ctx.tenant_id, channel, identifier),
                                  source="erasure", actor=ctx.sub)
                 result["consentWithdrawn"].append(channel)
     if email and os.environ.get("MARKETING_TABLE_NAME"):

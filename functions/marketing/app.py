@@ -420,6 +420,8 @@ def _campaign_action(ctx, campaign, action, event):
                 raise ValueError("scheduledAt must be between now and 90 days ahead")
         template = _frozen_template(ctx, campaign)
         snapshot = _sender_snapshot(ctx, template, when)
+        if not snapshot["postalAddress"]:
+            raise ValueError("the restaurant has no legal name and address for the footer")
         if not snapshot["siteUrl"] and any(b["type"] == "button" and b.get("destination") != "custom"
                                            for b in template["blocks"]):
             raise ValueError("the restaurant has no website address yet for the buttons")
@@ -557,6 +559,8 @@ def _offer(ctx, method, event):
     if method != "PUT":
         return http.error(405, "method not allowed")
     data = offer.validate_settings(http.body(event))
+    if data["enabled"] and not marketing_mail.sender_identity(ctx.tenant):
+        raise ValueError("the restaurant has no legal name and address for the footer")
     image_url = dish_name = None
     if data["imageMenuItemId"]:
         # The card shows one of the restaurant's own dishes; resolved now so

@@ -134,15 +134,18 @@ only), `functions/guest-privacy`:
 - **Export:** `GET /privacy/guests?email=&phone=` returns, as JSON, the
   subscriber and welcome-offer code, the consent history, and every
   booking, order and catering request of the guest in all the restaurant's
-  locations (matched on e-mail, any case, or phone).
+  locations (matched on e-mail, any case, or phone). A catering request
+  includes its signature (name, masked personal number, time) and the
+  guest's own events from the history (request, signing with IP and method).
 - **Erasure:** `POST /privacy/guests/erase {email?, phone?}`:
-  - consent: a withdrawal with source `erasure` on every channel that has
-    records; the next data-retention run replaces the full records with a
+  - consent: a withdrawal with source `erasure` (written by subject, without
+    the address) on every channel that has records; the next data-retention run replaces the full records with a
     bare suppression record at once (no 30-day grace). guest-privacy stays
     append-only on the log. While the job is a dry run this step waits.
   - the subscriber row and the welcome-offer address and code rows are
     deleted (a code reserved by a checkout or redeemed stays; it holds no
-    address).
+    address). A bounced or complained subscriber row keeps its hashed block
+    without the address, as in section 5.
   - bookings, orders and catering requests are anonymised as in section 5:
     receipt fields, company invoice details and catering signatures stay
     (bokföringslagen, signed contracts); catering history and the S3

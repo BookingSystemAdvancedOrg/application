@@ -17,6 +17,7 @@ TRIGGER:
       POST   /locations/{locationId}/print/devices/{deviceId}/rotate  owner: new secret
       POST   /locations/{locationId}/print/devices/{deviceId}/test    test print
       POST   /locations/{locationId}/print/jobs                {orderId}: "Skriv ut igen"
+                                                               (409 order_not_paid, order_cancelled, no_printer)
 
 PURPOSE:
     Creates and manages kitchen print jobs (shared/printing.py); the printer
@@ -171,6 +172,8 @@ def _route(event, method, location_id, ctx):
                 raise o.NotFound
             if order.get("status") in (o.PENDING_PAYMENT, o.FAILED):
                 raise p.Conflict("order_not_paid")
+            if order.get("status") == o.CANCELLED:
+                raise p.Conflict("order_cancelled")
             job = p.reprint(ctx.tenant_id, location_id, order["orderId"], now)
             return http.respond(202, {"jobId": p.job_token(job["SK"]), "status": job["status"]})
         allow = "POST"

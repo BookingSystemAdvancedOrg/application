@@ -4359,7 +4359,9 @@ paths:
         GDPR art. 15/20. The subscriber and welcome-offer code, the consent
         history, and the guest's bookings, orders and catering requests in
         every location of the restaurant, matched on e-mail (any case) or
-        phone. Keys, link hashes and expiry fields are left out.
+        phone. Keys, link hashes and expiry fields are left out. A catering
+        request carries its signature (name, masked personal number, signedAt)
+        and the guest's own events (signing with IP and method).
       security:
         - bearerAuth: []
       x-required-groups: [owner_user]
@@ -5690,7 +5692,7 @@ paths:
       tags: [Printing]
       summary: Print an order again ("Skriv ut igen")
       operationId: reprintOrder
-      description: Failed jobs of the order are superseded. 409 `no_printer` or `order_not_paid`.
+      description: Failed jobs of the order are superseded. 409 `no_printer`, `order_not_paid` or `order_cancelled`.
       security:
         - bearerAuth: []
       x-required-groups: [staff_user, owner_user]
@@ -5713,7 +5715,7 @@ paths:
         '404':
           description: Unknown order.
         '409':
-          description: no_printer, order_not_paid
+          description: no_printer, order_not_paid, order_cancelled
 
   /print/cloudprnt/{deviceId}:
     parameters:

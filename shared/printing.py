@@ -43,6 +43,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from shared import dynamo
+from shared import orders as o
 
 PENDING, PRINTING, PRINTED, FAILED, CANCELLED = "PENDING", "PRINTING", "PRINTED", "FAILED", "CANCELLED"
 OPEN = (PENDING, PRINTING, FAILED)
@@ -55,6 +56,8 @@ JOB_TTL_DAYS = 30
 OFFLINE_SECONDS = 120        # no poll for this long: "Skrivaren svarar inte"
 SEEN_WRITE_SECONDS = 30      # lastSeenAt is written at most this often
 STUCK_SECONDS = 300          # a job waiting longer counts as stuck (sweep metric)
+TEST_SECONDS = 600           # an unprinted test print is dropped after this
+FAILED_SECONDS = 24 * 3600   # a FAILED job leaves the banner after this
 FAILED_DUE = "9999-12-31T00:00:00Z"
 PAPER_WIDTHS = (80, 58)
 MAX_DEVICES = 5
@@ -288,7 +291,8 @@ def rotate_device(location_id, device_id, actor, now):
 
 
 def remove_device(location_id, device_id, now):
-    """Revokes the printer. If it was the order printer, auto print stops."""
+    """Revokes the printer. If it was the order printer, auto print stops.
+    Its open jobs (and, for the order printer, every open job) are closed."""
     get_device(location_id, device_id)
     _table().delete_item(Key=_key(location_id, f"DEVICE#{device_id}"))
     try:
@@ -303,6 +307,7 @@ def remove_device(location_id, device_id, now):
     except ClientError as exc:
         if not _conditional(exc):
             raise
+    tidy(location_id, queue(location_id), get_settings(location_id), list_devices(location_id), now)
 
 
 def seen(device, now, *, mac=None, status_code=None):
@@ -409,9 +414,13 @@ def on_order_cancelled(order, now):
     ticket may already be in the kitchen, a "MAKULERAD" slip prints."""
     location_id, order_id = order["locationId"], order["orderId"]
     jobs = [j for j in order_jobs(location_id, order_id) if j.get("kind") != CANCEL]
-    for job in jobs:
-        if job.get("status") in OPEN:
-            close_job(job, CANCELLED, now, expected=job["status"])
+    for i, job in enumerate(jobs):
+        if job.get("status") in OPEN and not close_job(job, CANCELLED, now, expected=job["status"]):
+            # Lost a race with the printer (a lease or a confirm): read what it did.
+            fresh = get_job(location_id, job["SK"]) or job
+            jobs[i] = {**fresh, "attempts": max(int(fresh.get("attempts") or 0), 1)}
+            if fresh.get("status") in OPEN:
+                close_job(fresh, CANCELLED, now, expected=fresh["status"])
     if not any(_maybe_printed(j) for j in jobs) or not get_settings(location_id)["printerId"]:
         return False
     return _put_once(_new_job(order.get("tenantId"), location_id, f"JOB#{order_id}#cancel", CANCEL, now,
@@ -532,14 +541,49 @@ def confirm(job, device_id, ok, now):
     except ClientError as exc:
         if not _conditional(exc):
             raise
+        return (get_job(job["locationId"], job["SK"]) or {}).get("status")
     return PENDING
+
+
+def _order_open(location_id, order_id):
+    try:
+        return o.load(location_id, order_id).get("status") in o.OPEN_STATUSES
+    except o.NotFound:
+        return False
+
+
+def _stale(job, settings, device_ids, now):
+    """An open job that can never be useful: a test print that waited
+    TEST_SECONDS or lost its device; an order job with no order printer; a
+    FAILED job older than FAILED_SECONDS or whose order is no longer open
+    (a cancellation slip's order never is)."""
+    age = (now - parse_iso(job["createdAt"])).total_seconds()
+    if job.get("kind") == TEST:
+        return age > TEST_SECONDS or job.get("deviceId") not in device_ids
+    if settings.get("printerId") not in device_ids:
+        return True
+    if job.get("status") == FAILED:
+        return age > FAILED_SECONDS or not _order_open(job["locationId"], job.get("orderId"))
+    return False
+
+
+def tidy(location_id, jobs, settings, devices, now):
+    """Closes stale open jobs (CANCELLED); returns the rest."""
+    ids = {d.get("deviceId") for d in devices}
+    kept = []
+    for job in jobs:
+        if job.get("status") in OPEN and _stale(job, settings, ids, now):
+            close_job(job, CANCELLED, now, expected=job["status"])
+        else:
+            kept.append(job)
+    return kept
 
 
 def summary(location_id, settings, devices, now):
     """What the admin banner shows: printer reachable, unprinted and failed
     orders, and the state of each order that is not printed yet."""
     printer = next((d for d in devices if d.get("deviceId") == settings.get("printerId")), None)
-    jobs = [j for j in queue(location_id) if j.get("kind") != TEST]
+    jobs = [j for j in tidy(location_id, queue(location_id), settings, devices, now) if j.get("kind") != TEST]
     orders = {}
     for job in sorted(jobs, key=lambda j: j.get("createdAt") or ""):
         if job.get("orderId") and job.get("kind") != CANCEL:
@@ -556,9 +600,10 @@ def summary(location_id, settings, devices, now):
 
 
 def sweep(now):
-    """Every 5 minutes: jobs whose lease ran out with no attempts left turn
-    FAILED; stuck (waiting > STUCK_SECONDS) and failed jobs are counted into
-    metrics for the alarms. Returns the counts."""
+    """Every 5 minutes: stale jobs are closed (tidy); jobs whose lease ran
+    out with no attempts left turn FAILED; stuck (waiting > STUCK_SECONDS)
+    and failed jobs are counted into metrics for the alarms. Returns the
+    counts (after tidying)."""
     items, kwargs = [], {"IndexName": "queue"}
     while True:
         page = _table().scan(**kwargs)
@@ -566,6 +611,12 @@ def sweep(now):
         if "LastEvaluatedKey" not in page:
             break
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    by_location = {}
+    for job in items:
+        by_location.setdefault(job["locationId"], []).append(job)
+    items = []
+    for location_id, jobs in by_location.items():
+        items += tidy(location_id, jobs, get_settings(location_id), list_devices(location_id), now)
     stuck, failed, now_iso = 0, 0, iso(now)
     for job in items:
         status = job.get("status")

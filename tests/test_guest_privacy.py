@@ -150,7 +150,8 @@ ANNA = {"customerName": "Anna Gäst", "customerEmail": "Anna@Example.se", "custo
 def guest(env, monkeypatch):
     res = boto3.resource("dynamodb", region_name=REGION)
     tables = {}
-    for kind, name in (("reservation", "test-reservation"), ("order", "test-order"), ("catering", "test-catering")):
+    for kind, name in (("reservation", "test-reservation"), ("order", "test-order"), ("catering", "test-catering"),
+                       ("history", "test-history")):
         res.create_table(TableName=name, BillingMode="PAY_PER_REQUEST",
                          KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"},
                                     {"AttributeName": "SK", "KeyType": "RANGE"}],
@@ -160,6 +161,12 @@ def guest(env, monkeypatch):
     monkeypatch.setenv("RESERVATION_TABLE_NAME", "test-reservation")
     monkeypatch.setenv("ORDER_TABLE_NAME", "test-order")
     monkeypatch.setenv("CATERING_TABLE_NAME", "test-catering")
+    monkeypatch.setenv("CATERING_REQUEST_HISTORY_TABLE_NAME", "test-history")
+    for sk, entry in (("AUDIT#2025-01-01T10:00:00Z#1", {"action": "requested", "by": "guest", "ip": "1.2.3.4"}),
+                      ("AUDIT#2025-01-02T10:00:00Z#2", {"action": "offer_sent", "by": "staff-sub", "version": 1}),
+                      ("AUDIT#2025-01-03T10:00:00Z#3", {"action": "signed", "by": "customer", "ip": "1.2.3.4",
+                                                        "method": "bankid", "evidence": "s3/key"})):
+        tables["history"].put_item(Item={"PK": "REQUEST#q1", "SK": sk, "at": sk[6:26], **entry})
     pk = f"LOCATION#{LOC_A}"
     r = tables["reservation"]
     r.put_item(Item={"PK": pk, "SK": "RESERVATION#2025-01-10#old", "reservationId": "old", "date": "2025-01-10",
@@ -175,7 +182,9 @@ def guest(env, monkeypatch):
                                    "lines": [{"name": "Soppa", "qty": 1}], **ANNA, "customerEmail": "anna@example.se"})
     tables["catering"].put_item(Item={"PK": pk, "SK": "REQUEST#q1", "requestId": "q1", "status": "closed",
                                       "customerType": "company", "companyName": "Firma AB",
-                                      "deliveryAddress": {"street": "G 1"}, "signature": {"name": "Anna Gäst"},
+                                      "deliveryAddress": {"street": "G 1"},
+                                      "signature": {"name": "Anna Gäst", "personalNumberMasked": "19800101-****",
+                                                    "signedAt": "2025-01-03T10:00:00Z", "evidenceKey": "s3/key"},
                                       "invoiceNumber": "F-1", **ANNA})
     consent.grant(env["log"], tenant_id=TENANT_A, restaurant="Bistro Linnea", version=consent.CURRENT,
                   channels=["email"], email="anna@example.se", source="booking")
@@ -194,7 +203,12 @@ def test_export_lists_everything_about_the_guest_in_this_restaurant(env, guest):
     assert sorted(b["reservationId"] for b in body["bookings"]) == ["next", "old"]  # not LOC_B, not Bo
     assert "manageTokenHash" not in body["bookings"][0] and "PK" not in body["bookings"][0]
     assert [o["orderId"] for o in body["orders"]] == ["o1"]
-    assert [c["requestId"] for c in body["cateringRequests"]] == ["q1"]
+    (req,) = body["cateringRequests"]
+    assert req["requestId"] == "q1"
+    assert req["signature"] == {"name": "Anna Gäst", "personalNumberMasked": "19800101-****",
+                                "signedAt": "2025-01-03T10:00:00Z"}  # no evidence key
+    assert [e["action"] for e in req["events"]] == ["signed", "requested"]  # the guest's own, not staff's
+    assert req["events"][0] == {"action": "signed", "at": "2025-01-03T10:00:00Z", "ip": "1.2.3.4", "method": "bankid"}
     assert body["subscriber"]["status"] == "subscribed" and body["subscriber"]["locations"] == [LOC_A]
     assert body["welcomeOfferCode"] == {"code": "ABCD-EFGH", "percent": 10, "status": "issued"}
     assert body["consents"]["email"]["state"] == "granted"
@@ -224,14 +238,24 @@ def test_erase_anonymises_keeps_receipts_and_coming_bookings(env, guest):
     assert "customerPhone" not in order and order["totalAmount"] == 12900 and order["lines"]
     req = guest["catering"].get_item(Key={"PK": pk, "SK": "REQUEST#q1"})["Item"]
     assert "customerEmail" not in req and req["companyName"] == "Firma AB" and req["invoiceNumber"] == "F-1"
-    assert req["signature"] == {"name": "Anna Gäst"} and req["deliveryAddress"] == {"street": "G 1"}
+    assert req["signature"]["name"] == "Anna Gäst" and req["deliveryAddress"] == {"street": "G 1"}
     assert env["marketing"].scan()["Items"] == []
     assert not consent.may_send(env["log"], TENANT_A, "email", "anna@example.se")
     latest = consent.latest(env["log"], TENANT_A, consent.subject(TENANT_A, "email", "anna@example.se"))
-    assert latest["source"] == "erasure"
+    assert latest["source"] == "erasure" and "identifier" not in latest  # the address is not written again
     # Again: nothing new to anonymise, nothing breaks.
     again = call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[1]
     assert again["anonymised"] == 0 and again["marketingRowsDeleted"] == 0
+
+
+def test_erase_keeps_the_block_of_a_bounced_subscriber(env, guest):
+    key = m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "anna@example.se"))
+    env["marketing"].update_item(Key=key, UpdateExpression="SET #s = :b, suppressedAt = :t",
+                                 ExpressionAttributeNames={"#s": "status"},
+                                 ExpressionAttributeValues={":b": "bounced", ":t": "2026-10-01T00:00:00Z"})
+    call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})
+    row = env["marketing"].get_item(Key=key)["Item"]
+    assert set(row) == {"PK", "SK", "status", "suppressedAt", "anonymisedAt"} and row["status"] == "bounced"
 
 
 def test_erase_keeps_a_code_used_at_checkout(env, guest):

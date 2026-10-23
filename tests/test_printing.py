@@ -136,6 +136,7 @@ def job(env, sk):
     return p.get_job(LOC_A, sk)
 
 
+MAC = "00:11:62:aa:bb:cc"
 AUTO_SK = f"JOB#{ORDER_ID}#auto"
 CANCEL_SK = f"JOB#{ORDER_ID}#cancel"
 
@@ -237,7 +238,7 @@ def test_device_prints_and_confirms(env):
     assert done["status"] == "PRINTED" and done["attempts"] == 1 and "queue" not in done
     device = p.get_device(LOC_A, device_id)
     assert device["mac"] == "00:11:62:aa:bb:cc" and device["lastSeenAt"] == p.iso(NOW)
-    assert json.loads(device_call(env, "POST", device_id, secret, body={})["body"]) == {"jobReady": False}
+    assert json.loads(device_call(env, "POST", device_id, secret, body={"printerMAC": MAC})["body"]) == {"jobReady": False}
 
 
 def test_wrong_secret_mac_and_rate_limit(env):
@@ -264,7 +265,7 @@ def test_error_backs_off_then_fails_after_five_attempts(env):
     print_once(env, device_id, secret, code="520 Error")
     first = job(env, AUTO_SK)
     assert first["status"] == "PENDING" and first["dueAt"] == p.iso(NOW + timedelta(seconds=15))
-    assert json.loads(device_call(env, "POST", device_id, secret, body={})["body"])["jobReady"] is False
+    assert json.loads(device_call(env, "POST", device_id, secret, body={"printerMAC": MAC})["body"])["jobReady"] is False
     for wait in (15, 30, 60, 120):
         clock["now"] += timedelta(seconds=wait)
         data = print_once(env, device_id, secret, code="520 Error")
@@ -340,3 +341,79 @@ def test_sweep_counts_stuck_jobs(env):
     env["clock"]["now"] += timedelta(minutes=6)
     assert env["jobs"].handler({"source": "sweep"}, None) == {"open": 1, "stuck": 1, "failed": 0}
     assert ("PrintStuckJobs", 1) in env["metrics"]
+
+
+# --- review fixes ----------------------------------------------------------------------------------
+
+def test_mac_is_required_once_bound(env):
+    device_id, secret = add_printer(env, autoPrint=True)
+    device_call(env, "POST", device_id, secret, body={"printerMAC": MAC})
+    assert device_call(env, "POST", device_id, secret, body={})["statusCode"] == 401
+    assert device_call(env, "GET", device_id, secret, query={})["statusCode"] == 401
+    assert device_call(env, "DELETE", device_id, secret, query={"code": "200 OK"})["statusCode"] == 401
+    assert device_call(env, "GET", device_id, secret, query={"mac": MAC})["statusCode"] == 404  # no job, but allowed
+
+
+def test_sweep_closes_old_test_jobs_and_jobs_without_printer(env):
+    device_id, _ = add_printer(env, autoPrint=True)
+    api(env, "POST", f"devices/{device_id}/test")
+    stream(env, order(status="pending_payment"), order())
+    env["clock"]["now"] += timedelta(minutes=11)
+    assert env["jobs"].handler({"source": "sweep"}, None) == {"open": 1, "stuck": 1, "failed": 0}
+    assert all(j.get("kind") != "test" for j in p.queue(LOC_A))
+    api(env, "DELETE", f"devices/{device_id}")  # closes the order printer's open jobs too
+    assert p.queue(LOC_A) == [] and job(env, AUTO_SK)["status"] == "CANCELLED"
+    assert env["jobs"].handler({"source": "sweep"}, None) == {"open": 0, "stuck": 0, "failed": 0}
+
+
+def test_failed_jobs_leave_the_banner_when_order_closed_or_old(env):
+    add_printer(env, autoPrint=True)
+    stream(env, order(status="pending_payment"), order())
+    item = job(env, AUTO_SK)
+    p.fail(item, NOW, expected="PENDING")
+    assert api(env, "GET", "status")[1]["failed"] == 1
+    env["clock"]["now"] += timedelta(hours=25)
+    assert api(env, "GET", "status")[1]["failed"] == 0
+    assert job(env, AUTO_SK)["status"] == "CANCELLED"
+
+
+def test_failed_job_of_completed_order_is_closed(env):
+    add_printer(env, autoPrint=True)
+    stream(env, order(status="pending_payment"), order())
+    p.fail(job(env, AUTO_SK), NOW, expected="PENDING")
+    env["res"].Table("test-order").put_item(Item=order(status="completed"))
+    assert env["jobs"].handler({"source": "sweep"}, None)["failed"] == 0
+
+
+def test_cancel_racing_the_printer_still_prints_makulerad(env, monkeypatch):
+    device_id, secret = add_printer(env, autoPrint=True)
+    stream(env, order(status="pending_payment"), order())
+    real_close = p.close_job
+
+    def lease_first(j, status, now, *, expected):
+        if j["SK"] == AUTO_SK and expected == "PENDING":  # the printer takes it between read and close
+            p.lease(job(env, AUTO_SK), device_id, now)
+            monkeypatch.setattr(p, "close_job", real_close)
+        return real_close(j, status, now, expected=expected)
+
+    monkeypatch.setattr(p, "close_job", lease_first)
+    stream(env, order(), order(status="cancelled"))
+    assert job(env, AUTO_SK)["status"] == "CANCELLED"
+    assert job(env, CANCEL_SK)["status"] == "PENDING"
+
+
+def test_reprint_refuses_cancelled_orders(env):
+    add_printer(env)
+    env["res"].Table("test-order").put_item(Item=order(status="cancelled"))
+    assert api(env, "POST", "jobs", {"orderId": ORDER_ID}) == (409, {"error": "order_cancelled"})
+
+
+def test_confirm_returns_actual_status_when_it_loses_the_race(env):
+    device_id, secret = add_printer(env, autoPrint=True)
+    stream(env, order(status="pending_payment"), order())
+    leased = p.lease(job(env, AUTO_SK), device_id, NOW)
+    p.close_job(leased, "CANCELLED", NOW, expected="PRINTING")  # order cancelled meanwhile
+    stale = {**leased}
+    env["res"].Table("test-print").update_item(Key={"PK": stale["PK"], "SK": stale["SK"]},
+                                               UpdateExpression="SET leasedBy = :d", ExpressionAttributeValues={":d": device_id})
+    assert p.confirm(stale, device_id, False, NOW) == "CANCELLED"

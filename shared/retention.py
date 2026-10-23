@@ -253,6 +253,16 @@ def subscriber_action(item, now, p):
     return None
 
 
+def subscriber_strip_update(item, now_iso):
+    """(UpdateExpression, names, values) that keeps only SUBSCRIBER_KEEP on a
+    bounced/complained row, conditional on its status (#s = :s)."""
+    removes = [k for k in item if k not in SUBSCRIBER_KEEP]
+    names = {"#s": "status", "#a": "anonymisedAt", **{f"#r{i}": k for i, k in enumerate(removes)}}
+    values = {":s": item.get("status"), ":a": now_iso}
+    expr = "SET #a = :a" + (" REMOVE " + ", ".join(f"#r{i}" for i in range(len(removes))) if removes else "")
+    return expr, names, values
+
+
 def _parse_ts(value):
     if not value:
         return None

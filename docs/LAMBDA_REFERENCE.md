@@ -1082,6 +1082,10 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
 **Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
 
+### 30a. `dlq-replay`
+**Trigger:** EventBridge Scheduler (`dlq_replay_interval_minutes`), input `{"queue": "all", "max": 50}`
+**Purpose:** Drains the dead-letter queues (lifecycle, notification and print stream pointers, scheduled invocations) by redelivering each message to the owning Lambda's live alias; deletes it only on success. After 3 failed replays it emails the alerts topic once and parks the message; expired stream pointers are reconciled (catering-lifecycle) or escalated. Scheduled targets must be on the `REPLAYABLE_FUNCTION_ARNS` allow-list.
+
 ---
 
 ### 31. `finance-rollup`
@@ -1170,6 +1174,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
+| 30a | `dlq-replay` | EventBridge Scheduler (`dlq_replay_interval_minutes`) | - |
 | 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |
 | 32 | `insights-rollup` | EventBridge Scheduler (nightly), by hand (`{from, to}`) | - |
 | 33 | `insights` | API GW `GET /insights` | JWT (owner, staff without amounts) |

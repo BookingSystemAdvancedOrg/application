@@ -7,7 +7,7 @@ Project rules: `CLAUDE.md` (root) and `application/docs/orchestrator/STATUS.md` 
 - `infrastructure` (Terraform), `application` (Python Lambdas), `admin-front-end`, `customer-front-end`. `booqy-console` and `booqy-website` are out of scope.
 - Work on `dev` only, commit and push to `origin/dev`. No other branches, no worktrees. Rollout order: infrastructure, application, frontends.
 - `.github/` is the owner's: give a snippet, do not edit.
-- No em dash or en dash anywhere (also not `&ndash;`/`&mdash;`). Swedish app copy. Never touch OIDC/deploy roles; call out IAM changes.
+- No em dash or en dash anywhere (also not as HTML entities). Swedish app copy. Never touch OIDC/deploy roles; call out IAM changes.
 
 ## Backend (`application`)
 - Python 3.13, arm64, one container image per function. `functions/<name>/{app.py, requirements.txt, Dockerfile}`; module docstring lists TRIGGER, PURPOSE, ENV_VARS, AWS RESOURCE ACCESS. Shared code: `from shared import tenant, http, dynamo, responses, ...`.

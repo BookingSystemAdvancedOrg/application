@@ -47,7 +47,8 @@ def env(monkeypatch):
         features = {**ALL_FEATURES, "marketing": True}
         seed_tenancy(monkeypatch,
                      tenant_a=tenant_row(TENANT_A, features=features, name="Bistro Linnea",
-                                         branding={"primaryColor": "#9a3b26"}, replyToEmail="hej@linnea.se"),
+                                         branding={"primaryColor": "#9a3b26"}, replyToEmail="hej@linnea.se",
+                                         address={"street": "Gatan 2", "postalCode": "111 11", "city": "Stockholm"}),
                      tenant_b=tenant_row(TENANT_B, features=features),
                      locations_a=[location_row(TENANT_A, LOC_A, timezone="Europe/Stockholm")])
         monkeypatch.setenv("USER_TABLE_NAME", "test-user")
@@ -594,6 +595,22 @@ def test_public_offer_only_when_live(env):
     assert body_of(public_get(public, "/m/offer", {"locationId": "unknown"})) == {"offer": None}
 
 
+def test_no_offer_without_the_legal_sender(env):
+    fn, public = load("marketing"), load("marketing-public")
+    save_offer(env, fn)
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}, UpdateExpression="REMOVE address")
+    shared_tenant.reset_caches()
+    assert body_of(public_get(public, "/m/offer", {"locationId": LOC_A})) == {"offer": None}
+    out = signup(public)
+    assert out["statusCode"] == 404 and body_of(out)["error"] == "no_offer"
+    assert outbox(env) == []
+    refused = save_offer(env, fn)
+    assert refused["statusCode"] == 400
+    assert body_of(refused)["error"] == "the restaurant has no legal name and address for the footer"
+    assert save_offer(env, fn, enabled=False)["statusCode"] == 200  # switching it off is always allowed
+
+
 def code_in(mail):
     return re.search(r"[A-Z2-9]{4}-[A-Z2-9]{4}", mail["text"]).group(0)
 
@@ -760,6 +777,26 @@ def test_dish_blocks_skip_dishes_guests_cannot_order(env, fields):
     env.menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "MENU#dish-1", "menuItemId": "dish-1",
                             "name": "Pumpasoppa", "price": Decimal(145), "active": True})
     assert "Pumpasoppa" in body_of(admin(fn, "POST", "/marketing/preview", {"template": TEMPLATE}))["html"]
+
+
+def test_send_is_refused_without_the_legal_sender(env):
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}, UpdateExpression="REMOVE address")
+    shared_tenant.reset_caches()
+    fn = load("marketing")
+    make_subscribers(env, 1)
+    _, cmp = draft(env, fn)
+    out = admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
+    assert out["statusCode"] == 400
+    assert body_of(out)["error"] == "the restaurant has no legal name and address for the footer"
+    assert body_of(admin(fn, "GET", f"/marketing/campaigns/{cmp['campaignId']}"))["status"] == "draft"
+
+
+def test_sender_identity_needs_name_and_address():
+    from shared import marketing_mail
+    assert marketing_mail.sender_identity({"legalName": "A AB"}) == ""
+    assert marketing_mail.sender_identity({"address": {"street": "G 1", "city": "Sthlm"}}) == ""
+    assert marketing_mail.sender_identity({"name": "Krog", "address": "G 1"}) == "Krog, G 1"
 
 
 def test_send_fails_closed_without_consent_log(env, monkeypatch):

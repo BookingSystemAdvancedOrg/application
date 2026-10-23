@@ -141,6 +141,8 @@ def _campaign_allowed(tenant_id, day, key):
 # --- welcome offer ----------------------------------------------------------------------
 
 def _live_offer(ctx):
+    if not marketing_mail.sender_identity(ctx.tenant):
+        return None  # marketing mail needs the legal sender in the footer: no card, no sign-up
     item = _table().get_item(Key=offer.offer_key(ctx.tenant_id)).get("Item")
     today = m.local_day(tz=ctx.location.get("timezone"))
     return item if offer.is_live(item, today) else None

@@ -14,8 +14,12 @@ TRIGGER:
 PURPOSE:
     The printer's side of kitchen printing (shared/printing.py). Secrets are
     compared by SHA-256 in constant time; the printer's MAC address is bound
-    on its first poll and checked after that; failed logins are counted per
-    IP address (shared/request_guard.py, 429 past the limit). Firmware
+    on its first poll and required on every request after that (POST body
+    printerMAC, GET/DELETE ?mac=). Failed logins are counted per IP address
+    after the check fails (shared/request_guard.py): past the limit the
+    answer is 429 instead of 401. The secret is 256 random bits, so the
+    counter limits noise and cost, not guessing; counting before every check
+    would cost two writes per poll. Firmware
     without Basic auth may send the secret as ?k= instead: the query string
     is never logged (the API stage has no access log; this function logs
     only ids and outcomes).
@@ -87,7 +91,7 @@ def _authenticate(event, device_id, mac):
     device = p.find_device(device_id)
     if not device or user != device_id or not p.secret_matches(device, secret):
         return None, _unauthorized(event, "secret", device_id if p.valid_device_id(device_id) else None)
-    if mac and device.get("mac") and mac != device["mac"]:
+    if device.get("mac") and mac != device["mac"]:
         return None, _unauthorized(event, "mac", device_id)
     ctx = tenant.for_public(device["locationId"], feature="ordering")
     if ctx.tenant_id != device.get("tenantId"):

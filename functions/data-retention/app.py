@@ -314,12 +314,9 @@ def _subscribers(tenant_id, policy, now, counts, budget):
                 table.delete_item(Key=key, ConditionExpression="#s = :s", ExpressionAttributeNames=names,
                                   ExpressionAttributeValues=values)
                 continue
-            removes = [k for k in item if k not in retention.SUBSCRIBER_KEEP]
-            names.update({f"#r{i}": k for i, k in enumerate(removes)}, **{"#a": "anonymisedAt"})
-            values[":a"] = _iso(now)
-            table.update_item(Key=key, ConditionExpression="#s = :s", ExpressionAttributeNames=names,
-                              ExpressionAttributeValues=values,
-                              UpdateExpression="SET #a = :a REMOVE " + ", ".join(f"#r{i}" for i in range(len(removes))))
+            expr, names, values = retention.subscriber_strip_update(item, _iso(now))
+            table.update_item(Key=key, ConditionExpression="#s = :s", UpdateExpression=expr,
+                              ExpressionAttributeNames=names, ExpressionAttributeValues=values)
         except ClientError as exc:
             if not _missing(exc):
                 raise

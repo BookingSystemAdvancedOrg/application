@@ -9,11 +9,11 @@ Updated: 2026-10-22
 
 | # | Issue | Priority | Phase | Branch | Agent | Status | Blockers |
 |---|-------|----------|-------|--------|-------|--------|----------|
-| 5 | Catering | 1 | 2 Implementing (M2-M5) | wt/issue-5-catering (local) | impl agent | in progress | provider adapter waits for Scrive/SEB decision |
-| 3 | Booking time limits | 2 | 2 Implementing | wt/issue-3-booking-limits (local) | impl agent | in progress | none |
-| 2 | Kitchen printing | 3 | 1 Approved | dev | none | starts after 1 and 3 merge | none (Star mC-Print3, Ethernet, 80 mm) |
-| 4 | Cookies and email marketing | 4 | 1 Approved | dev | none | starts after 1 and 3 merge | none |
-| 1 | Scheduled dishes | 5 | 2 Implementing | wt/issue-1-scheduled-dishes (local) | impl agent | in progress | none |
+| 5 | Catering | 1 | Done in dev (M1-M5, reviewed, fixed) | dev | none | done | signing adapter waits for Scrive/SEB decision |
+| 3 | Booking time limits | 2 | Done in dev (reviewed, fixed) | dev | none | done | none |
+| 2 | Kitchen printing | 3 | Done in dev (reviewed, fixed) | dev | none | done | test with the real mC-Print3 |
+| 4 | Cookies and email marketing | 4 | Done in dev (reviewed, fixed) | dev | none | done | dmarc@booqy.se mailbox; data-retention DRY_RUN still on |
+| 1 | Scheduled dishes | 5 | Done in dev (reviewed, fixed) | dev | none | done | none |
 
 Phase 0 (recon, `CONVENTIONS.md`): done.
 Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md section 8). Approved 2026-10-22.
@@ -37,6 +37,9 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 - 2026-10-23: M1-Q1 answered: `defaultServiceIncluded` = true (12 % VAT) until the accountant confirms. M1-Q2 closed: no migration needed; the owner adds catering dishes in the admin (script kept in the repo, unused).
 - 2026-10-23: Faster plan approved by the owner (relayed, then confirmed here): catering M2-M5, issue 1 and issue 3 in parallel; issues 2 and 4 after 1 and 3 are merged; one review per issue (catering after M5); catering infrastructure for M2-M5 pushed ahead in one go. Supersedes "one implementation agent at a time" and "all of catering first".
 - 2026-10-23: File ownership for parallel work: issue 1 owns shared/menu.py, get-menu, manage-menu, shared/orders.py, admin meny, customer bestall; issue 3 owns availability, booking_rules, reservations, booking functions, create/get-location, admin installningar profil + bokningar, customer boka/bokning; catering owns everything catering incl. shared/catering.py and all infrastructure. openapi.yaml and test_openapi.py: each edits only its own sections.
+
+- 2026-10-23: All five issues implemented, reviewed by a non-author agent and fixed, on dev. Extra: dlq-replay moved to application/functions (it was never built; DLQs were not replayed), with a parking-timeout bug fix.
+- 2026-10-23: Owner rule: no git commands until everything is finished locally; then a few large commits per changed repo and push to dev. No merge to main.
 
 ## Rule changes
 

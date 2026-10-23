@@ -121,6 +121,15 @@ def test_lookup_and_withdraw_on_the_guests_behalf(env):
                 {"email": "anna@example.se", "channels": ["email"]})[1]["withdrawn"] == []
 
 
+def test_withdraw_unsubscribes_a_subscriber_without_a_grant_on_record(env):
+    env["marketing"].put_item(Item={**m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "old@example.se")),
+                                    "status": "subscribed", "email": "old@example.se"})
+    status, body = call(env, "POST", "/privacy/consents/withdraw", {"email": "old@example.se", "channels": ["email"]})
+    assert status == 200 and body["withdrawn"] == []
+    sub = env["marketing"].get_item(Key=m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, "old@example.se")))["Item"]
+    assert sub["status"] == "unsubscribed" and sub["unsubscribedVia"] == "restaurant"
+
+
 def test_lookup_needs_a_contact_detail(env):
     assert call(env, "GET", "/privacy/consents", query={})[0] == 400
     assert call(env, "POST", "/privacy/consents/withdraw", {"email": "a@b.se", "channels": ["fax"]})[0] == 400

@@ -158,13 +158,15 @@ def _consents(ctx, method, path, event):
         identifier = email if channel == consent.EMAIL else phone
         if channel not in channels or not identifier:
             continue
+        # The subscriber list follows even without a grant on record (a
+        # subscriber from before the consent log): no campaign reaches them.
+        if channel == consent.EMAIL and os.environ.get("MARKETING_TABLE_NAME"):
+            _unsubscribe(ctx.tenant_id, email)
         if consent.state(table, ctx.tenant_id, channel, identifier) != "granted":
             continue  # nothing to withdraw: no record is added
         consent.withdraw(table, tenant_id=ctx.tenant_id, channel=channel, identifier=identifier, source="admin",
                          actor=ctx.sub)
         withdrawn.append(channel)
-        if channel == consent.EMAIL and os.environ.get("MARKETING_TABLE_NAME"):
-            _unsubscribe(ctx.tenant_id, email)
     logger.info(json.dumps({"consent": "withdrawn_by_restaurant", "tenantId": ctx.tenant_id, "channels": withdrawn}))
     return http.respond(200, {"withdrawn": withdrawn, **_lookup(ctx, table, email, phone)})
 

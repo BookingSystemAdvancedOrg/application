@@ -1044,6 +1044,16 @@ Full details: `docs/ORDERS.md`.
 **Trigger:** API Gateway - `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` - Auth: `JWT` (owner, staff of the location)
 **Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
 
+### 25a. `print-jobs`
+**Trigger:** order table stream (paid, cancelled; DLQ `print-stream`), Scheduler every 5 minutes (`{"source": "sweep"}`), API Gateway `GET /locations/{locationId}/print`, `GET|POST|PUT|DELETE /locations/{locationId}/print/{proxy+}` - Auth: `JWT` (owner; staff for status, test print and reprint)
+**Purpose:** Kitchen printing (see `docs/ORDERS.md`, Kitchen printer): one auto job per paid order, "MAKULERAD" slip for a printed order that is cancelled, printer settings and printers (secret shown once), "Skriv ut igen", sweep metrics `PrintStuckJobs` / `PrintFailedJobs`.
+**AWS resource access:** print table (read/write, Scan of the `queue` index), order table GetItem, order stream read, tenant-context reads.
+
+### 25b. `print-device`
+**Trigger:** API Gateway `POST|GET|DELETE /print/cloudprnt/{deviceId}` - Auth: `NONE` at the gateway, HTTP Basic with the device secret in the handler
+**Purpose:** Star CloudPRNT: poll, fetch (StarPRNT ticket rendered from the order, job leased 60 s), confirm or report an error (backoff, FAILED after 5 attempts). MAC bound on the first poll; failed logins limited per IP.
+**AWS resource access:** print table Get/Update and its indexes, order table GetItem, request-guard counters, tenant-context reads.
+
 ---
 
 ## Marketing

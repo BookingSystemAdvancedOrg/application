@@ -104,7 +104,20 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/catering/menu/dishes/{dishId}": frozenset({"put", "delete"}),
     "/locations/{locationId}/catering/menu/packages": frozenset({"get", "post"}),
     "/locations/{locationId}/catering/menu/packages/{packageId}": frozenset({"put", "delete"}),
+    "/locations/{locationId}/print": frozenset({"get"}),
+    "/locations/{locationId}/print/status": frozenset({"get"}),
+    "/locations/{locationId}/print/settings": frozenset({"put"}),
+    "/locations/{locationId}/print/devices": frozenset({"post"}),
+    "/locations/{locationId}/print/devices/{deviceId}": frozenset({"delete"}),
+    "/locations/{locationId}/print/devices/{deviceId}/rotate": frozenset({"post"}),
+    "/locations/{locationId}/print/devices/{deviceId}/test": frozenset({"post"}),
+    "/locations/{locationId}/print/jobs": frozenset({"post"}),
+    "/print/cloudprnt/{deviceId}": frozenset({"post", "get", "delete"}),
 }
+# Kitchen printers: no JWT, HTTP Basic with the device secret (print-device).
+PRINTER_OPERATIONS = frozenset(
+    ("/print/cloudprnt/{deviceId}", m) for m in ("post", "get", "delete")
+)
 PUBLIC_OPERATIONS = frozenset(
     {
         ("/auth/login", "post"),
@@ -183,6 +196,10 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/orders/{orderId}/status", "put"),
         ("/locations/{locationId}/orders/pause", "put"),
         ("/locations/{locationId}/orders/table-codes", "post"),
+        ("/locations/{locationId}/print", "get"),
+        ("/locations/{locationId}/print/status", "get"),
+        ("/locations/{locationId}/print/devices/{deviceId}/test", "post"),
+        ("/locations/{locationId}/print/jobs", "post"),
     }
 )
 
@@ -224,13 +241,15 @@ def test_openapi_security_matches_public_and_protected_routes(openapi_document):
             operation = document["paths"][path][method]
             effective_security = operation.get("security", default_security)
             expected_security = (
-                [] if (path, method) in PUBLIC_OPERATIONS else BEARER_SECURITY
+                [] if (path, method) in PUBLIC_OPERATIONS
+                else [{"printerBasic": []}] if (path, method) in PRINTER_OPERATIONS
+                else BEARER_SECURITY
             )
             assert effective_security == expected_security, f"{method.upper()} {path}"
 
             expected_groups = (
                 []
-                if (path, method) in PUBLIC_OPERATIONS
+                if (path, method) in PUBLIC_OPERATIONS | PRINTER_OPERATIONS
                 else STAFF_GROUPS
                 if (path, method) in STAFF_OPERATIONS
                 else ADMIN_GROUPS

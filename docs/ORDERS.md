@@ -57,6 +57,20 @@ ordered 1-20 times; an order has at most 30 lines.
    servera" (table), then `completed`; or `cancelled` (refunds the whole
    order with Stripe).
 
+6. **Kitchen printer** (optional, Star CloudPRNT, e.g. mC-Print3 on
+   Ethernet): the order table's stream runs `print-jobs`, which puts one
+   auto job per paid order in the `print` table (conditional put, so a
+   retried record never prints twice) when the location has auto print on.
+   The printer polls `POST /print/cloudprnt/{deviceId}` every few seconds,
+   fetches the ticket (StarPRNT, rendered from the order at that moment:
+   "Köksnota, ej kvitto", no prices, phone on pickup only, notes in bold,
+   local time) and confirms it. Errors retry after 15/30/60/120 s, then the
+   job is FAILED; a ticket printed on a second attempt says "KAN VARA
+   DUBBLETT". A printed order that is cancelled prints "MAKULERAD #N". The
+   admin's Beställningar screen shows "Skrivaren svarar inte" / "N
+   outskrivna" and "Skriv ut igen"; settings are under Inställningar,
+   Skrivare. Printing never runs in the order request path.
+
 Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 `failed`; the TTL (60 min) removes an order whose webhook never came.
 

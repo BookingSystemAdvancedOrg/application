@@ -64,6 +64,8 @@ tags:
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
   - name: Insights
     description: The restaurant's own figures for a period (Statistik in the admin app).
+  - name: Printing
+    description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
   - name: Catering
     description: Catering menu (dishes and packages, plan feature "catering"). Other catering routes are listed in infrastructure ROUTES.md.
 
@@ -4638,8 +4640,271 @@ paths:
         '204':
           description: Deleted
 
+  # --- Printing (issue 2) ------------------------------------------------------
+  /locations/{locationId}/print:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Printer settings, printers and queue state
+      operationId: getPrinting
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Settings, printers (never their secrets) and status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings: {$ref: '#/components/schemas/PrintSettings'}
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Printer'}
+                  status: {$ref: '#/components/schemas/PrintStatus'}
+        '404':
+          description: Unknown location or another tenant's.
+
+  /locations/{locationId}/print/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Printer reachable, unprinted and failed orders (orders screen banner)
+      operationId: getPrintStatus
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Queue state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintStatus'}
+
+  /locations/{locationId}/print/settings:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    put:
+      tags: [Printing]
+      summary: Auto print, order printer and paper width
+      operationId: putPrintSettings
+      description: Conditional on `version` (409 `changed_retry`). Auto print needs a printer.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PrintSettings'}
+      responses:
+        '200':
+          description: Saved settings with the new version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintSettings'}
+        '400':
+          description: Invalid settings.
+        '409':
+          description: changed_retry
+
+  /locations/{locationId}/print/devices:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Printing]
+      summary: Add a printer (the secret is returned once)
+      operationId: addPrinter
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 40}
+      responses:
+        '201':
+          description: The printer and its CloudPRNT credentials.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrinterCredentials'}
+        '409':
+          description: too_many_printers (5 per location)
+
+  /locations/{locationId}/print/devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    delete:
+      tags: [Printing]
+      summary: Remove (revoke) a printer
+      operationId: removePrinter
+      description: If it was the order printer, auto print turns off.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The overview after the change (as GET /print).
+        '404':
+          description: Unknown printer.
+
+  /locations/{locationId}/print/devices/{deviceId}/rotate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: New secret for a printer (the old one stops working, MAC binding cleared)
+      operationId: rotatePrinterSecret
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The printer and its new credentials.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrinterCredentials'}
+
+  /locations/{locationId}/print/devices/{deviceId}/test:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: Queue a test print on one printer
+      operationId: testPrint
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintJobQueued'}
+
+  /locations/{locationId}/print/jobs:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Printing]
+      summary: Print an order again ("Skriv ut igen")
+      operationId: reprintOrder
+      description: Failed jobs of the order are superseded. 409 `no_printer` or `order_not_paid`.
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [orderId]
+              properties:
+                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+      responses:
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintJobQueued'}
+        '404':
+          description: Unknown order.
+        '409':
+          description: no_printer, order_not_paid
+
+  /print/cloudprnt/{deviceId}:
+    parameters:
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: CloudPRNT poll from the printer
+      operationId: cloudprntPoll
+      description: |
+        Star CloudPRNT. HTTP Basic (user = device id, password = secret);
+        firmware without Basic auth may send `?k=<secret>`. 401 on a wrong
+        secret or MAC, 429 after 20 failed logins per IP in 15 minutes.
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                printerMAC: {type: string}
+                statusCode: {type: string}
+                printingInProgress: {type: boolean}
+      responses:
+        '200':
+          description: Whether a job is waiting.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobReady]
+                properties:
+                  jobReady: {type: boolean}
+                  mediaTypes: {type: array, items: {type: string, enum: [application/vnd.star.starprnt]}}
+                  jobToken: {type: string}
+        '401':
+          description: unauthorized
+        '429':
+          description: too_many_attempts
+    get:
+      tags: [Printing]
+      summary: Fetch the job (leases it for 60 s)
+      operationId: cloudprntFetch
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: query, schema: {type: string}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: mac, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: The ticket.
+          content:
+            application/vnd.star.starprnt:
+              schema: {type: string, format: binary}
+        '404':
+          description: no job
+    delete:
+      tags: [Printing]
+      summary: Confirm the job (code 2xx) or report an error
+      operationId: cloudprntConfirm
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: query, schema: {type: string}}
+        - {name: code, in: query, schema: {type: string}}
+        - {name: mac, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Recorded.
+
 components:
   securitySchemes:
+    printerBasic:
+      type: http
+      scheme: basic
+      description: Kitchen printer (Star CloudPRNT) - user = device id, password = the device secret shown once in admin.
     bearerAuth:
       type: http
       scheme: bearer
@@ -4783,6 +5048,50 @@ components:
           - no-store
 
   schemas:
+    PrintSettings:
+      type: object
+      additionalProperties: false
+      required: [autoPrint, printerId, paperWidth, version]
+      properties:
+        autoPrint: {type: boolean}
+        printerId: {type: string, nullable: true}
+        paperWidth: {type: integer, enum: [80, 58]}
+        version: {type: integer, minimum: 0}
+    Printer:
+      type: object
+      properties:
+        deviceId: {type: string}
+        name: {type: string}
+        mac: {type: string}
+        lastSeenAt: {type: string, format: date-time}
+        statusCode: {type: string}
+        createdAt: {type: string, format: date-time}
+        online: {type: boolean}
+        serverUrl: {type: string, description: CloudPRNT server URL to enter in the printer}
+    PrinterCredentials:
+      type: object
+      properties:
+        device: {$ref: '#/components/schemas/Printer'}
+        username: {type: string}
+        secret: {type: string, description: Shown once; only its SHA-256 is stored.}
+    PrintStatus:
+      type: object
+      properties:
+        autoPrint: {type: boolean}
+        printerConfigured: {type: boolean}
+        online: {type: boolean}
+        lastSeenAt: {type: string, format: date-time}
+        unprinted: {type: integer}
+        failed: {type: integer}
+        orders:
+          type: object
+          description: orderId -> PENDING | PRINTING | FAILED for orders not printed yet.
+          additionalProperties: {type: string, enum: [PENDING, PRINTING, FAILED]}
+    PrintJobQueued:
+      type: object
+      properties:
+        jobId: {type: string}
+        status: {type: string, enum: [PENDING]}
     CateringDishInput:
       type: object
       additionalProperties: false

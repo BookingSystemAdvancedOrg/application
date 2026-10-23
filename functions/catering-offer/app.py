@@ -5,6 +5,8 @@ TRIGGER:
     GET  /locations/{locationId}/catering/requests/{requestId}
     PUT  /locations/{locationId}/catering/requests/{requestId}/offer        save a draft
     POST /locations/{locationId}/catering/requests/{requestId}/offer/send   send version N
+    POST /locations/{locationId}/catering/requests/{requestId}/restaurant-sign         owner signs version N
+    POST /locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status  poll / after the return
     POST /locations/{locationId}/catering/requests/{requestId}/decline      {"reason"}
     POST /locations/{locationId}/catering/requests/{requestId}/cancel       {"reason"}
     POST /locations/{locationId}/catering/requests/{requestId}/delivered
@@ -18,7 +20,12 @@ PURPOSE:
     - The owner adjusts the offer freely (lines, prices, discount, delivery
       fee, equipment return and cleaning fee, message, valid-until) and
       sends it: every send is a new, immutable OFFER#vN in the history; the
-      guest can only sign the latest. The version keeps its own copy of the
+      guest can only sign the latest. Sending renders the offer PDF
+      (catering-document), cancels the previous version's signing order and
+      opens a new one (shared/signing.py). The restaurant signs first
+      (restaurant-sign, BankID or the provider's page); only then is the
+      guest told and may sign (shared/catering_signing.py).
+      The version keeps its own copy of the
       return choice and the fee, so changing the location's cleaning fee
       never touches an offer already sent or signed.
       Sending holds the portions on the day (capacity) - the difference
@@ -30,8 +37,8 @@ PURPOSE:
       tells the guest.
     - Delivered: confirmed -> delivered, or closed when already paid.
     - Mark paid: a company paid the invoice by Bankgiro.
-    - documents/signature: a 5-minute download link to the signature
-      evidence (BankID's signature and OCSP response for the signed version).
+    - documents/{offer|signed|signature}: a 5-minute download link to the
+      current offer PDF, the signed copy, or the customer's signature evidence.
 
     Every write is conditional on status + version (409 changed_retry when
     someone else changed it first) and appends an AUDIT# history entry.
@@ -39,9 +46,11 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
-    CATERING_DOCUMENTS_BUCKET_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION
+    CATERING_DOCUMENTS_BUCKET_NAME, CATERING_DOCUMENT_FUNCTION_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION,
+    SIGNING_PROVIDER_SECRET_ARN, SIGNING_WEBHOOK_URL, ADMIN_DASHBOARD_URL, DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS
 """
 
+import base64
 import json
 import logging
 import os
@@ -52,8 +61,9 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
+from shared import catering_signing as sign
 from shared import catering_stripe as cs
-from shared import http, prices, tenant
+from shared import http, prices, signing, tenant
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -65,6 +75,8 @@ _ROUTES = {
     ("GET", _BASE): "view",
     ("PUT", _BASE + "/offer"): "draft",
     ("POST", _BASE + "/offer/send"): "send",
+    ("POST", _BASE + "/restaurant-sign"): "restaurant_sign",
+    ("POST", _BASE + "/restaurant-sign/status"): "restaurant_sign_status",
     ("POST", _BASE + "/decline"): "decline",
     ("POST", _BASE + "/cancel"): "cancel",
     ("POST", _BASE + "/delivered"): "delivered",
@@ -212,30 +224,102 @@ def _send(event):
     offer = {**offer, "version": version, "terms": settings["terms"]}
     document = c.offer_document(item, offer, ctx.tenant, ctx.location, settings)
     doc_hash = c.document_hash(document)
+    pdf = _render_pdf(ctx, item, version, document)
+    order = signing.create_order(item, {**offer, "summary": _summary(ctx, item, offer)}, pdf["bytes"], [
+        {"role": sign.RESTAURANT, "name": ctx.tenant.get("legalName") or ctx.tenant.get("name"),
+         "email": settings.get("notifyEmail") or ctx.location.get("email")},
+        {"role": sign.CUSTOMER, "name": (item.get("signatory") or {}).get("name") or item.get("customerName"),
+         "email": item.get("customerEmail")},
+    ], _callback_url(item))
+    signing_record = {"offerVersion": version, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
+                      "pdfSha256": pdf["sha256"], "order": order, "signatures": {}}
     held = int(item.get("capacityHeld") or 0)
     delta = int(offer["portions"]) - held
     offer_item = {**c.offer_key(item["requestId"], version), **offer, "documentHash": doc_hash,
-                  "document": document, "createdAt": c.iso(now), "createdBy": ctx.sub}
+                  "document": document, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
+                  "pdfSha256": pdf["sha256"],
+                  "createdAt": c.iso(now), "createdBy": ctx.sub}
     summary = {k: offer[k] for k in ("version", "lines", "totals", "validUntil", "message", "portions")}
     summary["documentHash"] = doc_hash
+    summary["pdfSha256"] = pdf["sha256"]
     equipment = offer.get("equipmentReturn") or c.equipment_return(item.get("equipmentReturn"))
     summary["equipmentReturn"] = equipment
-    c.transact([
-        {"Put": {"TableName": c.history_table(), "Item": c.serialize(offer_item),
-                 "ConditionExpression": "attribute_not_exists(SK)"}},
-        c.head_update(item, to_status=c.OFFER_SENT, sets=[
-            "currentOfferVersion = :v", "offer = :o", "validUntil = :valid", "capacityHeld = :held",
-            "notice = :n", "updatedAt = :now", "offerSentAt = :now", "equipmentReturn = :eq"],
-            removes=["draft", "changeMessage", "signing", "expiresAt"],
-            values={":v": version, ":o": summary, ":valid": offer["validUntil"], ":held": int(offer["portions"]),
-                    ":eq": equipment,
-                    ":n": c.notice(c.N_OFFER_SENT, now, version=version), ":now": c.iso(now)}),
-        c.capacity_change(location_id, settings, item["deliveryDate"], delta),
-        c.audit_put(item["requestId"], "offer_sent", ctx.sub, now, version=version,
-                    total=offer["totals"]["total"], documentHash=doc_hash),
-    ])
+    # The guest hears about it (notice catering_offer_sent) once the restaurant has signed.
+    try:
+        c.transact([
+            {"Put": {"TableName": c.history_table(), "Item": c.serialize(offer_item),
+                     "ConditionExpression": "attribute_not_exists(SK)"}},
+            c.head_update(item, to_status=c.OFFER_SENT, sets=[
+                "currentOfferVersion = :v", "offer = :o", "validUntil = :valid", "capacityHeld = :held",
+                "updatedAt = :now", "offerSentAt = :now", "equipmentReturn = :eq", "signing = :sg",
+                "reviewedAt = if_not_exists(reviewedAt, :now)"],
+                removes=["draft", "changeMessage", "expiresAt", "restaurantSignedAt"],
+                values={":v": version, ":o": summary, ":valid": offer["validUntil"], ":held": int(offer["portions"]),
+                        ":eq": equipment, ":sg": signing_record, ":now": c.iso(now)}),
+            c.capacity_change(location_id, settings, item["deliveryDate"], delta),
+            c.audit_put(item["requestId"], "offer_sent", ctx.sub, now, version=version,
+                        total=offer["totals"]["total"], documentHash=doc_hash, pdfSha256=pdf["sha256"]),
+        ])
+    except Exception:
+        signing.cancel(order)
+        raise
+    signing.cancel((item.get("signing") or {}).get("order"))  # only now: the new version replaced the open order
     logger.info(json.dumps({"catering": "offer_sent", "requestId": item["requestId"], "version": version}))
     return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
+
+
+def _render_pdf(ctx, item, version, document):
+    """catering-document renders and stores the PDF; -> {key, sha256, bytes}."""
+    payload = {"tenantId": ctx.tenant_id, "requestId": item["requestId"], "version": version,
+               "document": c.plain(document),
+               "restaurant": {"name": ctx.location.get("name"), "address": ctx.location.get("address"),
+                              "phone": ctx.location.get("phoneNumber"), "email": ctx.location.get("email")}}
+    response = boto3.client("lambda").invoke(FunctionName=os.environ["CATERING_DOCUMENT_FUNCTION_NAME"],
+                                             Payload=json.dumps(payload, default=str).encode("utf-8"))
+    body = json.loads(response["Payload"].read() or b"{}")
+    if response.get("FunctionError") or not body.get("key"):
+        logger.error(json.dumps({"document": "failed", "requestId": item["requestId"],
+                                 "error": str(body.get("errorMessage"))[:300]}))
+        raise c.Unavailable("document_unavailable")
+    return {"key": body["key"], "versionId": body.get("versionId"), "sha256": body["sha256"],
+            "bytes": base64.b64decode(body["pdf"])}
+
+
+def _summary(ctx, item, offer):
+    """What BankID shows each party: who, when, how much, which version."""
+    seller = (ctx.tenant.get("legalName") or ctx.tenant.get("name") or "").replace("*", "")
+    buyer = (item.get("companyName") or item.get("customerName") or "").replace("*", "")
+    return (f"# Offert catering\n\nSäljare: {seller}\n\nKund: {buyer}\n\n"
+            f"Leverans: {item.get('deliveryDate')} kl {item.get('deliveryTime')}\n\n"
+            + (f"Gäster: {int(item['guests'])}\n\n" if item.get("guests") else "")
+            + f"Totalt: {c.money(offer['totals']['total'])} inkl. moms\n\nOffertversion: {int(offer['version'])}")
+
+
+def _callback_url(item):
+    base = os.environ.get("SIGNING_WEBHOOK_URL")
+    return f"{base}?l={item['locationId']}&r={item['requestId']}" if base else None
+
+
+def _restaurant_sign(event):
+    location_id, ctx = _ctx(event, owner=True)
+    item = _load(event, location_id, ctx)
+    http.body(event, allowed=set(), required=False)
+    tz = ZoneInfo(ctx.location.get("timezone") or "Europe/Stockholm")
+    if item.get("validUntil") and date.fromisoformat(item["validUntil"]) < c.now_utc().astimezone(tz).date():
+        raise c.InvalidState("offer_expired")
+    admin = c.admin_url(os.environ.get("ADMIN_DASHBOARD_URL"), item)
+    return http.respond(200, sign.begin(item, sign.RESTAURANT, http.source_ip(event),
+                                        f"{admin}?signering=klar" if admin else None))
+
+
+def _restaurant_sign_status(event):
+    location_id, ctx = _ctx(event, owner=True)
+    item = _load(event, location_id, ctx)
+    http.body(event, allowed=set(), required=False)
+    result = sign.poll(item, sign.RESTAURANT, http.source_ip(event))
+    if result["state"] == "signed":
+        return http.respond(200, {"state": "signed", "request": c.staff_view(c.load(location_id, item["requestId"]))})
+    return http.respond(200, result)
 
 
 def _reason(event, required):
@@ -250,6 +334,7 @@ def _decline(event):
         raise c.InvalidState("not_declinable")
     reason = _reason(event, required=False)
     now = c.now_utc()
+    signing.cancel((item.get("signing") or {}).get("order"))
     c.transact([
         c.head_update(item, to_status=c.DECLINED, sets=["declineReason = :r", "notice = :n", "updatedAt = :now",
                                                          "capacityHeld = :zero"],
@@ -314,12 +399,10 @@ def _delivered(event):
 def _document(event):
     location_id, ctx = _ctx(event, owner=False)
     item = _load(event, location_id, ctx)
-    if http.path_id(event, "docId") != "signature" or not (item.get("signature") or {}).get("evidenceKey"):
+    key, version = sign.document_ref(item, http.path_id(event, "docId"))
+    if not key:
         raise c.NotFound
-    url = boto3.client("s3").generate_presigned_url(
-        "get_object", ExpiresIn=300,
-        Params={"Bucket": os.environ["CATERING_DOCUMENTS_BUCKET_NAME"], "Key": item["signature"]["evidenceKey"]})
-    return http.respond(200, {"url": url, "expiresIn": 300})
+    return http.respond(200, {"url": sign.presign(key, version), "expiresIn": 300})
 
 
 def _invoices(event):
@@ -346,7 +429,8 @@ def _mark_paid(event):
 
 
 _HANDLERS = {"view": _view, "draft": _draft, "send": _send, "decline": _decline, "cancel": _cancel,
-             "delivered": _delivered, "document": _document, "invoices": _invoices, "mark_paid": _mark_paid}
+             "delivered": _delivered, "document": _document, "invoices": _invoices, "mark_paid": _mark_paid,
+             "restaurant_sign": _restaurant_sign, "restaurant_sign_status": _restaurant_sign_status}
 
 
 def handler(event, context):
@@ -362,6 +446,15 @@ def handler(event, context):
         return http.error(404, "not found")
     except c.InvalidState as exc:
         return http.error(409, exc.code)
+    except sign.NotReady as exc:
+        return http.error(409, exc.code)
+    except c.Unavailable as exc:
+        return http.error(503, exc.code)
+    except signing.SigningRejected as exc:
+        return http.error(409, f"signing_{exc.code}")
+    except signing.SigningUnavailable:
+        logger.exception("signing unavailable")
+        return http.error(503, "signing_unavailable")
     except stripe.StripeError as exc:
         logger.error(json.dumps({"stripe": "rejected", "code": exc.code, "message": str(exc)}))
         return http.error(502, "payment_provider_rejected")

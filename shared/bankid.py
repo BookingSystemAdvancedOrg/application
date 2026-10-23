@@ -1,29 +1,22 @@
-"""BankID signing behind a small adapter (catering offers).
+"""BankID's own RP API v6 (mutual TLS) and the signing-provider secret.
 
-Providers, chosen by the signing-provider secret
-(SIGNING_PROVIDER_SECRET_ARN, JSON):
+The secret (SIGNING_PROVIDER_SECRET_ARN, JSON) picks the catering signing
+provider in shared/signing.py, which is what the handlers use:
 
-    {"provider": "bankid", "environment": "test" | "prod",
+    {"provider": "bankid_direct" (or the older "bankid"), "environment": "test" | "prod",
      "certPem": "...", "keyPem": "...", "caPem": "..."}
-        BankID's own RP API v6 with the relying party's client certificate
-        (mutual TLS). "test" talks to BankID's public test environment
-        (appapi2.test.bankid.com) - with BankID's free test certificate
-        and the BankID app in test mode the whole flow works in dev.
+        BankID's RP API with the relying party's client certificate. "test"
+        talks to BankID's public test environment (appapi2.test.bankid.com).
 
     {"provider": "simulator"}
-        Dev only (refused when ENVIRONMENT=prod): completes the second time
-        the status is asked, signed by "Test Testsson". For trying the flow
-        without any BankID setup.
-
-A licensed signing provider (Idura, Scrive, Signicat) can be added as one
-more provider with the same three calls: start(), collect(), cancel().
+        Dev only (refused when ENVIRONMENT=prod), shared/signing.py.
 
     start(end_user_ip, visible_text, document_hash)
         -> {"orderRef", "autoStartToken", "qrStartToken", "qrStartSecret", "startedAt"}
-    collect(order_ref)
+    collect(order)
         -> {"status": "pending" | "failed" | "complete", "hintCode",
             "completion": {"name", "personalNumber", "signature", "ocspResponse", ...}}
-    qr_data(order)  -> the animated QR string for "now" (BankID: changes every second)
+    qr_data(order)  -> the animated QR string for "now" (changes every second)
 """
 
 import base64
@@ -39,6 +32,7 @@ import urllib.request
 
 import boto3
 
+PROVIDERS = ("bankid", "bankid_direct", "simulator")
 _HOSTS = {"test": "https://appapi2.test.bankid.com", "prod": "https://appapi2.bankid.com"}
 _TIMEOUT = 15
 _cache = {"config": None, "at": 0.0, "context": None}
@@ -71,7 +65,7 @@ def _config():
             config = json.loads(raw or "")
         except Exception:  # noqa: BLE001 - an unset or malformed secret
             raise SigningUnavailable("signing provider is not configured") from None
-        if not isinstance(config, dict) or config.get("provider") not in ("bankid", "simulator"):
+        if not isinstance(config, dict) or config.get("provider") not in PROVIDERS:
             raise SigningUnavailable("signing provider is not configured")
         if config["provider"] == "simulator" and os.environ.get("ENVIRONMENT") == "prod":
             raise SigningUnavailable("the signing simulator only runs in dev")
@@ -126,12 +120,7 @@ def _b64(text):
 
 
 def start(end_user_ip, visible_text, document_hash):
-    config = _config()
     started = int(time.time())
-    if config["provider"] == "simulator":
-        ref = hashlib.sha256(f"{document_hash}{started}".encode()).hexdigest()[:32]
-        return {"orderRef": f"sim-{ref}", "autoStartToken": f"sim-{ref}", "qrStartToken": f"sim-{ref}",
-                "qrStartSecret": "simulator", "startedAt": started, "polls": 0}
     result = _call("sign", {
         "endUserIp": end_user_ip or "127.0.0.1",
         "userVisibleData": _b64(visible_text[:40000]),
@@ -144,13 +133,6 @@ def start(end_user_ip, visible_text, document_hash):
 
 
 def collect(order):
-    config = _config()
-    if config["provider"] == "simulator":
-        if int(order.get("polls") or 0) < 1:
-            return {"status": "pending", "hintCode": "outstandingTransaction"}
-        return {"status": "complete", "completion": {
-            "name": "Test Testsson", "personalNumber": "190000000000",
-            "signature": base64.b64encode(b"<simulated/>").decode(), "ocspResponse": "", "simulated": True}}
     result = _call("collect", {"orderRef": order["orderRef"]})
     out = {"status": result.get("status"), "hintCode": result.get("hintCode")}
     if result.get("status") == "complete":
@@ -164,8 +146,6 @@ def collect(order):
 
 
 def cancel(order):
-    if _config()["provider"] == "simulator":
-        return
     try:
         _call("cancel", {"orderRef": order["orderRef"]})
     except (SigningRejected, SigningUnavailable):

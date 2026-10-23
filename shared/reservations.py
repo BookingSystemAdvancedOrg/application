@@ -21,8 +21,7 @@ then the day's holds (consistent reads), checks availability with the shared
 engine and commits everything in ONE transaction that also requires the lock
 versions to be unchanged. Two concurrent writers to the same table and date
 can never both commit - the loser gets 409 and the guest picks again.
-Manual blocks (block-table) don't take the lock; that rare race is
-documented in docs/RESERVATIONS.md.
+Manual blocks (block-table) take the same lock.
 """
 
 import os

@@ -67,7 +67,7 @@ tags:
   - name: Printing
     description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
   - name: Catering
-    description: Catering menu (dishes and packages, plan feature "catering"). Other catering routes are listed in infrastructure ROUTES.md.
+    description: Catering (plan feature "catering") - settings, tiers, menu, the public quote and request, the owner's offers and signing, the guest's magic-link routes and the signing webhook (infrastructure docs/CATERING-FLOW.md).
 
 paths:
   /auth/login:
@@ -4585,6 +4585,808 @@ paths:
         '503':
           description: The catering service is unavailable.
 
+  /locations/{locationId}/catering/settings:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Catering settings for the calculator
+      operationId: getCateringSettings
+      description: 'Public fields only (no notification contacts). 404 when catering is not in the plan.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringSettings'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    put:
+      tags:
+        - Catering
+      summary: Save the catering settings
+      operationId: saveCateringSettings
+      description: 'Fields are merged over the current ones. The answer adds originFound: whether the delivery origin can be located for road distances (null when delivery is off or the map service is down).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringSettings'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringSettings'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/discount-tiers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Discount tiers
+      operationId: listCateringDiscountTiers
+      description: 'fromPortions/toPortions are guest counts (issue 5).'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTierList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a discount tier
+      operationId: createCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringTierInput'}
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTier'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/discount-tiers/{tierId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: tierId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a discount tier
+      operationId: updateCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringTierInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTier'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a discount tier
+      operationId: deleteCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Done.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/quote:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Catering
+      summary: Price a catering choice
+      operationId: quoteCatering
+      description: 'The server is the only source of prices: packages x guests, dishes x portions, the tier discount by guests, the delivery band from the road distance (Amazon Location), the cleaning fee and the VAT per line, plus the earliest date the guest count allows. An estimate until the offer is signed. Limited per IP (429).'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringQuoteInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringQuote'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'catering_disabled, catering_outside_area, catering_pickup_off or catering_delivery_off.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Catering
+      summary: Send a catering request
+      operationId: createCateringRequest
+      description: 'Priced again exactly like the quote. Needs guests >= minGuests, the lead time for that many guests, a company signatory (name, role, authority) and Turnstile when the site shows it. Answers the guest''s link token.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringRequestInput'}
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequestCreated'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'catering_disabled, catering_too_soon, catering_closed_day, catering_day_full, catering_outside_area, ...'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    get:
+      tags:
+        - Catering
+      summary: List catering requests
+      operationId: listCateringRequests
+      description: 'Newest first; ?status= filters (comma separated).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequestList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags:
+        - Catering
+      summary: A catering request with its offers and history
+      operationId: getCateringRequest
+      description: 'Includes `signing` (who has signed the current version) and `capacityLeft`.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/documents/{docId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: docId, in: path, required: true, schema: {type: string, enum: [offer, signed, signature]}}
+    get:
+      tags:
+        - Catering
+      summary: Download link for a document
+      operationId: getCateringDocument
+      description: 'docId offer (the current offer PDF), signed (the signed copy) or signature (the customer''s signature evidence). A 5-minute presigned URL.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentLink'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/offer:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Save an offer draft
+      operationId: saveCateringOfferDraft
+      description: 'Marks the request under review (reviewedAt).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringOfferInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_editable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/offer/send:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Send offer version N
+      operationId: sendCateringOffer
+      description: 'Renders the PDF, cancels the previous signing order and opens a new one, holds the day''s capacity. The guest is told once the restaurant has signed. Without a body the saved draft is sent.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringOfferInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_editable, capacity_full or changed_retry.'}
+        '503': {description: 'document_unavailable, signing_unavailable or the catering service is unavailable.'}
+
+  /locations/{locationId}/catering/requests/{requestId}/restaurant-sign:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Start the restaurant's signature
+      operationId: startCateringRestaurantSigning
+      description: 'BankID here (kind bankid: autoStartToken, qrData) or the provider''s page (kind redirect: url, back with ?signering=klar).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignStart'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_signable, already_signed or signing_<code>.'}
+        '503': {description: signing_unavailable.}
+
+  /locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Poll the restaurant's signature
+      operationId: pollCateringRestaurantSigning
+      description: 'state pending (hint, qrData), failed (hint) or signed (with the request).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignPoll'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_signable or no_signing_started.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/decline:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Decline the request
+      operationId: declineCateringRequest
+      description: 'Before signing; releases capacity and cancels the signing order.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_declinable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Cancel a signed order
+      operationId: cancelCateringOrder
+      description: 'Refunds a paid private order, voids an open invoice.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_cancellable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/delivered:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Mark delivered
+      operationId: markCateringDelivered
+      description: 'confirmed -> delivered (closed when paid).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_confirmed.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/invoices:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Catering invoices
+      operationId: listCateringInvoices
+      description: 'Mirrored from Stripe.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/invoices/{invoiceId}/mark-paid:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: invoiceId, in: path, required: true, schema: {type: string}}
+    post:
+      tags:
+        - Catering
+      summary: Record a Bankgiro payment
+      operationId: markCateringInvoicePaid
+      description: 'Marks the Stripe invoice paid out of band; invoice.paid settles the request.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '202':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    get:
+      tags:
+        - Catering
+      summary: The guest's view
+      operationId: getCateringRequestAsGuest
+      description: 'Magic link: the token from the link in the X-Order-Token header (wrong token: 404). canSign once the restaurant has signed; canAccept where simple acceptance is allowed.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/sign:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Start the guest's signature
+      operationId: startCateringCustomerSigning
+      description: 'After the restaurant. kind bankid or redirect. Limited per request and IP (429).'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignStart'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_signable, awaiting_restaurant, offer_expired, already_signed or signing_<code>.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503': {description: signing_unavailable.}
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/sign/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Poll the guest's signature
+      operationId: pollCateringCustomerSigning
+      description: 'status pending (hintCode, qrData), failed (hintCode), complete (request) or none.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/accept:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Accept without BankID
+      operationId: acceptCateringOffer
+      description: 'Simple acceptance (off by default per restaurant): name, and for a company role and confirmAuthority. Name, time, IP, user agent and the PDF hash are stored as locked evidence. Limited per request and IP (429).'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AcceptInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'acceptance_not_allowed, not_signable, awaiting_restaurant or offer_expired.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/checkout:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Pay the signed offer
+      operationId: startCateringCheckout
+      description: 'Private guests; {embedded: true} answers clientSecret and stripeAccount, else checkoutUrl.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LooseObject'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_payable, offer_expired or payment_in_progress.'}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/change:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Ask for changes
+      operationId: requestCateringChange
+      description: 'Cancels the open signing order.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MessageInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_changeable.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/reject:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Decline the offer
+      operationId: rejectCateringOffer
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_rejectable.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/documents/{docId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: docId, in: path, required: true, schema: {type: string, enum: [offer, signed, signature]}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    get:
+      tags:
+        - Catering
+      summary: Download link for a document
+      operationId: getCateringDocumentAsGuest
+      description: 'docId offer, signed or signature; a 5-minute presigned URL.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentLink'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /webhooks/signing/catering:
+    post:
+      tags:
+        - Catering
+      summary: Signing provider callback
+      operationId: cateringSigningWebhook
+      description: 'Called by the signing provider with ?l=<locationId>&r=<requestId>&t=<per-order token>. Verified against the request''s current signing order (401 otherwise), deduplicated on AUDIT#SIGNING#<eventId>, and the order''s state is always read again from the provider. 503 makes the provider retry.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LooseObject'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '401': {description: The callback is not for this request's signing order.}
+        '404': {description: Unknown request.}
+        '503': {description: Not processed; the provider retries.}
+
   /marketing/{proxy}:
     parameters:
       - {name: proxy, in: path, required: true, schema: {type: string}}
@@ -5092,6 +5894,240 @@ components:
       properties:
         jobId: {type: string}
         status: {type: string, enum: [PENDING]}
+    LooseObject:
+      type: object
+      additionalProperties: true
+    DocumentLink:
+      type: object
+      required: [url, expiresIn]
+      properties:
+        url: {type: string, format: uri}
+        expiresIn: {type: integer, example: 300}
+    ReasonInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: {type: string, maxLength: 500}
+    MessageInput:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: {type: string, maxLength: 1000}
+    AcceptInput:
+      type: object
+      additionalProperties: false
+      required: [name, acceptTerms]
+      properties:
+        name: {type: string, maxLength: 120}
+        role: {type: string, maxLength: 80, description: Required for a company.}
+        confirmAuthority: {type: boolean, description: Required (true) for a company.}
+        acceptTerms: {type: boolean, enum: [true]}
+    SignStart:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [bankid, redirect]}
+        url: {type: string, description: kind redirect.}
+        autoStartToken: {type: string, description: kind bankid.}
+        qrData: {type: string, description: 'kind bankid: the animated QR string (changes every second).'}
+        status: {type: string, enum: [pending], description: The guest's start only.}
+    SignPoll:
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, enum: [pending, failed, signed]}
+        hint: {type: string}
+        qrData: {type: string}
+        request: {$ref: '#/components/schemas/CateringRequest'}
+    CateringSettings:
+      type: object
+      additionalProperties: true
+      description: 'cateringSettings (shared/catering.py DEFAULT_SETTINGS): minGuests, leadTimeRules [{fromGuests, toGuests, days}], deliveryBands [{upToKm, price}], maxDeliveryKm, originAddress, defaultServiceIncluded, ownerReminderHours, signReminderDaysBefore, dayBeforeReminder, allowSimpleAcceptance, cleaningFee, terms, ...'
+    CateringTierInput:
+      type: object
+      additionalProperties: false
+      required: [name, fromPortions]
+      properties:
+        name: {type: string, maxLength: 40}
+        fromPortions: {type: integer, minimum: 1, description: Guests (issue 5).}
+        toPortions: {type: integer, minimum: 1, nullable: true, description: Guests; null = and up.}
+        discountPercent: {type: integer, minimum: 0, maximum: 50}
+        active: {type: boolean}
+    CateringTier:
+      allOf:
+        - $ref: '#/components/schemas/CateringTierInput'
+        - type: object
+          required: [tierId]
+          properties:
+            tierId: {type: string}
+    CateringTierList:
+      type: object
+      required: [tiers]
+      properties:
+        tiers: {type: array, items: {$ref: '#/components/schemas/CateringTier'}}
+    CateringQuoteInput:
+      type: object
+      description: Unknown fields are refused (400).
+      required: [guests, fulfilment]
+      properties:
+        guests: {type: integer, minimum: 1, maximum: 5000, description: At least the location's minGuests.}
+        packages:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [packageId]
+            properties:
+              packageId: {type: string}
+              quantity: {type: integer, minimum: 1, description: Guests on the package; default all guests.}
+        dishes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [dishId, quantity]
+            properties:
+              dishId: {type: string}
+              quantity: {type: integer, minimum: 1, description: Portions.}
+        items:
+          type: array
+          description: Regular menu dishes (legacy, until the catering menu is migrated).
+          items:
+            type: object
+            additionalProperties: false
+            required: [menuItemId, quantity]
+            properties:
+              menuItemId: {type: string}
+              quantity: {type: integer, minimum: 1}
+        fulfilment: {type: string, enum: [pickup, delivery]}
+        deliveryAddress: {$ref: '#/components/schemas/CateringAddress'}
+        equipmentReturn: {type: string, enum: [cleaned, not_cleaned]}
+        deliveryDate: {type: string, format: date, description: Decides the VAT rate.}
+        deliveryZone: {type: string, description: Sent by older sites; ignored.}
+    CateringAddress:
+      type: object
+      additionalProperties: false
+      required: [street, postalCode, city]
+      properties:
+        street: {type: string, maxLength: 120}
+        postalCode: {type: string, pattern: '^\d{3} ?\d{2}$'}
+        city: {type: string, maxLength: 60}
+    CateringQuote:
+      type: object
+      description: 'Amounts in öre, incl. VAT. Every line carries its vatRate; delivery and cleaning follow the food.'
+      required: [lines, guests, portions, subtotal, discount, deliveryFee, cleaningFee, total, vat, vatRate, vatBreakdown, deliveryFeeManual, earliestDate]
+      properties:
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: {type: string, enum: [package, dish, menu]}
+              packageId: {type: string}
+              dishId: {type: string}
+              menuItemId: {type: string}
+              name: {type: string}
+              unitPrice: {type: integer}
+              quantity: {type: integer}
+              vatRate: {type: integer, enum: [6, 12]}
+        guests: {type: integer}
+        portions: {type: integer}
+        tierName: {type: string, nullable: true}
+        subtotal: {type: integer}
+        discountPercent: {type: integer}
+        discount: {type: integer}
+        deliveryFee: {type: integer}
+        cleaningFee: {type: integer}
+        total: {type: integer}
+        vat: {type: integer}
+        vatRate: {type: integer}
+        vatBreakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              rate: {type: integer}
+              gross: {type: integer}
+              net: {type: integer}
+              vat: {type: integer}
+        serviceIncluded: {type: boolean}
+        distanceKm: {type: number, nullable: true, description: Road distance; null when not delivered or the address could not be located.}
+        deliveryFeeManual: {type: boolean, description: The address could not be located; the restaurant sets the fee in the offer.}
+        ruleRefs: {type: object, additionalProperties: true, description: 'tierId, deliveryBand, minGuests, leadTimeDays, vat.'}
+        earliestDate: {type: string, format: date}
+    CateringRequestInput:
+      allOf:
+        - $ref: '#/components/schemas/CateringQuoteInput'
+        - type: object
+          required: [customerType, name, email, phone, deliveryDate, deliveryTime, acceptTerms]
+          properties:
+            customerType: {type: string, enum: [private, company]}
+            name: {type: string}
+            email: {type: string}
+            phone: {type: string}
+            companyName: {type: string}
+            orgNumber: {type: string}
+            invoiceReference: {type: string}
+            signatoryName: {type: string, description: 'Company only, required.'}
+            signatoryRole: {type: string, description: 'Company only, required.'}
+            signatoryAuthority: {type: boolean, description: 'Company only, must be true.'}
+            deliveryTime: {type: string, pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'}
+            notes: {type: string, maxLength: 1000}
+            language: {type: string}
+            acceptTerms: {type: boolean, enum: [true]}
+            turnstileToken: {type: string}
+            attribution: {type: object}
+            marketingOptIn: {type: boolean}
+            marketingConsent: {type: object}
+    CateringRequestCreated:
+      type: object
+      required: [requestId, locationId, token, status, request]
+      properties:
+        requestId: {type: string}
+        locationId: {type: string}
+        token: {type: string}
+        status: {type: string, enum: [requested]}
+        request: {$ref: '#/components/schemas/CateringQuote'}
+    CateringRequestList:
+      type: object
+      required: [requests]
+      properties:
+        requests: {type: array, items: {type: object, additionalProperties: true}}
+    CateringOfferInput:
+      type: object
+      additionalProperties: false
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, unitPrice, quantity]
+            properties:
+              name: {type: string, maxLength: 120}
+              unitPrice: {type: number, minimum: 0, description: Kronor incl. VAT.}
+              quantity: {type: integer, minimum: 1}
+              menuItemId: {type: string}
+              dishId: {type: string}
+              packageId: {type: string}
+        discountPercent: {type: integer, minimum: 0, maximum: 50}
+        deliveryFee: {type: number, minimum: 0}
+        equipmentReturn: {type: string, enum: [cleaned, not_cleaned]}
+        cleaningFee: {type: number, minimum: 0}
+        serviceIncluded: {type: boolean, description: 'With service 12 % VAT; food only by the takeaway rule (6 % 2026-04-01 to 2027-12-31).'}
+        message: {type: string, maxLength: 1000}
+        validUntil: {type: string, format: date}
+    CateringRequest:
+      type: object
+      additionalProperties: true
+      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, capacityLeft, settings).
+    CateringGuestView:
+      type: object
+      additionalProperties: true
+      description: The guest's fields, the current offer, canSign, canAccept, canPay, documents [offer, signed], signedBy, signedMethod.
     CateringDishInput:
       type: object
       additionalProperties: false
@@ -5581,7 +6617,8 @@ components:
           $ref: '#/components/schemas/BookingRuleSnapshot'
         extendedMinutes:
           type: integer
-          description: Minutes beyond (negative = before) the rule's length after staff changed the end.
+          minimum: 0
+          description: Minutes beyond the rule's length after staff extended the end (0 when not extended or shortened).
 
     ReservationList:
       type: object

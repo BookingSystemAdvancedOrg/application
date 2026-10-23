@@ -432,11 +432,12 @@ def test_subscriber_admin_and_export(env):
     page = body_of(admin(fn, "GET", "/marketing/subscribers"))
     assert {s["email"] for s in page["subscribers"]} == {"guest0@example.se", "guest1@example.se"}
     sid = page["subscribers"][0]["subscriberId"]
-    assert admin(fn, "POST", f"/marketing/subscribers/{sid}/unsubscribe")["statusCode"] == 204
     csv_out = admin(fn, "GET", "/marketing/subscribers/export")
-    assert csv_out["headers"]["Content-Type"].startswith("text/csv") and "unsubscribed" in csv_out["body"]
-    assert admin(fn, "DELETE", f"/marketing/subscribers/{sid}")["statusCode"] == 204
-    assert len(body_of(admin(fn, "GET", "/marketing/subscribers"))["subscribers"]) == 1
+    assert csv_out["headers"]["Content-Type"].startswith("text/csv") and "guest0@example.se" in csv_out["body"]
+    # Unlogged unsubscribe/erase are gone: the privacy endpoints log every withdrawal.
+    assert admin(fn, "POST", f"/marketing/subscribers/{sid}/unsubscribe")["statusCode"] == 404
+    assert admin(fn, "DELETE", f"/marketing/subscribers/{sid}")["statusCode"] == 404
+    assert len(body_of(admin(fn, "GET", "/marketing/subscribers"))["subscribers"]) == 2
 
 
 def test_overview_totals(env):

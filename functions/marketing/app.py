@@ -26,8 +26,7 @@ TRIGGER:
     GET    /marketing/subscribers?status=&cursor=      status "suppressed" = bounced + complained
     GET    /marketing/subscribers?email=               one subscriber by address (exact, any case)
     GET    /marketing/subscribers/export               CSV
-    POST   /marketing/subscribers/{id}/unsubscribe
-    DELETE /marketing/subscribers/{id}                 erase (GDPR)
+    (unsubscribe and erase: guest-privacy, /privacy/consents/withdraw and /privacy/guests/erase)
 
 PURPOSE:
     The owner's marketing section in the admin app. Sending is done by
@@ -646,24 +645,8 @@ def _subscribers(ctx, method, rest, event):
         return {"statusCode": 200, "headers": {"Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store",
                                                "Content-Disposition": 'attachment; filename="mottagare.csv"'},
                 "body": out.getvalue()}
-    if not rest or not _SID.fullmatch(rest[0]):
-        return http.error(404, "not found")
-    key = m.sub_key(ctx.tenant_id, rest[0])
-    if rest[1:] == ["unsubscribe"] and method == "POST":
-        try:
-            table.update_item(Key=key, ConditionExpression="#st = :s",
-                              UpdateExpression="SET #st = :u, unsubscribedAt = :now, unsubscribedVia = :via",
-                              ExpressionAttributeNames={"#st": "status"},
-                              ExpressionAttributeValues={":s": "subscribed", ":u": "unsubscribed",
-                                                         ":now": m.now_iso(), ":via": "staff"})
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-        return http.respond(204, {})
-    if len(rest) == 1 and method == "DELETE":
-        table.delete_item(Key=key)
-        logger.info(json.dumps({"marketing": "subscriber_erased", "tenantId": ctx.tenant_id}))
-        return http.respond(204, {})
+    # Unsubscribe and erase go through guest-privacy (/privacy/consents/withdraw,
+    # /privacy/guests/erase), so every withdrawal is in the consent log.
     return http.error(404, "not found")
 
 

@@ -190,7 +190,8 @@ def test_staff_may_shorten_and_the_table_frees_up(env):
     with_rules(env)
     rid = booked(env)["reservationId"]
     response = extend(env, rid, "19:00")
-    assert response["statusCode"] == 200 and body_of(response)["extendedMinutes"] == -30
+    assert response["statusCode"] == 200 and body_of(response)["extendedMinutes"] == 0
+    assert body_of(response)["history"][-1]["action"] == "shortened"
     assert rows(env) == [f"SLOT#{DAY}#18:00-19:00#table-b"]
     assert "table-b" in free_tables_at(env, "19:00")
 
@@ -211,3 +212,13 @@ def test_a_legacy_booking_extends_only_with_override(env):
     assert body_of(extend(env, rid, "20:30")) == {"error": "not_extendable"}
     body = body_of(extend(env, rid, "20:30", overrideRule=True))
     assert body["endTime"] == "20:30" and body["bookingRule"]["durationMinutes"] == 120
+
+
+def test_extension_after_ttl_removed_the_old_slot_row(env):
+    with_rules(env)
+    rid = booked(env)["reservationId"]
+    env["res"].Table(OCCUPANCY_TABLE).delete_item(
+        Key={"PK": f"LOCATION#{LOC_A}", "SK": f"SLOT#{DAY}#18:00-19:30#table-b"})
+    response = extend(env, rid, "20:00")
+    assert response["statusCode"] == 200, response
+    assert rows(env) == [f"SLOT#{DAY}#18:00-20:00#table-b"]

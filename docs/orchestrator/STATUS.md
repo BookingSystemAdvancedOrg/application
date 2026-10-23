@@ -34,7 +34,7 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 - 2026-10-23: Issue 5 M1 shipped to dev: infrastructure 77a1695, b27272f (CI 39854058365 ok); application b2d6e1a (CI 39861092948 ok); admin 78ee3c2 (CI 39862567469 ok). Migration script `scripts/migrate_catering_menu.py` written, not yet run.
 
 - 2026-10-23: M1 review fixes on dev: application dda8a08 (CI 39864076823 ok), admin 076dcfa (CI 39865892508 ok). Races in menu CRUD documented as `shortcut:`.
-- 2026-10-23: M1-Q1 answered: `defaultServiceIncluded` = true (12 % VAT) until the accountant confirms. M1-Q2 answered: the owner runs `migrate_catering_menu.py --apply` with their dev profile.
+- 2026-10-23: M1-Q1 answered: `defaultServiceIncluded` = true (12 % VAT) until the accountant confirms. M1-Q2 closed: no migration needed; the owner adds catering dishes in the admin (script kept in the repo, unused).
 - 2026-10-23: Faster plan approved by the owner (relayed, then confirmed here): catering M2-M5, issue 1 and issue 3 in parallel; issues 2 and 4 after 1 and 3 are merged; one review per issue (catering after M5); catering infrastructure for M2-M5 pushed ahead in one go. Supersedes "one implementation agent at a time" and "all of catering first".
 - 2026-10-23: File ownership for parallel work: issue 1 owns shared/menu.py, get-menu, manage-menu, shared/orders.py, admin meny, customer bestall; issue 3 owns availability, booking_rules, reservations, booking functions, create/get-location, admin installningar profil + bokningar, customer boka/bokning; catering owns everything catering incl. shared/catering.py and all infrastructure. openapi.yaml and test_openapi.py: each edits only its own sections.
 

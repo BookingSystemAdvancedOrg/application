@@ -190,5 +190,5 @@ def test_staff_block_sees_a_live_hold_and_may_take_over_an_expired_one(env, monk
 
     later(env, 15)
     assert block._query_occupancies(pk, prefix) == []
-    block._put_manual_item({"PK": row["PK"], "SK": row["SK"], "reservationId": "MANUAL_BLOCK#x", "ttl": 1})
+    block._put_manual_item({"PK": row["PK"], "SK": row["SK"], "reservationId": "MANUAL_BLOCK#x", "ttl": 1}, {})
     assert [r["reservationId"] for r in rows(env)] == ["MANUAL_BLOCK#x"]

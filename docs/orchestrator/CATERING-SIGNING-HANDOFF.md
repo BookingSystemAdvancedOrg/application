@@ -5,26 +5,29 @@ When the owner says something like **"start on the BankID signing for catering, 
 
 Background: on 2026-10-22 the owner approved the catering plan, but the provider is chosen after meetings with Scrive and SEB. Idura (the plan's first recommendation) is not on the shortlist. Until then, everything provider-neutral is built and the dev environment signs with the BankID simulator.
 
-## What exists when the trigger comes (built in issue 5 M1-M5)
-Check `STATUS.md` for the actual state; this is the target.
-- `application/shared/signing.py`: the provider interface and the factory. The provider is chosen by the `provider` field in the secret at `SIGNING_PROVIDER_SECRET_ARN`: `simulator` (dev), `bankid_direct`, later `scrive`.
-- Signing order: the restaurant signs first (owner in admin), then the customer. Statuses: `offer_sent` means "waiting for signatures"; per-party signature state lives on the offer version (`signatures[{role, method, signedAt, evidenceKey}]`). A new offer version cancels the open signing order.
-- Offer PDF: `functions/catering-document` (WeasyPrint) renders `OFFER#vNNNN` to `<tenant>/offers/<id>/vNNNN.pdf` with its SHA-256 on the offer.
-- Webhook endpoint `POST /webhooks/signing/catering` (`functions/catering-signing-webhook`): dedupe on `AUDIT#SIGNING#<eventId>`, provider-specific verification delegated to the adapter, always re-fetch status from the provider before changing state.
-- Locked storage: `signed/` and `invoices/` get per-object COMPLIANCE retention (7 years in prod, 1 day GOVERNANCE in dev); `offers/` expire after 13 months.
-- Admin and customer UIs handle both start kinds the interface can return: `redirect` (open the provider's signing page) and `bankid` (QR or app on same device, polled through `collect`).
-- Fallback without BankID (simple acceptance) is provider-independent and already works.
+## What exists (built in issue 5 M4, 2026-10-23)
+- `application/shared/signing.py`: the provider interface and the factory. The provider is the `provider` field in the secret at `SIGNING_PROVIDER_SECRET_ARN`: `simulator` (dev; `{"startKind": "redirect"}` makes it behave like a provider with its own signing page), `bankid_direct` (older name `bankid`, wraps `shared/bankid.py`). Add `scrive` (or the SEB variant) as one more branch in the same functions.
+- `application/shared/catering_signing.py`: the flow on top of it (restaurant first, then the customer; simple acceptance; evidence package; webhook re-fetch). Provider code never touches DynamoDB or S3.
+- Signing order: the restaurant signs first (owner in admin, `POST …/restaurant-sign` + `…/status`), then the customer (`…/customer/sign` + `…/status`). `offer_sent` means "waiting for signatures"; `restaurantSignedAt` marks the restaurant's signature and only then is the customer notified. Per-party state lives on the **head item** `signing.signatures[role] = {name, personalNumberMasked?, role?, method, signedAt, evidenceKey}` (the history table is append-only, so not on `OFFER#vNNNN`). A new offer version cancels the open order and opens a new one.
+- Offer PDF: `functions/catering-document` (WeasyPrint, PDF/A-3b) renders the version to `<tenant>/offers/<id>/vNNNN.pdf` (tagged `retention=offer`); its SHA-256 is `signing.pdfSha256` and what both parties sign (BankID `userNonVisibleData`).
+- Webhook `POST /webhooks/signing/catering?l=&r=&t=` (`functions/catering-signing-webhook`): verification delegated to the adapter, dedupe on `AUDIT#SIGNING#<eventId>` (checked first, written after the change), always re-fetch with `status()` before recording.
+- Locked storage: `signed/<id>/vNNNN/` holds each party's evidence, `offer.pdf` (the pinned S3 version `signing.pdfVersionId`, hash-checked) and `manifest.json` with per-object COMPLIANCE (7 years prod, 1 day GOVERNANCE dev), all written only when the customer's signature makes the contract binding. Until then the restaurant's evidence sits unlocked next to the PDF in `offers/` (tagged, expires after 13 months).
+- Admin and customer UIs handle both start kinds: `redirect` (open the provider's page, back with `?signering=klar`, then one status call) and `bankid` (QR or app on the same device, polled every second).
+- Fallback without BankID (simple acceptance) is provider-independent and works (off by default per restaurant).
 
-### Interface (keep it; one implementation per provider, no extra layers)
+### Interface as built (differences from the first draft)
+The "order_ref" is the **order dict** the adapter returns from `create_order`; the caller stores it as `signing.order` and passes it back, and the functions return the changed dict. Keep provider ids, per-party URLs and tokens inside it.
 ```
-create_order(request, offer, pdf_bytes, parties) -> order_ref         # parties: [{role: "restaurant"|"customer", name, email, personalNumber?}] in signing order
-start(order_ref, role, end_user_ip) -> {"kind": "redirect", "url"} | {"kind": "bankid", "orderRef", "autoStartToken", "qr"}
-collect(order_ref, role) -> {"state": "pending"|"signed"|"failed", "hint"?}   # only for kind "bankid"
-cancel(order_ref) -> None
-status(order_ref) -> {"complete": bool, "parties": [{role, signedAt?, method}]}
-fetch_evidence(order_ref) -> {"<filename>": bytes}                  # stored under signed/<requestId>/vNNNN/ with lock
-verify_webhook(headers, raw_body) -> {"eventId", "orderRef"} | None   # None means reject (401)
+create_order(request, offer, pdf_bytes, parties, callback_url) -> order    # parties: [{role, name, email}] in signing order
+start(order, role, end_user_ip, return_url) -> (result, order)            # result {"kind": "redirect", "url"} | {"kind": "bankid", "autoStartToken", "qrData"}
+collect(order, role) -> (result, order)                                   # {"state": "pending"|"signed"|"failed", "hint"?, "signer"?, "evidence"? {filename: bytes}}
+qr(order, role) -> str | None
+cancel(order) -> None
+status(order) -> {"complete": bool, "parties": [{role, signedAt?, method}]}
+fetch_evidence(order) -> {"<filename>": bytes}                            # whole-order files (Scrive: the sealed PDF), stored with the package
+verify_webhook(order, headers, raw_body, query) -> {"eventId"} | None     # None = 401
 ```
+`callback_url` already carries `?l=<locationId>&r=<requestId>`; `create_order` adds the per-order random `t` token. For a redirect provider, `collect` after the return reads the party's state from the provider. `return_url` comes from the caller (admin page for the restaurant, the guest's page for the customer). An offer that expires (catering-lifecycle) does not cancel the provider's order: lifecycle has no access to the signing secret; let the provider's own expiry (days to sign) match `offerValidDays`.
 
 ## If the choice is Scrive
 Owner provides (never paste secrets into chat): a Scrive API account (testbed first: api-testbed.scrive.com), OAuth or personal access credentials put into the existing signing secret in Secrets Manager by the owner, the contract's price model, and the user-group setup per restaurant if Enterprise.

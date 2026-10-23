@@ -31,7 +31,7 @@ EMAIL, SMS = "email", "sms"
 CHANNELS = (EMAIL, SMS)
 GRANT, WITHDRAW, SUPPRESSED = "grant", "withdraw", "suppressed"
 SOURCES = ("booking", "order", "catering", "welcome_offer", "withdraw_page", "unsubscribe_link", "admin",
-           "complaint", "legacy")
+           "complaint", "legacy", "erasure")
 TENANT_INDEX = "byTenant"
 WITHDRAW_LINK_DAYS = 90
 
@@ -51,6 +51,10 @@ TEXTS = {
 CURRENT = "offers_v1"
 CHANNEL_QUESTION = "Hur vill du få dem?"
 CHANNEL_LABELS = {EMAIL: "E-post", SMS: "SMS"}
+# Channels the guest forms offer. SMS is not offered while nothing sends
+# marketing SMS (no consent is collected for a channel that is never used);
+# existing SMS records stay valid and can still be withdrawn.
+OFFERED = (EMAIL,)
 # Versions a guest form may still send (the current one, plus the one before
 # while a cached old page is open).
 ACCEPTED = (CURRENT,)
@@ -88,7 +92,7 @@ def render(version, restaurant):
 def public_text(restaurant):
     """What site-config gives the guest forms, so they show the server's words."""
     return {"version": CURRENT, "label": render(CURRENT, restaurant), "channelQuestion": CHANNEL_QUESTION,
-            "channels": [{"value": c, "label": CHANNEL_LABELS[c]} for c in CHANNELS]}
+            "channels": [{"value": c, "label": CHANNEL_LABELS[c]} for c in OFFERED]}
 
 
 def parse_request(raw, *, email=None, phone=None, legacy_opt_in=False, source="booking"):
@@ -96,7 +100,8 @@ def parse_request(raw, *, email=None, phone=None, legacy_opt_in=False, source="b
     guest did not tick the box. Accepts the new `marketingConsent` object and,
     for one release, the old `marketingOptIn: true` (= e-mail, old wording).
     Raises ValueError for a malformed field; a channel without its contact
-    detail is dropped (an SMS consent needs a phone number)."""
+    detail is dropped (an SMS consent needs a phone number), and so is a
+    channel that is not offered (an old cached page may still send "sms")."""
     if raw is None:
         if legacy_opt_in is True and email:
             return LEGACY_BY_SOURCE.get(source, "offers_order_v0"), [EMAIL]
@@ -110,7 +115,7 @@ def parse_request(raw, *, email=None, phone=None, legacy_opt_in=False, source="b
     if not isinstance(channels, list) or not channels or any(c not in CHANNELS for c in channels):
         raise ValueError("marketingConsent.channels must be a non-empty list of email/sms")
     have = {EMAIL: bool(email), SMS: bool(phone)}
-    kept = [c for c in CHANNELS if c in channels and have[c]]
+    kept = [c for c in OFFERED if c in channels and have[c]]
     return (version, kept) if kept else None
 
 

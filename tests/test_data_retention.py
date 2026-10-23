@@ -221,3 +221,50 @@ def test_out_of_time_continues_after_the_last_tenant(env):
     summary = env["app"].handler({}, Context(remaining=1_000))
     assert summary["continued"] is True
     assert json.loads(env["lambda"].calls[0]["Payload"]) == {"after": "", "round": 1}
+
+
+def _subscribers(t):
+    sub = lambda email, **f: t["marketing"].put_item(Item={  # noqa: E731
+        **marketing.sub_key(T, marketing.subscriber_id(T, email)), "email": email, "name": "Gäst", **f})
+    sub("pending-old@example.se", status="pending", pendingAt="2026-09-01T00:00:00Z")
+    sub("pending-new@example.se", status="pending", pendingAt="2026-10-20T00:00:00Z")
+    sub("bounced@example.se", status="bounced", suppressedAt="2026-08-01T00:00:00Z", lastVisit="2026-01-01")
+    sub("complained-ancient@example.se", status="complained", suppressedAt="2023-01-01T00:00:00Z")
+    sub("active@example.se", status="subscribed", consentAt="2020-01-01T00:00:00Z")
+
+
+def test_subscriber_rows_dry_run_counts_only(env, monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    _subscribers(env["t"])
+    before = env["t"]["marketing"].scan()["Items"]
+    counts = env["app"].handler({}, Context())["counts"]
+    assert env["t"]["marketing"].scan()["Items"] == before
+    assert (counts["subscribersPendingDeleted"], counts["subscribersSuppressedStripped"],
+            counts["subscribersSuppressedDeleted"]) == (1, 1, 1)
+
+
+def test_subscriber_rows_expire_and_bounces_keep_a_hashed_block(env):
+    t = env["t"]
+    _subscribers(t)
+    env["app"].handler({}, Context())
+    rows = {i["SK"]: i for i in t["marketing"].scan()["Items"]}
+    sid = lambda email: f"SUB#{marketing.subscriber_id(T, email)}"  # noqa: E731
+    assert set(rows) == {sid("pending-new@example.se"), sid("bounced@example.se"), sid("active@example.se")}
+    bounced = rows[sid("bounced@example.se")]
+    assert set(bounced) == {"PK", "SK", "status", "suppressedAt", "anonymisedAt"} and bounced["status"] == "bounced"
+    # The block still works: a new opt-in for the same address is refused.
+    marketing.upsert_subscriber(t["marketing"], tenant_id=T, restaurant="Roma", email="bounced@example.se",
+                                name="x", source="booking")
+    assert t["marketing"].get_item(Key=marketing.sub_key(T, marketing.subscriber_id(T, "bounced@example.se")))[
+        "Item"]["status"] == "bounced"
+
+
+def test_consent_suppression_keeps_a_bounced_subscriber_block(env):
+    t = env["t"]
+    t["marketing"].update_item(Key=marketing.sub_key(T, marketing.subscriber_id(T, "gone@example.se")),
+                               UpdateExpression="SET #s = :c, suppressedAt = :at",
+                               ExpressionAttributeNames={"#s": "status"},
+                               ExpressionAttributeValues={":c": "complained", ":at": "2026-10-20T00:00:00Z"})
+    env["app"].handler({}, Context())
+    (row,) = t["marketing"].scan()["Items"]
+    assert row["status"] == "complained"

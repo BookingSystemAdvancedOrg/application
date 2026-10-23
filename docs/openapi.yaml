@@ -4349,6 +4349,93 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentLookup'}
 
+  /privacy/guests:
+    get:
+      tags:
+        - Privacy
+      summary: Everything stored about one guest (export)
+      operationId: privacyGuestExport
+      description: >-
+        GDPR art. 15/20. The subscriber and welcome-offer code, the consent
+        history, and the guest's bookings, orders and catering requests in
+        every location of the restaurant, matched on e-mail (any case) or
+        phone. Keys, link hashes and expiry fields are left out.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: email, in: query, required: false, schema: {type: string}}
+        - {name: phone, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: The guest's data as JSON.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: {type: string, nullable: true}
+                  phone: {type: string, nullable: true}
+                  exportedAt: {type: string, format: date-time}
+                  consents: {$ref: '#/components/schemas/ConsentLookup'}
+                  subscriber: {type: object, nullable: true, additionalProperties: true}
+                  welcomeOfferCode: {type: object, nullable: true, additionalProperties: true}
+                  bookings: {type: array, items: {type: object, additionalProperties: true}}
+                  orders: {type: array, items: {type: object, additionalProperties: true}}
+                  cateringRequests: {type: array, items: {type: object, additionalProperties: true}}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
+  /privacy/guests/erase:
+    post:
+      tags:
+        - Privacy
+      summary: Erase one guest's data
+      operationId: privacyGuestErase
+      description: >-
+        GDPR art. 17. Withdraws marketing consent (source erasure; the next
+        data-retention run keeps only a suppression record), deletes the
+        subscriber and welcome-offer rows, and anonymises bookings, orders
+        and catering requests. Receipt fields, company invoice details and
+        catering signatures stay (bokföringslagen, signed contracts). Items
+        still in progress are kept and listed; cancel them first.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                email: {type: string}
+                phone: {type: string}
+      responses:
+        '200':
+          description: What was done.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consentWithdrawn: {type: array, items: {type: string, enum: [email, sms]}}
+                  marketingRowsDeleted: {type: integer}
+                  anonymised: {type: integer}
+                  kept:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: {type: string, enum: [booking, order, catering]}
+                        locationId: {type: string}
+                        status: {type: string}
+                        date: {type: string, nullable: true}
+                        id: {type: string}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
   /locations/{locationId}/catering/menu:
     parameters:
       - $ref: '#/components/parameters/LocationId'

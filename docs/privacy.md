@@ -53,7 +53,7 @@ in section 5.
 | Catering history: offers, audit (actor, IP, user agent, document hash, BankID signature events) | catering-request-history table | Evidence of the offer and the signature | Contract; legal obligation | Deleted with the request (see above). **LEGAL REVIEW:** IP and user agent are kept as long as the request (signature evidence) | System; owners see the history |
 | Catering documents (offer, signed offer, invoice PDFs) | S3 `catering-documents` (Object Lock) | Contract and bookkeeping | Contract; legal obligation | 7 years (Object Lock, compliance) | Presigned links only |
 | Marketing consent records (grant, withdrawal): identifier (e-mail or phone), restaurant, location, channel, exact checkbox wording + version id, time, source form, reference | `consent-log` table, append-only (section 3) | Proof of consent; the check before every marketing send | Consent; legal obligation to show consent (art. 7.1) | Kept while the latest record is a grant. After a withdrawal, the full records stay `consent_history_days` (30, **LEGAL REVIEW**), then only a suppression record (channel, time, hashed subject, no address or number) for `suppression_months` (36, **LEGAL REVIEW**), then deleted | Owners (Inställningar > Integritet); the guest through the withdrawal link |
-| Marketing subscriber list: e-mail, name, last visit, locations, status, bounce or complaint | marketing table `TENANT#<t>#SUB` | Send campaigns (e-mail only) | Consent | Follows the consent log: unsubscribed on withdrawal, deleted when the consent becomes a suppression record | Owners (Marknadsföring) |
+| Marketing subscriber list: e-mail, name, last visit, locations, status, bounce or complaint | marketing table `TENANT#<t>#SUB` | Send campaigns (e-mail only) | Consent | Follows the consent log: unsubscribed on withdrawal, deleted when the consent becomes a suppression record. Unconfirmed sign-ups (`pending`) deleted after 30 days (`RETENTION_PENDING_DAYS`). Bounced or complained: the address and every other personal field removed `consent_history_days` (30) after the bounce or complaint, the hashed row kept as a block for `suppression_months` (36, **LEGAL REVIEW**), then deleted | Owners (Marknadsföring) |
 | Welcome offer codes: code, hash of the canonical e-mail, status | marketing table `CODE#` / `EMAIL#` | One personal discount per guest | Consent (sign-up) | Code validity; deleted with the restaurant | System |
 | Campaign recipients (subscriber id, message id) | marketing table `CMP#<t>#<id>` | Never send the same campaign twice | Legitimate interest | Kept with the campaign; deleted with the restaurant | System |
 | Visit statistics: per day, location, channel, campaign counts | marketing table `TENANT#<t>#STATS` | Statistics | Legitimate interest | Kept; no personal data | Owners |
@@ -87,8 +87,11 @@ Code: `shared/consent.py`. Table: `consent-log` (PK
   `{channels, textVersion}`. The server stores its own rendered text, never
   text sent by the client. Change the wording by adding a version, never by
   editing one.
-- **The form field.** `marketingConsent: {channels: ["email"|"sms"],
-  textVersion}` on bookings, orders and catering requests. The old
+- **The form field.** `marketingConsent: {channels: ["email"],
+  textVersion}` on bookings, orders and catering requests. Only e-mail is
+  offered (`consent.OFFERED`): no SMS consent is collected while nothing
+  sends marketing SMS; an old page that still sends `sms` records e-mail
+  only. Existing SMS records stay valid and can be withdrawn. The old
   `marketingOptIn: true` is still accepted for one release and means
   e-mail, with the legacy wording. The checkbox shows only when the
   restaurant has the `marketing` feature.
@@ -120,6 +123,33 @@ never affected.
 - **Restaurant:** admin, Inställningar > Integritet (owners only). Look up a
   guest by e-mail and/or phone, see the history and withdraw per channel
   (`POST /privacy/consents/withdraw`, source `admin`, actor = the owner).
+  Marknadsföring > Mottagare uses the same endpoint for "Avregistrera", so
+  every withdrawal by the restaurant is in the log.
+
+## 4a. Export and erasure (GDPR art. 15, 17, 20)
+
+Admin, Inställningar > Integritet and Marknadsföring > Mottagare (owners
+only), `functions/guest-privacy`:
+
+- **Export:** `GET /privacy/guests?email=&phone=` returns, as JSON, the
+  subscriber and welcome-offer code, the consent history, and every
+  booking, order and catering request of the guest in all the restaurant's
+  locations (matched on e-mail, any case, or phone).
+- **Erasure:** `POST /privacy/guests/erase {email?, phone?}`:
+  - consent: a withdrawal with source `erasure` on every channel that has
+    records; the next data-retention run replaces the full records with a
+    bare suppression record at once (no 30-day grace). guest-privacy stays
+    append-only on the log. While the job is a dry run this step waits.
+  - the subscriber row and the welcome-offer address and code rows are
+    deleted (a code reserved by a checkout or redeemed stays; it holds no
+    address).
+  - bookings, orders and catering requests are anonymised as in section 5:
+    receipt fields, company invoice details and catering signatures stay
+    (bokföringslagen, signed contracts); catering history and the S3
+    documents are not touched (signature evidence, Object Lock).
+  - anything still in progress (a coming booking, an open or unpaid order,
+    a catering request not yet delivered or closed) is kept and listed;
+    the restaurant cancels it, then erases again.
 
 ## 5. Automatic deletion (`functions/data-retention`)
 
@@ -144,6 +174,10 @@ never affected.
   dates, payment ids and company invoice details stay.
 - **Offboarding** stays with `tenant-purge` (90 days), which now also deletes
   the restaurant's consent records.
+- **Marketing subscriber rows:** unconfirmed sign-ups deleted after 30 days;
+  bounced and complained rows lose the address after `consent_history_days`
+  and are deleted after `suppression_months` (the hashed key keeps blocking
+  a new sign-up until then).
 
 ## 6. SES and SMS
 
@@ -153,9 +187,14 @@ never affected.
   and the welcome offer go only to guests with a current consent in the
   consent log, after double opt-in for the welcome offer. One-click
   unsubscribe, bounce and complaint suppression.
-- **No marketing SMS.** SMS consent is collected so a restaurant can use it
-  later, but nothing sends marketing SMS. The SMS statement stays
-  transactional-only until that changes.
+- **No marketing SMS.** SMS consent is no longer offered on the guest forms
+  (existing records stay valid). Nothing sends marketing SMS.
+- **Configuration sets:** transactional e-mail from `notification` uses
+  `<env>-transactional`, marketing uses `<env>-marketing`; both suppress
+  hard bounces in SES. Account reputation alarms (bounce 4 %, complaint
+  0.08 %) go to `platform-alerts`.
+- **DMARC:** `p=none` with aggregate reports to `dmarc@booqy.se`
+  (`var.dmarc_report_address`; the mailbox must exist).
 
 ## 7. Open items and legal review
 

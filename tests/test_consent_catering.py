@@ -29,14 +29,13 @@ def test_request_without_consent_logs_nothing(env):  # noqa: F811
     assert log.scan()["Items"] == []
 
 
-def test_ticked_box_is_logged_per_channel_with_the_request_id(env):  # noqa: F811
+def test_ticked_box_is_logged_for_email_with_the_request_id(env):  # noqa: F811
     log = _log(env)
     response = create(env, marketingConsent=CURRENT)
     assert response["statusCode"] == 201
     request_id = json.loads(response["body"])["requestId"]
     items = sorted(log.scan()["Items"], key=lambda i: i["channel"])
-    assert [(i["channel"], i["source"], i["ref"]) for i in items] == [("email", "catering", request_id),
-                                                                        ("sms", "catering", request_id)]
+    assert [(i["channel"], i["source"], i["ref"]) for i in items] == [("email", "catering", request_id)]
     assert items[0]["text"] == consent.render(consent.CURRENT, "Roma")
 
 

@@ -67,7 +67,8 @@ ENV_VARS:
     NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
     RESERVATION_LINK_KEY_SECRET_ARN,
     SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes),
-    MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox")
+    MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox"),
+    SES_CONFIGURATION_SET (optional, the transactional SES configuration set)
 
 DEV MAIL OUTBOX:
     When MAIL_OUTBOX_BUCKET_NAME is set (infrastructure var.mail_outbox,
@@ -232,9 +233,12 @@ def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=Non
                "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}}
     if html_body:
         message["Body"]["Html"] = {"Data": html_body, "Charset": "UTF-8"}
+    extra = {}
+    if os.environ.get("SES_CONFIGURATION_SET"):
+        extra["ConfigurationSetName"] = os.environ["SES_CONFIGURATION_SET"]  # transactional, not marketing
     _client("ses").send_email(
         Source=source, Destination={"ToAddresses": [to]}, Message=message,
-        ReplyToAddresses=reply_to,
+        ReplyToAddresses=reply_to, **extra,
     )
     finance.count(tenant_id, emails=1, location_id=location_id)
 

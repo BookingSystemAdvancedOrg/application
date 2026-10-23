@@ -25,6 +25,8 @@ EXPECTED_OPERATIONS = {
     "/privacy/notice": frozenset({"get", "put", "delete"}),
     "/privacy/consents": frozenset({"get"}),
     "/privacy/consents/withdraw": frozenset({"post"}),
+    "/privacy/guests": frozenset({"get"}),
+    "/privacy/guests/erase": frozenset({"post"}),
     "/marketing/{proxy}": frozenset({"get", "post", "put", "delete"}),
     "/auth/forgot-password": frozenset({"post"}),
     "/auth/reset-password": frozenset({"post"}),

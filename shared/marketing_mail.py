@@ -32,6 +32,16 @@ def _client(name):
     return _clients[name]
 
 
+def sender_identity(tenant_row):
+    """Footer identity (MFL 20 §, e-handelslagen): "Legal AB (org.nr X),
+    street, postcode city" from the tenant PROFILE row."""
+    from shared.privacy_notice import _address
+    row = tenant_row or {}
+    name = row.get("legalName") or row.get("name") or ""
+    org = f" (org.nr {row['orgNumber']})" if row.get("orgNumber") else ""
+    return ", ".join(p for p in (f"{name}{org}".strip(), _address(row)) if p)
+
+
 def from_address(display_name):
     display = (display_name or "Restaurangen").replace('"', "").replace("\n", " ")[:60]
     return formataddr((display, os.environ["NO_REPLY_EMAIL_ADDRESS"]), charset="utf-8")

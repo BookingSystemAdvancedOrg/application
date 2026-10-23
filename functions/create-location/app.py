@@ -391,6 +391,16 @@ def _check_grace_period(fields):
         raise ValueError("gracePeriodHours must be shorter than the shortest booking length")
 
 
+# Grace period that can be chosen: 15 to 60 minutes. Older locations may
+# still hold 0; that is accepted when read and replaced on the next save of it.
+_GRACE_MIN_HOURS, _GRACE_MAX_HOURS = 0.25, 1
+
+
+def _check_grace_range(fields):
+    if not _GRACE_MIN_HOURS <= fields["gracePeriodHours"] <= _GRACE_MAX_HOURS:
+        raise ValueError("gracePeriodHours must be between 15 and 60 minutes")
+
+
 def _validated_location_fields(source, *, require_contacts=False):
     timezone_name = _required_timezone(source)
     return {
@@ -806,6 +816,7 @@ def _create_location(event, ctx):
         _request_body(event, partial=False),
         require_contacts=True,
     )
+    _check_grace_range(fields)
     _check_grace_period(fields)
     location_id = _new_location_id()
     timestamp = _utc_now()
@@ -842,6 +853,8 @@ def _update_location(event, ctx):
     }
     candidate.update(updates)
     fields = _validated_location_fields(candidate)
+    if "gracePeriodHours" in updates:
+        _check_grace_range(fields)
     if {"gracePeriodHours", "bookingDurationHours", "bookingTimeRules"} & set(updates):
         _check_grace_period(fields)
     changed = {

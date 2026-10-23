@@ -794,7 +794,7 @@ def test_partial_update_preserves_creation_fields_and_sets_update_audit(
 
     response = app.handler(
         make_event(
-            {"name": "  Central Bistro  ", "gracePeriodHours": 1.25},
+            {"name": "  Central Bistro  ", "gracePeriodHours": 0.75},
             method="PUT",
             sub="editor-sub",
             location_id="location-id",
@@ -806,7 +806,7 @@ def test_partial_update_preserves_creation_fields_and_sets_update_audit(
     assert response["statusCode"] == 200
     assert json.loads(response["body"]) == public_location(stored)
     assert stored["name"] == "Central Bistro"
-    assert stored["gracePeriodHours"] == Decimal("1.25")
+    assert stored["gracePeriodHours"] == Decimal("0.75")
     assert stored["createdBy"] == original["createdBy"]
     assert stored["createdAt"] == original["createdAt"]
     assert stored["updatedBy"] == "editor-sub"
@@ -1509,3 +1509,13 @@ def test_grace_period_must_be_shorter_than_the_shortest_booking(app_and_table):
     body = valid_body()
     body["gracePeriodHours"] = 2
     assert app.handler(make_event(body), None)["statusCode"] == 400
+
+
+def test_grace_period_is_15_to_60_minutes(app_and_table):
+    app, location_table = app_and_table
+    put_location(location_table)
+    for hours in (0, 0.2, 1.25):
+        response = put_rules(app, {"gracePeriodHours": hours})
+        assert response["statusCode"] == 400
+        assert "15 and 60 minutes" in json.loads(response["body"])["error"]
+    assert put_rules(app, {"gracePeriodHours": 0.25})["statusCode"] == 200

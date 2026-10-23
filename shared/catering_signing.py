@@ -9,11 +9,14 @@ The head item carries `signing` for the offer version being signed:
                     "role"?, "method", "signedAt", "evidenceKey"}}}
 
 The restaurant signs first; only then is the customer told (notice
-catering_offer_sent) and may sign. When the customer has signed (BankID or,
-where the restaurant allows it, simple acceptance), the request is `signed`
-and the evidence package is written under <tenant>/signed/<requestId>/vNNNN/:
-the offer PDF, each signature's evidence and a manifest of SHA-256 hashes,
-every object with its own Object Lock retention (DOCUMENT_LOCK_MODE /
+catering_offer_sent) and may sign. The restaurant's evidence is kept next to
+the offer PDF under offers/ (unlocked, tagged retention=offer, so it expires
+with an offer that is never signed). When the customer has signed (BankID
+or, where the restaurant allows it, simple acceptance), the contract is
+binding: the request is `signed` and the evidence package is written under
+<tenant>/signed/<requestId>/vNNNN/: the offer PDF (the exact S3 version that
+was signed, pdfVersionId), both parties' evidence and a manifest of SHA-256
+hashes, every object with its own Object Lock retention (DOCUMENT_LOCK_MODE /
 DOCUMENT_LOCK_DAYS; the bucket has no default lock).
 """
 
@@ -48,14 +51,33 @@ def bucket():
 
 
 def put_locked(key, body, content_type):
-    """Writes an evidence object with its own retention (C7)."""
+    """Writes an evidence object with its own retention (C7); -> its version id."""
     extra = {}
     mode, days = os.environ.get("DOCUMENT_LOCK_MODE"), os.environ.get("DOCUMENT_LOCK_DAYS")
     if mode and days:
         extra = {"ObjectLockMode": mode, "ObjectLockRetainUntilDate": c.now_utc() + timedelta(days=int(days))}
-    _s3().put_object(Bucket=bucket(), Key=key, Body=body, ContentType=content_type, ChecksumAlgorithm="SHA256",
-                     **extra)
+    return _s3().put_object(Bucket=bucket(), Key=key, Body=body, ContentType=content_type,
+                            ChecksumAlgorithm="SHA256", **extra).get("VersionId")
+
+
+def _put_pending(key, body):
+    """Evidence of a contract not yet binding: unlocked, expires with the offer."""
+    _s3().put_object(Bucket=bucket(), Key=key, Body=body, ContentType="application/json",
+                     ChecksumAlgorithm="SHA256", Tagging="retention=offer")
     return key
+
+
+def _read(key, version=None):
+    params = {"Bucket": bucket(), "Key": key, **({"VersionId": version} if version else {})}
+    return _s3().get_object(**params)["Body"].read()
+
+
+def _signed_pdf(s):
+    """The offer PDF exactly as signed (its S3 version), checked against the hash."""
+    pdf = _read(s["pdfKey"], s.get("pdfVersionId"))
+    if hashlib.sha256(pdf).hexdigest() != s["pdfSha256"]:
+        raise c.Unavailable("document_mismatch")
+    return pdf
 
 
 def signed_prefix(item, version):
@@ -145,7 +167,14 @@ def record(item, role, signer, evidence, ip, order):
     s = item["signing"]
     version = int(s["offerVersion"])
     prefix = signed_prefix(item, version)
-    keys = [put_locked(prefix + name, body, "application/json") for name, body in evidence.items()]
+    if role == RESTAURANT:
+        pending = f"{item['tenantId']}/offers/{item['requestId']}/v{version:04d}-"
+        keys = [_put_pending(pending + name, body) for name, body in evidence.items()]
+    else:
+        pdf = _signed_pdf(s)  # before anything is locked
+        for name, body in evidence.items():
+            put_locked(prefix + name, body, "application/json")
+        keys = [prefix + name for name in evidence]
     now = c.now_utc()
     entry = {k: v for k, v in {**signer, "signedAt": c.iso(now), "evidenceKey": keys[0] if keys else None}.items()
              if v is not None}
@@ -161,31 +190,40 @@ def record(item, role, signer, evidence, ip, order):
         values[":n"] = c.notice(c.N_OFFER_SENT, now, version=version)
         c.transact([c.head_update(item, sets=sets, values=values, names=names), audit])
         return
-    signed_key = _finalize(item, s, signatures, prefix)
+    signed_key, signed_version, signatures = _finalize(item, s, signatures, prefix, pdf)
     signature = {**{k: entry.get(k) for k in ("name", "personalNumberMasked", "role", "method", "evidenceKey")},
                  "signedAt": entry["signedAt"], "documentHash": (item.get("offer") or {}).get("documentHash"),
                  "pdfSha256": s["pdfSha256"], "provider": order.get("provider"), "signedPdfKey": signed_key}
-    sets += ["signature = :sig", "signedAt = :now", "signedOfferVersion = :v", "notice = :n", "signedPdfKey = :pdf"]
+    sets += ["signature = :sig", "signedAt = :now", "signedOfferVersion = :v", "notice = :n", "signedPdfKey = :pdf",
+             "signedPdfVersionId = :pv"]
     values.update({":sig": {k: v for k, v in signature.items() if v is not None}, ":v": version,
-                   ":n": c.notice(c.N_SIGNED, now), ":pdf": signed_key})
+                   ":n": c.notice(c.N_SIGNED, now), ":pdf": signed_key, ":pv": signed_version or "-",
+                   ":sigs": signatures})
     c.transact([c.head_update(item, to_status=c.SIGNED, sets=sets, values=values, names=names), audit])
 
 
-def _finalize(item, s, signatures, prefix):
-    """The evidence package: the signed PDF (a locked copy of the offer the
-    parties signed), the provider's own evidence, and a manifest of hashes."""
-    pdf = _s3().get_object(Bucket=bucket(), Key=s["pdfKey"])["Body"].read()
-    if hashlib.sha256(pdf).hexdigest() != s["pdfSha256"]:
-        raise RuntimeError("offer PDF does not match the signed hash")
+def _finalize(item, s, signatures, prefix, pdf):
+    """The evidence package once the contract is binding: the signed PDF (a
+    locked copy of the version the parties signed), the restaurant's
+    evidence moved in from offers/, the provider's own evidence, and a
+    manifest of hashes. -> (pdf key, its version id, signatures)."""
     files = {"offer.pdf": pdf, **signing.fetch_evidence(s["order"])}
+    restaurant = dict(signatures.get(RESTAURANT) or {})
+    if restaurant.get("evidenceKey") and "/offers/" in restaurant["evidenceKey"]:
+        name = restaurant["evidenceKey"].rsplit("/", 1)[1].split("-", 1)[1]
+        files[name] = _read(restaurant["evidenceKey"])
+        signatures = {**signatures, RESTAURANT: {**restaurant, "evidenceKey": prefix + name}}
+    pdf_version = None
     for name, body in files.items():
-        put_locked(prefix + name, body, "application/pdf" if name.endswith(".pdf") else "application/octet-stream")
+        version = put_locked(prefix + name, body,
+                             "application/pdf" if name.endswith(".pdf") else "application/json")
+        pdf_version = version if name == "offer.pdf" else pdf_version
     manifest = {"requestId": item["requestId"], "offerVersion": int(s["offerVersion"]), "pdfSha256": s["pdfSha256"],
                 "files": {name: hashlib.sha256(body).hexdigest() for name, body in files.items()},
                 "signatures": signatures, "createdAt": c.iso(c.now_utc())}
     put_locked(prefix + "manifest.json", json.dumps(manifest, ensure_ascii=False, default=str).encode("utf-8"),
                "application/json")
-    return prefix + "offer.pdf"
+    return prefix + "offer.pdf", pdf_version, signatures
 
 
 def apply_status(item):
@@ -209,17 +247,20 @@ def apply_status(item):
     return done
 
 
-def presign(key, seconds=300):
-    return _s3().generate_presigned_url("get_object", ExpiresIn=seconds, Params={"Bucket": bucket(), "Key": key})
+def presign(key, version=None, seconds=300):
+    params = {"Bucket": bucket(), "Key": key, **({"VersionId": version} if version else {})}
+    return _s3().generate_presigned_url("get_object", ExpiresIn=seconds, Params=params)
 
 
-def document_key(item, doc_id):
-    """offer: the current offer PDF; signed: the signed copy; signature: the
-    customer's signature evidence."""
+def document_ref(item, doc_id):
+    """(key, version id or None). offer: the current offer PDF as rendered;
+    signed: the signed copy; signature: the customer's signature evidence."""
     if doc_id == "offer":
-        return (item.get("signing") or {}).get("pdfKey")
+        s = item.get("signing") or {}
+        return s.get("pdfKey"), s.get("pdfVersionId")
     if doc_id == "signed":
-        return item.get("signedPdfKey")
+        version = item.get("signedPdfVersionId")
+        return item.get("signedPdfKey"), version if version and version != "-" else None
     if doc_id == "signature":
-        return (item.get("signature") or {}).get("evidenceKey")
-    return None
+        return (item.get("signature") or {}).get("evidenceKey"), None
+    return None, None

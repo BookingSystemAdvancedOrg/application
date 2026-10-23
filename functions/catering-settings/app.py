@@ -39,10 +39,12 @@ ENV_VARS:
 AWS RESOURCE ACCESS:
     location table: GetItem, Query, UpdateItem (cateringSettings only)
     catering-menu table: GetItem, Query, PutItem, DeleteItem
-    Amazon Location: geo-places:Geocode (the delivery origin)
+    Amazon Location: geo-places:Geocode (the delivery origin, IntendedUse Storage, kept on the
+    location as cateringOrigin {text, position} so quotes need not geocode it)
 """
 
 import os
+from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -72,25 +74,35 @@ def _put(event):
     current = ctx.location.get("cateringSettings")
     merged = {**(current if isinstance(current, dict) else {}), **data}
     settings = c.validate_settings(merged, phone_normalizer=normalize_phone)
+    origin = _origin(settings, ctx.location)
+    update, values = "SET cateringSettings = :s", {":s": settings}
+    if origin:
+        update += ", cateringOrigin = :o"
+        values[":o"] = origin
     dynamo.table(os.environ["LOCATION_TABLE_NAME"]).update_item(
-        Key=ctx.location_key,
-        UpdateExpression="SET cateringSettings = :s",
-        ConditionExpression="attribute_exists(PK)",
-        ExpressionAttributeValues={":s": settings},
-    )
-    return http.respond(200, {**settings, "originFound": _origin_found(settings, ctx.location)})
+        Key=ctx.location_key, UpdateExpression=update, ConditionExpression="attribute_exists(PK)",
+        ExpressionAttributeValues=values)
+    found = None if not settings["delivery"] else (bool(origin["position"]) if origin else None)
+    return http.respond(200, {**settings, "originFound": found})
 
 
-def _origin_found(settings, location):
+def _origin(settings, location):
+    """The delivery origin geocoded once and stored (IntendedUse Storage), so
+    quotes don't geocode it per call. None: delivery off, nothing to look up,
+    the map service down, or already stored for this text."""
     if not settings["delivery"]:
         return None
-    origin = settings["originAddress"] or (location or {}).get("address")
-    if not origin:
-        return False
+    text = c.origin_text(settings, location)
+    stored = (location or {}).get("cateringOrigin") or {}
+    if stored.get("text") == text and stored.get("position"):
+        return {"text": text, "position": stored["position"]}
+    if not text:
+        return {"text": "", "position": None}
     try:
-        return geo.position(origin) is not None
+        found = geo.position(text, store=True)
     except (BotoCoreError, ClientError):
         return None
+    return {"text": text, "position": [Decimal(str(v)) for v in found] if found else None}
 
 
 def _validate(prefix, body, menu):

@@ -73,6 +73,10 @@ _FIELDS = _SELECTION | {"customerType", "name", "email", "phone", "companyName",
 IP_LIMIT = (5, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
 QUOTE_IP_LIMIT = (120, 10 * 60)  # a calculator re-quotes as the guest types
+# Amazon Location lookups (address not cached): per IP, and a daily cap per location
+# after which quotes leave the delivery fee to the restaurant.
+GEO_IP_LIMIT = (20, 10 * 60)
+GEO_LOCATION_LIMIT = (500, 24 * 60 * 60)
 
 
 def _address(raw):
@@ -159,8 +163,16 @@ def _quote(event):
             raise ValueError("deliveryDate must be YYYY-MM-DD") from None
     now = c.now_utc()
     request_guard.check([("catering-quote-ip", http.source_ip(event), *QUOTE_IP_LIMIT)], now)
+    def before_lookup():
+        request_guard.check([("catering-geo-ip", http.source_ip(event), *GEO_IP_LIMIT)], now)
+        try:
+            request_guard.check([("catering-geo-location", location_id, *GEO_LOCATION_LIMIT)], now)
+        except request_guard.Limited:
+            return False
+        return True
+
     priced = c.price_request(location_id, settings, c.list_tiers(location_id), ctx.location, selection, guests,
-                             fulfilment, address, equipment, day, now)
+                             fulfilment, address, equipment, day, now, before_lookup)
     return http.respond(200, {**priced, "earliestDate": c.earliest_date(settings, ctx.location, guests, now)})
 
 

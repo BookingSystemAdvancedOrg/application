@@ -12,8 +12,8 @@ PURPOSE:
     it to <tenantId>/offers/<requestId>/v<NNNN>.pdf, tagged retention=offer
     (the bucket's lifecycle expires unsigned offers after 13 months; a signed
     one is copied to signed/ with its lock by catering-customer).
-    Answers {"key", "sha256", "size", "pdf": base64}: the SHA-256 of these
-    exact bytes is what the parties sign.
+    Answers {"key", "versionId", "sha256", "size", "pdf": base64}: the SHA-256
+    of these exact bytes (that S3 version) is what the parties sign.
 
 ENV_VARS:
     ENVIRONMENT, CATERING_DOCUMENTS_BUCKET_NAME
@@ -157,9 +157,11 @@ def handler(event, context):
         raise ValueError("tenantId and requestId are required")
     pdf = render_pdf(render_html(event["document"], event.get("restaurant") or {}))
     key = f"{tenant_id}/offers/{request_id}/v{version:04d}.pdf"
-    boto3.client("s3").put_object(Bucket=os.environ["CATERING_DOCUMENTS_BUCKET_NAME"], Key=key, Body=pdf,
-                                  ContentType="application/pdf", ChecksumAlgorithm="SHA256",
-                                  Tagging="retention=offer")
+    put = boto3.client("s3").put_object(Bucket=os.environ["CATERING_DOCUMENTS_BUCKET_NAME"], Key=key, Body=pdf,
+                                        ContentType="application/pdf", ChecksumAlgorithm="SHA256",
+                                        Tagging="retention=offer")
     sha = hashlib.sha256(pdf).hexdigest()
     logger.info(json.dumps({"document": "offer", "requestId": request_id, "version": version, "bytes": len(pdf)}))
-    return {"key": key, "sha256": sha, "size": len(pdf), "pdf": base64.b64encode(pdf).decode("ascii")}
+    # The version id pins exactly these bytes: a later render of the same key never replaces what was signed.
+    return {"key": key, "versionId": put.get("VersionId"), "sha256": sha, "size": len(pdf),
+            "pdf": base64.b64encode(pdf).decode("ascii")}

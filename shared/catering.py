@@ -605,14 +605,21 @@ def delivery_band(settings, km):
     raise Unavailable("catering_outside_area")
 
 
-def delivery_quote(settings, location, fulfilment, address):
+def origin_text(settings, location):
+    return settings.get("originAddress") or (location or {}).get("address") or ""
+
+
+def delivery_quote(settings, location, fulfilment, address, before_lookup=None):
     """(fee öre or None, distanceKm or None, band or None). None fee = the
     distance can't be trusted (shared/geo.py): the restaurant sets the fee
     by hand when it reviews the request."""
     if fulfilment != DELIVERY:
         return 0, None, None
-    origin = settings.get("originAddress") or (location or {}).get("address")
-    km = geo.distance_km(origin, geo.address_text(address)) if address else None
+    origin = origin_text(settings, location)
+    stored = (location or {}).get("cateringOrigin") or {}
+    position = [float(v) for v in stored["position"]] if stored.get("text") == origin and stored.get("position") \
+        else None
+    km = geo.distance_km(origin, geo.address_text(address), position, before_lookup) if address else None
     if km is None:
         return None, None, None
     band = delivery_band(settings, km)
@@ -674,7 +681,7 @@ def validate_selection(data, guests):
     return out
 
 
-def _lines(location_id, selection, now):
+def _lines(location_id, selection, now, guests):
     lines = []
     if selection["packages"] or selection["dishes"]:
         menu = list_catering_menu(location_id, active_only=True)
@@ -684,6 +691,8 @@ def _lines(location_id, selection, now):
             package = packages.get(package_id)
             if not package:
                 raise ValueError("catering_item_unavailable")
+            if qty > guests:
+                raise ValueError(f"{package['name']} is for at most {guests} guests")
             if qty < int(package.get("minGuests") or 1):
                 raise ValueError(f"{package['name']} needs at least {int(package['minGuests'])} guests")
             lines.append({"kind": "package", "packageId": package_id, "name": str(package["name"])[:120],
@@ -739,18 +748,21 @@ def earliest_date(settings, location, guests, now):
 
 
 def price_request(location_id, settings, tiers, location, selection, guests, fulfilment, address,
-                  equipment=CLEANED, day=None, now=None):
+                  equipment=CLEANED, day=None, now=None, before_lookup=None):
     """The full price breakdown and its snapshot: lines (packages x guests,
     dishes x portions), the tier discount by guests, the delivery band from
     the road distance, the cleaning fee and the VAT per line. `day` is the
     delivery date (VAT), today when the guest has not picked one yet."""
     now = now or now_utc()
-    lines = _lines(location_id, selection, now)
+    lines = _lines(location_id, selection, now, guests)
     portions = sum(line["quantity"] for line in lines)
     if portions > settings["maxPortions"]:
         raise ValueError(f"at most {settings['maxPortions']} portions")
-    tier = tier_for(tiers, guests)
-    fee, km, band = delivery_quote(settings, location, fulfilment, address)
+    # The discount follows what is ordered: never more guests than portions, so a large
+    # guest count with a small order does not unlock a tier.
+    tier_guests = min(guests, portions)
+    tier = tier_for(tiers, tier_guests)
+    fee, km, band = delivery_quote(settings, location, fulfilment, address, before_lookup)
     service = bool(settings["defaultServiceIncluded"])
     rate = vat_rate_for(service, day or local_today(location, now))
     for line in lines:
@@ -762,7 +774,7 @@ def price_request(location_id, settings, tiers, location, selection, guests, ful
             "equipmentReturn": equipment, **result, "serviceIncluded": service,
             "distanceKm": Decimal(str(km)) if km is not None else None,
             "deliveryFeeManual": fulfilment == DELIVERY and fee is None,
-            "ruleRefs": {"tierId": tier["tierId"] if tier and tier.get("tierId") else None,
+            "ruleRefs": {"tierId": tier["tierId"] if tier and tier.get("tierId") else None, "tierGuests": tier_guests,
                          "deliveryBand": band, "minGuests": settings["minGuests"],
                          "leadTimeDays": lead_days(settings, guests),
                          "vat": "with_service" if service else "food"}}
@@ -1088,7 +1100,8 @@ def guest_view(item, offer=None, location=None, settings=None):
     view["canSign"] = item.get("status") == OFFER_SENT and current and "restaurant" in signing_view
     view["canAccept"] = view["canSign"] and bool((settings or {}).get("allowSimpleAcceptance"))
     view["canPay"] = item.get("status") == SIGNED and item.get("customerType") == PRIVATE
-    view["documents"] = [d for d, ok in (("offer", current), ("signed", bool(item.get("signedPdfKey")))) if ok]
+    view["documents"] = [d for d, ok in (("offer", view["canSign"] or bool(item.get("signedPdfKey"))),
+                                         ("signed", bool(item.get("signedPdfKey")))) if ok]
     return view
 
 

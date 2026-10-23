@@ -92,7 +92,8 @@ def handler(event, context):
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return _respond(200, {"result": "duplicate"})
         return _failed(item, exc)
-    except (BotoCoreError, signing.SigningUnavailable, signing.SigningRejected, c.InvalidState, RuntimeError) as exc:
+    except (BotoCoreError, signing.SigningUnavailable, signing.SigningRejected, c.InvalidState, c.Unavailable,
+            RuntimeError) as exc:
         return _failed(item, exc)
     logger.info(json.dumps({"signingWebhook": "handled", "requestId": item["requestId"], "recorded": done}))
     return _respond(200, {"result": "handled", "recorded": done})

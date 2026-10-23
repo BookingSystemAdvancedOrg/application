@@ -13,6 +13,7 @@ from test_catering import (CATERING_MENU_TABLE, COMPANY, LOC_A, LOCATION_TABLE, 
                            body_of, create, env, location_item, staff)  # noqa: F401 - env is a fixture
 
 PACKAGE_ID = "a" * 32
+REAL_DISTANCE = geo.distance_km  # before the fixture replaces it
 DISH_ID = "b" * 32
 OFF_DISH_ID = "c" * 32
 
@@ -208,3 +209,52 @@ def test_legacy_menu_item_follows_its_schedule(env):  # noqa: F811
     env.res.Table(MENU_TABLE).put_item(Item=menu_item("later", "Julbord", "300", availableFrom="2026-12-01T00:00:00Z"))
     response = create(env, items=[{"menuItemId": "later", "quantity": 20}])
     assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}
+
+
+def test_tier_follows_what_is_ordered_not_only_the_guest_count(menu):
+    # 100 guests but 20 portions: no tier (tiers start at 30)
+    body = body_of(quote(menu, guests=100, packages=None, dishes=[{"dishId": DISH_ID, "quantity": 20}]))
+    assert body["discount"] == 0 and body["ruleRefs"]["tierGuests"] == 20
+    too_many = quote(menu, guests=40, packages=[{"packageId": PACKAGE_ID, "quantity": 41}])
+    assert body_of(too_many) == {"error": "Buffé Roma is for at most 40 guests"}
+
+
+def test_distance_is_cached_and_lookups_are_guarded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(geo, "_lookup", lambda o, d, p: calls.append((o, d, p)) or 12.3)
+    geo._distances.clear()
+    assert geo.distance_km("A", "B", [1, 2]) == 12.3
+    assert geo.distance_km("A", "B") == 12.3 and len(calls) == 1  # cached: quantities changed only
+    assert geo.distance_km("A", "C", before_lookup=lambda: False) is None and len(calls) == 1
+    assert calls[0][2] == [1, 2]
+
+
+def test_settings_store_the_origin_and_quotes_use_it(env, monkeypatch):  # noqa: F811
+    from tenant_support import with_tenant_claims
+    stored = []
+    monkeypatch.setattr(geo, "position", lambda text, store=False: stored.append(store) or [18.07, 59.31])
+    event = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+             "body": json.dumps({"originAddress": "Götgatan 1, Stockholm"})}
+    assert body_of(env.m["settings"].handler(with_tenant_claims(event), None))["originFound"] is True
+    location = env.res.Table(LOCATION_TABLE).get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"})["Item"]
+    assert location["cateringOrigin"]["text"] == "Götgatan 1, Stockholm" and stored == [True]
+    seen = []
+    monkeypatch.setattr(geo, "distance_km", lambda o, d, position=None, before=None: seen.append(position) or 5.0)
+    settings = c.settings_of(location)
+    c.delivery_quote(settings, location, "delivery", {"street": "S 1", "postalCode": "11122", "city": "X"})
+    assert seen == [[18.07, 59.31]]
+
+
+def test_quote_location_cap_leaves_the_fee_to_the_restaurant(menu, monkeypatch):
+    menu.res.create_table(TableName="test-guard", KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}],
+                          AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}],
+                          BillingMode="PAY_PER_REQUEST")
+    monkeypatch.setenv("REQUEST_GUARD_TABLE_NAME", "test-guard")
+    monkeypatch.setattr(menu.m["requests"], "GEO_LOCATION_LIMIT", (1, 86400))
+    monkeypatch.setattr(c.geo, "distance_km", REAL_DISTANCE)  # the real cache + hook
+    monkeypatch.setattr(geo, "_lookup", lambda o, d, p: 10.0)
+    geo._distances.clear()
+    first = body_of(quote(menu))
+    assert first["deliveryFeeManual"] is False
+    second = body_of(quote(menu, deliveryAddress={"street": "Annan väg 2", "postalCode": "11122", "city": "Stockholm"}))
+    assert second["deliveryFeeManual"] is True

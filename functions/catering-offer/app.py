@@ -225,19 +225,19 @@ def _send(event):
     document = c.offer_document(item, offer, ctx.tenant, ctx.location, settings)
     doc_hash = c.document_hash(document)
     pdf = _render_pdf(ctx, item, version, document)
-    signing.cancel((item.get("signing") or {}).get("order"))  # a new version voids the open order
     order = signing.create_order(item, {**offer, "summary": _summary(ctx, item, offer)}, pdf["bytes"], [
         {"role": sign.RESTAURANT, "name": ctx.tenant.get("legalName") or ctx.tenant.get("name"),
          "email": settings.get("notifyEmail") or ctx.location.get("email")},
         {"role": sign.CUSTOMER, "name": (item.get("signatory") or {}).get("name") or item.get("customerName"),
          "email": item.get("customerEmail")},
     ], _callback_url(item))
-    signing_record = {"offerVersion": version, "pdfKey": pdf["key"], "pdfSha256": pdf["sha256"], "order": order,
-                      "signatures": {}}
+    signing_record = {"offerVersion": version, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
+                      "pdfSha256": pdf["sha256"], "order": order, "signatures": {}}
     held = int(item.get("capacityHeld") or 0)
     delta = int(offer["portions"]) - held
     offer_item = {**c.offer_key(item["requestId"], version), **offer, "documentHash": doc_hash,
-                  "document": document, "pdfKey": pdf["key"], "pdfSha256": pdf["sha256"],
+                  "document": document, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
+                  "pdfSha256": pdf["sha256"],
                   "createdAt": c.iso(now), "createdBy": ctx.sub}
     summary = {k: offer[k] for k in ("version", "lines", "totals", "validUntil", "message", "portions")}
     summary["documentHash"] = doc_hash
@@ -263,6 +263,7 @@ def _send(event):
     except Exception:
         signing.cancel(order)
         raise
+    signing.cancel((item.get("signing") or {}).get("order"))  # only now: the new version replaced the open order
     logger.info(json.dumps({"catering": "offer_sent", "requestId": item["requestId"], "version": version}))
     return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
 
@@ -280,7 +281,8 @@ def _render_pdf(ctx, item, version, document):
         logger.error(json.dumps({"document": "failed", "requestId": item["requestId"],
                                  "error": str(body.get("errorMessage"))[:300]}))
         raise c.Unavailable("document_unavailable")
-    return {"key": body["key"], "sha256": body["sha256"], "bytes": base64.b64decode(body["pdf"])}
+    return {"key": body["key"], "versionId": body.get("versionId"), "sha256": body["sha256"],
+            "bytes": base64.b64decode(body["pdf"])}
 
 
 def _summary(ctx, item, offer):
@@ -302,6 +304,9 @@ def _restaurant_sign(event):
     location_id, ctx = _ctx(event, owner=True)
     item = _load(event, location_id, ctx)
     http.body(event, allowed=set(), required=False)
+    tz = ZoneInfo(ctx.location.get("timezone") or "Europe/Stockholm")
+    if item.get("validUntil") and date.fromisoformat(item["validUntil"]) < c.now_utc().astimezone(tz).date():
+        raise c.InvalidState("offer_expired")
     admin = c.admin_url(os.environ.get("ADMIN_DASHBOARD_URL"), item)
     return http.respond(200, sign.begin(item, sign.RESTAURANT, http.source_ip(event),
                                         f"{admin}?signering=klar" if admin else None))
@@ -394,10 +399,10 @@ def _delivered(event):
 def _document(event):
     location_id, ctx = _ctx(event, owner=False)
     item = _load(event, location_id, ctx)
-    key = sign.document_key(item, http.path_id(event, "docId"))
+    key, version = sign.document_ref(item, http.path_id(event, "docId"))
     if not key:
         raise c.NotFound
-    return http.respond(200, {"url": sign.presign(key), "expiresIn": 300})
+    return http.respond(200, {"url": sign.presign(key, version), "expiresIn": 300})
 
 
 def _invoices(event):

@@ -197,8 +197,8 @@ def env(monkeypatch):
         monkeypatch.setattr(stripe_client, "request", fake)
         monkeypatch.setattr(c, "now_utc", lambda: NOW)
         distance = {"km": 10.0}
-        monkeypatch.setattr(c.geo, "distance_km", lambda origin, destination: distance["km"])
-        monkeypatch.setattr(c.geo, "position", lambda text: None if "okänd" in text else [18.07, 59.31])
+        monkeypatch.setattr(c.geo, "distance_km", lambda origin, destination, *a: distance["km"])
+        monkeypatch.setattr(c.geo, "position", lambda text, store=False: None if "okänd" in text else [18.07, 59.31])
         mods = {name: load(f"catering-{name}", f"cat_{name.replace('-', '_')}") for name in
                 ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle",
                  "document", "signing-webhook")}
@@ -210,7 +210,8 @@ def env(monkeypatch):
             out = mods["document"].handler({"tenantId": ctx.tenant_id, "requestId": item["requestId"],
                                             "version": version, "document": c.plain(document),
                                             "restaurant": {"name": "Södermalm"}}, None)
-            return {"key": out["key"], "sha256": out["sha256"], "bytes": _b64.b64decode(out["pdf"])}
+            return {"key": out["key"], "versionId": out["versionId"], "sha256": out["sha256"],
+                    "bytes": _b64.b64decode(out["pdf"])}
         mods["offer"]._render_pdf = render
         sched = FakeClient()
         mods["lifecycle"]._clients["scheduler"] = sched

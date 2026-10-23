@@ -224,3 +224,107 @@ def test_reminder_messages():
     assert "godkänd" in m.guest_email("catering_signed", item, tenant_row, location, "L")[0]
     assert m.guest_sms("catering_sign_reminder", item, tenant_row, location, "L").endswith(": L")
     assert set(m.ROUTING) == set(c.NOTICE_TYPES)
+
+
+# --- review fixes -----------------------------------------------------------------------------
+
+def _s3():
+    return boto3.client("s3", region_name=REGION)
+
+
+def test_signed_copy_is_the_exact_pdf_version_even_after_an_overwrite(env):  # noqa: F811
+    rid, token = sent_offer(env)
+    s = c.load(LOC_A, rid)["signing"]
+    _s3().put_object(Bucket=BUCKET, Key=s["pdfKey"], Body=b"%PDF-1.7 something else")  # a later render
+    guest(env, "POST", "/sign", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    assert body_of(guest(env, "POST", "/sign/status", rid, token))["status"] == "complete"
+    item = c.load(LOC_A, rid)
+    import hashlib
+    signed = _s3().get_object(Bucket=BUCKET, Key=item["signedPdfKey"], VersionId=item["signedPdfVersionId"])
+    assert hashlib.sha256(signed["Body"].read()).hexdigest() == s["pdfSha256"]
+    url = body_of(guest_document(env, rid, token, "offer"))["url"]
+    assert f"versionId={s['pdfVersionId']}" in url
+
+
+def test_a_pdf_that_does_not_match_the_hash_is_refused_not_locked(env):  # noqa: F811
+    rid, token = sent_offer(env)
+    item = c.load(LOC_A, rid)
+    other = _s3().put_object(Bucket=BUCKET, Key=item["signing"]["pdfKey"], Body=b"%PDF-1.7 tampered")
+    env.res.Table("test-catering-requests").update_item(
+        Key=c.request_key(LOC_A, rid), UpdateExpression="SET signing.pdfVersionId = :v",
+        ExpressionAttributeValues={":v": other["VersionId"]})
+    guest(env, "POST", "/sign", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    response = guest(env, "POST", "/sign/status", rid, token)
+    assert response["statusCode"] == 503 and body_of(response) == {"error": "document_mismatch"}
+    assert c.load(LOC_A, rid)["status"] == "offer_sent"
+    listed = _s3().list_objects_v2(Bucket=BUCKET, Prefix=f"{TENANT_A}/signed/{rid}/").get("Contents") or []
+    assert listed == []
+
+
+def test_restaurant_evidence_stays_unlocked_until_the_contract_is_binding(env):  # noqa: F811
+    rid, token = sent_offer(env)
+    key = c.load(LOC_A, rid)["signing"]["signatures"]["restaurant"]["evidenceKey"]
+    assert key == f"{TENANT_A}/offers/{rid}/v0001-restaurant-bankid.json"
+    assert "ObjectLockMode" not in _s3().head_object(Bucket=BUCKET, Key=key)
+    assert _s3().get_object_tagging(Bucket=BUCKET, Key=key)["TagSet"] == [{"Key": "retention", "Value": "offer"}]
+    guest(env, "POST", "/sign", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    guest(env, "POST", "/sign/status", rid, token)
+    moved = c.load(LOC_A, rid)["signing"]["signatures"]["restaurant"]["evidenceKey"]
+    assert moved == f"{TENANT_A}/signed/{rid}/v0001/restaurant-bankid.json"
+    assert _s3().head_object(Bucket=BUCKET, Key=moved)["ObjectLockMode"] == "GOVERNANCE"
+
+
+def test_webhook_for_a_replaced_version_is_refused(env):  # noqa: F811
+    rid, token = sent_offer(env)
+    old = c.load(LOC_A, rid)["signing"]["order"]["callbackToken"]
+    staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
+    assert webhook(env, rid, old)["statusCode"] == 401
+    new = c.load(LOC_A, rid)["signing"]["order"]["callbackToken"]
+    assert body_of(webhook(env, rid, new, {"eventId": "evt-v2"})) == {"result": "handled", "recorded": []}
+
+
+def test_two_completions_at_once_record_only_one(env):  # noqa: F811
+    from shared import catering_signing as sign
+    rid, _ = sent_offer(env)
+    item = c.load(LOC_A, rid)
+    signer = {"name": "Anna", "method": "simple_acceptance"}
+    sign.record(item, "customer", signer, {"customer-acceptance.json": b"{}"}, "1.1.1.1", item["signing"]["order"])
+    with pytest.raises(c.InvalidState):
+        sign.record(item, "customer", signer, {"customer-acceptance.json": b"{}"}, "1.1.1.1", item["signing"]["order"])
+    assert c.load(LOC_A, rid)["status"] == "signed"
+
+
+def test_guest_gets_no_offer_pdf_before_the_restaurant_signed(env):  # noqa: F811
+    rid, token = sent_offer(env, sign=False)
+    assert guest_document(env, rid, token, "offer")["statusCode"] == 404
+    assert body_of(guest(env, "GET", "", rid, token))["documents"] == []
+    restaurant_signs(env, rid)
+    assert guest_document(env, rid, token, "offer")["statusCode"] == 200
+
+
+def test_restaurant_cannot_sign_an_expired_offer(env):  # noqa: F811
+    rid, _ = sent_offer(env, sign=False)
+    env.res.Table("test-catering-requests").update_item(
+        Key=c.request_key(LOC_A, rid), UpdateExpression="SET validUntil = :v", ExpressionAttributeValues={":v": "2026-09-30"})
+    response = staff(env, "POST", "/restaurant-sign", request_id=rid)
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "offer_expired"}
+
+
+def test_a_failed_send_keeps_the_open_order(env):  # noqa: F811
+    cancelled = []
+    env.monkeypatch.setattr(signing, "cancel", lambda order: cancelled.append(order and order["ref"]))
+    rid, _ = sent_offer(env)
+    first = c.load(LOC_A, rid)["signing"]["order"]["ref"]
+    big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
+    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == {"error": "capacity_full"}
+    assert first not in cancelled and c.load(LOC_A, rid)["signing"]["order"]["ref"] == first
+
+
+def guest_document(env, rid, token, doc_id):  # noqa: F811
+    event = {"routeKey": "GET /locations/{locationId}/catering/requests/{requestId}/customer/documents/{docId}",
+             "pathParameters": {"locationId": LOC_A, "requestId": rid, "docId": doc_id},
+             "headers": {"X-Order-Token": token}, "requestContext": {"http": {"sourceIp": "203.0.113.9"}}}
+    return env.m["customer"].handler(event, None)

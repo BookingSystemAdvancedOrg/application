@@ -263,10 +263,13 @@ def _reject(event):
 
 def _document(event):
     ctx, item = _context(event)
-    key = sign.document_key(item, http.path_id(event, "docId"))
+    doc_id = http.path_id(event, "docId")
+    if doc_id == "offer" and not sign.restaurant_signed(item):
+        raise c.NotFound  # the guest sees a version only once the restaurant has signed it
+    key, version = sign.document_ref(item, doc_id)
     if not key:
         raise c.NotFound
-    return http.respond(200, {"url": sign.presign(key), "expiresIn": 300})
+    return http.respond(200, {"url": sign.presign(key, version), "expiresIn": 300})
 
 
 _HANDLERS = {"view": _view, "sign": _sign, "sign_status": _sign_status, "accept": _accept, "checkout": _checkout,

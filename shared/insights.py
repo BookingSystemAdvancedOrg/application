@@ -27,6 +27,10 @@ Row (insights table, PK LOCATION#<loc>, SK DAY#<date>). No personal data:
                       prep (minutes confirmed -> ready), prepN, late}}
     d     {"<item id>": {n: name, q: {"<hour>": qty}, r: {"<hour>": öre}}}
     pairs {"<id>|<id>": orders with both}         top PAIRS_KEPT
+    k     {"<hour>": {n, rev, free, rfN, rf}}     in-person card payments
+          (shared/card_payments.py) by the hour paid: n/rev paid and kept,
+          free = öre of those not for an order (an order's are already in
+          o), rfN/rf refunded
     c     {req, offers, won, rev, replyH, replyN}  catering by local day
     m     {visits, pageviews, bookings, orders, catering,
            ch: {"<channel>": {visits, bookings, orders, catering}}}
@@ -66,7 +70,8 @@ NOT_AN_ORDER = frozenset({"pending_payment", "failed", "cancelled"})
 CATERING_WON = frozenset({"signed", "confirmed", "delivered", "closed"})
 
 MONEY_FIELDS = ("revenue", "orderRevenue", "cateringRevenue", "tableRevenue", "pickupRevenue",
-                "avgOrder", "feesCharged", "feesRefunded", "avgCatering")
+                "avgOrder", "feesCharged", "feesRefunded", "avgCatering", "cardRevenue", "cardRefunded",
+                "inPersonRevenue")
 
 
 # --- small helpers -----------------------------------------------------------------
@@ -326,6 +331,25 @@ def _order(row, item, tz):
             _add(row["pairs"], f"{a}|{b}", 1)
 
 
+def _card(row, item, tz):
+    status = item.get("status")
+    if status not in ("succeeded", "refunded"):
+        return
+    paid = _parse_iso(item.get("paidAt") or item.get("createdAt"))
+    if not paid:
+        return
+    cell = row["k"].setdefault(str(paid.astimezone(tz).hour), {"n": 0, "rev": 0, "free": 0, "rfN": 0, "rf": 0})
+    amount = _int(item.get("amount"))
+    if status == "refunded":
+        cell["rfN"] += 1
+        cell["rf"] += _int((item.get("refund") or {}).get("amount")) or amount
+        return
+    cell["n"] += 1
+    cell["rev"] += amount
+    if not item.get("orderId"):
+        cell["free"] += amount
+
+
 def _catering(row, item, day, tz):
     created = local_day(item.get("createdAt"), tz)
     sent = local_day(item.get("offerSentAt"), tz)
@@ -361,7 +385,8 @@ def _visits(row, items):
                 ch[field] += value
 
 
-def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=(), snapshots=(), built_at=None):
+def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=(), snapshots=(), card=(),
+              built_at=None):
     """One location's day as an insights row (see the module docstring)."""
     tz = _zone((location or {}).get("timezone"))
     tables = tables_of_snapshots(snapshots, day)
@@ -369,7 +394,7 @@ def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=
         "PK": f"LOCATION#{location['locationId']}", "SK": f"DAY#{day}",
         "locationId": location["locationId"], "date": day, "v": ROW_VERSION,
         "builtAt": built_at or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "b": {}, "occ": {}, "open": {}, "o": {}, "d": {}, "pairs": {},
+        "b": {}, "occ": {}, "open": {}, "o": {}, "d": {}, "pairs": {}, "k": {},
         "c": {"req": 0, "offers": 0, "won": 0, "rev": 0, "replyH": 0, "replyN": 0},
         "m": {"visits": 0, "pageviews": 0, "bookings": 0, "orders": 0, "catering": 0, "ch": {}},
         "tables": len(tables),
@@ -385,6 +410,8 @@ def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=
             _booking(row, item, day, tz, tables)
     for item in orders:
         _order(row, item, tz)
+    for item in card:
+        _card(row, item, tz)
     for item in catering:
         _catering(row, item, day, tz)
     _visits(row, visits)
@@ -430,7 +457,8 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     t = {k: 0 for k in ("bookings", "guests", "arrived", "noShows", "cancelled", "lateCancels", "cardOnFile",
                         "seats", "feesCharged", "feeCount", "feesFailed", "feesRefunded", "bookedMin", "openMin",
                         "orders", "orderRevenue", "tableRevenue", "pickupRevenue", "tableOrders", "prepMin",
-                        "prepCount", "lateOrders")}
+                        "prepCount", "lateOrders", "cardPayments", "cardRevenue", "inPersonRevenue",
+                        "cardRefunds", "cardRefunded")}
     sources = {s: 0 for s in SOURCES}
     lead = [0] * len(LEAD_LABELS)
     party = {}
@@ -452,7 +480,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         split = splits.get(row.get("locationId"), DEFAULT_LUNCH_UNTIL)
         wd = date.fromisoformat(day).weekday()
         point = by_day.setdefault(day, {"date": day, "bookings": 0, "guests": 0, "orders": 0, "orderRevenue": 0,
-                                        "cateringRevenue": 0, "bookedMin": 0, "openMin": 0, "noShows": 0,
+                                        "cateringRevenue": 0, "inPersonRevenue": 0, "bookedMin": 0, "openMin": 0, "noShows": 0,
                                         "cancelled": 0, "visits": 0})
         for key, cell in (row.get("b") or {}).items():
             hour_s, _, source = key.partition("|")
@@ -543,6 +571,15 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         if service == "all":
             for key, n in (row.get("pairs") or {}).items():
                 _add(pairs, key, _int(n))
+        for hour_s, cell in (row.get("k") or {}).items():
+            if not in_service(_int(hour_s), service, split):
+                continue
+            t["cardPayments"] += _int(cell.get("n"))
+            t["cardRevenue"] += _int(cell.get("rev"))
+            t["inPersonRevenue"] += _int(cell.get("free"))
+            t["cardRefunds"] += _int(cell.get("rfN"))
+            t["cardRefunded"] += _int(cell.get("rf"))
+            point["inPersonRevenue"] += _int(cell.get("free"))
         c = row.get("c") or {}
         catering["requests"] += _int(c.get("req"))
         catering["offers"] += _int(c.get("offers"))
@@ -585,7 +622,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         w["occupancy"] = _fill(w.pop("bookedMin"), w.pop("openMin"))
     days_out = []
     for d in sorted(by_day.values(), key=lambda p: p["date"]):
-        d["revenue"] = d["orderRevenue"] + d["cateringRevenue"]
+        d["revenue"] = d["orderRevenue"] + d["cateringRevenue"] + d["inPersonRevenue"]
         d["occupancy"] = _fill(d.pop("bookedMin"), d.pop("openMin"))
         days_out.append(d)
 
@@ -629,7 +666,14 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         "prepMinutes": round(t["prepMin"] / t["prepCount"], 1) if t["prepCount"] else None,
         "latePct": _pct(t["lateOrders"], t["prepCount"]),
         "cateringRevenue": catering["cateringRevenue"],
-        "revenue": order_revenue + catering["cateringRevenue"],
+        "revenue": order_revenue + catering["cateringRevenue"] + t["inPersonRevenue"],
+        # In-person card payments (Ta betalt): all of them, and the part
+        # that is not an order's (that part is in revenue above).
+        "cardPayments": t["cardPayments"],
+        "cardRevenue": t["cardRevenue"],
+        "inPersonRevenue": t["inPersonRevenue"],
+        "cardRefunds": t["cardRefunds"],
+        "cardRefunded": t["cardRefunded"],
         "catering": catering,
         "web": {**web, "channels": channels},
         "dishes": dish_list,

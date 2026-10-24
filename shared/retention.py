@@ -13,6 +13,10 @@ Per data type (docs/privacy.md has the full inventory):
     order, paid or refunded         guest fields removed at RETENTION_GUEST_MONTHS,
                                     the receipt fields kept until the accounting period ends
     order, never paid               delete at RETENTION_CANCELLED_MONTHS
+    card payment at the till        paid or refunded: the receipt e-mail address
+                                    removed at RETENTION_GUEST_MONTHS, the rest kept
+                                    until the accounting period ends; never paid:
+                                    delete at RETENTION_CANCELLED_MONTHS
     catering, paid or invoiced      like a paid order (date = delivery date)
     catering, declined/rejected/
       expired/cancelled, not paid   delete at RETENTION_CANCELLED_MONTHS after the last change
@@ -55,6 +59,9 @@ ANONYMISED_NAME = "Anonymiserad"
 BOOKING_GUEST_FIELDS = ("customerEmail", "customerPhone", "notes", "marketingOptIn", "language",
                         "manageTokenHash", "attribution")
 ORDER_GUEST_FIELDS = ("customerEmail", "customerPhone", "notes", "marketingOptIn", "language", "attribution")
+# In-person card payments hold no guest data except a receipt address.
+CARD_GUEST_FIELDS = ("receiptEmail", "notice")
+CARD_RECEIPT_STATUSES = ("succeeded", "refunded")
 CATERING_GUEST_FIELDS = ("customerEmail", "customerPhone", "notes", "marketingOptIn", "language", "attribution")
 # A private person's delivery address is personal data; a company's stays on
 # its invoice.
@@ -178,6 +185,22 @@ def order_action(item, today, p):
     return None
 
 
+def card_action(item, today, p):
+    day = parse_day(item.get("date"))
+    if not day:
+        return None
+    if item.get("status") in CARD_RECEIPT_STATUSES:
+        if today > accounting_end(day, p.accounting_years):
+            return "delete"
+        if item.get("receiptEmail") and day <= months_before(today, p.guest_months) \
+                and not item.get("anonymisedAt"):
+            return "anonymise"
+        return None
+    if day <= months_before(today, p.cancelled_months):
+        return "delete"
+    return None
+
+
 def catering_financial(item):
     return bool(item.get("paid") or item.get("stripeInvoiceId") or item.get("invoiceNumber")
                 or item.get("paymentIntentId"))
@@ -284,6 +307,11 @@ def suppression_ttl(withdrawn_at, p):
 def anonymise_update(kind, item, now_iso, ttl=None):
     """(UpdateExpression, names, values) that strips the guest's details
     (and sets the row's expiry when `ttl` is given)."""
+    if kind == "card":
+        present = [f for f in CARD_GUEST_FIELDS if f in item]
+        names = {"#a": "anonymisedAt", **{f"#r{i}": f for i, f in enumerate(present)}}
+        expr = "SET #a = :a" + (" REMOVE " + ", ".join(f"#r{i}" for i in range(len(present))) if present else "")
+        return expr, names, {":a": now_iso}
     if kind == "booking":
         fields = BOOKING_GUEST_FIELDS
     elif kind == "order":

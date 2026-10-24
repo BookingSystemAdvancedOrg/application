@@ -55,6 +55,8 @@ PURPOSE:
                          no SMS can be sent
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
+      card_receipt       e-mail: the receipt of an in-person card payment
+                         (order table, CARD# records, shared/card_messages.py)
 
     Order SMS don't depend on tenant.notifications.sms - telling the guest
     the food is ready is what ordering is - but still go to Nordic numbers
@@ -105,7 +107,8 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import catering, catering_messages, dynamo, finance, manage_link, messages, order_messages, orders, sms, tenant
+from shared import card_messages, card_payments, catering, catering_messages, dynamo, finance, manage_link, messages
+from shared import order_messages, orders, sms, tenant
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -390,9 +393,39 @@ def _fresh_notice(new, old, types):
     return notice, None
 
 
+def _card_receipt(new, old):
+    """"Skicka kvitto" on an in-person card payment (shared/card_payments.py):
+    the receipt to the address staff typed. E-mail only."""
+    notice, skipped = _fresh_notice(new, old, (card_payments.NOTICE_RECEIPT,))
+    if not notice or not new.get("receiptEmail"):
+        return skipped or "no_address"
+    tenant_id, location_id = new.get("tenantId"), new.get("locationId")
+    try:
+        tenant_row = tenant.get_tenant(tenant_id) if tenant_id else None
+        location = tenant.get_location(tenant_id, location_id) if tenant_row else None
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    if not tenant_row or tenant_row.get("status") != "active" or not location:
+        return "inactive"
+    subject, text, html_body = card_messages.email(new, tenant_row, location)
+    try:
+        _send_email(new["receiptEmail"], subject, text, html_body, source=_from_address(tenant_row, location),
+                    reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    logger.info(json.dumps({"notice": notice["type"], "paymentId": new.get("paymentId"), "tenantId": tenant_id}))
+    return "sent"
+
+
 def _order(record):
     new = _image(record["dynamodb"].get("NewImage"))
     old = _image(record["dynamodb"].get("OldImage"))
+    if str(new.get("SK", "")).startswith("CARD#"):
+        return _card_receipt(new, old)
     notice, skipped = _fresh_notice(new, old, orders.NOTICE_TYPES)
     if not notice:
         if skipped == "stale":

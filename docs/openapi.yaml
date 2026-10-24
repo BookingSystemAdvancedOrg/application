@@ -64,6 +64,8 @@ tags:
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
   - name: Insights
     description: The restaurant's own figures for a period (Statistik in the admin app).
+  - name: Card payments
+    description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
   - name: Printing
     description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
   - name: Catering
@@ -5531,6 +5533,216 @@ paths:
         '204':
           description: Deleted
 
+  # --- Card payments at the till (Stripe Terminal) ---------------------------
+  /locations/{locationId}/card-payments:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Card payments]
+      summary: 'The day''s in-person card payments, newest first'
+      operationId: listCardPayments
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payments.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPaymentList'}
+      parameters:
+        - {name: date, in: query, required: false, schema: {type: string, format: date}}
+    post:
+      tags: [Card payments]
+      summary: 'Take a card payment on a reader ("Ta betalt")'
+      operationId: createCardPayment
+      description: 'One PaymentIntent (card_present, automatic capture) per checkoutId on the restaurant''s connected account, sent to the reader. The same checkoutId again answers 200 with the same payment. An orderId takes the amount from that unpaid order. 409 terminal_not_enabled, order_not_payable, order_other_account, order_already_paid; 404 for a reader of another location.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkoutId, readerId]
+              properties:
+                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                readerId: {type: string, pattern: '^tmr_'}
+                amount: {type: integer, minimum: 300, maximum: 5000000, description: Öre}
+                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                note: {type: string, maxLength: 120}
+      responses:
+        '201':
+          description: 'Sent to the reader (processing), or failed with reader_offline / reader_busy.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/readers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Card payments]
+      summary: 'The location''s card readers (registered in Booqy Console)'
+      operationId: listCardReaders
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'Readers with online/offline status.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardReaderList'}
+  /locations/{locationId}/card-payments/{paymentId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags: [Card payments]
+      summary: 'One payment (the till polls it; asks Stripe when the webhook is late)'
+      operationId: getCardPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Cancel the payment on the reader ("Avbryt")'
+      operationId: cancelCardPayment
+      description: 'If the card went through meanwhile, the answer is the paid payment.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/retry:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Try the same PaymentIntent again ("Försök igen")'
+      operationId: retryCardPayment
+      description: 'From failed or canceled only. Never a second PaymentIntent.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                readerId: {type: string, pattern: '^tmr_'}
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Refund the whole payment ("Återbetala")'
+      operationId: refundCardPayment
+      description: '409 refund_via_order: a payment for an order is refunded by cancelling the order.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/simulate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Test mode: the simulated reader taps a card'
+      operationId: simulateCardPayment
+      description: 'Not in prod (404). Simulated readers only (409 not_simulated).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome]
+              properties:
+                outcome: {type: string, enum: [approve, decline]}
+      responses:
+        '202':
+          description: 'Accepted.'
+  /locations/{locationId}/card-payments/{paymentId}/receipt:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags: [Card payments]
+      summary: 'The Swedish receipt (Kvitto) of a payment'
+      operationId: getCardReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment and its receipt.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardReceipt'}
+    post:
+      tags: [Card payments]
+      summary: 'E-mail the receipt ("Skicka kvitto")'
+      operationId: sendCardReceipt
+      description: 'Paid payments only (409 not_paid), at most 5 e-mails per payment (409 receipt_limit).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+
   # --- Printing (issue 2) ------------------------------------------------------
   /locations/{locationId}/print:
     parameters:
@@ -5978,6 +6190,59 @@ components:
           type: object
           description: orderId -> PENDING | PRINTING | FAILED for orders not printed yet.
           additionalProperties: {type: string, enum: [PENDING, PRINTING, FAILED]}
+    CardPayment:
+      type: object
+      properties:
+        paymentId: {type: string}
+        locationId: {type: string}
+        date: {type: string, format: date}
+        amount: {type: integer, description: Öre}
+        currency: {type: string, enum: [sek]}
+        orderId: {type: string}
+        orderNumber: {type: integer}
+        note: {type: string}
+        readerId: {type: string}
+        readerLabel: {type: string}
+        status: {type: string, enum: [processing, succeeded, failed, canceled, refunded]}
+        attempt: {type: integer}
+        failure:
+          type: object
+          properties:
+            code: {type: string}
+            message: {type: string}
+        card: {$ref: '#/components/schemas/LooseObject'}
+        refund: {$ref: '#/components/schemas/LooseObject'}
+        simulated: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        paidAt: {type: string, format: date-time}
+        receiptsSent: {type: integer}
+    CardPaymentList:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        enabled: {type: boolean}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/CardPayment'}
+    CardReaderList:
+      type: object
+      properties:
+        enabled: {type: boolean}
+        readers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              label: {type: string}
+              deviceType: {type: string}
+              status: {type: string, enum: [online, offline]}
+              simulated: {type: boolean}
+    CardReceipt:
+      type: object
+      properties:
+        payment: {$ref: '#/components/schemas/CardPayment'}
+        receipt: {$ref: '#/components/schemas/LooseObject'}
     PrintJobQueued:
       type: object
       properties:

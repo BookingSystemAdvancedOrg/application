@@ -71,6 +71,16 @@ ordered 1-20 times; an order has at most 30 lines.
    outskrivna" and "Skriv ut igen"; settings are under Inställningar,
    Skrivare. Printing never runs in the order request path.
 
+7. **Paid at the till** (optional, plan feature `terminal`): an order still
+   `pending_payment` can be paid on the restaurant's card reader under "Ta
+   betalt" (functions/terminal-payments, shared/card_payments.py). The
+   order's Checkout Session is expired first (the guest can't also pay
+   online; a session that was paid meanwhile settles the order and the till
+   is refused), `cardPaymentId` marks the order so the expiry never fails
+   it, and the card payment's success settles it with `settle_paid`
+   (`paymentMethod: card_present`): number, receipt e-mail and kitchen
+   ticket exactly as online. Refund: cancel the order.
+
 Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 `failed`; the TTL (60 min) removes an order whose webhook never came.
 

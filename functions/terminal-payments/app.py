@@ -4,7 +4,7 @@ TRIGGER:
     * API Gateway -- Auth: JWT (owner_user, staff_user of the location's tenant)
       GET  /locations/{locationId}/card-payments?date=YYYY-MM-DD   the day's card payments
       POST /locations/{locationId}/card-payments
-           {checkoutId, readerId, amount (öre) | orderId, note?}
+           {checkoutId, readerId, amount (öre) + vatRate (12 | 25) | orderId, note?}
            -> 201 the payment, already sent to the reader (status
            processing, or failed with reader_offline / reader_busy)
       GET  /locations/{locationId}/card-payments/readers           the location's readers
@@ -105,11 +105,12 @@ def _list(event):
 
 def _create(event):
     location_id, ctx = _ctx(event)
-    data = http.body(event, allowed={"checkoutId", "readerId", "amount", "orderId", "note"})
+    data = http.body(event, allowed={"checkoutId", "readerId", "amount", "orderId", "note", "vatRate"})
     if data.get("amount") is None and data.get("orderId") is None:
         raise ValueError("amount or orderId is required")
     item, created = cp.create(ctx, checkout_id=data.get("checkoutId"), reader_id=data.get("readerId"),
                               amount=data.get("amount"), order_id=data.get("orderId"), note=data.get("note"),
+                              vat_rate=data.get("vatRate"),
                               actor=ctx.sub, now=o.now_utc())
     logger.info(json.dumps({"card": "created" if created else "existing", "paymentId": item["paymentId"],
                             "status": item.get("status")}))

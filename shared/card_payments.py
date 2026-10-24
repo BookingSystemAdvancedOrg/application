@@ -18,6 +18,9 @@ Record (order table, next to the location's orders):
     paymentId        32 hex, the till's checkoutId: a double click or a
                      retried POST finds the same record
     amount           öre (SEK)
+    vatRate, vat     a free amount's VAT rate (12 or 25, chosen by staff) and
+                     its VAT row [{rate, gross, net, vat}] for the receipt and
+                     the accounting export
     orderId          optional: an unpaid (pending_payment) order of the location;
                      once paid its lines, vat and orderNumber are copied here
                      for the receipt
@@ -55,6 +58,7 @@ receipt e-mail and the kitchen ticket (print-jobs) all follow from it.
 """
 
 import re
+from decimal import Decimal
 from datetime import date, timedelta
 
 from boto3.dynamodb.conditions import Key
@@ -146,6 +150,17 @@ def validate_amount(value):
     return o._whole(value, MIN_ORE, MAX_ORE, "amount")
 
 
+FREE_AMOUNT_VAT_RATES = (o.VAT_RESTAURANT, o.VAT_ALCOHOL)
+
+
+def clean_vat_rate(value):
+    """A free amount's VAT rate: 12 (food and drink served) or 25 (alcohol)."""
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or int(value) != value \
+            or int(value) not in FREE_AMOUNT_VAT_RATES:
+        raise ValueError("vatRate must be 12 or 25")
+    return int(value)
+
+
 def clean_note(value):
     if value is None:
         return None
@@ -235,7 +250,7 @@ def list_day(location_id, date_str):
 
 def view(item):
     out = {k: item.get(k) for k in (
-        "paymentId", "locationId", "date", "amount", "currency", "orderId", "orderNumber", "note",
+        "paymentId", "locationId", "date", "amount", "currency", "vatRate", "orderId", "orderNumber", "note",
         "readerId", "readerLabel", "status", "attempt", "attemptAt", "failure", "card", "refund",
         "createdAt", "createdBy", "paidAt", "receiptsSent")}
     out["simulated"] = str(item.get("readerType") or "").startswith("simulated")
@@ -346,9 +361,11 @@ def _settle_order(item, now):
 
 # --- create and send to the reader --------------------------------------------------------
 
-def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None, actor, now, kassa_bill_id=None):
+def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None, actor, now, kassa_bill_id=None,
+           vat_rate=None):
     """POST /card-payments: the checkout's PaymentIntent, sent to the reader.
-    Returns (item, created). `kassa_bill_id`: a part of a Kassa bill."""
+    Returns (item, created). `kassa_bill_id`: a part of a Kassa bill (its
+    receipt carries the VAT). A free amount needs `vat_rate` (12 or 25)."""
     if not valid_id(checkout_id):
         raise ValueError("checkoutId must be 32 hex characters")
     location = ctx.location
@@ -382,6 +399,13 @@ def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None
         amount = int(order["totalAmount"])
     else:
         amount = validate_amount(amount)
+    if order is not None or kassa_bill_id:
+        if vat_rate is not None:
+            raise ValueError("vatRate is only for a free amount")
+        vat = None
+    else:
+        rate = clean_vat_rate(vat_rate)
+        vat = o.vat_breakdown([{"vatRate": rate, "total": amount}])
     note = clean_note(note)
     date_str = o.local_now(location, now).date().isoformat()
 
@@ -415,6 +439,7 @@ def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None
         "readerId": reader["id"], "readerLabel": reader.get("label") or reader["id"],
         "readerType": reader.get("device_type"),
         "stripeAccountId": account, "paymentIntentId": intent["id"], "kassaBillId": kassa_bill_id,
+        "vatRate": vat[0]["rate"] if vat else None, "vat": vat,
         "status": PROCESSING, "attempt": 1, "attemptAt": o.iso(now),
         "createdAt": o.iso(now), "createdBy": actor, "updatedAt": o.iso(now), "version": 1,
         "history": _entry("created", actor, now, amount=amount, reader=reader["id"]),

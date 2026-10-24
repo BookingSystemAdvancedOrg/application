@@ -252,8 +252,8 @@ def api(env, method, suffix="", *, body=None, query=None, role="owner_user", ten
 
 
 def charge(env, amount=12550, checkout=CHECKOUT, reader="tmr_a1", **extra):
-    return api(env, "POST", body={"checkoutId": checkout, "readerId": reader, "amount": amount, **extra}, **{
-        k: v for k, v in {}.items()})
+    extra.setdefault("vatRate", 12)
+    return api(env, "POST", body={"checkoutId": checkout, "readerId": reader, "amount": amount, **extra})
 
 
 def stripe_event(kind, obj, *, account=ACCOUNT, livemode=False, created=None, event_id="evt_1"):
@@ -322,8 +322,21 @@ def test_payment_intent_is_card_present_automatic_capture_in_ore_on_the_restaura
     assert process["params"] == {"payment_intent": "pi_1"} and process["account"] == ACCOUNT
 
 
+def test_a_free_amount_needs_a_vat_rate_and_keeps_its_vat_row(env):
+    for bad in (None, 6, 0, "12", True):
+        body = {"checkoutId": CHECKOUT, "readerId": "tmr_a1", "amount": 11200}
+        if bad is not None:
+            body["vatRate"] = bad
+        assert api(env, "POST", body=body)["statusCode"] == 400
+    assert env["stripe"].count("/v1/payment_intents") == 0
+    payment = body_of(charge(env, amount=11200, vatRate=25))
+    assert payment["vatRate"] == 25
+    item = cp.load(LOC_A, CHECKOUT)
+    assert item["vat"] == [{"rate": 25, "gross": 11200, "net": 8960, "vat": 2240}]
+
+
 def test_a_decimal_kronor_amount_from_the_browser_is_refused(env):
-    response = api(env, "POST", body={"checkoutId": CHECKOUT, "readerId": "tmr_a1", "amount": 125.5})
+    response = api(env, "POST", body={"checkoutId": CHECKOUT, "readerId": "tmr_a1", "amount": 125.5, "vatRate": 12})
     assert response["statusCode"] == 400
     assert env["stripe"].count("/v1/payment_intents") == 0
 
@@ -686,7 +699,8 @@ def test_receipt_view_and_email_are_swedish_with_the_card_fields(env):
     _paid(env, note="Bord 4")
     response = body_of(api(env, "GET", f"{CHECKOUT}/receipt"))
     r = response["receipt"]
-    assert r["total"] == 12550 and r["seller"]["org"] == "556000-0000" and r["vatOnRegister"] is True
+    assert r["total"] == 12550 and r["seller"]["org"] == "556000-0000" and r["vatOnRegister"] is False
+    assert r["vat"] == [{"rate": 12, "vat": 1345, "net": 11205}]
     labels = {row["label"]: row["value"] for row in r["card"]}
     assert labels["Kort"] == "Visa **** 4242" and labels["AID"] == "A0000000031010"
     assert labels["Godkännandekod"] == "123456" and labels["Läst"] == "Kontaktlös"
@@ -695,6 +709,7 @@ def test_receipt_view_and_email_are_swedish_with_the_card_fields(env):
                                                    {"name": "Södermalm"})
     assert subject.startswith("Kvitto 125,50 kr")
     assert "Totalt: 125,50 kr" in text and "Visa **** 4242" in html_body
+    assert "Moms 12 %: 13,45 kr" in text and "kassakvitto" not in text
     assert "\u2014" not in text + html_body and "\u2013" not in text + html_body
 
 

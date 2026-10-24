@@ -152,11 +152,13 @@ def test_export_json_month_balances_and_reconciles(app, env):
     assert status == 200, body
     summary = body["summary"]
     assert summary["days"] == 31 and summary["bookedDays"] == 3 and summary["balanced"]
-    assert summary["sales"] == 30000 + 5000 + 100000 and summary["vat"] == 4900 + 300 + 12000
+    assert summary["sales"] == 30000 + 35714 + 5000 + 100000 and summary["vat"] == 4900 + 4286 + 300 + 12000
+    assert summary["verifications"] == 3 and summary["locations"] == [{"locationId": LOC_A, "name": "Södermalm"}]
     assert summary["warnings"] == []
     day = {e["date"]: e for e in body["entries"]}
     lines = {(ln["account"], ln["text"]): ln["amount"] for ln in day["2026-10-20"]["lines"]}
-    assert lines[("3990", acc.T_GUARANTEE)] == -40000
+    assert lines[("3002", f"{acc.T_FEE_SALES} 12 % moms")] == -35714
+    assert lines[("2621", "Utgående moms 12 %")] == -2400 - 4286
     assert lines[("6570", acc.T_FEES)] == 1310
     assert lines[("1930", acc.T_PAYOUT)] == 50000
     assert sum(ln["amount"] for ln in day["2026-10-20"]["lines"]) == 0
@@ -201,3 +203,41 @@ def test_stripe_refusal_is_a_502(app, monkeypatch):
     monkeypatch.setattr(stripe_client, "request", refuse)
     status, body = call(app, "GET", "/export", query={"from": "2026-10-20", "to": "2026-10-20"})
     assert (status, body) == (502, {"error": "stripe_refused"})
+
+
+def test_locations_sharing_the_stripe_account_get_one_file_with_cost_centres(app, env):
+    res, _ = env
+    res.Table("test-location").put_item(Item=location_item(TENANT_A, "loc-a-2", name="Kungsholmen",
+                                                           createdAt="2026-09-01T10:00:00Z"))
+    res.Table("test-order").put_item(Item={
+        "PK": "LOCATION#loc-a-2", "SK": f"ORDER#2026-10-20#{'f' * 32}", "orderId": "f" * 32, "paymentStatus": "paid",
+        "confirmedAt": "2026-10-20T11:00:00Z", "totalAmount": 11200,
+        "vat": [{"rate": 12, "gross": 11200, "net": 10000, "vat": 1200}]})
+    env[1].txns.insert(2, {"id": "txn_k", "type": "charge", "amount": 11200, "fee": 200, "currency": "sek",
+                           "created": int(datetime(2026, 10, 20, 11, tzinfo=timezone.utc).timestamp())})
+    status, body = call(app, "GET", "/export", query={"from": "2026-10-20", "to": "2026-10-20", "format": "json"})
+    assert status == 200, body
+    assert [loc["locationId"] for loc in body["summary"]["locations"]] == [LOC_A, "loc-a-2"]
+    assert body["summary"]["warnings"] == []
+    entries = body["entries"]
+    assert [e["number"] for e in entries] == [29300, 29301, 29302]
+    company, roma, kungsholmen = entries
+    assert company["locationId"] is None and {ln["account"] for ln in company["lines"]} == {"6570", "1580", "1930"}
+    assert sum(ln["amount"] for ln in company["lines"] if ln["account"] == "6570") == 610 + 700 + 200
+    assert all("costCenter" not in ln for ln in company["lines"])
+    assert {ln["costCenter"] for ln in kungsholmen["lines"] if ln["account"] == "3002"} == {"LOCA2"}
+    assert all("costCenter" not in ln for ln in roma["lines"] if ln["account"] in ("1580", "2621"))
+    assert all(sum(ln["amount"] for ln in e["lines"]) == 0 for e in entries)
+    status, body = call(app, "GET", "/export", location="loc-a-2",
+                        query={"from": "2026-10-20", "to": "2026-10-20", "format": "sie"})
+    raw = base64.b64decode(body["content"]).decode("cp437")
+    assert '#OBJEKT 1 "LOCA1" "S\u00f6dermalm"' in raw and '#OBJEKT 1 "LOCA2" "Kungsholmen"' in raw
+    assert '#TRANS 3002 {1 "LOCA2"} -100.00' in raw
+
+
+def test_cost_centre_is_saved_and_defaults_from_the_location_id(app):
+    status, view = call(app, "GET", "")
+    assert view["costCenter"] == view["defaultCostCenter"] == "LOCA1"
+    status, saved = call(app, "PUT", "", body={"accounts": view["accounts"], "costCenter": "SOD", "version": 0})
+    assert status == 200 and saved["costCenter"] == "SOD"
+    assert call(app, "PUT", "", body={"costCenter": "söder", "version": 1})[0] == 400

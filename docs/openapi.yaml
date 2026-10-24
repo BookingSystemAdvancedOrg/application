@@ -5578,6 +5578,7 @@ paths:
                 amount: {type: integer, minimum: 300, maximum: 5000000, description: Öre}
                 orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
                 note: {type: string, maxLength: 120}
+                vatRate: {type: integer, enum: [12, 25], description: 'Required with amount (a free amount): 12 food and drink, 25 alcohol'}
       responses:
         '201':
           description: 'Sent to the reader (processing), or failed with reader_offline / reader_busy.'
@@ -5785,6 +5786,7 @@ paths:
                   additionalProperties: {type: string, pattern: '^[1-8][0-9]{3}$'}
                 series: {type: string, pattern: '^[A-Z]$'}
                 fiscalYearStartMonth: {type: integer, minimum: 1, maximum: 12}
+                costCenter: {type: string, pattern: '^[A-Z0-9]{1,10}$', description: 'Kostnadsställe when several locations share a Stripe account'}
                 version: {type: integer, minimum: 0}
       responses:
         '200':
@@ -5799,7 +5801,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     get:
       tags: [Accounting]
-      summary: 'One balanced verifikation per business day of the period (max 366 days) as SIE 4 (PC8), CSV or JSON'
+      summary: 'Balanced verifikationer per business day (max 366 days) as SIE 4 (PC8), CSV or JSON; locations sharing a Stripe account are one file with cost centres and a company Stripe entry'
       operationId: exportAccounting
       security:
         - bearerAuth: []

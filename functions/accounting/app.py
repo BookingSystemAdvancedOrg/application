@@ -72,7 +72,7 @@ def _ctx(event):
 
 def _view(location):
     settings = acc.settings_of(location)
-    return {**settings,
+    return {**settings, "defaultCostCenter": acc.default_cost_center((location or {}).get("locationId")),
             "defaults": {role: default for role, (default, _) in acc.DEFAULT_ACCOUNTS.items()},
             "names": {role: name for role, (_, name) in acc.DEFAULT_ACCOUNTS.items()},
             "labels": dict(acc.ROLE_LABELS)}
@@ -91,7 +91,7 @@ def _put(event, ctx):
     version = _whole(data.get("version", 0))
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         raise ValueError("version must be a whole number")
-    stored = acc.validate_settings(data)
+    stored = acc.validate_settings(data, ctx.location_id)
     current = acc.settings_of(ctx.location)["version"]
     if version != current:
         return http.error(409, "changed_retry")
@@ -104,35 +104,37 @@ def _put(event, ctx):
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return http.error(409, "changed_retry")
         raise
-    return http.respond(200, _view({"accounting": {**stored, "version": current + 1}}))
+    return http.respond(200, _view({"locationId": ctx.location_id, "accounting": {**stored, "version": current + 1}}))
 
 
 def build_export(ctx, first, last, now):
+    """The company file: the location, and the locations sharing its Stripe account."""
     acc.check_range(first, last)
     location = ctx.location
-    settings = acc.settings_of(location)
-    events = acc.collect(ctx.tenant, location, tenant.list_locations(ctx.tenant_id), first, last)
-    label = str(location.get("name") or "")
-    entries = acc.build_entries(first, last, events, settings, label)
+    company = acc.build_company(ctx.tenant, location, tenant.list_locations(ctx.tenant_id), first, last)
+    names = {}
+    for loc in [location, *company.locations]:
+        for number, name in acc.account_names(acc.settings_of(loc)["accounts"]).items():
+            names.setdefault(number, name)
+    label = str(location.get("name") or "") if len(company.locations) == 1 else str(ctx.tenant.get("name") or "")
     seller = _seller(ctx.tenant, location)
-    return ax.Export(company=str(seller.get("name") or label or "Restaurang"), org_number=seller.get("org"),
-                     label=label, first=first, last=last, generated=now.astimezone(acc.zone(location)).date(),
-                     fiscal_start_month=settings["fiscalYearStartMonth"], accounts=settings["accounts"],
-                     entries=entries)
+    export = ax.Export(company=str(seller.get("name") or label or "Restaurang"), org_number=seller.get("org"),
+                       label=label, first=first, last=last, generated=now.astimezone(acc.zone(location)).date(),
+                       fiscal_start_month=company.settings["fiscalYearStartMonth"], accounts=company.accounts,
+                       entries=company.entries, names=names, cost_centers=company.cost_centers)
+    export.locations = [{"locationId": loc["locationId"], "name": loc.get("name")} for loc in company.locations]
+    return export
 
 
 def summary(export):
-    accounts = export.accounts
-    sales = {accounts[f"sales{r}"] for r in acc.VAT_RATES}
-    vat = {accounts[f"vat{r}"] for r in acc.VAT_RATES}
-    lines = [ln for e in export.entries for ln in e.lines]
     warnings = [{"date": e.day, "text": w} for e in export.entries for w in e.warnings]
     if not ax.org_text(export.org_number):
         warnings.insert(0, {"date": None, "text": "Organisationsnummer saknas: lägg in det i Booqy Console innan "
                                                   "filen läses in."})
-    return {"days": len(export.entries), "bookedDays": len(export.booked),
-            "sales": -sum(ln.amount for ln in lines if ln.account in sales),
-            "vat": -sum(ln.amount for ln in lines if ln.account in vat),
+    days = sorted({e.day for e in export.entries})
+    return {"days": len(days), "bookedDays": len({e.day for e in export.booked}),
+            "verifications": len(export.booked), "locations": getattr(export, "locations", []),
+            "sales": sum(e.sales for e in export.entries), "vat": sum(e.vat for e in export.entries),
             "balanced": all(e.balanced for e in export.entries), "warnings": warnings}
 
 

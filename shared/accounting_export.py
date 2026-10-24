@@ -9,8 +9,11 @@ the voucher ids in Delivery.references) without changing the entries.
 SIE 4 (SIE-gruppen, "SIE filformat ver 4B"): #FLAGGA, #FORMAT PC8 (the file
 is IBM PC 8-bit, codepage 437: Å 0x8F, Ä 0x8E, Ö 0x99), #SIETYP 4,
 #PROGRAM, #GEN, #FNAMN, #ORGNR, #RAR, #KONTO for the accounts used, then
-one #VER with its #TRANS rows per day. Amounts with a point and two
-decimals, debit positive.
+#VER with its #TRANS rows per day (one per location and day, plus the
+company's Stripe entry when locations share a Stripe account). Several
+locations: #DIM 1 "Kostnadsställe", one #OBJEKT per location and the
+location's code on its result rows ({1 "code"}). Amounts with a point and
+two decimals, debit positive.
 """
 
 import csv
@@ -36,8 +39,10 @@ class Export:
     generated: date
     fiscal_start_month: int
     accounts: dict                   # role -> account
-    entries: list                    # acc.Entry, one per day
+    entries: list                    # acc.Entry, by day
     names: dict = field(default_factory=dict)
+    cost_centers: dict = field(default_factory=dict)   # code -> location name
+    locations: list = field(default_factory=list)      # [{locationId, name}] in the file
 
     def __post_init__(self):
         if not self.names:
@@ -119,11 +124,17 @@ def sie_text_lines(export):
     out.append("#VALUTA SEK")
     for account in used:
         out.append(f"#KONTO {account} {sie_text(export.names.get(account, ''))}")
+    if export.cost_centers:
+        out.append(f"#DIM 1 {sie_text('Kostnadsställe')}")
+        for code, name in sorted(export.cost_centers.items()):
+            out.append(f"#OBJEKT 1 {sie_text(code)} {sie_text(name)}")
     for entry in export.booked:
         out.append(f"#VER {sie_text(entry.series)} {entry.number} {sie_date(entry.day)} {sie_text(entry.text)}")
         out.append("{")
         for ln in entry.lines:
-            out.append(f"   #TRANS {ln.account} {{}} {sie_amount(ln.amount)} {sie_date(entry.day)} {sie_text(ln.text)}")
+            objects = f"{{1 {sie_text(ln.obj)}}}" if ln.obj else "{}"
+            out.append(f"   #TRANS {ln.account} {objects} {sie_amount(ln.amount)} {sie_date(entry.day)} "
+                       f"{sie_text(ln.text)}")
         out.append("}")
     return out
 
@@ -149,7 +160,7 @@ class SieFile:
 
 # --- CSV ------------------------------------------------------------------------------------
 
-CSV_HEADER = ("Datum", "Verifikation", "Konto", "Kontonamn", "Debet", "Kredit", "Text")
+CSV_HEADER = ("Datum", "Verifikation", "Konto", "Kontonamn", "Debet", "Kredit", "Kostnadsställe", "Text")
 
 
 def _kr(ore):
@@ -166,7 +177,7 @@ def csv_bytes(export):
         for ln in entry.lines:
             writer.writerow((entry.day, f"{entry.series}{entry.number}", ln.account, export.names.get(ln.account, ""),
                              _kr(ln.amount) if ln.amount > 0 else "", _kr(-ln.amount) if ln.amount < 0 else "",
-                             ln.text))
+                             ln.obj or "", ln.text))
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 

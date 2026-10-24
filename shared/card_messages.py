@@ -71,7 +71,7 @@ def receipt(item, tenant_row, location):
         "lines": lines,
         "vat": vat,
         "total": int(item.get("amount") or 0),
-        "vatOnRegister": not order,
+        "vatOnRegister": not order and not vat,
         "card": [{"label": k, "value": v} for k, v in card_rows],
         "result": "Godkänd" if item.get("status") in ("succeeded", "refunded") else "Ej godkänd",
         "refunded": int(refund.get("amount") or 0) or None,

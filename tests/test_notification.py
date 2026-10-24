@@ -2,6 +2,7 @@
 SMS and restaurant email. SES/SNS are fakes; DynamoDB and Secrets Manager
 are moto, so tenant/location/domain lookups and the manage link are real."""
 
+import email
 import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ import boto3
 import pytest
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
+from icalendar import Calendar
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
@@ -38,10 +40,31 @@ class FakeClient:
         return {"MessageId": "m"}
 
     def send_email(self, **kwargs):
+        if "Content" in kwargs:  # SES v2 raw (the confirmation with its .ics)
+            kwargs = _from_raw(kwargs)
         return self._record("SendEmail", kwargs)
 
     def publish(self, **kwargs):
         return self._record("Publish", kwargs)
+
+
+def _from_raw(kwargs):
+    """An SES v2 raw send in the shape of a v1 simple one, plus the
+    parsed attachments, so the same assertions read both."""
+    msg = email.message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=email.policy.default)
+    body = {"Text": {"Data": msg.get_body(("plain",)).get_content().replace("\r\n", "\n")}}
+    if msg.get_body(("html",)) is not None:
+        body["Html"] = {"Data": msg.get_body(("html",)).get_content()}
+    reply = msg.get("Reply-To")
+    return {
+        "Source": kwargs["FromEmailAddress"], "Destination": kwargs["Destination"],
+        "Message": {"Subject": {"Data": str(msg["Subject"])}, "Body": body},
+        "ReplyToAddresses": [a.strip() for a in str(reply).split(",")] if reply else [],
+        "Attachments": [{"filename": part.get_filename(), "type": part.get_content_type(),
+                         "method": part.get_param("method"), "data": part.get_payload(decode=True)}
+                        for part in msg.iter_attachments()],
+        **({"ConfigurationSetName": kwargs["ConfigurationSetName"]} if "ConfigurationSetName" in kwargs else {}),
+    }
 
 
 @pytest.fixture
@@ -72,7 +95,7 @@ def env(monkeypatch):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         ses, sns = FakeClient(), FakeClient()
-        module._clients.update(ses=ses, sns=sns)
+        module._clients.update(ses=ses, sesv2=ses, sns=sns)
         monkeypatch.setattr(module, "_now", lambda: NOW)
         yield module, ses, sns
         shared_dynamo._resource = None
@@ -357,6 +380,8 @@ def test_outbox_saves_emails_instead_of_sending_and_copies_sms(env, monkeypatch)
     assert "no-reply@mail.example.se" in guest["from"] and guest["replyTo"] == ["soder@roma.se"]
     assert "/bokning/" in guest["text"] and guest["html"]
     assert sms["to"] == "+46701234567" and sms["text"].startswith("Roma Södermalm: Hej Anna!")
+    [ics] = guest["attachments"]
+    assert ics["filename"] == "bokning.ics" and ics["content"].startswith("BEGIN:VCALENDAR\r\n")
     assert all(m["id"] and m["at"].endswith("Z") for m in saved)
 
 
@@ -389,3 +414,49 @@ def test_transactional_email_uses_its_own_configuration_set(env, monkeypatch):
     monkeypatch.setenv("SES_CONFIGURATION_SET", "dev-transactional")
     run(module, record(booking(reservationId="b" * 32), event_name="INSERT", seq="2"))
     assert ses.calls and all(c["ConfigurationSetName"] == "dev-transactional" for c in ses.calls)
+
+
+def test_confirmation_carries_the_booking_as_ics(env):
+    module, ses, _ = env
+    item = booking(bookedFor="2026-09-20T16:00:00Z", endsAt="2026-09-20T18:30:00Z")
+    run(module, record(item, event_name="INSERT"))
+
+    guest = next(c for c in ses.calls if c["Destination"]["ToAddresses"] == ["anna@example.se"])
+    [attachment] = guest["Attachments"]
+    assert (attachment["filename"], attachment["type"], attachment["method"]) == (
+        "bokning.ics", "text/calendar", "PUBLISH")
+    assert b"\r\nEND:VCALENDAR\r\n" in attachment["data"]  # CRLF survives the transfer encoding
+    [vevent] = Calendar.from_ical(attachment["data"]).walk("VEVENT")
+    assert str(vevent["UID"]) == "a" * 32 + "@booqy.se"
+    assert str(vevent["SUMMARY"]) == "Bord hos Roma Södermalm"
+    assert str(vevent["LOCATION"]) == "Götgatan 1, Stockholm"
+    assert vevent.decoded("DTSTART") == datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc)
+    assert vevent.decoded("DTEND") == datetime(2026, 9, 20, 18, 30, tzinfo=timezone.utc)
+    assert "/bokning/" in str(vevent["DESCRIPTION"])
+    # The rest of the mail is unchanged: subject, both bodies, Reply-To.
+    assert guest["Message"]["Subject"]["Data"] == "Bokningsbekräftelse - Roma Södermalm"
+    assert "/bokning/" in guest["Message"]["Body"]["Text"]["Data"] and guest["Message"]["Body"]["Html"]["Data"]
+    assert guest["ReplyToAddresses"] == ["soder@roma.se"]
+    # The restaurant's notice has no attachment (simple SES path).
+    staff = next(c for c in ses.calls if c["Destination"]["ToAddresses"] == ["soder@roma.se"])
+    assert "Attachments" not in staff
+
+
+def test_other_notices_have_no_ics(env):
+    module, ses, _ = env
+    run(module, record(booking(notice={"id": "r" * 32, "type": "reminder",
+                                       "at": (NOW - timedelta(seconds=5)).isoformat()})))
+    assert ses.calls and all("Attachments" not in c for c in ses.calls)
+
+
+def test_an_ics_bug_never_blocks_the_confirmation(env, monkeypatch):
+    module, ses, _ = env
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("bad booking")
+
+    monkeypatch.setattr(module.calendar_invite, "booking_ics", boom)
+    run(module, record(booking(), event_name="INSERT"))
+    guest = next(c for c in ses.calls if c["Destination"]["ToAddresses"] == ["anna@example.se"])
+    assert guest["Message"]["Subject"]["Data"] == "Bokningsbekräftelse - Roma Södermalm"
+    assert "Attachments" not in guest

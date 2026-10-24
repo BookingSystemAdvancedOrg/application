@@ -91,9 +91,10 @@ DEV MAIL OUTBOX:
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
     GetItem on locations (tenant-context policy); ses:SendEmail on the
-    no-reply identity; sns:Publish (SMS, Resource "*" by AWS design);
-    GetSecretValue on the link signing key; UpdateItem on the finance table
-    (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
+    no-reply identity (also SES v2 SendEmail with raw content: the booking
+    confirmation carries its .ics, same IAM action); sns:Publish (SMS,
+    Resource "*" by AWS design); GetSecretValue on the link signing key;
+    UpdateItem on the finance table (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
 """
 
 import json
@@ -102,6 +103,8 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from email import policy
+from email.message import EmailMessage
 from email.utils import formataddr
 
 import boto3
@@ -111,6 +114,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import card_messages, card_payments, catering, catering_messages, dynamo, finance, manage_link, messages
 from shared import kassa, kassa_receipt, order_messages, orders, sms, tenant
+from shared import calendar_invite
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -227,11 +231,46 @@ def _to_outbox(bucket, entry):
     logger.info("saved %s to the dev mail outbox: %s", entry.get("channel"), message_id)
 
 
-def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=None, location_id=None):
+def _raw_email(to, subject, text, html_body, *, source, reply_to, attachments):
+    """MIME bytes: text + html alternatives, then the attachments
+    ((filename, content type, str) each, base64 so CRLF survives)."""
+    msg = EmailMessage(policy=policy.SMTP.clone(cte_type="7bit"))  # SES: 7-bit safe MIME
+    msg["From"], msg["To"], msg["Subject"] = source, to, subject
+    if reply_to:
+        msg["Reply-To"] = ", ".join(reply_to)
+    msg.set_content(text)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
+    for filename, content_type, data in attachments:
+        rest = content_type.partition("/")[2]  # text/... only: data is a str
+        subtype, *params = [p.strip() for p in rest.split(";")]
+        extra = dict(p.split("=", 1) for p in params if "=" in p and not p.startswith("charset="))
+        msg.add_attachment(data, subtype=subtype, filename=filename, cte="base64", params=extra)
+    return msg.as_bytes()
+
+
+def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=None, location_id=None,
+                attachments=None):
     bucket = _outbox_bucket()
     if bucket:
-        _to_outbox(bucket, {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
-                            "subject": subject, "text": text, "html": html_body})
+        entry = {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
+                 "subject": subject, "text": text, "html": html_body}
+        if attachments:
+            entry["attachments"] = [{"filename": f, "contentType": c, "content": d} for f, c, d in attachments]
+        _to_outbox(bucket, entry)
+        finance.count(tenant_id, emails=1, location_id=location_id)
+        return
+    if attachments:
+        # SES v2 SendEmail with raw content: the same ses:SendEmail action
+        # and configuration set as the simple path, so no IAM change.
+        extra = {}
+        if os.environ.get("SES_CONFIGURATION_SET"):
+            extra["ConfigurationSetName"] = os.environ["SES_CONFIGURATION_SET"]
+        raw = _raw_email(to, subject, text, html_body, source=source, reply_to=reply_to, attachments=attachments)
+        _client("sesv2").send_email(
+            FromEmailAddress=source, Destination={"ToAddresses": [to]},
+            Content={"Raw": {"Data": raw}}, **extra,
+        )
         finance.count(tenant_id, emails=1, location_id=location_id)
         return
     message = {"Subject": {"Data": subject, "Charset": "UTF-8"},
@@ -326,9 +365,16 @@ def _reservation(record):
     email = None if staff_only else new.get("customerEmail")
     if email:
         subject, text, html_body = messages.guest_email(kind, new, tenant_row, location, link)
+        attachments = None
+        if kind == "confirmed":
+            try:
+                attachments = [(calendar_invite.FILENAME, calendar_invite.CONTENT_TYPE,
+                                calendar_invite.booking_ics(new, tenant_row, location, link, now=_now()))]
+            except Exception:  # noqa: BLE001 - the confirmation goes out with or without the .ics
+                logger.exception("no .ics for %s", new.get("reservationId"))
         try:
             _send_email(email, subject, text, html_body, source=source, reply_to=reply_to, tenant_id=tenant_id,
-                        location_id=location_id)
+                        location_id=location_id, attachments=attachments)
             sent.append("guest_email")
         except (BotoCoreError, ClientError) as exc:
             if _retryable(exc):

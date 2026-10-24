@@ -114,6 +114,8 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/card-payments/{paymentId}/refund": frozenset({"post"}),
     "/locations/{locationId}/card-payments/{paymentId}/simulate": frozenset({"post"}),
     "/locations/{locationId}/card-payments/{paymentId}/receipt": frozenset({"get", "post"}),
+    "/locations/{locationId}/accounting": frozenset({"get", "put"}),
+    "/locations/{locationId}/accounting/export": frozenset({"get"}),
     "/locations/{locationId}/kassa": frozenset({"get"}),
     "/locations/{locationId}/kassa/registers": frozenset({"get", "post"}),
     "/locations/{locationId}/kassa/registers/{registerId}": frozenset({"get"}),

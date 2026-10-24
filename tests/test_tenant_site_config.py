@@ -212,3 +212,16 @@ def test_a_malformed_special_day_never_breaks_the_site(site):
     response = call(module, {"host": "www.roma.se"})
     assert response["statusCode"] == 200
     assert all(loc["specialDays"] == [] for loc in json.loads(response["body"])["locations"])
+
+
+def test_grace_period_is_public_in_minutes(site):
+    module, _ = site
+    locations = boto3.resource("dynamodb", region_name=REGION).Table(LOCATION_TABLE_DEFAULT)
+    locations.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+                          UpdateExpression="SET gracePeriodHours = :g",
+                          ExpressionAttributeValues={":g": Decimal("0.25")})
+    shared_tenant.reset_caches()
+    body = json.loads(call(module, {"host": "www.roma.se"})["body"])
+    by_id = {loc["locationId"]: loc for loc in body["locations"]}
+    assert by_id[LOC_A]["gracePeriodMinutes"] == 15
+    assert by_id[LOC_A2]["gracePeriodMinutes"] is None

@@ -605,6 +605,8 @@ def guest_view(item, location=None, *, now=None):
             "noShowFee": int(snap.get("noShowFee") or 0),
             "lateCancelFee": int(snap.get("lateCancelFee") or 0),
             "cancelCutoffHours": int(snap.get("cancelCutoffHours") or 0),
+            # Last moment to cancel for free (UTC) - the late-cancellation fee applies after it.
+            "freeCancelUntil": guarantee.free_cancel_until(item),
             "currency": snap.get("currency", "sek"),
             # What cancelling NOW would cost (öre) - shown before the guest confirms.
             "cancellationFee": guarantee.late_cancel_fee(item, now) if item["status"] in ACTIVE else 0,

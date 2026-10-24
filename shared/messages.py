@@ -8,6 +8,8 @@ guest typed is escaped in HTML; nothing here sends anything.
 import html
 import re
 from datetime import date as _date
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 _WEEKDAYS = {
     "sv": ("måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag"),
@@ -63,6 +65,16 @@ _TEXT = {
         "sms.manage": "Se/avboka: {link}",
         "sms.greeting": "Hej {first}! ",
         "when": "{weekday} {day} {month} kl {time}",
+        "g.heading": "Kortgaranti (inget har dragits från kortet)",
+        "g.no_show": "Uteblivet besök: {fee}.",
+        "g.late_cancel": "Avbokning senare än {hours} före: {fee}.",
+        "g.free_until": "Kostnadsfri avbokning senast {when}.",
+        "g.free_until_start": "Kostnadsfri avbokning fram till bokad tid.",
+        "g.waiver": "Restaurangen kan efterskänka avgiften vid sjukdom eller liknande.",
+        "g.per_person": "{amount}/person",
+        "g.total": "{amount} för {guests}",
+        "g.hour": "1 timme",
+        "g.hours": "{n} timmar",
     },
     "en": {
         "hello": "Hi {name},",
@@ -104,6 +116,16 @@ _TEXT = {
         "sms.manage": "View/cancel: {link}",
         "sms.greeting": "Hi {first}! ",
         "when": "{weekday} {day} {month} at {time}",
+        "g.heading": "Card guarantee (nothing has been charged)",
+        "g.no_show": "No-show: {fee}.",
+        "g.late_cancel": "Cancelling later than {hours} before: {fee}.",
+        "g.free_until": "Free cancellation until {when}.",
+        "g.free_until_start": "Free cancellation until the booked time.",
+        "g.waiver": "The restaurant may waive the fee in case of illness or similar.",
+        "g.per_person": "{amount}/person",
+        "g.total": "{amount} for {guests}",
+        "g.hour": "1 hour",
+        "g.hours": "{n} hours",
     },
 }
 
@@ -149,6 +171,45 @@ def _long_date(item, lang):
 def _guests(item, lang):
     n = int(item.get("partySize") or 0)
     return _t(lang, "guests.one") if n == 1 else _t(lang, "guests.value", n=n)
+
+
+def _guarantee_fee(per_person_kr, total_ore, n, lang):
+    text = _t(lang, "g.per_person", amount=money(per_person_kr * 100))
+    if n > 1:
+        text += f" ({_t(lang, 'g.total', amount=money(total_ore), guests=_t(lang, 'guests.value', n=n))})"
+    return text
+
+
+def guarantee_lines(item, lang=None):
+    """The card-guarantee fees and free-cancellation deadline the guest
+    accepted (the reservation's snapshot), in the same wording as the
+    booking site's terms (customer-front-end src/shared/bookingTerms.ts).
+    [] = no card on file."""
+    lang = lang or _lang(item)
+    snap = item.get("guarantee")
+    if not isinstance(snap, dict) or not item.get("stripePaymentMethodId"):
+        return []
+    n = int(item.get("partySize") or 0)
+    no_show = int(snap.get("noShowFee") or 0)
+    late = int(snap.get("lateCancelFee") or 0)
+    hours = int(snap.get("cancelCutoffHours") or 0)
+    lines = []
+    if no_show:
+        lines.append(_t(lang, "g.no_show", fee=_guarantee_fee(
+            int(snap.get("noShowFeePerPerson") or no_show // 100 // max(n, 1)), no_show, n, lang)))
+    if late and hours:
+        hours_text = _t(lang, "g.hour") if hours == 1 else _t(lang, "g.hours", n=hours)
+        lines.append(_t(lang, "g.late_cancel", hours=hours_text, fee=_guarantee_fee(
+            int(snap.get("lateCancelFeePerPerson") or late // 100 // max(n, 1)), late, n, lang)))
+        until = datetime.fromisoformat(item["bookedFor"].replace("Z", "+00:00")) - timedelta(hours=hours)
+        until = until.astimezone(ZoneInfo(item.get("timezone") or "Europe/Stockholm"))
+        lines.append(_t(lang, "g.free_until", when=_t(
+            lang, "when", weekday=_WEEKDAYS[lang][until.weekday()], day=until.day,
+            month=_MONTHS[lang][until.month - 1], time=until.strftime("%H:%M"))))
+    else:
+        lines.append(_t(lang, "g.free_until_start"))
+    lines.append(_t(lang, "g.waiver"))
+    return lines
 
 
 def restaurant_name(tenant_row, location):
@@ -213,12 +274,15 @@ def guest_email(kind, item, tenant_row, location, link):
     show_link = bool(link) and kind in _WITH_LINK
     contact_text = _t(lang, "contact", restaurant=name, contact=contact) if contact else ""
     footer = _t(lang, "footer", restaurant=name)
+    terms = guarantee_lines(item, lang) if kind in _WITH_LINK else []
     withdraw = _withdraw_link(item) if kind == "confirmed" else None
     if withdraw:
         footer += " " + _t(lang, "withdraw", restaurant=name, link=withdraw)
 
     text_lines = [hello, "", lead, ""]
     text_lines += [f"{label}: {value}" for label, value in rows]
+    if terms:
+        text_lines += ["", _t(lang, "g.heading")] + [f"- {line}" for line in terms]
     if show_link:
         text_lines += ["", f"{manage_label}:", link]
     if contact_text:
@@ -247,7 +311,11 @@ def guest_email(kind, item, tenant_row, location, link):
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">{e(hello)}</p><p style="margin:0 0 20px">{e(lead)}</p>'
         f'<table role="presentation" style="border-collapse:collapse">{table_rows}</table>'
-        f'{button}'
+        + (f'<p style="margin:24px 0 6px;font-weight:600;color:#1a1a1a">{e(_t(lang, "g.heading"))}</p>'
+           '<ul style="margin:0;padding-left:20px;color:#1a1a1a">'
+           + "".join(f'<li style="margin:2px 0">{e(line)}</li>' for line in terms) + '</ul>'
+           if terms else "")
+        + f'{button}'
         + (f'<p style="margin:24px 0 0;color:#6b6b6b">{e(contact_text)}</p>' if contact_text else "")
         + '</div>'
         f'<p style="margin:16px 4px 0;color:#8a8a8a;font-size:12px">{e(footer)}</p>'

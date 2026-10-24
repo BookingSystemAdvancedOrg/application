@@ -119,6 +119,11 @@ def _number(value):
     return int(number) if number == int(number) else number
 
 
+def _minutes(hours):
+    number = _number(hours)
+    return round(number * 60) if number and number > 0 else None
+
+
 def _special_days(row):
     """Closed days, special hours and days without online booking from
     today (the location's date) through the next 60 days. A malformed stored
@@ -151,6 +156,8 @@ def _public_location(row, tenant_row):
         "businessHours": row.get("businessHours") or {},
         "bookingDurationHours": _number(row.get("bookingDurationHours")),
         "maxPartySizeOnline": _number(row.get("maxPartySizeOnline")),
+        # How long a table is held for a late guest (booking terms).
+        "gracePeriodMinutes": _minutes(row.get("gracePeriodHours")),
         "specialDays": _special_days(row),
         # Which ways to order this location offers (None = no ordering);
         # open/closed right now comes from GET .../ordering, not this

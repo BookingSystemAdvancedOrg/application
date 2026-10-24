@@ -54,7 +54,7 @@ def _log_request(tenant_id: str, kind: str, location_id: Optional[str] = None) -
 
 
 ROLES = ("owner_user", "staff_user")
-FEATURES = ("reservations", "ordering", "catering", "terminal")
+FEATURES = ("reservations", "ordering", "catering", "terminal", "kassa")
 
 _tenant_cache: dict = {}
 _location_tenant_cache: dict = {}

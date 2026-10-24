@@ -25,7 +25,8 @@ PURPOSE:
     only ids and outcomes).
 
     Tickets are rendered from the order at fetch time (shared/print_ticket.py),
-    so the job itself holds no personal data. An automatic job whose order
+    so the job itself holds no personal data; a Kassa job carries its own
+    document (receipt, report or kitchen ticket, shared/kassa_receipt.py). An automatic job whose order
     is already completed or cancelled is dropped instead of printed.
 
 ENV_VARS:
@@ -141,6 +142,8 @@ def _render(job, device, ctx, settings, now):
     kind = job.get("kind")
     if kind == p.TEST:
         return print_ticket.test_ticket(ctx.location, device.get("name"), width=width, now=now)
+    if kind == p.KASSA:
+        return print_ticket.document_ticket(job.get("ticket"), width=width, retry=int(job.get("attempts") or 0) > 1)
     order = o.load(ctx.location_id, job.get("orderId"))
     if kind == p.CANCEL:
         return print_ticket.cancel_ticket(order, ctx.location, width=width, now=now)

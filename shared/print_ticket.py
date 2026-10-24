@@ -154,3 +154,28 @@ def test_ticket(location, device_name, *, width=80, now=None):
     t.line("Svenska tecken: å ä ö Å Ä Ö é")
     t.line("Skrivaren är kopplad till Booqy.")
     return t.done()
+
+
+def document_ticket(document, *, width=80, retry=False):
+    """A Kassa document (shared/kassa_receipt.py): rows of text, pairs
+    (left text, right-aligned amount) and rules. A receipt printed on a
+    retry says so: the earlier attempt may have printed already."""
+    t = _Ticket(width)
+    if retry:
+        t.line("KAN VARA DUBBLETT", bold=True, center=True)
+    for row in (document or {}).get("rows") or []:
+        if row.get("rule"):
+            t.rule()
+        elif "pair" in row:
+            left, right = (clean(x) for x in row["pair"])
+            cols = t.cols // 2 if row.get("big") else t.cols
+            room = max(cols - len(right) - 1, 1)
+            rows = textwrap.wrap(left, room, break_long_words=True) or [""]
+            t.out += _LEFT + (_DOUBLE if row.get("big") else _NORMAL) + (_BOLD_ON if row.get("bold") else _BOLD_OFF)
+            for row_text in rows[:-1]:
+                t.out += _enc(row_text) + b"\n"
+            t.out += _enc(rows[-1].ljust(cols - len(right)) + right) + b"\n"
+        else:
+            t.line(clean(row.get("text")), bold=bool(row.get("bold")), big=bool(row.get("big")),
+                   center=bool(row.get("center")))
+    return t.done()

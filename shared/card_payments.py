@@ -34,6 +34,9 @@ Record (order table, next to the location's orders):
     failure          {code, message}
     card             brand, last4 and the EMV fields a card receipt needs
     refund           {amount, at, refundId}
+    refundKeys       Kassa's partial refunds: idempotency key -> Stripe refund id
+    kassaBillId      the Kassa bill this payment is part of (shared/kassa.py):
+                     refunded only through Kassa (a return receipt)
     receiptEmail, notice   "Skicka kvitto" (notification sends it)
 
 Never a ``paymentStatus`` attribute: that is the order's field, and the
@@ -343,9 +346,9 @@ def _settle_order(item, now):
 
 # --- create and send to the reader --------------------------------------------------------
 
-def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None, actor, now):
+def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None, actor, now, kassa_bill_id=None):
     """POST /card-payments: the checkout's PaymentIntent, sent to the reader.
-    Returns (item, created)."""
+    Returns (item, created). `kassa_bill_id`: a part of a Kassa bill."""
     if not valid_id(checkout_id):
         raise ValueError("checkoutId must be 32 hex characters")
     location = ctx.location
@@ -395,6 +398,8 @@ def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None
                 "date": date_str, "source": "booqy-terminal"}
     if order:
         metadata["orderId"] = order["orderId"]
+    if kassa_bill_id:
+        metadata["kassaBillId"] = kassa_bill_id
     description = f"Beställning {order['orderId'][:8]}" if order else (note or "Kortbetalning")
     intent = stripe.request("POST", "/v1/payment_intents", {
         "amount": amount, "currency": o.CURRENCY, "payment_method_types": ["card_present"],
@@ -409,7 +414,7 @@ def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None
         "orderNumber": order.get("number") if order else None, "note": note,
         "readerId": reader["id"], "readerLabel": reader.get("label") or reader["id"],
         "readerType": reader.get("device_type"),
-        "stripeAccountId": account, "paymentIntentId": intent["id"],
+        "stripeAccountId": account, "paymentIntentId": intent["id"], "kassaBillId": kassa_bill_id,
         "status": PROCESSING, "attempt": 1, "attemptAt": o.iso(now),
         "createdAt": o.iso(now), "createdBy": actor, "updatedAt": o.iso(now), "version": 1,
         "history": _entry("created", actor, now, amount=amount, reader=reader["id"]),
@@ -610,6 +615,8 @@ def refund(item, *, actor, now):
     guest's messages stay right."""
     if item.get("orderId"):
         raise InvalidState("refund_via_order")
+    if item.get("kassaBillId"):
+        raise InvalidState("refund_via_kassa")
     if item.get("status") != SUCCEEDED:
         raise InvalidState(f"cannot_refund_{item.get('status')}")
     result = stripe.request("POST", "/v1/refunds", {
@@ -624,6 +631,39 @@ def refund(item, *, actor, now):
                                    "status": result.get("status")},
                        ":entry": _entry("refunded", actor, now, amount=amount)},
                       names={"#rf": "refund"}, condition="#s = :succeeded")
+    return updated or load(item["locationId"], item["paymentId"])
+
+
+def refund_part(item, amount, *, key, actor, now):
+    """Kassa: `amount` öre back to the card (a return, or a paid part of a
+    bill undone before its receipt). `key` makes a retry the same refund.
+    Returns the updated item."""
+    if key in (item.get("refundKeys") or {}):
+        return item
+    if item.get("status") not in (SUCCEEDED, REFUNDED):
+        raise InvalidState(f"cannot_refund_{item.get('status')}")
+    already = int((item.get("refund") or {}).get("amount") or 0)
+    amount = int(amount)
+    if amount <= 0 or already + amount > int(item["amount"]):
+        raise InvalidState("refund_too_large")
+    result = stripe.request("POST", "/v1/refunds", {
+        "payment_intent": item["paymentIntentId"], "amount": amount, "reason": "requested_by_customer",
+        "metadata": {"paymentId": item["paymentId"], "locationId": item["locationId"], "by": actor},
+    }, account=item["stripeAccountId"], idempotency_key=key)
+    total = already + amount
+    sets = ["#rf = :refund", "refundKeys.#k = :rid",
+            "history = list_append(if_not_exists(history, :empty), :entry)"]
+    values = {":refund": {"amount": total, "at": o.iso(now), "refundId": result.get("id")}, ":rid": result.get("id"),
+              ":empty": [], ":entry": _entry("refunded", actor, now, amount=amount), ":succeeded": SUCCEEDED,
+              ":refunded": REFUNDED}
+    if total >= int(item["amount"]):
+        sets.append("#s = :refunded")
+    if not item.get("refundKeys"):
+        sets[1] = "refundKeys = :keys"
+        values[":keys"] = {key: result.get("id")}
+        del values[":rid"]
+    updated = _update(item, now, sets, values, names={"#rf": "refund", **({"#k": key} if item.get("refundKeys") else {})},
+                      condition="#s IN (:succeeded, :refunded)")
     return updated or load(item["locationId"], item["paymentId"])
 
 

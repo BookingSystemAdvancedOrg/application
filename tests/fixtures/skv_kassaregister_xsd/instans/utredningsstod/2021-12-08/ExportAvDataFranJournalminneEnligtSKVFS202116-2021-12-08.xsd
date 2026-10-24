@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:utrein="http://xmls.skatteverket.se/se/skatteverket/td/instans/utredningsstod/1.0" xmlns:utreko="http://xmls.skatteverket.se/se/skatteverket/td/komponent/utredningsstod/1.0" targetNamespace="http://xmls.skatteverket.se/se/skatteverket/td/instans/utredningsstod/1.0" elementFormDefault="qualified" attributeFormDefault="unqualified" version="1.0" xml:lang="sv">
+ <xs:import namespace="http://xmls.skatteverket.se/se/skatteverket/td/komponent/utredningsstod/1.0" schemaLocation="../../../komponent/utredningsstod/2021-12-08/Utredningsstod-ElementAvSammansattTyp-2021-12-08-COMPONENT.xsd"/>
+ <xs:element name="ExportAvDataFranJournalminneEnligtSKVFS2021-16" type="utrein:ExportAvDataFranJournalminneEnligtSKVFS2021-16TYPE"/>
+ <xs:complexType name="ExportAvDataFranJournalminneEnligtSKVFS2021-16TYPE">
+  <xs:sequence>
+   <xs:element ref="utreko:InloggadAnvandareVidExportAvDataFranJournalminnet" minOccurs="0"/>
+   <xs:element ref="utreko:BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfran"/>
+   <xs:element ref="utreko:TidpunktForNarExportAvDataFranJournalminnetSker"/>
+   <xs:element ref="utreko:ValdPeriodForExportAvDataFranJournalminne"/>
+   <xs:element ref="utreko:BeteckningPaValdaKassaregisterForExportAvDataFranJournalminnenLISTA"/>
+   <xs:element ref="utreko:InformationOmForetaget"/>
+   <xs:element ref="utreko:KassaregistersystemLISTA"/>
+   <xs:element ref="utreko:RegistreringLISTA"/>
+  </xs:sequence>
+ </xs:complexType>
+</xs:schema>

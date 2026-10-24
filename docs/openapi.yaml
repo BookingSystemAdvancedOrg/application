@@ -66,6 +66,8 @@ tags:
     description: The restaurant's own figures for a period (Statistik in the admin app).
   - name: Card payments
     description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
+  - name: Kassa
+    description: The till (feature "kassa", off by default) - bills, card payments, receipts with a control code, returns, one copy, training mode, X/Z reports and the journal export (SKVFS 2021:16). Test mode until a certified control system is connected (docs/KASSA-REQUIREMENTS.md).
   - name: Printing
     description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
   - name: Catering
@@ -5744,6 +5746,563 @@ paths:
               schema: {$ref: '#/components/schemas/CardPayment'}
 
   # --- Printing (issue 2) ------------------------------------------------------
+  /locations/{locationId}/kassa:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Kassa state: registers, open bills, test mode'
+      operationId: getKassa
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'The location''s registers'
+      operationId: listKassaRegisters
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    post:
+      tags: [Kassa]
+      summary: 'A new register (kassabeteckning, max 16 characters)'
+      operationId: createKassaRegister
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [label]
+              properties:
+                label: {type: string, maxLength: 16}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A register, its control system and day status'
+      operationId: getKassaRegister
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/open-day:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Register the float (växelkassa) at the start of the day'
+      operationId: openKassaDay
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [float]
+              properties:
+                float: {type: integer, minimum: 0, description: Öre}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/training:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Training mode on or off (journalled)'
+      operationId: setKassaTraining
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: ['on']
+              properties:
+                'on': {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/x:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'X report (journalled, no number)'
+      operationId: kassaXReport
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                print: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/z:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Z report (numbered, closes the period)'
+      operationId: kassaZReport
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                print: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A day''s receipts and reports from the journal'
+      operationId: listKassaReceipts
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: date, in: query, required: false, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'One receipt, returned lines, copy taken'
+      operationId: getKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/copy:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'The one copy of a receipt (409 copy_exists)'
+      operationId: copyKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/return:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Return lines: refund to the card, then a return receipt'
+      operationId: returnKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery, lines, reason]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+                reason: {type: string, maxLength: 72}
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [lineId, quantity]
+                    properties:
+                      lineId: {type: string}
+                      quantity: {type: integer, minimum: 1}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/export:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Journal export in XML (SKVFS 2021:16)'
+      operationId: exportKassaJournal
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: from, in: query, required: true, schema: {type: string, format: date}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: 'The XML file.'
+          content:
+            application/xml:
+              schema: {type: string}
+  /locations/{locationId}/kassa/registers/{registerId}/simulate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Test mode only (not prod): the simulated control system down or up'
+      operationId: simulateKassaControlSystem
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [down]
+              properties:
+                down: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Open bills'
+      operationId: listKassaBills
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    post:
+      tags: [Kassa]
+      summary: 'Open a bill for a table or a takeaway sale'
+      operationId: createKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [registerId, kind]
+              properties:
+                registerId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                kind: {type: string, enum: [table, takeaway]}
+                tableLabel: {type: string, maxLength: 20}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A bill with prices, VAT and card payments'
+      operationId: getKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    put:
+      tags: [Kassa]
+      summary: 'Lines and discount (409 changed_retry, bill_has_payments, line_sent)'
+      operationId: updateKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, lines]
+              properties:
+                version: {type: integer}
+                lines:
+                  type: array
+                  maxItems: 60
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [quantity]
+                    properties:
+                      lineId: {type: string}
+                      menuItemId: {type: string}
+                      quantity: {type: integer, minimum: 1, maximum: 99}
+                      note: {type: string, maxLength: 80, nullable: true}
+                discount:
+                  type: object
+                  nullable: true
+                  additionalProperties: false
+                  properties:
+                    kind: {type: string, enum: [percent, amount]}
+                    value: {type: integer, minimum: 1}
+                    label: {type: string, maxLength: 40}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/send:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Kitchen ticket for the lines not sent yet'
+      operationId: sendKassaBillToKitchen
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/void:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Throw away an unpaid bill (sent lines are journalled)'
+      operationId: voidKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/payments:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Card payment for (part of) the bill on a reader; 503 control_system_unreachable before any charge'
+      operationId: startKassaPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkoutId, readerId, amount]
+              properties:
+                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                readerId: {type: string, pattern: '^tmr_'}
+                amount: {type: integer, minimum: 300, description: Öre}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/payments/{paymentId}/undo:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'A paid part back to the card, before the receipt'
+      operationId: undoKassaPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/finalize:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable); printed or e-mailed'
+      operationId: finalizeKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
   /locations/{locationId}/print:
     parameters:
       - $ref: '#/components/parameters/LocationId'

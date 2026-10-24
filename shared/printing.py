@@ -7,9 +7,12 @@ Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK JOB#<orderId>#cancel   "MAKULERAD" slip
     PK LOCATION#<l>  SK JOB#<orderId>#m<ms>    "Skriv ut igen"
     PK LOCATION#<l>  SK JOB#test#<ms>          test print for one device
+    PK LOCATION#<l>  SK JOB#kassa#<id>         Kassa: a receipt, report or kitchen
+                                               ticket, carried in the job (ticket)
 
 A job holds no personal data: the ticket is rendered from the order when
-the printer fetches it. Jobs expire after 30 days.
+the printer fetches it. Kassa jobs carry their document (shared/kassa_receipt.py),
+which has no guest data either. Jobs expire after 30 days.
 
 Job states:
     PENDING  --printer GET (lease 60 s, attempts+1)-->  PRINTING
@@ -47,7 +50,7 @@ from shared import orders as o
 
 PENDING, PRINTING, PRINTED, FAILED, CANCELLED = "PENDING", "PRINTING", "PRINTED", "FAILED", "CANCELLED"
 OPEN = (PENDING, PRINTING, FAILED)
-AUTO, CANCEL, REPRINT, TEST = "auto", "cancel", "reprint", "test"
+AUTO, CANCEL, REPRINT, TEST, KASSA = "auto", "cancel", "reprint", "test", "kassa"
 
 LEASE_SECONDS = 60
 BACKOFF_SECONDS = (15, 30, 60, 120)
@@ -64,7 +67,7 @@ MAX_DEVICES = 5
 NAME_MAX = 40
 
 _ID = re.compile(r"[0-9a-f]{32}")
-_TOKEN = re.compile(r"(?:[0-9a-f]{32}\.(?:auto|cancel|m\d{13})|test\.\d{13})")
+_TOKEN = re.compile(r"(?:[0-9a-f]{32}\.(?:auto|cancel|m\d{13})|test\.\d{13}|kassa\.[0-9a-f]{32})")
 
 
 class NotFound(Exception):
@@ -446,6 +449,16 @@ def test_job(tenant_id, location_id, device_id, now):
     return item
 
 
+def kassa_job(tenant_id, location_id, ticket, now):
+    """A Kassa print (shared/kassa.py) on the location's printer."""
+    if not get_settings(location_id)["printerId"]:
+        raise Conflict("no_printer")
+    item = _new_job(tenant_id, location_id, f"JOB#kassa#{uuid.uuid4().hex}", KASSA, now)
+    item["ticket"] = ticket
+    _put_once(item)
+    return item
+
+
 def queue(location_id, *, due_by=None):
     """Open jobs of a location, oldest due first (only those due by `due_by`)."""
     cond = Key("queue").eq(pk(location_id))
@@ -563,6 +576,8 @@ def _stale(job, settings, device_ids, now):
     if settings.get("printerId") not in device_ids:
         return True
     if job.get("status") == FAILED:
+        if job.get("kind") == KASSA:
+            return age > FAILED_SECONDS
         return age > FAILED_SECONDS or not _order_open(job["locationId"], job.get("orderId"))
     return False
 

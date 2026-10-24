@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:utreko="http://xmls.skatteverket.se/se/skatteverket/td/komponent/utredningsstod/1.0" targetNamespace="http://xmls.skatteverket.se/se/skatteverket/td/komponent/utredningsstod/1.0" elementFormDefault="qualified" attributeFormDefault="unqualified" version="1.0" xml:lang="sv">
+ <xs:include schemaLocation="Utredningsstod-GenerellaTypdefinitioner-2021-12-08-TYPELIB.xsd"/>
+ <xs:element name="AntalAvRegistreradArtikel" type="utreko:AntalAvRegistreradArtikelTYPE"/>
+ <xs:simpleType name="AntalAvRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalAvSaldArtikel" type="utreko:AntalAvSaldArtikelTYPE"/>
+ <xs:simpleType name="AntalAvSaldArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalKassakvitton" type="utreko:AntalKassakvittonTYPE"/>
+ <xs:simpleType name="AntalKassakvittonTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalKassaladoppningar" type="utreko:AntalKassaladoppningarTYPE"/>
+ <xs:simpleType name="AntalKassaladoppningarTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalKvittokopior" type="utreko:AntalKvittokopiorTYPE"/>
+ <xs:simpleType name="AntalKvittokopiorTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalKvittonSomTagitsFramIOvningslage" type="utreko:AntalKvittonSomTagitsFramIOvningslageTYPE"/>
+ <xs:simpleType name="AntalKvittonSomTagitsFramIOvningslageTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalOavslutadeForsaljningar" type="utreko:AntalOavslutadeForsaljningarTYPE"/>
+ <xs:simpleType name="AntalOavslutadeForsaljningarTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalOvrigaRegistreringarSomMinskatDagensForsaljningsbelopp" type="utreko:AntalOvrigaRegistreringarSomMinskatDagensForsaljningsbeloppTYPE"/>
+ <xs:simpleType name="AntalOvrigaRegistreringarSomMinskatDagensForsaljningsbeloppTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalReturer" type="utreko:AntalReturerTYPE"/>
+ <xs:simpleType name="AntalReturerTYPE"><xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9999999999999"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalSaldaTjanster" type="utreko:AntalSaldaTjansterTYPE"/>
+ <xs:simpleType name="AntalSaldaTjansterTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="AntalSaldaVaror" type="utreko:AntalSaldaVarorTYPE"/>
+ <xs:simpleType name="AntalSaldaVarorTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="AnvandaClear" type="utreko:AnvandaClearTYPE"/>
+ <xs:simpleType name="AnvandaClearTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="Artikelnamn" type="utreko:ArtikelnamnTYPE"/>
+ <xs:simpleType name="ArtikelnamnTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="ArtikelnsRegistreringstidpunkt" type="utreko:ArtikelnsRegistreringstidpunktTYPE"/>
+ <xs:simpleType name="ArtikelnsRegistreringstidpunktTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="Artikelnummer" type="utreko:ArtikelnummerTYPE"/>
+ <xs:simpleType name="ArtikelnummerTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="Avstamningskod" type="utreko:AvstamningskodTYPE"/>
+ <xs:simpleType name="AvstamningskodTYPE"><xs:restriction base="xs:string"><xs:minLength value="113"/><xs:maxLength value="113"/></xs:restriction></xs:simpleType>
+ <xs:element name="AvstamningskodForKvittotSomKopianAvser" type="utreko:AvstamningskodForKvittotSomKopianAvserTYPE"/>
+ <xs:simpleType name="AvstamningskodForKvittotSomKopianAvserTYPE"><xs:restriction base="xs:string"><xs:minLength value="113"/><xs:maxLength value="113"/></xs:restriction></xs:simpleType>
+ <xs:element name="BeloppIUtlandskValuta" type="utreko:BeloppIUtlandskValutaTYPE"/>
+ <xs:simpleType name="BeloppIUtlandskValutaTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="BenamningPaRabatt" type="utreko:BenamningPaRabattTYPE"/>
+ <xs:simpleType name="BenamningPaRabattTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="Betalningsmedel" type="utreko:BetalningsmedelTYPE"/>
+ <xs:simpleType name="BetalningsmedelTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfran" type="utreko:BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfranTYPE"/>
+ <xs:simpleType name="BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfranTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="BeteckningPaValtKassaregisterForExportAvDataFranJournalminnet" type="utreko:BeteckningPaValtKassaregisterForExportAvDataFranJournalminnetTYPE"/>
+ <xs:simpleType name="BeteckningPaValtKassaregisterForExportAvDataFranJournalminnetTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="DatumOchKlockslagNarKvittoFramstalls" type="utreko:DatumOchKlockslagNarKvittoFramstallsTYPE"/>
+ <xs:simpleType name="DatumOchKlockslagNarKvittoFramstallsTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="DatumOchKlockslagNarOriginalkvittoFramstalldes" type="utreko:DatumOchKlockslagNarOriginalkvittoFramstalldesTYPE"/>
+ <xs:simpleType name="DatumOchKlockslagNarOriginalkvittoFramstalldesTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="DatumOchKlockslagNarProFormaKvittoFramstalls" type="utreko:DatumOchKlockslagNarProFormaKvittoFramstallsTYPE"/>
+ <xs:simpleType name="DatumOchKlockslagNarProFormaKvittoFramstallsTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="DatumOchKlockslagNarRapportFramstalls" type="utreko:DatumOchKlockslagNarRapportFramstallsTYPE"/>
+ <xs:simpleType name="DatumOchKlockslagNarRapportFramstallsTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="DatumOchKlockslagNarReturkvittoFramstalls" type="utreko:DatumOchKlockslagNarReturkvittoFramstallsTYPE"/>
+ <xs:simpleType name="DatumOchKlockslagNarReturkvittoFramstallsTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="DenAdressDarForsaljningSker" type="utreko:DenAdressDarForsaljningSkerTYPE"/>
+ <xs:simpleType name="DenAdressDarForsaljningSkerTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="ElektroniskKopiaAvKassakvitto" type="utreko:ElektroniskKopiaAvKassakvittoTYPE"/>
+ <xs:simpleType name="ElektroniskKopiaAvKassakvittoTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="ElektronisktKassakvitto" type="utreko:ElektronisktKassakvittoTYPE"/>
+ <xs:simpleType name="ElektronisktKassakvittoTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="EnhetForViktLangdTidEllerVolym" type="utreko:EnhetForViktLangdTidEllerVolymTYPE"/>
+ <xs:simpleType name="EnhetForViktLangdTidEllerVolymTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="ForandringAvVaxelkassaISvenskaKronor" type="utreko:ForandringAvVaxelkassaISvenskaKronorTYPE"/>
+ <xs:simpleType name="ForandringAvVaxelkassaISvenskaKronorTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="ForetagetsNamn" type="utreko:ForetagetsNamnTYPE"/>
+ <xs:simpleType name="ForetagetsNamnTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="ForsaljningssummaPerBetalningsmedel" type="utreko:ForsaljningssummaPerBetalningsmedelTYPE"/>
+ <xs:simpleType name="ForsaljningssummaPerBetalningsmedelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="GrandTotalForsaljning" type="utreko:GrandTotalForsaljningTYPE"/>
+ <xs:simpleType name="GrandTotalForsaljningTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="0"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="GrandTotalNetto" type="utreko:GrandTotalNettoTYPE"/>
+ <xs:simpleType name="GrandTotalNettoTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="GrandTotalRetur" type="utreko:GrandTotalReturTYPE"/>
+ <xs:simpleType name="GrandTotalReturTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="IdentitetsbeteckningForRegistreringAvArtiklar" type="utreko:IdentitetsbeteckningForRegistreringAvArtiklarTYPE"/>
+ <xs:simpleType name="IdentitetsbeteckningForRegistreringAvArtiklarTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="IdentitetsbeteckningForTidigareParkering" type="utreko:IdentitetsbeteckningForTidigareParkeringTYPE"/>
+ <xs:simpleType name="IdentitetsbeteckningForTidigareParkeringTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="IdentitetsbeteckningPaParkering" type="utreko:IdentitetsbeteckningPaParkeringTYPE"/>
+ <xs:simpleType name="IdentitetsbeteckningPaParkeringTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="InloggadAnvandare" type="utreko:InloggadAnvandareTYPE"/>
+ <xs:simpleType name="InloggadAnvandareTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="InloggadAnvandareVidExportAvDataFranJournalminnet" type="utreko:InloggadAnvandareVidExportAvDataFranJournalminnetTYPE"/>
+ <xs:simpleType name="InloggadAnvandareVidExportAvDataFranJournalminnetTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="InloggningIKassaregister" type="utreko:InloggningIKassaregisterTYPE"/>
+ <xs:simpleType name="InloggningIKassaregisterTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="Kassabeteckning" type="utreko:KassabeteckningTYPE"/>
+ <xs:simpleType name="KassabeteckningTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="Kontrollkod" type="utreko:KontrollkodTYPE"/>
+ <xs:simpleType name="KontrollkodTYPE"><xs:restriction base="xs:string"><xs:minLength value="59"/><xs:maxLength value="59"/></xs:restriction></xs:simpleType>
+ <xs:element name="KontrollkodForKvittotSomKopianAvser" type="utreko:KontrollkodForKvittotSomKopianAvserTYPE"/>
+ <xs:simpleType name="KontrollkodForKvittotSomKopianAvserTYPE"><xs:restriction base="xs:string"><xs:minLength value="59"/><xs:maxLength value="59"/></xs:restriction></xs:simpleType>
+ <xs:element name="KontrollkodPaKopiaAvKassakvitto" type="utreko:KontrollkodPaKopiaAvKassakvittoTYPE"/>
+ <xs:simpleType name="KontrollkodPaKopiaAvKassakvittoTYPE"><xs:restriction base="xs:string"><xs:minLength value="59"/><xs:maxLength value="59"/></xs:restriction></xs:simpleType>
+ <xs:element name="LopnummerForKassakvitto" type="utreko:LopnummerTYPE"/>
+ <xs:element name="LopnummerForKvittokopia" type="utreko:LopnummerTYPE"/>
+ <xs:element name="LopnummerForOvningskvitto" type="utreko:LopnummerForOvningskvittoTYPE"/>
+ <xs:simpleType name="LopnummerForOvningskvittoTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="12"/></xs:restriction></xs:simpleType>
+ <xs:element name="LopnummerForUrsprungligtKassakvitto" type="utreko:LopnummerTYPE"/>
+ <xs:element name="LopnummerForZDagrapport" type="utreko:LopnummerTYPE"/>
+ <xs:element name="LopnummerForZDagrapportPaKvitto" type="utreko:LopnummerTYPE"/>
+ <xs:element name="LopnummerPaOriginalkvitto" type="utreko:LopnummerTYPE"/>
+ <xs:element name="MangdAvRegistreradArtikel" type="utreko:MangdAvRegistreradArtikelTYPE"/>
+ <xs:simpleType name="MangdAvRegistreradArtikelTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="MangdAvSaldArtikel" type="utreko:MangdAvSaldArtikelTYPE"/>
+ <xs:simpleType name="MangdAvSaldArtikelTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="MervardesskattPaForsaljningsbeloppet" type="utreko:MervardesskattPaForsaljningsbeloppetTYPE"/>
+ <xs:simpleType name="MervardesskattPaForsaljningsbeloppetTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="MervardesskattPaRegistreradArtikel" type="utreko:MervardesskattPaRegistreradArtikelTYPE"/>
+ <xs:simpleType name="MervardesskattPaRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="MervardesskattPaSaldArtikel" type="utreko:MervardesskattPaSaldArtikelTYPE"/>
+ <xs:simpleType name="MervardesskattPaSaldArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="Mervardesskattesats" type="utreko:MervardesskattesatsTYPE"/>
+ <xs:simpleType name="MervardesskattesatsTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="0"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="MervardesskattesatsForRegistreradArtikel" type="utreko:MervardesskattesatsForRegistreradArtikelTYPE"/>
+ <xs:simpleType name="MervardesskattesatsForRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="MervardesskattesatsForSaldArtikel" type="utreko:MervardesskattesatsForSaldArtikelTYPE"/>
+ <xs:simpleType name="MervardesskattesatsForSaldArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="ModellEllerProgramForKassaregistret" type="utreko:ModellEllerProgramForKassaregistretTYPE"/>
+ <xs:simpleType name="ModellEllerProgramForKassaregistretTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="ModellbeteckningForKassaregistret" type="utreko:ModellbeteckningForKassaregistretTYPE"/>
+ <xs:simpleType name="ModellbeteckningForKassaregistretTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="NamnPaHuvudgrupp" type="utreko:NamnPaHuvudgruppTYPE"/>
+ <xs:simpleType name="NamnPaHuvudgruppTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="NamnPaOvrigRapport" type="utreko:NamnPaOvrigRapportTYPE"/>
+ <xs:simpleType name="NamnPaOvrigRapportTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="NamnPaVerksamheten" type="utreko:NamnPaVerksamhetenTYPE"/>
+ <xs:simpleType name="NamnPaVerksamhetenTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="NyTidVidOmstallningAvKlockan" type="utreko:NyTidVidOmstallningAvKlockanTYPE"/>
+ <xs:simpleType name="NyTidVidOmstallningAvKlockanTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="OmstartAvKassaregister" type="utreko:OmstartAvKassaregisterTYPE"/>
+ <xs:simpleType name="OmstartAvKassaregisterTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="OppnaKassaladaVidNollforsaljning" type="utreko:OppnaKassaladaVidNollforsaljningTYPE"/>
+ <xs:simpleType name="OppnaKassaladaVidNollforsaljningTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="OrganisationsnummerEllerPersonnummer" type="utreko:OrganisationsnummerEllerPersonnummerTYPE"/>
+ <xs:element name="OriginalkvittoUtskrivetUtanKontaktMedKontrollservern" type="utreko:OriginalkvittoUtskrivetUtanKontaktMedKontrollservernTYPE"/>
+ <xs:simpleType name="OriginalkvittoUtskrivetUtanKontaktMedKontrollservernTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="OrsakTillAndring" type="utreko:OrsakTillAndringTYPE"/>
+ <xs:simpleType name="OrsakTillAndringTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="PrisPaEfterfragadArtikel" type="utreko:PrisPaEfterfragadArtikelTYPE"/>
+ <xs:simpleType name="PrisPaEfterfragadArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="PrisPaRegistreradArtikel" type="utreko:PrisPaRegistreradArtikelTYPE"/>
+ <xs:simpleType name="PrisPaRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="PrisPaSaldArtikel" type="utreko:PrisPaSaldArtikelTYPE"/>
+ <xs:simpleType name="PrisPaSaldArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="PrisPerEnhet" type="utreko:PrisPerEnhetTYPE"/>
+ <xs:simpleType name="PrisPerEnhetTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="RabattensBelopp" type="utreko:RabattensBeloppTYPE"/>
+ <xs:simpleType name="RabattensBeloppTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="RabattensBeloppPaKvittoniva" type="utreko:RabattensBeloppPaKvittonivaTYPE"/>
+ <xs:simpleType name="RabattensBeloppPaKvittonivaTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="RabatternasBelopp" type="utreko:RabatternasBeloppTYPE"/>
+ <xs:simpleType name="RabatternasBeloppTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="Registreringstidpunkt" type="utreko:RegistreringstidpunktTYPE"/>
+ <xs:simpleType name="RegistreringstidpunktTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="ReturernasBelopp" type="utreko:ReturernasBeloppTYPE"/>
+ <xs:simpleType name="ReturernasBeloppTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="Sokparameter" type="utreko:SokparameterTYPE"/>
+ <xs:simpleType name="SokparameterTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="256"/></xs:restriction></xs:simpleType>
+ <xs:element name="StallaOmTillNormallage" type="utreko:StallaOmTillNormallageTYPE"/>
+ <xs:simpleType name="StallaOmTillNormallageTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="StallaOmTillOvningslage" type="utreko:StallaOmTillOvningslageTYPE"/>
+ <xs:simpleType name="StallaOmTillOvningslageTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="StartAvKassaregister" type="utreko:StartAvKassaregisterTYPE"/>
+ <xs:simpleType name="StartAvKassaregisterTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="StatuskodFranKontrollprogrammet" type="utreko:StatuskodFranKontrollprogrammetTYPE"/>
+ <xs:simpleType name="StatuskodFranKontrollprogrammetTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="StoppAvKassaregister" type="utreko:StoppAvKassaregisterTYPE"/>
+ <xs:simpleType name="StoppAvKassaregisterTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareAntalAvRegistreradArtikel" type="utreko:TidigareAntalAvRegistreradArtikelTYPE"/>
+ <xs:simpleType name="TidigareAntalAvRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareBeloppPaRabatten" type="utreko:TidigareBeloppPaRabattenTYPE"/>
+ <xs:simpleType name="TidigareBeloppPaRabattenTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareBenamningPaRabatt" type="utreko:TidigareBenamningPaRabattTYPE"/>
+ <xs:simpleType name="TidigareBenamningPaRabattTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareEnhetForViktLangdTidEllerVolym" type="utreko:TidigareEnhetForViktLangdTidEllerVolymTYPE"/>
+ <xs:simpleType name="TidigareEnhetForViktLangdTidEllerVolymTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareMangdAvRegistreradArtikel" type="utreko:TidigareMangdAvRegistreradArtikelTYPE"/>
+ <xs:simpleType name="TidigareMangdAvRegistreradArtikelTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareMervardesskattPaRegistreradArtikel" type="utreko:TidigareMervardesskattPaRegistreradArtikelTYPE"/>
+ <xs:simpleType name="TidigareMervardesskattPaRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigareMervardesskattesatsForRegistreradArtikel" type="utreko:TidigareMervardesskattesatsForRegistreradArtikelTYPE"/>
+ <xs:simpleType name="TidigareMervardesskattesatsForRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigarePrisPaRegistreradArtikel" type="utreko:TidigarePrisPaRegistreradArtikelTYPE"/>
+ <xs:simpleType name="TidigarePrisPaRegistreradArtikelTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidigarePrisPerEnhet" type="utreko:TidigarePrisPerEnhetTYPE"/>
+ <xs:simpleType name="TidigarePrisPerEnhetTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TidpunktForNarExportAvDataFranJournalminnetSker" type="utreko:TidpunktForNarExportAvDataFranJournalminnetSkerTYPE"/>
+ <xs:simpleType name="TidpunktForNarExportAvDataFranJournalminnetSkerTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="TillverkningsnummerForKassaregistret" type="utreko:TillverkningsnummerForKassaregistretTYPE"/>
+ <xs:element name="TillverkningsnummerForKontrollenheten" type="utreko:TillverkningsnummerForKontrollenhetenTYPE"/>
+ <xs:element name="TillverkningsnummerForKontrollsystemet" type="utreko:TillverkningsnummerForKontrollsystemetTYPE"/>
+ <xs:element name="TotalForsaljningssumma" type="utreko:TotalForsaljningssummaTYPE"/>
+ <xs:simpleType name="TotalForsaljningssummaTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotalForsaljningssummaForHuvudgrupp" type="utreko:TotalForsaljningssummaForHuvudgruppTYPE"/>
+ <xs:simpleType name="TotalForsaljningssummaForHuvudgruppTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltBeloppAvOavslutadeForsaljningar" type="utreko:TotaltBeloppAvOavslutadeForsaljningarTYPE"/>
+ <xs:simpleType name="TotaltBeloppAvOavslutadeForsaljningarTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="0"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltBeloppAvOvrigaRegistreringarSomMinskatDagensForsaljningsbelopp" type="utreko:TotaltBeloppAvOvrigaRegistreringarSomMinskatDagensForsaljningsbeloppTYPE"/>
+ <xs:simpleType name="TotaltBeloppAvOvrigaRegistreringarSomMinskatDagensForsaljningsbeloppTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="0"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltBeloppIOvningslage" type="utreko:TotaltBeloppIOvningslageTYPE"/>
+ <xs:simpleType name="TotaltBeloppIOvningslageTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="0"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltBeloppPaKvittokopior" type="utreko:TotaltBeloppPaKvittokopiorTYPE"/>
+ <xs:simpleType name="TotaltBeloppPaKvittokopiorTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltForsaljningsbeloppISvenskaKronor" type="utreko:TotaltForsaljningsbeloppISvenskaKronorTYPE"/>
+ <xs:simpleType name="TotaltForsaljningsbeloppISvenskaKronorTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltMervardesskattebeloppPerSkattesats" type="utreko:TotaltMervardesskattebeloppPerSkattesatsTYPE"/>
+ <xs:simpleType name="TotaltMervardesskattebeloppPerSkattesatsTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TotaltRabattbeloppPaKvitto" type="utreko:TotaltRabattbeloppPaKvittoTYPE"/>
+ <xs:simpleType name="TotaltRabattbeloppPaKvittoTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="TypAvArtikel" type="utreko:TypAvArtikelTYPE"/>
+ <xs:simpleType name="TypAvArtikelTYPE"><xs:restriction base="xs:token"><xs:enumeration value="VARA"/><xs:enumeration value="TJANST"/></xs:restriction></xs:simpleType>
+ <xs:element name="TypAvRadering" type="utreko:TypAvRaderingTYPE"/>
+ <xs:simpleType name="TypAvRaderingTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+ <xs:element name="UrsprungligRegistreringstidpunkt" type="utreko:UrsprungligRegistreringstidpunktTYPE"/>
+ <xs:simpleType name="UrsprungligRegistreringstidpunktTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="UtlandskValuta" type="utreko:UtlandskValutaTYPE"/>
+ <xs:element name="UtloggningUrKassaregister" type="utreko:UtloggningUrKassaregisterTYPE"/>
+ <xs:simpleType name="UtloggningUrKassaregisterTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="UtskriftAvKvittoUtanAttKontrollprogrammetHarKontaktMedKontrollservern" type="utreko:UtskriftAvKvittoUtanAttKontrollprogrammetHarKontaktMedKontrollservernTYPE"/>
+ <xs:simpleType name="UtskriftAvKvittoUtanAttKontrollprogrammetHarKontaktMedKontrollservernTYPE"><xs:restriction base="xs:token"><xs:enumeration value="JA"/></xs:restriction></xs:simpleType>
+ <xs:element name="ValdSluttidpunktForExportAvDataFranJournalminnet" type="utreko:ValdSluttidpunktForExportAvDataFranJournalminnetTYPE"/>
+ <xs:simpleType name="ValdSluttidpunktForExportAvDataFranJournalminnetTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="ValdStarttidpunktForExportAvDataFranJournalminnet" type="utreko:ValdStarttidpunktForExportAvDataFranJournalminnetTYPE"/>
+ <xs:simpleType name="ValdStarttidpunktForExportAvDataFranJournalminnetTYPE"><xs:restriction base="utreko:DatumOchKlockslagTYPE"></xs:restriction></xs:simpleType>
+ <xs:element name="VaxelkassansBeloppISvenskaKronor" type="utreko:VaxelkassansBeloppISvenskaKronorTYPE"/>
+ <xs:simpleType name="VaxelkassansBeloppISvenskaKronorTYPE"><xs:restriction base="xs:decimal"><xs:fractionDigits value="2"/><xs:minInclusive value="-9999999999.99"/><xs:maxInclusive value="99999999999.99"/></xs:restriction></xs:simpleType>
+ <xs:element name="VersionsnummerForKassaregistret" type="utreko:VersionsnummerForKassaregistretTYPE"/>
+ <xs:simpleType name="VersionsnummerForKassaregistretTYPE"><xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="72"/></xs:restriction></xs:simpleType>
+</xs:schema>

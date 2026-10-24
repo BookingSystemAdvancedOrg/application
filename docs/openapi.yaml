@@ -66,8 +66,6 @@ tags:
     description: The restaurant's own figures for a period (Statistik in the admin app).
   - name: Card payments
     description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
-  - name: Accounting
-    description: The accounting export (Bokföring) - the location's BAS account mapping and one balanced verifikation per business day as SIE 4, CSV or JSON (docs/ACCOUNTING-EXPORT.md).
   - name: Kassa
     description: The till (feature "kassa", off by default) - bills, card payments, receipts with a control code, returns, one copy, training mode, X/Z reports and the journal export (SKVFS 2021:16). Test mode until a certified control system is connected (docs/KASSA-REQUIREMENTS.md).
   - name: Printing
@@ -5748,76 +5746,6 @@ paths:
               schema: {$ref: '#/components/schemas/CardPayment'}
 
   # --- Printing (issue 2) ------------------------------------------------------
-  /locations/{locationId}/accounting:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Accounting]
-      summary: 'The account mapping: accounts per role, BAS defaults and names, SIE series, fiscal year start'
-      operationId: getAccounting
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-    put:
-      tags: [Accounting]
-      summary: 'Save the account mapping (sending the defaults resets); 409 changed_retry on a stale version'
-      operationId: putAccounting
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [version]
-              properties:
-                accounts:
-                  type: object
-                  additionalProperties: {type: string, pattern: '^[1-8][0-9]{3}$'}
-                series: {type: string, pattern: '^[A-Z]$'}
-                fiscalYearStartMonth: {type: integer, minimum: 1, maximum: 12}
-                version: {type: integer, minimum: 0}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-        '409':
-          description: 'Someone saved first (changed_retry).'
-  /locations/{locationId}/accounting/export:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Accounting]
-      summary: 'One balanced verifikation per business day of the period (max 366 days) as SIE 4 (PC8), CSV or JSON'
-      operationId: exportAccounting
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      parameters:
-        - {name: from, in: query, required: true, schema: {type: string, format: date}}
-        - {name: to, in: query, required: true, schema: {type: string, format: date}}
-        - {name: format, in: query, required: false, schema: {type: string, enum: [sie, csv, json], default: sie}}
-      responses:
-        '200':
-          description: 'summary (days, sales, vat, warnings) plus entries (json) or filename, mediaType and base64 content (sie, csv).'
-          content:
-            application/json:
-              schema: {type: object}
-        '502':
-          description: 'Stripe refused to list balance transactions (stripe_refused).'
-        '503':
-          description: 'Stripe or the database is unavailable.'
   /locations/{locationId}/kassa:
     parameters:
       - $ref: '#/components/parameters/LocationId'

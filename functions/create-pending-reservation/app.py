@@ -50,6 +50,11 @@ PURPOSE:
     Staff bookings may omit email/phone and may book the slot that is
     already running (walk-ins).
 
+    Booking length (shared/booking_rules.py bookingTimeRules): the rule of
+    the local start time sets the end; the rule is snapshotted on the hold
+    and the booking (bookingRule, extendedMinutes) so later rule changes
+    never move existing bookings.
+
     Online bookings follow the location's booking rules
     (shared/booking_rules.py): the chosen table(s) must be one of the
     options the availability response offered that party - one table whose
@@ -102,7 +107,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from shared import availability, booking_rules, guarantee, http, manage_link, marketing
+from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
 from shared import request_guard, tenant, turnstile
 from shared import reservations as r
 from shared import stripe_client as stripe
@@ -116,10 +121,10 @@ _HOLD_FIELDS = {"date", "startTime", "tableIds", "partySize", "turnstileToken"}
 _ONLINE_FIELDS = {
     "date", "startTime", "tableIds", "partySize", "name", "email", "phone",
     "notes", "language", "marketingOptIn", "acceptTerms", "turnstileToken", "holdId",
-    "attribution",
+    "attribution", "marketingConsent",
 }
 _MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn", "turnstileToken", "holdId",
-                                    "attribution"}) | {
+                                    "attribution", "marketingConsent"}) | {
     "source", "notifyGuest",
 }
 # Online booking attempts: (max attempts, window seconds) per client.
@@ -180,6 +185,12 @@ def _create(event, *, staff):
         source = "online"
         if data.get("acceptTerms") is not True:
             raise ValueError("acceptTerms must be true")
+        # Marketing consent: voluntary, never needed for the booking. The
+        # subscriber list (marketing-sync) still reads marketingOptIn = e-mail.
+        ticked = consent.parse_request(data.get("marketingConsent"), email=guest.get("customerEmail"),
+                                       phone=guest.get("customerPhone"),
+                                       legacy_opt_in=guest.get("marketingOptIn"), source="booking")
+        guest["marketingOptIn"] = bool(ticked and consent.EMAIL in ticked[1])
 
     now = r.now_utc()
     booking = {
@@ -197,18 +208,28 @@ def _create(event, *, staff):
             ("email", guest.get("customerEmail"), *CONTACT_LIMIT),
         ], now)
         try:
-            return _book_held(event, ctx, location_id, now, data.get("holdId"), **booking)
+            response = _book_held(event, ctx, location_id, now, data.get("holdId"), **booking)
         except Exception:
             request_guard.refund(counted)
             raise
+        return _with_consent(ctx, location_id, guest, ticked, response)
     counted = _guard_online(event, data, guest, now)
     try:
-        return _book(ctx, location_id, now, staff=False, **booking)
+        response = _book(ctx, location_id, now, staff=False, **booking)
     except Exception:
         # Nothing was booked (taken table, closed day ...): the attempt
         # doesn't count against the guest's phone number and e-mail.
         request_guard.refund(counted)
         raise
+    return _with_consent(ctx, location_id, guest, ticked, response)
+
+
+def _with_consent(ctx, location_id, guest, ticked, response):
+    """The consent log record, once the booking exists (shared/consent.py)."""
+    consent.record_from_form(ctx.tenant, ctx.tenant_id, parsed=ticked, email=guest.get("customerEmail"),
+                             phone=guest.get("customerPhone"), location_id=location_id, source="booking",
+                             ref=consent.ref_from_response(response, "reservationId"))
+    return response
 
 
 def _checked_slot(ctx, location_id, now, *, staff, source, date_str, start_time, table_ids, party_size):
@@ -267,6 +288,8 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "seats": seats,
         "partySize": party_size,
         "layoutVersion": slot["layoutVersion"],
+        "bookingRule": slot["rule"],
+        "extendedMinutes": 0,
         **{k: v for k, v in guest.items() if v is not None},
         "source": source,
         "status": r.RESERVED,
@@ -365,6 +388,9 @@ def _hold(event):
         "seats": seats,
         "partySize": party_size,
         "layoutVersion": slot["layoutVersion"],
+        # The rule of the start time, kept by the booking made from the hold.
+        "bookingRule": slot["rule"],
+        "extendedMinutes": 0,
         "source": "online",
         "status": r.HELD,
         "holdOnly": True,
@@ -406,6 +432,9 @@ def _hold(event):
         "endTime": slot["endTime"],
         "tableIds": table_ids,
         "partySize": party_size,
+        "durationMinutes": slot["durationMinutes"],
+        "extendable": slot["rule"]["extensionAllowed"],
+        "ruleName": slot["rule"].get("name"),
         "cardRequired": guarantee.required(ctx.location, ctx.tenant, party_size),
     })
 

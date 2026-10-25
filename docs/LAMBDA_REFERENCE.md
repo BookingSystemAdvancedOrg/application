@@ -399,7 +399,8 @@ super-user mirrors must use an empty `locationId`.
 
 `date` is a real calendar date in `YYYY-MM-DD`, `startTime` is local 24-hour
 `HH:MM`, and `blocked` is a boolean. For `blocked: true`, the handler derives
-the end time from `bookingDurationHours`. The slot must be in the future,
+the end time from the booking time rule of the start (`bookingTimeRules`,
+else `bookingDurationHours`), like a booking's. The slot must be in the future,
 start on the location's booking grid, remain inside one business-hours
 interval, and map to one unambiguous real interval in the location's IANA
 timezone. Slots at ambiguous/nonexistent local times or crossing a daylight
@@ -1014,7 +1015,7 @@ If a field you need for the message isn't present in the DynamoDB item (and ther
 
 **Authorization:** The caller must have a valid subject and belong to `owner_user` or `super_user`, following the least-privilege group example in the original stub. Missing/malformed direct-invocation claims return `401`; a valid caller outside those groups, including `staff_user`, receives `403`.
 
-The request accepts only `GET` with exactly two query parameters: `locationId` and `contentType`. `locationId` is 1–128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. `contentType` is exactly `image/avif`, `image/jpeg`, `image/png`, or `image/webp` after case normalization. The handler generates `menu-images/locations/<locationId>/menu/<uuid>.<extension>` itself; callers cannot select an arbitrary bucket key or CloudFront distribution. The `menu-images/` prefix matches the CloudFront behavior path and is part of the S3 object key, not merely a public URL prefix.
+The request accepts only `GET` with exactly two query parameters: `locationId` and `contentType`. `locationId` is 1-128 ASCII letters, digits, dots, underscores, or hyphens and must start with a letter or digit. `contentType` is exactly `image/avif`, `image/jpeg`, `image/png`, or `image/webp` after case normalization. The handler generates `menu-images/locations/<locationId>/menu/<uuid>.<extension>` itself; callers cannot select an arbitrary bucket key or CloudFront distribution. The `menu-images/` prefix matches the CloudFront behavior path and is part of the S3 object key, not merely a public URL prefix.
 
 The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 300 seconds, and binds the selected content type. A successful `200` response contains exactly `uploadUrl`, `imageKey`, `expiresIn`, and `requiredHeaders`; `imageKey` is the full generated value (for example, `menu-images/locations/<locationId>/menu/<uuid>.webp`) and must be stored unchanged on the menu item after the upload succeeds. The uploader must send the returned `Content-Type` header with its S3 `PUT`. Malformed input returns `400`, a wrong method returns `405` with `Allow: GET`, and signing failures return a sanitized `503`. All responses include `Cache-Control: no-store` because the URL carries temporary upload authority.
 
@@ -1028,7 +1029,7 @@ Full details: `docs/ORDERS.md`.
 
 ### 22. `payment-intent`
 **Trigger:** API Gateway - `POST /order` - Auth: `NONE`
-**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1–20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, checkoutUrl, statusToken, totalAmount}`. Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
+**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1-20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
 **AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
 
 ### 23. `webhook-payment-intent`
@@ -1042,6 +1043,16 @@ Full details: `docs/ORDERS.md`.
 ### 25. `manage-order`
 **Trigger:** API Gateway - `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` - Auth: `JWT` (owner, staff of the location)
 **Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
+
+### 25a. `print-jobs`
+**Trigger:** order table stream (paid, cancelled; DLQ `print-stream`), Scheduler every 5 minutes (`{"source": "sweep"}`), API Gateway `GET /locations/{locationId}/print`, `GET|POST|PUT|DELETE /locations/{locationId}/print/{proxy+}` - Auth: `JWT` (owner; staff for status, test print and reprint)
+**Purpose:** Kitchen printing (see `docs/ORDERS.md`, Kitchen printer): one auto job per paid order, "MAKULERAD" slip for a printed order that is cancelled, printer settings and printers (secret shown once), "Skriv ut igen", sweep metrics `PrintStuckJobs` / `PrintFailedJobs`.
+**AWS resource access:** print table (read/write, Scan of the `queue` index), order table GetItem, order stream read, tenant-context reads.
+
+### 25b. `print-device`
+**Trigger:** API Gateway `POST|GET|DELETE /print/cloudprnt/{deviceId}` - Auth: `NONE` at the gateway, HTTP Basic with the device secret in the handler
+**Purpose:** Star CloudPRNT: poll, fetch (StarPRNT ticket rendered from the order, job leased 60 s), confirm or report an error (backoff, FAILED after 5 attempts). MAC bound on the first poll; failed logins limited per IP.
+**AWS resource access:** print table Get/Update and its indexes, order table GetItem, request-guard counters, tenant-context reads.
 
 ---
 
@@ -1071,6 +1082,10 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
 **Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
 
+### 30a. `dlq-replay`
+**Trigger:** EventBridge Scheduler (`dlq_replay_interval_minutes`), input `{"queue": "all", "max": 50}`
+**Purpose:** Drains the dead-letter queues (lifecycle, notification and print stream pointers, scheduled invocations) by redelivering each message to the owning Lambda's live alias; deletes it only on success. After 3 failed replays it emails the alerts topic once and parks the message; expired stream pointers are reconciled (catering-lifecycle) or escalated. Scheduled targets must be on the `REPLAYABLE_FUNCTION_ARNS` allow-list.
+
 ---
 
 ### 31. `finance-rollup`
@@ -1093,6 +1108,37 @@ query) go to the alert topic. Design: infrastructure `docs/FINANCE.md`.
 **Also in this area:** `platform-stripe-webhook` `/billing` handles the
 subscription and invoice events (`shared/billing.py`: `PROFILE.billing`,
 the invoice ledger and the day's revenue, ex VAT).
+
+## Statistik
+
+A restaurant's own figures (the admin app's Statistik). Table
+`INSIGHTS_TABLE_NAME`, one row per location and day (`LOCATION#<id> /
+DAY#<date>`), no personal data; row layout and sums in `shared/insights.py`,
+reads and writes in `shared/insights_store.py`. Separate from the finance
+table (the operator's figures never reach a restaurant).
+
+### 32. `insights-rollup`
+**Trigger:** EventBridge Scheduler, nightly (`insights_rollup_schedule`,
+02:30 UTC); `{"from", "to"}` (optionally `tenantId`) by hand; itself near its
+timeout (`{"after", "round"}`).
+**Purpose:** For every served location: a backfill from its creation (at
+most 395 days) when it has no rows yet, otherwise the last 8 days up to
+yesterday plus any missed days. Bookings per start hour and source (kept,
+guests, arrived, no-shows, cancelled, late cancellations, card on file,
+lead time, party size, fees), table minutes booked and open (opening hours
+x the published layout), paid orders per hour (revenue, table/pickup, prep
+time, late), dishes per hour, dish pairs, catering (requests, offers,
+accepted, delivered revenue, reply hours) and website visits per channel.
+Rows are overwritten whole: idempotent.
+
+### 33. `insights`
+**Trigger:** API Gateway `GET /insights` - Auth: `JWT` (owner; staff when the owner allows it)
+**Purpose:** The figures for a period and its compare period (`previous`,
+`year`, `none`), filtered by location (`all` = the tenant's own), service
+(lunch before the location's `lunchUntil`, 15:00 by default) and booking
+source. Days after the last rollup (today) are computed live with the same
+code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
+= `none` answers 403.
 
 ## Quick index
 
@@ -1128,4 +1174,7 @@ the invoice ledger and the day's revenue, ex VAT).
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
+| 30a | `dlq-replay` | EventBridge Scheduler (`dlq_replay_interval_minutes`) | - |
 | 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |
+| 32 | `insights-rollup` | EventBridge Scheduler (nightly), by hand (`{from, to}`) | - |
+| 33 | `insights` | API GW `GET /insights` | JWT (owner, staff without amounts) |

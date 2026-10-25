@@ -7,6 +7,8 @@ tableRules         Per table: who may book it online (party size range,
                    below.
 tableCombinations  Tables the restaurant lets guests book together online,
                    with the party size range the combination is for.
+bookingTimeRules   Booking length per start time, extension and last
+                   seating (see "booking time rules" below).
 
 Online guests always pick their table(s), but only among the options these
 rules allow; staff (phone bookings, walk-ins, moves) may use any free
@@ -20,6 +22,7 @@ violation as an inconsistent record.
 """
 
 import re
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -296,3 +299,234 @@ def online_options(free, party_size, rules, combinations):
                 options.append({"tableIds": list(combination["tableIds"]), "seats": seats})
     options.sort(key=lambda option: (option["seats"], len(option["tableIds"]), option["tableIds"]))
     return options
+
+
+# --- booking time rules (issue 3) ----------------------------------------------------
+#
+# bookingTimeRules = {
+#   defaultMinutes, extension: {allowed, maxMinutes}, lastSeatingMinutes,
+#   windows: [{id, name, weekdays, startTime, endTime, dateFrom?, dateTo?,
+#              durationMinutes, extension: {allowed, maxMinutes}, priority}]}
+#
+# The rule of a booking is chosen by its LOCAL start time: the windows whose
+# weekday, date range and [startTime, endTime) contain it; a window with a
+# date range beats a recurring one, then the higher priority wins. Two
+# windows that could tie are refused on save, so resolution is deterministic.
+# A booking starting before a window keeps its own rule when it runs into
+# the window; only an extension may not run into a window without extension.
+# Without bookingTimeRules the location keeps bookingDurationHours and no
+# extension (locations from before this feature).
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+TIME_STEP = 15  # minutes: durations, window times and extensions
+MIN_MINUTES = 15
+MAX_MINUTES = 480
+MAX_EXTENSION_MINUTES = 240
+MAX_LAST_SEATING_MINUTES = 480
+DEFAULT_LAST_SEATING_MINUTES = 120  # last start this long before closing
+MAX_WINDOWS = 20
+MAX_PRIORITY = 100
+WINDOW_NAME_MAX = 40
+_WINDOW_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+_TIME_RULE_FIELDS = frozenset({"defaultMinutes", "extension", "lastSeatingMinutes", "windows"})
+_WINDOW_FIELDS = frozenset({"id", "name", "weekdays", "startTime", "endTime", "dateFrom",
+                            "dateTo", "durationMinutes", "extension", "priority"})
+
+
+def minute_of_day(value):
+    return int(value[:2]) * 60 + int(value[3:])
+
+
+def _minutes(value, field, low, high):
+    number = whole_number(value, field, low, high)
+    if number % TIME_STEP:
+        raise ValueError(f"{field} must be in steps of {TIME_STEP} minutes")
+    return number
+
+
+def _extension(value, field):
+    if not isinstance(value, dict) or not set(value) <= {"allowed", "maxMinutes"} \
+            or not isinstance(value.get("allowed"), bool):
+        raise ValueError(f"{field} needs allowed (true or false) and maxMinutes")
+    if not value["allowed"]:
+        return {"allowed": False, "maxMinutes": 0}
+    return {"allowed": True, "maxMinutes": _minutes(
+        value.get("maxMinutes"), f"{field} maxMinutes", TIME_STEP, MAX_EXTENSION_MINUTES)}
+
+
+def _window_time(value, field):
+    if not isinstance(value, str) or not _TIME.fullmatch(value):
+        raise ValueError(f"{field} must use 24-hour HH:MM")
+    if minute_of_day(value) % TIME_STEP:
+        raise ValueError(f"{field} must be in steps of {TIME_STEP} minutes")
+    return value
+
+
+def _window_date(value, field):
+    if not isinstance(value, str) or not _DATE.fullmatch(value):
+        raise ValueError(f"{field} must use YYYY-MM-DD")
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{field} must be a real calendar date") from None
+    return value
+
+
+def _window(entry, index):
+    field = f"bookingTimeRules windows[{index}]"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{field} must be an object")
+    unknown = sorted(set(entry) - _WINDOW_FIELDS)
+    if unknown:
+        raise ValueError(f"{field} has unsupported fields: {', '.join(unknown)}")
+    window_id = entry.get("id")
+    if window_id is None:
+        window_id = uuid.uuid4().hex
+    elif not isinstance(window_id, str) or not _WINDOW_ID.fullmatch(window_id):
+        raise ValueError(f"{field} id must be 1-64 letters, digits, - or _")
+    name = entry.get("name")
+    if not isinstance(name, str) or not " ".join(name.split()):
+        raise ValueError(f"{field} needs a name")
+    name = " ".join(name.split())
+    if len(name) > WINDOW_NAME_MAX:
+        raise ValueError(f"{field} name must be at most {WINDOW_NAME_MAX} characters")
+    weekdays = entry.get("weekdays")
+    if not isinstance(weekdays, list) or not weekdays or any(d not in WEEKDAYS for d in weekdays) \
+            or len(set(weekdays)) != len(weekdays):
+        raise ValueError(f"{field} weekdays must be distinct weekday names, at least one")
+    start = _window_time(entry.get("startTime"), f"{field} startTime")
+    end = _window_time(entry.get("endTime"), f"{field} endTime")
+    if start >= end:
+        raise ValueError(f"{field} startTime must be before endTime (a window can't cross midnight)")
+    window = {
+        "id": window_id,
+        "name": name,
+        "weekdays": [d for d in WEEKDAYS if d in weekdays],
+        "startTime": start,
+        "endTime": end,
+        "durationMinutes": _minutes(entry.get("durationMinutes"), f"{field} durationMinutes",
+                                    MIN_MINUTES, MAX_MINUTES),
+        "extension": _extension(entry.get("extension"), f"{field} extension"),
+        "priority": whole_number(entry.get("priority", 0), f"{field} priority", 0, MAX_PRIORITY),
+    }
+    for key in ("dateFrom", "dateTo"):
+        if entry.get(key) is not None:
+            window[key] = _window_date(entry[key], f"{field} {key}")
+    if window.get("dateFrom") and window.get("dateTo") and window["dateFrom"] > window["dateTo"]:
+        raise ValueError(f"{field} dateFrom must not be after dateTo")
+    return window
+
+
+def _dated(window):
+    return "dateFrom" in window or "dateTo" in window
+
+
+def windows_overlap(first, second):
+    """True when one start time could fall in both windows."""
+    return (
+        bool(set(first["weekdays"]) & set(second["weekdays"]))
+        and first["startTime"] < second["endTime"] and second["startTime"] < first["endTime"]
+        and first.get("dateFrom", "0000-01-01") <= second.get("dateTo", "9999-12-31")
+        and second.get("dateFrom", "0000-01-01") <= first.get("dateTo", "9999-12-31")
+    )
+
+
+def validate_booking_time_rules(value):
+    """The validated bookingTimeRules, or None (the location then keeps its
+    bookingDurationHours without extension). A window without id gets one."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("bookingTimeRules must be an object")
+    unknown = sorted(set(value) - _TIME_RULE_FIELDS)
+    if unknown:
+        raise ValueError(f"bookingTimeRules has unsupported fields: {', '.join(unknown)}")
+    windows = value.get("windows") or []
+    if not isinstance(windows, list):
+        raise ValueError("bookingTimeRules windows must be a list")
+    if len(windows) > MAX_WINDOWS:
+        raise ValueError(f"bookingTimeRules has more than {MAX_WINDOWS} windows")
+    windows = [_window(entry, index) for index, entry in enumerate(windows)]
+    if len({w["id"] for w in windows}) != len(windows):
+        raise ValueError("bookingTimeRules window ids must be unique")
+    for i, first in enumerate(windows):
+        for second in windows[i + 1:]:
+            if (windows_overlap(first, second) and _dated(first) == _dated(second)
+                    and first["priority"] == second["priority"]):
+                raise ValueError(
+                    f"bookingTimeRules windows {first['name']} and {second['name']} overlap "
+                    "with the same priority; give one a higher priority"
+                )
+    return {
+        "defaultMinutes": _minutes(value.get("defaultMinutes"), "bookingTimeRules defaultMinutes",
+                                   MIN_MINUTES, MAX_MINUTES),
+        "extension": _extension(value.get("extension"), "bookingTimeRules extension"),
+        "lastSeatingMinutes": _minutes(value.get("lastSeatingMinutes", DEFAULT_LAST_SEATING_MINUTES),
+                                       "bookingTimeRules lastSeatingMinutes", 0,
+                                       MAX_LAST_SEATING_MINUTES),
+        "windows": windows,
+    }
+
+
+def _window_applies(window, local_date, minute):
+    day = local_date.isoformat()
+    return (
+        WEEKDAYS[local_date.weekday()] in window["weekdays"]
+        and minute_of_day(window["startTime"]) <= minute < minute_of_day(window["endTime"])
+        and window.get("dateFrom", day) <= day <= window.get("dateTo", day)
+    )
+
+
+def day_windows(rules, local_date):
+    """The windows that apply on one date (any time of day)."""
+    return [w for w in (rules or {}).get("windows") or ()
+            if _window_applies(w, local_date, minute_of_day(w["startTime"]))]
+
+
+def resolve_booking_rule(rules, fallback_minutes, local_date, start_minute):
+    """The rule snapshot for a booking starting at ``start_minute`` (local
+    minute of day) on ``local_date``: {windowId, name, durationMinutes,
+    extensionAllowed, maxExtensionMinutes}; windowId and name only for a
+    window. ``fallback_minutes`` (bookingDurationHours * 60) applies without
+    bookingTimeRules."""
+    if not rules:
+        return {"durationMinutes": int(fallback_minutes), "extensionAllowed": False,
+                "maxExtensionMinutes": 0}
+    matching = [w for w in rules["windows"] if _window_applies(w, local_date, start_minute)]
+    if matching:
+        window = max(matching, key=lambda w: (_dated(w), w["priority"]))
+        return {"windowId": window["id"], "name": window["name"],
+                "durationMinutes": window["durationMinutes"],
+                "extensionAllowed": window["extension"]["allowed"],
+                "maxExtensionMinutes": window["extension"]["maxMinutes"]}
+    return {"durationMinutes": rules["defaultMinutes"],
+            "extensionAllowed": rules["extension"]["allowed"],
+            "maxExtensionMinutes": rules["extension"]["maxMinutes"]}
+
+
+def last_seating_minutes(rules):
+    return (rules or {}).get("lastSeatingMinutes", DEFAULT_LAST_SEATING_MINUTES)
+
+
+def max_duration_minutes(rules, fallback_minutes):
+    """The longest booking length any start can get."""
+    if not rules:
+        return int(fallback_minutes)
+    return max([rules["defaultMinutes"]] + [w["durationMinutes"] for w in rules["windows"]])
+
+
+def shortest_duration_minutes(rules, fallback_minutes):
+    if not rules:
+        return int(fallback_minutes)
+    return min([rules["defaultMinutes"]] + [w["durationMinutes"] for w in rules["windows"]])
+
+
+def blocking_window(rules, local_date, from_minute, to_minute):
+    """A window without extension that the added time [from, to) of an
+    extension would run into, or None."""
+    for window in day_windows(rules, local_date):
+        if (not window["extension"]["allowed"]
+                and from_minute < minute_of_day(window["endTime"])
+                and minute_of_day(window["startTime"]) < to_minute):
+            return window
+    return None

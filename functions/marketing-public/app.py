@@ -15,6 +15,8 @@ TRIGGER:
     POST /m/code                {locationId, code} -> the code's terms, so the
                                 order page can show the discount before paying
     GET|POST /m/s/{token}       confirm a welcome-offer sign-up (double opt-in)
+    GET|POST /m/w/{token}       withdraw marketing consent (signed link that
+                                expires, shared/consent.py; GET shows a button)
 
 PURPOSE:
     Visits: the restaurant site reports page views without cookies, browser
@@ -34,9 +36,10 @@ ENV_VARS:
     MARKETING_TABLE_NAME, MARKETING_LINK_KEY_SECRET_ARN, MARKETING_LINK_BASE,
     NO_REPLY_EMAIL_ADDRESS, MARKETING_CONFIGURATION_SET, CUSTOMER_SITE_URL,
     TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
-    MAIL_OUTBOX_BUCKET_NAME (dev only)
+    MAIL_OUTBOX_BUCKET_NAME (dev only), CONSENT_TABLE_NAME (consent log)
 
 AWS RESOURCE ACCESS:
+    Query/PutItem on the consent table;
     GetItem/PutItem/UpdateItem/DeleteItem on the marketing table; tenant-context
     read policy; GetSecretValue on the marketing link key and the Turnstile
     secret; UpdateItem on the request-guard table; ses:SendRawEmail from the
@@ -53,7 +56,7 @@ from datetime import datetime, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, marketing as m, marketing_mail, request_guard, site, tenant, turnstile
+from shared import consent, dynamo, http, marketing as m, marketing_mail, request_guard, site, tenant, turnstile
 from shared import marketing_offer as offer
 
 logger = logging.getLogger()
@@ -138,6 +141,8 @@ def _campaign_allowed(tenant_id, day, key):
 # --- welcome offer ----------------------------------------------------------------------
 
 def _live_offer(ctx):
+    if not marketing_mail.sender_identity(ctx.tenant):
+        return None  # marketing mail needs the legal sender in the footer: no card, no sign-up
     item = _table().get_item(Key=offer.offer_key(ctx.tenant_id)).get("Item")
     today = m.local_day(tz=ctx.location.get("timezone"))
     return item if offer.is_live(item, today) else None
@@ -175,13 +180,12 @@ def _mail(ctx, sid, email, name, template):
     """One email from the restaurant (code, or why there is none)."""
     restaurant = ctx.tenant.get("name") or "Restaurangen"
     branding = ctx.tenant.get("branding") or {}
-    legal = ctx.tenant.get("legal") or {}
     unsubscribe_url = _signed_link("m/u", {"k": "u", "t": ctx.tenant_id, "s": sid, "c": None})
     subject, text, html_body = m.render_email(
         template, tenant_row={"branding": {k: branding.get(k) for k in ("primaryColor", "logoUrl") if branding.get(k)}},
         restaurant=restaurant, values={"förnamn": m.first_name(name) or "där", "restaurang": restaurant},
         menu_items={}, site_url=None, link_for=lambda i, url: url, unsubscribe_url=unsubscribe_url,
-        postal_address=legal.get("address") if isinstance(legal.get("address"), str) else "")
+        postal_address=marketing_mail.sender_identity(ctx.tenant))
     message_id = marketing_mail.send(
         to=email, subject=subject, text=text, html_body=html_body, sender=marketing_mail.from_address(restaurant),
         reply_to=ctx.tenant.get("replyToEmail") or ctx.tenant.get("contactEmail"),
@@ -361,7 +365,9 @@ def _confirm(token, method):
                      "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fff;border:0;"
                      "border-radius:6px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer'>"
                      "Ja, bekräfta</button></form>")
-    m.confirm_subscriber(table, tenant_id, sid, via="email_link")
+    if m.confirm_subscriber(table, tenant_id, sid, via="email_link") and row.get("email"):
+        _log_consent("grant", tenant_id, row["email"], restaurant=row.get("restaurantName"),
+                     location_id=next(iter(row.get("locations") or []), None))
     return _html(200, "Bekräftad", f"<h1 style='font-size:20px;margin:0 0 8px'>Tack, nu är du med!</h1>"
                                     f"<p style='margin:0'>Du får erbjudanden från {restaurant}. "
                                     "Varje mejl har en länk för att avsluta.</p>")
@@ -468,12 +474,94 @@ def _unsubscribe(event, token, method):
                                            ":via": "email_link"})
             m.bump_campaign(table, tenant_id, campaign_id, unsubscribed=1)
             logger.info(json.dumps({"marketing": "unsubscribed", "tenantId": tenant_id}))
+            if row.get("email"):
+                _log_consent("withdraw", tenant_id, row["email"], source="unsubscribe_link")
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
     return _html(200, "Avregistrerad",
                  f"<h1 style='font-size:20px;margin:0 0 8px'>Klart, du är avregistrerad</h1>"
                  f"<p style='margin:0'>Du får inga fler utskick från {restaurant}.</p>")
+
+
+# --- consent log (shared/consent.py) ----------------------------------------------------
+
+def _log_consent(action, tenant_id, email, *, restaurant=None, location_id=None, source=None):
+    """A grant (welcome offer confirmed) or a withdrawal (unsubscribe link)
+    in the consent log. Never fails the page: the subscriber row is already
+    updated and the failure is logged without the address."""
+    name = consent.table_name()
+    if not name:
+        return
+    try:
+        table = dynamo.table(name)
+        if action == "grant":
+            consent.grant(table, tenant_id=tenant_id, restaurant=restaurant, version=CONSENT_VERSION,
+                          channels=[consent.EMAIL], email=email, location_id=location_id, source="welcome_offer")
+        else:
+            consent.withdraw(table, tenant_id=tenant_id, channel=consent.EMAIL, identifier=email, source=source)
+    except Exception:  # noqa: BLE001
+        logger.exception("consent log write failed (%s)", action)
+
+
+_CHANNEL_NAMES = {consent.EMAIL: "e-post", consent.SMS: "sms"}
+
+
+def _withdraw_page(token, method):
+    """The signed, expiring withdrawal link (consent.withdraw_link): GET shows
+    what the guest has agreed to and a button (mail scanners follow links,
+    they don't press buttons), POST withdraws every channel in the link.
+    Marketing only: booking and order messages are not affected."""
+    found = consent.read_token(token)
+    name = consent.table_name()
+    if not found or not name:
+        return _invalid_link()
+    tenant_id, subjects = found
+    table = dynamo.table(name)
+    profile = tenant.get_tenant(tenant_id)
+    restaurant = html.escape((profile or {}).get("name") or "restaurangen")
+    granted = [c for c, s in subjects.items() if consent.state(table, tenant_id, c, subject_id=s) == "granted"]
+    if not granted:
+        return _html(200, "Inga utskick",
+                     "<h1 style='font-size:20px;margin:0 0 8px'>Du får inga erbjudanden</h1>"
+                     f"<p style='margin:0'>Du har inget samtycke till erbjudanden från {restaurant}. "
+                     "Bekräftelser och kvitton på bokningar och beställningar skickas som vanligt.</p>")
+    channels = " och ".join(_CHANNEL_NAMES[c] for c in granted)
+    if method == "GET":
+        return _html(200, "Återkalla samtycke",
+                     "<h1 style='font-size:20px;margin:0 0 8px'>Sluta få erbjudanden?</h1>"
+                     f"<p style='margin:0 0 20px'>Du får i dag erbjudanden och nyheter från {restaurant} via "
+                     f"{channels}. Om du återkallar ditt samtycke slutar vi skicka dem. Bekräftelser och kvitton "
+                     "på bokningar och beställningar påverkas inte.</p>"
+                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fff;border:0;"
+                     "border-radius:6px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer'>"
+                     "Återkalla samtycke</button></form>")
+    for channel in granted:
+        consent.withdraw(table, tenant_id=tenant_id, channel=channel, subject_id=subjects[channel],
+                         source="withdraw_page")
+        if channel == consent.EMAIL:
+            email = next((r.get("identifier") for r in consent.history(table, tenant_id, subjects[channel])
+                          if r.get("identifier")), None)
+            if email:
+                _unsubscribe_row(tenant_id, email, via="withdraw_page")
+    logger.info(json.dumps({"consent": "withdrawn", "tenantId": tenant_id, "channels": granted}))
+    return _html(200, "Samtycket återkallat",
+                 "<h1 style='font-size:20px;margin:0 0 8px'>Klart, samtycket är återkallat</h1>"
+                 f"<p style='margin:0'>Du får inga fler erbjudanden från {restaurant} via {channels}.</p>")
+
+
+def _unsubscribe_row(tenant_id, email, *, via):
+    """Keeps the subscriber list in step with the consent log."""
+    try:
+        _table().update_item(
+            Key=m.sub_key(tenant_id, m.subscriber_id(tenant_id, email)),
+            UpdateExpression="SET #st = :u, unsubscribedAt = :now, unsubscribedVia = :via",
+            ConditionExpression="#st IN (:s, :p)", ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={":u": "unsubscribed", ":s": "subscribed", ":p": "pending",
+                                       ":now": m.now_iso(), ":via": via})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def handler(event, context):
@@ -489,6 +577,8 @@ def handler(event, context):
             return _offer_public(event)
         if route == "/m/s/{token}" and method in ("GET", "POST"):
             return _confirm((event.get("pathParameters") or {}).get("token"), method)
+        if route == "/m/w/{token}" and method in ("GET", "POST"):
+            return _withdraw_page((event.get("pathParameters") or {}).get("token"), method)
         if route == "/m/signup" and method == "POST":
             return _signup(event)
         if route == "/m/code" and method == "POST":

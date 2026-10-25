@@ -21,10 +21,16 @@ PURPOSE:
       4. The order is written "pending_payment" (with a pointer and a TTL
          backstop), then a Stripe Checkout Session is created on the
          restaurant's connected account and its id stored on the order.
+         `embedded: true` (the site's own payment step): the session is
+         ui_mode "elements" and the site confirms it with Stripe's Payment
+         Element; without it, hosted Checkout (sites from before the
+         embedded step).
 
-    Response 201: {orderId, checkoutUrl, statusToken, totalAmount}. The site
-    keeps statusToken (it opens /bestallning/<locationId>/<orderId> after
-    payment) and sends the guest to checkoutUrl. The order becomes
+    Response 201: {orderId, statusToken, totalAmount} plus checkoutUrl
+    (hosted) or {clientSecret, stripeAccount} (embedded). The site keeps
+    statusToken (it opens /bestallning/<locationId>/<orderId> after
+    payment) and sends the guest to checkoutUrl, or shows the Payment
+    Element for clientSecret on the restaurant's account. The order becomes
     "confirmed" when Stripe reports the payment (webhook-payment-intent, or
     the status page asking get-order).
 
@@ -49,7 +55,8 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, manage_link, marketing, order_payments, request_guard, site
+from shared import consent, dynamo, http, manage_link, marketing, order_payments, payment_domains, request_guard
+from shared import site
 from shared import marketing_offer as offer
 from shared import tenant, turnstile
 from shared import orders as o
@@ -61,7 +68,8 @@ logger.setLevel(logging.INFO)
 
 _PATH = "/order"
 _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email", "notes",
-           "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn"}
+           "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn",
+           "embedded", "marketingConsent"}
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 _NOTES_MAX = 300
@@ -111,17 +119,26 @@ def _create(event):
     opt_in = data.get("marketingOptIn", False)
     if not isinstance(opt_in, bool):
         raise ValueError("marketingOptIn must be true or false")
-    guest["orderMarketingOptIn"] = opt_in
+    # Marketing consent: voluntary, never needed for the order (shared/consent.py).
+    ticked = consent.parse_request(data.get("marketingConsent"), email=guest.get("customerEmail"),
+                                   phone=guest.get("customerPhone"), legacy_opt_in=opt_in, source="order")
+    guest["orderMarketingOptIn"] = bool(ticked and consent.EMAIL in ticked[1])
     if data.get("discountCode") not in (None, "") and not isinstance(data.get("discountCode"), str):
         raise ValueError("discountCode must be text")
+    if not isinstance(data.get("embedded", False), bool):
+        raise ValueError("embedded must be true or false")
     now = o.now_utc()
 
     counted = _guard(event, data, guest, now)
     try:
-        return _place(ctx, location_id, mode, data, wanted, guest, now)
+        response = _place(ctx, location_id, mode, data, wanted, guest, now)
     except Exception:
         request_guard.refund(counted)
         raise
+    consent.record_from_form(ctx.tenant, ctx.tenant_id, parsed=ticked, email=guest.get("customerEmail"),
+                             phone=guest.get("customerPhone"), location_id=location_id, source="order",
+                             ref=consent.ref_from_response(response, "orderId"))
+    return response
 
 
 def _place(ctx, location_id, mode, data, wanted, guest, now):
@@ -167,7 +184,8 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
         total = discounted
     try:
         return _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_date, lines, total,
-                                   discount, table_id, table_label, base, slug, order_id, now)
+                                   discount, table_id, table_label, base, slug, order_id, now,
+                                   embedded=data.get("embedded") is True)
     except Exception:
         if discount:
             offer.release_code(dynamo.table(marketing_table()), ctx.tenant_id, discount["code"], order_id)
@@ -209,7 +227,7 @@ def _hold_released(location_id, order_id, email, now):
 
 
 def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_date, lines, total, discount,
-                        table_id, table_label, base, slug, order_id, now):
+                        table_id, table_label, base, slug, order_id, now, *, embedded=False):
     date_str = local_date.isoformat()
     item = {
         **o.order_key(location_id, date_str, order_id),
@@ -251,10 +269,13 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
                  "ConditionExpression": "attribute_not_exists(PK)"}},
     ])
 
+    if embedded:
+        payment_domains.ensure(account, lambda: site.hosts(ctx.tenant_id, ctx.tenant))
     status_page = site.page(base, slug, f"/bestallning/{location_id}/{order_id}")
     cancel_page = site.page(base, slug, "/bestall") + ("&" if slug else "?") + f"avbruten={order_id}"
     try:
-        session = order_payments.create_checkout(item, account, status_page, cancel_page, now)
+        session = order_payments.create_checkout(item, account, status_page, cancel_page, now,
+                                                 embedded=embedded)
     except stripe.StripeError as exc:
         logger.error(json.dumps({"checkout": "rejected", "orderId": order_id, "code": exc.code,
                                  "message": str(exc)}))
@@ -268,9 +289,10 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
     )
     logger.info(json.dumps({"order": "created", "orderId": order_id, "tenantId": ctx.tenant_id,
                             "mode": mode, "total": total}))
-    return http.respond(201, {"orderId": order_id, "locationId": location_id,
-                              "checkoutUrl": session["url"], "statusToken": token,
-                              "totalAmount": total})
+    payment = ({"clientSecret": session["client_secret"], "stripeAccount": account}
+               if embedded else {"checkoutUrl": session["url"]})
+    return http.respond(201, {"orderId": order_id, "locationId": location_id, **payment,
+                              "statusToken": token, "totalAmount": total})
 
 
 def _refused(event, status, error):

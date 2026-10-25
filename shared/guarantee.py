@@ -171,6 +171,15 @@ def late_cancel_fee(item, now):
     return fee if now >= cutoff else 0
 
 
+def free_cancel_until(item):
+    """ISO UTC instant until which cancelling is free (None = no late-cancel fee)."""
+    snap = item.get("guarantee") if isinstance(item.get("guarantee"), dict) else {}
+    if not int(snap.get("lateCancelFee") or 0) or not int(snap.get("cancelCutoffHours") or 0):
+        return None
+    cutoff = r.parse_iso(item["bookedFor"]) - timedelta(hours=int(snap.get("cancelCutoffHours") or 0))
+    return r.iso(cutoff)
+
+
 def no_show_fee(item):
     if not is_guaranteed(item):
         return 0

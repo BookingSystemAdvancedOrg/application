@@ -5,6 +5,7 @@ lifecycle (company invoice, expiry timers), the Stripe webhook and the
 notifications. DynamoDB, S3 and Secrets Manager are moto; Stripe, SES, SNS
 and EventBridge Scheduler are recording fakes."""
 
+import base64
 import hashlib
 import hmac
 import importlib.util
@@ -20,7 +21,7 @@ import pytest
 from boto3.dynamodb.types import TypeSerializer
 from moto import mock_aws
 
-from shared import bankid, catering as c, catering_stripe, manage_link, stripe_client
+from shared import bankid, catering as c, catering_stripe, manage_link, payment_domains, stripe_client
 from shared import dynamo as shared_dynamo
 from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_A2, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE, create_tables,
@@ -32,6 +33,7 @@ REQ_TABLE = "test-catering-requests"
 HIST_TABLE = "test-catering-history"
 TIERS_TABLE = "test-catering-tiers"
 MENU_TABLE = "test-menu"
+CATERING_MENU_TABLE = "test-catering-menu"
 BUCKET = "test-catering-docs"
 NOW = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
 DAY = "2026-10-20"
@@ -80,6 +82,7 @@ class FakeStripe:
     def __init__(self):
         self.calls = []
         self.invoice_status = "open"
+        self.session_status = "open"
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -91,7 +94,15 @@ class FakeStripe:
         if path == "/v1/coupons":
             return {"id": "co_1"}
         if path == "/v1/checkout/sessions":
-            return {"id": "cs_cat_1", "url": "https://checkout.stripe.com/c/cs_cat_1"}
+            n = sum(1 for x in self.calls if x["path"] == "/v1/checkout/sessions")
+            return {"id": f"cs_cat_{n}", "url": f"https://checkout.stripe.com/c/cs_cat_{n}",
+                    "client_secret": f"cs_cat_{n}_secret_x"}
+        if path.startswith("/v1/checkout/sessions/") and path.endswith("/expire"):
+            if self.session_status != "open":
+                raise stripe_client.StripeError(400, {"code": "checkout_session_not_open"})
+            return {"id": path.split("/")[4], "status": "expired"}
+        if path.startswith("/v1/checkout/sessions/"):
+            return {"id": path.split("/")[4], "status": self.session_status}
         if path == "/v1/customers":
             return {"id": "cus_1"}
         if path == "/v1/invoices":
@@ -107,6 +118,8 @@ class FakeStripe:
             return {"id": "in_1", "status": self.invoice_status, "payment_intent": "pi_inv"}
         if path == "/v1/refunds":
             return {"id": "re_1"}
+        if path == "/v1/payment_method_domains":
+            return {"data": []} if method == "GET" else {"id": "pmd_1"}
         raise AssertionError(path)
 
 
@@ -133,10 +146,12 @@ def env(monkeypatch):
         "ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "t", "AWS_SECRET_ACCESS_KEY": "t", "AWS_SESSION_TOKEN": "t",
         "AWS_DEFAULT_REGION": REGION, "CATERING_REQUESTS_TABLE_NAME": REQ_TABLE,
         "CATERING_REQUEST_HISTORY_TABLE_NAME": HIST_TABLE, "CATERING_DISCOUNT_TIERS_TABLE_NAME": TIERS_TABLE,
-        "MENU_TABLE_NAME": MENU_TABLE, "CATERING_DOCUMENTS_BUCKET_NAME": BUCKET, "USER_TABLE_NAME": "test-user",
+        "MENU_TABLE_NAME": MENU_TABLE, "CATERING_MENU_TABLE_NAME": CATERING_MENU_TABLE, "CATERING_DOCUMENTS_BUCKET_NAME": BUCKET, "USER_TABLE_NAME": "test-user",
         "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net", "ADMIN_DASHBOARD_URL": "https://admin.example.se",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "SCHEDULE_GROUP_NAME": "dev-catering",
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::1:role/sched", "SCHEDULER_DLQ_ARN": "arn:aws:sqs:x:1:dlq",
+        "DOCUMENT_LOCK_MODE": "GOVERNANCE", "DOCUMENT_LOCK_DAYS": "1",
+        "SIGNING_WEBHOOK_URL": "https://api.example.se/webhooks/signing/catering",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
@@ -147,6 +162,7 @@ def env(monkeypatch):
         c.reset_cache()
         bankid.reset_cache()
         manage_link.reset_cache()
+        payment_domains.reset_cache()
         catering_stripe._tax_cache.clear()
         sm = boto3.client("secretsmanager", region_name=REGION)
         monkeypatch.setenv("LINK_SIGNING_KEY_SECRET_ARN", sm.create_secret(Name="cat-link", SecretString="c" * 64)["ARN"])
@@ -156,7 +172,7 @@ def env(monkeypatch):
                            sm.create_secret(Name="signing", SecretString=json.dumps({"provider": "simulator"}))["ARN"])
         monkeypatch.setenv("CATERING_STRIPE_WEBHOOK_SECRET_ARN", sm.create_secret(Name="whsec", SecretString=WHSEC)["ARN"])
         res = boto3.resource("dynamodb", region_name=REGION)
-        for name in (REQ_TABLE, HIST_TABLE, TIERS_TABLE, MENU_TABLE):
+        for name in (REQ_TABLE, HIST_TABLE, TIERS_TABLE, MENU_TABLE, CATERING_MENU_TABLE):
             _table(res, name)
         boto3.client("s3", region_name=REGION).create_bucket(
             Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION}, ObjectLockEnabledForBucket=True)
@@ -180,11 +196,26 @@ def env(monkeypatch):
         fake = FakeStripe()
         monkeypatch.setattr(stripe_client, "request", fake)
         monkeypatch.setattr(c, "now_utc", lambda: NOW)
+        distance = {"km": 10.0}
+        monkeypatch.setattr(c.geo, "distance_km", lambda origin, destination, *a: distance["km"])
+        monkeypatch.setattr(c.geo, "position", lambda text, store=False: None if "okänd" in text else [18.07, 59.31])
         mods = {name: load(f"catering-{name}", f"cat_{name.replace('-', '_')}") for name in
-                ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle")}
+                ("settings", "discount-tiers", "requests", "offer", "customer", "stripe-webhook", "lifecycle",
+                 "document", "signing-webhook")}
+        # The PDF: catering-document's real handler and S3 write; only WeasyPrint is replaced.
+        mods["document"].render_pdf = lambda page: b"%PDF-1.7 " + page.encode("utf-8")
+        import base64 as _b64
+
+        def render(ctx, item, version, document):
+            out = mods["document"].handler({"tenantId": ctx.tenant_id, "requestId": item["requestId"],
+                                            "version": version, "document": c.plain(document),
+                                            "restaurant": {"name": "Södermalm"}}, None)
+            return {"key": out["key"], "versionId": out["versionId"], "sha256": out["sha256"],
+                    "bytes": _b64.b64decode(out["pdf"])}
+        mods["offer"]._render_pdf = render
         sched = FakeClient()
         mods["lifecycle"]._clients["scheduler"] = sched
-        yield SimpleNamespace(m=mods, res=res, stripe=fake, sched=sched, monkeypatch=monkeypatch)
+        yield SimpleNamespace(m=mods, res=res, stripe=fake, sched=sched, monkeypatch=monkeypatch, distance=distance)
         shared_dynamo._resource = None
         shared_dynamo._client = None
         shared_tenant.reset_caches()
@@ -237,10 +268,18 @@ OFFER = {"lines": [{"name": "Laxtallrik", "unitPrice": 140, "quantity": 20, "men
          "discountPercent": 5, "deliveryFee": 395, "message": "Välkomna!"}
 
 
-def sent_offer(env, **extra):
+def restaurant_signs(env, rid):
+    assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "pending"
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+
+
+def sent_offer(env, sign=True, **extra):
     created = body_of(create(env, **extra))
     rid = created["requestId"]
     assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)["statusCode"] == 200
+    if sign:
+        restaurant_signs(env, rid)
     return rid, created["token"]
 
 
@@ -323,7 +362,8 @@ def test_request_is_priced_on_the_server(env):
 
 @pytest.mark.parametrize("change, status, error", [
     ({"deliveryDate": "2026-10-04"}, 409, "catering_too_soon"),
-    ({"items": [{"menuItemId": "lax", "quantity": 5}]}, 400, "at least 10 portions"),
+    ({"guests": 10}, 400, "at least 15 guests"),
+    ({"guests": None}, 400, "guests is required"),
     ({"items": [{"menuItemId": "vin", "quantity": 20}]}, 400, "menu_item_unavailable"),
     ({"items": [{"menuItemId": "old", "quantity": 20}]}, 400, "menu_item_unavailable"),
     ({"customerType": "company"}, 400, "orgNumber is required"),
@@ -337,10 +377,14 @@ def test_request_rules(env, change, status, error):
 
 
 def test_company_request_and_pickup(env):
+    no_signatory = create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234")
+    assert body_of(no_signatory) == {"error": "signatoryAuthority must be true"}
     body = body_of(create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234",
-                          invoiceReference="Kalle", fulfilment="pickup", deliveryAddress=None))
+                          invoiceReference="Kalle", fulfilment="pickup", deliveryAddress=None,
+                          signatoryName="Karl Ek", signatoryRole="VD", signatoryAuthority=True))
     item = c.load(LOC_A, body["requestId"])
     assert item["orgNumber"] == "556000-1234" and item["request"]["deliveryFee"] == 0
+    assert item["signatory"] == {"name": "Karl Ek", "role": "VD", "authorityConfirmed": True}
     assert "deliveryAddress" not in item
 
 
@@ -373,13 +417,19 @@ def test_send_offer_versions_and_capacity(env):
     assert sent["status"] == "offer_sent" and sent["currentOfferVersion"] == 1 and "draft" not in sent
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 65
     item = c.load(LOC_A, rid)
-    assert item["notice"]["type"] == "catering_offer_sent" and len(item["offer"]["documentHash"]) == 64
+    # the guest hears about it only once the restaurant has signed
+    assert item["notice"]["type"] == "catering_request_received" and len(item["offer"]["documentHash"]) == 64
+    assert item["signing"]["pdfKey"] == f"{TENANT_A}/offers/{rid}/v0001.pdf" and len(item["signing"]["pdfSha256"]) == 64
+    restaurant_signs(env, rid)
+    item = c.load(LOC_A, rid)
+    assert item["notice"]["type"] == "catering_offer_sent" and item["restaurantSignedAt"]
     smaller = {**OFFER, "lines": [{"name": "Laxtallrik", "unitPrice": 140, "quantity": 20, "menuItemId": "lax"}]}
     assert body_of(staff(env, "POST", "/offer/send", body=smaller, request_id=rid))["currentOfferVersion"] == 2
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 80
     view = body_of(staff(env, "GET", request_id=rid))
     assert [o["version"] for o in view["offers"]] == [1, 2]
-    assert [h["action"] for h in view["history"]][:3] == ["offer_sent", "offer_sent", "requested"]
+    assert [h["action"] for h in view["history"]][:3] == ["offer_sent", "signed_restaurant", "signing_started_restaurant"]
+    assert "restaurant" not in view["signing"] and view["signing"]["offerVersion"] == 2
 
 
 def test_offer_capacity_full_and_validation(env):
@@ -426,28 +476,44 @@ def test_bankid_signing_with_the_simulator(env):
     done = body_of(guest(env, "POST", "/sign/status", rid, token))
     assert done["status"] == "complete" and done["request"]["status"] == "signed"
     assert done["request"]["canPay"] is True and done["request"]["signedBy"] == "Test Testsson"
+    assert done["request"]["documents"] == ["offer", "signed"]
     item = c.load(LOC_A, rid)
     assert item["signature"]["personalNumberMasked"] == "19000000-****" and item["notice"]["type"] == "catering_signed"
-    evidence = boto3.client("s3", region_name=REGION).get_object(Bucket=BUCKET, Key=item["signature"]["evidenceKey"])
-    data = json.loads(evidence["Body"].read())
-    assert data["documentHash"] == item["offer"]["documentHash"] and data["signer"]["personalNumber"] == "190000000000"
-    assert c.document_hash(data["document"]) == data["documentHash"]
+    s3 = boto3.client("s3", region_name=REGION)
+    prefix = f"{TENANT_A}/signed/{rid}/v0001/"
+    keys = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)["Contents"])
+    assert keys == [prefix + n for n in ("customer-bankid.json", "manifest.json", "offer.pdf", "restaurant-bankid.json")]
+    evidence = json.loads(s3.get_object(Bucket=BUCKET, Key=item["signature"]["evidenceKey"])["Body"].read())
+    assert evidence["pdfSha256"] == item["signing"]["pdfSha256"] and evidence["user"]["personalNumber"] == "190000000000"
+    pdf = s3.get_object(Bucket=BUCKET, Key=item["signedPdfKey"])["Body"].read()
+    assert hashlib.sha256(pdf).hexdigest() == item["signing"]["pdfSha256"]
+    manifest = json.loads(s3.get_object(Bucket=BUCKET, Key=prefix + "manifest.json")["Body"].read())
+    assert manifest["files"]["offer.pdf"] == item["signing"]["pdfSha256"]
+    assert set(manifest["signatures"]) == {"restaurant", "customer"}
+    # every evidence object carries its own lock (no bucket default, C7)
+    assert s3.head_object(Bucket=BUCKET, Key=item["signedPdfKey"])["ObjectLockMode"] == "GOVERNANCE"
+    assert "ObjectLockMode" not in s3.head_object(Bucket=BUCKET, Key=item["signing"]["pdfKey"])
+    assert s3.get_object_tagging(Bucket=BUCKET, Key=item["signing"]["pdfKey"])["TagSet"] == \
+        [{"Key": "retention", "Value": "offer"}]
 
 
 def test_simulator_is_refused_in_prod(env):
     env.monkeypatch.setenv("ENVIRONMENT", "prod")
     bankid.reset_cache()
-    rid, token = sent_offer(env)
-    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "signing_unavailable"}
+    rid = body_of(create(env))["requestId"]
+    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)) == {"error": "signing_unavailable"}
+    assert c.load(LOC_A, rid)["status"] == "requested"
 
 
 def test_a_new_offer_version_during_signing_is_not_signed(env):
     rid, token = sent_offer(env)
     guest(env, "POST", "/sign", rid, token)
     staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
-    guest(env, "POST", "/sign/status", rid, token)
     assert body_of(guest(env, "POST", "/sign/status", rid, token))["status"] == "none"
     assert c.load(LOC_A, rid)["status"] == "offer_sent"
+    # v2 needs the restaurant's signature again before the guest can sign
+    assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "awaiting_restaurant"}
 
 
 def test_bankid_qr_code_format():
@@ -489,12 +555,56 @@ def test_failed_payment_keeps_the_signature(env):
     assert keys == [f"checkout-{rid}-1", f"checkout-{rid}-2"]
 
 
+def test_private_guest_pays_on_the_site_with_the_payment_element(env):
+    rid, token = signed(env)
+    body = body_of(guest(env, "POST", "/checkout", rid, token, {"embedded": True}))
+    assert body == {"clientSecret": "cs_cat_1_secret_x", "stripeAccount": ACCOUNT}
+    params = next(x for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions")["params"]
+    assert params["ui_mode"] == "elements" and params["invoice_creation"]["enabled"] is True
+    assert params["return_url"].endswith(f"/catering/{LOC_A}/{rid}?restaurang=roma&betalning=klar")
+    assert not {"success_url", "cancel_url", "locale"} & set(params)
+    (domain,) = [x for x in env.stripe.calls if x["path"] == "/v1/payment_method_domains" and x["method"] == "POST"]
+    assert domain["account"] == ACCOUNT and domain["params"] == {"domain_name": "dev123.cloudfront.net"}
+    session = {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+               "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "checkout.session.completed", session))["result"] == "confirmed"
+
+
+def test_a_new_attempt_expires_the_open_session_first(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    body = body_of(guest(env, "POST", "/checkout", rid, token, {"embedded": True}))
+    assert body["clientSecret"] == "cs_cat_2_secret_x"
+    paths = [x["path"] for x in env.stripe.calls if "/checkout/sessions" in x["path"]]
+    assert paths == ["/v1/checkout/sessions", "/v1/checkout/sessions/cs_cat_1/expire", "/v1/checkout/sessions"]
+    assert c.load(LOC_A, rid)["checkoutSessionId"] == "cs_cat_2"
+    # The first session is no longer the request's: its events are ignored.
+    late = {"id": "cs_cat_1", "payment_status": "paid", "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "checkout.session.completed", late))["result"] != "confirmed"
+
+
+def test_no_new_attempt_while_a_completed_session_settles(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    env.stripe.session_status = "complete"
+    response = guest(env, "POST", "/checkout", rid, token, {"embedded": True})
+    assert response["statusCode"] == 409 and body_of(response) == {"error": "payment_in_progress"}
+
+
+def test_checkout_rejects_unknown_fields(env):
+    rid, token = signed(env)
+    response = guest(env, "POST", "/checkout", rid, token, {"embedded": "ja"})
+    assert response["statusCode"] == 400
+
+
 def test_guest_asks_for_changes_and_owner_sends_a_new_version(env):
     rid, token = sent_offer(env)
     body = body_of(guest(env, "POST", "/change", rid, token, {"message": "Kan ni lägga till dessert?"}))
     assert body["status"] == "change_requested" and body["canSign"] is False
     assert c.load(LOC_A, rid)["notice"]["type"] == "catering_change_requested"
     assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))["currentOfferVersion"] == 2
+    assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
+    restaurant_signs(env, rid)
     assert body_of(guest(env, "GET", "", rid, token))["canSign"] is True
 
 
@@ -507,7 +617,8 @@ def test_guest_rejects_the_offer(env):
 
 # --- company: lifecycle invoices ------------------------------------------------------------------------
 
-COMPANY = dict(customerType="company", companyName="Acme AB", orgNumber="556000-1234", invoiceReference="Kalle")
+COMPANY = dict(customerType="company", companyName="Acme AB", orgNumber="556000-1234", invoiceReference="Kalle",
+               signatoryName="Karl Ek", signatoryRole="VD", signatoryAuthority=True)
 
 
 def test_company_is_invoiced_by_the_lifecycle(env):
@@ -541,8 +652,12 @@ def test_lifecycle_timers_and_expiry(env):
     item = c.load(LOC_A, rid)
     ctx = SimpleNamespace(invoked_function_arn="arn:fn:live")
     env.m["lifecycle"].handler({"Records": [stream_record(item, old={})]}, ctx)
-    (kind, call), = [x for x in env.sched.calls if x[0] == "create"]
-    assert call["Name"] == f"request-expiry-{rid}" and call["ScheduleExpression"] == "at(2026-10-04T10:00:00)"
+    created = {x[1]["Name"]: x[1] for x in env.sched.calls if x[0] == "create"}
+    assert set(created) == {f"request-expiry-{rid}", f"owner-reminder-{rid}"}
+    call = created[f"request-expiry-{rid}"]
+    assert call["ScheduleExpression"] == "at(2026-10-04T10:00:00)"
+    # default ownerReminderHours 24
+    assert created[f"owner-reminder-{rid}"]["ScheduleExpression"] == "at(2026-10-02T10:00:00)"
     assert json.loads(call["Target"]["Input"]) == {"action": "expire", "kind": "request", "locationId": LOC_A,
                                                     "requestId": rid}
     assert env.m["lifecycle"].handler({"action": "expire", "kind": "offer", "locationId": LOC_A, "requestId": rid},
@@ -642,16 +757,20 @@ def test_bankid_rp_api_calls(env, monkeypatch):
             "signature": "PFNpZz4=", "ocspResponse": "MII=", "bankIdIssueDate": "2024-01-01"}}
 
     monkeypatch.setattr(bankid, "_call", fake_call)
-    rid, token = sent_offer(env)
+    rid, token = sent_offer(env, sign=False)
+    assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
+    assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+    restaurant_text = base64.b64decode(calls[0][1]["userVisibleData"]).decode()
+    assert "Restaurangen godkänner offerten." in restaurant_text
+    calls.clear()
     start = body_of(guest(env, "POST", "/sign", rid, token))
     assert start["autoStartToken"] == "ast" and start["qrData"].startswith("bankid.qst.")
     path, body = calls[0]
     assert path == "sign" and body["endUserIp"] == "203.0.113.9" and body["userVisibleDataFormat"] == "simpleMarkdownV1"
-    import base64
     visible = base64.b64decode(body["userVisibleData"]).decode()
-    assert "Säljare: Roma AB" in visible and "Offertversion: 1" in visible
+    assert "Säljare: Roma AB" in visible and "Offertversion: 1" in visible and "Jag godkänner" in visible
     item = c.load(LOC_A, rid)
-    assert base64.b64decode(body["userNonVisibleData"]).decode() == f"sha256:{item['offer']['documentHash']}"
+    assert base64.b64decode(body["userNonVisibleData"]).decode() == f"sha256:{item['signing']['pdfSha256']}"
     done = body_of(guest(env, "POST", "/sign/status", rid, token))
     assert done["status"] == "complete" and done["request"]["signedBy"] == "Anna Svensson"
     assert c.load(LOC_A, rid)["signature"]["personalNumberMasked"] == "19900101-****"
@@ -680,3 +799,119 @@ def test_catering_opt_in_subscribes_and_counts_for_marketing_restaurants(env):
     stats = [i for i in table.scan()["Items"] if i["SK"].startswith("DAY#")]
     assert len(stats) == 1 and stats[0]["catering"] == 1
     assert create(env, marketingOptIn="yes")["statusCode"] == 400
+
+
+# --- equipment return and cleaning fee ---------------------------------------------------------
+
+def set_cleaning_fee(env, kronor):
+    put = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+           "body": json.dumps({"cleaningFee": kronor})}
+    response = env.m["settings"].handler(with_tenant_claims(put), None)
+    assert response["statusCode"] == 200, response
+    shared_tenant.reset_caches()
+    return body_of(response)
+
+
+def test_cleaning_fee_setting(env):
+    assert set_cleaning_fee(env, 300)["cleaningFee"] == 300
+    get = env.m["settings"].handler({"routeKey": "GET /locations/{locationId}/catering/settings",
+                                     "pathParameters": {"locationId": LOC_A}}, None)
+    assert body_of(get)["cleaningFee"] == 300
+    for bad in (-1, 12.5, "300", 100001):
+        put = {"routeKey": "PUT /locations/{locationId}/catering/settings", "pathParameters": {"locationId": LOC_A},
+               "body": json.dumps({"cleaningFee": bad})}
+        assert env.m["settings"].handler(with_tenant_claims(put), None)["statusCode"] == 400
+    assert c.settings_of({})["cleaningFee"] == 0
+
+
+def test_not_cleaned_adds_the_cleaning_fee_as_its_own_amount(env):
+    set_cleaning_fee(env, 300)
+    priced = body_of(create(env, equipmentReturn="not_cleaned"))["request"]
+    # 4700 kr dishes - 5 % (dishes only) + 395 kr delivery + 300 kr cleaning
+    assert priced["equipmentReturn"] == "not_cleaned" and priced["cleaningFee"] == 30000
+    assert priced["discount"] == 23500 and priced["total"] == 486000 + 30000
+    assert priced["vat"] == 55286  # 5160 kr x 12/112, rounded half up
+    cleaned = body_of(create(env, equipmentReturn="cleaned", phone="0701234568", email="b@example.se"))["request"]
+    assert cleaned["cleaningFee"] == 0 and cleaned["total"] == 486000
+    # an older site without the field: cleaned, no fee
+    older = body_of(create(env, phone="0701234569", email="c@example.se"))
+    assert older["request"]["cleaningFee"] == 0
+    assert c.load(LOC_A, older["requestId"])["equipmentReturn"] == "cleaned"
+    bad = create(env, equipmentReturn="dirty", phone="0701234560", email="d@example.se")
+    assert bad["statusCode"] == 400 and "equipmentReturn" in body_of(bad)["error"]
+
+
+def test_vat_on_the_cleaning_fee():
+    lines = [{"unitPrice": 100000, "quantity": 1}]
+    t = c.totals(lines, 0, 0, 30000)
+    assert t["total"] == 130000 and t["cleaningFee"] == 30000 and t["vat"] == 13929 and t["vatRate"] == 12
+    # the discount is on the dishes only
+    t = c.totals(lines, 10, 39500, 30000)
+    assert t["discount"] == 10000 and t["total"] == 159500 and t["vat"] == c.vat_of(159500) == 17089
+    assert c.totals(lines, 0, 0)["cleaningFee"] == 0
+
+
+def test_offer_carries_the_choice_and_its_own_fee(env):
+    set_cleaning_fee(env, 300)
+    rid = body_of(create(env, equipmentReturn="not_cleaned"))["requestId"]
+    rows_event = {"routeKey": "GET /locations/{locationId}/catering/requests", "pathParameters": {"locationId": LOC_A}}
+    row = body_of(env.m["requests"].handler(with_tenant_claims(rows_event), None))["requests"][0]
+    assert row["equipmentReturn"] == "not_cleaned"
+    # no fee in the body: the location's fee in force when the owner sends
+    sent = body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))
+    assert sent["offer"]["totals"]["cleaningFee"] == 30000 and sent["offer"]["equipmentReturn"] == "not_cleaned"
+    # the owner sets a fee for this offer, or switches to cleaned (no fee whatever the body says)
+    v2 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "cleaningFee": 250}, request_id=rid))
+    assert v2["offer"]["totals"]["cleaningFee"] == 25000
+    v3 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "equipmentReturn": "cleaned", "cleaningFee": 250},
+                       request_id=rid))
+    assert v3["offer"]["totals"]["cleaningFee"] == 0 and v3["equipmentReturn"] == "cleaned"
+    assert staff(env, "PUT", "/offer", body={**OFFER, "equipmentReturn": "x"}, request_id=rid)["statusCode"] == 400
+    view = body_of(staff(env, "GET", request_id=rid))
+    assert [(o["equipmentReturn"], o["totals"]["cleaningFee"]) for o in view["offers"]] == \
+        [("not_cleaned", 30000), ("not_cleaned", 25000), ("cleaned", 0)]
+
+
+def test_signed_offer_keeps_its_price_after_a_fee_change(env):
+    set_cleaning_fee(env, 300)
+    rid, token = signed(env, equipmentReturn="not_cleaned")
+    item = c.load(LOC_A, rid)
+    signed_total = int(item["offer"]["totals"]["total"])
+    offer = c.load_offer(rid, 1)
+    assert offer["document"]["cleaningFee"] == 30000 and offer["document"]["equipmentReturn"] == "not_cleaned"
+    assert c.document_hash(offer["document"]) == item["signature"]["documentHash"]
+
+    set_cleaning_fee(env, 500)
+    view = body_of(guest(env, "GET", "", rid, token))
+    assert view["offer"]["totals"]["cleaningFee"] == 30000 and view["offer"]["totals"]["total"] == signed_total
+    assert view["offer"]["equipmentReturn"] == "not_cleaned"
+    guest(env, "POST", "/checkout", rid, token)
+    params = next(x for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions")["params"]
+    names = [(li["price_data"]["product_data"]["name"], li["price_data"]["unit_amount"]) for li in params["line_items"]]
+    assert names[-1] == ("Rengöring av utrustning", 30000)
+    charged = sum(li["price_data"]["unit_amount"] * li["quantity"] for li in params["line_items"]) \
+        - int(item["offer"]["totals"]["discount"])
+    assert charged == signed_total
+    # a new request or an unsigned offer sent now gets the new fee
+    assert body_of(create(env, equipmentReturn="not_cleaned", phone="0701234568",
+                          email="b@example.se"))["request"]["cleaningFee"] == 50000
+
+
+def test_company_invoice_has_the_cleaning_line(env):
+    set_cleaning_fee(env, 300)
+    rid, _ = signed(env, equipmentReturn="not_cleaned", **COMPANY)
+    item = c.load(LOC_A, rid)
+    env.m["lifecycle"].handler({"Records": [stream_record(item, old={**item, "status": "offer_sent"})]},
+                               SimpleNamespace(invoked_function_arn="arn:fn"))
+    items = [x["params"] for x in env.stripe.calls if x["path"] == "/v1/invoiceitems"]
+    assert {"description": "Rengöring av utrustning", "unit_amount": 30000} in \
+        [{k: i[k] for k in ("description", "unit_amount")} for i in items]
+    assert sum(i["unit_amount"] * i["quantity"] for i in items) == int(item["offer"]["totals"]["total"])
+
+
+def test_offers_sent_before_the_choice_hash_as_before():
+    item = {"requestId": "r", "customerType": "private"}
+    old = {"version": 1, "lines": [{"name": "A", "unitPrice": 100, "quantity": 1}], "validUntil": "2026-10-10",
+           "totals": {"subtotal": 100, "discount": 0, "deliveryFee": 0, "total": 100, "vat": 11}}
+    document = c.offer_document(item, old, {}, {}, {})
+    assert "cleaningFee" not in document and "equipmentReturn" not in document

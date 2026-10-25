@@ -8,6 +8,8 @@ TRIGGER:
     PATCH /locations/{locationId}/reservations/{reservationId}
           guest details, party size, notes, and/or a move:
           {"date", "startTime", "tableIds"}
+          or, on its own, a new end: {"endTime", "overrideRule"}
+          (extend / shorten, docs/RESERVATIONS.md "Booking length")
     POST  /locations/{locationId}/reservations/{reservationId}/payment
           {"action": "charge"}                 charge / retry the fee
           {"action": "refund", "amount": öre}  refund (owner only; amount
@@ -28,6 +30,10 @@ PURPOSE:
     A move re-checks availability with the shared engine (ignoring the
     booking's own holds) and swaps holds, locks and - for a new date - the
     row itself in ONE transaction, so it can't collide with a guest booking.
+    Editing tables or the party keeps the booking's own end (its rule
+    snapshot); a move to another time takes that time's rule. Staff extend
+    or shorten with endTime: 15-minute steps, never past closing, free on
+    every table, within the snapshot rule unless overrideRule (logged).
     Every change appends to the booking's history (who, when, what).
 
     Card guarantee (shared/guarantee.py): no_show on a guaranteed booking
@@ -50,12 +56,12 @@ ENV_VARS:
 Full details: docs/RESERVATIONS.md
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, guarantee, http, tenant
+from shared import availability, booking_rules, guarantee, http, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -64,7 +70,8 @@ _EDIT = "/locations/{locationId}/reservations/{reservationId}"
 _PAYMENT = "/locations/{locationId}/reservations/{reservationId}/payment"
 _ARRIVE_EARLY = timedelta(hours=3)
 _EDIT_FIELDS = {"date", "startTime", "tableIds", "partySize", "name", "email",
-                "phone", "notes", "language", "notifyGuest"}
+                "phone", "notes", "language", "notifyGuest", "endTime", "overrideRule"}
+_EXTEND_STEP = 15  # minutes (booking_rules.TIME_STEP)
 
 
 def _grace(location):
@@ -238,10 +245,120 @@ def _payment(event, ctx, item):
     raise ValueError("action must be charge or refund")
 
 
+def _own_minutes(item):
+    return availability.minute_of_day(item["endTime"]) - availability.minute_of_day(item["startTime"])
+
+
+def _extend(ctx, item, end_time, override, now):
+    """Staff change a booking's end (extend or shorten) on the 15-minute
+    grid. Longer than the rule snapshot needs the snapshot to allow it,
+    within its max and not into a window without extension - unless staff
+    override it (logged). Never past closing, never into another booking
+    on any of its tables; the slot rows are swapped in one transaction."""
+    if item["status"] not in (r.RESERVED, r.ARRIVED):
+        raise r.InvalidState("not_extendable")
+    location_id, date_str = item["locationId"], item["date"]
+    start = availability.minute_of_day(item["startTime"])
+    end = availability.minute_of_day(r.validate_time(end_time, "endTime"))
+    if end % _EXTEND_STEP:
+        raise ValueError("endTime must be in steps of 15 minutes")
+    if end - start < booking_rules.MIN_MINUTES:
+        raise ValueError("endTime must be at least 15 minutes after startTime")
+    if end == availability.minute_of_day(item["endTime"]):
+        return None
+    availability.set_tenant(ctx.tenant_id)
+    location = availability.read_location(location_id)
+    if location is None:
+        raise r.NotFound
+    closes = availability.closing_minute(location, date_str, start)
+    if closes is None or end > closes:
+        raise r.InvalidState("after_closing")
+    rule = r.booking_rule(item)
+    extended = (end - start) - rule["durationMinutes"]
+    overridden = False
+    # Only a longer extension than the booking has needs the rule; shortening never does.
+    if extended > 0 and extended > _own_minutes(item) - rule["durationMinutes"]:
+        blocked = booking_rules.blocking_window(
+            location.get("bookingTimeRules"), date.fromisoformat(date_str),
+            start + rule["durationMinutes"], end)
+        if not rule["extensionAllowed"] or extended > rule["maxExtensionMinutes"] or blocked:
+            if not override:
+                if blocked and rule["extensionAllowed"] and extended <= rule["maxExtensionMinutes"]:
+                    raise r.InvalidState("window_not_extendable")
+                raise r.InvalidState("not_extendable" if not rule["extensionAllowed"]
+                                     else "extension_too_long")
+            overridden = True
+    try:
+        ends_at = availability.local_instant(location, date_str, end)
+        starts_at = availability.local_instant(location, date_str, start)
+    except ValueError:
+        raise ValueError("endTime falls on a clock change") from None
+    if ends_at - starts_at != timedelta(minutes=end - start):
+        raise ValueError("endTime falls on a clock change")
+    if ends_at <= now:
+        raise r.InvalidState("already_ended")
+
+    tables = item.get("tableIds") or []
+    versions = r.read_lock_versions(location_id, date_str, tables)
+    for occupancy in availability.query_occupancies(location_id, date_str):
+        details = availability.validate_occupancy(occupancy, location_id, date_str)
+        if (details["tableId"] in tables
+                and occupancy.get("reservationId") != item["reservationId"]
+                and availability.intervals_overlap(start, end, details["startMinute"], details["endMinute"])):
+            raise r.Conflict("table_taken")
+
+    new_end = f"{end // 60:02d}:{end % 60:02d}"
+    ops = r.lock_updates(location_id, date_str, versions)
+    for t in tables:
+        ops.append({"Delete": {
+            "TableName": r.occupancy_table(),
+            "Key": r.serialize(r.slot_key(location_id, date_str, item["startTime"], item["endTime"], t)),
+            # TTL may already have removed the row (extending after the old end).
+            "ConditionExpression": "attribute_not_exists(PK) OR reservationId = :rid",
+            "ExpressionAttributeValues": r.serialize({":rid": item["reservationId"]}),
+        }})
+    ops += r.hold_items(location_id, date_str, item["startTime"], new_end, tables,
+                        item["reservationId"], ends_at, now=now)
+    action = "extended" if end > availability.minute_of_day(item["endTime"]) else "shortened"
+    entry = r.history_entry(action, ctx.sub, now, previous=item["endTime"], endTime=new_end,
+                            override=True if overridden else None)
+    version = int(item.get("version", 0))
+    new_item = {**item, "endTime": new_end, "endsAt": r.iso(ends_at), "extendedMinutes": max(extended, 0),
+                "ttl": r.retention_ttl(ends_at), "updatedAt": r.iso(now), "updatedBy": ctx.sub,
+                "version": version + 1, "history": (item.get("history") or []) + [entry]}
+    if "bookingRule" not in item:
+        new_item["bookingRule"] = rule  # the derived rule of an older booking, frozen now
+    new_item.pop("notice", None)
+    ops.append({"Put": {
+        "TableName": r.reservation_table(), "Item": r.serialize(new_item),
+        "ConditionExpression": "#s = :status AND (attribute_not_exists(version) OR version = :v)",
+        "ExpressionAttributeNames": {"#s": "status"},
+        "ExpressionAttributeValues": r.serialize({":status": item["status"], ":v": version}),
+    }})
+    ops.append({"Update": {
+        "TableName": r.reservation_table(),
+        "Key": r.serialize(r.pointer_key(location_id, item["reservationId"])),
+        "UpdateExpression": "SET #ttl = :ttl",
+        "ConditionExpression": "attribute_exists(PK)",
+        "ExpressionAttributeNames": {"#ttl": "ttl"},
+        "ExpressionAttributeValues": r.serialize({":ttl": new_item["ttl"]}),
+    }})
+    r.transact(ops)
+    return new_item
+
+
 def _edit(event, ctx, item):
     data = http.body(event, allowed=_EDIT_FIELDS)
     notify = r.notify_flag(data)
     data.pop("notifyGuest", None)
+    override = data.pop("overrideRule", False)
+    if not isinstance(override, bool):
+        raise ValueError("overrideRule must be true or false")
+    if "endTime" in data:
+        if set(data) != {"endTime"}:
+            raise ValueError("endTime is changed on its own")
+        new_item = _extend(ctx, item, data["endTime"], override, r.now_utc())
+        return r.staff_view(new_item or item)
     if not data:
         raise ValueError("nothing to update")
     now = r.now_utc()
@@ -285,10 +402,13 @@ def _edit(event, ctx, item):
         # lead time, like any new booking - except a walk-in's, which follows
         # the walk-in rule (the guest is already there).
         same_time = new_date == item["date"] and new_start == item["startTime"]
+        # Keeping its time also keeps its length (rule snapshot + extension),
+        # whatever the location's rules say today.
         context = availability.day_context(
             location_id, new_date, now,
             include_started=same_time or item.get("source") == "walk_in",
             keep_start=item["startTime"] if same_time else None,
+            keep_minutes=_own_minutes(item) if same_time else None,
         )
         if context is None:
             raise r.NotFound
@@ -316,6 +436,9 @@ def _edit(event, ctx, item):
             "tableIds": new_tables, "seats": seats, "layoutVersion": slot["layoutVersion"],
             "ttl": r.retention_ttl(ends_at),
         })
+        if not same_time:
+            # A new start time gets the rule of that time; extensions are gone.
+            changes.update({"bookingRule": slot["rule"], "extendedMinutes": 0})
     elif "partySize" in data and item["status"] not in r.HOLDS_TABLES:
         raise r.InvalidState("not_editable")
 

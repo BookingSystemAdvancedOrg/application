@@ -42,6 +42,8 @@ servers:
         description: AWS region containing the HTTP API.
 
 tags:
+  - name: Privacy
+    description: Guest privacy (docs/privacy.md) - the restaurant's privacy notice, marketing consent lookup and withdrawal.
   - name: Authentication
     description: Public Cognito sign-in, challenge, and token-refresh flows.
   - name: Users
@@ -60,6 +62,18 @@ tags:
     description: Guest table bookings, the guest manage link, and staff booking management.
   - name: Marketing
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
+  - name: Insights
+    description: The restaurant's own figures for a period (Statistik in the admin app).
+  - name: Card payments
+    description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
+  - name: Accounting
+    description: The accounting export (Bokföring) - the location's BAS account mapping and one balanced verifikation per business day as SIE 4, CSV or JSON (docs/ACCOUNTING-EXPORT.md).
+  - name: Kassa
+    description: The till (feature "kassa", off by default) - bills, card payments, receipts with a control code, returns, one copy, training mode, X/Z reports and the journal export (SKVFS 2021:16). Test mode until a certified control system is connected (docs/KASSA-REQUIREMENTS.md).
+  - name: Printing
+    description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
+  - name: Catering
+    description: Catering (plan feature "catering") - settings, tiers, menu, the public quote and request, the owner's offers and signing, the guest's magic-link routes and the signing webhook (infrastructure docs/CATERING-FLOW.md).
 
 paths:
   /auth/login:
@@ -1194,6 +1208,9 @@ paths:
                 slots:
                   - startTime: '18:00'
                     endTime: '20:00'
+                    durationMinutes: 120
+                    extendable: true
+                    ruleName: null
                     layoutVersion: 2
                     tables:
                       - tableId: table-4
@@ -1352,7 +1369,9 @@ paths:
       summary: Get the public menu for a location
       operationId: getPublicMenu
       description: |
-        Returns only active menu items in a customer-facing shape. Audit
+        Returns only the menu items a guest can order now (`active` and
+        inside the optional availableFrom/availableUntil window, evaluated
+        per request) in a customer-facing shape. Audit
         fields and internal DynamoDB keys are not exposed. An empty menu and
         an unknown location both produce an empty list because this Lambda is
         not permitted to read the Location table. Item ordering is not
@@ -2809,8 +2828,8 @@ paths:
       operationId: updateTenant
       description: |
         Owner only. Only `senderName` (1-11 letters, digits or spaces - the
-        SMS sender), `replyToEmail`, `branding` and `notifications` may be
-        changed; `null` or `""` removes a value (the platform default is
+        SMS sender), `replyToEmail`, `branding`, `notifications` and
+        `insights` (staff access to Statistik) may be changed; `null` or `""` removes a value (the platform default is
         used). Everything else is managed by operators.
       security:
         - bearerAuth: []
@@ -2844,6 +2863,100 @@ paths:
         '503':
           $ref: '#/components/responses/AccountServiceUnavailable'
 
+  /insights:
+    get:
+      tags:
+        - Insights
+      summary: The restaurant's figures for a period
+      operationId: getInsights
+      description: |
+        Statistik in the admin app. Sums the restaurant's own per-day rows
+        (insights table, rebuilt nightly by insights-rollup for the last 8
+        days) and computes the days after the last rollup (today) live from
+        bookings, orders and catering requests. `previous` is the compare
+        period (`compare`). A location without rows yet is computed live for
+        its last 31 days and `pending` is true.
+
+        Bookings kept = reserved, arrived and no-shows (holds, unfinished
+        card guarantees and expired holds never count); cancellations and
+        late cancellations (charged, or cancelled by the guest at most 24 h
+        before) are counted apart. Occupancy = table minutes booked / table
+        minutes open (opening hours x the published layout's tables). Lunch
+        = start hour before the location's `lunchUntil` (15:00 by default).
+
+        Tenant isolation: the tenant comes from the token; `locationId` must
+        be one of its locations (another tenant's answers 404) and `all` is
+        its own locations. Owners see everything. Staff see only their
+        assigned location and never an amount (every revenue, fee and price
+        field is left out, `money` is false); with the owner's setting
+        `insights.staffAccess` = `none` they get 403 `staff_no_access`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: At most 731 days after `from`; days after today are left out.
+          schema:
+            type: string
+            format: date
+        - name: locationId
+          in: query
+          required: false
+          schema:
+            type: string
+            default: all
+        - name: service
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, lunch, dinner]
+            default: all
+        - name: channel
+          in: query
+          required: false
+          description: Booking source; filters the booking figures only.
+          schema:
+            type: string
+            enum: [all, online, phone, onsite]
+            default: all
+        - name: compare
+          in: query
+          required: false
+          description: The equally long period before, the same days a year earlier, or none.
+          schema:
+            type: string
+            enum: [previous, year, none]
+            default: previous
+      responses:
+        '200':
+          description: The figures.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsightsResponse'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+
   /tenant/stripe/account-link:
     post:
       tags:
@@ -2870,6 +2983,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StripeAccountLink'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/dpa/accept:
+    post:
+      tags:
+        - Account
+      summary: Accept the current personuppgiftsbiträdesavtal (DPA)
+      operationId: acceptTenantDpa
+      description: |
+        Owner only. Records that the caller accepted `version`, which must be
+        the current DPA version (409 `dpa_version_outdated` with
+        `currentVersion` otherwise). Each acceptance is an append-only row
+        (version, time, accepting user); the response is the tenant with an
+        updated `dpa`. A new tenant (`dpa.required`) serves no public routes
+        until a version is accepted.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version:
+                  type: string
+      responses:
+        '200':
+          description: Accepted; the tenant as GET /tenant returns it.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
@@ -3086,7 +3248,10 @@ paths:
       operationId: updateReservation
       description: |
         Guest details, notes, party size, and/or a move to another `date`,
-        `startTime` or `tableIds`. A move is re-validated against
+        `startTime` or `tableIds`; or, on its own, a new `endTime` (staff
+        extend or shorten, see ReservationUpdateRequest). A move to a new
+        time takes that time's booking rule; keeping the time keeps the
+        booking's own end. A move is re-validated against
         availability (ignoring the booking's own holds) and committed
         atomically; a taken table answers 409 `table_taken`. A new time must
         be on the half-hour grid and at least 30 minutes ahead, except for a
@@ -3336,6 +3501,9 @@ paths:
                   endTime: {type: string}
                   tableIds: {type: array, items: {type: string}}
                   partySize: {type: integer}
+                  durationMinutes: {type: integer}
+                  extendable: {type: boolean}
+                  ruleName: {type: string, nullable: true}
                   cardRequired: {type: boolean}
         '409':
           $ref: '#/components/responses/ReservationConflict'
@@ -3520,7 +3688,10 @@ paths:
               acceptTerms: true
       responses:
         '201':
-          description: Created; send the guest to checkoutUrl.
+          description: |
+            Created. Hosted: send the guest to checkoutUrl. Embedded
+            (`embedded: true`): confirm clientSecret with Stripe's Payment
+            Element (Checkout Sessions, ui_mode elements) on stripeAccount.
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
@@ -4029,6 +4200,1288 @@ paths:
         '200':
           description: HTML confirmation; the address is subscribed.
 
+  /m/w/{token}:
+    get:
+      tags:
+        - Privacy
+      summary: Withdraw marketing consent (page)
+      operationId: consentWithdrawPage
+      description: |
+        The guest's own withdrawal link (shared/consent.py withdraw_link):
+        HMAC-signed, expires after 90 days. Shows the channels the guest
+        has consented to and a button; a GET alone never withdraws. Marketing
+        only: booking and order messages are not affected.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML page.
+        '404':
+          description: HTML page; the link is invalid or expired.
+    post:
+      tags:
+        - Privacy
+      summary: Withdraw marketing consent
+      operationId: consentWithdraw
+      description: Writes a withdrawal record per channel in the link (never an overwrite) and unsubscribes the e-mail.
+      security: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: HTML confirmation.
+        '404':
+          description: HTML page; the link is invalid or expired.
+
+  /privacy/notice:
+    get:
+      tags:
+        - Privacy
+      summary: The restaurant's privacy notice for guests and the filled template
+      operationId: privacyNoticeGet
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notice, template]
+                properties:
+                  notice: {$ref: '#/components/schemas/PrivacyNotice'}
+                  template: {type: string}
+        '403':
+          description: Not the owner.
+    put:
+      tags:
+        - Privacy
+      summary: Save a new version of the privacy notice
+      operationId: privacyNoticeSave
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              additionalProperties: false
+              properties:
+                body:
+                  type: string
+                  maxLength: 20000
+                  description: Plain text. "## " starts a heading, "- " a list item.
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notice: {$ref: '#/components/schemas/PrivacyNotice'}
+        '400':
+          description: Empty, too long or not plain text.
+    delete:
+      tags:
+        - Privacy
+      summary: Go back to the template
+      operationId: privacyNoticeReset
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The template is used again.
+
+  /privacy/consents:
+    get:
+      tags:
+        - Privacy
+      summary: One guest's marketing consent state and history
+      operationId: privacyConsentLookup
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: email, in: query, required: false, schema: {type: string}}
+        - {name: phone, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: Per channel (email, sms) the state and the records, newest first.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentLookup'}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
+  /privacy/consents/withdraw:
+    post:
+      tags:
+        - Privacy
+      summary: Withdraw a guest's marketing consent on their behalf
+      operationId: privacyConsentWithdraw
+      description: A new withdrawal record per channel (actor = the owner). Marketing only.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channels]
+              additionalProperties: false
+              properties:
+                email: {type: string}
+                phone: {type: string}
+                channels:
+                  type: array
+                  minItems: 1
+                  items: {type: string, enum: [email, sms]}
+      responses:
+        '200':
+          description: The channels withdrawn and the new state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentLookup'}
+
+  /privacy/guests:
+    get:
+      tags:
+        - Privacy
+      summary: Everything stored about one guest (export)
+      operationId: privacyGuestExport
+      description: >-
+        GDPR art. 15/20. The subscriber and welcome-offer code, the consent
+        history, and the guest's bookings, orders and catering requests in
+        every location of the restaurant, matched on e-mail (any case) or
+        phone. Keys, link hashes and expiry fields are left out. A catering
+        request carries its signature (name, masked personal number, signedAt)
+        and the guest's own events (signing with IP and method).
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: email, in: query, required: false, schema: {type: string}}
+        - {name: phone, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: The guest's data as JSON.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: {type: string, nullable: true}
+                  phone: {type: string, nullable: true}
+                  exportedAt: {type: string, format: date-time}
+                  consents: {$ref: '#/components/schemas/ConsentLookup'}
+                  subscriber: {type: object, nullable: true, additionalProperties: true}
+                  welcomeOfferCode: {type: object, nullable: true, additionalProperties: true}
+                  bookings: {type: array, items: {type: object, additionalProperties: true}}
+                  orders: {type: array, items: {type: object, additionalProperties: true}}
+                  cateringRequests: {type: array, items: {type: object, additionalProperties: true}}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
+  /privacy/guests/erase:
+    post:
+      tags:
+        - Privacy
+      summary: Erase one guest's data
+      operationId: privacyGuestErase
+      description: >-
+        GDPR art. 17. Withdraws marketing consent (source erasure; the next
+        data-retention run keeps only a suppression record), deletes the
+        subscriber and welcome-offer rows, and anonymises bookings, orders
+        and catering requests. Receipt fields, company invoice details and
+        catering signatures stay (bokföringslagen, signed contracts). Items
+        still in progress are kept and listed; cancel them first.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                email: {type: string}
+                phone: {type: string}
+      responses:
+        '200':
+          description: What was done.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  consentWithdrawn: {type: array, items: {type: string, enum: [email, sms]}}
+                  marketingRowsDeleted: {type: integer}
+                  anonymised: {type: integer}
+                  kept:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: {type: string, enum: [booking, order, catering]}
+                        locationId: {type: string}
+                        status: {type: string}
+                        date: {type: string, nullable: true}
+                        id: {type: string}
+        '400':
+          description: Neither email nor phone, or an invalid one.
+
+  /locations/{locationId}/catering/menu:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: The guest's catering menu
+      operationId: getCateringMenu
+      description: Active dishes and active packages whose dishes are all active, sorted by sort then name. 404 while catering is switched off.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringMenu'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/dishes:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: All catering dishes (owner)
+      operationId: listCateringDishs
+      description: Active and inactive dishes.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [dishes], properties: {dishes: {type: array, items: {$ref: '#/components/schemas/CateringDish'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a catering dish
+      operationId: createCateringDish
+      description: New dish with version 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringDishInput'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringDish'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/dishes/{dishId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: dishId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a catering dish
+      operationId: updateCateringDish
+      description: Send the `version` you read; the answer has version + 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringDishInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringDish'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a catering dish
+      operationId: deleteCateringDish
+      description: Idempotent. A dish in a package answers 409 dish_in_package.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/packages:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: All catering packages (owner)
+      operationId: listCateringPackages
+      description: Active and inactive packages.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, required: [packages], properties: {packages: {type: array, items: {$ref: '#/components/schemas/CateringPackage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a catering package
+      operationId: createCateringPackage
+      description: New package with version 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringPackageInput'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringPackage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/menu/packages/{packageId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: packageId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a catering package
+      operationId: updateCateringPackage
+      description: Send the `version` you read; the answer has version + 1.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringPackageInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringPackage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '409':
+          description: changed_retry (someone saved first; reload) or dish_in_package.
+        '503':
+          description: The catering service is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a catering package
+      operationId: deleteCateringPackage
+      description: Idempotent.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Deleted.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, or unknown item.
+        '503':
+          description: The catering service is unavailable.
+
+  /locations/{locationId}/catering/settings:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Catering settings for the calculator
+      operationId: getCateringSettings
+      description: 'Public fields only (no notification contacts). 404 when catering is not in the plan.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringSettings'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    put:
+      tags:
+        - Catering
+      summary: Save the catering settings
+      operationId: saveCateringSettings
+      description: 'Fields are merged over the current ones. The answer adds originFound: whether the delivery origin can be located for road distances (null when delivery is off or the map service is down).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringSettings'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringSettings'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/discount-tiers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Discount tiers
+      operationId: listCateringDiscountTiers
+      description: 'fromPortions/toPortions are guest counts (issue 5).'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTierList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    post:
+      tags:
+        - Catering
+      summary: Create a discount tier
+      operationId: createCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringTierInput'}
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTier'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/discount-tiers/{tierId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: tierId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Replace a discount tier
+      operationId: updateCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringTierInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringTier'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    delete:
+      tags:
+        - Catering
+      summary: Delete a discount tier
+      operationId: deleteCateringDiscountTier
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '204':
+          description: Done.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/quote:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Catering
+      summary: Price a catering choice
+      operationId: quoteCatering
+      description: 'The server is the only source of prices: packages x guests, dishes x portions, the tier discount by guests, the delivery band from the road distance (Amazon Location), the cleaning fee and the VAT per line, plus the earliest date the guest count allows. An estimate until the offer is signed. Limited per IP (429).'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringQuoteInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringQuote'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'catering_disabled, catering_outside_area, catering_pickup_off or catering_delivery_off.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags:
+        - Catering
+      summary: Send a catering request
+      operationId: createCateringRequest
+      description: 'Priced again exactly like the quote. Needs guests >= minGuests, the lead time for that many guests, a company signatory (name, role, authority) and Turnstile when the site shows it. Answers the guest''s link token.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringRequestInput'}
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequestCreated'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'catering_disabled, catering_too_soon, catering_closed_day, catering_day_full, catering_outside_area, ...'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+    get:
+      tags:
+        - Catering
+      summary: List catering requests
+      operationId: listCateringRequests
+      description: 'Newest first; ?status= filters (comma separated).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequestList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags:
+        - Catering
+      summary: A catering request with its offers and history
+      operationId: getCateringRequest
+      description: 'Includes `signing` (who has signed the current version) and `capacityLeft`.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/documents/{docId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: docId, in: path, required: true, schema: {type: string, enum: [offer, signed, signature]}}
+    get:
+      tags:
+        - Catering
+      summary: Download link for a document
+      operationId: getCateringDocument
+      description: 'docId offer (the current offer PDF), signed (the signed copy) or signature (the customer''s signature evidence). A 5-minute presigned URL.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentLink'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/offer:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags:
+        - Catering
+      summary: Save an offer draft
+      operationId: saveCateringOfferDraft
+      description: 'Marks the request under review (reviewedAt).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringOfferInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_editable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/offer/send:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Send offer version N
+      operationId: sendCateringOffer
+      description: 'Renders the PDF, cancels the previous signing order and opens a new one, holds the day''s capacity. The guest is told once the restaurant has signed. Without a body the saved draft is sent.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CateringOfferInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_editable, capacity_full or changed_retry.'}
+        '503': {description: 'document_unavailable, signing_unavailable or the catering service is unavailable.'}
+
+  /locations/{locationId}/catering/requests/{requestId}/restaurant-sign:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Start the restaurant's signature
+      operationId: startCateringRestaurantSigning
+      description: 'BankID here (kind bankid: autoStartToken, qrData) or the provider''s page (kind redirect: url, back with ?signering=klar).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignStart'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_signable, already_signed or signing_<code>.'}
+        '503': {description: signing_unavailable.}
+
+  /locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Poll the restaurant's signature
+      operationId: pollCateringRestaurantSigning
+      description: 'state pending (hint, qrData), failed (hint) or signed (with the request).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignPoll'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_signable or no_signing_started.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/decline:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Decline the request
+      operationId: declineCateringRequest
+      description: 'Before signing; releases capacity and cancels the signing order.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_declinable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Cancel a signed order
+      operationId: cancelCateringOrder
+      description: 'Refunds a paid private order, voids an open invoice.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_cancellable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/delivered:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Mark delivered
+      operationId: markCateringDelivered
+      description: 'confirmed -> delivered (closed when paid).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_confirmed.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/invoices:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Catering
+      summary: Catering invoices
+      operationId: listCateringInvoices
+      description: 'Mirrored from Stripe.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/invoices/{invoiceId}/mark-paid:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: invoiceId, in: path, required: true, schema: {type: string}}
+    post:
+      tags:
+        - Catering
+      summary: Record a Bankgiro payment
+      operationId: markCateringInvoicePaid
+      description: 'Marks the Stripe invoice paid out of band; invoice.paid settles the request.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '202':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    get:
+      tags:
+        - Catering
+      summary: The guest's view
+      operationId: getCateringRequestAsGuest
+      description: 'Magic link: the token from the link in the X-Order-Token header (wrong token: 404). canSign once the restaurant has signed; canAccept where simple acceptance is allowed.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/sign:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Start the guest's signature
+      operationId: startCateringCustomerSigning
+      description: 'After the restaurant. kind bankid or redirect. Limited per request and IP (429).'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignStart'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_signable, awaiting_restaurant, offer_expired, already_signed or signing_<code>.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503': {description: signing_unavailable.}
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/sign/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Poll the guest's signature
+      operationId: pollCateringCustomerSigning
+      description: 'status pending (hintCode, qrData), failed (hintCode), complete (request) or none.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/accept:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Accept without BankID
+      operationId: acceptCateringOffer
+      description: 'Simple acceptance (off by default per restaurant): name, and for a company role and confirmAuthority. Name, time, IP, user agent and the PDF hash are stored as locked evidence. Limited per request and IP (429).'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AcceptInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'acceptance_not_allowed, not_signable, awaiting_restaurant or offer_expired.'}
+        '429': {description: too_many_requests (Retry-After).}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/checkout:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Pay the signed offer
+      operationId: startCateringCheckout
+      description: 'Private guests; {embedded: true} answers clientSecret and stripeAccount, else checkoutUrl.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LooseObject'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'not_payable, offer_expired or payment_in_progress.'}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/change:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Ask for changes
+      operationId: requestCateringChange
+      description: 'Cancels the open signing order.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MessageInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_changeable.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/reject:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    post:
+      tags:
+        - Catering
+      summary: Decline the offer
+      operationId: rejectCateringOffer
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReasonInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringGuestView'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: not_rejectable.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/customer/documents/{docId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      - {name: docId, in: path, required: true, schema: {type: string, enum: [offer, signed, signature]}}
+      - {name: X-Order-Token, in: header, required: true, schema: {type: string, maxLength: 256}, description: "The token from the guest's link (the part after t= in the fragment)."}
+    get:
+      tags:
+        - Catering
+      summary: Download link for a document
+      operationId: getCateringDocumentAsGuest
+      description: 'docId offer, signed or signature; a 5-minute presigned URL.'
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentLink'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /webhooks/signing/catering:
+    post:
+      tags:
+        - Catering
+      summary: Signing provider callback
+      operationId: cateringSigningWebhook
+      description: 'Called by the signing provider with ?l=<locationId>&r=<requestId>&t=<per-order token>. Verified against the request''s current signing order (401 otherwise), deduplicated on AUDIT#SIGNING#<eventId>, and the order''s state is always read again from the provider. 503 makes the provider retry.'
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LooseObject'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LooseObject'}
+        '401': {description: The callback is not for this request's signing order.}
+        '404': {description: Unknown request.}
+        '503': {description: Not processed; the provider retries.}
+
   /marketing/{proxy}:
     parameters:
       - {name: proxy, in: path, required: true, schema: {type: string}}
@@ -4084,8 +5537,1110 @@ paths:
         '204':
           description: Deleted
 
+  # --- Card payments at the till (Stripe Terminal) ---------------------------
+  /locations/{locationId}/card-payments:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Card payments]
+      summary: 'The day''s in-person card payments, newest first'
+      operationId: listCardPayments
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payments.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPaymentList'}
+      parameters:
+        - {name: date, in: query, required: false, schema: {type: string, format: date}}
+    post:
+      tags: [Card payments]
+      summary: 'Take a card payment on a reader ("Ta betalt")'
+      operationId: createCardPayment
+      description: 'One PaymentIntent (card_present, automatic capture) per checkoutId on the restaurant''s connected account, sent to the reader. The same checkoutId again answers 200 with the same payment. An orderId takes the amount from that unpaid order. 409 terminal_not_enabled, order_not_payable, order_other_account, order_already_paid; 404 for a reader of another location.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkoutId, readerId]
+              properties:
+                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                readerId: {type: string, pattern: '^tmr_'}
+                amount: {type: integer, minimum: 300, maximum: 5000000, description: Öre}
+                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                note: {type: string, maxLength: 120}
+                vatRate: {type: integer, enum: [12, 25], description: 'Required with amount (a free amount): 12 food and drink, 25 alcohol'}
+      responses:
+        '201':
+          description: 'Sent to the reader (processing), or failed with reader_offline / reader_busy.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/readers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Card payments]
+      summary: 'The location''s card readers (registered in Booqy Console)'
+      operationId: listCardReaders
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'Readers with online/offline status.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardReaderList'}
+  /locations/{locationId}/card-payments/{paymentId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags: [Card payments]
+      summary: 'One payment (the till polls it; asks Stripe when the webhook is late)'
+      operationId: getCardPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Cancel the payment on the reader ("Avbryt")'
+      operationId: cancelCardPayment
+      description: 'If the card went through meanwhile, the answer is the paid payment.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/retry:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Try the same PaymentIntent again ("Försök igen")'
+      operationId: retryCardPayment
+      description: 'From failed or canceled only. Never a second PaymentIntent.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                readerId: {type: string, pattern: '^tmr_'}
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Refund the whole payment ("Återbetala")'
+      operationId: refundCardPayment
+      description: '409 refund_via_order: a payment for an order is refunded by cancelling the order.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+  /locations/{locationId}/card-payments/{paymentId}/simulate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Card payments]
+      summary: 'Test mode: the simulated reader taps a card'
+      operationId: simulateCardPayment
+      description: 'Not in prod (404). Simulated readers only (409 not_simulated).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome]
+              properties:
+                outcome: {type: string, enum: [approve, decline]}
+      responses:
+        '202':
+          description: 'Accepted.'
+  /locations/{locationId}/card-payments/{paymentId}/receipt:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags: [Card payments]
+      summary: 'The Swedish receipt (Kvitto) of a payment'
+      operationId: getCardReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'The payment and its receipt.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardReceipt'}
+    post:
+      tags: [Card payments]
+      summary: 'E-mail the receipt ("Skicka kvitto")'
+      operationId: sendCardReceipt
+      description: 'Paid payments only (409 not_paid), at most 5 e-mails per payment (409 receipt_limit).'
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+      responses:
+        '200':
+          description: 'The payment.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CardPayment'}
+
+  # --- Printing (issue 2) ------------------------------------------------------
+  /locations/{locationId}/accounting:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Accounting]
+      summary: 'The account mapping: accounts per role, BAS defaults and names, SIE series, fiscal year start'
+      operationId: getAccounting
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    put:
+      tags: [Accounting]
+      summary: 'Save the account mapping (sending the defaults resets); 409 changed_retry on a stale version'
+      operationId: putAccounting
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                accounts:
+                  type: object
+                  additionalProperties: {type: string, pattern: '^[1-8][0-9]{3}$'}
+                series: {type: string, pattern: '^[A-Z]$'}
+                fiscalYearStartMonth: {type: integer, minimum: 1, maximum: 12}
+                costCenter: {type: string, pattern: '^[A-Z0-9]{1,10}$', description: 'Kostnadsställe when several locations share a Stripe account'}
+                version: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+        '409':
+          description: 'Someone saved first (changed_retry).'
+  /locations/{locationId}/accounting/export:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Accounting]
+      summary: 'Balanced verifikationer per business day (max 366 days) as SIE 4 (PC8), CSV or JSON; locations sharing a Stripe account are one file with cost centres and a company Stripe entry'
+      operationId: exportAccounting
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: from, in: query, required: true, schema: {type: string, format: date}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [sie, csv, json], default: sie}}
+      responses:
+        '200':
+          description: 'summary (days, sales, vat, warnings) plus entries (json) or filename, mediaType and base64 content (sie, csv).'
+          content:
+            application/json:
+              schema: {type: object}
+        '502':
+          description: 'Stripe refused to list balance transactions (stripe_refused).'
+        '503':
+          description: 'Stripe or the database is unavailable.'
+  /locations/{locationId}/kassa:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Kassa state: registers, open bills, test mode'
+      operationId: getKassa
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'The location''s registers'
+      operationId: listKassaRegisters
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    post:
+      tags: [Kassa]
+      summary: 'A new register (kassabeteckning, max 16 characters)'
+      operationId: createKassaRegister
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [label]
+              properties:
+                label: {type: string, maxLength: 16}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A register, its control system and day status'
+      operationId: getKassaRegister
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/open-day:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Register the float (växelkassa) at the start of the day'
+      operationId: openKassaDay
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [float]
+              properties:
+                float: {type: integer, minimum: 0, description: Öre}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/training:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Training mode on or off (journalled)'
+      operationId: setKassaTraining
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: ['on']
+              properties:
+                'on': {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/x:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'X report (journalled, no number)'
+      operationId: kassaXReport
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                print: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/z:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Z report (numbered, closes the period)'
+      operationId: kassaZReport
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                print: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A day''s receipts and reports from the journal'
+      operationId: listKassaReceipts
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: date, in: query, required: false, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'One receipt, returned lines, copy taken'
+      operationId: getKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/copy:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'The one copy of a receipt (409 copy_exists)'
+      operationId: copyKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/return:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Return lines: refund to the card, then a return receipt'
+      operationId: returnKassaReceipt
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery, lines, reason]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+                reason: {type: string, maxLength: 72}
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [lineId, quantity]
+                    properties:
+                      lineId: {type: string}
+                      quantity: {type: integer, minimum: 1}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/export:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Journal export in XML (SKVFS 2021:16)'
+      operationId: exportKassaJournal
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: from, in: query, required: true, schema: {type: string, format: date}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: 'The XML file.'
+          content:
+            application/xml:
+              schema: {type: string}
+  /locations/{locationId}/kassa/registers/{registerId}/simulate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Test mode only (not prod): the simulated control system down or up'
+      operationId: simulateKassaControlSystem
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [down]
+              properties:
+                down: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'Open bills'
+      operationId: listKassaBills
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    post:
+      tags: [Kassa]
+      summary: 'Open a bill for a table or a takeaway sale'
+      operationId: createKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [registerId, kind]
+              properties:
+                registerId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                kind: {type: string, enum: [table, takeaway]}
+                tableLabel: {type: string, maxLength: 20}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'A bill with prices, VAT and card payments'
+      operationId: getKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    put:
+      tags: [Kassa]
+      summary: 'Lines and discount (409 changed_retry, bill_has_payments, line_sent)'
+      operationId: updateKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, lines]
+              properties:
+                version: {type: integer}
+                lines:
+                  type: array
+                  maxItems: 60
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [quantity]
+                    properties:
+                      lineId: {type: string}
+                      menuItemId: {type: string}
+                      quantity: {type: integer, minimum: 1, maximum: 99}
+                      note: {type: string, maxLength: 80, nullable: true}
+                discount:
+                  type: object
+                  nullable: true
+                  additionalProperties: false
+                  properties:
+                    kind: {type: string, enum: [percent, amount]}
+                    value: {type: integer, minimum: 1}
+                    label: {type: string, maxLength: 40}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/send:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Kitchen ticket for the lines not sent yet'
+      operationId: sendKassaBillToKitchen
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/void:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Throw away an unpaid bill (sent lines are journalled)'
+      operationId: voidKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/payments:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Card payment for (part of) the bill on a reader; 503 control_system_unreachable before any charge'
+      operationId: startKassaPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkoutId, readerId, amount]
+              properties:
+                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                readerId: {type: string, pattern: '^tmr_'}
+                amount: {type: integer, minimum: 300, description: Öre}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/payments/{paymentId}/undo:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'A paid part back to the card, before the receipt'
+      operationId: undoKassaPayment
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+        - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/bills/{billId}/finalize:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable); printed or e-mailed'
+      operationId: finalizeKassaBill
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delivery]
+              properties:
+                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
+                email: {type: string, format: email}
+      responses:
+        '201':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/print:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Printer settings, printers and queue state
+      operationId: getPrinting
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Settings, printers (never their secrets) and status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings: {$ref: '#/components/schemas/PrintSettings'}
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Printer'}
+                  status: {$ref: '#/components/schemas/PrintStatus'}
+        '404':
+          description: Unknown location or another tenant's.
+
+  /locations/{locationId}/print/status:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Printer reachable, unprinted and failed orders (orders screen banner)
+      operationId: getPrintStatus
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Queue state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintStatus'}
+
+  /locations/{locationId}/print/settings:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    put:
+      tags: [Printing]
+      summary: Auto print, order printer and paper width
+      operationId: putPrintSettings
+      description: Conditional on `version` (409 `changed_retry`). Auto print needs a printer.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PrintSettings'}
+      responses:
+        '200':
+          description: Saved settings with the new version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintSettings'}
+        '400':
+          description: Invalid settings.
+        '409':
+          description: changed_retry
+
+  /locations/{locationId}/print/devices:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Printing]
+      summary: Add a printer (the secret is returned once)
+      operationId: addPrinter
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 40}
+      responses:
+        '201':
+          description: The printer and its CloudPRNT credentials.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrinterCredentials'}
+        '409':
+          description: too_many_printers (5 per location)
+
+  /locations/{locationId}/print/devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    delete:
+      tags: [Printing]
+      summary: Remove (revoke) a printer
+      operationId: removePrinter
+      description: If it was the order printer, auto print turns off.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The overview after the change (as GET /print).
+        '404':
+          description: Unknown printer.
+
+  /locations/{locationId}/print/devices/{deviceId}/rotate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: New secret for a printer (the old one stops working, MAC binding cleared)
+      operationId: rotatePrinterSecret
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      responses:
+        '200':
+          description: The printer and its new credentials.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrinterCredentials'}
+
+  /locations/{locationId}/print/devices/{deviceId}/test:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: Queue a test print on one printer
+      operationId: testPrint
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintJobQueued'}
+
+  /locations/{locationId}/print/jobs:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Printing]
+      summary: Print an order again ("Skriv ut igen")
+      operationId: reprintOrder
+      description: Failed jobs of the order are superseded. 409 `no_printer`, `order_not_paid` or `order_cancelled`.
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [orderId]
+              properties:
+                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+      responses:
+        '202':
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintJobQueued'}
+        '404':
+          description: Unknown order.
+        '409':
+          description: no_printer, order_not_paid, order_cancelled
+
+  /print/cloudprnt/{deviceId}:
+    parameters:
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: CloudPRNT poll from the printer
+      operationId: cloudprntPoll
+      description: |
+        Star CloudPRNT. HTTP Basic (user = device id, password = secret);
+        firmware without Basic auth may send `?k=<secret>`. 401 on a wrong
+        secret or MAC, 429 after 20 failed logins per IP in 15 minutes.
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                printerMAC: {type: string}
+                statusCode: {type: string}
+                printingInProgress: {type: boolean}
+      responses:
+        '200':
+          description: Whether a job is waiting.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobReady]
+                properties:
+                  jobReady: {type: boolean}
+                  mediaTypes: {type: array, items: {type: string, enum: [application/vnd.star.starprnt]}}
+                  jobToken: {type: string}
+        '401':
+          description: unauthorized
+        '429':
+          description: too_many_attempts
+    get:
+      tags: [Printing]
+      summary: Fetch the job (leases it for 60 s)
+      operationId: cloudprntFetch
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: query, schema: {type: string}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: mac, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: The ticket.
+          content:
+            application/vnd.star.starprnt:
+              schema: {type: string, format: binary}
+        '404':
+          description: no job
+    delete:
+      tags: [Printing]
+      summary: Confirm the job (code 2xx) or report an error
+      operationId: cloudprntConfirm
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      parameters:
+        - {name: token, in: query, schema: {type: string}}
+        - {name: code, in: query, schema: {type: string}}
+        - {name: mac, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Recorded.
+
 components:
   securitySchemes:
+    printerBasic:
+      type: http
+      scheme: basic
+      description: Kitchen printer (Star CloudPRNT) - user = device id, password = the device secret shown once in admin.
     bearerAuth:
       type: http
       scheme: bearer
@@ -4229,6 +6784,465 @@ components:
           - no-store
 
   schemas:
+    PrintSettings:
+      type: object
+      additionalProperties: false
+      required: [autoPrint, printerId, paperWidth, version]
+      properties:
+        autoPrint: {type: boolean}
+        printerId: {type: string, nullable: true}
+        paperWidth: {type: integer, enum: [80, 58]}
+        version: {type: integer, minimum: 0}
+    Printer:
+      type: object
+      properties:
+        deviceId: {type: string}
+        name: {type: string}
+        mac: {type: string}
+        lastSeenAt: {type: string, format: date-time}
+        statusCode: {type: string}
+        createdAt: {type: string, format: date-time}
+        online: {type: boolean}
+        serverUrl: {type: string, description: CloudPRNT server URL to enter in the printer}
+    PrinterCredentials:
+      type: object
+      properties:
+        device: {$ref: '#/components/schemas/Printer'}
+        username: {type: string}
+        secret: {type: string, description: Shown once; only its SHA-256 is stored.}
+    PrintStatus:
+      type: object
+      properties:
+        autoPrint: {type: boolean}
+        printerConfigured: {type: boolean}
+        online: {type: boolean}
+        lastSeenAt: {type: string, format: date-time}
+        unprinted: {type: integer}
+        failed: {type: integer}
+        orders:
+          type: object
+          description: orderId -> PENDING | PRINTING | FAILED for orders not printed yet.
+          additionalProperties: {type: string, enum: [PENDING, PRINTING, FAILED]}
+    CardPayment:
+      type: object
+      properties:
+        paymentId: {type: string}
+        locationId: {type: string}
+        date: {type: string, format: date}
+        amount: {type: integer, description: Öre}
+        currency: {type: string, enum: [sek]}
+        orderId: {type: string}
+        orderNumber: {type: integer}
+        note: {type: string}
+        readerId: {type: string}
+        readerLabel: {type: string}
+        status: {type: string, enum: [processing, succeeded, failed, canceled, refunded]}
+        attempt: {type: integer}
+        failure:
+          type: object
+          properties:
+            code: {type: string}
+            message: {type: string}
+        card: {$ref: '#/components/schemas/LooseObject'}
+        refund: {$ref: '#/components/schemas/LooseObject'}
+        simulated: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        paidAt: {type: string, format: date-time}
+        receiptsSent: {type: integer}
+    CardPaymentList:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        enabled: {type: boolean}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/CardPayment'}
+    CardReaderList:
+      type: object
+      properties:
+        enabled: {type: boolean}
+        readers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              label: {type: string}
+              deviceType: {type: string}
+              status: {type: string, enum: [online, offline]}
+              simulated: {type: boolean}
+    CardReceipt:
+      type: object
+      properties:
+        payment: {$ref: '#/components/schemas/CardPayment'}
+        receipt: {$ref: '#/components/schemas/LooseObject'}
+    PrintJobQueued:
+      type: object
+      properties:
+        jobId: {type: string}
+        status: {type: string, enum: [PENDING]}
+    LooseObject:
+      type: object
+      additionalProperties: true
+    DocumentLink:
+      type: object
+      required: [url, expiresIn]
+      properties:
+        url: {type: string, format: uri}
+        expiresIn: {type: integer, example: 300}
+    ReasonInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: {type: string, maxLength: 500}
+    MessageInput:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: {type: string, maxLength: 1000}
+    AcceptInput:
+      type: object
+      additionalProperties: false
+      required: [name, acceptTerms]
+      properties:
+        name: {type: string, maxLength: 120}
+        role: {type: string, maxLength: 80, description: Required for a company.}
+        confirmAuthority: {type: boolean, description: Required (true) for a company.}
+        acceptTerms: {type: boolean, enum: [true]}
+    SignStart:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [bankid, redirect]}
+        url: {type: string, description: kind redirect.}
+        autoStartToken: {type: string, description: kind bankid.}
+        qrData: {type: string, description: 'kind bankid: the animated QR string (changes every second).'}
+        status: {type: string, enum: [pending], description: The guest's start only.}
+    SignPoll:
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, enum: [pending, failed, signed]}
+        hint: {type: string}
+        qrData: {type: string}
+        request: {$ref: '#/components/schemas/CateringRequest'}
+    CateringSettings:
+      type: object
+      additionalProperties: true
+      description: 'cateringSettings (shared/catering.py DEFAULT_SETTINGS): minGuests, leadTimeRules [{fromGuests, toGuests, days}], deliveryBands [{upToKm, price}], maxDeliveryKm, originAddress, defaultServiceIncluded, ownerReminderHours, signReminderDaysBefore, dayBeforeReminder, allowSimpleAcceptance, cleaningFee, terms, ...'
+    CateringTierInput:
+      type: object
+      additionalProperties: false
+      required: [name, fromPortions]
+      properties:
+        name: {type: string, maxLength: 40}
+        fromPortions: {type: integer, minimum: 1, description: Guests (issue 5).}
+        toPortions: {type: integer, minimum: 1, nullable: true, description: Guests; null = and up.}
+        discountPercent: {type: integer, minimum: 0, maximum: 50}
+        active: {type: boolean}
+    CateringTier:
+      allOf:
+        - $ref: '#/components/schemas/CateringTierInput'
+        - type: object
+          required: [tierId]
+          properties:
+            tierId: {type: string}
+    CateringTierList:
+      type: object
+      required: [tiers]
+      properties:
+        tiers: {type: array, items: {$ref: '#/components/schemas/CateringTier'}}
+    CateringQuoteInput:
+      type: object
+      description: Unknown fields are refused (400).
+      required: [guests, fulfilment]
+      properties:
+        guests: {type: integer, minimum: 1, maximum: 5000, description: At least the location's minGuests.}
+        packages:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [packageId]
+            properties:
+              packageId: {type: string}
+              quantity: {type: integer, minimum: 1, description: Guests on the package; default all guests.}
+        dishes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [dishId, quantity]
+            properties:
+              dishId: {type: string}
+              quantity: {type: integer, minimum: 1, description: Portions.}
+        items:
+          type: array
+          description: Regular menu dishes (legacy, until the catering menu is migrated).
+          items:
+            type: object
+            additionalProperties: false
+            required: [menuItemId, quantity]
+            properties:
+              menuItemId: {type: string}
+              quantity: {type: integer, minimum: 1}
+        fulfilment: {type: string, enum: [pickup, delivery]}
+        deliveryAddress: {$ref: '#/components/schemas/CateringAddress'}
+        equipmentReturn: {type: string, enum: [cleaned, not_cleaned]}
+        deliveryDate: {type: string, format: date, description: Decides the VAT rate.}
+        deliveryZone: {type: string, description: Sent by older sites; ignored.}
+    CateringAddress:
+      type: object
+      additionalProperties: false
+      required: [street, postalCode, city]
+      properties:
+        street: {type: string, maxLength: 120}
+        postalCode: {type: string, pattern: '^\d{3} ?\d{2}$'}
+        city: {type: string, maxLength: 60}
+    CateringQuote:
+      type: object
+      description: 'Amounts in öre, incl. VAT. Every line carries its vatRate; delivery and cleaning follow the food.'
+      required: [lines, guests, portions, subtotal, discount, deliveryFee, cleaningFee, total, vat, vatRate, vatBreakdown, deliveryFeeManual, earliestDate]
+      properties:
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: {type: string, enum: [package, dish, menu]}
+              packageId: {type: string}
+              dishId: {type: string}
+              menuItemId: {type: string}
+              name: {type: string}
+              unitPrice: {type: integer}
+              quantity: {type: integer}
+              vatRate: {type: integer, enum: [6, 12]}
+        guests: {type: integer}
+        portions: {type: integer}
+        tierName: {type: string, nullable: true}
+        subtotal: {type: integer}
+        discountPercent: {type: integer}
+        discount: {type: integer}
+        deliveryFee: {type: integer}
+        cleaningFee: {type: integer}
+        total: {type: integer}
+        vat: {type: integer}
+        vatRate: {type: integer}
+        vatBreakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              rate: {type: integer}
+              gross: {type: integer}
+              net: {type: integer}
+              vat: {type: integer}
+        serviceIncluded: {type: boolean}
+        distanceKm: {type: number, nullable: true, description: Road distance; null when not delivered or the address could not be located.}
+        deliveryFeeManual: {type: boolean, description: The address could not be located; the restaurant sets the fee in the offer.}
+        ruleRefs: {type: object, additionalProperties: true, description: 'tierId, deliveryBand, minGuests, leadTimeDays, vat.'}
+        earliestDate: {type: string, format: date}
+    CateringRequestInput:
+      allOf:
+        - $ref: '#/components/schemas/CateringQuoteInput'
+        - type: object
+          required: [customerType, name, email, phone, deliveryDate, deliveryTime, acceptTerms]
+          properties:
+            customerType: {type: string, enum: [private, company]}
+            name: {type: string}
+            email: {type: string}
+            phone: {type: string}
+            companyName: {type: string}
+            orgNumber: {type: string}
+            invoiceReference: {type: string}
+            signatoryName: {type: string, description: 'Company only, required.'}
+            signatoryRole: {type: string, description: 'Company only, required.'}
+            signatoryAuthority: {type: boolean, description: 'Company only, must be true.'}
+            deliveryTime: {type: string, pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'}
+            notes: {type: string, maxLength: 1000}
+            language: {type: string}
+            acceptTerms: {type: boolean, enum: [true]}
+            turnstileToken: {type: string}
+            attribution: {type: object}
+            marketingOptIn: {type: boolean}
+            marketingConsent: {type: object}
+    CateringRequestCreated:
+      type: object
+      required: [requestId, locationId, token, status, request]
+      properties:
+        requestId: {type: string}
+        locationId: {type: string}
+        token: {type: string}
+        status: {type: string, enum: [requested]}
+        request: {$ref: '#/components/schemas/CateringQuote'}
+    CateringRequestList:
+      type: object
+      required: [requests]
+      properties:
+        requests: {type: array, items: {type: object, additionalProperties: true}}
+    CateringOfferInput:
+      type: object
+      additionalProperties: false
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, unitPrice, quantity]
+            properties:
+              name: {type: string, maxLength: 120}
+              unitPrice: {type: number, minimum: 0, description: Kronor incl. VAT.}
+              quantity: {type: integer, minimum: 1}
+              menuItemId: {type: string}
+              dishId: {type: string}
+              packageId: {type: string}
+        discountPercent: {type: integer, minimum: 0, maximum: 50}
+        deliveryFee: {type: number, minimum: 0}
+        equipmentReturn: {type: string, enum: [cleaned, not_cleaned]}
+        cleaningFee: {type: number, minimum: 0}
+        serviceIncluded: {type: boolean, description: 'With service 12 % VAT; food only by the takeaway rule (6 % 2026-04-01 to 2027-12-31).'}
+        message: {type: string, maxLength: 1000}
+        validUntil: {type: string, format: date}
+    CateringRequest:
+      type: object
+      additionalProperties: true
+      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, capacityLeft, settings).
+    CateringGuestView:
+      type: object
+      additionalProperties: true
+      description: The guest's fields, the current offer, canSign, canAccept, canPay, documents [offer, signed], signedBy, signedMethod.
+    CateringDishInput:
+      type: object
+      additionalProperties: false
+      required: [name, pricePerPortion]
+      properties:
+        name: {type: string, maxLength: 120}
+        description: {type: string, maxLength: 500}
+        pricePerPortion: {type: number, minimum: 0, maximum: 10000, description: 'Kronor incl. VAT, at most two decimals.'}
+        allergens:
+          type: array
+          items: {type: string, enum: [gluten, crustaceans, eggs, fish, peanuts, soy, milk, nuts, celery, mustard, sesame, sulphites, lupin, molluscs]}
+        dietary:
+          type: array
+          items: {type: string, enum: [vegetarian, vegan, gluten_free, lactose_free]}
+        active: {type: boolean, default: true}
+        sort: {type: integer, minimum: 0, maximum: 10000, default: 0}
+        sourceMenuItemId: {type: string, maxLength: 128, description: The regular menu dish it was copied from.}
+        version: {type: integer, minimum: 1, description: Required on PUT.}
+    CateringDish:
+      allOf:
+        - $ref: '#/components/schemas/CateringDishInput'
+        - type: object
+          required: [dishId, version, active, allergens, dietary, sort]
+          properties:
+            dishId: {type: string}
+    CateringPackageInput:
+      type: object
+      additionalProperties: false
+      required: [name, pricePerGuest, dishIds]
+      properties:
+        name: {type: string, maxLength: 120}
+        description: {type: string, maxLength: 500}
+        pricePerGuest: {type: number, minimum: 0, maximum: 10000, description: 'Kronor incl. VAT, at most two decimals.'}
+        dishIds: {type: array, minItems: 1, maxItems: 40, uniqueItems: true, items: {type: string}}
+        minGuests: {type: integer, minimum: 1, maximum: 5000}
+        active: {type: boolean, default: true}
+        sort: {type: integer, minimum: 0, maximum: 10000, default: 0}
+        version: {type: integer, minimum: 1, description: Required on PUT.}
+    CateringPackage:
+      allOf:
+        - $ref: '#/components/schemas/CateringPackageInput'
+        - type: object
+          required: [packageId, version, active, sort]
+          properties:
+            packageId: {type: string}
+    CateringMenu:
+      type: object
+      description: Guest fields only (no version, sort or sourceMenuItemId).
+      required: [dishes, packages]
+      properties:
+        dishes:
+          type: array
+          items:
+            type: object
+            required: [dishId, name, description, pricePerPortion, allergens, dietary]
+            properties:
+              dishId: {type: string}
+              name: {type: string}
+              description: {type: string}
+              pricePerPortion: {type: number}
+              allergens: {type: array, items: {type: string}}
+              dietary: {type: array, items: {type: string}}
+        packages:
+          type: array
+          items:
+            type: object
+            required: [packageId, name, description, pricePerGuest, dishIds]
+            properties:
+              packageId: {type: string}
+              name: {type: string}
+              description: {type: string}
+              pricePerGuest: {type: number}
+              dishIds: {type: array, items: {type: string}}
+              minGuests: {type: integer}
+    MarketingConsent:
+      type: object
+      description: |
+        The guest's voluntary consent to offers (shared/consent.py). Leave it
+        out when the box is not ticked; a booking or order never needs it.
+        The wording is the server's (GET /site-config privacy.marketingConsent);
+        only its version comes back here. Channels without a contact detail
+        are dropped.
+      required: [channels, textVersion]
+      additionalProperties: false
+      properties:
+        channels:
+          type: array
+          minItems: 1
+          items: {type: string, enum: [email, sms]}
+        textVersion:
+          type: string
+          description: The current wording version (400 for any other).
+    PrivacyNotice:
+      type: object
+      required: [body, version, custom]
+      properties:
+        body: {type: string}
+        version: {type: integer, description: 0 = the template}
+        updatedAt: {type: string, nullable: true}
+        custom: {type: boolean}
+    ConsentLookup:
+      type: object
+      properties:
+        withdrawn:
+          type: array
+          items: {type: string, enum: [email, sms]}
+          description: Only in the withdraw answer.
+        email: {$ref: '#/components/schemas/ChannelConsent'}
+        sms: {$ref: '#/components/schemas/ChannelConsent'}
+    ChannelConsent:
+      type: object
+      required: [state, history]
+      properties:
+        state: {type: string, enum: [granted, withdrawn, none]}
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              at: {type: string}
+              action: {type: string, enum: [grant, withdraw, suppressed]}
+              channel: {type: string, enum: [email, sms]}
+              source: {type: string}
+              text: {type: string}
+              textVersion: {type: string}
+              locationId: {type: string}
+              ref: {type: string}
+              by: {type: string, enum: [guest, restaurant, system]}
     GuideState:
       type: object
       additionalProperties: false
@@ -4309,6 +7323,10 @@ components:
               maxPartySizeOnline:
                 type: integer
                 nullable: true
+              gracePeriodMinutes:
+                type: integer
+                nullable: true
+                description: How long the table is held for a late guest (booking terms); null = not set.
               ordering:
                 type: object
                 nullable: true
@@ -4390,6 +7408,9 @@ components:
           enum: [sv, en]
         marketingOptIn:
           type: boolean
+          description: Older sites only. true = consent to offers by e-mail (legacy wording). Prefer marketingConsent.
+        marketingConsent:
+          $ref: '#/components/schemas/MarketingConsent'
         acceptTerms:
           type: boolean
           enum: [true]
@@ -4476,6 +7497,20 @@ components:
         notifyGuest:
           type: boolean
           description: Tell the guest about a new date/time (default true). Table-only changes never notify.
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: |
+            Extend or shorten a reserved/arrived booking (on its own, with
+            no other change). 15-minute steps, at least 15 minutes, never
+            past closing, free on every table. Longer than the rule needs the
+            rule to allow it, within its maxExtensionMinutes and not into a
+            window without extension; otherwise 409 `not_extendable`,
+            `extension_too_long` or `window_not_extendable` unless
+            overrideRule. 409 `after_closing`, `table_taken`, `already_ended`.
+        overrideRule:
+          type: boolean
+          description: Staff override of the extension rule (logged in history as override).
 
     ReservationStatusRequest:
       type: object
@@ -4569,6 +7604,12 @@ components:
         pendingExpiresAt:
           type: string
           format: date-time
+        bookingRule:
+          $ref: '#/components/schemas/BookingRuleSnapshot'
+        extendedMinutes:
+          type: integer
+          minimum: 0
+          description: Minutes beyond the rule's length after staff extended the end (0 when not extended or shortened).
 
     ReservationList:
       type: object
@@ -4611,6 +7652,14 @@ components:
           type: string
         cancellable:
           type: boolean
+        durationMinutes:
+          type: integer
+        extendable:
+          type: boolean
+          description: The restaurant may extend the booking on site if the table is free.
+        ruleName:
+          type: string
+          nullable: true
         location:
           type: object
           properties:
@@ -4638,6 +7687,11 @@ components:
               type: integer
             cancelCutoffHours:
               type: integer
+            freeCancelUntil:
+              type: string
+              format: date-time
+              nullable: true
+              description: Last moment (UTC) to cancel for free; null = no late-cancellation fee.
             currency:
               type: string
             cancellationFee:
@@ -4835,6 +7889,27 @@ components:
           additionalProperties: true
         notifications:
           $ref: '#/components/schemas/TenantNotifications'
+        insights:
+          $ref: '#/components/schemas/TenantInsightsSettings'
+        dpa:
+          type: object
+          additionalProperties: false
+          description: Personuppgiftsbiträdesavtal status. Added later; older backends omit it.
+          properties:
+            currentVersion:
+              type: string
+            acceptedVersion:
+              type: string
+              nullable: true
+            acceptedAt:
+              type: string
+              format: date-time
+              nullable: true
+            required:
+              type: boolean
+              description: A new tenant - its public routes answer 404 until a version is accepted.
+            upToDate:
+              type: boolean
         role:
           type: string
           enum: [owner_user, staff_user]
@@ -4857,6 +7932,82 @@ components:
               timezone:
                 type: string
                 nullable: true
+
+    InsightsResponse:
+      type: object
+      required: [range, compare, filters, locations, money, pending, current]
+      properties:
+        range:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        compare:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum: [previous, year, none]
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        filters:
+          type: object
+          additionalProperties: true
+        locations:
+          type: array
+          items:
+            type: object
+            properties:
+              locationId:
+                type: string
+              name:
+                type: string
+                nullable: true
+              lunchUntil:
+                type: string
+        money:
+          type: boolean
+          description: False for staff - every amount is left out.
+        pending:
+          type: boolean
+          description: A location has no rolled-up rows yet (the nightly run builds them).
+        builtAt:
+          type: string
+          nullable: true
+        current:
+          $ref: '#/components/schemas/InsightsSummary'
+        previous:
+          allOf:
+            - $ref: '#/components/schemas/InsightsSummary'
+          nullable: true
+
+    InsightsSummary:
+      type: object
+      additionalProperties: true
+      description: |
+        Counts, rates (percent, null when there is nothing to divide by) and
+        amounts in öre (owners only): bookings, guests, avgParty, arrived,
+        noShows, noShowPct, cancelled, cancelledPct, lateCancels,
+        lateCancelPct, cardOnFilePct, occupancy, seatFill, sources {online,
+        phone, onsite}, lead [{label, bookings}] (days ahead: 0, 1, 2-6,
+        7-13, 14+), party [{size, bookings}] (8 = 8+), bySize [{size,
+        occupancy}], feesCharged, feeCount, feesFailed, feesRefunded,
+        orders, orderRevenue, tableRevenue, pickupRevenue, tableOrders,
+        avgOrder, prepMinutes, latePct, cateringRevenue, revenue, catering
+        {requests, offers, won, delivered, cateringRevenue, replyHours,
+        conversionPct, avgCatering}, web {visits, pageviews, bookings,
+        orders, catering, conversionPct, channels[]}, dishes [{id, name,
+        quantity, revenue, previousQuantity}], pairs [{a, b, orders}],
+        byHour, byWeekday (0 = Monday), byDay, heat [{weekday, hour,
+        occupancy}].
 
     TenantUpdateRequest:
       type: object
@@ -4886,6 +8037,20 @@ components:
             reminderHours:
               type: integer
               enum: [0, 2, 3, 6, 12, 24, 48]
+        insights:
+          $ref: '#/components/schemas/TenantInsightsSettings'
+
+    TenantInsightsSettings:
+      type: object
+      additionalProperties: false
+      description: |
+        What staff see on Statistik (GET /insights). `operations` (default)
+        = their own location's figures without any amounts; `none` = no
+        access. Owners always see everything.
+      properties:
+        staffAccess:
+          type: string
+          enum: [operations, none]
 
     TenantNotifications:
       type: object
@@ -5043,16 +8208,23 @@ components:
             sent to. Lowers every line by its percent; 409 discount_invalid /
             discount_expired / discount_used / discount_min_order /
             discount_other_email when it can't be used.
+        marketingConsent:
+          $ref: '#/components/schemas/MarketingConsent'
         marketingOptIn:
           type: boolean
           description: The guest ticked "send me offers" (subscribed when the order is paid).
+        embedded:
+          type: boolean
+          description: |
+            The site pays on its own page with Stripe's Payment Element: the
+            response carries clientSecret and stripeAccount instead of
+            checkoutUrl.
 
     OrderCreated:
       type: object
       required:
         - orderId
         - locationId
-        - checkoutUrl
         - statusToken
         - totalAmount
       properties:
@@ -5063,6 +8235,13 @@ components:
         checkoutUrl:
           type: string
           format: uri
+          description: Hosted Checkout (requests without `embedded`).
+        clientSecret:
+          type: string
+          description: Checkout Session client secret (embedded requests).
+        stripeAccount:
+          type: string
+          description: The restaurant's connected account (acct_...) for Stripe.js (embedded requests).
         statusToken:
           type: string
         totalAmount:
@@ -5711,6 +8890,11 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        lunchUntil:
+          type: string
+          pattern: '^(1[0-9]|20):00$'
+          nullable: true
+          description: The hour dinner starts in Statistik (lunch before it); null = 15:00.
         specialDays:
           type: array
           nullable: true
@@ -5737,6 +8921,15 @@ components:
           description: Tables guests may book together online; staff may combine any tables. null removes them.
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          allOf:
+            - $ref: '#/components/schemas/BookingTimeRules'
+          nullable: true
+          description: |
+            Booking length per start time and extension rules. null removes
+            them (the location then books bookingDurationHours, no
+            extension). gracePeriodHours must stay shorter than the
+            shortest booking length.
 
     LocationUpdateRequest:
       type: object
@@ -5791,6 +8984,11 @@ components:
           maximum: 50
           nullable: true
           description: Largest party bookable online; null = no limit.
+        lunchUntil:
+          type: string
+          pattern: '^(1[0-9]|20):00$'
+          nullable: true
+          description: The hour dinner starts in Statistik (lunch before it); null = 15:00.
         specialDays:
           type: array
           nullable: true
@@ -5817,6 +9015,15 @@ components:
           description: Tables guests may book together online; staff may combine any tables. null removes them.
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          allOf:
+            - $ref: '#/components/schemas/BookingTimeRules'
+          nullable: true
+          description: |
+            Booking length per start time and extension rules. null removes
+            them (the location then books bookingDurationHours, no
+            extension). gracePeriodHours must stay shorter than the
+            shortest booking length.
 
     Location:
       type: object
@@ -5867,6 +9074,9 @@ components:
           $ref: '#/components/schemas/GuaranteePolicy'
         maxPartySizeOnline:
           type: integer
+        lunchUntil:
+          type: string
+          description: The hour dinner starts in Statistik ("15:00" when not set).
         specialDays:
           type: array
           items:
@@ -5879,6 +9089,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableCombination'
+        bookingTimeRules:
+          $ref: '#/components/schemas/BookingTimeRules'
         createdBy:
           type: string
         createdAt:
@@ -5895,6 +9107,119 @@ components:
           description: |
             Creation or last effective-update time. Optional only for legacy
             records created before update auditing.
+
+    BookingExtension:
+      type: object
+      additionalProperties: false
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+        maxMinutes:
+          type: integer
+          minimum: 0
+          maximum: 240
+          multipleOf: 15
+          description: Longest extension (staff), required when allowed; 0 when not.
+
+    BookingTimeWindow:
+      type: object
+      additionalProperties: false
+      required: [name, weekdays, startTime, endTime, durationMinutes, extension]
+      description: |
+        A special rule (e.g. lunch buffet) for bookings STARTING in
+        [startTime, endTime) local time on these weekdays (and dates). No
+        midnight crossing. A window with a date range beats a recurring one,
+        then the higher priority wins; an unresolvable overlap is refused.
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: Assigned on save when missing.
+        name:
+          type: string
+          maxLength: 40
+          description: Shown to guests ("Lunchbuffé").
+        weekdays:
+          type: array
+          minItems: 1
+          maxItems: 7
+          items:
+            type: string
+            enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        startTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: 15-minute steps.
+        endTime:
+          type: string
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+          description: 15-minute steps, after startTime.
+        dateFrom:
+          type: string
+          format: date
+        dateTo:
+          type: string
+          format: date
+        durationMinutes:
+          type: integer
+          minimum: 15
+          maximum: 480
+          multipleOf: 15
+        extension:
+          $ref: '#/components/schemas/BookingExtension'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 0
+
+    BookingTimeRules:
+      type: object
+      additionalProperties: false
+      required: [defaultMinutes, extension]
+      description: |
+        Booking length by local start time (shared/booking_rules.py). The
+        rule of a booking's start is snapshotted on the booking.
+      properties:
+        defaultMinutes:
+          type: integer
+          minimum: 15
+          maximum: 480
+          multipleOf: 15
+        extension:
+          $ref: '#/components/schemas/BookingExtension'
+        lastSeatingMinutes:
+          type: integer
+          minimum: 0
+          maximum: 480
+          multipleOf: 15
+          default: 120
+          description: No booking starts less than this before closing.
+        windows:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/BookingTimeWindow'
+
+    BookingRuleSnapshot:
+      type: object
+      required: [durationMinutes, extensionAllowed, maxExtensionMinutes]
+      description: |
+        The rule taken when the booking was made; windowId and name only for
+        a window. Bookings from before snapshots report their own length and
+        no extension.
+      properties:
+        windowId:
+          type: string
+        name:
+          type: string
+        durationMinutes:
+          type: integer
+        extensionAllowed:
+          type: boolean
+        maxExtensionMinutes:
+          type: integer
 
     PublicLocationInfo:
       type: object
@@ -5965,6 +9290,9 @@ components:
       required:
         - startTime
         - endTime
+        - durationMinutes
+        - extendable
+        - ruleName
         - layoutVersion
         - tables
       properties:
@@ -5974,6 +9302,16 @@ components:
         endTime:
           type: string
           pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        durationMinutes:
+          type: integer
+          description: Booking length for this start (its booking time rule).
+        extendable:
+          type: boolean
+          description: Staff may extend a booking of this start if the table is free.
+        ruleName:
+          type: string
+          nullable: true
+          description: The special window's name ("Lunchbuffé"), null for the default rule.
         layoutVersion:
           type: integer
           minimum: 1
@@ -6279,6 +9617,24 @@ components:
         alcohol:
           type: boolean
           description: Contains alcohol - 25 % VAT, not orderable for pickup. Optional (false).
+        availableFrom:
+          $ref: '#/components/schemas/MenuScheduleBound'
+        availableUntil:
+          $ref: '#/components/schemas/MenuScheduleBound'
+
+    MenuScheduleBound:
+      type: string
+      format: date-time
+      nullable: true
+      pattern: 'Z$'
+      example: '2026-11-01T10:00:00Z'
+      description: |
+        Optional schedule bound in UTC (must end in `Z`; stored to the
+        second). Omitted or null = no bound; null in a PUT clears it. The dish
+        is shown and orderable when `active` is true and
+        availableFrom <= now < availableUntil (end exclusive). When both are
+        set, availableUntil must be after availableFrom, also against the
+        stored value in a partial PUT (400).
 
     MenuItemCreateRequest:
       allOf:
@@ -6297,7 +9653,7 @@ components:
         - $ref: '#/components/schemas/MenuItemEditableFields'
         - type: object
           minProperties: 1
-      description: At least one of the six editable fields is required.
+      description: At least one editable field is required.
 
     MenuItem:
       type: object
@@ -6334,6 +9690,10 @@ components:
           type: boolean
         alcohol:
           type: boolean
+        availableFrom:
+          $ref: '#/components/schemas/MenuScheduleBound'
+        availableUntil:
+          $ref: '#/components/schemas/MenuScheduleBound'
         createdBy:
           type: string
         createdAt:
@@ -7949,7 +11309,9 @@ components:
       description: |
         `table_taken` (pick another table/time), `availability_changed`,
         `changed_retry`, or a status-transition code (`too_early`,
-        `grace_period_not_over`, `not_cancellable`, `already_started`, ...).
+        `grace_period_not_over`, `not_cancellable`, `already_started`,
+        `not_extendable`, `extension_too_long`, `window_not_extendable`,
+        `after_closing`, ...).
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'

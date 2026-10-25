@@ -32,6 +32,20 @@ def _client(name):
     return _clients[name]
 
 
+def sender_identity(tenant_row):
+    """Footer identity (MFL 20 §, e-handelslagen): "Legal AB (org.nr X),
+    street, postcode city" from the tenant PROFILE row. "" when the name or
+    the address is missing: a campaign must not go out without both."""
+    from shared.privacy_notice import _address
+    row = tenant_row or {}
+    name = (row.get("legalName") or row.get("name") or "").strip()
+    address = _address(row)
+    if not name or not address:
+        return ""
+    org = f" (org.nr {row['orgNumber']})" if row.get("orgNumber") else ""
+    return f"{name}{org}, {address}"
+
+
 def from_address(display_name):
     display = (display_name or "Restaurangen").replace('"', "").replace("\n", " ")[:60]
     return formataddr((display, os.environ["NO_REPLY_EMAIL_ADDRESS"]), charset="utf-8")

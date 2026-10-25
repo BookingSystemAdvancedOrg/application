@@ -43,7 +43,7 @@ import os
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, marketing as m, tenant
+from shared import consent, dynamo, marketing as m, tenant
 from shared import marketing_offer as offer
 
 logger = logging.getLogger()
@@ -176,6 +176,12 @@ def _ses(detail):
             raise
     m.bump_campaign(table, tenant_id, campaign_id, **{status: 1})
     logger.info(json.dumps({"marketing": status, "tenantId": tenant_id, "campaignId": campaign_id}))
+    if kind == "Complaint" and consent.table_name():
+        # "This is spam" is a withdrawal: the consent log records it too.
+        email = (table.get_item(Key=m.sub_key(tenant_id, sid)).get("Item") or {}).get("email")
+        if email:
+            consent.withdraw(dynamo.table(consent.table_name()), tenant_id=tenant_id, channel=consent.EMAIL,
+                             identifier=email, source="complaint", actor="ses")
 
 
 def handler(event, context):

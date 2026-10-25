@@ -55,6 +55,10 @@ PURPOSE:
                          no SMS can be sent
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
+      card_receipt       e-mail: the receipt of an in-person card payment
+                         (order table, CARD# records, shared/card_messages.py)
+      kassa_receipt      e-mail: a Kassa receipt or copy, already rendered
+                         (order table, KASSAMAIL# items, shared/kassa_receipt.py)
 
     Order SMS don't depend on tenant.notifications.sms - telling the guest
     the food is ready is what ordering is - but still go to Nordic numbers
@@ -67,7 +71,8 @@ ENV_VARS:
     NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
     RESERVATION_LINK_KEY_SECRET_ARN,
     SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes),
-    MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox")
+    MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox"),
+    SES_CONFIGURATION_SET (optional, the transactional SES configuration set)
 
 DEV MAIL OUTBOX:
     When MAIL_OUTBOX_BUCKET_NAME is set (infrastructure var.mail_outbox,
@@ -86,9 +91,10 @@ DEV MAIL OUTBOX:
 AWS RESOURCE ACCESS:
     Stream read on the three tables; GetItem/Query on the tenant table and
     GetItem on locations (tenant-context policy); ses:SendEmail on the
-    no-reply identity; sns:Publish (SMS, Resource "*" by AWS design);
-    GetSecretValue on the link signing key; UpdateItem on the finance table
-    (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
+    no-reply identity (also SES v2 SendEmail with raw content: the booking
+    confirmation carries its .ics, same IAM action); sns:Publish (SMS,
+    Resource "*" by AWS design); GetSecretValue on the link signing key;
+    UpdateItem on the finance table (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
 """
 
 import json
@@ -97,6 +103,8 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from email import policy
+from email.message import EmailMessage
 from email.utils import formataddr
 
 import boto3
@@ -104,7 +112,9 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import catering, catering_messages, dynamo, finance, manage_link, messages, order_messages, orders, sms, tenant
+from shared import card_messages, card_payments, catering, catering_messages, dynamo, finance, manage_link, messages
+from shared import kassa, kassa_receipt, order_messages, orders, sms, tenant
+from shared import calendar_invite
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -221,20 +231,58 @@ def _to_outbox(bucket, entry):
     logger.info("saved %s to the dev mail outbox: %s", entry.get("channel"), message_id)
 
 
-def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=None, location_id=None):
+def _raw_email(to, subject, text, html_body, *, source, reply_to, attachments):
+    """MIME bytes: text + html alternatives, then the attachments
+    ((filename, content type, str) each, base64 so CRLF survives)."""
+    msg = EmailMessage(policy=policy.SMTP.clone(cte_type="7bit"))  # SES: 7-bit safe MIME
+    msg["From"], msg["To"], msg["Subject"] = source, to, subject
+    if reply_to:
+        msg["Reply-To"] = ", ".join(reply_to)
+    msg.set_content(text)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
+    for filename, content_type, data in attachments:
+        rest = content_type.partition("/")[2]  # text/... only: data is a str
+        subtype, *params = [p.strip() for p in rest.split(";")]
+        extra = dict(p.split("=", 1) for p in params if "=" in p and not p.startswith("charset="))
+        msg.add_attachment(data, subtype=subtype, filename=filename, cte="base64", params=extra)
+    return msg.as_bytes()
+
+
+def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=None, location_id=None,
+                attachments=None):
     bucket = _outbox_bucket()
     if bucket:
-        _to_outbox(bucket, {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
-                            "subject": subject, "text": text, "html": html_body})
+        entry = {"channel": "email", "to": to, "from": source, "replyTo": reply_to,
+                 "subject": subject, "text": text, "html": html_body}
+        if attachments:
+            entry["attachments"] = [{"filename": f, "contentType": c, "content": d} for f, c, d in attachments]
+        _to_outbox(bucket, entry)
+        finance.count(tenant_id, emails=1, location_id=location_id)
+        return
+    if attachments:
+        # SES v2 SendEmail with raw content: the same ses:SendEmail action
+        # and configuration set as the simple path, so no IAM change.
+        extra = {}
+        if os.environ.get("SES_CONFIGURATION_SET"):
+            extra["ConfigurationSetName"] = os.environ["SES_CONFIGURATION_SET"]
+        raw = _raw_email(to, subject, text, html_body, source=source, reply_to=reply_to, attachments=attachments)
+        _client("sesv2").send_email(
+            FromEmailAddress=source, Destination={"ToAddresses": [to]},
+            Content={"Raw": {"Data": raw}}, **extra,
+        )
         finance.count(tenant_id, emails=1, location_id=location_id)
         return
     message = {"Subject": {"Data": subject, "Charset": "UTF-8"},
                "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}}
     if html_body:
         message["Body"]["Html"] = {"Data": html_body, "Charset": "UTF-8"}
+    extra = {}
+    if os.environ.get("SES_CONFIGURATION_SET"):
+        extra["ConfigurationSetName"] = os.environ["SES_CONFIGURATION_SET"]  # transactional, not marketing
     _client("ses").send_email(
         Source=source, Destination={"ToAddresses": [to]}, Message=message,
-        ReplyToAddresses=reply_to,
+        ReplyToAddresses=reply_to, **extra,
     )
     finance.count(tenant_id, emails=1, location_id=location_id)
 
@@ -317,9 +365,16 @@ def _reservation(record):
     email = None if staff_only else new.get("customerEmail")
     if email:
         subject, text, html_body = messages.guest_email(kind, new, tenant_row, location, link)
+        attachments = None
+        if kind == "confirmed":
+            try:
+                attachments = [(calendar_invite.FILENAME, calendar_invite.CONTENT_TYPE,
+                                calendar_invite.booking_ics(new, tenant_row, location, link, now=_now()))]
+            except Exception:  # noqa: BLE001 - the confirmation goes out with or without the .ics
+                logger.exception("no .ics for %s", new.get("reservationId"))
         try:
             _send_email(email, subject, text, html_body, source=source, reply_to=reply_to, tenant_id=tenant_id,
-                        location_id=location_id)
+                        location_id=location_id, attachments=attachments)
             sent.append("guest_email")
         except (BotoCoreError, ClientError) as exc:
             if _retryable(exc):
@@ -354,9 +409,9 @@ def _reservation(record):
         try:
             subject, text = messages.staff_email(kind, new, tenant_row, location,
                                                  os.environ.get("ADMIN_DASHBOARD_URL"))
-            guest_email = new.get("customerEmail")
+            # No guest address in Reply-To either: contact details are in admin.
             _send_email(staff_to, subject, text, None, source=source,
-                        reply_to=[guest_email] if guest_email else [], tenant_id=tenant_id, location_id=location_id)
+                        reply_to=[], tenant_id=tenant_id, location_id=location_id)
             sent.append("staff_email")
         except Exception as exc:  # noqa: BLE001 - the guest part is done; log, don't retry
             logger.error(json.dumps({"failed": "staff_email", "reservationId": new.get("reservationId"),
@@ -386,9 +441,69 @@ def _fresh_notice(new, old, types):
     return notice, None
 
 
+def _card_receipt(new, old):
+    """"Skicka kvitto" on an in-person card payment (shared/card_payments.py):
+    the receipt to the address staff typed. E-mail only."""
+    notice, skipped = _fresh_notice(new, old, (card_payments.NOTICE_RECEIPT,))
+    if not notice or not new.get("receiptEmail"):
+        return skipped or "no_address"
+    tenant_id, location_id = new.get("tenantId"), new.get("locationId")
+    try:
+        tenant_row = tenant.get_tenant(tenant_id) if tenant_id else None
+        location = tenant.get_location(tenant_id, location_id) if tenant_row else None
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    if not tenant_row or tenant_row.get("status") != "active" or not location:
+        return "inactive"
+    subject, text, html_body = card_messages.email(new, tenant_row, location)
+    try:
+        _send_email(new["receiptEmail"], subject, text, html_body, source=_from_address(tenant_row, location),
+                    reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    logger.info(json.dumps({"notice": notice["type"], "paymentId": new.get("paymentId"), "tenantId": tenant_id}))
+    return "sent"
+
+
+def _kassa_receipt(new, old):
+    """An e-mailed Kassa receipt or copy (shared/kassa.py queue_email): the
+    document is rendered already; the item expires a day later."""
+    notice, skipped = _fresh_notice(new, old, (kassa.NOTICE_RECEIPT,))
+    if not notice or not new.get("receiptEmail"):
+        return skipped or "no_address"
+    tenant_id, location_id = new.get("tenantId"), new.get("locationId")
+    try:
+        tenant_row = tenant.get_tenant(tenant_id) if tenant_id else None
+        location = tenant.get_location(tenant_id, location_id) if tenant_row else None
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    if not tenant_row or tenant_row.get("status") != "active" or not location:
+        return "inactive"
+    subject, text, html_body = kassa_receipt.email(new.get("document") or {}, tenant_row, location)
+    try:
+        _send_email(new["receiptEmail"], subject, text, html_body, source=_from_address(tenant_row, location),
+                    reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)
+    except (BotoCoreError, ClientError) as exc:
+        if _retryable(exc):
+            raise Retry from exc
+        raise
+    logger.info(json.dumps({"notice": notice["type"], "tenantId": tenant_id}))
+    return "sent"
+
+
 def _order(record):
     new = _image(record["dynamodb"].get("NewImage"))
     old = _image(record["dynamodb"].get("OldImage"))
+    if str(new.get("SK", "")).startswith("CARD#"):
+        return _card_receipt(new, old)
+    if str(new.get("SK", "")).startswith("KASSAMAIL#"):
+        return _kassa_receipt(new, old)
     notice, skipped = _fresh_notice(new, old, orders.NOTICE_TYPES)
     if not notice:
         if skipped == "stale":

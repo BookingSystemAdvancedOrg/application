@@ -35,7 +35,7 @@ from typing import Optional
 
 from boto3.dynamodb.conditions import Key
 
-from shared import dynamo
+from shared import dpa, dynamo
 from shared.responses import json_response
 
 # One line per request that resolved to a tenant. finance-rollup counts
@@ -54,7 +54,7 @@ def _log_request(tenant_id: str, kind: str, location_id: Optional[str] = None) -
 
 
 ROLES = ("owner_user", "staff_user")
-FEATURES = ("reservations", "ordering", "catering", "terminal")
+FEATURES = ("reservations", "ordering", "catering", "terminal", "kassa")
 
 _tenant_cache: dict = {}
 _location_tenant_cache: dict = {}
@@ -297,6 +297,10 @@ def for_public(location_id: str, *, feature: Optional[str] = None) -> TenantCont
         raise _not_found()
     tenant_row = get_tenant(tenant_id)
     if not tenant_row or tenant_row.get("status") != "active":
+        raise _not_found()
+    # A new restaurant goes live only once the owner has accepted the DPA
+    # (shared/dpa.py); restaurants without the flag are never affected.
+    if dpa.blocks_public(tenant_row):
         raise _not_found()
     try:
         require_feature(tenant_row, feature)

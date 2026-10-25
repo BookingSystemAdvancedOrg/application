@@ -5,13 +5,19 @@
              the order record) - idempotency key checkout-<orderId>. The
              session's metadata carries locationId/orderId/date/tenantId so
              the webhook finds the order without a lookup.
+             embedded: ui_mode "elements" - the site shows Stripe's Payment
+             Element on its own page (card data stays in Stripe's iframes)
+             and confirms with the session's client_secret. The session,
+             its events and the settling below are the same as hosted
+             Checkout; only the page the guest pays on differs.
     settle   paid  -> status confirmed, paymentStatus paid, daily number,
                       ready estimate, order_confirmed notice (SMS + receipt)
              failed -> status failed (checkout expired, async payment failed)
              Every write is conditional on status pending_payment, so the
              webhook, the guest's status page and Stripe's retries can all
              try - the first wins and the rest are no-ops.
-    refund   staff cancel -> Refund of the PaymentIntent (key refund-<orderId>)
+    refund   staff cancel -> Refund of the PaymentIntent (key refund-<orderId>);
+             also an order paid on the card reader (same PaymentIntent field)
 
 Only payment_status == "paid" confirms: Swish/Klarna complete the session
 first and settle later (checkout.session.async_payment_*).
@@ -27,7 +33,7 @@ from shared import stripe_client as stripe
 _LOCALES = {"sv": "sv", "en": "en"}
 
 
-def create_checkout(item, account, success_url, cancel_url, now):
+def create_checkout(item, account, success_url, cancel_url, now, *, embedded=False):
     metadata = {"orderId": item["orderId"], "locationId": item["locationId"],
                 "tenantId": item["tenantId"], "date": item["date"]}
     params = {
@@ -46,16 +52,19 @@ def create_checkout(item, account, success_url, cancel_url, now):
         # Link account, not the number in the order. With it off, the only
         # SMS about the order go to the number the guest typed (ours).
         "wallet_options": {"link": {"display": "never"}},
-        "locale": _LOCALES.get(item.get("language"), "sv"),
         "metadata": metadata,
         "payment_intent_data": {"metadata": metadata,
                                 "description": f"Beställning {item['date']} ({item['orderId'][:8]})"},
         # Stripe's minimum is 30 minutes; a minute more so clock skew never
         # makes the request invalid.
         "expires_at": int((now + timedelta(minutes=o.CHECKOUT_MINUTES + 1)).timestamp()),
-        "success_url": success_url,
-        "cancel_url": cancel_url,
     }
+    if embedded:
+        # Swish, Klarna and 3-D Secure redirects come back to the status page.
+        params.update({"ui_mode": "elements", "return_url": success_url})
+    else:
+        params.update({"locale": _LOCALES.get(item.get("language"), "sv"),
+                       "success_url": success_url, "cancel_url": cancel_url})
     return stripe.request("POST", "/v1/checkout/sessions", params, account=account,
                           idempotency_key=f"checkout-{item['orderId']}")
 
@@ -79,9 +88,10 @@ def _conditional_failed(exc):
         exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
 
 
-def settle_paid(item, session, now, actor):
+def settle_paid(item, session, now, actor, *, method="online"):
     """pending_payment -> confirmed. Returns the updated item, or None when
-    the order was already settled (by someone else first)."""
+    the order was already settled (by someone else first). ``method``
+    card_present: paid on the restaurant's card reader (shared/card_payments.py)."""
     if item.get("status") != o.PENDING_PAYMENT:
         return None
     number = o.next_number(item["locationId"], item["date"])
@@ -92,7 +102,7 @@ def settle_paid(item, session, now, actor):
             Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
             UpdateExpression=(
                 "SET #s = :confirmed, paymentStatus = :paid, #n = :number, confirmedAt = :now, "
-                "readyEstimate = :ready, paymentIntentId = :pi, notice = :notice, updatedAt = :now, "
+                "readyEstimate = :ready, paymentIntentId = :pi, paymentMethod = :method, notice = :notice, updatedAt = :now, "
                 "history = list_append(if_not_exists(history, :empty), :entry), "
                 "version = if_not_exists(version, :zero) + :one REMOVE #ttl"),
             ConditionExpression="attribute_exists(PK) AND #s = :pending",
@@ -103,7 +113,7 @@ def settle_paid(item, session, now, actor):
                 ":pi": session.get("payment_intent") or "-",
                 ":notice": o.notice(o.NOTICE_CONFIRMED, now),
                 ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
-                ":pending": o.PENDING_PAYMENT,
+                ":pending": o.PENDING_PAYMENT, ":method": method,
             },
             ReturnValues="ALL_NEW",
         )
@@ -115,7 +125,10 @@ def settle_paid(item, session, now, actor):
 
 
 def settle_failed(item, now, actor, reason):
-    if item.get("status") != o.PENDING_PAYMENT:
+    """pending_payment -> failed, unless the order is being paid on the
+    restaurant's card reader (cardPaymentId): its Checkout Session was
+    expired on purpose, and the order settles from the card payment."""
+    if item.get("status") != o.PENDING_PAYMENT or item.get("cardPaymentId"):
         return None
     entry = o.history_entry("payment_failed", actor, now, status=o.FAILED, reason=reason)
     try:
@@ -125,7 +138,7 @@ def settle_failed(item, now, actor, reason):
                 "SET #s = :failed, paymentStatus = :pfailed, failureReason = :reason, updatedAt = :now, "
                 "history = list_append(if_not_exists(history, :empty), :entry), "
                 "version = if_not_exists(version, :zero) + :one REMOVE #ttl"),
-            ConditionExpression="attribute_exists(PK) AND #s = :pending",
+            ConditionExpression="attribute_exists(PK) AND #s = :pending AND attribute_not_exists(cardPaymentId)",
             ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
             ExpressionAttributeValues={
                 ":failed": o.FAILED, ":pfailed": o.PAY_FAILED, ":reason": reason, ":now": o.iso(now),

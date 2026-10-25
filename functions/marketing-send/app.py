@@ -10,7 +10,8 @@ PURPOSE:
     marketing function when the owner presses Skicka or schedules a time):
       * one email per subscriber in the campaign's audience who is still
         subscribed at send time (unsubscribed, bounced and complained
-        addresses are skipped);
+        addresses are skipped) and whose latest record in the consent log
+        (CONSENT_TABLE_NAME, shared/consent.py) is a grant for e-mail;
       * each recipient is written first (conditional put) and sent once,
         so a retried or resumed run never mails anyone twice (the recipient
         rows never expire); if nothing reached SES the recipient and the
@@ -51,7 +52,7 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, finance, marketing as m, marketing_mail
+from shared import consent, dynamo, finance, marketing as m, marketing_mail
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -107,6 +108,15 @@ def _count_usage(table, tenant_id):
         if _conditional_failed(exc):
             return False
         raise
+
+
+def _consented(tenant_id, subscriber):
+    """The latest consent state, checked right before each send. The
+    subscriber row is only the list; the consent log decides."""
+    name = consent.table_name()
+    if not name:
+        return False  # fail closed: no consent log, no proof of consent, no email
+    return consent.may_send(dynamo.table(name), tenant_id, consent.EMAIL, subscriber.get("email"))
 
 
 def _link_base():
@@ -264,6 +274,8 @@ def _run_campaign(table, campaign, schedule_sk, deadline):
                     return "paused", cursor
                 if not m.in_audience(subscriber, audience, today):
                     continue
+                if not _consented(tenant_id, subscriber):
+                    continue  # the consent log says no (withdrawn, or no consent on record)
                 sid = subscriber["SK"].split("#", 1)[1]
                 if not _claim(table, campaign, sid):
                     continue  # already sent (or being sent) by an earlier run

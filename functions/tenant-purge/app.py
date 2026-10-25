@@ -26,7 +26,8 @@ PURPOSE:
         and discount tiers), the catering history of each request, and the
         location rows themselves
       * marketing: subscribers, templates, campaigns and their recipients,
-        offers, codes, statistics, usage, queued sends
+        offers, codes, statistics, usage, queued sends, and the consent log
+        (CONSENT_TABLE_NAME)
       * users: the Cognito users of the tenant pool and their profiles
       * menu images (menu-images/<tenantId>/ in the menu image bucket)
       * domains we ran DNS for: auto-renew is switched off for domains
@@ -56,7 +57,8 @@ ENV_VARS:
     LOCATION_TABLE_NAME, USER_TABLE_NAME, USER_TENANT_INDEX_NAME,
     COGNITO_USER_POOL_ID, LOCATION_TABLE_NAMES (JSON list),
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
-    MARKETING_TABLE_NAME, MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
+    MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
+    MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list)
 
 AWS RESOURCE ACCESS:
@@ -210,6 +212,13 @@ def _purge_marketing(tenant_id, budget, counts):
     counts["marketing"] += _delete_keys(table_name, queued, budget)
     for part in MARKETING_PARTS:
         counts["marketing"] += _delete_partition(table_name, f"TENANT#{tenant_id}#{part}", budget)
+    # The consent log (shared/consent.py), found through its byTenant index:
+    # with the restaurant gone nobody can send, so nothing is kept.
+    consent_table = os.environ.get("CONSENT_TABLE_NAME")
+    if consent_table:
+        rows = [{"PK": i["PK"], "SK": i["SK"]} for i in _query_keys(
+            consent_table, Key("tenantId").eq(tenant_id), index=os.environ.get("CONSENT_TENANT_INDEX_NAME", "byTenant"))]
+        counts["marketing"] += _delete_keys(consent_table, rows, budget)
 
 
 def _purge_users(tenant_id, budget, counts):

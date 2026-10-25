@@ -23,7 +23,8 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY
+    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY, RETENTION_* (the periods the
+    privacy notice shows, shared/retention.py)
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.3
 """
@@ -35,7 +36,8 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, catering, dynamo, guarantee, http, orders, tenant
+from shared import booking_rules, catering, consent, dynamo, guarantee, http, orders, privacy_notice, retention
+from shared import tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -117,6 +119,11 @@ def _number(value):
     return int(number) if number == int(number) else number
 
 
+def _minutes(hours):
+    number = _number(hours)
+    return round(number * 60) if number and number > 0 else None
+
+
 def _special_days(row):
     """Closed days, special hours and days without online booking from
     today (the location's date) through the next 60 days. A malformed stored
@@ -149,6 +156,8 @@ def _public_location(row, tenant_row):
         "businessHours": row.get("businessHours") or {},
         "bookingDurationHours": _number(row.get("bookingDurationHours")),
         "maxPartySizeOnline": _number(row.get("maxPartySizeOnline")),
+        # How long a table is held for a late guest (booking terms).
+        "gracePeriodMinutes": _minutes(row.get("gracePeriodHours")),
         "specialDays": _special_days(row),
         # Which ways to order this location offers (None = no ordering);
         # open/closed right now comes from GET .../ordering, not this
@@ -207,6 +216,13 @@ def _site_config(params):
             "accountId": (row.get("stripe") or {}).get("accountId"),
         },
         "turnstile": {"siteKey": os.environ.get("TURNSTILE_SITE_KEY") or None},
+        # The guest notice on the forms, the restaurant's own privacy notice
+        # and the marketing checkbox wording (null without marketing).
+        "privacy": {
+            "notice": privacy_notice.public(row),
+            "retention": retention.public_periods(),
+            "marketingConsent": consent.public_text(row.get("name")) if features.get("marketing") else None,
+        },
     }
 
 

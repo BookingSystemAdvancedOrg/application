@@ -281,3 +281,140 @@ def test_the_guard_counts_nothing_without_a_table(monkeypatch):
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
     assert request_guard.check(CONTACT, NOW) == []
     request_guard.refund(["phone#x#86400#1"])
+
+
+# --- booking time rules ------------------------------------------------------------------
+
+ALL_DAYS = list(rules.WEEKDAYS)
+
+
+def window(name="Lunchbuffé", **extra):
+    w = {"id": "lunch", "name": name, "weekdays": ALL_DAYS[:5], "startTime": "11:00",
+         "endTime": "14:00", "durationMinutes": 60, "extension": {"allowed": False}, "priority": 0}
+    w.update(extra)
+    return w
+
+
+def time_rules(*windows, **extra):
+    value = {"defaultMinutes": 90, "extension": {"allowed": True, "maxMinutes": 30},
+             "windows": list(windows)}
+    value.update(extra)
+    return rules.validate_booking_time_rules(value)
+
+
+MONDAY = date(2026, 10, 19)
+SATURDAY = date(2026, 10, 24)
+
+
+def minute(clock):
+    return rules.minute_of_day(clock)
+
+
+def test_time_rules_are_normalized_with_defaults():
+    value = time_rules(window(weekdays=["friday", "monday"], name="  Lunch   buffé "))
+    assert value["lastSeatingMinutes"] == 120
+    assert value["windows"][0]["weekdays"] == ["monday", "friday"]
+    assert value["windows"][0]["name"] == "Lunch buffé"
+    assert value["windows"][0]["extension"] == {"allowed": False, "maxMinutes": 0}
+    assert rules.validate_booking_time_rules(None) is None
+
+
+def test_a_window_without_id_gets_one():
+    w = window()
+    del w["id"]
+    assert len(time_rules(w)["windows"][0]["id"]) == 32
+
+
+@pytest.mark.parametrize("bad, message", [
+    ({"defaultMinutes": 100}, "steps of 15"),
+    ({"defaultMinutes": 0}, "between 15 and 480"),
+    ({"defaultMinutes": 495}, "between 15 and 480"),
+    ({"extension": {"allowed": True}}, "maxMinutes"),
+    ({"extension": {"allowed": "yes"}}, "allowed"),
+    ({"lastSeatingMinutes": 50}, "steps of 15"),
+    ({"surprise": 1}, "unsupported"),
+    ({"windows": [window(startTime="22:00", endTime="01:00")]}, "cross midnight"),
+    ({"windows": [window(startTime="11:10")]}, "steps of 15"),
+    ({"windows": [window(weekdays=[])]}, "weekdays"),
+    ({"windows": [window(weekdays=["funday"])]}, "weekdays"),
+    ({"windows": [window(name=" ")]}, "name"),
+    ({"windows": [window(dateFrom="2026-12-01", dateTo="2026-11-01")]}, "dateFrom"),
+    ({"windows": [window(dateFrom="2026-02-30")]}, "real calendar date"),
+    ({"windows": [window(durationMinutes=45, extension={"allowed": True, "maxMinutes": 20})]},
+     "steps of 15"),
+    ({"windows": [window(id="a"), window(id="a", name="Brunch", weekdays=["sunday"])]}, "unique"),
+    ({"windows": [window(id=f"w{i}", weekdays=["sunday"], startTime=f"{i:02d}:00",
+                         endTime=f"{i:02d}:30") for i in range(21)]}, "more than 20"),
+])
+def test_invalid_time_rules_are_refused(bad, message):
+    value = {"defaultMinutes": 90, "extension": {"allowed": True, "maxMinutes": 30}, **bad}
+    with pytest.raises(ValueError, match=message):
+        rules.validate_booking_time_rules(value)
+
+
+def test_overlapping_windows_with_the_same_priority_are_refused():
+    with pytest.raises(ValueError, match="same priority"):
+        time_rules(window(), window(id="b", name="Brunch", startTime="13:00", endTime="15:00"))
+
+
+def test_overlaps_that_resolve_are_accepted():
+    time_rules(window(), window(id="b", name="Brunch", startTime="13:00", endTime="15:00", priority=1))
+    # dated beats recurring, so the same priority is fine
+    time_rules(window(), window(id="b", name="Jul", dateFrom="2026-12-01", dateTo="2026-12-23"))
+    # touching windows don't overlap; different weekdays or dates neither
+    time_rules(window(), window(id="b", name="Middag", startTime="14:00", endTime="17:00"))
+    time_rules(window(), window(id="b", name="Helg", weekdays=["saturday"]))
+    time_rules(window(id="a", dateTo="2026-11-30"), window(id="b", name="Jul", dateFrom="2026-12-01"))
+
+
+def test_resolution_uses_the_local_start_with_inclusive_start_and_exclusive_end():
+    value = time_rules(window())
+    buffet = {"windowId": "lunch", "name": "Lunchbuffé", "durationMinutes": 60,
+              "extensionAllowed": False, "maxExtensionMinutes": 0}
+    default = {"durationMinutes": 90, "extensionAllowed": True, "maxExtensionMinutes": 30}
+    assert rules.resolve_booking_rule(value, 120, MONDAY, minute("10:45")) == default
+    assert rules.resolve_booking_rule(value, 120, MONDAY, minute("11:00")) == buffet
+    assert rules.resolve_booking_rule(value, 120, MONDAY, minute("13:45")) == buffet
+    assert rules.resolve_booking_rule(value, 120, MONDAY, minute("14:00")) == default
+    assert rules.resolve_booking_rule(value, 120, SATURDAY, minute("12:00")) == default
+
+
+def test_dated_window_beats_recurring_then_priority_decides():
+    value = time_rules(
+        window(),
+        window(id="vip", name="Kvällsmeny", priority=5, durationMinutes=120),
+        window(id="jul", name="Julbord", dateFrom="2026-10-19", dateTo="2026-10-19",
+               durationMinutes=150, extension={"allowed": True, "maxMinutes": 60}),
+    )
+    assert rules.resolve_booking_rule(value, 120, MONDAY, minute("12:00"))["name"] == "Julbord"
+    assert rules.resolve_booking_rule(value, 120, date(2026, 10, 20), minute("12:00"))["name"] == "Kvällsmeny"
+
+
+def test_date_range_bounds_are_inclusive():
+    value = time_rules(window(dateFrom="2026-10-19", dateTo="2026-10-20"))
+    assert rules.resolve_booking_rule(value, 120, date(2026, 10, 20), minute("12:00"))["durationMinutes"] == 60
+    assert rules.resolve_booking_rule(value, 120, date(2026, 10, 21), minute("12:00"))["durationMinutes"] == 90
+
+
+def test_without_rules_the_old_duration_applies_and_nothing_extends():
+    assert rules.resolve_booking_rule(None, 120, MONDAY, 600) == {
+        "durationMinutes": 120, "extensionAllowed": False, "maxExtensionMinutes": 0}
+    assert rules.last_seating_minutes(None) == 120
+    assert rules.max_duration_minutes(None, 120) == rules.shortest_duration_minutes(None, 120) == 120
+
+
+def test_longest_and_shortest_durations():
+    value = time_rules(window(), window(id="b", name="Middag", startTime="17:00", endTime="22:00",
+                                        durationMinutes=150))
+    assert rules.max_duration_minutes(value, 120) == 150
+    assert rules.shortest_duration_minutes(value, 120) == 60
+
+
+def test_an_extension_may_not_run_into_a_window_without_extension():
+    value = time_rules(window())
+    # 09:30 + 90 min ends 11:00: extending to 11:15 runs into the buffet.
+    assert rules.blocking_window(value, MONDAY, minute("11:00"), minute("11:15"))["name"] == "Lunchbuffé"
+    assert rules.blocking_window(value, MONDAY, minute("10:30"), minute("11:00")) is None
+    assert rules.blocking_window(value, SATURDAY, minute("11:00"), minute("11:30")) is None
+    open_window = time_rules(window(extension={"allowed": True, "maxMinutes": 15}))
+    assert rules.blocking_window(open_window, MONDAY, minute("11:00"), minute("11:15")) is None

@@ -3,6 +3,7 @@ campaigns, sending, clicks, unsubscribe and SES suppression."""
 
 import importlib.util
 import json
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -15,8 +16,10 @@ import pytest
 from boto3.dynamodb.types import TypeSerializer
 from moto import mock_aws
 
+from shared import consent, dynamo
 from shared import marketing as m
 from shared import tenant as shared_tenant
+from test_consent import consent_table
 from tenant_support import (ALL_FEATURES, LOC_A, REGION, TENANT_A, TENANT_B,
                             location_row, seed_tenancy, tenant_row, with_tenant_claims)
 
@@ -44,7 +47,8 @@ def env(monkeypatch):
         features = {**ALL_FEATURES, "marketing": True}
         seed_tenancy(monkeypatch,
                      tenant_a=tenant_row(TENANT_A, features=features, name="Bistro Linnea",
-                                         branding={"primaryColor": "#9a3b26"}, replyToEmail="hej@linnea.se"),
+                                         branding={"primaryColor": "#9a3b26"}, replyToEmail="hej@linnea.se",
+                                         address={"street": "Gatan 2", "postalCode": "111 11", "city": "Stockholm"}),
                      tenant_b=tenant_row(TENANT_B, features=features),
                      locations_a=[location_row(TENANT_A, LOC_A, timezone="Europe/Stockholm")])
         monkeypatch.setenv("USER_TABLE_NAME", "test-user")
@@ -72,7 +76,7 @@ def env(monkeypatch):
             ExpressionAttributeValues={":s": "bistro-linnea"})
         shared_tenant.reset_caches()
         m.reset_key_cache()
-        yield SimpleNamespace(table=boto3.resource("dynamodb", region_name=REGION).Table(MKT_TABLE),
+        yield SimpleNamespace(mp=monkeypatch, table=boto3.resource("dynamodb", region_name=REGION).Table(MKT_TABLE),
                               menu=boto3.resource("dynamodb", region_name=REGION).Table(MENU_TABLE),
                               s3=boto3.client("s3", region_name=REGION))
 
@@ -268,10 +272,19 @@ TEMPLATE = {"name": "Höst", "subject": "Hej {förnamn}, höst på {restaurang}"
 
 
 def make_subscribers(env, n=3):
+    """n subscribed guests. Without a consent log set up by the test, one is
+    created with a grant for each (marketing-send fails closed without it)."""
     sync = load("marketing-sync")
+    own_log = not os.environ.get("CONSENT_TABLE_NAME")
+    if own_log:
+        env.mp.setenv("CONSENT_TABLE_NAME", "test-consent")
+        consent_table(boto3.resource("dynamodb", region_name=REGION))
     for i in range(n):
         sync.handler(stream(RES_TABLE, booking(reservationId=f"r{i}", customerEmail=f"guest{i}@example.se",
                                                customerName=f"Gäst{i} Test")), None)
+        if own_log:
+            consent.grant(dynamo.table("test-consent"), tenant_id=TENANT_A, restaurant="Bistro Linnea",
+                          version=consent.CURRENT, channels=["email"], email=f"guest{i}@example.se", source="booking")
 
 
 def draft(env, fn):
@@ -420,11 +433,12 @@ def test_subscriber_admin_and_export(env):
     page = body_of(admin(fn, "GET", "/marketing/subscribers"))
     assert {s["email"] for s in page["subscribers"]} == {"guest0@example.se", "guest1@example.se"}
     sid = page["subscribers"][0]["subscriberId"]
-    assert admin(fn, "POST", f"/marketing/subscribers/{sid}/unsubscribe")["statusCode"] == 204
     csv_out = admin(fn, "GET", "/marketing/subscribers/export")
-    assert csv_out["headers"]["Content-Type"].startswith("text/csv") and "unsubscribed" in csv_out["body"]
-    assert admin(fn, "DELETE", f"/marketing/subscribers/{sid}")["statusCode"] == 204
-    assert len(body_of(admin(fn, "GET", "/marketing/subscribers"))["subscribers"]) == 1
+    assert csv_out["headers"]["Content-Type"].startswith("text/csv") and "guest0@example.se" in csv_out["body"]
+    # Unlogged unsubscribe/erase are gone: the privacy endpoints log every withdrawal.
+    assert admin(fn, "POST", f"/marketing/subscribers/{sid}/unsubscribe")["statusCode"] == 404
+    assert admin(fn, "DELETE", f"/marketing/subscribers/{sid}")["statusCode"] == 404
+    assert len(body_of(admin(fn, "GET", "/marketing/subscribers"))["subscribers"]) == 2
 
 
 def test_overview_totals(env):
@@ -581,6 +595,22 @@ def test_public_offer_only_when_live(env):
     assert body_of(public_get(public, "/m/offer", {"locationId": "unknown"})) == {"offer": None}
 
 
+def test_no_offer_without_the_legal_sender(env):
+    fn, public = load("marketing"), load("marketing-public")
+    save_offer(env, fn)
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}, UpdateExpression="REMOVE address")
+    shared_tenant.reset_caches()
+    assert body_of(public_get(public, "/m/offer", {"locationId": LOC_A})) == {"offer": None}
+    out = signup(public)
+    assert out["statusCode"] == 404 and body_of(out)["error"] == "no_offer"
+    assert outbox(env) == []
+    refused = save_offer(env, fn)
+    assert refused["statusCode"] == 400
+    assert body_of(refused)["error"] == "the restaurant has no legal name and address for the footer"
+    assert save_offer(env, fn, enabled=False)["statusCode"] == 200  # switching it off is always allowed
+
+
 def code_in(mail):
     return re.search(r"[A-Z2-9]{4}-[A-Z2-9]{4}", mail["text"]).group(0)
 
@@ -707,3 +737,89 @@ def test_discount_math_rounds_per_unit():
     assert offer.normalize_code(" abcd-efgh ") == "ABCD-EFGH" and offer.normalize_code("ABCD-EFG0") is None
     assert offer.canonical_email("A.n.N.a+x@GoogleMail.com") == "anna@gmail.com"
     assert offer.canonical_email("anna.b+tag@example.se") == "anna.b@example.se"
+
+
+# --- issue 4: footer identity, dish availability, fail closed ------------------------------
+
+def _set_legal(env):
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
+        UpdateExpression="SET legalName = :l, orgNumber = :o, address = :a",
+        ExpressionAttributeValues={":l": "Linnea Mat AB", ":o": "556677-8899",
+                                   ":a": {"street": "Storgatan 1", "postalCode": "111 22", "city": "Stockholm"}})
+    shared_tenant.reset_caches()
+
+
+def test_campaign_footer_names_the_legal_sender(env):
+    _set_legal(env)
+    fn, sender = load("marketing"), load("marketing-send")
+    make_subscribers(env, 1)
+    _, cmp = draft(env, fn)
+    admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
+    sender.handler({"source": "schedule"}, SimpleNamespace(get_remaining_time_in_millis=lambda: 120000))
+    (mail,) = outbox(env)
+    assert "Linnea Mat AB (org.nr 556677-8899), Storgatan 1, 111 22 Stockholm." in mail["text"]
+
+
+@pytest.mark.parametrize("fields", [
+    {"active": False},
+    {"availableUntil": "2020-01-01T00:00:00Z"},
+    {"availableFrom": "2999-01-01T00:00:00Z"},
+    {"availableUntil": "not a date"},
+])
+def test_dish_blocks_skip_dishes_guests_cannot_order(env, fields):
+    fn = load("marketing")
+    draft(env, fn)
+    env.menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "MENU#dish-1", "menuItemId": "dish-1",
+                            "name": "Pumpasoppa", "price": Decimal(145), "active": True, **fields})
+    out = body_of(admin(fn, "POST", "/marketing/preview", {"template": TEMPLATE}))
+    assert "Pumpasoppa" not in out["html"]
+    env.menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "MENU#dish-1", "menuItemId": "dish-1",
+                            "name": "Pumpasoppa", "price": Decimal(145), "active": True})
+    assert "Pumpasoppa" in body_of(admin(fn, "POST", "/marketing/preview", {"template": TEMPLATE}))["html"]
+
+
+def test_send_is_refused_without_the_legal_sender(env):
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}, UpdateExpression="REMOVE address")
+    shared_tenant.reset_caches()
+    fn = load("marketing")
+    make_subscribers(env, 1)
+    _, cmp = draft(env, fn)
+    out = admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
+    assert out["statusCode"] == 400
+    assert body_of(out)["error"] == "the restaurant has no legal name and address for the footer"
+    assert body_of(admin(fn, "GET", f"/marketing/campaigns/{cmp['campaignId']}"))["status"] == "draft"
+
+
+def test_sender_identity_needs_name_and_address():
+    from shared import marketing_mail
+    assert marketing_mail.sender_identity({"legalName": "A AB"}) == ""
+    assert marketing_mail.sender_identity({"address": {"street": "G 1", "city": "Sthlm"}}) == ""
+    assert marketing_mail.sender_identity({"name": "Krog", "address": "G 1"}) == "Krog, G 1"
+
+
+def test_send_fails_closed_without_consent_log(env, monkeypatch):
+    monkeypatch.delenv("CONSENT_TABLE_NAME", raising=False)
+    fn, sender, sync = load("marketing"), load("marketing-send"), load("marketing-sync")
+    sync.handler(stream(RES_TABLE, booking(customerEmail="guest0@example.se")), None)
+    _, cmp = draft(env, fn)
+    admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
+    sender.handler({"source": "schedule"}, SimpleNamespace(get_remaining_time_in_millis=lambda: 120000))
+    assert outbox(env) == []
+
+
+def test_subscriber_lookup_by_email_and_suppressed_group(env):
+    fn = load("marketing")
+    make_subscribers(env, 3)
+    for email, status in (("guest1@example.se", "bounced"), ("guest2@example.se", "complained")):
+        env.table.update_item(Key=m.sub_key(TENANT_A, m.subscriber_id(TENANT_A, email)),
+                              UpdateExpression="SET #s = :v", ExpressionAttributeNames={"#s": "status"},
+                              ExpressionAttributeValues={":v": status})
+    found = body_of(admin(fn, "GET", "/marketing/subscribers", query={"email": " Guest0@Example.se"}))
+    assert [s["email"] for s in found["subscribers"]] == ["guest0@example.se"]
+    assert body_of(admin(fn, "GET", "/marketing/subscribers", query={"email": "nobody@example.se"}))[
+        "subscribers"] == []
+    assert admin(fn, "GET", "/marketing/subscribers", query={"email": "nope"})["statusCode"] == 400
+    blocked = body_of(admin(fn, "GET", "/marketing/subscribers", query={"status": "suppressed"}))
+    assert sorted(s["status"] for s in blocked["subscribers"]) == ["bounced", "complained"]

@@ -77,16 +77,23 @@ _EDITABLE_FIELDS = {
     "specialDays",
     "tableRules",
     "tableCombinations",
+    # Booking length per start time and extension rules
+    # (shared/booking_rules.py); None keeps bookingDurationHours.
+    "bookingTimeRules",
     # Food ordering policy (shared/orders.py).
     "ordering",
+    # Statistik: the hour dinner starts ("15:00"; shared/insights.py).
+    "lunchUntil",
 }
 _OPTIONAL_RULE_FIELDS = (
     "ordering",
+    "lunchUntil",
     "guarantee",
     "maxPartySizeOnline",
     "specialDays",
     "tableRules",
     "tableCombinations",
+    "bookingTimeRules",
 )
 _PUBLIC_REQUIRED_FIELDS = (
     "locationId",
@@ -340,6 +347,13 @@ def _optional_rules(source, timezone_name):
         rules["guarantee"] = guarantee.validate_policy(source["guarantee"])
     if "ordering" in source:
         rules["ordering"] = orders.validate_policy(source["ordering"])
+    if "lunchUntil" in source:
+        value = source["lunchUntil"]
+        if value is not None and (
+            not isinstance(value, str) or not re.fullmatch(r"(1[0-9]|20):00", value)
+        ):
+            raise ValueError("lunchUntil must be a whole hour between 10:00 and 20:00")
+        rules["lunchUntil"] = value
     if "maxPartySizeOnline" in source:
         value = source["maxPartySizeOnline"]
         if value is not None:
@@ -360,7 +374,31 @@ def _optional_rules(source, timezone_name):
         rules["tableCombinations"] = booking_rules.validate_table_combinations(
             source["tableCombinations"]
         )
+    if "bookingTimeRules" in source:
+        rules["bookingTimeRules"] = booking_rules.validate_booking_time_rules(
+            source["bookingTimeRules"]
+        )
     return rules
+
+
+def _check_grace_period(fields):
+    """On save: a no-show can only be marked while the booking runs, so the
+    grace period must be shorter than the shortest booking length."""
+    shortest = booking_rules.shortest_duration_minutes(
+        fields.get("bookingTimeRules"), fields["bookingDurationHours"] * 60
+    )
+    if fields["gracePeriodHours"] * 60 >= shortest:
+        raise ValueError("gracePeriodHours must be shorter than the shortest booking length")
+
+
+# Grace period that can be chosen: 15 to 60 minutes. Older locations may
+# still hold 0; that is accepted when read and replaced on the next save of it.
+_GRACE_MIN_HOURS, _GRACE_MAX_HOURS = 0.25, 1
+
+
+def _check_grace_range(fields):
+    if not _GRACE_MIN_HOURS <= fields["gracePeriodHours"] <= _GRACE_MAX_HOURS:
+        raise ValueError("gracePeriodHours must be between 15 and 60 minutes")
 
 
 def _validated_location_fields(source, *, require_contacts=False):
@@ -778,6 +816,8 @@ def _create_location(event, ctx):
         _request_body(event, partial=False),
         require_contacts=True,
     )
+    _check_grace_range(fields)
+    _check_grace_period(fields)
     location_id = _new_location_id()
     timestamp = _utc_now()
     item = {
@@ -813,6 +853,10 @@ def _update_location(event, ctx):
     }
     candidate.update(updates)
     fields = _validated_location_fields(candidate)
+    if "gracePeriodHours" in updates:
+        _check_grace_range(fields)
+    if {"gracePeriodHours", "bookingDurationHours", "bookingTimeRules"} & set(updates):
+        _check_grace_period(fields)
     changed = {
         field: fields[field]
         for field in updates

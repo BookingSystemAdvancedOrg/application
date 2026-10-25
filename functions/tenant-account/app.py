@@ -5,6 +5,7 @@ TRIGGER:
     GET   /tenant
     PATCH /tenant
     POST  /tenant/stripe/account-link
+    POST  /tenant/dpa/accept
 
 PURPOSE:
     The signed-in restaurant's own account: name, plan and what it allows,
@@ -12,7 +13,10 @@ PURPOSE:
     work with (GET - owner and staff; staff see only their assigned
     location), the
     few fields an owner may edit themselves (PATCH: senderName,
-    replyToEmail, branding, notifications) and a fresh Stripe onboarding link (POST, owner).
+    replyToEmail, branding, notifications, insights) and a fresh Stripe onboarding link (POST, owner).
+    POST /tenant/dpa/accept (owner): accepts the current personuppgifts-
+    biträdesavtal (shared/dpa.py) - an append-only DPA#<tenant> row with version,
+    time and the accepting user, plus the `dpa` summary on PROFILE.
     Everything else about the tenant is managed by operators in Booqy Console.
 
     Multi-tenant: the tenant is the token's tenant_id claim - there is no
@@ -33,8 +37,10 @@ AWS RESOURCE ACCESS:
     Tenant table GetItem/Query; location table Query on the caller's own
     TENANT# partition / GetItem; user table GetItem of the caller's own
     profile (staff); UpdateItem limited by IAM to senderName,
-    replyToEmail, branding, notifications, updatedAt, updatedBy with ReturnValues
-    NONE/UPDATED_*; GetSecretValue on the platform Stripe key.
+    replyToEmail, branding, notifications, insights, updatedAt, updatedBy with ReturnValues
+    NONE/UPDATED_*; GetSecretValue on the platform Stripe key. DPA accept:
+    PutItem of a new DPA# row and UpdateItem of `dpa` on PROFILE, in one
+    transaction (infrastructure dpa-iam.tf).
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.2
 """
@@ -55,7 +61,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import dpa, tenant
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -67,11 +73,16 @@ _ROUTES = {
     ("GET", "/tenant"),
     ("PATCH", "/tenant"),
     ("POST", "/tenant/stripe/account-link"),
+    ("POST", "/tenant/dpa/accept"),
 }
-_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications")
+_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications", "insights")
 # Guest/restaurant messages (functions/notification, reservation-reminders).
 _REMINDER_HOURS = (0, 2, 3, 6, 12, 24, 48)
 NOTIFICATION_DEFAULTS = {"sms": False, "staffEmails": True, "reminderHours": 24}
+# Statistik (functions/insights): what staff may see. "operations" = the
+# figures without amounts, "none" = nothing; owners always see everything.
+INSIGHTS_STAFF_ACCESS = ("operations", "none")
+INSIGHTS_DEFAULTS = {"staffAccess": "operations"}
 # SMS sender ids: max 11 characters, letters/digits/space only.
 _SENDER_NAME = re.compile(r"[A-Za-z0-9 ]{1,11}")
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -196,6 +207,8 @@ def _public_tenant(ctx, row):
         "replyToEmail": row.get("replyToEmail"),
         "branding": row.get("branding") or {},
         "notifications": _notifications(row.get("notifications")),
+        "insights": _insights(row.get("insights")),
+        "dpa": dpa.status(row),
         "role": role,
         "locations": _locations(ctx),
     }
@@ -282,6 +295,25 @@ def _validated_notifications(value, current):
     return merged
 
 
+def _insights(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    out = dict(INSIGHTS_DEFAULTS)
+    if raw.get("staffAccess") in INSIGHTS_STAFF_ACCESS:
+        out["staffAccess"] = raw["staffAccess"]
+    return out
+
+
+def _validated_insights(value):
+    if not isinstance(value, dict):
+        raise ValueError("insights must be an object")
+    unknown = sorted(set(value) - set(INSIGHTS_DEFAULTS))
+    if unknown:
+        raise ValueError(f"unsupported insights fields: {', '.join(unknown)}")
+    if "staffAccess" in value and value["staffAccess"] not in INSIGHTS_STAFF_ACCESS:
+        raise ValueError("insights.staffAccess must be operations or none")
+    return {**INSIGHTS_DEFAULTS, **value}
+
+
 def _validated_edit(body, current=None):
     """None or "" removes a field (falls back to the platform default)."""
     unknown = sorted(set(body) - set(_EDITABLE))
@@ -325,6 +357,8 @@ def _validated_edit(body, current=None):
     if "notifications" in body:
         fields["notifications"] = _validated_notifications(
             body["notifications"], (current or {}).get("notifications"))
+    if "insights" in body:
+        fields["insights"] = _validated_insights(body["insights"])
     return fields
 
 
@@ -359,6 +393,69 @@ def _fresh_profile(tenant_id):
     if not isinstance(item, dict):
         raise _ServiceFailure
     return item
+
+
+# --- POST /tenant/dpa/accept ---------------------------------------------------
+
+def _accepting_user(ctx):
+    """Who accepted, from the caller's own USER# profile (access tokens carry
+    no e-mail). The sub alone is enough if the profile can't be read."""
+    user = {"sub": ctx.sub}
+    table_name = os.environ.get("USER_TABLE_NAME")
+    if table_name:
+        item = table(table_name).get_item(
+            Key={"PK": f"USER#{ctx.sub}", "SK": "PROFILE"}
+        ).get("Item") or {}
+        if item.get("tenantId") == ctx.tenant_id:
+            for field in ("email", "name"):
+                if isinstance(item.get(field), str) and item[field]:
+                    user[field] = item[field]
+    return user
+
+
+def _accept_dpa(ctx, event):
+    body = _body(event)
+    if set(body) - {"version"}:
+        raise ValueError("only version may be sent")
+    if body.get("version") != dpa.CURRENT_VERSION:
+        return _response(
+            HTTPStatus.CONFLICT.value,
+            {"error": "dpa_version_outdated", "currentVersion": dpa.CURRENT_VERSION},
+        )
+    accepted_at = _now()
+    user = _accepting_user(ctx)
+    record = {
+        **dpa.record_key(ctx.tenant_id, accepted_at),
+        "tenantId": ctx.tenant_id,
+        "version": dpa.CURRENT_VERSION,
+        "acceptedAt": accepted_at,
+        "acceptedBy": user,
+    }
+    summary = {"version": dpa.CURRENT_VERSION, "acceptedAt": accepted_at, "acceptedBySub": ctx.sub}
+    # The resource's client takes plain Python values, like Table calls.
+    table(TENANT_TABLE_NAME).meta.client.transact_write_items(
+        TransactItems=[
+            {
+                "Put": {
+                    "TableName": TENANT_TABLE_NAME,
+                    "Item": record,
+                    "ConditionExpression": "attribute_not_exists(SK)",
+                }
+            },
+            {
+                "Update": {
+                    "TableName": TENANT_TABLE_NAME,
+                    "Key": {"PK": tenant.tenant_pk(ctx.tenant_id), "SK": "PROFILE"},
+                    "UpdateExpression": "SET #dpa = :dpa",
+                    "ConditionExpression": "attribute_exists(PK)",
+                    "ExpressionAttributeNames": {"#dpa": "dpa"},
+                    "ExpressionAttributeValues": {":dpa": summary},
+                }
+            },
+        ]
+    )
+    tenant.invalidate(ctx.tenant_id)
+    return _response(HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id)))
 
 
 # --- POST /tenant/stripe/account-link --------------------------------------------
@@ -449,6 +546,8 @@ def handler(event, context):
             return _response(
                 HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id))
             )
+        if path == "/tenant/dpa/accept":
+            return _accept_dpa(ctx, event)
         return _account_link(
             tenant.TenantContext(ctx.tenant_id, _fresh_profile(ctx.tenant_id), ctx.role, ctx.sub)
         )

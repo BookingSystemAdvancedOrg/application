@@ -23,10 +23,10 @@ TRIGGER:
     POST   /marketing/campaigns/{id}/resume            continue after the monthly limit (new month)
     GET    /marketing/offer                            welcome offer settings + results
     PUT    /marketing/offer                            save the settings
-    GET    /marketing/subscribers?status=&cursor=
+    GET    /marketing/subscribers?status=&cursor=      status "suppressed" = bounced + complained
+    GET    /marketing/subscribers?email=               one subscriber by address (exact, any case)
     GET    /marketing/subscribers/export               CSV
-    POST   /marketing/subscribers/{id}/unsubscribe
-    DELETE /marketing/subscribers/{id}                 erase (GDPR)
+    (unsubscribe and erase: guest-privacy, /privacy/consents/withdraw and /privacy/guests/erase)
 
 PURPOSE:
     The owner's marketing section in the admin app. Sending is done by
@@ -62,6 +62,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, http, marketing as m, marketing_mail, site, tenant
 from shared import marketing_offer as offer
+from shared import menu as menu_rules
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -248,8 +249,11 @@ def _templates(ctx, method, rest, event):
 
 # --- rendering ---------------------------------------------------------------------------
 
-def _dishes(ctx, template):
-    """menuItemId -> {name, description, price, imageUrl} for the dish blocks."""
+def _dishes(ctx, template, at=None):
+    """menuItemId -> {name, description, price, imageUrl} for the dish blocks
+    whose dish a guest can order at `at` (default now): active and inside its
+    schedule (shared/menu.is_available)."""
+    at = at or datetime.now(timezone.utc)
     out = {}
     menu = dynamo.table(os.environ["MENU_TABLE_NAME"])
     image_base = (os.environ.get("MENU_IMAGE_BASE_URL") or "").rstrip("/")
@@ -260,8 +264,11 @@ def _dishes(ctx, template):
             continue  # another restaurant's location: never rendered
         item = menu.get_item(Key={"PK": f"LOCATION#{block['locationId']}",
                                   "SK": f"MENU#{block['menuItemId']}"}).get("Item")
-        if not item:
-            continue
+        try:
+            if not item or not menu_rules.is_available(item, at):
+                continue
+        except ValueError:
+            continue  # corrupt schedule: treated as unavailable, like the menu
         image_key = item.get("imageKey")
         out[block["menuItemId"]] = {
             "name": item.get("name") or "", "description": item.get("description") or "",
@@ -271,19 +278,18 @@ def _dishes(ctx, template):
     return out
 
 
-def _sender_snapshot(ctx, template):
+def _sender_snapshot(ctx, template, at=None):
     base, slug = site.base(ctx.tenant_id, ctx.tenant)
     branding = ctx.tenant.get("branding") or {}
     return {
         "template": template,
         "restaurant": ctx.tenant.get("name") or "Restaurangen",
         "branding": {k: branding.get(k) for k in ("primaryColor", "logoUrl") if branding.get(k)},
-        "dishes": _dishes(ctx, template),
+        "dishes": _dishes(ctx, template, at),
         "siteUrl": base,
         "siteQuery": {"restaurang": slug} if slug else {},
         "replyTo": ctx.tenant.get("replyToEmail") or ctx.tenant.get("contactEmail"),
-        "postalAddress": ((ctx.tenant.get("legal") or {}).get("address") or "") if isinstance(
-            (ctx.tenant.get("legal") or {}).get("address"), str) else "",
+        "postalAddress": marketing_mail.sender_identity(ctx.tenant),
     }
 
 
@@ -413,7 +419,9 @@ def _campaign_action(ctx, campaign, action, event):
             if when < now - timedelta(minutes=1) or when > now + timedelta(days=90):
                 raise ValueError("scheduledAt must be between now and 90 days ahead")
         template = _frozen_template(ctx, campaign)
-        snapshot = _sender_snapshot(ctx, template)
+        snapshot = _sender_snapshot(ctx, template, when)
+        if not snapshot["postalAddress"]:
+            raise ValueError("the restaurant has no legal name and address for the footer")
         if not snapshot["siteUrl"] and any(b["type"] == "button" and b.get("destination") != "custom"
                                            for b in template["blocks"]):
             raise ValueError("the restaurant has no website address yet for the buttons")
@@ -551,6 +559,8 @@ def _offer(ctx, method, event):
     if method != "PUT":
         return http.error(405, "method not allowed")
     data = offer.validate_settings(http.body(event))
+    if data["enabled"] and not marketing_mail.sender_identity(ctx.tenant):
+        raise ValueError("the restaurant has no legal name and address for the footer")
     image_url = dish_name = None
     if data["imageMenuItemId"]:
         # The card shows one of the restaurant's own dishes; resolved now so
@@ -580,7 +590,8 @@ def _sub_view(item):
     return {"subscriberId": item["SK"].split("#", 1)[1], "email": item.get("email"), "name": item.get("name"),
             "status": item.get("status"), "consentAt": item.get("consentAt"),
             "consentSource": item.get("consentSource"), "lastVisit": item.get("lastVisit"),
-            "locations": sorted(item.get("locations") or []), "unsubscribedAt": item.get("unsubscribedAt")}
+            "locations": sorted(item.get("locations") or []), "unsubscribedAt": item.get("unsubscribedAt"),
+            "suppressedAt": item.get("suppressedAt")}
 
 
 def _csv_cell(value):
@@ -592,10 +603,19 @@ def _csv_cell(value):
 def _subscribers(ctx, method, rest, event):
     table = _table()
     query = http.query(event)
+    if not rest and method == "GET" and query.get("email") is not None:
+        email = str(query["email"]).strip().lower()
+        if not m.valid_email(email):
+            raise ValueError("email is invalid")
+        item = table.get_item(Key=m.sub_key(ctx.tenant_id, m.subscriber_id(ctx.tenant_id, email))).get("Item")
+        return _ok(200, {"subscribers": [_sub_view(item)] if item else [], "cursor": None})
     if not rest and method == "GET":
         params = {"KeyConditionExpression": Key("PK").eq(m.sub_pk(ctx.tenant_id)), "Limit": 100}
         status = query.get("status")
-        if status:
+        if status == "suppressed":
+            params.update(FilterExpression="#st IN (:b, :c)", ExpressionAttributeNames={"#st": "status"},
+                          ExpressionAttributeValues={":b": "bounced", ":c": "complained"})
+        elif status:
             if status not in ("subscribed", "pending", "unsubscribed", "bounced", "complained"):
                 raise ValueError("status is invalid")
             params.update(FilterExpression="#st = :s", ExpressionAttributeNames={"#st": "status"},
@@ -629,24 +649,8 @@ def _subscribers(ctx, method, rest, event):
         return {"statusCode": 200, "headers": {"Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store",
                                                "Content-Disposition": 'attachment; filename="mottagare.csv"'},
                 "body": out.getvalue()}
-    if not rest or not _SID.fullmatch(rest[0]):
-        return http.error(404, "not found")
-    key = m.sub_key(ctx.tenant_id, rest[0])
-    if rest[1:] == ["unsubscribe"] and method == "POST":
-        try:
-            table.update_item(Key=key, ConditionExpression="#st = :s",
-                              UpdateExpression="SET #st = :u, unsubscribedAt = :now, unsubscribedVia = :via",
-                              ExpressionAttributeNames={"#st": "status"},
-                              ExpressionAttributeValues={":s": "subscribed", ":u": "unsubscribed",
-                                                         ":now": m.now_iso(), ":via": "staff"})
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-        return http.respond(204, {})
-    if len(rest) == 1 and method == "DELETE":
-        table.delete_item(Key=key)
-        logger.info(json.dumps({"marketing": "subscriber_erased", "tenantId": ctx.tenant_id}))
-        return http.respond(204, {})
+    # Unsubscribe and erase go through guest-privacy (/privacy/consents/withdraw,
+    # /privacy/guests/erase), so every withdrawal is in the consent log.
     return http.error(404, "not found")
 
 

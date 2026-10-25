@@ -140,11 +140,10 @@ _BOOKING_HORIZON = timedelta(days=21)
 # alike. Only staff walk-ins (the guest is standing there) skip the lead time.
 SLOT_STEP_MINUTES = 30
 LEAD_TIME = timedelta(minutes=30)
-# No booking may START less than this before closing, even when the booking
-# length is shorter (the owner's rule: the kitchen and the room need the last
-# guests seated two hours before closing). With a longer booking length that
-# length wins, since the whole booking must fit before closing anyway.
-LAST_START_BEFORE_CLOSE_MINUTES = 120
+# No booking may START less than bookingTimeRules.lastSeatingMinutes (default
+# 120) before closing, even when the booking length is shorter (the kitchen
+# and the room need the last guests seated). With a longer booking length
+# that length wins, since the whole booking must fit before closing anyway.
 
 
 class _AvailabilityServiceFailure(Exception):
@@ -309,6 +308,7 @@ def _validate_location(item, location_id):
         combinations = booking_rules.validate_table_combinations(
             item.get("tableCombinations")
         )
+        time_rules = booking_rules.validate_booking_time_rules(item.get("bookingTimeRules"))
         max_online = item.get("maxPartySizeOnline")
         if max_online is not None:
             max_online = booking_rules.whole_number(
@@ -322,6 +322,7 @@ def _validate_location(item, location_id):
     return {
         "businessHours": business_hours,
         "durationMinutes": int(duration_minutes),
+        "bookingTimeRules": time_rules,
         "timezone": location_timezone,
         "timezoneName": timezone_name,
         "specialDays": booking_rules.special_days_by_date(special_days),
@@ -363,28 +364,30 @@ def _first_step(minute):
     return -(-minute // SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
 
 
-def _interval_starts(opens_at, closes_at, duration, keep_start):
-    """Start minutes inside one opening interval: the half-hour grid up to
-    LAST_START_BEFORE_CLOSE_MINUTES (or the booking length, if longer) before
-    closing, plus ``keep_start`` (an existing booking's own time, which may
-    predate the grid or the rule) when the booking fits the interval."""
-    last_start = closes_at - max(duration, LAST_START_BEFORE_CLOSE_MINUTES)
-    starts = list(range(_first_step(opens_at), last_start + 1, SLOT_STEP_MINUTES))
-    if (
-        keep_start is not None
-        and opens_at <= keep_start <= closes_at - duration
-        and keep_start not in starts
-    ):
-        starts.append(keep_start)
+def _interval_starts(opens_at, closes_at, duration_at, last_seating, keep_start):
+    """(start minute, booking minutes) inside one opening interval: the
+    half-hour grid, each start with the length its rule gives it
+    (``duration_at``), up to ``last_seating`` minutes (or that length, if
+    longer) before closing, plus ``keep_start`` (an existing booking's own
+    time, which may predate the grid or the rule) when the booking fits the
+    interval."""
+    starts = []
+    for start in range(_first_step(opens_at), closes_at, SLOT_STEP_MINUTES):
+        if start != keep_start and start <= closes_at - max(duration_at(start), last_seating):
+            starts.append((start, duration_at(start)))
+    if keep_start is not None and opens_at <= keep_start <= closes_at - duration_at(keep_start):
+        starts.append((keep_start, duration_at(keep_start)))
         starts.sort()
     return starts
 
 
-def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
+def _candidate_slots(details, location, now, *, earliest=None, keep_start=None, keep_minutes=None):
     """Bookable slots of one day: starts every SLOT_STEP_MINUTES on the
-    clock's half hours inside opening hours, the whole booking before
+    clock's half hours inside opening hours, each as long as the booking
+    time rule of its start says (``rule``), the whole booking before
     closing, starting no earlier than ``earliest`` (default now + LEAD_TIME).
-    ``keep_start`` (minute of day) adds one existing booking's own start."""
+    ``keep_start`` (minute of day) adds one existing booking's own start,
+    with its own length ``keep_minutes`` when given."""
     if (
         not isinstance(now, datetime)
         or now.tzinfo is None
@@ -403,15 +406,27 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
     ).date():
         raise ValueError("date must not be more than 21 days ahead")
 
-    duration = location["durationMinutes"]
-    expected_duration = timedelta(minutes=duration)
+    time_rules = location.get("bookingTimeRules")
+    rules = {}
+
+    def rule_at(minute):
+        if minute not in rules:
+            rules[minute] = booking_rules.resolve_booking_rule(
+                time_rules, location["durationMinutes"], requested_date, minute)
+            if minute == keep_start and keep_minutes:
+                rules[minute] = {**rules[minute], "durationMinutes": keep_minutes}
+        return rules[minute]
+
+    last_seating = booking_rules.last_seating_minutes(time_rules)
     slots = []
     weekday = _WEEKDAYS[requested_date.weekday()]
     special = (location.get("specialDays") or {}).get(details["date"])
     for interval in booking_rules.day_intervals(location["businessHours"], weekday, special):
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
-        for start_minute in _interval_starts(opens_at, closes_at, duration, keep_start):
+        starts = _interval_starts(opens_at, closes_at, lambda m: rule_at(m)["durationMinutes"],
+                                  last_seating, keep_start)
+        for start_minute, duration in starts:
             end_minute = start_minute + duration
             start_local = datetime.combine(
                 requested_date,
@@ -434,7 +449,7 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
                 continue
 
             if (
-                end_utc - start_utc == expected_duration
+                end_utc - start_utc == timedelta(minutes=duration)
                 and earliest <= start_utc <= latest_start
             ):
                 slots.append(
@@ -445,6 +460,8 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None):
                         "endMinute": end_minute,
                         "startUtc": start_utc,
                         "endUtc": end_utc,
+                        "durationMinutes": duration,
+                        "rule": rule_at(start_minute),
                     }
                 )
     return slots
@@ -1266,6 +1283,9 @@ def _public_availability(context, occupancies, *, party_size=None):
             public_slot = {
                 "startTime": slot["startTime"],
                 "endTime": slot["endTime"],
+                "durationMinutes": slot["durationMinutes"],
+                "extendable": slot["rule"]["extensionAllowed"],
+                "ruleName": slot["rule"].get("name"),
                 "layoutVersion": slot["layoutVersion"],
                 "tables": available_tables,
             }
@@ -1301,22 +1321,29 @@ def set_tenant(tenant_id):
     _TENANT_ID.set(tenant_id)
 
 
-def candidate_slots(details, location, now, *, include_started=False, keep_start=None):
+def candidate_slots(details, location, now, *, include_started=False, keep_start=None,
+                    keep_minutes=None):
     """Slots for a day. ``include_started`` (staff walk-ins, a booking
     keeping its own time) also returns slots starting within LEAD_TIME and
     ones that have started but not ended; otherwise a slot must start at
     least LEAD_TIME from now. ``keep_start`` ("HH:MM") adds a booking's own
-    start time even when it is off the half-hour grid (made before it)."""
+    start time even when it is off the half-hour grid (made before it);
+    ``keep_minutes`` keeps that booking's own length (its rule snapshot and
+    any extension) instead of today's rule."""
     now = now.astimezone(timezone.utc)
     keep = _minute_of_day(keep_start) if keep_start else None
     if not include_started:
-        return _candidate_slots(details, location, now, keep_start=keep)
-    started = now - timedelta(minutes=location["durationMinutes"])
-    slots = _candidate_slots(details, location, now, earliest=started, keep_start=keep)
+        return _candidate_slots(details, location, now, keep_start=keep, keep_minutes=keep_minutes)
+    longest = max(booking_rules.max_duration_minutes(location.get("bookingTimeRules"),
+                                                     location["durationMinutes"]), keep_minutes or 0)
+    started = now - timedelta(minutes=longest)
+    slots = _candidate_slots(details, location, now, earliest=started, keep_start=keep,
+                             keep_minutes=keep_minutes)
     return [s for s in slots if s["endUtc"] > now]
 
 
-def day_context(location_id, requested_date, now, *, include_started=False, keep_start=None):
+def day_context(location_id, requested_date, now, *, include_started=False, keep_start=None,
+                keep_minutes=None):
     """Bookable slots of one location and date with each slot's tables, or
     None when the location doesn't exist. ``include_started`` also returns
     slots inside the lead time and the running ones (staff walk-ins, a
@@ -1329,7 +1356,8 @@ def day_context(location_id, requested_date, now, *, include_started=False, keep
         return None
     now = now.astimezone(timezone.utc)
     slots = candidate_slots({"date": requested_date}, location, now,
-                            include_started=include_started, keep_start=keep_start)
+                            include_started=include_started, keep_start=keep_start,
+                            keep_minutes=keep_minutes)
     if slots:
         slots, active_tables = _layout_slots(location_id, slots, now)
     else:
@@ -1338,11 +1366,36 @@ def day_context(location_id, requested_date, now, *, include_started=False, keep
         "locationId": location_id,
         "date": requested_date,
         "timezone": location["timezoneName"],
-        "durationMinutes": location["durationMinutes"],
         "slots": slots,
         "tables": active_tables,
         **location_rules(location, requested_date),
     }
+
+
+def read_location(location_id):
+    """The validated location (hours, rules, time zone) or None."""
+    return _read_location(location_id)
+
+
+def local_instant(location, date_str, minute):
+    """UTC instant of a local minute of day; ValueError in a DST gap or fold."""
+    naive = datetime.combine(date.fromisoformat(date_str), time()) + timedelta(minutes=minute)
+    if naive.date().isoformat() != date_str:
+        raise ValueError("time must be on the same day")
+    return _resolve_local_instant(naive, location["timezone"])
+
+
+def closing_minute(location, date_str, start_minute):
+    """Closing minute of the opening interval a booking starting at
+    ``start_minute`` belongs to on ``date_str`` (special days included), or
+    None when no interval contains it."""
+    requested = date.fromisoformat(date_str)
+    special = (location.get("specialDays") or {}).get(date_str)
+    for interval in booking_rules.day_intervals(
+            location["businessHours"], _WEEKDAYS[requested.weekday()], special):
+        if _minute_of_day(interval["opensAt"]) <= start_minute < _minute_of_day(interval["closesAt"]):
+            return _minute_of_day(interval["closesAt"])
+    return None
 
 
 def location_rules(location, requested_date):

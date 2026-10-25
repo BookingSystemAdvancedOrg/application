@@ -20,7 +20,14 @@ restaurant should hear about sets `notice` on the head item; the table's
 stream delivers it to the notification function (same contract as
 reservations and orders).
 
-Amounts are öre. Prices include VAT (12 % - catering is a restaurant service).
+Amounts are öre. Prices include VAT, per line (vat_rate_for: 12 % with
+service, food only by the takeaway rule; delivery and cleaning follow the
+food). Only the server prices (price_request, POST .../catering/quote).
+
+Equipment return: the guest chooses to bring dishes and equipment back
+cleaned (free) or not cleaned (the location's `cleaningFee`). The request and
+every offer version keep the choice and the fee (öre), so a signed
+version never changes when the owner changes the fee later.
 """
 
 import base64
@@ -40,7 +47,8 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from shared import dynamo
+from shared import dynamo, geo, orders
+from shared import menu as menu_rules
 
 CURRENCY = "sek"
 VAT_RATE = 12
@@ -69,6 +77,9 @@ PRIVATE = "private"
 COMPANY = "company"
 PICKUP = "pickup"
 DELIVERY = "delivery"
+CLEANED = "cleaned"
+NOT_CLEANED = "not_cleaned"
+EQUIPMENT_RETURNS = (CLEANED, NOT_CLEANED)
 
 # notice types (guest and/or owner messages, shared/catering_messages.py)
 N_REQUEST_RECEIVED = "catering_request_received"
@@ -80,8 +91,11 @@ N_SIGNED = "catering_signed"
 N_CONFIRMED = "catering_confirmed"
 N_CANCELLED = "catering_cancelled"
 N_EXPIRED = "catering_expired"
+N_OWNER_REMINDER = "catering_owner_reminder"  # issue 5 M5: lifecycle reminders
+N_SIGN_REMINDER = "catering_sign_reminder"
+N_DAY_BEFORE = "catering_day_before"
 NOTICE_TYPES = (N_REQUEST_RECEIVED, N_OFFER_SENT, N_CHANGE_REQUESTED, N_REJECTED, N_DECLINED,
-                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED)
+                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED, N_OWNER_REMINDER, N_SIGN_REMINDER, N_DAY_BEFORE)
 
 _ID = re.compile(r"[0-9a-f]{32}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -201,10 +215,6 @@ def kronor_to_ore(value, field):
     return int(ore)
 
 
-def vat_of(gross):
-    return int((Decimal(gross) * VAT_RATE / (100 + VAT_RATE)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
-
-
 # --- settings (location item `cateringSettings`) -------------------------------------------
 
 DEFAULT_SETTINGS = {
@@ -220,13 +230,27 @@ DEFAULT_SETTINGS = {
     "priceWithinLimit": 395,
     "priceBeyondLimit": 795,
     "allowOutsideArea": False,
+    "cleaningFee": 0,
     "offerValidDays": 7,
     "paymentTermsDays": 30,
     "requestExpiryHours": 72,
     "terms": "",
     "notifyEmail": None,
     "notifyPhone": None,
+    # Issue 5: pricing, tiers and lead time go by guests (C4).
+    "minGuests": 15,
+    "leadTimeRules": [],  # [{fromGuests, toGuests|null, days}]; empty = advanceDays
+    "deliveryBands": [],  # [{upToKm, price}]; empty = derived from the flat prices
+    "maxDeliveryKm": None,  # always the last band's upToKm
+    "defaultServiceIncluded": True,  # 12 % as today until the accountant confirms 6 % for food only
+    "ownerReminderHours": 24,  # 0 = off
+    "signReminderDaysBefore": 2,  # 0 = off
+    "dayBeforeReminder": True,
+    "allowSimpleAcceptance": False,
+    "originAddress": "",  # where deliveries start; empty = the location's address
 }
+MAX_LEAD_TIME_RULES = 10
+MAX_DELIVERY_BANDS = 10
 
 
 def validate_settings(raw, *, phone_normalizer=None):
@@ -238,7 +262,8 @@ def validate_settings(raw, *, phone_normalizer=None):
         raise ValueError(f"unsupported catering settings: {', '.join(unknown)}")
     s = {**DEFAULT_SETTINGS, **raw}
     out = {}
-    for flag in ("enabled", "pickup", "delivery", "allowOutsideArea"):
+    for flag in ("enabled", "pickup", "delivery", "allowOutsideArea", "defaultServiceIncluded",
+                 "dayBeforeReminder", "allowSimpleAcceptance"):
         if not isinstance(s[flag], bool):
             raise ValueError(f"{flag} must be true or false")
         out[flag] = s[flag]
@@ -253,6 +278,7 @@ def validate_settings(raw, *, phone_normalizer=None):
     out["maxDistanceKm"] = whole(s["maxDistanceKm"], 0, 1000, "maxDistanceKm")
     out["priceWithinLimit"] = whole(s["priceWithinLimit"], 0, 100000, "priceWithinLimit")
     out["priceBeyondLimit"] = whole(s["priceBeyondLimit"], 0, 100000, "priceBeyondLimit")
+    out["cleaningFee"] = whole(s["cleaningFee"], 0, 100000, "cleaningFee")
     out["offerValidDays"] = whole(s["offerValidDays"], 1, 60, "offerValidDays")
     out["paymentTermsDays"] = whole(s["paymentTermsDays"], 0, 90, "paymentTermsDays")
     out["requestExpiryHours"] = whole(s["requestExpiryHours"], 12, 720, "requestExpiryHours")
@@ -265,7 +291,78 @@ def validate_settings(raw, *, phone_normalizer=None):
     out["notifyPhone"] = phone_normalizer(phone) if phone and phone_normalizer else phone
     if out["enabled"] and not (out["pickup"] or out["delivery"]):
         raise ValueError("enabled catering needs pickup or delivery")
+    out["minGuests"] = whole(s["minGuests"], 1, 5000, "minGuests")
+    out["originAddress"] = text(s["originAddress"], "originAddress", max_length=200) or ""
+    out["leadTimeRules"] = _lead_time_rules(s["leadTimeRules"])
+    _delivery_bands(s, out)
+    # A default reminder is clamped inside a short expiry, so settings that
+    # never set it (older locations, partial saves) always stay valid.
+    if "ownerReminderHours" not in raw:
+        s["ownerReminderHours"] = min(s["ownerReminderHours"], out["requestExpiryHours"] - 1)
+    if "signReminderDaysBefore" not in raw:
+        s["signReminderDaysBefore"] = min(s["signReminderDaysBefore"], out["offerValidDays"] - 1)
+    out["ownerReminderHours"] = whole(s["ownerReminderHours"], 0, 168, "ownerReminderHours")
+    if out["ownerReminderHours"] >= out["requestExpiryHours"]:
+        raise ValueError("ownerReminderHours must be less than requestExpiryHours")
+    out["signReminderDaysBefore"] = whole(s["signReminderDaysBefore"], 0, 59, "signReminderDaysBefore")
+    if out["signReminderDaysBefore"] >= out["offerValidDays"]:
+        raise ValueError("signReminderDaysBefore must be less than offerValidDays")
     return out
+
+
+def _lead_time_rules(raw):
+    """Contiguous guest ranges, ascending; only the last may be open (toGuests null)."""
+    if not isinstance(raw, list) or len(raw) > MAX_LEAD_TIME_RULES:
+        raise ValueError(f"leadTimeRules must be a list of at most {MAX_LEAD_TIME_RULES} rules")
+    rules = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) - {"fromGuests", "toGuests", "days"}:
+            raise ValueError("each lead time rule needs fromGuests, toGuests and days")
+        rule = {"fromGuests": whole(entry.get("fromGuests"), 1, 5000, "fromGuests"),
+                "toGuests": None if entry.get("toGuests") is None else whole(entry["toGuests"], 1, 5000, "toGuests"),
+                "days": whole(entry.get("days"), 0, 90, "days")}
+        if rule["toGuests"] is not None and rule["toGuests"] < rule["fromGuests"]:
+            raise ValueError("toGuests must not be less than fromGuests")
+        rules.append(rule)
+    rules.sort(key=lambda r: r["fromGuests"])
+    for prev, nxt in zip(rules, rules[1:]):
+        if prev["toGuests"] is None or nxt["fromGuests"] != prev["toGuests"] + 1:
+            raise ValueError("leadTimeRules must not overlap or leave gaps")
+    return rules
+
+
+def _delivery_bands(s, out):
+    """deliveryBands + maxDeliveryKm. Without bands (older settings) the flat
+    prices become one band, or two when delivery beyond the limit was allowed
+    (then without an upper limit, i.e. up to 1000 km). The flat fields are
+    then derived back from the bands, so the current request pricing
+    (within/beyond zone) stays in step until it moves to bands."""
+    raw = s["deliveryBands"]
+    if not isinstance(raw, list) or len(raw) > MAX_DELIVERY_BANDS:
+        raise ValueError(f"deliveryBands must be a list of at most {MAX_DELIVERY_BANDS} bands")
+    if not raw:
+        raw = [{"upToKm": max(1, out["maxDistanceKm"]), "price": out["priceWithinLimit"]}]
+        if out["allowOutsideArea"] and raw[0]["upToKm"] < 1000:
+            raw.append({"upToKm": 1000, "price": out["priceBeyondLimit"]})
+        maximum = raw[-1]["upToKm"]
+    else:
+        maximum = s["maxDeliveryKm"]
+    bands = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) != {"upToKm", "price"}:
+            raise ValueError("each delivery band needs upToKm and price")
+        bands.append({"upToKm": whole(entry["upToKm"], 1, 1000, "upToKm"),
+                      "price": whole(entry["price"], 0, 100000, "price")})
+    if any(b["upToKm"] <= a["upToKm"] for a, b in zip(bands, bands[1:])):
+        raise ValueError("deliveryBands must be in ascending order of upToKm")
+    if maximum is not None and whole(maximum, 1, 1000, "maxDeliveryKm") != bands[-1]["upToKm"]:
+        raise ValueError("maxDeliveryKm must be the last band's upToKm")
+    out["deliveryBands"] = bands
+    out["maxDeliveryKm"] = bands[-1]["upToKm"]
+    out["maxDistanceKm"] = bands[0]["upToKm"]
+    out["priceWithinLimit"] = bands[0]["price"]
+    out["priceBeyondLimit"] = bands[-1]["price"]
+    out["allowOutsideArea"] = len(bands) > 1
 
 
 def settings_of(location):
@@ -278,8 +375,9 @@ def settings_of(location):
 
 def public_settings(settings):
     keys = ("enabled", "minPortions", "maxPortions", "advanceDays", "pickup", "delivery", "deliveryArea",
-            "maxDistanceKm", "priceWithinLimit", "priceBeyondLimit", "allowOutsideArea", "terms",
-            "offerValidDays", "paymentTermsDays")
+            "maxDistanceKm", "priceWithinLimit", "priceBeyondLimit", "allowOutsideArea", "cleaningFee", "terms",
+            "offerValidDays", "paymentTermsDays", "minGuests", "leadTimeRules", "deliveryBands", "maxDeliveryKm",
+            "defaultServiceIncluded", "allowSimpleAcceptance")
     return {k: settings[k] for k in keys}
 
 
@@ -325,37 +423,207 @@ def list_tiers(location_id):
     return sorted(out, key=lambda t: (t["fromPortions"], t["name"]))
 
 
-def tier_for(tiers, portions):
+def tier_for(tiers, guests):
+    """The best active tier for this many guests (C4: the stored
+    fromPortions/toPortions are guest counts since issue 5)."""
     best = None
     for tier in tiers:
-        if not tier["active"] or portions < tier["fromPortions"]:
+        if not tier["active"] or guests < tier["fromPortions"]:
             continue
-        if tier["toPortions"] is not None and portions > tier["toPortions"]:
+        if tier["toPortions"] is not None and guests > tier["toPortions"]:
             continue
         if best is None or tier["discountPercent"] > best["discountPercent"]:
             best = tier
     return best
 
 
-# --- pricing ---------------------------------------------------------------------------------
+# --- catering menu (catering-menu table: DISH# and PACKAGE# per location) ------------------
 
-def totals(lines, discount_percent, delivery_fee):
-    """{subtotal, discountPercent, discount, deliveryFee, total, vat} in öre."""
+# EU 1169/2011 annex II (the 14 allergens) and the dietary labels the admin offers.
+ALLERGENS = ("gluten", "crustaceans", "eggs", "fish", "peanuts", "soy", "milk", "nuts", "celery", "mustard",
+             "sesame", "sulphites", "lupin", "molluscs")
+DIETARY = ("vegetarian", "vegan", "gluten_free", "lactose_free")
+MAX_DISHES = 200
+MAX_PACKAGES = 50
+MAX_PACKAGE_DISHES = 40
+MAX_MENU_PRICE = 10000  # kronor per portion / guest - typo guard
+DISH = "DISH#"
+PACKAGE = "PACKAGE#"
+_DISH_FIELDS = ("name", "description", "pricePerPortion", "allergens", "dietary", "active", "sort",
+                "sourceMenuItemId")
+_PACKAGE_FIELDS = ("name", "description", "pricePerGuest", "dishIds", "minGuests", "active", "sort")
+
+
+def menu_table():
+    return os.environ["CATERING_MENU_TABLE_NAME"]
+
+
+def menu_key(location_id, prefix, item_id):
+    return {"PK": location_pk(location_id), "SK": f"{prefix}{item_id}"}
+
+
+def _price(value, field):
+    kronor_to_ore(value, field)  # at least 0, at most two decimals
+    if Decimal(value) > MAX_MENU_PRICE:
+        raise ValueError(f"{field} may be at most {MAX_MENU_PRICE}")
+    return Decimal(value)
+
+
+def _codes(value, allowed, field):
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(v not in allowed for v in value):
+        raise ValueError(f"{field} must be a list of: {', '.join(allowed)}")
+    return [v for v in allowed if v in value]
+
+
+def _common(raw, fields):
+    if not isinstance(raw, dict):
+        raise ValueError("body must be an object")
+    unknown = sorted(set(raw) - set(fields) - {"version"})
+    if unknown:
+        raise ValueError(f"unsupported fields: {', '.join(unknown)}")
+    active = raw.get("active", True)
+    if not isinstance(active, bool):
+        raise ValueError("active must be true or false")
+    return {"name": text(raw.get("name"), "name", required=True, max_length=120),
+            "description": text(raw.get("description"), "description", max_length=500) or "",
+            "active": active, "sort": whole(raw.get("sort", 0), 0, 10000, "sort")}
+
+
+def validate_dish(raw):
+    dish = _common(raw, _DISH_FIELDS)
+    dish["pricePerPortion"] = _price(raw.get("pricePerPortion"), "pricePerPortion")
+    dish["allergens"] = _codes(raw.get("allergens"), ALLERGENS, "allergens")
+    dish["dietary"] = _codes(raw.get("dietary"), DIETARY, "dietary")
+    source = text(raw.get("sourceMenuItemId"), "sourceMenuItemId", max_length=128)
+    if source:
+        dish["sourceMenuItemId"] = source
+    return dish
+
+
+def validate_package(raw, dish_ids):
+    """`dish_ids`: the location's existing dish ids (a package only lists those)."""
+    package = _common(raw, _PACKAGE_FIELDS)
+    package["pricePerGuest"] = _price(raw.get("pricePerGuest"), "pricePerGuest")
+    wanted = raw.get("dishIds")
+    if not isinstance(wanted, list) or not wanted or len(wanted) > MAX_PACKAGE_DISHES:
+        raise ValueError(f"dishIds must list 1 to {MAX_PACKAGE_DISHES} dishes")
+    if len(set(wanted)) != len(wanted) or any(d not in dish_ids for d in wanted):
+        raise ValueError("dishIds must be distinct dishes of this location")
+    package["dishIds"] = list(wanted)
+    if raw.get("minGuests") is not None:
+        package["minGuests"] = whole(raw["minGuests"], 1, 5000, "minGuests")
+    return package
+
+
+def _menu_view(item, prefix, id_field):
+    out = {k: v for k, v in item.items() if k not in ("PK", "SK")}
+    return {id_field: item["SK"].removeprefix(prefix), **out}
+
+
+_GUEST_DISH = ("dishId", "name", "description", "pricePerPortion", "allergens", "dietary")
+_GUEST_PACKAGE = ("packageId", "name", "description", "pricePerGuest", "dishIds", "minGuests")
+
+
+def list_catering_menu(location_id, *, active_only=False):
+    """{dishes, packages} sorted by sort then name. Active only = what a
+    guest may order (guest fields only): active dishes, and active packages
+    whose dishes are all active."""
+    table = dynamo.table(menu_table())
+    request = {"KeyConditionExpression": Key("PK").eq(location_pk(location_id)), "ConsistentRead": not active_only}
+    items = []
+    while True:
+        page = table.query(**request)
+        items += page.get("Items") or []
+        if "LastEvaluatedKey" not in page:
+            break
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    dishes = [_menu_view(i, DISH, "dishId") for i in items if i["SK"].startswith(DISH)]
+    packages = [_menu_view(i, PACKAGE, "packageId") for i in items if i["SK"].startswith(PACKAGE)]
+    if active_only:
+        dishes = [d for d in dishes if d.get("active") is True]
+        live = {d["dishId"] for d in dishes}
+        packages = [p for p in packages if p.get("active") is True and set(p.get("dishIds") or []) <= live]
+    order = lambda x: (int(x.get("sort") or 0), str(x.get("name") or "").lower())  # noqa: E731
+    dishes, packages = sorted(dishes, key=order), sorted(packages, key=order)
+    if active_only:
+        dishes = [{k: d[k] for k in _GUEST_DISH if k in d} for d in dishes]
+        packages = [{k: p[k] for k in _GUEST_PACKAGE if k in p} for p in packages]
+    return {"dishes": dishes, "packages": packages}
+
+
+# --- pricing (issue 5, M2: the server is the only source of prices) --------------------------
+
+def vat_rate_for(service_included, day):
+    """C5: catering with service (staff, serving) is a restaurant service, 12 %.
+    Food without service follows the rule for takeaway orders (6 % from
+    2026-04-01 to 2027-12-31, else 12 %; shared/orders.py). Delivery and
+    cleaning are ancillary and follow the food. `day` is the delivery date."""
+    if service_included:
+        return orders.VAT_RESTAURANT
+    return orders.vat_rate(False, orders.PICKUP, day)
+
+
+def vat_of(gross, rate=VAT_RATE):
+    return int((Decimal(gross) * rate / (100 + rate)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def totals(lines, discount_percent, delivery_fee, cleaning_fee=0, vat_rate=VAT_RATE):
+    """{subtotal, discountPercent, discount, deliveryFee, cleaningFee, total,
+    vat, vatRate, vatBreakdown} in öre. The discount is on the dishes only,
+    not on the fees. Prices include VAT; every line of one offer has the
+    same rate (C5), so the breakdown has one row."""
     subtotal = sum(int(line["unitPrice"]) * int(line["quantity"]) for line in lines)
     discount = int((Decimal(subtotal) * int(discount_percent) / 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
-    total = subtotal - discount + int(delivery_fee)
+    total = subtotal - discount + int(delivery_fee) + int(cleaning_fee)
+    vat = vat_of(total, vat_rate)
     return {"subtotal": subtotal, "discountPercent": int(discount_percent), "discount": discount,
-            "deliveryFee": int(delivery_fee), "total": total, "vat": vat_of(total), "vatRate": VAT_RATE}
+            "deliveryFee": int(delivery_fee), "cleaningFee": int(cleaning_fee), "total": total,
+            "vat": vat, "vatRate": vat_rate,
+            "vatBreakdown": [{"rate": vat_rate, "gross": total, "net": total - vat, "vat": vat}]}
 
 
-def delivery_fee(settings, fulfilment, zone):
-    if fulfilment == PICKUP:
-        return 0
-    if zone == "beyond":
-        if not settings["allowOutsideArea"]:
-            raise Unavailable("catering_outside_area")
-        return settings["priceBeyondLimit"] * 100
-    return settings["priceWithinLimit"] * 100
+def equipment_return(value):
+    """The guest's choice; a request without one (an older site) is cleaned."""
+    if value is None:
+        return CLEANED
+    if value not in EQUIPMENT_RETURNS:
+        raise ValueError("equipmentReturn must be cleaned or not_cleaned")
+    return value
+
+
+def cleaning_fee(settings, choice):
+    return settings["cleaningFee"] * 100 if choice == NOT_CLEANED else 0
+
+
+def delivery_band(settings, km):
+    """The first band that reaches `km`; beyond the last one there is no delivery."""
+    for band in settings["deliveryBands"]:
+        if km <= band["upToKm"]:
+            return band
+    raise Unavailable("catering_outside_area")
+
+
+def origin_text(settings, location):
+    return settings.get("originAddress") or (location or {}).get("address") or ""
+
+
+def delivery_quote(settings, location, fulfilment, address, before_lookup=None):
+    """(fee öre or None, distanceKm or None, band or None). None fee = the
+    distance can't be trusted (shared/geo.py): the restaurant sets the fee
+    by hand when it reviews the request."""
+    if fulfilment != DELIVERY:
+        return 0, None, None
+    origin = origin_text(settings, location)
+    stored = (location or {}).get("cateringOrigin") or {}
+    position = [float(v) for v in stored["position"]] if stored.get("text") == origin and stored.get("position") \
+        else None
+    km = geo.distance_km(origin, geo.address_text(address), position, before_lookup) if address else None
+    if km is None:
+        return None, None, None
+    band = delivery_band(settings, km)
+    return band["price"] * 100, km, band
 
 
 def read_menu(location_id, item_ids):
@@ -375,61 +643,150 @@ def read_menu(location_id, item_ids):
                       "BatchGetItem")
 
 
-def validate_wanted(raw):
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("items must be a non-empty list")
-    if len(raw) > MAX_LINES:
-        raise ValueError(f"items may have at most {MAX_LINES} lines")
-    quantities, order = {}, []
-    for entry in raw:
-        if not isinstance(entry, dict) or set(entry) - {"menuItemId", "quantity"}:
-            raise ValueError("each item needs menuItemId and quantity")
-        item_id = entry.get("menuItemId")
-        if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 128 or "#" in item_id:
-            raise ValueError("menuItemId is invalid")
-        qty = whole(entry.get("quantity"), 1, MAX_LINE_QTY, "quantity")
-        if item_id not in quantities:
-            order.append(item_id)
-            quantities[item_id] = 0
-        quantities[item_id] += qty
-    return [(i, quantities[i]) for i in order]
+_SELECTIONS = (("packages", "packageId"), ("dishes", "dishId"), ("items", "menuItemId"))
 
 
-def price_request(location_id, settings, tiers, wanted, fulfilment, zone):
-    """Lines from the menu (alcohol excluded), the tier discount on total
-    portions and the delivery fee."""
-    menu = read_menu(location_id, [i for i, _ in wanted])
+def validate_selection(data, guests):
+    """packages [{packageId, quantity?}] (quantity = guests on that package,
+    default all guests), dishes [{dishId, quantity}] (portions) and, until
+    the menu migration, legacy regular-menu items [{menuItemId, quantity}].
+    -> {"packages": [(id, qty)], "dishes": [...], "items": [...]}"""
+    out, lines = {}, 0
+    for key, id_field in _SELECTIONS:
+        raw = data.get(key)
+        if raw is None:
+            out[key] = []
+            continue
+        if not isinstance(raw, list):
+            raise ValueError(f"{key} must be a list")
+        quantities, order = {}, []
+        for entry in raw:
+            if not isinstance(entry, dict) or set(entry) - {id_field, "quantity"}:
+                raise ValueError(f"each of {key} needs {id_field} and quantity")
+            item_id = entry.get(id_field)
+            if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 128 or "#" in item_id:
+                raise ValueError(f"{id_field} is invalid")
+            qty = entry.get("quantity", guests if key == "packages" else None)
+            qty = whole(qty, 1, MAX_LINE_QTY, "quantity")
+            if item_id not in quantities:
+                order.append(item_id)
+                quantities[item_id] = 0
+            quantities[item_id] += qty
+        out[key] = [(i, quantities[i]) for i in order]
+        lines += len(order)
+    if not lines:
+        raise ValueError("choose at least one package or dish")
+    if lines > MAX_LINES:
+        raise ValueError(f"at most {MAX_LINES} lines")
+    return out
+
+
+def _lines(location_id, selection, now, guests):
     lines = []
-    for item_id, qty in wanted:
-        item = menu.get(item_id)
-        if not item or item.get("active") is not True or item.get("alcohol") is True:
-            raise ValueError("menu_item_unavailable")
-        try:
-            unit = kronor_to_ore(item.get("price"), "price")
-        except ValueError:
-            raise ValueError("menu_item_unavailable") from None
-        lines.append({"menuItemId": item_id, "name": str(item.get("name") or "")[:120],
-                      "unitPrice": unit, "quantity": qty})
+    if selection["packages"] or selection["dishes"]:
+        menu = list_catering_menu(location_id, active_only=True)
+        packages = {p["packageId"]: p for p in menu["packages"]}
+        dishes = {d["dishId"]: d for d in menu["dishes"]}
+        for package_id, qty in selection["packages"]:
+            package = packages.get(package_id)
+            if not package:
+                raise ValueError("catering_item_unavailable")
+            if qty > guests:
+                raise ValueError(f"{package['name']} is for at most {guests} guests")
+            if qty < int(package.get("minGuests") or 1):
+                raise ValueError(f"{package['name']} needs at least {int(package['minGuests'])} guests")
+            lines.append({"kind": "package", "packageId": package_id, "name": str(package["name"])[:120],
+                          "unitPrice": kronor_to_ore(package["pricePerGuest"], "pricePerGuest"), "quantity": qty})
+        for dish_id, qty in selection["dishes"]:
+            dish = dishes.get(dish_id)
+            if not dish:
+                raise ValueError("catering_item_unavailable")
+            lines.append({"kind": "dish", "dishId": dish_id, "name": str(dish["name"])[:120],
+                          "unitPrice": kronor_to_ore(dish["pricePerPortion"], "pricePerPortion"), "quantity": qty})
+    if selection["items"]:
+        # Legacy: dishes of the regular menu, accepted until migrate_catering_menu.py has run.
+        menu = read_menu(location_id, [i for i, _ in selection["items"]])
+        for item_id, qty in selection["items"]:
+            item = menu.get(item_id)
+            try:
+                if not item or not menu_rules.is_available(item, now) or item.get("alcohol") is True:
+                    raise ValueError("menu_item_unavailable")
+                unit = kronor_to_ore(item.get("price"), "price")
+            except ValueError:
+                raise ValueError("menu_item_unavailable") from None
+            lines.append({"kind": "menu", "menuItemId": item_id, "name": str(item.get("name") or "")[:120],
+                          "unitPrice": unit, "quantity": qty})
+    return lines
+
+
+def validate_guests(settings, value):
+    """C4/M3: the number of guests drives tiers and lead time; at least minGuests."""
+    if value is None or value == "":
+        raise ValueError("guests is required")
+    guests = whole(value, 1, 5000, "guests")
+    if guests < settings["minGuests"]:
+        raise ValueError(f"at least {settings['minGuests']} guests")
+    return guests
+
+
+def lead_days(settings, guests):
+    """Days of notice for this many guests: the matching rule, else advanceDays."""
+    for rule in settings["leadTimeRules"]:
+        if rule["fromGuests"] <= guests and (rule["toGuests"] is None or guests <= rule["toGuests"]):
+            return rule["days"]
+    return settings["advanceDays"]
+
+
+def local_today(location, now):
+    return now.astimezone(ZoneInfo((location or {}).get("timezone") or "Europe/Stockholm")).date()
+
+
+def earliest_date(settings, location, guests, now):
+    """First deliverable date in the restaurant's time zone (a calendar date,
+    so DST changes never move it)."""
+    return (local_today(location, now) + timedelta(days=lead_days(settings, guests))).isoformat()
+
+
+def price_request(location_id, settings, tiers, location, selection, guests, fulfilment, address,
+                  equipment=CLEANED, day=None, now=None, before_lookup=None):
+    """The full price breakdown and its snapshot: lines (packages x guests,
+    dishes x portions), the tier discount by guests, the delivery band from
+    the road distance, the cleaning fee and the VAT per line. `day` is the
+    delivery date (VAT), today when the guest has not picked one yet."""
+    now = now or now_utc()
+    lines = _lines(location_id, selection, now, guests)
     portions = sum(line["quantity"] for line in lines)
-    if portions < settings["minPortions"]:
-        raise ValueError(f"at least {settings['minPortions']} portions")
     if portions > settings["maxPortions"]:
         raise ValueError(f"at most {settings['maxPortions']} portions")
-    tier = tier_for(tiers, portions)
-    result = totals(lines, tier["discountPercent"] if tier else 0, delivery_fee(settings, fulfilment, zone))
+    # The discount follows what is ordered: never more guests than portions, so a large
+    # guest count with a small order does not unlock a tier.
+    tier_guests = min(guests, portions)
+    tier = tier_for(tiers, tier_guests)
+    fee, km, band = delivery_quote(settings, location, fulfilment, address, before_lookup)
+    service = bool(settings["defaultServiceIncluded"])
+    rate = vat_rate_for(service, day or local_today(location, now))
+    for line in lines:
+        line["vatRate"] = rate
+    result = totals(lines, tier["discountPercent"] if tier else 0, fee or 0, cleaning_fee(settings, equipment), rate)
     if result["total"] > MAX_TOTAL_ORE:
         raise ValueError("order total is too large")
-    return {"lines": lines, "portions": portions, "tierName": tier["name"] if tier else None, **result}
+    return {"lines": lines, "guests": guests, "portions": portions, "tierName": tier["name"] if tier else None,
+            "equipmentReturn": equipment, **result, "serviceIncluded": service,
+            "distanceKm": Decimal(str(km)) if km is not None else None,
+            "deliveryFeeManual": fulfilment == DELIVERY and fee is None,
+            "ruleRefs": {"tierId": tier["tierId"] if tier and tier.get("tierId") else None, "tierGuests": tier_guests,
+                         "deliveryBand": band, "minGuests": settings["minGuests"],
+                         "leadTimeDays": lead_days(settings, guests),
+                         "vat": "with_service" if service else "food"}}
 
 
-def check_date(settings, location, day, now):
+def check_date(settings, location, day, now, guests):
     try:
         wanted = date.fromisoformat(day)
     except (TypeError, ValueError):
         raise ValueError("deliveryDate must be YYYY-MM-DD") from None
-    tz = ZoneInfo((location or {}).get("timezone") or "Europe/Stockholm")
-    today = now.astimezone(tz).date()
-    if wanted < today + timedelta(days=settings["advanceDays"]):
+    today = local_today(location, now)
+    if wanted < today + timedelta(days=lead_days(settings, guests)):
         raise Unavailable("catering_too_soon")
     if wanted > today + timedelta(days=365):
         raise ValueError("deliveryDate must be within a year")
@@ -634,15 +991,39 @@ def offer_document(item, offer, tenant_row, location, settings):
                      "email": item.get("customerEmail")},
         "delivery": {"date": item.get("deliveryDate"), "time": item.get("deliveryTime"),
                      "fulfilment": item.get("fulfilment"), "address": item.get("deliveryAddress")},
-        "lines": [{"name": line["name"], "unitPrice": int(line["unitPrice"]), "quantity": int(line["quantity"])}
+        "lines": [{"name": line["name"], "unitPrice": int(line["unitPrice"]), "quantity": int(line["quantity"]),
+                   **({"vatRate": int(line["vatRate"])} if line.get("vatRate") is not None else {})}
                   for line in offer["lines"]],
         "totals": {k: int(offer["totals"][k]) for k in ("subtotal", "discount", "deliveryFee", "total", "vat")},
+        **_equipment_terms(offer),
+        **_issue5_terms(item, offer),
         "currency": CURRENCY,
         "validUntil": offer["validUntil"],
         "paymentTermsDays": int(settings.get("paymentTermsDays") or 0) if item.get("customerType") == COMPANY else 0,
         "terms": offer.get("terms") or "",
         "message": offer.get("message") or "",
     }
+
+
+def _equipment_terms(offer):
+    """Signed with the offer. Left out of offers sent before the choice
+    existed, so their document (and its hash) reads as it did."""
+    if not offer.get("equipmentReturn"):
+        return {}
+    return {"equipmentReturn": offer["equipmentReturn"],
+            "cleaningFee": int(offer["totals"].get("cleaningFee") or 0)}
+
+
+def _issue5_terms(item, offer):
+    """VAT rate, service, guests and the company signatory (issue 5). Left
+    out of older offers, so their document (and its hash) reads as it did."""
+    if offer.get("serviceIncluded") is None:
+        return {}
+    out = {"serviceIncluded": bool(offer["serviceIncluded"]), "vatRate": int(offer["totals"]["vatRate"]),
+           "guests": int(item["guests"]) if item.get("guests") else None}
+    if item.get("signatory"):
+        out["signatory"] = {k: item["signatory"].get(k) for k in ("name", "role")}
+    return out
 
 
 def plain(value):
@@ -674,7 +1055,20 @@ _GUEST_FIELDS = ("requestId", "locationId", "status", "customerType", "customerN
                  "deliveryZone", "deliveryAddress", "guests", "notes", "request", "createdAt",
                  "currentOfferVersion", "validUntil", "signedAt", "signedOfferVersion", "paid",
                  "invoiceNumber", "invoiceUrl", "invoiceStatus", "declineReason", "cancelReason",
-                 "changeMessage", "delivered")
+                 "changeMessage", "delivered", "equipmentReturn", "serviceIncluded", "restaurantSignedAt",
+                 "signatory")
+_SIGNER_FIELDS = ("name", "role", "method", "signedAt")
+
+
+def _signing_view(item):
+    """Who has signed the current version, without evidence keys or provider state."""
+    s = item.get("signing") or {}
+    if not s.get("order"):
+        return None
+    sigs = s.get("signatures") or {}
+    return {"offerVersion": int(s["offerVersion"]), "pdfSha256": s.get("pdfSha256"),
+            **{role: {k: sigs[role].get(k) for k in _SIGNER_FIELDS if sigs[role].get(k) is not None}
+               for role in ("restaurant", "customer") if sigs.get(role)}}
 
 
 def guest_view(item, offer=None, location=None, settings=None):
@@ -682,11 +1076,13 @@ def guest_view(item, offer=None, location=None, settings=None):
     signer = (item.get("signature") or {}).get("name")
     if signer:
         view["signedBy"] = signer
+        view["signedMethod"] = (item.get("signature") or {}).get("method") or "bankid"
     if offer:
         view["offer"] = {
             "version": int(offer["version"]),
             "lines": offer["lines"],
             "totals": offer["totals"],
+            "equipmentReturn": offer.get("equipmentReturn"),
             "validUntil": offer["validUntil"],
             "message": offer.get("message"),
             "terms": offer.get("terms"),
@@ -697,8 +1093,15 @@ def guest_view(item, offer=None, location=None, settings=None):
         view["location"] = {k: location.get(k) for k in ("name", "address", "phoneNumber", "email")}
     if settings and item.get("customerType") == COMPANY:
         view["paymentTermsDays"] = settings.get("paymentTermsDays")
-    view["canSign"] = item.get("status") == OFFER_SENT
+    signing_view = _signing_view(item)
+    current = bool(signing_view) and signing_view["offerVersion"] == int(item.get("currentOfferVersion") or 0)
+    # The guest signs after the restaurant, the current version only (offers sent before
+    # issue 5 M4 have no signing order: the restaurant sends them again).
+    view["canSign"] = item.get("status") == OFFER_SENT and current and "restaurant" in signing_view
+    view["canAccept"] = view["canSign"] and bool((settings or {}).get("allowSimpleAcceptance"))
     view["canPay"] = item.get("status") == SIGNED and item.get("customerType") == PRIVATE
+    view["documents"] = [d for d, ok in (("offer", view["canSign"] or bool(item.get("signedPdfKey"))),
+                                         ("signed", bool(item.get("signedPdfKey")))) if ok]
     return view
 
 
@@ -707,5 +1110,9 @@ def staff_view(item):
     view.pop("signature", None)
     sig = item.get("signature") or {}
     if sig:
-        view["signature"] = {k: sig.get(k) for k in ("name", "personalNumberMasked", "signedAt", "documentHash")}
+        view["signature"] = {k: sig.get(k) for k in ("name", "personalNumberMasked", "signedAt", "documentHash",
+                                                     "method", "role", "pdfSha256") if sig.get(k) is not None}
+    signing_view = _signing_view(item)
+    if signing_view:
+        view["signing"] = signing_view
     return view

@@ -20,8 +20,14 @@ ordered 1-20 times; an order has at most 30 lines.
 2. **Order:** `POST /order` (payment-intent). Prices, names and VAT come from
    the menu table; the request only names dishes and quantities. The order is
    written `pending_payment` with a TTL backstop, then the Checkout Session
-   is created; the browser goes to `checkoutUrl`.
-3. **Paid:** Stripe redirects to `/bestallning/<locationId>/<orderId>`. The
+   is created. The site sends `embedded: true`: the session is `ui_mode:
+   elements` and the answer carries `clientSecret` + `stripeAccount`; the
+   site's own "Betala" step shows Stripe's Payment Element (card data stays
+   in Stripe's iframes, PCI SAQ A) styled with the site's tokens, and
+   confirms it there. Without `embedded` (older sites) the browser goes to
+   hosted Checkout at `checkoutUrl`. Same session, events and settling.
+3. **Paid:** the site (or Stripe, after a redirect method such as Swish,
+   Klarna or a 3-D Secure redirect) opens `/bestallning/<locationId>/<orderId>`. The
    page polls `GET /locations/{id}/order-status/{orderId}` with the status
    token; while pending, get-order asks Stripe itself. The webhook
    (`checkout.session.completed`, `payment_status=paid`) does the same - the
@@ -46,10 +52,34 @@ ordered 1-20 times; an order has at most 30 lines.
        Roma: Beställning #12 bekräftad. Serveras till bord 5.
        Roma: Beställning #12 är klar att hämta. Adress: Götgatan 1, Stockholm
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
-   orders. Two clicks: "Påbörja – skicka sms" (`preparing`, the
-   confirmation SMS) and "Klar – skicka sms" (`ready`, pickup) / "Klar att
+   orders. Two clicks: "Påbörja - skicka sms" (`preparing`, the
+   confirmation SMS) and "Klar - skicka sms" (`ready`, pickup) / "Klar att
    servera" (table), then `completed`; or `cancelled` (refunds the whole
    order with Stripe).
+
+6. **Kitchen printer** (optional, Star CloudPRNT, e.g. mC-Print3 on
+   Ethernet): the order table's stream runs `print-jobs`, which puts one
+   auto job per paid order in the `print` table (conditional put, so a
+   retried record never prints twice) when the location has auto print on.
+   The printer polls `POST /print/cloudprnt/{deviceId}` every few seconds,
+   fetches the ticket (StarPRNT, rendered from the order at that moment:
+   "Köksnota, ej kvitto", no prices, phone on pickup only, notes in bold,
+   local time) and confirms it. Errors retry after 15/30/60/120 s, then the
+   job is FAILED; a ticket printed on a second attempt says "KAN VARA
+   DUBBLETT". A printed order that is cancelled prints "MAKULERAD #N". The
+   admin's Beställningar screen shows "Skrivaren svarar inte" / "N
+   outskrivna" and "Skriv ut igen"; settings are under Inställningar,
+   Skrivare. Printing never runs in the order request path.
+
+7. **Paid at the till** (optional, plan feature `terminal`): an order still
+   `pending_payment` can be paid on the restaurant's card reader under "Ta
+   betalt" (functions/terminal-payments, shared/card_payments.py). The
+   order's Checkout Session is expired first (the guest can't also pay
+   online; a session that was paid meanwhile settles the order and the till
+   is refused), `cardPaymentId` marks the order so the expiry never fails
+   it, and the card payment's success settles it with `settle_paid`
+   (`paymentMethod: card_present`): number, receipt e-mail and kitchen
+   ticket exactly as online. Refund: cancel the order.
 
 Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 `failed`; the TTL (60 min) removes an order whose webhook never came.

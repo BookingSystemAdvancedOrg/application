@@ -5,11 +5,15 @@
 #   bash scripts/kassa-testprotokoll.sh            (from the repository root)
 #
 # Needs the dev requirements (requirements-dev.txt) in the active Python.
+# The run against fiskaly's TEST environment is separate (opt-in, needs AWS
+# credentials that can read the fiskaly secret):
+#   KASSA_FISKALY_LIVE_TEST=1 python -m pytest -s tests/test_control_system_fiskaly.py -k test_environment
 set -uo pipefail
 [ -d functions/kassa ] || { echo "run from the application repository root" >&2; exit 2; }
 PYTHON="${PYTHON:-python}"
 REPORT="$(mktemp -t kassa-junit.XXXXXX).xml"
-"$PYTHON" -m pytest -q tests/test_kassa.py tests/test_kassa_xml.py tests/test_card_payments.py \
+"$PYTHON" -m pytest -q tests/test_kassa.py tests/test_kassa_xml.py tests/test_control_system_fiskaly.py \
+  tests/test_card_payments.py \
   -p no:cacheprovider --junitxml="$REPORT" >/dev/null 2>&1
 STATUS=$?
 "$PYTHON" - "$REPORT" "$STATUS" <<'PY'

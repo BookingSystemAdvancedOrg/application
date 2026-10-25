@@ -2,6 +2,8 @@
 
 Den här bruksanvisningen beskriver alla funktioner i Booqy Kassa, kassaregistret i Booqy Admin. Den är skriven för dig som står i kassan och för dig som äger restaurangen. Kassan finns under **Kassa** i menyn i Booqy Admin.
 
+**Kontrollsystem:** Booqy Kassa ansluts till kontrollsystemet fiskaly SIGN SE (fiskaly Sweden AB). Varje kvitto skickas dit och får en kontrollkod tillbaka. Kontrollsystemet är en tjänst på internet, så kassan behöver internet för att kunna sälja.
+
 **Testläge:** Så länge det står "Testläge - inte ett certifierat kassaregister än" överst i kassan är kassan inte kopplad till ett certifierat kontrollsystem. Kvittona är då inte giltiga kassakvitton och kassan får inte användas som restaurangens kassaregister. Allt annat i den här bruksanvisningen fungerar likadant i testläget.
 
 ## 1. Det här är kassan
@@ -9,7 +11,7 @@ Den här bruksanvisningen beskriver alla funktioner i Booqy Kassa, kassaregistre
 - Kassan tar betalt med kort på restaurangens kortläsare (Stripe Reader S700). Kontanter tas inte emot.
 - Varje försäljning ger ett kassakvitto med en kontrollkod från kontrollsystemet. Utan kontrollkod blir det inget kvitto och ingen försäljning.
 - Allt som registreras sparas i kassans journalminne. Ingen kan ändra eller ta bort något i journalen. Journalen sparas i minst sju år.
-- En plats kan ha upp till fem kassor. Varje kassa har ett eget namn (kassabeteckning) som står på alla kvitton och rapporter.
+- En plats kan ha upp till fem kassor. Varje kassa har ett eget namn, till exempel "Kassa 1", och en kassabeteckning som står på alla kvitton och rapporter. Kassabeteckningen är det tillverkningsnummer på 16 tecken som kontrollsystemet ger kassan när den skapas.
 
 Vem får göra vad:
 
@@ -23,15 +25,18 @@ Vem får göra vad:
 
 ## 2. Kom igång (ägaren, en gång)
 
-1. Öppna **Kassa**. Finns ingen kassa än, tryck **Skapa Kassa 1**. Namnet kan inte ändras efteråt.
-2. Tryck **Kom igång** i raden överst och gå igenom listan:
-   1. Anmäl kassan till Skatteverket i e-tjänsten "Anmäl, ändra, felanmäl och avanmäl kassaregister". Uppgifterna du behöver står under **Kom igång**: kassans beteckning, modell (Booqy Kassa SE), program, tillverkningsnummer, att kassan har journalminne, kontrollsystemets tillverkningsnummer och den adress där kassan används.
+1. Kontrollera att företagets organisationsnummer och restaurangens adress (gata med nummer, postnummer och ort) stämmer i Booqy. Kontrollsystemet behöver dem.
+2. Öppna **Kassa**. Finns ingen kassa än, tryck **Skapa Kassa 1**. Namnet kan inte ändras efteråt. Kassan kopplas då till kontrollsystemet och får sitt tillverkningsnummer (kassabeteckningen). Från och med nu har du 14 dagar på dig att anmäla kassan till Skatteverket.
+3. Tryck **Kom igång** i raden överst och gå igenom listan:
+   1. Anmäl kassan till Skatteverket i e-tjänsten "Anmäl, ändra, felanmäl och avanmäl kassaregister" (du loggar in med BankID). Uppgifterna du behöver står under **Kom igång**. Anmäl i den här ordningen:
+      - Kontrollenheten: tillverkare TCS, modell "System ver. 1.1 + Miljö rev. A", adress Tunnelgatan 2, Stockholm, kontrollserverns id ISTCSKS0000000011. Uppgifterna är desamma för alla som använder fiskaly.
+      - Kassaregistret: kassabeteckningen (tillverkningsnumret på 16 tecken), modell (Booqy Kassa SE), program, att kassan har journalminne, kontrollenheten ovan och den adress där kassan används.
    2. När du fått skylten med id-nummer från Skatteverket: skriv ut **Kassans uppgifter**, fyll i id-numret och sätt upp skylten synligt vid kassan, eller förvara skylten ordnat i lokalen tillsammans med utskriften.
    3. Ta en Z-rapport varje försäljningsdag (se avsnitt 10).
    4. Journalen sparas av Booqy i sju år. Du behöver inte göra något.
    5. Läs vad du gör om kontrollsystemet inte svarar (avsnitt 12) och skriv ut några **Manuell försäljningslista** i förväg.
-3. Koppla en skrivare under **Inställningar** (Star mC-Print3). Kvitton och köksnotor skrivs ut på den.
-4. Kortläsare kopplas av Booqy. De syns i kassan när de är klara.
+4. Koppla en skrivare under **Inställningar** (Star mC-Print3). Kvitton och köksnotor skrivs ut på den.
+5. Kortläsare kopplas av Booqy. De syns i kassan när de är klara.
 
 ## 3. Öppna dagen
 
@@ -39,7 +44,7 @@ Varje försäljningsdag börjar med att växelkassan registreras.
 
 1. Tryck **Öppna dagen** i raden överst.
 2. Skriv växelkassan. Kassan tar bara kort, så den är oftast 0 kr.
-3. Tryck **Öppna dagen**.
+3. Tryck **Öppna dagen**. Kassan frågar först kontrollsystemet om allt är i ordning. Svarar det inte, går dagen inte att öppna: se avsnitt 12.
 
 Knappen syns bara när dagen inte är öppnad.
 
@@ -120,14 +125,15 @@ Om kvittot inte kunde skrivas ut eller mejlas sparas det ändå. Ta då en kopia
 - adressen där försäljningen sker
 - datum och klockslag
 - kvittonummer (löpnummer i obruten följd per kassa)
-- kassans namn (kassabeteckning)
-- varje rätt med antal och pris inklusive moms, och eventuell rabatt
+- kassabeteckningen (tillverkningsnumret från kontrollsystemet) och kassans namn
+- varje rätt med antal och pris inklusive moms, styckpris när det är fler än en, och eventuell rabatt
 - totalt att betala
 - moms per momssats (6, 12 eller 25 %) med nettobelopp
 - betalningssätt: kort, med korttyp och de fyra sista siffrorna
-- kontrollkoden och kontrollsystemets tillverkningsnummer
+- kontrollkoden (113 tecken, på fyra rader) och kontrollserverns id (ISTCSKS0000000011)
 - "Elektroniskt kassakvitto" om kvittot mejlades
-- "Offline" om kontrollsystemet meddelat att kvittot togs fram utan kontakt med sin server
+
+En kopia märks **KOPIA** med stor text och har både originalets kontrollkod och kopians egen.
 
 ## 8. Kvitton, kopia och retur
 
@@ -172,6 +178,7 @@ Ta en Z-rapport när försäljningsdagen är slut. Det ska finnas en Z-rapport f
 
 1. Tryck **Z-rapport** och bekräfta.
 2. Rapporten får ett nummer i en egen obruten serie och skrivs ut om en skrivare finns.
+3. Kassan meddelar sedan kontrollsystemet att dagen är stängd.
 
 Har du glömt en dag visar kassan "Z-rapport saknas för ...". Ta en Z-rapport så snart du kan.
 
@@ -205,13 +212,17 @@ När kontrollsystemet inte svarar:
 
 Har ett kort redan dragits när kontrollsystemet slutade svara, ligger betalningen kvar på notan. Skapa kvittot när kontrollsystemet svarar igen, eller tryck **Återbetala** om gästen inte kan vänta.
 
+Kassan tar aldrig fram kvitton utan kontrollkod och skriver inte ut kontantnotor. Tar restaurangen betalt på något annat sätt under avbrottet, till exempel kontant eller med en annan kortterminal, fråga ägaren först: Skatteverket kan då kräva en kontantnota med egen nummerserie och kundens underskrift.
+
+Säger kassan "Kontrollsystemet tog inte emot uppgifterna" svarar kontrollsystemet, men något i uppgifterna är fel (till exempel organisationsnummer eller adress). Inget kvitto skapades. Kontakta Booqy.
+
 När meddelandet visas och när någon stänger det sparas i kassans logg.
 
 ## 13. Om kassan
 
-Tryck **Om kassan** i raden överst. Där står tillverkare (Booqy), modell (Booqy Kassa SE), program och versionsnummer, kassans tillverkningsnummer, kontrollsystemets tillverkningsnummer och kassans aktuella inställningar (övningsläge, växelkassa, senaste Z-rapport). Versionsnumret ändras när programmet ändras.
+Tryck **Om kassan** i raden överst. Där står tillverkare (Booqy), modell (Booqy Kassa SE), program och versionsnummer, kassans tillverkningsnummer från Booqy, kassabeteckningen (tillverkningsnumret från kontrollsystemet), kontrollsystemet och kontrollserverns id, när kassan kopplades till kontrollsystemet, och kassans aktuella inställningar (övningsläge, växelkassa, senaste Z-rapport). Versionsnumret ändras när programmet ändras.
 
 ## 14. Flera kassor
 
-- Ägaren skapar fler kassor med **Ny kassa** (högst fem per plats). Varje kassa ska anmälas till Skatteverket.
+- Ägaren skapar fler kassor med **Ny kassa** (högst fem per plats). Varje kassa får ett eget tillverkningsnummer och ska anmälas till Skatteverket inom 14 dagar. Kontrollenheten anmäls bara en gång.
 - Välj kassa i listan bredvid kassans namn. Notor, kvitton, rapporter och journal hålls isär per kassa.

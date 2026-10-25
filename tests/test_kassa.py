@@ -202,7 +202,7 @@ def test_full_sale_end_to_end(env):
     assert doc["title"] == "Kvitto" and doc["seq"] == 1
     assert kassa_receipt.TEST_NOTICE in texts
     assert any("Org.nr 556677-8899" in t for t in texts) and any("Götgatan 1" in t for t in texts)
-    assert any(t.startswith("Kassa Kassa 1") for t in texts)
+    assert any(t.startswith("Kassabeteckning Kassa 1") for t in texts)
     assert any("Kort Visa **** 4242" in t for t in texts)
     assert any(t == "Kontrollsystem: BOOQYSIMULATOR001" for t in texts)
     sale_entry = receipts_of(env, rid)[0]

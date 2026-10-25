@@ -45,14 +45,16 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, KASSA_TABLE_NAME, KASSA_JOURNAL_TABLE_NAME, MENU_TABLE_NAME,
     ORDER_TABLE_NAME, PRINT_TABLE_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION,
-    KASSA_CERTIFIED ("true" only with a certified control system)
+    KASSA_CERTIFIED ("true" only with a certified control system),
+    KASSA_CONTROL_SYSTEM (simulator | fiskaly), FISKALY_SECRET_ID
 
 AWS RESOURCE ACCESS:
     Kassa table GetItem/PutItem/UpdateItem/Query; journal table PutItem/
     GetItem/Query only (append-only, no Update/Delete); menu table GetItem/
     BatchGetItem; order table GetItem/PutItem/UpdateItem/Query (card payment
     records, receipt e-mail notices); print table GetItem/PutItem (Kassa
-    print jobs); the platform Stripe key; tenant-context read policy.
+    print jobs); the platform Stripe key; the fiskaly SIGN SE key (one
+    secret, when the environment uses fiskaly); tenant-context read policy.
 """
 
 import json
@@ -158,9 +160,9 @@ def _done(entry, delivered):
             "document": delivered["document"], "problems": delivered["problems"]}
 
 
-def _report(event, ctx, register_id, kind, now, user):
+def _report(event, ctx, register_id, kind, now, user, system):
     data = http.body(event, allowed={"print"}, required=False)
-    entry = kassa.report(ctx, register_id, kind, user=user, now=now, tenant_row=ctx.tenant)
+    entry = kassa.report(ctx, register_id, kind, user=user, now=now, tenant_row=ctx.tenant, system=system)
     document = kassa_receipt.document(entry, ctx.location)
     problems = []
     if data.get("print") is True:
@@ -217,7 +219,7 @@ def _receipt(event, method, ctx, register_id, seq, action, now, user, system):
     return http.error(404, "not found")
 
 
-def _export(event, ctx, register_id, now, user):
+def _export(event, ctx, register_id, now, user, system):
     _owner(ctx)
     params = http.query(event)
     if set(params) - {"from", "to"}:
@@ -235,7 +237,8 @@ def _export(event, ctx, register_id, now, user):
         entries += kassa.journal_day(register_id, day.isoformat())
         day += timedelta(days=1)
     body = kassa_xml.export(register=register, entries=entries, company=kassa.company(ctx.tenant, ctx.location),
-                            location=ctx.location, start=f"{start}T00:00:00", end=f"{end}T23:59:59", user=user, now=now)
+                            location=ctx.location, start=f"{start}T00:00:00", end=f"{end}T23:59:59", user=user, now=now,
+                            control_system_serial=system.serial)
     name = f"journal-{re.sub(r'[^A-Za-z0-9-]', '-', register['label'])}-{start}-{end}.xml"
     logger.info(json.dumps({"kassa": "export", "register": register_id, "entries": len(entries)}))
     return {"statusCode": 200, "body": body.decode("utf-8"),
@@ -259,15 +262,16 @@ def _register_route(event, method, ctx, parts, now, user, system):
                         now, user, system)
     if action == "export" and len(parts) == 3:
         _allow(method, "GET")
-        return _export(event, ctx, register_id, now, user)
+        return _export(event, ctx, register_id, now, user, system)
     if len(parts) != 3:
         return http.error(404, "not found")
     _allow(method, "POST")
     if action in ("x", "z"):
-        return _report(event, ctx, register_id, kassa.XREPORT if action == "x" else kassa.ZREPORT, now, user)
+        return _report(event, ctx, register_id, kassa.XREPORT if action == "x" else kassa.ZREPORT, now, user,
+                       system)
     if action == "open-day":
         data = http.body(event, allowed={"float"})
-        kassa.open_day(ctx, register_id, data.get("float"), user=user, now=now)
+        kassa.open_day(ctx, register_id, data.get("float"), user=user, now=now, system=system)
     elif action == "training":
         data = http.body(event, allowed={"on"})
         kassa.set_training(ctx, register_id, data.get("on"), user=user, now=now)
@@ -355,7 +359,8 @@ def _proxy(event, method):
                                                     for r in kassa.list_registers(ctx.location_id)]})
         _owner(ctx)
         data = http.body(event, allowed={"label"})
-        entry = kassa.create_register(ctx, data.get("label"), user=user, now=now, system=system)
+        entry = kassa.create_register(ctx, data.get("label"), user=user, now=now, system=system,
+                                      tenant_row=ctx.tenant)
         register = kassa.get_register(ctx, entry["registerId"])
         return http.respond(201, {"register": kassa.register_view(register, system, ctx.location)})
     if len(parts) >= 2 and parts[0] == "registers" and kassa.valid_id(parts[1]):

@@ -18,6 +18,7 @@ kassasystem before then.
 | XSD | Skatteverket's XML schema for the export (2021-12-08) | [schemalager](https://www.skatteverket.se/foretag/etjansterochblanketter/allaetjanster/schemalagerxml.4.dfe345a107ebcc9baf80006452.html), [zip](https://www.skatteverket.se/download/18.5dc1d8b31903014b1bf11b9/1719999713439/xml-schema-kassaregister.zip) |
 | KS | SKVFS 2020:9 om kontrollsystem till kassaregister | [rättslig vägledning](https://www4.skatteverket.se/rattsligvagledning/386888.html), [PDF](https://www4.skatteverket.se/download/18.1aec3436175c97b8415658a/1698823929573/SKVFS%202020_9.pdf) |
 | ANM | Så här anmäler du kassaregister (what to report, felanmälan) | [skatteverket.se](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/saharanmalerdukassaregister.4.69ef368911e1304a62580008748.html), e-tjänst [Anmäl, ändra, felanmäl och avanmäl kassaregister](https://www.skatteverket.se/foretag/etjansterochblanketter/allaetjanster/tjanster/anmalandrafelanmalochavanmalkassaregister.4.309a41aa1672ad0c837fd5d.html) (read 2026-10-25) |
+| FSK | fiskaly SIGN SE (Unified API 2026-06-01): integration guide, process overview, receipt compliance, Skatteverket registration, glossary, service description 2026-07-10, API spec | [workspace.fiskaly.com/sign-se](https://workspace.fiskaly.com/sign-se/2026-06-01/integration-guide/), [spec](https://workspace.fiskaly.com/specs/fiskaly.uapi.sign-se.2026-06-01.yaml) (copy in `tests/fixtures/fiskaly/`), [service description](https://workspace.fiskaly.com/pm-hub/service-descriptions/sign-se/2026-07-10/) (read 2026-10-25) |
 | SKV | Skatteverket's kassaregister pages | [Kassaregister](https://www.skatteverket.se/foretag/drivaforetag/kassaregister.4.121b82f011a74172e5880005263.html), [Så här använder du](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/saharanvanderdukassaregister.4.69ef368911e1304a625800013725.html), [Undantag](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/vissaverksamheterarundantagnafrankravetpakassaregister.4.6efe6285127ab4f1d2580005105.html), [Tillverkare](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/fortillverkareochleverantorer.4.6efe6285127ab4f1d2580006050.html) |
 
 What changes on 1 January 2027: SKVFS 2021:17 took effect on 1 January
@@ -34,6 +35,7 @@ system "i funktion" before it registers a sale or a return (KRAV 4 kap. 9 §).
 |---|---|
 | Domain: registers, bills, receipts, returns, copies, training, X/Z, journal | `application/shared/kassa.py` |
 | Control system port and the dev simulator | `application/shared/control_system.py` |
+| fiskaly SIGN SE adapter (the chosen control system) | `application/shared/control_system_fiskaly.py`, tested against fiskaly's spec in `tests/test_control_system_fiskaly.py` |
 | Journal XML export (SKVFS 2021:16) | `application/shared/kassa_xml.py`, checked against Skatteverket's XSD in `tests/fixtures/skv_kassaregister_xsd/` |
 | Receipt and report text, print and e-mail | `application/shared/kassa_receipt.py`, `shared/print_ticket.py` |
 | API | `application/functions/kassa/app.py`, routes `/locations/{locationId}/kassa[/...]` |
@@ -60,14 +62,14 @@ system "i funktion" before it registers a sale or a return (KRAV 4 kap. 9 §).
 | b. address where the sale happens | the location's `address` |
 | c. date and time | local time in the location's time zone (Europe/Stockholm, DST handled), ANV 3 kap. 10 § |
 | d. serial number, unbroken rising series | `receiptSeq` per register, gap-free (see Serial numbers) |
-| e. kassabeteckning | the register's label, unique per location, max 16 characters (KS tabell A N3), fixed after creation |
+| e. kassabeteckning | with fiskaly: the 16-character tillverkningsnummer fiskaly assigns when the register is enrolled (FSK: "used as the kassabeteckning"); with the simulator: the register's label. Unique, max 16 characters (KS tabell A N3), fixed after creation. The label ("Kassa 1") is printed too when it differs |
 | f/g. articles and quantity | the menu item name as programmed (never editable at the till, KRAV 6 kap. 4 §) and the quantity |
-| h. amount per article incl. VAT, total | line totals and the total, kronor and öre |
+| h. amount per article incl. VAT, total | line totals and the total, kronor and öre; the unit price ("à 149,00") under a line with more than one |
 | i/j. VAT and VAT per rate | per rate (6/12/25 %), computed per line after discount |
 | k. payment method | "Kort" with brand and last four digits per card payment (split payments listed) |
-| l. control system manufacturing number | from the control system (the simulator returns a 17-character test number) |
+| l. control system manufacturing number | from the control system: fiskaly's kontrollserverns ID `ISTCSKS0000000011` (17 characters, static per FSK); the simulator's `BOOQYSIMULATOR001` |
 | m. "Elektroniskt kassakvitto" | printed on e-mailed receipts |
-| control code | printed under the total (not listed in 7 kap. 1 §, but it is what the control system returns and the XML has it) |
+| control code | printed under the total, never shortened, in even rows of at most 30 characters (fits 58 mm paper, 32 columns): fiskaly's avstämningskod is 113 characters (4 rows), a control unit's code 59 (2 rows). FSK says printing it is not required; Booqy prints it anyway (KS, and the XML has it) |
 
 The same fields go on a return receipt (7 kap. 1 § third paragraph).
 
@@ -180,23 +182,113 @@ sales day and changes are journalled. Card only: no cash drawer.
   rate `R...`, return total, VAT per rate `M...`); copies tabell B,
   training tabell C. `shared/control_system.py` builds exactly these
   strings (`ReceiptData.kvittodata()`), so a provider adapter maps them.
-- What comes back: the control code (59 characters in the XML schema)
-  and the control system's manufacturing number (17 characters).
+- What comes back: the control code and the control system's
+  manufacturing number (17 characters). The XML schema has both code
+  lengths: `Kontrollkod` (59, a control unit) or `Avstamningskod` (113, a
+  control system such as fiskaly's); the export picks the element by length.
 - When: before the receipt exists. `kassa.finalize` can't write a receipt
   without a code; the code is stored in the journal entry and printed.
 - The till never asks for a code before the card payment has succeeded,
   but it does check that the control system answers before the card is
   charged (`status()`), so staff aren't left with money and no receipt.
 - One interface (`ControlSystem`: `status`, `sign`, `register_register`,
-  `pause_register`), one implementation today (`SimulatedControlSystem`:
-  HMAC-SHA256 code, "BOOQYSIMULATOR001"). The owner picks the certified
-  provider later (likely fiskaly SIGN SE; Axena KS4POS and Loomis Control
-  System are also certified); it becomes one adapter class, with nothing
-  provider-specific outside it. A new register is enrolled with the
-  provider before it can sell.
+  `pause_register`, `close_day`), two implementations: the simulator
+  (HMAC-SHA256 code, "BOOQYSIMULATOR001") and fiskaly SIGN SE, the owner's
+  choice (2026-10-25). Terraform `kassa_control_system` (`simulator` or
+  `fiskaly`) picks one per environment; nothing provider-specific lives
+  outside the adapter (Axena KS4POS and Loomis Control System would be one
+  more adapter each). A new register is enrolled with the provider before
+  it can sell.
 - KRAV 3 kap. 1 §: the control system must always be certified. ANV 3 kap.
   5 §: the restaurant must not have "intressegemenskap" with the control
   system provider. Booqy must therefore not build its own control system.
+
+### fiskaly SIGN SE (FSK)
+
+fiskaly's Unified API, version 2026-06-01. Every request body is checked in
+the tests against fiskaly's published OpenAPI spec.
+
+| Kassa | fiskaly |
+|---|---|
+| Tenant (the company, org.nr) | an Organization UNIT under Booqy's GROUP, and a Taxpayer COMPANY (commissioned) |
+| Location (restaurant) | a Location BRANCH with the location's address (commissioned) |
+| "Ny kassa" (`register_register`) | a System FISCAL_DEVICE: producer brand "Booqy", model "Booqy Kassa SE" (both needed for enrolment), serial = the register's `BQ` manufacturing number, software "Booqy Kassa" + version. Commissioning enrols it with Skatteverket's IDM and returns the 16-character tillverkningsnummer: the register's kassabeteckning |
+| `status` (start of the Kassa page, "Öppna dagen", before every card payment and return, while an outage lasts) | INTENTION::OPENING. Only STATUS_OK (1) lets the day open or a card be charged |
+| Sale (`sign`, kassakvitto) | INTENTION::TRANSACTION, then TRANSACTION::RECEIPT: one SALE entry per line (VAT_RATE STANDARD 25 %, REDUCED_1 12 %, REDUCED_2 6 %, REDUCED_3 0 %), the VAT breakdown, totals, the card payments (last four digits, debit or credit) |
+| Return (returkvitto) | the same, with RETURN entries in positive amounts and `document.references.preceding_document` = the original receipt's number |
+| Copy (kvittokopia) | INTENTION::DUPLICATE of the original's fiskaly record, then TRANSACTION::RECEIPT with the original's lines; the copy gets its own code, printed under the original's |
+| Training receipt | `details.training = true` on both records; no code; payment OTHER "Övningskvitto" |
+| Z report | after the Z: INTENTION::CLOSING (DAILY), best effort |
+| A register out of use (`pause_register`) | System state DECOMMISSIONED (IDM CLOSE); the merchant still tells Skatteverket |
+
+- Document numbers: the receipt serial, series `KVITTO`, `KOPIA` or `OVNING`.
+- Status codes 1-7 map to Skatteverket's names: 1 STATUS_OK, 2
+  NO_CONTACT_WITH_KS = EJ_KONTAKT_MED_KS, 3 CONTACT_WITH_KS = KONTAKT_MED_KS,
+  4 NOT_CONFIGURED = EJ_KONFIGURERAD, 5 CONTACT_MANUFACTURER =
+  KONTAKTA_TILLVERKARE, 6 REPORT_ERROR_24H = ANMAL_FEL_24H, 7 ANMAL_FEL_48H.
+  5-7 show the felanmälan banner at once.
+- HTTP: 400, 404, 422 are our data (`control_system_rejected`, "Kontrollsystemet
+  tog inte emot uppgifterna", no retry, no serial used); 401 gets a new token
+  once; 403 or a refused key is EJ_KONFIGURERAD; 409, 429, 5xx and timeouts
+  are retried with exponential backoff (0.5, 1, 2 s, Retry-After respected)
+  within 18 s per receipt (the register lock holds 30 s, API Gateway 30 s),
+  then `control_system_unreachable`. A retry reuses its idempotency key, so
+  fiskaly answers it once.
+- The key: Secrets Manager `booqy/<env>/fiskaly-sign-se`, JSON `{"api_key",
+  "api_secret", "env": "TEST" | "LIVE"}`, read at runtime, kept in memory,
+  never logged. Only the kassa function may read it (`kassa-fiskaly-secret`
+  policy). The token is cached until a minute before it expires. Receipts
+  are shown as real only with `env` LIVE and `kassa_certified = true`; TEST
+  receipts always say "Testläge".
+- fiskaly's ids: the register's `csRef` and one item per tenant and
+  environment (`TENANT#<t>` / `CS#fiskaly#<env>`). Switching TEST to LIVE
+  needs new registers (their ids are per environment).
+- **Offline (status 2): Kassa blocks.** FSK: fiskaly enforces a strict
+  online requirement and does not offer the optional 48-hour offline mode;
+  if signing is unreachable the POS halts, rolls back the payment and
+  cancels the receipt. KRAV 4 kap. 9 §: no sale without the control system
+  "i funktion". So status 2 is treated like any other outage: no receipt,
+  the card is checked before it is charged, and a paid bill stays open
+  ("Försök igen" or "Återbetala"). **Osäkert:** FSK's error table also says
+  "print with offline text" for status 2; with no offline mode that row
+  should not apply, confirm with fiskaly.
+- **Kontantnota: not offered.** FSK describes it as an extreme fallback (a
+  separate number series, the customer's signature, the text
+  "Kontantfaktura"). Kassa is card only: a card that can't be charged
+  through Kassa is not charged, and the outage is documented on the
+  "Manuell försäljningslista" and reported (felanmälan). **Osäkert:** whether
+  a restaurant that takes cash or a separate card terminal during an outage
+  must issue kontantnotor; the manual tells staff to ask the owner.
+- **Osäkert, to check in fiskaly TEST** (the opt-in test
+  `test_fiskaly_test_environment` prints what fiskaly returns): where a
+  record carries the status code (FSK's guide reads
+  `content.compliance.status`, the spec has no such field; Kassa also reads
+  `compliance.data` and the logs), which field holds the 113-character code
+  (`compliance.data` is read first), where the tillverkningsnummer sits
+  (`compliance.technical_security_system_id`), whether a copy needs the
+  TRANSACTION after INTENTION::DUPLICATE (Kassa sends it unless the
+  duplicate already carries a code), whether the GROUP key may act for a
+  UNIT with `X-Scope-Identifier` (else each merchant needs its own UNIT key,
+  which would have to be stored as a secret), and whether a return should be
+  TRANSACTION::CORRECTION of the original record instead of a RECEIPT with
+  RETURN entries.
+- **Osäkert:** sole traders (enskild firma, personnummer): fiskaly's
+  INDIVIDUAL taxpayer needs the owner's name and gender; Kassa refuses with
+  `control_system_rejected` for now.
+- **Osäkert:** the service description excludes "storage of data beyond the
+  three (3) month period". The 7-year journal is Booqy's own (below) and
+  does not depend on fiskaly; confirm with fiskaly that the control data
+  Skatteverket may read is kept by the TCS as SKVFS 2020:9 requires.
+- **Osäkert:** `TillverkningsnummerForKassaregistret` in the XML stays the
+  register's `BQ` number (Booqy is the manufacturer); fiskaly's
+  tillverkningsnummer is the kassabeteckning. Confirm that this split is
+  what Skatteverket expects.
+- **Osäkert:** a kvittokopia's own 113-character code has no place in the
+  XML (`KontrollkodPaKopiaAvKassakvitto` is 59 characters, optional); it is
+  kept in the journal and printed, the XML has the original's
+  `AvstamningskodForKvittotSomKopianAvser`.
+- fiskaly offers templates for the test protocol and the manufacturer's
+  declaration (SKV 1509) as an option in the contract: ask for them.
 
 ### When the control system can't be reached
 
@@ -268,6 +360,15 @@ kommunikation" with the register.
   (Booqy Kassa SE, Booqy Kassa, the register's manufacturing number,
   journalminne, the control system's manufacturing number) so the owner can
   copy them.
+- With fiskaly (FSK, "Skatteverket Registration"), within 14 days of the
+  register being enrolled: first the kontrollenhet (tillverkare TCS, modell
+  "System ver. 1.1 + Miljö rev. A", adress Tunnelgatan 2, Stockholm,
+  kontrollserverns ID ISTCSKS0000000011; the same for every fiskaly
+  merchant), then the kassaregister with the 16-character
+  tillverkningsnummer as kassabeteckning and the address where it is used.
+  "Om kassan" and "Kom igång" show the tillverkningsnummer, the kontrollserverns
+  ID and the date the 14 days started. Skatteverket registration applies to
+  LIVE only; TEST registers are not reported.
 - **ID plates:** Skatteverket provides the plates with ID numbers after the
   registration; the business attaches them visibly to the registreringsenhet
   and to the unit with the control system's buffering program, or, if
@@ -310,9 +411,11 @@ kommunikation" with the register.
 
 ## What still has to happen before Kassa is a legal till
 
-1. **Owner:** choose and contract a certified control system provider
-   (ANV 3 kap. 5 §, no common ownership). Build its adapter behind
-   `ControlSystem`.
+1. **Owner:** fiskaly SIGN SE is chosen and its adapter is built. Create
+   the fiskaly HUB account, put the TEST key in Secrets Manager
+   (`booqy/dev/fiskaly-sign-se`), set `kassa_control_system = "fiskaly"` in
+   `dev.tfvars`, run the opt-in TEST check, then sign the LIVE contract
+   (ANV 3 kap. 5 §, no common ownership) and repeat for prod.
 2. **Manufacturer's declaration** (SKV 1509) with a test protocol
    (`docs/kassa/TESTPROTOKOLL.md`, run `scripts/kassa-testprotokoll.sh`), filed
    at least two weeks before Kassa is offered (KRAV 8 kap.), and a new one

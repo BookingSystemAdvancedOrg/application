@@ -5854,7 +5854,7 @@ paths:
               schema: {type: object}
     post:
       tags: [Kassa]
-      summary: 'A new register (kassabeteckning, max 16 characters)'
+      summary: 'A new register (name max 16 characters); with a real control system it is enrolled there and gets its kassabeteckning (503 control_system_unreachable / control_system_rejected)'
       operationId: createKassaRegister
       security:
         - bearerAuth: []
@@ -5898,7 +5898,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'Register the float (växelkassa) at the start of the day'
+      summary: 'Register the float (växelkassa) at the start of the day, after the control system''s startup check (503 control_system_unreachable unless STATUS_OK)'
       operationId: openKassaDay
       security:
         - bearerAuth: []
@@ -6437,7 +6437,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable); printed or e-mailed'
+      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable, or control_system_rejected when the control system refused the data); printed or e-mailed'
       operationId: finalizeKassaBill
       security:
         - bearerAuth: []

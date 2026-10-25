@@ -580,3 +580,91 @@ def test_print_device_renders_a_kassa_job(env, monkeypatch):
                                                         {"pair": ["Totalt", "387,50"], "bold": True}]}, NOW)
     body = device._render({**job, "attempts": 1}, {"name": "Kassan"}, None, {"paperWidth": 58}, NOW)
     assert b"KOPIA" in body and b"387,50" in body and b"KAN VARA DUBBLETT" not in body
+
+
+# --- outages, felanmälan, checklist, manual -------------------------------------------------
+
+def test_outage_start_and_end_are_recorded_once(env):
+    rid = register(env)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "GET")
+    call(env, "GET")
+    assert reg_row(env, rid)["csDownSince"] == "2026-10-24T12:00:00Z"
+    statuses = [e["data"]["code"] for e in journal(env, rid) if e["type"] == kassa.STATUS]
+    assert statuses == ["EJ_KONTAKT_MED_KS"]
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": False})
+    call(env, "GET")
+    assert "csDownSince" not in reg_row(env, rid)
+    assert [e["data"]["code"] for e in journal(env, rid) if e["type"] == kassa.STATUS] == [
+        "EJ_KONTAKT_MED_KS", "KONTAKT_MED_KS"]
+
+
+def test_felanmal_banner_after_thirty_minutes(env):
+    rid = register(env)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    assert call(env, "GET")[1]["registers"][0]["felanmal"] is False
+    env["clock"]["now"] = NOW + timedelta(minutes=29)
+    assert call(env, "GET")[1]["registers"][0]["felanmal"] is False
+    env["clock"]["now"] = NOW + timedelta(minutes=30)
+    state = call(env, "GET")[1]
+    assert state["registers"][0]["felanmal"] is True and state["felanmalAfterMinutes"] == 30
+
+
+def test_provider_status_asks_for_felanmalan_at_once(env):
+    reg = {"csDownSince": "2026-10-24T12:00:00Z"}
+    status = cs.Status(ok=False, code=cs.STATUS_REPORT_24H, provider="x", serial="s")
+    assert kassa.felanmal_due(reg, status, NOW) is True
+    assert kassa.felanmal_due(reg, cs.Status(ok=False, code=cs.STATUS_NO_CONTACT, provider="x", serial="s"), NOW) is False
+
+
+def test_outage_notice_is_audited(env):
+    rid = register(env)
+    assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": "shown"})[1] == {
+        "error": "control_system_up"}
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "GET")
+    for action in ("shown", "shown", "dismissed", "dismissed"):
+        assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": action})[0] == 200
+    audit = sorted(i["action"] for i in env["res"].Table("test-kassa").scan()["Items"] if i["SK"].startswith("AUDIT#"))
+    assert audit == ["dismissed", "dismissed", "shown"]
+    assert reg_row(env, rid)["outageNoticeShown"] == "2026-10-24T12:00:00Z"
+
+
+def test_failed_payment_check_marks_the_outage(env):
+    rid = register(env)
+    b = bill(env, rid)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "a" * 32, "readerId": "tmr_a1",
+                                                             "amount": 1000})
+    assert reg_row(env, rid)["csDownCode"] == "EJ_KONTAKT_MED_KS"
+
+
+def test_setup_checklist_per_location(env):
+    status, body = call(env, "GET", "setup")
+    assert status == 200 and body["items"]["anmalan"] == {"done": False}
+    status, body = call(env, "PUT", "setup", body={"item": "anmalan", "done": True})
+    assert status == 200 and body["items"]["anmalan"]["done"] is True and body["items"]["anmalan"]["by"] == "anna@roma.se"
+    assert call(env, "PUT", "setup", body={"item": "x", "done": True})[0] == 400
+    assert call(env, "PUT", "setup", body={"item": "skylt", "done": True}, role="staff_user", sub=STAFF_A_SUB)[1] == {
+        "error": "owner_only"}
+    assert call(env, "GET", "setup", tenant_id=TENANT_B, location_id=LOC_B)[1]["items"]["anmalan"] == {"done": False}
+
+
+def test_manual_is_served_from_the_docs(env):
+    status, body = call(env, "GET", "manual")
+    assert status == 200 and body["markdown"].startswith("# Bruksanvisning för Booqy Kassa")
+
+
+def test_state_carries_the_company_for_the_manual_sheet(env):
+    register(env)
+    assert call(env, "GET")[1]["company"]["org"] == "5566778899"
+
+
+def test_identity_and_version_can_be_read(env, monkeypatch):
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_VERSION", "42")
+    rid = register(env)
+    reg = call(env, "GET", f"registers/{rid}")[1]["register"]
+    assert reg["model"] == "Booqy Kassa SE" and "SE" in reg["model"].split()
+    assert reg["manufacturer"] == "Booqy" and reg["version"] == f"{kassa.KASSA_VERSION}+42"
+    assert len(reg["serialNumber"]) == 17 and reg["serialNumber"].isalnum()
+    assert reg["controlSystem"]["serial"] == cs.SIMULATOR_SERIAL

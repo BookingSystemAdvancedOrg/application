@@ -38,8 +38,16 @@ COPY = "kopia"         # kvittokopia (tabell B)
 TRAINING = "ovning"    # övningskvitto (tabell C)
 KINDS = (NORMAL, COPY, TRAINING)
 
+# Status codes a control program sends (SKVFS 2020:9 5 kap. 12 §).
 STATUS_OK = "STATUS_OK"
 STATUS_NO_CONTACT = "EJ_KONTAKT_MED_KS"
+STATUS_CONTACT_AGAIN = "KONTAKT_MED_KS"
+STATUS_NOT_CONFIGURED = "EJ_KONFIGURERAD"
+STATUS_CALL_MANUFACTURER = "KONTAKTA_TILLVERKARE"
+STATUS_REPORT_24H = "ANMAL_FEL_24H"
+STATUS_REPORT_48H = "ANMAL_FEL_48H"
+# The provider itself says the fault must be reported or fixed by it.
+REPORT_NOW = (STATUS_CALL_MANUFACTURER, STATUS_REPORT_24H, STATUS_REPORT_48H)
 
 CODE_LENGTH = 59                  # Kontrollkod in Skatteverket's XML schema
 SERIAL_LENGTH = 17                # TillverkningsnummerForKontrollsystemet

@@ -13,6 +13,10 @@ Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
         discount, card payment ids; closed/void bills expire after 90 days
     PK LOCATION#<l>  SK RCPT#<registerId>#<seq>    a sale receipt's pointer:
         jseq, payments, returned lines, returnCount, copyJseq (one copy)
+    PK LOCATION#<l>  SK SETUP                      "Kom igång med kassan" checklist
+    PK LOCATION#<l>  SK AUDIT#<registerId>#<at>#<id>  audit trail outside the
+        journal (written once, never changed): the felanmälan banner shown /
+        dismissed during a control system outage
 
 Journal table (KASSA_JOURNAL_TABLE_NAME), append-only, no TTL:
     PK REG#<registerId>  SK J#<jseq, 12 digits>   one registration: type, at
@@ -66,6 +70,12 @@ TABLE_LABEL_MAX = 20
 MAX_FLOAT = 10_000_000
 BILL_TTL_DAYS = 90
 MAIL_TTL_HOURS = 24
+# "Felanmäl till Skatteverket": after this long without the control system,
+# or at once when the provider reports a fault to report (see
+# docs/KASSA-REQUIREMENTS.md, "När kontrollsystemet inte svarar").
+FELANMAL_AFTER_MINUTES = 30
+SETUP_ITEMS = ("anmalan", "skylt", "zrapport", "journal", "avbrott")
+OUTAGE_ACTIONS = ("shown", "dismissed")
 
 TABLE, TAKEAWAY = "table", "takeaway"
 BILL_KINDS = (TABLE, TAKEAWAY)
@@ -288,12 +298,13 @@ def clean_label(value):
     return label
 
 
-def register_view(register, system, location):
-    status = system.status(register)
+def register_view(register, system, location, status=None):
+    status = status or system.status(register)
     view = {k: _plain(register.get(k)) for k in (
         "registerId", "label", "serialNumber", "receiptSeq", "zSeq", "jseq", "training", "float", "dayOpen",
-        "lastZAt", "lastZDay", "createdAt")}
+        "lastZAt", "lastZDay", "createdAt", "csDownSince", "outageNoticeShown")}
     view.update({
+        "felanmal": felanmal_due(register, status, o.now_utc()),
         "model": MODEL, "program": PROGRAM, "manufacturer": MANUFACTURER, "version": version(),
         "controlSystem": {"ok": status.ok, "code": status.code, "provider": status.provider,
                           "serial": status.serial, "simulated": status.provider == cs.SIMULATOR},
@@ -439,6 +450,119 @@ def journal_entry(register_id, jseq):
     if not item:
         raise NotFound
     return item
+
+
+def felanmal_due(register, status, now):
+    """True when staff should report the outage to Skatteverket: down for
+    FELANMAL_AFTER_MINUTES, or the provider says so (status code)."""
+    if status.ok or not register.get("csDownSince"):
+        return False
+    if status.code in cs.REPORT_NOW:
+        return True
+    try:
+        since = o.parse_iso(register["csDownSince"])
+    except (TypeError, ValueError):
+        return True
+    return (now - since).total_seconds() >= FELANMAL_AFTER_MINUTES * 60
+
+
+def _mark_down(ctx, register_id, code, *, now, user):
+    """The control system stopped answering: remember since when and journal
+    the status code once (KS 5 kap. 12 §: on every change)."""
+    try:
+        _table().update_item(
+            Key=register_key(ctx.location_id, register_id), UpdateExpression="SET csDownSince = :now, csDownCode = :code",
+            ConditionExpression="attribute_exists(PK) AND attribute_not_exists(csDownSince)",
+            ExpressionAttributeValues={":now": o.iso(now), ":code": code})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        return False
+    _status_event(ctx, register_id, code, now=now, user=user)
+    return True
+
+
+def _mark_up(ctx, register_id, *, now, user):
+    try:
+        _table().update_item(
+            Key=register_key(ctx.location_id, register_id),
+            UpdateExpression="REMOVE csDownSince, csDownCode, outageNoticeShown",
+            ConditionExpression="attribute_exists(csDownSince)")
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        return False
+    _status_event(ctx, register_id, cs.STATUS_CONTACT_AGAIN, now=now, user=user)
+    return True
+
+
+def check_control_system(ctx, register, system, *, now, user):
+    """Asks the control system and records an outage starting or ending.
+    Returns (register as it is now, status)."""
+    status = system.status(register)
+    register_id = register["registerId"]
+    if status.ok and register.get("csDownSince"):
+        _mark_up(ctx, register_id, now=now, user=user)
+        register = {k: v for k, v in register.items() if k not in ("csDownSince", "csDownCode", "outageNoticeShown")}
+    elif not status.ok and not register.get("csDownSince"):
+        _mark_down(ctx, register_id, status.code, now=now, user=user)
+        register = {**register, "csDownSince": o.iso(now), "csDownCode": status.code}
+    return register, status
+
+
+def outage_notice(ctx, register_id, action, *, user, now):
+    """Audit trail: the felanmälan banner was shown (once per outage) or
+    dismissed. Kept outside the journal (no SKVFS 2021:16 element)."""
+    if action not in OUTAGE_ACTIONS:
+        raise ValueError("action must be shown or dismissed")
+    register = get_register(ctx, register_id)
+    down_since = register.get("csDownSince")
+    if not down_since:
+        raise Conflict("control_system_up")
+    if action == "shown":
+        try:
+            _table().update_item(Key=register_key(ctx.location_id, register_id),
+                                 UpdateExpression="SET outageNoticeShown = :since",
+                                 ConditionExpression="csDownSince = :since AND attribute_not_exists(outageNoticeShown)",
+                                 ExpressionAttributeValues={":since": down_since})
+        except ClientError as exc:
+            if not _conditional(exc):
+                raise
+            return None
+    item = {"PK": pk(ctx.location_id), "SK": f"AUDIT#{register_id}#{o.iso(now)}#{new_id()[:8]}",
+            "tenantId": ctx.tenant_id, "registerId": register_id, "type": "felanmalan_banner", "action": action,
+            "downSince": down_since, "user": user, "at": o.iso(now)}
+    _table().put_item(Item=item, ConditionExpression="attribute_not_exists(SK)")
+    return item
+
+
+def audit_entries(ctx, register_id):
+    items = _table().query(KeyConditionExpression=Key("PK").eq(pk(ctx.location_id))
+                           & Key("SK").begins_with(f"AUDIT#{register_id}#"), ConsistentRead=True).get("Items") or []
+    return [i for i in items if i.get("tenantId") == ctx.tenant_id]
+
+
+def get_setup(ctx):
+    item = _table().get_item(Key={"PK": pk(ctx.location_id), "SK": "SETUP"}, ConsistentRead=True).get("Item") or {}
+    items = _plain(item.get("items") or {})
+    return {key: items.get(key) or {"done": False} for key in SETUP_ITEMS}
+
+
+def set_setup_item(ctx, key, done, *, user, now):
+    """"Kom igång med kassan": one item ticked or unticked (per location)."""
+    if key not in SETUP_ITEMS:
+        raise ValueError("unknown checklist item")
+    if not isinstance(done, bool):
+        raise ValueError("done must be true or false")
+    _table().update_item(
+        Key={"PK": pk(ctx.location_id), "SK": "SETUP"},
+        UpdateExpression="SET #i = if_not_exists(#i, :empty), tenantId = :t",
+        ExpressionAttributeNames={"#i": "items"}, ExpressionAttributeValues={":empty": {}, ":t": ctx.tenant_id})
+    _table().update_item(
+        Key={"PK": pk(ctx.location_id), "SK": "SETUP"}, UpdateExpression="SET #i.#k = :v",
+        ExpressionAttributeNames={"#i": "items", "#k": key},
+        ExpressionAttributeValues={":v": {"done": done, "by": user, "at": o.iso(now)}})
+    return get_setup(ctx)
 
 
 def _status_event(ctx, register_id, code, *, now, user):
@@ -814,7 +938,9 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
         raise Conflict("bill_closed")
     if bill.get("training"):
         raise Conflict("training_no_payment")
-    if not system.status(get_register(ctx, bill["registerId"])).ok:
+    status = system.status(get_register(ctx, bill["registerId"]))
+    if not status.ok:
+        _mark_down(ctx, bill["registerId"], status.code, now=now, user=user_of(ctx))
         raise Unavailable("control_system_unreachable")
     payments = payments_of(ctx, bill)
     known = next((p for p in payments if p.get("paymentId") == checkout_id), None)
@@ -893,7 +1019,7 @@ def _register_receipt(ctx, register, lock, system, data, *, now, user):
         return system.sign(register, data)
     except cs.Unreachable as exc:
         _unlock(ctx.location_id, register["registerId"], lock)
-        _status_event(ctx, register["registerId"], exc.status, now=now, user=user)
+        _mark_down(ctx, register["registerId"], exc.status, now=now, user=user)
         raise Unavailable("control_system_unreachable") from None
 
 
@@ -1082,7 +1208,9 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
     picked = _return_lines(original, pointer, lines)
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
-    if not system.status(get_register(ctx, register_id)).ok:
+    status = system.status(get_register(ctx, register_id))
+    if not status.ok:
+        _mark_down(ctx, register_id, status.code, now=now, user=user)
         raise Unavailable("control_system_unreachable")
     total = sum(amount for _, _, amount, _ in picked)
     count = _int(pointer.get("returnCount")) + 1

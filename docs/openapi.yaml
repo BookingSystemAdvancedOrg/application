@@ -6159,6 +6159,90 @@ paths:
           content:
             application/json:
               schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/outage-notice:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Audit trail: the felanmälan banner was shown (once per outage) or dismissed'
+      operationId: kassaOutageNotice
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action: {type: string, enum: [shown, dismissed]}
+      responses:
+        '200':
+          description: 'OK. 409 control_system_up when there is no outage.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/setup:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: '"Kom igång med kassan" checklist of the location'
+      operationId: getKassaSetup
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    put:
+      tags: [Kassa]
+      summary: 'Tick or untick a checklist item (owner only, checked in the handler)'
+      operationId: setKassaSetup
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [item, done]
+              properties:
+                item: {type: string, enum: [anmalan, skylt, zrapport, journal, avbrott]}
+                done: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/manual:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'The user manual (docs/kassa/BRUKSANVISNING.md) as Markdown'
+      operationId: getKassaManual
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
   /locations/{locationId}/kassa/bills:
     parameters:
       - $ref: '#/components/parameters/LocationId'

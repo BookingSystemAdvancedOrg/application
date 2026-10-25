@@ -1,6 +1,6 @@
 # Kassa: Skatteverket's cash register rules and how Booqy meets them
 
-Status 2026-10-24. Written by the engineering side, not by a lawyer. Every
+Status 2026-10-25. Written by the engineering side, not by a lawyer. Every
 "Uncertain" item below is for the owner's accountant or lawyer before Kassa
 is offered as a cash register. Until a certified control system is
 connected and a manufacturer's declaration is filed, Kassa runs in test
@@ -17,6 +17,7 @@ kassasystem before then.
 | XML | SKVFS 2021:16 om standardexport av data i journalminne | [rättslig vägledning](https://www4.skatteverket.se/rattsligvagledning/399369.html), [PDF](https://www4.skatteverket.se/download/18.566df4d617d171254ec12069/1698824221107/SKVFS%2020221_16.pdf) |
 | XSD | Skatteverket's XML schema for the export (2021-12-08) | [schemalager](https://www.skatteverket.se/foretag/etjansterochblanketter/allaetjanster/schemalagerxml.4.dfe345a107ebcc9baf80006452.html), [zip](https://www.skatteverket.se/download/18.5dc1d8b31903014b1bf11b9/1719999713439/xml-schema-kassaregister.zip) |
 | KS | SKVFS 2020:9 om kontrollsystem till kassaregister | [rättslig vägledning](https://www4.skatteverket.se/rattsligvagledning/386888.html), [PDF](https://www4.skatteverket.se/download/18.1aec3436175c97b8415658a/1698823929573/SKVFS%202020_9.pdf) |
+| ANM | Så här anmäler du kassaregister (what to report, felanmälan) | [skatteverket.se](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/saharanmalerdukassaregister.4.69ef368911e1304a62580008748.html), e-tjänst [Anmäl, ändra, felanmäl och avanmäl kassaregister](https://www.skatteverket.se/foretag/etjansterochblanketter/allaetjanster/tjanster/anmalandrafelanmalochavanmalkassaregister.4.309a41aa1672ad0c837fd5d.html) (read 2026-10-25) |
 | SKV | Skatteverket's kassaregister pages | [Kassaregister](https://www.skatteverket.se/foretag/drivaforetag/kassaregister.4.121b82f011a74172e5880005263.html), [Så här använder du](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/saharanvanderdukassaregister.4.69ef368911e1304a625800013725.html), [Undantag](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/vissaverksamheterarundantagnafrankravetpakassaregister.4.6efe6285127ab4f1d2580005105.html), [Tillverkare](https://www.skatteverket.se/foretag/drivaforetag/kassaregister/fortillverkareochleverantorer.4.6efe6285127ab4f1d2580006050.html) |
 
 What changes on 1 January 2027: SKVFS 2021:17 took effect on 1 January
@@ -212,8 +213,30 @@ sales day and changes are journalled. Card only: no cash drawer.
   provider says so and journals the provider's status codes.
 - SKV "Använd kassaregister även vid driftsavbrott": a longer outage must
   be documented by hand and reported to Skatteverket (felanmälan, e-tjänst);
-  sales are not keyed in afterwards. **Owner decision:** a printable
-  manual sales sheet and a "felanmäl" reminder in Kassa.
+  sales are not keyed in afterwards. ANV 4 kap. 1 §: a register that does
+  not work must be documented and reported "utan dröjsmål". ANM: report
+  "så snart som möjligt", above all outages that need repair and can't be
+  fixed during the sales day; not for a power cut.
+- Kassa records when an outage starts (`csDownSince` on the register) and
+  ends, and journals the status code at each change (EJ_KONTAKT_MED_KS,
+  then KONTAKT_MED_KS; SKVFS 2020:9 5 kap. 12 §: on every change).
+- From the first failure Kassa shows "Manuell försäljningslista", a
+  printable A4 sheet (restaurant, org.nr, kassabeteckning, date; rows for
+  time, item, amount, VAT rate, payment method; signature) to document
+  sales by hand.
+- **Felanmälan banner** after 30 minutes without the control system, or
+  at once when the provider reports KONTAKTA_TILLVERKARE, ANMAL_FEL_24H or
+  ANMAL_FEL_48H: "Kontrollsystemet har varit nere sedan HH:MM. Felanmäl
+  till Skatteverket och använd den manuella listan.", with links to the
+  e-tjänst and the sheet. Why 30 minutes: shorter blips (network,
+  provider restart) should not send restaurants to Skatteverket, while 30
+  minutes is a large part of a lunch or dinner rush and well inside "utan
+  dröjsmål" and "under försäljningsdagen". **Osäkert:** Skatteverket gives
+  no number; a lawyer may prefer "when the outage can't be fixed today".
+- Showing the banner (once per outage) and every dismissal are kept in an
+  audit trail next to the journal (`AUDIT#` items, written once, never
+  changed). They are not journal registrations: SKVFS 2021:16 has no
+  element for them.
 
 ### Receipt must be produced at every sale (KRAV 6 kap. 2 §)
 
@@ -230,6 +253,40 @@ The S700 prints nothing; Booqy prints one receipt with the card part on
 it, on the same printer, so the "Ej kvitto på köp" paper is not needed.
 **Uncertain:** confirm that a server-driven reader counts as "dubbelriktad
 kommunikation" with the register.
+
+### Registering the till and the ID plates (SFL 39 kap.; ANV 3 kap. 8 §, 4 kap. 1 §; ANM)
+
+- Each registreringsenhet and its control system is reported to
+  Skatteverket as a separate register (ANV 4 kap. 1 §), before use, in the
+  e-tjänst "Anmäl, ändra, felanmäl och avanmäl kassaregister". ANM lists
+  what to enter: for the control system its designation, model or version,
+  manufacturing number and address; for the register its designation,
+  model or program, manufacturing number and whether it has a journal
+  memory or a paper roll; plus the business name and the address where the
+  register is used. Changes within two weeks; avanmälan when it stops.
+- Kassa's "Kom igång med kassan" shows exactly these values per register
+  (Booqy Kassa SE, Booqy Kassa, the register's manufacturing number,
+  journalminne, the control system's manufacturing number) so the owner can
+  copy them.
+- **ID plates:** Skatteverket provides the plates with ID numbers after the
+  registration; the business attaches them visibly to the registreringsenhet
+  and to the unit with the control system's buffering program, or, if
+  that is hard, keeps them in an orderly way at the premises "tillsammans
+  med en förteckning över vilka komponenter som hör till en viss skylt".
+  Booqy does not make plates. It prints that list of components ("Kassans
+  uppgifter") with space for the ID number from Skatteverket, to keep with
+  the plate. **Osäkert:** what the registreringsenhet physically is for a
+  web till used on several tablets, and where the plate should go when
+  the control system runs in the provider's cloud.
+
+### "Om kassan" and the user manual (KRAV 4 kap. 4 §, 4 kap. 12 §, 5 kap. 4 §)
+
+- "Om kassan" in Kassa shows manufacturer, model, program, version,
+  manufacturing numbers, and the register's current settings (training
+  mode, float, last Z).
+- The user manual is `docs/kassa/BRUKSANVISNING.md` (Swedish); Kassa shows
+  it under "Bruksanvisning" (served by the kassa function from the same
+  file). The test protocol for SKV 1509 is `docs/kassa/TESTPROTOKOLL.md`.
 
 ### Identity, clock, version (KRAV 2 kap. 23 §, 4 kap. 3-6 §§; ANV 3 kap. 9-10 §§)
 
@@ -256,14 +313,16 @@ kommunikation" with the register.
 1. **Owner:** choose and contract a certified control system provider
    (ANV 3 kap. 5 §, no common ownership). Build its adapter behind
    `ControlSystem`.
-2. **Manufacturer's declaration** (SKV 1509) with a test protocol, filed
+2. **Manufacturer's declaration** (SKV 1509) with a test protocol
+   (`docs/kassa/TESTPROTOKOLL.md`, run `scripts/kassa-testprotokoll.sh`), filed
    at least two weeks before Kassa is offered (KRAV 8 kap.), and a new one
    for every version that changes regulated functions.
 3. **Documentation** in Swedish or English that ships with the register
-   (KRAV 4 kap. 12 §): every function, including training mode. This file
-   is the start of it, not the user manual.
+   (KRAV 4 kap. 12 §): `docs/kassa/BRUKSANVISNING.md`, shown in Kassa.
+   Update it with the real provider's name and its own outage behaviour.
 4. **Each restaurant** reports each register to Skatteverket, puts up the
-   ID plates (ANV 3 kap. 8 §) and keeps one Z per day.
+   ID plates (ANV 3 kap. 8 §) and keeps one Z per day; "Kom igång med
+   kassan" in Kassa walks them through it.
 5. **Legal review** of every "Uncertain" above, especially: table QR
    orders, journalling of every line, discount and return signs in the
    XML, services vs goods, the drawer, and the receipt printer setup.

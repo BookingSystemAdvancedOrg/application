@@ -8,5 +8,7 @@ COPY functions/kassa/requirements.txt .
 RUN pip install -r requirements.txt --target "${LAMBDA_TASK_ROOT}" --no-cache-dir
 
 COPY functions/kassa/app.py ${LAMBDA_TASK_ROOT}/
+# The user manual the till shows ("Bruksanvisning", SKVFS 2014:9 4 kap. 12 §).
+COPY docs/kassa/BRUKSANVISNING.md ${LAMBDA_TASK_ROOT}/
 
 CMD ["app.handler"]

@@ -15,6 +15,10 @@ TRIGGER:
         POST registers/{r}/receipts/{seq}/return  {lines, reason, delivery, email?}
         GET  registers/{r}/export?from=&to=   owner: journal XML (SKVFS 2021:16)
         POST registers/{r}/simulate           {down}   test mode only: control system down/up
+        POST registers/{r}/outage-notice      {action: shown|dismissed}  audit: felanmälan banner
+        GET  setup                            "Kom igång med kassan" checklist
+        PUT  setup                            {item, done}             owner: tick an item
+        GET  manual                           the user manual (docs/kassa/BRUKSANVISNING.md)
         GET  bills                            open bills
         POST bills                            {registerId, kind, tableLabel?}
         GET  bills/{b}
@@ -56,6 +60,7 @@ import logging
 import os
 import re
 from datetime import date, timedelta
+from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -110,12 +115,35 @@ def _bill_summary(ctx, bill):
             "total": priced["total"], "createdAt": bill.get("createdAt")}
 
 
+def _checked(ctx, system, register, now, user):
+    register, status = kassa.check_control_system(ctx, register, system, now=now, user=user)
+    return kassa.register_view(register, system, ctx.location, status)
+
+
+def _company(ctx):
+    try:
+        return kassa.company(ctx.tenant, ctx.location)
+    except kassa.Conflict:
+        return None
+
+
+def _manual():
+    """The manual ships in the image next to app.py; tests read it from docs."""
+    for path in (Path(__file__).parent / "BRUKSANVISNING.md",
+                 Path(__file__).parents[2] / "docs" / "kassa" / "BRUKSANVISNING.md"):
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    raise kassa.NotFound
+
+
 def _state(ctx, system):
     registers = kassa.list_registers(ctx.location_id)
     terminal = (ctx.location.get("terminal") or {})
+    now, user = o.now_utc(), kassa.user_of(ctx)
     return {
         "testMode": kassa.test_mode(system), "testNotice": kassa_receipt.TEST_NOTICE,
-        "registers": [kassa.register_view(r, system, ctx.location) for r in registers],
+        "company": _company(ctx), "felanmalAfterMinutes": kassa.FELANMAL_AFTER_MINUTES,
+        "registers": [_checked(ctx, system, r, now, user) for r in registers],
         "openBills": [_bill_summary(ctx, b) for b in kassa.list_open_bills(ctx.location_id)],
         "printer": bool(printing.get_settings(ctx.location_id).get("printerId")),
         "cardReaders": bool(terminal.get("locationId")) and bool(
@@ -220,7 +248,7 @@ def _register_route(event, method, ctx, parts, now, user, system):
     if len(parts) == 2:
         _allow(method, "GET")
         register = kassa.get_register(ctx, register_id)
-        return http.respond(200, {"register": kassa.register_view(register, system, ctx.location),
+        return http.respond(200, {"register": _checked(ctx, system, register, now, user),
                                   "day": kassa.day_status(ctx, register, now)})
     action = parts[2]
     if action == "receipts" and len(parts) == 3:
@@ -243,6 +271,9 @@ def _register_route(event, method, ctx, parts, now, user, system):
     elif action == "training":
         data = http.body(event, allowed={"on"})
         kassa.set_training(ctx, register_id, data.get("on"), user=user, now=now)
+    elif action == "outage-notice":
+        data = http.body(event, allowed={"action"})
+        kassa.outage_notice(ctx, register_id, data.get("action"), user=user, now=now)
     elif action == "simulate":
         if os.environ.get("ENVIRONMENT") == "prod" or system.provider != cs.SIMULATOR:
             return http.error(404, "not found")
@@ -250,8 +281,7 @@ def _register_route(event, method, ctx, parts, now, user, system):
         kassa.simulate(ctx, register_id, data.get("down"))
     else:
         return http.error(404, "not found")
-    return http.respond(200, {"register": kassa.register_view(kassa.get_register(ctx, register_id), system,
-                                                                ctx.location)})
+    return http.respond(200, {"register": _checked(ctx, system, kassa.get_register(ctx, register_id), now, user)})
 
 
 def _bill_route(event, method, ctx, parts, now, user, system):
@@ -307,6 +337,17 @@ def _proxy(event, method):
     now, user = o.now_utc(), kassa.user_of(ctx)
     proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
     parts = proxy.split("/") if proxy else []
+    if parts == ["manual"]:
+        _allow(method, "GET")
+        return http.respond(200, {"markdown": _manual()})
+    if parts == ["setup"]:
+        _allow(method, "GET", "PUT")
+        if method == "PUT":
+            _owner(ctx)
+            data = http.body(event, allowed={"item", "done"})
+            return http.respond(200, {"items": kassa.set_setup_item(ctx, data.get("item"), data.get("done"),
+                                                                    user=user, now=now)})
+        return http.respond(200, {"items": kassa.get_setup(ctx)})
     if parts == ["registers"]:
         _allow(method, "GET", "POST")
         if method == "GET":

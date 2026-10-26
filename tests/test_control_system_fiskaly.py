@@ -26,7 +26,11 @@ from shared import kassa_receipt, print_ticket
 from test_card_payments import location_item
 from test_kassa import LOC_A, TENANT_A, TENANT_TABLE, bill, call, env, journal, pay, register, sale  # noqa: F401
 
-CREDS = {"key": TEST_KEY, "secret": TEST_SECRET, "env": "TEST", "server": fk.CONTROL_SERVER_ID}
+CREDS = {"key": TEST_KEY, "secret": TEST_SECRET, "env": "TEST"}
+TEST_SERVER = "ISTCSKSVERIFY0001"     # kontrollserverns ID in fiskaly TEST
+# compliance.data of a receipt in fiskaly TEST, 2026-10-26 (a TEST code, not a secret)
+TEST_RECEIPT_DATA = ("ISTCSKSVERIFY0001,NIKLXBBLGMPOTG6DDPXHVTI5TA7SGART;6LRFC2MVYYVNH5N3TYJT5PGQR6LSDXKV2KRIN6VSBITSYR2M4IY"
+                     "NTQXN4KHOHRHJZCAIMNH2KQCX2===,STATUS_OK,Kvitto får skrivas ut")
 AT = datetime(2026, 10, 25, 14, 3, tzinfo=ZoneInfo("Europe/Stockholm"))
 REF = {"provider": "fiskaly", "env": "TEST", "unitId": "unit-1", "systemId": "0190a9d0-0000-7000-8000-000000000001"}
 REGISTER = {"registerId": "r" * 32, "tenantId": "t1", "locationId": "l1", "label": "Kassa 1",
@@ -51,6 +55,7 @@ class Clock:
 def fresh():
     fk._tokens.clear()
     fk._units.clear()
+    fk._servers.clear()
     fk._secret.update(value=None, at=0.0)
     yield
     fk._tokens.clear()
@@ -90,7 +95,7 @@ def test_status_is_an_opening_record_and_the_token_is_reused():
     system, fake, _ = make()
     first = system.status(REGISTER)
     second = system.status(REGISTER)
-    assert first == cs.Status(ok=True, code=cs.STATUS_OK, provider="fiskaly", serial="ISTCSKS0000000011")
+    assert first == cs.Status(ok=True, code=cs.STATUS_OK, provider="fiskaly", serial=TEST_SERVER)
     assert second.ok and fake.tokens == 1
     opening = records(fake)[0]
     assert opening == {"type": "INTENTION", "system": {"id": REF["systemId"]}, "operation": {"type": "OPENING"}}
@@ -101,7 +106,7 @@ def test_status_is_an_opening_record_and_the_token_is_reused():
 @pytest.mark.parametrize("number,name", [(1, cs.STATUS_OK), (2, cs.STATUS_NO_CONTACT), (3, cs.STATUS_CONTACT_AGAIN),
                                          (4, cs.STATUS_NOT_CONFIGURED), (5, cs.STATUS_CALL_MANUFACTURER),
                                          (6, cs.STATUS_REPORT_24H), (7, cs.STATUS_REPORT_48H)])
-@pytest.mark.parametrize("where", ["name", "compliance", "data", "logs"])
+@pytest.mark.parametrize("where", ["name", "compliance", "logs"])
 def test_every_status_code_maps_to_skatteverkets_name(number, name, where):
     fake = FakeFiskaly()
     fake.status, fake.status_in = number, where
@@ -128,7 +133,7 @@ def test_status_never_raises_when_fiskaly_is_down():
     fake.fail = [("/records", 503)] * 10
     system, _, clock = make(fake)
     status = system.status(REGISTER)
-    assert status == cs.Status(ok=False, code=cs.STATUS_NO_CONTACT, provider="fiskaly", serial="ISTCSKS0000000011")
+    assert status == cs.Status(ok=False, code=cs.STATUS_NO_CONTACT, provider="fiskaly", serial=TEST_SERVER)
     assert clock.now <= fk.STATUS_BUDGET
 
 
@@ -338,7 +343,7 @@ def test_sale_is_an_intention_then_a_receipt_with_lines_vat_and_card():
     assert op["totals"] == {"vat": {"amount": "41.52", "exclusive": "345.98", "inclusive": "387.50"}}
     assert op["payments"] == [{"type": "CARD", "kind": "DEBIT", "number": "4242",
                                "details": {"amount": "387.50", "currency": "SEK", "date": "2026-10-25"}}]
-    assert registration.control_code == code(1) and registration.serial == "ISTCSKS0000000011"
+    assert registration.control_code == code(1) and registration.serial == TEST_SERVER
     assert registration.ref == {"provider": "fiskaly", "recordId": registration.ref["recordId"],
                                 "intentionId": registration.ref["intentionId"]}
 
@@ -421,11 +426,50 @@ def test_a_rejected_record_is_rejected():
     assert fk.outcome({"state": "FAILED"}) == cs.STATUS_NO_CONTACT
 
 
-def test_control_code_is_found_where_fiskaly_may_put_it():
-    assert fk.control_code({"compliance": {"data": code(3)}}) == code(3)
-    assert fk.control_code({"compliance": {"data": f"SE,1,{code(4)}"}}) == code(4)
-    assert fk.control_code({"compliance": {"artifact": {"content": code(5)}}}) == code(5)
-    assert fk.control_code({"compliance": {}}) is None
+def test_receipt_compliance_data_as_fiskaly_test_sends_it():
+    record = {"id": "r2", "type": "TRANSACTION::RECEIPT", "mode": "FINISHED", "state": "COMPLETED",
+              "compliance": {"data": TEST_RECEIPT_DATA}}
+    code_ = "NIKLXBBLGMPOTG6DDPXHVTI5TA7SGART;6LRFC2MVYYVNH5N3TYJT5PGQR6LSDXKV2KRIN6VSBITSYR2M4IYNTQXN4KHOHRHJZCAIMNH2KQCX2==="
+    assert fk.compliance_fields(record) == {"server": TEST_SERVER, "code": code_, "status": "STATUS_OK",
+                                            "text": "Kvitto får skrivas ut"}
+    assert fk.control_code(record) == code_ and len(code_) == cs.AVSTAMNING_LENGTH
+    assert fk.server_id(record) == TEST_SERVER and fk.outcome(record) == cs.STATUS_OK
+
+
+@pytest.mark.parametrize("data,fields", [
+    ("STATUS_OK", {"status": "STATUS_OK"}),
+    ("NO_CONTACT_WITH_KS", {"status": "NO_CONTACT_WITH_KS"}),
+    ("S,C,ANMAL_FEL_48H,Kvitto får inte skrivas ut", {"server": "S", "code": "C", "status": "ANMAL_FEL_48H",
+                                                      "text": "Kvitto får inte skrivas ut"}),
+    ("S,C,STATUS_OK,Text, med komma", {"server": "S", "code": "C", "status": "STATUS_OK", "text": "Text, med komma"}),
+    ("S,C,STATUS_OK", None), ("S,C1,C2,STATUS_OK,Text", None), ("hej", None), ("", None),
+])
+def test_compliance_data_by_field_count(data, fields):
+    assert fk.compliance_fields({"compliance": {"data": data}}) == fields
+
+
+def test_a_receipt_without_a_usable_code_is_rejected():
+    system, fake, _ = make()
+    original = fake._record
+
+    def three_fields(content):
+        record = original(content)
+        if content["type"] == "TRANSACTION":
+            record["compliance"] = {"data": "S,C,STATUS_OK"}
+        return record
+
+    fake._record = three_fields
+    with pytest.raises(cs.Rejected):
+        system.sign(REGISTER, receipt())
+
+
+def test_server_id_comes_from_the_receipt_and_is_journalled(with_fiskaly):
+    env = with_fiskaly
+    rid = register(env)
+    sale(env, rid)
+    entry = next(e for e in journal(env, rid) if e["type"] == "kassakvitto")
+    assert entry["data"]["csSerial"] == TEST_SERVER and entry["data"]["csMessage"] == "Kvitto får skrivas ut"
+    assert ";" in entry["data"]["controlCode"] and entry["data"]["controlCode"].endswith("===")
 
 
 def test_close_day_and_pause_register():
@@ -582,7 +626,7 @@ def test_credentials_come_from_secrets_manager_and_only_live_is_certifiable(monk
             {"api_key": TEST_KEY, "api_secret": TEST_SECRET, "env": "TEST"}))
         fk._secret.update(value=None, at=0.0)
         system = fk.FiskalyControlSystem()
-        assert system.env == "TEST" and system.certifiable is False and system.serial == "ISTCSKS0000000011"
+        assert system.env == "TEST" and system.certifiable is False and system.serial == TEST_SERVER
         client.put_secret_value(SecretId="booqy/dev/fiskaly-sign-se", SecretString=json.dumps(
             {"api_key": TEST_KEY, "api_secret": TEST_SECRET, "env": "LIVE"}))
         fk._secret.update(value=None, at=0.0)
@@ -625,14 +669,14 @@ def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     status, state = call(env, "GET")
     reg = state["registers"][0]
     assert reg["designation"] == "SE01BQ0000000001" and reg["label"] == "Kassa 1"
-    assert reg["controlSystem"]["provider"] == "fiskaly" and reg["controlSystem"]["serial"] == "ISTCSKS0000000011"
+    assert reg["controlSystem"]["provider"] == "fiskaly" and reg["controlSystem"]["serial"] == TEST_SERVER
     assert state["testMode"] is True and state["simulator"] is False and state["canSimulate"] is False
     assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
     b, done = sale(env, rid)
     rows = done["document"]["rows"]
     texts = [r.get("text") or " ".join(r.get("pair") or []) for r in rows]
     assert "Kassabeteckning SE01BQ0000000001" in texts and "Kassa Kassa 1" in texts
-    assert "Kontrollsystem: ISTCSKS0000000011" in texts
+    assert f"Kontrollsystem: {TEST_SERVER}" in texts
     code_rows = [r["text"] for r in rows if r.get("code")]
     sold = next(e for e in journal(env, rid) if e["type"] == "kassakvitto")["data"]["controlCode"]
     assert "".join(code_rows) == sold and len(sold) == 113
@@ -655,7 +699,7 @@ def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     assert "<utreko:Avstamningskod>" in xml and "<utreko:Kontrollkod>" not in xml
     assert "<utreko:AvstamningskodForKvittotSomKopianAvser>" in xml
     assert "<utreko:Kassabeteckning>SE01BQ0000000001<" in xml
-    assert "<utreko:TillverkningsnummerForKontrollsystemet>ISTCSKS0000000011<" in xml
+    assert f"<utreko:TillverkningsnummerForKontrollsystemet>{TEST_SERVER}<" in xml
 
 
 def test_kassa_blocks_the_card_payment_when_fiskaly_says_no_contact(with_fiskaly):
@@ -799,5 +843,5 @@ def test_register_view_tells_what_to_report_to_skatteverket(with_fiskaly):
     reg = call(env, "GET")[1]["registers"][0]
     assert reg["controlSystem"]["name"] == "fiskaly SIGN SE" and reg["controlSystem"]["connected"] is True
     assert reg["controlSystem"]["unit"] == {"manufacturer": "TCS", "model": "System ver. 1.1 + Miljö rev. A",
-                                            "address": "Tunnelgatan 2, Stockholm", "serverId": "ISTCSKS0000000011"}
+                                            "address": "Tunnelgatan 2, Stockholm", "serverId": TEST_SERVER}
     assert reg["csEnrolledAt"].startswith("2026-10-24")

@@ -130,7 +130,7 @@ Om kvittot inte kunde skrivas ut eller mejlas sparas det ändå. Ta då en kopia
 - totalt att betala
 - moms per momssats (6, 12 eller 25 %) med nettobelopp
 - betalningssätt: kort, med korttyp och de fyra sista siffrorna
-- kontrollkoden (113 tecken, på fyra rader) och kontrollserverns id (ISTCSKS0000000011)
+- kontrollkoden (113 tecken, på fyra rader) och kontrollserverns id, som kontrollsystemet skickar med varje kvitto
 - "Elektroniskt kassakvitto" om kvittot mejlades
 
 En kopia märks **KOPIA** med stor text och har både originalets kontrollkod och kopians egen.

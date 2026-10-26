@@ -69,10 +69,13 @@ from shared import dynamo
 PROVIDER = "fiskaly"
 API_VERSION = "2026-06-01"
 BASES = {"TEST": "https://test.api.fiskaly.com", "LIVE": "https://live.api.fiskaly.com"}
-# Kontrollserverns ID of fiskaly's control system (TCS). fiskaly documents it as
-# static ("Skatteverket Registration", "Receipt Compliance"); the secret may
+# Kontrollserverns ID of fiskaly's control system (TCS). Every receipt brings
+# it back (compliance.data, first field) and that value is what Kassa uses.
+# Until a receipt has been seen: LIVE per fiskaly's docs ("Skatteverket
+# Registration"), TEST as fiskaly TEST answered (2026-10-26). The secret may
 # override it with "control_server_id".
-CONTROL_SERVER_ID = "ISTCSKS0000000011"
+CONTROL_SERVER_IDS = {"TEST": "ISTCSKSVERIFY0001", "LIVE": "ISTCSKS0000000011"}
+CONTROL_SERVER_ID = CONTROL_SERVER_IDS["LIVE"]
 BRAND = "Booqy"                   # producer.details.brand; enrolment needs brand and model
 PART_NUMBER = "BOOQY-KASSA-SE"
 VAT_CODES = {25: "STANDARD", 12: "REDUCED_1", 6: "REDUCED_2", 0: "REDUCED_3"}
@@ -98,6 +101,7 @@ TOKEN_MARGIN = 60
 _secret = {"value": None, "at": 0.0}
 _tokens = {}      # (env, key fingerprint) -> Token
 _units = {}       # (env, tenantId) -> Creds
+_servers = {}     # env -> kontrollserverns ID from the latest receipt
 
 
 # pytest prints a failing frame's arguments; these keep keys, secrets and
@@ -208,7 +212,7 @@ def credentials():
     if not isinstance(value, dict) or not value.get("api_key") or not value.get("api_secret") or env not in BASES:
         raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
     _secret["value"] = Creds(value["api_key"], value["api_secret"], env=env,
-                             server=str(value.get("control_server_id") or CONTROL_SERVER_ID))
+                             server=str(value["control_server_id"]) if value.get("control_server_id") else None)
     _secret["at"] = now
     return _secret["value"]
 
@@ -279,27 +283,39 @@ def _find_status(value, depth=0):
     return None
 
 
-def _data_tokens(record):
-    """compliance.data split on , ; | and spaces (fiskaly's Czech module keeps
-    "EET,<code>" there; Sweden may do the same)."""
+def compliance_fields(record):
+    """compliance.data as fiskaly SIGN SE sends it (seen in TEST, 2026-10-26):
+    one field, the status ("STATUS_OK" on INTENTION::OPENING), or four,
+    comma-separated, on a receipt:
+
+        ISTCSKSVERIFY0001,<avstämningskod>,STATUS_OK,Kvitto får skrivas ut
+        kontrollserverns ID, the 113-character code (';' and '=' are part of
+        it, kept exactly), the status, a text for staff
+
+    {"server", "code", "status", "text"} (only "status" for one field), or
+    None for any other shape. The code has no commas; the text might, so
+    it is everything after the status."""
     data = (record.get("compliance") or {}).get("data")
-    return [t for t in re.split(r"[,;|\s]+", data.strip()) if t] if isinstance(data, str) else []
+    if not isinstance(data, str) or not data.strip():
+        return None
+    parts = data.strip().split(",")
+    if len(parts) == 1:
+        return {"status": parts[0].strip()} if parts[0].strip().upper() in NAMES else None
+    if len(parts) < 4 or parts[2].strip().upper() not in NAMES:
+        return None
+    return {"server": parts[0].strip(), "code": parts[1].strip(), "status": parts[2].strip(),
+            "text": ",".join(parts[3:]).strip()}
 
 
 def status_code(record):
-    """The status code (1-7) a record carries, or None. fiskaly's guide reads
-    it from content.compliance.status; then compliance.data, then the logs."""
+    """The status code (1-7) a record carries, or None: compliance.data
+    (above), else a status field or a log message naming one."""
+    fields = compliance_fields(record)
+    if fields:
+        return NAMES[fields["status"].upper()]
     code = _find_status(record.get("compliance")) or _as_code(record.get("status"))
     if code:
         return code
-    tokens = _data_tokens(record)
-    for token in tokens:
-        if token.upper() in NAMES:
-            return NAMES[token.upper()]
-    if len(tokens) > 1:
-        digits = [_as_code(t) for t in tokens if len(t) == 1]
-        if digits and digits[0]:
-            return digits[0]
     for log in record.get("logs") or []:
         match = _NAME.search(str((log or {}).get("message") or ""))
         if match:
@@ -319,18 +335,18 @@ def _strings(value, depth=0):
 
 
 def control_code(record):
-    """The 113-character avstämningskod: compliance.data, else any string of
-    that length in compliance. None when there is none (training, pro forma)."""
-    compliance = record.get("compliance") or {}
-    data = compliance.get("data")
-    if isinstance(data, str) and len(data.strip()) == cs.AVSTAMNING_LENGTH:
-        return data.strip()
-    for text in [*_strings(compliance), *_data_tokens(record)]:
-        if len(text) == cs.AVSTAMNING_LENGTH:
-            return text
-    tokens = _data_tokens(record)
-    # A lone status name (OPENING answers compliance.data "STATUS_OK") is not a code.
-    return tokens[0] if len(tokens) == 1 and tokens[0].upper() not in NAMES else None
+    """The avstämningskod exactly as fiskaly gave it (the second field of
+    compliance.data), or None (opening, training, pro forma, an error)."""
+    fields = compliance_fields(record)
+    if fields:
+        return fields.get("code") or None
+    data = (record.get("compliance") or {}).get("data")
+    return data.strip() if isinstance(data, str) and len(data.strip()) == cs.AVSTAMNING_LENGTH else None
+
+
+def server_id(record):
+    """Kontrollserverns ID a receipt came back with, or None."""
+    return (compliance_fields(record) or {}).get("server") or None
 
 
 def designation(system):
@@ -497,9 +513,10 @@ class FiskalyControlSystem(cs.ControlSystem):
     @property
     def serial(self):
         try:
-            return self._c().server
+            c = self._c()
         except cs.Unreachable:
             return CONTROL_SERVER_ID
+        return c.server or _servers.get(c.env) or CONTROL_SERVER_IDS[c.env]
 
     @property
     def certifiable(self):
@@ -671,7 +688,11 @@ class FiskalyControlSystem(cs.ControlSystem):
             code = control_code(record)
         if not code and data.kind != cs.TRAINING:
             raise cs.Rejected("fiskaly returned no control code")
-        return cs.Registration(control_code=code or "", serial=self.serial,
+        server = server_id(record)
+        if server:
+            _servers[self._c().env] = server
+        return cs.Registration(control_code=code or "", serial=server or self.serial,
+                               message=(compliance_fields(record) or {}).get("text") or "",
                                ref={"provider": PROVIDER, "recordId": record.get("id"),
                                     "intentionId": first.get("id")})
 

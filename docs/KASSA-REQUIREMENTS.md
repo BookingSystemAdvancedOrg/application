@@ -67,7 +67,7 @@ system "i funktion" before it registers a sale or a return (KRAV 4 kap. 9 §).
 | h. amount per article incl. VAT, total | line totals and the total, kronor and öre; the unit price ("à 149,00") under a line with more than one |
 | i/j. VAT and VAT per rate | per rate (6/12/25 %), computed per line after discount |
 | k. payment method | "Kort" with brand and last four digits per card payment (split payments listed) |
-| l. control system manufacturing number | from the control system: fiskaly's kontrollserverns ID `ISTCSKS0000000011` (17 characters, static per FSK); the simulator's `BOOQYSIMULATOR001` |
+| l. control system manufacturing number | from the control system: fiskaly's kontrollserverns ID (17 characters) as each receipt brings it back; `ISTCSKS0000000011` in LIVE per FSK, `ISTCSKSVERIFY0001` in TEST; the simulator's `BOOQYSIMULATOR001` |
 | m. "Elektroniskt kassakvitto" | printed on e-mailed receipts |
 | control code | printed under the total, never shortened, in even rows of at most 30 characters (fits 58 mm paper, 32 columns): fiskaly's avstämningskod is 113 characters (4 rows), a control unit's code 59 (2 rows). FSK says printing it is not required; Booqy prints it anyway (KS, and the XML has it) |
 
@@ -295,20 +295,31 @@ the tests against fiskaly's published OpenAPI spec.
   "Manuell försäljningslista" and reported (felanmälan). **Osäkert:** whether
   a restaurant that takes cash or a separate card terminal during an outage
   must issue kontantnotor; the manual tells staff to ask the owner.
-- Seen in fiskaly TEST (2026-10-26): INTENTION::OPENING answers FINISHED,
-  COMPLETED with the status in `compliance.data` ("STATUS_OK"); the
-  commissioned system carries the tillverkningsnummer in
+- Seen in fiskaly TEST (2026-10-26), which settles where the status and the
+  code sit: `compliance.data` is one field on INTENTION::OPENING (the
+  status, "STATUS_OK") and four comma-separated fields on a receipt:
+
+      ISTCSKSVERIFY0001,NIKLXBBLGMPOTG6DDPXHVTI5TA7SGART;6LRFC2MV...KQCX2===,STATUS_OK,Kvitto får skrivas ut
+
+  kontrollserverns ID, the 113-character avstämningskod (kept exactly as
+  given: `;` and the `=` padding are part of it), the status, and a text
+  for staff. Kassa prints and journals the code and the server ID from each
+  receipt (the server ID also goes into the XML), and journals the text
+  (`csMessage`). Any other shape counts as no code: no receipt. Until a
+  receipt has been seen, "Om kassan" and "Kom igång" show the documented ID
+  for the environment (LIVE `ISTCSKS0000000011`, TEST `ISTCSKSVERIFY0001`).
+  The commissioned system carries the tillverkningsnummer in
   `compliance.technical_security_system_id` (16 characters). An
   INTENTION::TRANSACTION stays ACCEPTED / PROCESSING until the
   TRANSACTION::RECEIPT that refers to it arrives, so Kassa never waits for
   it (only OPENING, CLOSING and a receipt still PROCESSING are polled).
 - **Osäkert, still to see in fiskaly TEST** (the opt-in test
-  `test_fiskaly_test_environment` prints what fiskaly returns): which field
-  of a receipt holds the 113-character code (`compliance.data` is read
-  first), whether a copy needs the TRANSACTION after INTENTION::DUPLICATE
-  (Kassa sends it unless the duplicate already carries a code), and whether
-  a return should be TRANSACTION::CORRECTION of the original record instead
-  of a RECEIPT with RETURN entries.
+  `test_fiskaly_test_environment` prints what fiskaly returns): whether a
+  copy needs the TRANSACTION after INTENTION::DUPLICATE (Kassa sends it
+  unless the duplicate already carries a code), what a receipt refused with
+  status 2-7 looks like, and whether a return should be
+  TRANSACTION::CORRECTION of the original record instead of a RECEIPT with
+  RETURN entries.
 - **Osäkert:** sole traders (enskild firma, personnummer): fiskaly's
   INDIVIDUAL taxpayer needs the owner's name and gender; Kassa refuses with
   `control_system_rejected` for now.

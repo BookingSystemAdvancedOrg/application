@@ -90,6 +90,7 @@ class Registration:
     serial: str
     offline: bool = False
     ref: dict | None = None           # the provider's ids for this receipt (copies refer to it)
+    message: str = ""                 # the control system's text for staff ("Kvitto får skrivas ut")
 
 
 @dataclass(frozen=True)

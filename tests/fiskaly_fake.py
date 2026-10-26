@@ -47,19 +47,25 @@ def uuid7():
     return f"{raw[:8]}-{raw[8:12]}-7{raw[13:16]}-8{raw[17:20]}-{raw[20:32]}"
 
 
+SERVER = "ISTCSKSVERIFY0001"     # kontrollserverns ID in fiskaly TEST
+
+
 def code(n):
-    """A 113-character control code, as fiskaly's TCS returns."""
-    return (f"SE{n:04d}" + "ABCDEF0123456789" * 8)[:113]
+    """A 113-character avstämningskod shaped like fiskaly TEST's: 32
+    characters, ';', 80 ending in '==='."""
+    head = (f"N{n:04d}" + "IKLXBBLGMPOTG6DDPXHVTI5TA7SGART")[:32]
+    return head + ";" + ("6LRFC2MVYYVNH5N3TYJT5PGQR6LSDXKV2KRIN6VSBITSYR2M4IYNTQXN4KHOHRHJZCAIMNH2KQCX2" + "A" * 10)[:77] + "==="
 
 
 class FakeFiskaly:
     def __init__(self):
         self.calls = []
         self.status = 1                 # status code of OPENING and TRANSACTION records
-        # Where the status goes: "name" is what fiskaly TEST did (2026-10-26):
-        # compliance.data "STATUS_OK" on OPENING. Others: compliance.status,
-        # "SE,<n>,<code>" in data, or the logs.
-        self.status_in = "name"         # name | compliance | data | logs
+        # Where the status goes: "name" is what fiskaly TEST does (2026-10-26):
+        # compliance.data "STATUS_OK" on OPENING, and on a receipt
+        # "<server>,<code>,<status>,<text>". Fallbacks the adapter also reads:
+        # compliance.status, or the logs.
+        self.status_in = "name"         # name | compliance | logs
         self.fail = []                  # [(path prefix, HTTP status), ...] answered before the real handler
         self.processing = 0             # first GETs of a record still PROCESSING
         self.copy_code_on_intention = False
@@ -191,11 +197,14 @@ class FakeFiskaly:
             if not ok:
                 record["state"] = "FAILED" if self.status > 2 else "COMPLETED"
             if self.status_in == "name":
-                record["compliance"] = {"data": data or self.NAMES[self.status]}
+                name = self.NAMES[self.status]
+                if operation in ("OPENING", "CLOSING"):
+                    record["compliance"] = {"data": name}
+                else:
+                    text = "Kvitto får skrivas ut" if ok else "Kvitto får inte skrivas ut"
+                    record["compliance"] = {"data": f"{SERVER},{data},{name},{text}"}
             elif self.status_in == "compliance":
                 record["compliance"] = {"status": self.status, **({"data": data} if data else {})}
-            elif self.status_in == "data":
-                record["compliance"] = {"data": f"SE,{self.status}" + (f",{data}" if data else "")}
             else:
                 record["logs"] = [{"severity": "WARNING", "message": f"TCS status {self.NAMES[self.status]}"}]
                 if data:

@@ -1111,7 +1111,7 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
         "gross": priced["gross"], "total": priced["total"], "vat": priced["vat"],
         "payments": _card_rows(succeeded), "controlCode": registration.control_code,
         "csSerial": registration.serial, "offline": registration.offline, "electronic": delivery == EMAIL,
-        "testMode": test_mode(system), "csRef": registration.ref,
+        "testMode": test_mode(system), "csRef": registration.ref, "csMessage": registration.message or None,
     }
     sets = {field: seq}
     if not training:
@@ -1207,7 +1207,7 @@ def copy_receipt(ctx, register_id, seq, *, delivery, email, user, now, system, t
             "originalJseq": _int(original["jseq"]), "original": _plain(original["data"]),
             "zSeq": _int(register.get("zSeq")) + 1, "controlCode": registration.control_code,
             "csSerial": registration.serial, "electronic": delivery == EMAIL, "testMode": test_mode(system),
-            "csRef": registration.ref}
+            "csRef": registration.ref, "csMessage": registration.message or None}
 
     def extra(jseq):
         return [{"Update": {
@@ -1319,7 +1319,7 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
                                  "vat": vat_by_rate[r]} for r in sorted(sums_by_rate)],
         "payments": refunds, "controlCode": registration.control_code, "csSerial": registration.serial,
         "offline": registration.offline, "electronic": delivery == EMAIL, "testMode": test_mode(system),
-        "csRef": registration.ref,
+        "csRef": registration.ref, "csMessage": registration.message or None,
     }
 
     def extra(jseq):

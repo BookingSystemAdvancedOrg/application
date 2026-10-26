@@ -133,7 +133,7 @@ Om kvittot inte kunde skrivas ut eller mejlas sparas det ändå. Ta då en kopia
 - kontrollkoden (113 tecken, på fyra rader) och kontrollserverns id, som kontrollsystemet skickar med varje kvitto
 - "Elektroniskt kassakvitto" om kvittot mejlades
 
-En kopia märks **KOPIA** med stor text och har både originalets kontrollkod och kopians egen.
+En kopia märks **KOPIA** med stor text och har originalkvittots kontrollkod.
 
 ## 8. Kvitton, kopia och retur
 

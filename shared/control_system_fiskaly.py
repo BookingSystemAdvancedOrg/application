@@ -44,11 +44,11 @@ item per tenant and environment in the kassa table: PK TENANT#<tenantId>,
 SK CS#fiskaly#<env> (unitId, taxpayerId, locations {Booqy location: fiskaly
 location}).
 
-Not yet confirmed in fiskaly's TEST environment (docs/KASSA-REQUIREMENTS.md,
-"fiskaly SIGN SE", Osäkert): where a record carries the status code, which
-field holds the 113-character code and the tillverkningsnummer, whether a copy
-needs a TRANSACTION after INTENTION::DUPLICATE. The parsers look in the
-documented places first and tests/test_control_system_fiskaly.py pins them.
+Checked in fiskaly's TEST environment (2026-10-26; docs/KASSA-REQUIREMENTS.md,
+"fiskaly SIGN SE"): compliance.data carries the status, the code and the
+server ID (compliance_fields), the tillverkningsnummer sits in
+compliance.technical_security_system_id, a copy is INTENTION::DUPLICATE
+alone. tests/fiskaly_fake.py answers the same way.
 """
 
 import hashlib
@@ -599,9 +599,9 @@ class FiskalyControlSystem(cs.ControlSystem):
 
     def _record(self, unit, content, *, deadline, poll=True):
         """POST /records; a record still PROCESSING is polled until FINISHED.
-        `poll=False` for INTENTION::TRANSACTION and ::DUPLICATE: fiskaly
-        keeps those open (ACCEPTED, PROCESSING) until the TRANSACTION that
-        refers to them arrives, so waiting for them would never end."""
+        `poll=False` for INTENTION::TRANSACTION: fiskaly keeps it open
+        (ACCEPTED, PROCESSING) until the TRANSACTION that refers to it
+        arrives, so waiting for it would never end."""
         record = self._call("POST", "/records", {"content": content}, unit=unit,
                             deadline=deadline).get("content") or {}
         while poll and record.get("mode") == "PROCESSING" and record.get("id"):
@@ -663,31 +663,34 @@ class FiskalyControlSystem(cs.ControlSystem):
         deadline = self._clock() + SIGN_BUDGET
         ref, unit = self._ref(register, deadline)
         if data.kind == cs.COPY:
+            # A kvittokopia is the INTENTION::DUPLICATE alone, referring to the
+            # original's TRANSACTION::RECEIPT record (fiskaly TEST, 2026-10-26:
+            # FINISHED at once, compliance.data "<server>,,STATUS_OK,<text>",
+            # no code of its own; a TRANSACTION after it is refused with 405).
             original = (data.original_ref or {}).get("recordId")
             if not original:
                 raise cs.Rejected("a copy needs the original receipt's fiskaly record")
-            intention = {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                         "operation": {"type": "DUPLICATE", "record": {"id": original}, "number": "1",
-                                       "reason": "Kvittokopia", "details": details(data)}}
+            record = first = self._record(unit, {
+                "type": "INTENTION", "system": {"id": ref["systemId"]},
+                "operation": {"type": "DUPLICATE", "record": {"id": original}, "number": "1",
+                              "reason": "Kvittokopia", "details": details(data)}}, deadline=deadline)
+            self._allowed(record)
+            code = control_code(record)
         else:
-            intention = {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                         "operation": {"type": "TRANSACTION", "details": details(data)}}
-        first = self._record(unit, intention, deadline=deadline, poll=False)
-        if first.get("state") in ("REJECTED", "FAILED"):
-            self._allowed(first)
-        finished = first.get("mode") != "PROCESSING" and first.get("state") == "COMPLETED"
-        record, code = first, control_code(first) if data.kind == cs.COPY and finished else None
-        if code:
-            self._allowed(first)
-        if not code:
+            first = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                                        "operation": {"type": "TRANSACTION", "details": details(data)}},
+                                 deadline=deadline, poll=False)
+            if first.get("state") in ("REJECTED", "FAILED"):
+                self._allowed(first)
             if not first.get("id"):
                 raise cs.Rejected("fiskaly returned no record id")
             record = self._record(unit, {"type": "TRANSACTION", "record": {"id": first["id"]},
                                          "operation": operation(data)}, deadline=deadline)
             self._allowed(record)
             code = control_code(record)
-        if not code and data.kind != cs.TRAINING:
-            raise cs.Rejected("fiskaly returned no control code")
+            if not code and data.kind != cs.TRAINING:
+                # A kassakvitto or returkvitto without its code is no receipt.
+                raise cs.Rejected("fiskaly returned no control code")
         server = server_id(record)
         if server:
             _servers[self._c().env] = server

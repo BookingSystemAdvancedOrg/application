@@ -68,7 +68,6 @@ class FakeFiskaly:
         self.status_in = "name"         # name | compliance | logs
         self.fail = []                  # [(path prefix, HTTP status), ...] answered before the real handler
         self.processing = 0             # first GETs of a record still PROCESSING
-        self.copy_code_on_intention = False
         self.open_intentions = set()    # INTENTION::TRANSACTION / DUPLICATE without their TRANSACTION yet
         self.tokens = 0
         self.records = {}
@@ -162,7 +161,14 @@ class FakeFiskaly:
         if method == "PATCH":
             return 200, {}, {"content": {"id": path.split("/")[2], **payload["content"]}}
         if method == "POST" and base == "/records":
-            return 200, {}, {"content": self._record(payload["content"])}
+            content = payload["content"]
+            if content["type"] == "TRANSACTION":
+                target = self.records.get(content["record"]["id"]) or {}
+                if target.get("type") != "INTENTION::TRANSACTION":
+                    # fiskaly TEST, 2026-10-26, e.g. a RECEIPT after INTENTION::DUPLICATE
+                    return self._error(405, "E_METHOD_NOT_ALLOWED", "RECEIPT record can only be connected to a "
+                                       "previously created INTENTION::TRANSACTION record")
+            return 200, {}, {"content": self._record(content)}
         if method == "GET" and base == "/records":
             record = self.records[path.split("/")[2]]
             if record["id"] in self.open_intentions:
@@ -182,18 +188,18 @@ class FakeFiskaly:
         kind, operation = content["type"], content["operation"]["type"]
         record = {"id": record_id, "type": f"{kind}::{operation}", "state": "COMPLETED", "mode": "FINISHED",
                   "system": content.get("system") or {"id": "sys"}}
-        signed = kind == "TRANSACTION" or operation in ("OPENING", "CLOSING") or (
-            operation == "DUPLICATE" and self.copy_code_on_intention)
+        # A DUPLICATE (copy) finishes at once: status and server, no code of its own.
+        signed = kind == "TRANSACTION" or operation in ("OPENING", "CLOSING", "DUPLICATE")
         if kind == "TRANSACTION":
             self.open_intentions.discard(content["record"]["id"])
-        if kind == "INTENTION" and not signed and operation in ("TRANSACTION", "DUPLICATE"):
+        if kind == "INTENTION" and operation == "TRANSACTION":
             record.update(mode="PROCESSING", state="ACCEPTED")
             self.open_intentions.add(record_id)
         if signed:
             training = (content["operation"].get("details") or {}).get("training")
             self.counter += 1
             ok = self.status == 1
-            data = code(self.counter) if ok and not training and operation not in ("OPENING", "CLOSING") else ""
+            data = code(self.counter) if ok and not training and kind == "TRANSACTION" else ""
             if not ok:
                 record["state"] = "FAILED" if self.status > 2 else "COMPLETED"
             if self.status_in == "name":

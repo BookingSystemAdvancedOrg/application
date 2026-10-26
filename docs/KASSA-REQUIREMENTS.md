@@ -216,7 +216,7 @@ the tests against fiskaly's published OpenAPI spec.
 | `status` (start of the Kassa page, "Öppna dagen", before every card payment and return, while an outage lasts) | INTENTION::OPENING. Only STATUS_OK (1) lets the day open or a card be charged |
 | Sale (`sign`, kassakvitto) | INTENTION::TRANSACTION, then TRANSACTION::RECEIPT: one SALE entry per line (VAT_RATE STANDARD 25 %, REDUCED_1 12 %, REDUCED_2 6 %, REDUCED_3 0 %), the VAT breakdown, totals, the card payments (last four digits, debit or credit) |
 | Return (returkvitto) | the same, with RETURN entries in positive amounts and `document.references.preceding_document` = the original receipt's number |
-| Copy (kvittokopia) | INTENTION::DUPLICATE of the original's fiskaly record, then TRANSACTION::RECEIPT with the original's lines; the copy gets its own code, printed under the original's |
+| Copy (kvittokopia) | INTENTION::DUPLICATE referring to the original's TRANSACTION::RECEIPT record, and nothing more (fiskaly TEST: a TRANSACTION after it is refused with 405). It answers at once with the status and the server ID and no code of its own; STATUS_OK lets the copy be printed with the original's code and "KOPIA" in double size |
 | Training receipt | `details.training = true` on both records; no code; payment OTHER "Övningskvitto" |
 | Z report | after the Z: INTENTION::CLOSING (DAILY), best effort |
 | A register out of use (`pause_register`) | System state DECOMMISSIONED (IDM CLOSE); the merchant still tells Skatteverket |
@@ -313,10 +313,23 @@ the tests against fiskaly's published OpenAPI spec.
   INTENTION::TRANSACTION stays ACCEPTED / PROCESSING until the
   TRANSACTION::RECEIPT that refers to it arrives, so Kassa never waits for
   it (only OPENING, CLOSING and a receipt still PROCESSING are polled).
+- A copy is INTENTION::DUPLICATE alone (fiskaly TEST, 2026-10-26): it
+  answered FINISHED, COMPLETED, `compliance.data`
+  "ISTCSKSVERIFY0001,,STATUS_OK,Kvitto får skrivas ut" (empty code). An
+  empty code is accepted only for a copy (and a training receipt); a
+  kassakvitto or returkvitto without its code is no receipt.
+- **Osäkert (for the fiskaly meeting and the lawyer):** what code a
+  kvittokopia must carry. fiskaly's own process overview says a copy
+  "carries its own control code", but TEST gave none. Kassa prints the
+  original receipt's code with "KOPIA" in double size (KRAV 5 kap. 5 §, 6
+  kap. 3 §: one copy, clearly marked). Skatteverket's XML schema fits that:
+  `KopiaAvKassakvitto` requires the original's code
+  (`KontrollkodForKvittotSomKopianAvser` / `AvstamningskodForKvittotSomKopianAvser`)
+  and makes the copy's own code optional (`KontrollkodPaKopiaAvKassakvitto`,
+  minOccurs 0). Confirm with fiskaly whether LIVE returns a code for copies
+  and with the lawyer that the original's code is enough on the copy.
 - **Osäkert, still to see in fiskaly TEST** (the opt-in test
-  `test_fiskaly_test_environment` prints what fiskaly returns): whether a
-  copy needs the TRANSACTION after INTENTION::DUPLICATE (Kassa sends it
-  unless the duplicate already carries a code), what a receipt refused with
+  `test_fiskaly_test_environment` prints what fiskaly returns): what a receipt refused with
   status 2-7 looks like, and whether a return should be
   TRANSACTION::CORRECTION of the original record instead of a RECEIPT with
   RETURN entries.

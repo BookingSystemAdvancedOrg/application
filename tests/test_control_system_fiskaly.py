@@ -158,7 +158,7 @@ def test_sign_never_waits_for_the_open_intention():
     assert not [c for c in fake.calls if c["method"] == "GET" and intention_id in c["path"]]
     assert fake.open_intentions == set() and clock.sleeps == []
     copy = system.sign(REGISTER, receipt(cs.COPY, serial=1, original_ref=registration.ref))
-    assert len(copy.control_code) == 113 and fake.open_intentions == set()
+    assert copy.control_code == "" and fake.open_intentions == set()
 
 
 def test_a_rejected_intention_stops_the_sale():
@@ -372,26 +372,61 @@ def test_return_uses_positive_return_entries_and_refers_to_the_sale():
     assert op["payments"][0]["kind"] == "CREDIT" and op["payments"][0]["details"]["amount"] == "149.00"
 
 
-def test_copy_is_a_duplicate_of_the_original_record():
+def test_copy_is_the_duplicate_record_alone():
+    """fiskaly TEST: INTENTION::DUPLICATE of the original TRANSACTION::RECEIPT
+    record is the whole copy (status OK, no code of its own)."""
     system, fake, _ = make()
     original = system.sign(REGISTER, receipt())
+    sale_receipt = records(fake)[1]
     copy = system.sign(REGISTER, receipt(cs.COPY, serial=1, original_serial=7, original_at=AT,
                                          original_ref=original.ref))
+    assert len(records(fake)) == 3
     duplicate = records(fake)[2]
     assert duplicate["operation"] == {"type": "DUPLICATE", "record": {"id": original.ref["recordId"]}, "number": "1",
                                       "reason": "Kvittokopia", "details": {
                                           "creators": [{"type": "PERSON", "label": "anna@roma.se"}]}}
-    assert records(fake)[3]["operation"]["document"]["series"] == "KOPIA"
-    assert len(copy.control_code) == 113 and copy.control_code != original.control_code
+    assert fake.records[original.ref["recordId"]]["type"] == "TRANSACTION::RECEIPT"
+    assert sale_receipt["type"] == "TRANSACTION"
+    assert copy.control_code == "" and copy.serial == TEST_SERVER and copy.message == "Kvitto får skrivas ut"
 
 
-def test_copy_code_straight_from_the_duplicate_intention():
-    fake = FakeFiskaly()
-    fake.copy_code_on_intention = True
-    system, _, _ = make(fake)
+def test_a_receipt_after_a_duplicate_is_refused_like_fiskaly():
+    system, fake, _ = make()
     original = system.sign(REGISTER, receipt())
-    copy = system.sign(REGISTER, receipt(cs.COPY, serial=1, original_ref=original.ref))
-    assert len(records(fake)) == 3 and len(copy.control_code) == 113
+    system.sign(REGISTER, receipt(cs.COPY, serial=1, original_ref=original.ref))
+    duplicate_id = [r for r in fake.records.values() if r["type"] == "INTENTION::DUPLICATE"][0]["id"]
+    with pytest.raises(cs.Rejected) as caught:
+        system._call("POST", "/records", {"content": {"type": "TRANSACTION", "record": {"id": duplicate_id},
+                                                      "operation": fk.operation(receipt())}},
+                     unit=fk._units[("TEST", "t1")], deadline=system._clock() + 5)
+    assert "405" in str(caught.value) and "INTENTION::TRANSACTION" in str(caught.value)
+
+
+def test_a_copy_refused_by_status_is_no_copy():
+    system, fake, _ = make()
+    original = system.sign(REGISTER, receipt())
+    fake.status = 3
+    with pytest.raises(cs.Unreachable):
+        system.sign(REGISTER, receipt(cs.COPY, serial=1, original_ref=original.ref))
+
+
+@pytest.mark.parametrize("kind", [cs.NORMAL])
+def test_a_sale_or_return_with_an_empty_code_is_rejected(kind):
+    system, fake, _ = make()
+    original = fake._record
+
+    def empty_code(content):
+        record = original(content)
+        if content["type"] == "TRANSACTION":
+            record["compliance"] = {"data": f"{TEST_SERVER},,STATUS_OK,Kvitto får skrivas ut"}
+        return record
+
+    fake._record = empty_code
+    with pytest.raises(cs.Rejected):
+        system.sign(REGISTER, receipt(kind))
+    with pytest.raises(cs.Rejected):
+        system.sign(REGISTER, receipt(returns_by_rate={12: 8950}, vat_by_rate={12: 959}, original_serial=1,
+                                      lines=({"text": "Soppa", "quantity": 1, "total": 8950, "rate": 12, "vat": 959},)))
 
 
 def test_copy_without_the_original_record_is_rejected():
@@ -681,7 +716,12 @@ def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     sold = next(e for e in journal(env, rid) if e["type"] == "kassakvitto")["data"]["controlCode"]
     assert "".join(code_rows) == sold and len(sold) == 113
     assert len(code_rows) == 4 and all(len(t) <= kassa_receipt.CODE_ROW for t in code_rows)
-    assert call(env, "POST", f"registers/{rid}/receipts/1/copy", body={"delivery": "print"})[0] == 201
+    status, copied = call(env, "POST", f"registers/{rid}/receipts/1/copy", body={"delivery": "print"})
+    assert status == 201
+    copy_rows = copied["document"]["rows"]
+    assert "".join(r["text"] for r in copy_rows if r.get("code")) == sold
+    assert [r for r in copy_rows if r.get("text") == "KOPIA" and r.get("big")]
+    assert not [r for r in copy_rows if r.get("text") == "Kontrollkod för kopian:"]
     pasta = next(line for line in b["lines"] if line["menuItemId"] == "pasta")
     status, returned = call(env, "POST", f"registers/{rid}/receipts/1/return",
                             body={"lines": [{"lineId": pasta["lineId"], "quantity": 1}], "reason": "Fel rätt",

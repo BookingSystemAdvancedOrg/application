@@ -90,6 +90,11 @@ NAMES = {"STATUS_OK": 1, "NO_CONTACT_WITH_KS": 2, "CONTACT_WITH_KS": 3, "NOT_CON
          **{name: code for code, name in CODES.items()}}
 _NAME = re.compile(r"\b(" + "|".join(sorted(NAMES, key=len, reverse=True)) + r")\b")
 _DESIGNATION = re.compile(r"[A-Z0-9]{16}")
+# fiskaly TEST, 2026-10-26: a second OPENING is refused with 405 "record
+# operation invalid: cannot open cash register: cash register is already
+# opened". The wording for a register that isn't open is not seen yet (Osäkert).
+_ALREADY_OPEN = re.compile(r"already open", re.I)
+_NOT_OPEN = re.compile(r"not (yet )?open|is closed|already closed|not been opened", re.I)
 
 TIMEOUT = 8                       # one HTTP request
 SIGN_BUDGET = 18                  # one receipt; the register lock holds 30 s, API Gateway 30 s
@@ -648,19 +653,52 @@ class FiskalyControlSystem(cs.ControlSystem):
     # the port
 
     def status(self, register):
-        """INTENTION::OPENING: fiskaly's startup check (RegisterStatus)."""
+        """Read-only: GET the register's system. fiskaly has no status call
+        that changes nothing (INTENTION::OPENING opens the register, and a
+        second one is refused with 405 "already opened"), so a reachable
+        fiskaly, a working key and a COMMISSIONED system are STATUS_OK. The
+        control server's own status comes back with every receipt."""
         try:
             deadline = self._clock() + STATUS_BUDGET
             ref, unit = self._ref(register, deadline)
-            record = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                                         "operation": {"type": "OPENING"}}, deadline=deadline)
-            code = outcome(record)
+            system = self._call("GET", f"/systems/{ref['systemId']}", unit=unit,
+                                deadline=deadline).get("content") or {}
+            code = cs.STATUS_OK if system.get("state") == "COMMISSIONED" else cs.STATUS_NOT_CONFIGURED
         except cs.Unreachable as exc:
             code = exc.status
         except cs.Rejected as exc:
-            logger.warning(json.dumps({"fiskaly": "opening_rejected", "detail": str(exc)[:400]}, ensure_ascii=False))
+            logger.warning(json.dumps({"fiskaly": "status_rejected", "detail": str(exc)[:400]}, ensure_ascii=False))
             code = cs.STATUS_NOT_CONFIGURED
         return cs.Status(ok=code == cs.STATUS_OK, code=code, provider=self.provider, serial=self.serial)
+
+    def open_day(self, register):
+        """INTENTION::OPENING, fiskaly's startup check, once per day
+        ("Öppna dagen"). Already open counts as open."""
+        deadline = self._clock() + STATUS_BUDGET
+        ref, unit = self._ref(register, deadline)
+        self._open(ref, unit, deadline)
+
+    def _open(self, ref, unit, deadline):
+        try:
+            record = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                                         "operation": {"type": "OPENING"}}, deadline=deadline)
+        except cs.Rejected as exc:
+            if _ALREADY_OPEN.search(str(exc)):
+                return
+            raise
+        self._allowed(record)
+
+    def _intention(self, ref, unit, content, *, deadline, poll=True):
+        """A receipt's or copy's INTENTION. If fiskaly says the register isn't
+        open (a sale before "Öppna dagen", or after the Z report closed it),
+        open it and try once more."""
+        try:
+            return self._record(unit, content, deadline=deadline, poll=poll)
+        except cs.Rejected as exc:
+            if not _NOT_OPEN.search(str(exc)):
+                raise
+        self._open(ref, unit, deadline)
+        return self._record(unit, content, deadline=deadline, poll=poll)
 
     def sign(self, register, data):
         deadline = self._clock() + SIGN_BUDGET
@@ -673,16 +711,16 @@ class FiskalyControlSystem(cs.ControlSystem):
             original = (data.original_ref or {}).get("recordId")
             if not original:
                 raise cs.Rejected("a copy needs the original receipt's fiskaly record")
-            record = first = self._record(unit, {
+            record = first = self._intention(ref, unit, {
                 "type": "INTENTION", "system": {"id": ref["systemId"]},
                 "operation": {"type": "DUPLICATE", "record": {"id": original}, "number": "1",
                               "reason": "Kvittokopia", "details": details(data)}}, deadline=deadline)
             self._allowed(record)
             code = control_code(record)
         else:
-            first = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                                        "operation": {"type": "TRANSACTION", "details": details(data)}},
-                                 deadline=deadline, poll=False)
+            first = self._intention(ref, unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                                                "operation": {"type": "TRANSACTION", "details": details(data)}},
+                                    deadline=deadline, poll=False)
             if first.get("state") in ("REJECTED", "FAILED"):
                 self._allowed(first)
             if not first.get("id"):
@@ -709,10 +747,16 @@ class FiskalyControlSystem(cs.ControlSystem):
             raise cs.Unreachable(code)
 
     def close_day(self, register):
+        """INTENTION::CLOSING after the Z report; the next "Öppna dagen"
+        opens the register again. Already closed counts as closed."""
         deadline = self._clock() + STATUS_BUDGET
         ref, unit = self._ref(register, deadline)
-        self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                            "operation": {"type": "CLOSING", "period": "DAILY"}}, deadline=deadline)
+        try:
+            self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                                "operation": {"type": "CLOSING", "period": "DAILY"}}, deadline=deadline)
+        except cs.Rejected as exc:
+            if not _NOT_OPEN.search(str(exc)):
+                raise
 
     def pause_register(self, register):
         deadline = self._clock() + STATUS_BUDGET

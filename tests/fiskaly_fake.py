@@ -68,7 +68,12 @@ class FakeFiskaly:
         self.status_in = "name"         # name | compliance | logs
         self.fail = []                  # [(path prefix, HTTP status), ...] answered before the real handler
         self.processing = 0             # first GETs of a record still PROCESSING
-        self.open_intentions = set()    # INTENTION::TRANSACTION / DUPLICATE without their TRANSACTION yet
+        self.open_intentions = set()    # INTENTION::TRANSACTION without its TRANSACTION yet
+        # Registers opened with INTENTION::OPENING (closed again by CLOSING).
+        # As in fiskaly TEST: a second OPENING is 405 "already opened". The
+        # refusal of a receipt on a closed register is our guess at the wording.
+        self.opened = set()
+        self.system_states = {}
         self.tokens = 0
         self.records = {}
         self.counter = 0
@@ -150,7 +155,13 @@ class FakeFiskaly:
             return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", **payload["content"]}}
         if method == "POST" and base == "/systems":
             return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", "mode": "INACTIVE"}}
+        if method == "GET" and base == "/systems":
+            system_id = path.split("/")[2]
+            state = self.system_states.get(system_id, "COMMISSIONED")
+            return 200, {}, {"content": {"id": system_id, "state": state,
+                                         "mode": "OPERATIVE" if state == "COMMISSIONED" else "INACTIVE"}}
         if method == "PATCH" and base == "/systems":
+            self.system_states[path.split("/")[2]] = payload["content"].get("state")
             if payload["content"].get("state") == "COMMISSIONED":
                 self.counter += 1
                 return 200, {}, {"content": {"id": path.split("/")[2], "state": "COMMISSIONED", "mode": "OPERATIVE",
@@ -162,6 +173,17 @@ class FakeFiskaly:
             return 200, {}, {"content": {"id": path.split("/")[2], **payload["content"]}}
         if method == "POST" and base == "/records":
             content = payload["content"]
+            system_id, operation = (content.get("system") or {}).get("id"), content["operation"]["type"]
+            if content["type"] == "INTENTION" and operation == "OPENING":
+                if system_id in self.opened:
+                    return self._error(405, "E_METHOD_NOT_ALLOWED", "record operation invalid: cannot open cash "
+                                       "register: cash register is already opened")
+                self.opened.add(system_id)
+            elif content["type"] == "INTENTION" and system_id not in self.opened:
+                return self._error(405, "E_METHOD_NOT_ALLOWED",
+                                   "record operation invalid: cash register is not opened")
+            elif content["type"] == "INTENTION" and operation == "CLOSING":
+                self.opened.discard(system_id)
             if content["type"] == "TRANSACTION":
                 target = self.records.get(content["record"]["id"]) or {}
                 if target.get("type") != "INTENTION::TRANSACTION":

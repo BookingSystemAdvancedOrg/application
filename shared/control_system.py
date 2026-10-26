@@ -8,8 +8,9 @@ the sale or return is registered; without it, no receipt.
 The till talks to this one small interface:
 
     status(register)            -> Status: may a receipt be made right now?
-                                   (the startup check; also asked before
+                                   (read-only; asked when Kassa loads, before
                                    every card payment and return)
+    open_day(register)          -> the day starts ("Öppna dagen")
     sign(register, data)        -> Registration (control code, the control
                                    system's manufacturing number, the
                                    provider's reference) or raises
@@ -181,6 +182,9 @@ class ControlSystem:
 
     def pause_register(self, register):
         raise NotImplementedError
+
+    def open_day(self, register):
+        return None
 
     def close_day(self, register):
         return None

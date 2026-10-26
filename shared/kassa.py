@@ -1351,9 +1351,17 @@ def open_day(ctx, register_id, amount, *, user, now, system):
     """Växelkassa at the start of the sales day (ANV 4 kap. 2 §). The
     control system's startup check first: no day without STATUS_OK."""
     amount = o._whole(amount, 0, MAX_FLOAT, "float")
-    _, status = check_control_system(ctx, get_register(ctx, register_id), system, now=now, user=user)
+    register, status = check_control_system(ctx, get_register(ctx, register_id), system, now=now, user=user)
     if not status.ok:
         raise Unavailable("control_system_unreachable")
+    try:
+        system.open_day(register)
+    except cs.Unreachable as exc:
+        _mark_down(ctx, register_id, exc.status, now=now, user=user)
+        raise Unavailable("control_system_unreachable") from None
+    except cs.Rejected as exc:
+        _log_rejected("open_day", exc)
+        raise Unavailable("control_system_rejected") from None
     register, lock = _lock(ctx.location_id, register_id)
     change = amount - _int(register.get("float"))
     day = local(now, ctx.location).date().isoformat()

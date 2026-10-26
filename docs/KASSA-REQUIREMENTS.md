@@ -213,12 +213,13 @@ the tests against fiskaly's published OpenAPI spec.
 | Tenant (the company, org.nr) | an Organization UNIT under Booqy's GROUP, and a Taxpayer COMPANY (commissioned) |
 | Location (restaurant) | a Location BRANCH with the location's address (commissioned) |
 | "Ny kassa" (`register_register`) | a System FISCAL_DEVICE: producer brand "Booqy", model "Booqy Kassa SE" (both needed for enrolment), serial = the register's `BQ` manufacturing number, software "Booqy Kassa" + version. Commissioning enrols it with Skatteverket's IDM and returns the 16-character tillverkningsnummer: the register's kassabeteckning |
-| `status` (start of the Kassa page, "Öppna dagen", before every card payment and return, while an outage lasts) | INTENTION::OPENING. Only STATUS_OK (1) lets the day open or a card be charged |
+| `status` (Kassa page loads, before every card payment and return, while an outage lasts) | read-only: GET the register's system. Reachable, the key works and the system is COMMISSIONED = OK. fiskaly has no read-only status of the control server itself; that comes back with every receipt |
+| "Öppna dagen" (`open_day`) | INTENTION::OPENING, fiskaly's startup check: only STATUS_OK (1) opens the day. A second OPENING is refused with 405 "cash register is already opened" (dev admin, 2026-10-26), which counts as open. OPENING is a state change at fiskaly, so it is never used as a health check |
 | Sale (`sign`, kassakvitto) | INTENTION::TRANSACTION, then TRANSACTION::RECEIPT: one SALE entry per line (VAT_RATE STANDARD 25 %, REDUCED_1 12 %, REDUCED_2 6 %, REDUCED_3 0 %), the VAT breakdown, totals, the card payments (last four digits, debit or credit) |
 | Return (returkvitto) | the same, with RETURN entries in positive amounts and `document.references.preceding_document` = the original receipt's number |
 | Copy (kvittokopia) | INTENTION::DUPLICATE referring to the original's TRANSACTION::RECEIPT record, and nothing more (fiskaly TEST: a TRANSACTION after it is refused with 405). It answers at once with the status and the server ID and no code of its own; STATUS_OK lets the copy be printed with the original's code and "KOPIA" in double size |
 | Training receipt | `details.training = true` on both records; no code; payment OTHER "Övningskvitto" |
-| Z report | after the Z: INTENTION::CLOSING (DAILY), best effort |
+| Z report | after the Z: INTENTION::CLOSING (DAILY), best effort; it closes the register at fiskaly, so the next "Öppna dagen" opens it again. A receipt or copy refused because the register isn't open (a sale before "Öppna dagen", or after the Z) makes Kassa send OPENING and try once more |
 | A register out of use (`pause_register`) | System state DECOMMISSIONED (IDM CLOSE); the merchant still tells Skatteverket |
 
 - Document numbers: the receipt serial, series `KVITTO`, `KOPIA` or `OVNING`.
@@ -328,6 +329,11 @@ the tests against fiskaly's published OpenAPI spec.
   and makes the copy's own code optional (`KontrollkodPaKopiaAvKassakvitto`,
   minOccurs 0). Confirm with fiskaly whether LIVE returns a code for copies
   and with the lawyer that the original's code is enough on the copy.
+- **Osäkert:** the exact words fiskaly uses to refuse a receipt or a
+  CLOSING on a register that isn't open have not been seen yet; Kassa looks
+  for "not open", "is closed" or "not been opened" in the error. If fiskaly
+  words it differently, the sale fails with `control_system_rejected` and
+  the kassa log shows the text, and "Öppna dagen" fixes it.
 - **Osäkert, still to see in fiskaly TEST** (the opt-in test
   `test_fiskaly_test_environment` prints what fiskaly returns): what a receipt refused with
   status 2-7 looks like, and whether a return should be

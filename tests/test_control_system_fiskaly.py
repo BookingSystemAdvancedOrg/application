@@ -69,6 +69,7 @@ def make(fake=None, creds=CREDS):
     fake = fake or FakeFiskaly()
     key, secret = fake.add_unit("unit-1")
     fk._units[("TEST", "t1")] = fk.Creds(key, secret, env="TEST", unit_id="unit-1")
+    fake.opened.add(REF["systemId"])        # the day is open
     clock = Clock()
     return fk.FiskalyControlSystem(transport=fake, sleep=clock.sleep, clock=clock, creds=dict(creds)), fake, clock
 
@@ -91,16 +92,50 @@ def records(fake):
 
 # --- status (INTENTION::OPENING) ----------------------------------------------------------
 
-def test_status_is_an_opening_record_and_the_token_is_reused():
+def test_status_is_read_only_and_the_token_is_reused():
+    """fiskaly TEST, dev admin 2026-10-26: an OPENING on every status check
+    was refused with 405 "already opened" after the first. Status only reads."""
     system, fake, _ = make()
     first = system.status(REGISTER)
     second = system.status(REGISTER)
     assert first == cs.Status(ok=True, code=cs.STATUS_OK, provider="fiskaly", serial=TEST_SERVER)
-    assert second.ok and fake.tokens == 1
-    opening = records(fake)[0]
-    assert opening == {"type": "INTENTION", "system": {"id": REF["systemId"]}, "operation": {"type": "OPENING"}}
-    call_ = fake.posted("/records")[0]
-    assert call_["headers"]["X-Scope-Identifier"] == "unit-1" and call_["headers"]["Authorization"] == "Bearer jwt-u1"
+    assert second.ok and fake.tokens == 1 and fake.posted("/records") == []
+    reads = [c for c in fake.calls if c["method"] == "GET"]
+    assert [c["path"] for c in reads] == [f"/systems/{REF['systemId']}"] * 2
+    assert reads[0]["headers"]["X-Scope-Identifier"] == "unit-1"
+    assert reads[0]["headers"]["Authorization"] == "Bearer jwt-u1"
+
+
+def test_status_of_a_decommissioned_register_is_not_configured():
+    system, fake, _ = make()
+    fake.system_states[REF["systemId"]] = "DECOMMISSIONED"
+    assert system.status(REGISTER).code == cs.STATUS_NOT_CONFIGURED
+
+
+def test_open_day_opens_once_and_already_open_counts_as_open():
+    system, fake, _ = make()
+    fake.opened.clear()
+    system.open_day(REGISTER)
+    system.open_day(REGISTER)                       # 405 "already opened": fine
+    assert [r["operation"]["type"] for r in records(fake)] == ["OPENING", "OPENING"]
+    assert REF["systemId"] in fake.opened
+
+
+def test_a_receipt_on_a_closed_register_opens_it_and_retries_once():
+    system, fake, _ = make()
+    fake.opened.clear()                             # e.g. after the Z report's CLOSING
+    registration = system.sign(REGISTER, receipt())
+    assert len(registration.control_code) == 113
+    assert [r["operation"]["type"] for r in records(fake)] == ["TRANSACTION", "OPENING", "TRANSACTION", "RECEIPT"]
+
+
+def test_close_day_then_the_next_day_opens_again():
+    system, fake, _ = make()
+    system.close_day(REGISTER)
+    assert REF["systemId"] not in fake.opened
+    system.close_day(REGISTER)                      # already closed: fine
+    system.open_day(REGISTER)
+    assert REF["systemId"] in fake.opened
 
 
 @pytest.mark.parametrize("number,name", [(1, cs.STATUS_OK), (2, cs.STATUS_NO_CONTACT), (3, cs.STATUS_CONTACT_AGAIN),
@@ -111,8 +146,13 @@ def test_every_status_code_maps_to_skatteverkets_name(number, name, where):
     fake = FakeFiskaly()
     fake.status, fake.status_in = number, where
     system, _, _ = make(fake)
-    status = system.status(REGISTER)
-    assert status.code == name and status.ok is (number == 1)
+    fake.opened.clear()
+    if number == 1:
+        system.open_day(REGISTER)
+        return
+    with pytest.raises(cs.Unreachable) as caught:
+        system.open_day(REGISTER)
+    assert caught.value.status == name
 
 
 @pytest.mark.parametrize("value,expected", [("STATUS_OK", 1), ("NO_CONTACT_WITH_KS", 2), ("2", 2), (7, 7),
@@ -130,7 +170,7 @@ def test_status_without_a_register_enrolment_is_not_configured():
 
 def test_status_never_raises_when_fiskaly_is_down():
     fake = FakeFiskaly()
-    fake.fail = [("/records", 503)] * 10
+    fake.fail = [("/systems", 503)] * 10
     system, _, clock = make(fake)
     status = system.status(REGISTER)
     assert status == cs.Status(ok=False, code=cs.STATUS_NO_CONTACT, provider="fiskaly", serial=TEST_SERVER)
@@ -227,7 +267,7 @@ def test_401_gets_a_new_token_once_and_retries():
     fake.expired.add("jwt-u1")
     assert system.status(REGISTER).ok
     assert fake.tokens == 2
-    assert [c["headers"].get("Authorization") for c in fake.posted("/records")] == [
+    assert [c["headers"].get("Authorization") for c in fake.calls if c["method"] == "GET"] == [
         "Bearer jwt-u1", "Bearer jwt-u1", "Bearer jwt-u2"]
 
 
@@ -729,7 +769,8 @@ def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     assert status == 201, returned
     assert call(env, "POST", f"registers/{rid}/z", body={})[0] == 200
     kinds = [c["body"]["content"]["operation"]["type"] for c in env["fiskaly"].posted("/records")]
-    assert "DUPLICATE" in kinds and kinds[-1] == "CLOSING" and kinds.count("OPENING") >= 3
+    assert "DUPLICATE" in kinds and kinds[-1] == "CLOSING" and kinds.count("OPENING") == 1
+    assert kinds[0] == "OPENING"                    # "Öppna dagen", and only there
     entries = journal(env, rid)
     sale_entry = next(e for e in entries if e["type"] == "kassakvitto")
     assert sale_entry["label"] == "SE01BQ0000000001" and sale_entry["registerName"] == "Kassa 1"
@@ -742,17 +783,40 @@ def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     assert f"<utreko:TillverkningsnummerForKontrollsystemet>{TEST_SERVER}<" in xml
 
 
-def test_kassa_blocks_the_card_payment_when_fiskaly_says_no_contact(with_fiskaly):
+def test_kassa_blocks_the_card_payment_when_fiskaly_cannot_be_reached(with_fiskaly):
     env = with_fiskaly
     rid = register(env)
     b = bill(env, rid)
-    env["fiskaly"].status = 2
+    env["fiskaly"].fail = [("/systems", 503)] * 20
     status, body = call(env, "POST", f"bills/{b['billId']}/payments",
                         body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": b["total"]})
     assert status == 503 and body["error"] == "control_system_unreachable"
     assert env["stripe"].count("/v1/payment_intents") == 0
+    env["fiskaly"].fail = []
+    state = call(env, "GET")[1]
+    assert state["registers"][0]["controlSystem"]["ok"] is True       # the outage ends on the next good answer
+    assert "csDownSince" not in state["registers"][0]
+
+
+def test_open_day_needs_status_ok_from_fiskaly(with_fiskaly):
+    env = with_fiskaly
+    rid = register(env)
+    env["fiskaly"].status = 2                         # NO_CONTACT_WITH_KS on the OPENING
     status, body = call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
-    assert status == 503
+    assert status == 503 and body["error"] == "control_system_unreachable"
+    env["fiskaly"].status = 1
+    assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
+    assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200    # already open: fine
+
+
+def test_kassa_page_loads_never_send_opening(with_fiskaly):
+    """The dev admin bug: every load and poll sent OPENING, then 405."""
+    env = with_fiskaly
+    register(env)
+    for _ in range(3):
+        state = call(env, "GET")[1]
+        assert state["registers"][0]["controlSystem"]["ok"] is True
+    assert env["fiskaly"].posted("/records") == []
 
 
 def test_kassa_reports_a_rejected_receipt(with_fiskaly, caplog):

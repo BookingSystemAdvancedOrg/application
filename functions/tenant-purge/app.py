@@ -30,6 +30,11 @@ PURPOSE:
         (CONSENT_TABLE_NAME)
       * users: the Cognito users of the tenant pool and their profiles
       * menu images (menu-images/<tenantId>/ in the menu image bucket)
+      * Kassa's fiskaly API key for the restaurant (the secret
+        FISKALY_UNIT_PREFIX + tenantId, 7-day recovery window). The fiskaly
+        UNIT itself, Kassa's journal and its receipts stay (bookkeeping,
+        Skatteverket audits); fiskaly has no API to disable the key, so
+        Booqy disables it in fiskaly HUB if wanted.
       * domains we ran DNS for: auto-renew is switched off for domains
         registered through us, and the hosted zone is deleted once the
         domain no longer points at it (a zone still in use is kept and
@@ -59,7 +64,8 @@ ENV_VARS:
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
     MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
-    BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list)
+    BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
+    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/)
 
 AWS RESOURCE ACCESS:
     Query/GetItem/UpdateItem/PutItem/DeleteItem/BatchWriteItem on the tenant
@@ -68,7 +74,8 @@ AWS RESOURCE ACCESS:
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
     pool, s3:ListBucket/DeleteObject under menu-images/, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
-    DisableDomainAutoRenew, sns:Publish on the alert topic, and
+    DisableDomainAutoRenew, secretsmanager:DeleteSecret on
+    booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
     lambda:InvokeFunction on itself (continuation).
 """
 
@@ -253,6 +260,20 @@ def _purge_images(tenant_id, budget, counts):
             counts["images"] += len(objects)
 
 
+def _purge_fiskaly_key(tenant_id, counts):
+    """Kassa's fiskaly key of the restaurant. Gone or already scheduled for
+    deletion counts as done."""
+    prefix = os.environ.get("FISKALY_UNIT_PREFIX")
+    if not prefix:
+        return
+    try:
+        _client("secretsmanager").delete_secret(SecretId=prefix + tenant_id, RecoveryWindowInDays=7)
+        counts["fiskalyKey"] = 1
+    except ClientError as e:
+        if e.response["Error"]["Code"] not in ("ResourceNotFoundException", "InvalidRequestException"):
+            raise
+
+
 def _ns_lookup(domain):
     """The domain's public name servers (lower case, no trailing dot), or
     None when the lookup itself failed."""
@@ -379,7 +400,8 @@ def purge_tenant(tenant_id, budget):
     purge_at = parse_iso((profile or {}).get("purgeAt"))
     if not profile or profile.get("status") != "offboarded" or not purge_at or purge_at > now:
         return None
-    counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images")}
+    counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
+                             "fiskalyKey")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
               "zonesDeleted": [], "zonesKept": [], "notes": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
@@ -389,6 +411,7 @@ def purge_tenant(tenant_id, budget):
     _purge_marketing(tenant_id, budget, counts)
     _purge_users(tenant_id, budget, counts)
     _purge_images(tenant_id, budget, counts)
+    _purge_fiskaly_key(tenant_id, counts)
     _purge_tenant_rows(tenant_id, budget, report)
     budget.check()
     stone = _tombstone(profile, now_utc())

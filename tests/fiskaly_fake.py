@@ -5,7 +5,13 @@ fiskaly.uapi.sign-se.2026-06-01.yaml), so a payload fiskaly would refuse
 fails here. Answers follow fiskaly's documented examples (Postman collection,
 integration guide): {"content": {...}}, the control code in
 compliance.data, the status in compliance.status, the tillverkningsnummer in
-compliance.technical_security_system_id. No network."""
+compliance.technical_security_system_id. No network.
+
+Keys as in fiskaly TEST (2026-10-26): Booqy's GROUP key may only create
+organizations and subjects; anything inside a UNIT (taxpayers, locations,
+systems, records) needs that UNIT's own key from POST /subjects, and the
+GROUP token gets 405 "non-unit organization" there, X-Scope-Identifier or
+not. Errors carry their code and message in "content", as fiskaly's do."""
 
 import json
 import re
@@ -23,8 +29,9 @@ REQUEST_SCHEMAS = {
     ("POST", "/taxpayers"): "TaxpayerCreateRequest", ("PATCH", "/taxpayers"): "TaxpayerUpdateRequest",
     ("POST", "/locations"): "LocationCreateRequest", ("PATCH", "/locations"): "LocationUpdateRequest",
     ("POST", "/systems"): "SystemCreateRequest", ("PATCH", "/systems"): "SystemUpdateRequest",
-    ("POST", "/records"): "RecordCreateRequest",
+    ("POST", "/records"): "RecordCreateRequest", ("POST", "/subjects"): "SubjectCreateRequest",
 }
+UNIT_PATHS = ("/taxpayers", "/locations", "/systems", "/records")
 TEST_KEY = "test-key"
 TEST_SECRET = "test-secret-value"
 
@@ -57,6 +64,20 @@ class FakeFiskaly:
         self.records = {}
         self.counter = 0
         self.expired = set()
+        self.units = set()
+        self.unit_keys = {}             # key -> (secret, unit id)
+        self.bearers = {}               # bearer -> organization id
+
+    def add_unit(self, unit_id):
+        """A UNIT with its own key, as if enrolled earlier: (key, secret)."""
+        self.units.add(unit_id)
+        key, secret = f"unit-key-{len(self.unit_keys) + 1}", f"unit-secret-{len(self.unit_keys) + 1}"
+        self.unit_keys[key] = (secret, unit_id)
+        return key, secret
+
+    @staticmethod
+    def _error(status, code, message):
+        return status, {}, {"content": {"status": status, "code": code, "error": code, "message": message}}
 
     # transport(method, url, headers, body, timeout) -> (status, headers, json)
     def __call__(self, method, url, headers, body, timeout):
@@ -81,16 +102,42 @@ class FakeFiskaly:
             if errors:
                 return 400, {}, {"status": 400, "code": "E_BAD_REQUEST", "error": "Bad Request", "message": errors[0]}
         if path == "/tokens":
-            if payload["content"]["key"] != TEST_KEY or payload["content"]["secret"] != TEST_SECRET:
-                return 401, {}, {"status": 401, "code": "E_UNAUTHORIZED", "error": "Unauthorized", "message": "no"}
+            key, secret = payload["content"]["key"], payload["content"]["secret"]
+            if key == TEST_KEY and secret == TEST_SECRET:
+                org, prefix = "group-org", "jwt-"
+            elif key in self.unit_keys and self.unit_keys[key][0] == secret:
+                org, prefix = self.unit_keys[key][1], "jwt-u"
+            else:
+                return self._error(401, "E_UNAUTHORIZED", "invalid key")
             self.tokens += 1
+            bearer = f"{prefix}{self.tokens}"
+            self.bearers[bearer] = org
             return 200, {}, {"content": {"id": uuid7(), "authentication": {
-                "type": "JWT", "bearer": f"jwt-{self.tokens}", "expires_at": "2099-01-01T00:00:00Z",
-                "issued_at": "2026-10-25T10:00:00Z"}, "organization": {"id": "group-org"}}}
+                "type": "JWT", "bearer": bearer, "expires_at": "2099-01-01T00:00:00Z",
+                "issued_at": "2026-10-25T10:00:00Z"}, "organization": {"id": org}}}
         bearer = headers.get("Authorization", "").removeprefix("Bearer ")
-        if not bearer.startswith("jwt-") or bearer in self.expired:
-            return 401, {}, {"status": 401, "code": "E_UNAUTHORIZED", "error": "Unauthorized", "message": "expired"}
-        if method == "POST" and base in ("/organizations", "/taxpayers", "/locations"):
+        if bearer not in self.bearers or bearer in self.expired:
+            return self._error(401, "E_UNAUTHORIZED", "expired")
+        org, scope = self.bearers[bearer], headers.get("X-Scope-Identifier")
+        if base in UNIT_PATHS:
+            if org == "group-org":
+                return self._error(405, "E_METHOD_NOT_ALLOWED",
+                                   f"operation invalid for non-unit organization '{org}'")
+            if scope != org:
+                return self._error(403, "E_FORBIDDEN", "scope is not the token's unit")
+        if method == "POST" and base == "/organizations":
+            assert org == "group-org" and scope == "group-org"
+            unit_id = uuid7()
+            self.units.add(unit_id)
+            return 200, {}, {"content": {"id": unit_id, "state": "ENABLED", "organization": {"id": org},
+                                         **payload["content"]}}
+        if method == "POST" and base == "/subjects":
+            if org != "group-org" or scope not in self.units:
+                return self._error(403, "E_FORBIDDEN", "subjects need the group key and a unit scope")
+            key, secret = self.add_unit(scope)
+            return 200, {}, {"content": {"id": str(uuid.uuid4()), "state": "ENABLED", **payload["content"],
+                                         "credentials": {"key": key, "secret": secret}}}
+        if method == "POST" and base in ("/taxpayers", "/locations"):
             return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", **payload["content"]}}
         if method == "POST" and base == "/systems":
             return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", "mode": "INACTIVE"}}

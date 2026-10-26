@@ -323,7 +323,9 @@ def test_journal_is_written_append_only():
                                   for line in journal_writes)
     for name in ("data-retention", "tenant-purge", "guest-privacy"):
         text = (APP / "functions" / name / "app.py").read_text()
-        assert "KASSA_JOURNAL" not in text and "kassa-journal" not in text and "kassa" not in text.lower()
+        assert "KASSA_JOURNAL" not in text and "kassa-journal" not in text and "KASSA_TABLE" not in text
+        if name != "tenant-purge":   # tenant-purge deletes only Kassa's fiskaly key secret
+            assert "kassa" not in text.lower()
     assert "KASSA" not in (APP / "shared" / "retention.py").read_text().upper()
 
 

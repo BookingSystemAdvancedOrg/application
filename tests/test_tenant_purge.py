@@ -315,3 +315,26 @@ def test_one_failure_does_not_stop_the_others(env, monkeypatch):
     assert result["purged"] == [KEEP] and result["failed"] == [GONE]
     assert "FAILED" in env["sns"].calls[0]["Subject"]
     assert env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]["status"] == "offboarded"
+
+
+def test_kassa_fiskaly_key_is_deleted_and_the_neighbours_kept(env, monkeypatch):
+    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
+    sm = boto3.client("secretsmanager", region_name=REGION)
+    for tenant in (GONE, KEEP):
+        sm.create_secret(Name=f"booqy/dev/fiskaly-unit/{tenant}", SecretString='{"key": "k", "secret": "s"}')
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    assert "DeletedDate" in sm.describe_secret(SecretId=f"booqy/dev/fiskaly-unit/{GONE}")
+    assert "DeletedDate" not in sm.describe_secret(SecretId=f"booqy/dev/fiskaly-unit/{KEEP}")
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["fiskalyKey"] == 1
+
+
+def test_no_fiskaly_key_is_fine(env, monkeypatch):
+    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    result = env["app"].handler({}, Context())
+    assert result["purged"] == [GONE] and result["failed"] == []

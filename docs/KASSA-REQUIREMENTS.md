@@ -234,12 +234,48 @@ the tests against fiskaly's published OpenAPI spec.
   within 18 s per receipt (the register lock holds 30 s, API Gateway 30 s),
   then `control_system_unreachable`. A retry reuses its idempotency key, so
   fiskaly answers it once.
-- The key: Secrets Manager `booqy/<env>/fiskaly-sign-se`, JSON `{"api_key",
-  "api_secret", "env": "TEST" | "LIVE"}`, read at runtime, kept in memory,
-  never logged. Only the kassa function may read it (`kassa-fiskaly-secret`
-  policy). The token is cached until a minute before it expires. Receipts
-  are shown as real only with `env` LIVE and `kassa_certified = true`; TEST
-  receipts always say "Testläge".
+- Two kinds of key, both read at runtime, kept in memory (tokens until a
+  minute before they expire) and never logged or put in an error:
+  - Booqy's GROUP key: Secrets Manager `booqy/<env>/fiskaly-sign-se`, JSON
+    `{"api_key", "api_secret", "env": "TEST" | "LIVE"}`, created by hand.
+    Used only to create a restaurant's UNIT (`POST /organizations`) and that
+    UNIT's key (`POST /subjects`). Only the kassa function may read it
+    (`kassa-fiskaly-secret` policy).
+  - One key per restaurant (UNIT): fiskaly TEST answered the GROUP token
+    405 "cannot create new legal taxpayer for non-unit organization" inside
+    a UNIT, with `X-Scope-Identifier` or not (2026-10-26), and its
+    integration guide does the same: steps 3-4 make the UNIT's key and
+    token, steps 5-9 (taxpayer, location, system, commissioning, every
+    record) use them. Kassa makes the key when the restaurant's first
+    register is enrolled and keeps it in Secrets Manager
+    `booqy/<env>/fiskaly-unit/<tenantId>`, JSON `{"env", "unitId",
+    "subjectId", "key", "secret"}`. The kassa function may create, read and
+    update those secrets (`kassa-fiskaly-unit-keys`), not delete them.
+  - Why Secrets Manager and not KMS-encrypted fields in the kassa table:
+    one secret per restaurant costs 0.40 USD a month (only restaurants with
+    Kassa on fiskaly), needs no key policy or encryption code, is scoped in
+    IAM by name, every read is in CloudTrail, it can be rotated by writing a
+    new version, and offboarding deletes exactly one thing. KMS fields would
+    need a customer key (1 USD a month), Encrypt/Decrypt rights and our own
+    envelope code, and the encrypted value would sit next to data other code
+    reads.
+  - Recovery: the UNIT id is saved before its key is made. A retry after any
+    failure reuses the UNIT and makes a new key only if none was stored
+    (the request to fiskaly has a stable idempotency key, so a retry within
+    fiskaly's 24 hours gets the same key back). A key made but not stored is
+    left unused at fiskaly.
+  - Offboarding: tenant-purge deletes the restaurant's key secret (7-day
+    recovery window; `DeleteSecret` on `booqy/<env>/fiskaly-unit/*` only).
+    The UNIT, its registers' records and Kassa's journal stay (audits,
+    bookkeeping). fiskaly's API has no way to disable a key (a subject can
+    only be renamed): disable it in fiskaly HUB if wanted.
+- Receipts are shown as real only with `env` LIVE and `kassa_certified =
+  true`; TEST receipts always say "Testläge".
+- Request bodies follow fiskaly's OpenAPI spec and its Postman collection
+  (`{"content": {...}}`, addresses as `{line: {type: STREET_NUMBER, street,
+  number}, code, city, country}`). The integration guide's shortened
+  examples (flat bodies, `street`/`postal_code` addresses) don't match the
+  spec and are not used.
 - fiskaly's ids: the register's `csRef` and one item per tenant and
   environment (`TENANT#<t>` / `CS#fiskaly#<env>`). Switching TEST to LIVE
   needs new registers (their ids are per environment).
@@ -267,9 +303,7 @@ the tests against fiskaly's published OpenAPI spec.
   (`compliance.data` is read first), where the tillverkningsnummer sits
   (`compliance.technical_security_system_id`), whether a copy needs the
   TRANSACTION after INTENTION::DUPLICATE (Kassa sends it unless the
-  duplicate already carries a code), whether the GROUP key may act for a
-  UNIT with `X-Scope-Identifier` (else each merchant needs its own UNIT key,
-  which would have to be stored as a secret), and whether a return should be
+  duplicate already carries a code), and whether a return should be
   TRANSACTION::CORRECTION of the original record instead of a RECEIPT with
   RETURN entries.
 - **Osäkert:** sole traders (enskild firma, personnummer): fiskaly's

@@ -50,14 +50,20 @@ class Clock:
 @pytest.fixture(autouse=True)
 def fresh():
     fk._tokens.clear()
+    fk._units.clear()
     fk._secret.update(value=None, at=0.0)
     yield
     fk._tokens.clear()
+    fk._units.clear()
     fk._secret.update(value=None, at=0.0)
 
 
 def make(fake=None, creds=CREDS):
+    """The adapter on a fake fiskaly where REGISTER's restaurant (unit-1)
+    already has its own key (as after enrolment)."""
     fake = fake or FakeFiskaly()
+    key, secret = fake.add_unit("unit-1")
+    fk._units[("TEST", "t1")] = {"unitId": "unit-1", "key": key, "secret": secret}
     clock = Clock()
     return fk.FiskalyControlSystem(transport=fake, sleep=clock.sleep, clock=clock, creds=dict(creds)), fake, clock
 
@@ -89,7 +95,7 @@ def test_status_is_an_opening_record_and_the_token_is_reused():
     opening = records(fake)[0]
     assert opening == {"type": "INTENTION", "system": {"id": REF["systemId"]}, "operation": {"type": "OPENING"}}
     call_ = fake.posted("/records")[0]
-    assert call_["headers"]["X-Scope-Identifier"] == "unit-1" and call_["headers"]["Authorization"] == "Bearer jwt-1"
+    assert call_["headers"]["X-Scope-Identifier"] == "unit-1" and call_["headers"]["Authorization"] == "Bearer jwt-u1"
 
 
 @pytest.mark.parametrize("number,name", [(1, cs.STATUS_OK), (2, cs.STATUS_NO_CONTACT), (3, cs.STATUS_CONTACT_AGAIN),
@@ -131,20 +137,42 @@ def test_status_never_raises_when_fiskaly_is_down():
 def test_401_gets_a_new_token_once_and_retries():
     system, fake, _ = make()
     assert system.status(REGISTER).ok
-    fake.expired.add("jwt-1")
+    fake.expired.add("jwt-u1")
     assert system.status(REGISTER).ok
     assert fake.tokens == 2
     assert [c["headers"].get("Authorization") for c in fake.posted("/records")] == [
-        "Bearer jwt-1", "Bearer jwt-1", "Bearer jwt-2"]
+        "Bearer jwt-u1", "Bearer jwt-u1", "Bearer jwt-u2"]
 
 
 def test_a_refused_key_is_not_configured_and_never_echoes_the_secret():
-    system, fake, _ = make(creds={**CREDS, "secret": "wrong-secret"})
+    system, fake, _ = make()
+    fk._units[("TEST", "t1")]["secret"] = "wrong-secret"
     with pytest.raises(cs.Unreachable) as caught:
         system.sign(REGISTER, receipt())
     assert caught.value.status == cs.STATUS_NOT_CONFIGURED
     assert "wrong-secret" not in repr(caught.value) and TEST_SECRET not in repr(caught.value)
     assert system.status(REGISTER).code == cs.STATUS_NOT_CONFIGURED
+
+
+def test_unit_calls_use_the_restaurants_own_key_never_the_group_key():
+    system, fake, _ = make()
+    system.sign(REGISTER, receipt())
+    unit_calls = [c for c in fake.calls if c["path"].startswith("/records")]
+    assert unit_calls and all(c["headers"]["Authorization"].startswith("Bearer jwt-u") for c in unit_calls)
+    tokens = [c["body"]["content"]["key"] for c in fake.posted("/tokens")]
+    assert tokens == ["unit-key-1"]
+    # fiskaly answers the GROUP token 405 inside a UNIT, scope header or not
+    group = fk.FiskalyControlSystem(transport=fake, creds=dict(CREDS))
+    with pytest.raises(cs.Rejected) as caught:
+        group._call("GET", "/systems/sys-1", scope="unit-1", deadline=group._clock() + 5)
+    assert "405 E_METHOD_NOT_ALLOWED" in str(caught.value) and "non-unit organization" in str(caught.value)
+
+
+def test_a_register_without_its_restaurants_key_is_not_configured():
+    system, fake, _ = make()
+    fk._units.clear()
+    assert system.status(REGISTER).code == cs.STATUS_NOT_CONFIGURED
+    assert fake.posted("/records") == []
 
 
 def test_429_and_5xx_back_off_exponentially_then_succeed():
@@ -332,6 +360,7 @@ def test_close_day_and_pause_register():
 @pytest.fixture
 def kassa_table(monkeypatch):
     monkeypatch.setenv("KASSA_TABLE_NAME", "test-kassa")
+    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
     for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
         monkeypatch.setenv(key, "t")
@@ -369,6 +398,62 @@ def test_enrolment_creates_merchant_company_location_once_and_a_system_per_regis
     assert fake.posted("/organizations")[0]["headers"]["X-Scope-Identifier"] == "group-org"
     state = kassa_table.get_item(Key={"PK": "TENANT#t1", "SK": "CS#fiskaly#TEST"})["Item"]
     assert state["unitId"] == first.ref["unitId"] and set(state["locations"]) == {"l1"}
+
+
+def test_enrolment_makes_one_key_per_restaurant_and_keeps_it_in_its_secret(kassa_table):
+    system, fake, _ = make()
+    fk._units.clear()
+    new = {k: v for k, v in REGISTER.items() if k not in ("csRef", "designation")}
+    first = system.register_register(new, COMPANY)
+    subject = fake.posted("/subjects")[0]
+    assert subject["headers"]["X-Scope-Identifier"] == first.ref["unitId"]
+    assert subject["headers"]["Authorization"].startswith("Bearer jwt-") and "jwt-u" not in subject["headers"]["Authorization"]
+    assert subject["body"]["content"] == {"type": "API_KEY", "name": "bq-t1"}
+    stored = json.loads(boto3.client("secretsmanager", region_name="eu-north-1").get_secret_value(
+        SecretId="booqy/dev/fiskaly-unit/t1")["SecretString"])
+    assert stored["unitId"] == first.ref["unitId"] and stored["env"] == "TEST" and stored["key"] and stored["secret"]
+    for path in ("/taxpayers", "/locations", "/systems"):
+        assert all(c["headers"]["Authorization"].startswith("Bearer jwt-u") for c in fake.posted(path)), path
+    fk._units.clear()          # a cold start: the key comes back from the secret, no new one is made
+    fk._tokens.clear()
+    system.register_register({**new, "registerId": "s" * 32}, COMPANY)
+    assert len(fake.posted("/subjects")) == 1 and len(fake.posted("/organizations")) == 1
+    registered = {**new, "csRef": first.ref}
+    assert system.status(registered).ok
+
+
+def test_a_failed_key_store_is_retried_without_a_second_unit(kassa_table, monkeypatch):
+    system, fake, _ = make()
+    fk._units.clear()
+    new = {k: v for k, v in REGISTER.items() if k not in ("csRef", "designation")}
+    real = fk.store_unit
+    monkeypatch.setattr(fk, "store_unit", lambda *a: (_ for _ in ()).throw(cs.Unreachable(cs.STATUS_NOT_CONFIGURED)))
+    with pytest.raises(cs.Unreachable):
+        system.register_register(new, COMPANY)
+    assert kassa_table.get_item(Key={"PK": "TENANT#t1", "SK": "CS#fiskaly#TEST"})["Item"]["unitId"]
+    monkeypatch.setattr(fk, "store_unit", real)
+    enrolment = system.register_register(new, COMPANY)
+    assert len(fake.posted("/organizations")) == 1
+    assert enrolment.designation and fk.load_unit("t1")["unitId"] == enrolment.ref["unitId"]
+
+
+def test_unit_secret_is_never_in_an_error(kassa_table, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Refusing:
+        def create_secret(self, **kw):
+            raise ClientError({"Error": {"Code": "InvalidRequestException",
+                                         "Message": f"scheduled for deletion {kw['SecretString']}"}}, "CreateSecret")
+
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: Refusing())
+    with pytest.raises(cs.Unreachable) as caught:
+        fk.store_unit("t9", {"env": "TEST", "unitId": "u9", "key": "k9", "secret": "s3cr3t-value"})
+    assert "s3cr3t" not in repr(caught.value) and caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+
+
+def test_no_key_yet_is_none(kassa_table):
+    assert fk.load_unit("nobody") is None
 
 
 def test_enrolment_uses_the_companys_own_address_when_console_has_it(kassa_table):
@@ -440,6 +525,7 @@ def with_fiskaly(env, monkeypatch):
     fake = FakeFiskaly()
     monkeypatch.setenv("KASSA_CONTROL_SYSTEM", "fiskaly")
     monkeypatch.setenv("FISKALY_SECRET_ID", "booqy/dev/fiskaly-sign-se")
+    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
     monkeypatch.setattr(fk, "_urllib", fake)
     boto3.client("secretsmanager", region_name="eu-north-1").create_secret(
         Name="booqy/dev/fiskaly-sign-se",
@@ -547,7 +633,7 @@ def xml_schema():
                     reason="set KASSA_FISKALY_LIVE_TEST=1 with AWS credentials that can read the fiskaly secret")
 def test_fiskaly_test_environment():
     """Against test.api.fiskaly.com (TEST only, never LIVE): enrol a register
-    for a throwaway tenant, the startup check, a sale, its copy, a return, a
+    for a throwaway tenant (a new UNIT and its own key), the startup check, a sale, its copy, a return, a
     training receipt, the day's closing, then decommission. Prints each
     record's compliance and logs, and the shape of the rest, so the parsers
     (status code, control code, tillverkningsnummer) can be checked. The key
@@ -559,8 +645,15 @@ def test_fiskaly_test_environment():
 
     def recording(method, url, headers, body, timeout):
         status, answer_headers, answer = fk._urllib(method, url, headers, body, timeout)
-        if "/tokens" not in url:
-            seen.append((method, url.split("fiskaly.com", 1)[1], status, answer))
+        path = url.split("fiskaly.com", 1)[1]
+        if "/tokens" in path:
+            print("POST /tokens", status)          # never the key, the secret or the token
+            return status, answer_headers, answer
+        if status is None or status >= 300:
+            print("FAILED", method, path, status, "scope:", headers.get("X-Scope-Identifier"))
+            print("  sent:", (body or b"").decode("utf-8"))
+            print("  answer:", json.dumps(answer, ensure_ascii=False))
+        seen.append((method, path, status, answer))
         return status, answer_headers, answer
 
     def shape(value):
@@ -571,7 +664,9 @@ def test_fiskaly_test_environment():
         return f"str[{len(value)}]" if isinstance(value, str) else type(value).__name__
 
     with mock_aws():
+        # The restaurant's own key (POST /subjects) lands in moto, never in the real account.
         os.environ["KASSA_TABLE_NAME"] = "it-kassa"
+        os.environ["FISKALY_UNIT_PREFIX"] = "booqy/it/fiskaly-unit/"
         shared_dynamo._resource = None
         shared_dynamo._client = None
         boto3.resource("dynamodb", region_name="eu-north-1").create_table(

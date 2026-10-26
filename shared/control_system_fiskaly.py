@@ -17,10 +17,20 @@ spec fiskaly.uapi.sign-se.2026-06-01.yaml, a copy in tests/fixtures/fiskaly):
                           (a copy), INTENTION::CLOSING (end of day)
     PATCH /systems/{id}   state DECOMMISSIONED (register out of use)
 
-The key is read at runtime from Secrets Manager (FISKALY_SECRET_ID), JSON
-{"api_key", "api_secret", "env": "TEST" | "LIVE"}, kept in memory and never
-logged or put in an error. Every call uses the GROUP key's token, scoped to
-the merchant's UNIT with X-Scope-Identifier.
+Two kinds of key, both read at runtime, kept in memory and never logged or
+put in an error:
+  * Booqy's GROUP key (Secrets Manager FISKALY_SECRET_ID, JSON {"api_key",
+    "api_secret", "env": "TEST" | "LIVE"}): only for POST /organizations
+    (a new UNIT) and POST /subjects (that UNIT's key). fiskaly refuses it for
+    anything inside a UNIT (405 "non-unit organization"), X-Scope-Identifier
+    or not.
+  * One key per restaurant (UNIT), created with POST /subjects when its
+    first register is enrolled and kept in its own secret
+    FISKALY_UNIT_PREFIX + tenantId (booqy/<env>/fiskaly-unit/<tenantId>), JSON
+    {"env", "unitId", "subjectId", "key", "secret"}. Every taxpayer,
+    location, system and record call uses that UNIT's token with
+    X-Scope-Identifier = the UNIT. tenant-purge deletes the secret when the
+    restaurant is offboarded; the UNIT itself stays at fiskaly (audits).
 
 Errors: 400, 404, 405, 422 -> Rejected (our data; no retry); 401 -> a new
 token, once; 403 or a refused key -> Unreachable(EJ_KONFIGURERAD); 409, 429,
@@ -34,7 +44,7 @@ item per tenant and environment in the kassa table: PK TENANT#<tenantId>,
 SK CS#fiskaly#<env> (unitId, taxpayerId, locations {Booqy location: fiskaly
 location}).
 
-Not yet tried against fiskaly's TEST environment (docs/KASSA-REQUIREMENTS.md,
+Not yet confirmed in fiskaly's TEST environment (docs/KASSA-REQUIREMENTS.md,
 "fiskaly SIGN SE", Osäkert): where a record carries the status code, which
 field holds the 113-character code and the tillverkningsnummer, whether a copy
 needs a TRANSACTION after INTENTION::DUPLICATE. The parsers look in the
@@ -86,6 +96,7 @@ TOKEN_MARGIN = 60
 
 _secret = {"value": None, "at": 0.0}
 _tokens = {}
+_units = {}
 
 
 def _urllib(method, url, headers, body, timeout):
@@ -126,6 +137,43 @@ def credentials():
                         "server": str(value.get("control_server_id") or CONTROL_SERVER_ID)}
     _secret["at"] = now
     return _secret["value"]
+
+
+def _unit_secret_id(tenant_id):
+    prefix = os.environ.get("FISKALY_UNIT_PREFIX")
+    if not prefix:
+        raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
+    return prefix + tenant_id
+
+
+def load_unit(tenant_id):
+    """The restaurant's own fiskaly key, or None when there is none yet."""
+    import boto3
+    try:
+        raw = boto3.client("secretsmanager").get_secret_value(SecretId=_unit_secret_id(tenant_id))["SecretString"]
+        value = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 - never show the value; a missing secret is "none yet"
+        if getattr(exc, "response", {}).get("Error", {}).get("Code") == "ResourceNotFoundException":
+            return None
+        raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED) from None
+    return value if isinstance(value, dict) and value.get("key") and value.get("secret") else None
+
+
+def store_unit(tenant_id, value):
+    """Creates the restaurant's secret, or adds a new version to it."""
+    import boto3
+    client = boto3.client("secretsmanager")
+    secret_id, text = _unit_secret_id(tenant_id), json.dumps(value)
+    try:
+        try:
+            client.create_secret(Name=secret_id, SecretString=text,
+                                 Description="fiskaly SIGN SE API key of one restaurant (Booqy Kassa)")
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ResourceExistsException":
+                raise
+            client.put_secret_value(SecretId=secret_id, SecretString=text)
+    except Exception:  # noqa: BLE001 - e.g. scheduled for deletion; the value never reaches the error
+        raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED) from None
 
 
 # --- reading fiskaly's answers ---------------------------------------------------------
@@ -384,9 +432,10 @@ class FiskalyControlSystem(cs.ControlSystem):
 
     # HTTP
 
-    def _token(self, deadline):
-        c = self._c()
-        cache = (c["env"], c["key"])
+    def _token(self, deadline, unit=None):
+        """The bearer of Booqy's GROUP key, or of a restaurant's own key."""
+        c = unit or self._c()
+        cache = (self._c()["env"], c["key"])
         cached = _tokens.get(cache)
         if cached and cached["until"] > time.time() + TOKEN_MARGIN:
             return cached
@@ -404,7 +453,12 @@ class FiskalyControlSystem(cs.ControlSystem):
                           "group": (content.get("organization") or {}).get("id")}
         return _tokens[cache]
 
-    def _call(self, method, path, body=None, *, deadline, scope=None, idem=None):
+    def _call(self, method, path, body=None, *, deadline, scope=None, idem=None, unit=None):
+        """One request. `unit`: a restaurant's key (dict with key, secret,
+        unitId); its token is used and the scope is that UNIT. Without it,
+        Booqy's GROUP token (organizations and subjects only)."""
+        if unit:
+            scope = unit["unitId"]
         token_call = path == "/tokens"
         idem = idem or str(uuid.uuid4())   # the same key on every retry: fiskaly answers it once
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
@@ -416,7 +470,7 @@ class FiskalyControlSystem(cs.ControlSystem):
             if method in ("POST", "PATCH"):
                 headers["X-Idempotency-Key"] = idem
             if not token_call:
-                headers["Authorization"] = "Bearer " + self._token(deadline)["bearer"]
+                headers["Authorization"] = "Bearer " + self._token(deadline, unit)["bearer"]
             if scope:
                 headers["X-Scope-Identifier"] = scope
             left = deadline - self._clock()
@@ -430,7 +484,7 @@ class FiskalyControlSystem(cs.ControlSystem):
             if status is not None and 200 <= status < 300:
                 return answer
             if status == 401 and not token_call and not renewed:
-                _tokens.pop((self._c()["env"], self._c()["key"]), None)
+                _tokens.pop((self._c()["env"], (unit or self._c())["key"]), None)
                 renewed = True
                 continue
             if status in (401, 403):
@@ -448,32 +502,57 @@ class FiskalyControlSystem(cs.ControlSystem):
                 raise cs.Unreachable()
             self._sleep(wait)
 
-    def _record(self, scope, content, *, deadline):
-        record = self._call("POST", "/records", {"content": content}, scope=scope,
+    def _record(self, unit, content, *, deadline):
+        record = self._call("POST", "/records", {"content": content}, unit=unit,
                             deadline=deadline).get("content") or {}
         while record.get("mode") == "PROCESSING" and record.get("id"):
             if self._clock() + POLL_SECONDS >= deadline:
                 raise cs.Unreachable()
             self._sleep(POLL_SECONDS)
-            record = self._call("GET", f"/records/{record['id']}", scope=scope,
+            record = self._call("GET", f"/records/{record['id']}", unit=unit,
                                 deadline=deadline).get("content") or {}
         return record
 
-    def _ref(self, register):
+    def _unit(self, tenant_id, unit_id, deadline, *, create=False):
+        """The restaurant's own key for `unit_id` (memory, then its secret).
+        With `create`, a missing key is made with POST /subjects and stored;
+        the UNIT id is already saved, so a retry never makes a second UNIT."""
+        env = self._c()["env"]
+        cached = _units.get((env, tenant_id))
+        if cached and cached["unitId"] == unit_id:
+            return cached
+        value = load_unit(tenant_id)
+        if not (value and value.get("env") == env and value.get("unitId") == unit_id):
+            if not create:
+                raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
+            subject = self._call("POST", "/subjects", {"content": {
+                "type": "API_KEY", "name": ("bq-" + re.sub(r"[^a-z0-9-]", "", tenant_id.lower()))[:30]}},
+                scope=unit_id, deadline=deadline, idem=_key(env, tenant_id, "subject", unit_id)).get("content") or {}
+            credentials_ = subject.get("credentials") or {}
+            if not credentials_.get("key") or not credentials_.get("secret"):
+                raise cs.Rejected("fiskaly returned no key for the restaurant")
+            value = {"env": env, "unitId": unit_id, "subjectId": subject.get("id"),
+                     "key": credentials_["key"], "secret": credentials_["secret"]}
+            store_unit(tenant_id, value)
+        _units[(env, tenant_id)] = {"unitId": unit_id, "key": value["key"], "secret": value["secret"]}
+        return _units[(env, tenant_id)]
+
+    def _ref(self, register, deadline):
+        """(the register's fiskaly ids, its restaurant's key)."""
         ref = (register or {}).get("csRef") or {}
         if ref.get("provider") != PROVIDER or ref.get("env") != self.env or not ref.get("systemId"):
             raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
-        return ref
+        return ref, self._unit(register["tenantId"], ref["unitId"], deadline)
 
     # the port
 
     def status(self, register):
         """INTENTION::OPENING: fiskaly's startup check (RegisterStatus)."""
         try:
-            ref = self._ref(register)
-            record = self._record(ref["unitId"], {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                                                  "operation": {"type": "OPENING"}},
-                                  deadline=self._clock() + STATUS_BUDGET)
+            deadline = self._clock() + STATUS_BUDGET
+            ref, unit = self._ref(register, deadline)
+            record = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                                         "operation": {"type": "OPENING"}}, deadline=deadline)
             code = outcome(record)
         except cs.Unreachable as exc:
             code = exc.status
@@ -482,8 +561,8 @@ class FiskalyControlSystem(cs.ControlSystem):
         return cs.Status(ok=code == cs.STATUS_OK, code=code, provider=self.provider, serial=self.serial)
 
     def sign(self, register, data):
-        ref = self._ref(register)
         deadline = self._clock() + SIGN_BUDGET
+        ref, unit = self._ref(register, deadline)
         if data.kind == cs.COPY:
             original = (data.original_ref or {}).get("recordId")
             if not original:
@@ -494,14 +573,14 @@ class FiskalyControlSystem(cs.ControlSystem):
         else:
             intention = {"type": "INTENTION", "system": {"id": ref["systemId"]},
                          "operation": {"type": "TRANSACTION", "details": details(data)}}
-        first = self._record(ref["unitId"], intention, deadline=deadline)
+        first = self._record(unit, intention, deadline=deadline)
         self._allowed(first)
         record, code = first, control_code(first) if data.kind == cs.COPY else None
         if not code:
             if not first.get("id"):
                 raise cs.Rejected("fiskaly returned no record id")
-            record = self._record(ref["unitId"], {"type": "TRANSACTION", "record": {"id": first["id"]},
-                                                  "operation": operation(data)}, deadline=deadline)
+            record = self._record(unit, {"type": "TRANSACTION", "record": {"id": first["id"]},
+                                         "operation": operation(data)}, deadline=deadline)
             self._allowed(record)
             code = control_code(record)
         if not code and data.kind != cs.TRAINING:
@@ -517,20 +596,24 @@ class FiskalyControlSystem(cs.ControlSystem):
             raise cs.Unreachable(code)
 
     def close_day(self, register):
-        ref = self._ref(register)
-        self._record(ref["unitId"], {"type": "INTENTION", "system": {"id": ref["systemId"]},
-                                     "operation": {"type": "CLOSING", "period": "DAILY"}},
-                     deadline=self._clock() + STATUS_BUDGET)
+        deadline = self._clock() + STATUS_BUDGET
+        ref, unit = self._ref(register, deadline)
+        self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
+                            "operation": {"type": "CLOSING", "period": "DAILY"}}, deadline=deadline)
 
     def pause_register(self, register):
-        ref = self._ref(register)
+        deadline = self._clock() + STATUS_BUDGET
+        ref, unit = self._ref(register, deadline)
         self._call("PATCH", f"/systems/{ref['systemId']}", {"content": {"state": "DECOMMISSIONED"}},
-                   scope=ref["unitId"], deadline=self._clock() + STATUS_BUDGET)
+                   unit=unit, deadline=deadline)
 
     def register_register(self, register, company):
-        """Merchant (UNIT), company (taxpayer) and location once, then a
-        system for the register, commissioned: its tillverkningsnummer is the
-        kassabeteckning the merchant registers with Skatteverket."""
+        """Merchant (UNIT) and its own key, company (taxpayer) and location
+        once, then a system for the register, commissioned: its
+        tillverkningsnummer is the kassabeteckning the merchant registers
+        with Skatteverket. The UNIT id is saved before its key is made, so a
+        retry after any failure reuses the UNIT and makes a key only if none
+        was stored."""
         from shared import kassa as k
         deadline = self._clock() + ENROL_BUDGET
         env = self._c()["env"]
@@ -541,9 +624,10 @@ class FiskalyControlSystem(cs.ControlSystem):
             raise cs.Rejected("fiskaly needs a 10-digit organisation number")
         state = _state(tenant_id, env)
         group = self._token(deadline).get("group")
-        unit = state.get("unitId") or _save(tenant_id, env, "unitId", (self._call(
+        unit_id = state.get("unitId") or _save(tenant_id, env, "unitId", (self._call(
             "POST", "/organizations", {"content": {"type": "UNIT", "name": str(company.get("name"))[:128]}},
             scope=group, deadline=deadline, idem=_key(env, tenant_id, "unit")).get("content") or {}).get("id"))
+        unit = self._unit(tenant_id, unit_id, deadline, create=True)
         taxpayer = state.get("taxpayerId")
         if not taxpayer:
             created = self._call("POST", "/taxpayers", {"content": {
@@ -552,7 +636,7 @@ class FiskalyControlSystem(cs.ControlSystem):
                          "trade": str(company.get("restaurant") or company.get("name"))[:128]},
                 "address": address(company.get("legalAddress"), company.get("address")),
                 "fiscalization": {"type": "SE", "tax_id_number": org}}},
-                scope=unit, deadline=deadline, idem=_key(env, tenant_id, "taxpayer", org)).get("content") or {}
+                unit=unit, deadline=deadline, idem=_key(env, tenant_id, "taxpayer", org)).get("content") or {}
             self._commission("taxpayers", created.get("id"), unit, deadline)
             taxpayer = _save(tenant_id, env, "taxpayerId", created.get("id"))
         branch = (state.get("locations") or {}).get(location_id)
@@ -561,7 +645,7 @@ class FiskalyControlSystem(cs.ControlSystem):
                 "type": "BRANCH", "taxpayer": {"id": taxpayer},
                 "name": str(company.get("restaurant") or company.get("name"))[:32],
                 "address": address(None, company.get("address"))}},
-                scope=unit, deadline=deadline, idem=_key(env, tenant_id, "location", location_id)).get("content") or {}
+                unit=unit, deadline=deadline, idem=_key(env, tenant_id, "location", location_id)).get("content") or {}
             self._commission("locations", created.get("id"), unit, deadline)
             branch = _save_location(tenant_id, env, location_id, created.get("id"))
         system = self._call("POST", "/systems", {"content": {
@@ -571,25 +655,25 @@ class FiskalyControlSystem(cs.ControlSystem):
                                      "serial": register["serialNumber"]}},
             "software": {"name": k.PROGRAM, "version": k.KASSA_VERSION},
             "label": str(register.get("label") or "")[:16]}},
-            scope=unit, deadline=deadline).get("content") or {}
+            unit=unit, deadline=deadline).get("content") or {}
         if not system.get("id"):
             raise cs.Rejected("fiskaly returned no system id")
         system = self._commission("systems", system["id"], unit, deadline) or system
         number = designation(system)
         while not number and self._clock() + POLL_SECONDS < deadline:
             self._sleep(POLL_SECONDS)
-            system = self._call("GET", f"/systems/{system['id']}", scope=unit, deadline=deadline).get("content") or {}
+            system = self._call("GET", f"/systems/{system['id']}", unit=unit, deadline=deadline).get("content") or {}
             number = designation(system)
         if not number:
             raise cs.Rejected("fiskaly returned no tillverkningsnummer")
-        return cs.Enrolment(designation=number, ref={"provider": PROVIDER, "env": env, "unitId": unit,
+        return cs.Enrolment(designation=number, ref={"provider": PROVIDER, "env": env, "unitId": unit_id,
                                                     "systemId": system["id"]})
 
     def _commission(self, kind, resource_id, unit, deadline):
         if not resource_id:
             raise cs.Rejected(f"fiskaly returned no {kind} id")
         return self._call("PATCH", f"/{kind}/{resource_id}", {"content": {"state": "COMMISSIONED"}},
-                          scope=unit, deadline=deadline).get("content") or {}
+                          unit=unit, deadline=deadline).get("content") or {}
 
 
 # --- fiskaly's ids per tenant (kassa table) ------------------------------------------------

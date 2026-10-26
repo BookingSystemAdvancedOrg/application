@@ -436,7 +436,8 @@ class FiskalyControlSystem(cs.ControlSystem):
             if status in (401, 403):
                 raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
             if status in (400, 404, 405, 422):
-                detail = "" if token_call else f" {answer.get('code') or ''} {str(answer.get('message') or '')[:160]}"
+                error = (answer.get("content") if isinstance(answer.get("content"), dict) else answer) or {}
+                detail = "" if token_call else f" {error.get('code') or ''} {str(error.get('message') or '')[:160]}"
                 raise cs.Rejected(f"{method} {path.split('?')[0]}: {status}{detail}")
             attempt += 1
             wait = min(4.0, 0.5 * 2 ** (attempt - 1)) * (0.75 + random.random() / 2)  # noqa: S311
@@ -594,8 +595,9 @@ class FiskalyControlSystem(cs.ControlSystem):
 # --- fiskaly's ids per tenant (kassa table) ------------------------------------------------
 
 def _key(*parts):
-    """A stable idempotency key: a retry within fiskaly's 24 hours creates nothing twice."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, "booqy-kassa-fiskaly:" + ":".join(str(p) for p in parts)))
+    """A stable idempotency key: a retry within fiskaly's 24 hours creates nothing twice.
+    fiskaly accepts only version 3 or 4 UUIDs here, hence uuid3."""
+    return str(uuid.uuid3(uuid.NAMESPACE_URL, "booqy-kassa-fiskaly:" + ":".join(str(p) for p in parts)))
 
 
 def _state_key(tenant_id, env):

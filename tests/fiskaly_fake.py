@@ -8,6 +8,7 @@ compliance.data, the status in compliance.status, the tillverkningsnummer in
 compliance.technical_security_system_id. No network."""
 
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -71,6 +72,8 @@ class FakeFiskaly:
         assert headers.get("X-Api-Version") == "2026-06-01"
         if method in ("POST", "PATCH"):
             assert headers.get("X-Idempotency-Key"), "fiskaly requires X-Idempotency-Key on POST and PATCH"
+            assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[34][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                                headers["X-Idempotency-Key"]), "fiskaly accepts only UUID v3 or v4 idempotency keys"
         base = "/" + path.strip("/").split("/")[0].split("?")[0]
         schema = REQUEST_SCHEMAS.get((method, base))
         if schema:

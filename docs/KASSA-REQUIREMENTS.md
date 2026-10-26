@@ -295,17 +295,20 @@ the tests against fiskaly's published OpenAPI spec.
   "Manuell försäljningslista" and reported (felanmälan). **Osäkert:** whether
   a restaurant that takes cash or a separate card terminal during an outage
   must issue kontantnotor; the manual tells staff to ask the owner.
-- **Osäkert, to check in fiskaly TEST** (the opt-in test
-  `test_fiskaly_test_environment` prints what fiskaly returns): where a
-  record carries the status code (FSK's guide reads
-  `content.compliance.status`, the spec has no such field; Kassa also reads
-  `compliance.data` and the logs), which field holds the 113-character code
-  (`compliance.data` is read first), where the tillverkningsnummer sits
-  (`compliance.technical_security_system_id`), whether a copy needs the
-  TRANSACTION after INTENTION::DUPLICATE (Kassa sends it unless the
-  duplicate already carries a code), and whether a return should be
-  TRANSACTION::CORRECTION of the original record instead of a RECEIPT with
-  RETURN entries.
+- Seen in fiskaly TEST (2026-10-26): INTENTION::OPENING answers FINISHED,
+  COMPLETED with the status in `compliance.data` ("STATUS_OK"); the
+  commissioned system carries the tillverkningsnummer in
+  `compliance.technical_security_system_id` (16 characters). An
+  INTENTION::TRANSACTION stays ACCEPTED / PROCESSING until the
+  TRANSACTION::RECEIPT that refers to it arrives, so Kassa never waits for
+  it (only OPENING, CLOSING and a receipt still PROCESSING are polled).
+- **Osäkert, still to see in fiskaly TEST** (the opt-in test
+  `test_fiskaly_test_environment` prints what fiskaly returns): which field
+  of a receipt holds the 113-character code (`compliance.data` is read
+  first), whether a copy needs the TRANSACTION after INTENTION::DUPLICATE
+  (Kassa sends it unless the duplicate already carries a code), and whether
+  a return should be TRANSACTION::CORRECTION of the original record instead
+  of a RECEIPT with RETURN entries.
 - **Osäkert:** sole traders (enskild firma, personnummer): fiskaly's
   INDIVIDUAL taxpayer needs the owner's name and gender; Kassa refuses with
   `control_system_rejected` for now.

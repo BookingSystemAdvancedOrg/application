@@ -27,7 +27,7 @@ Kraven och hur Booqy uppfyller dem: [KASSA-REQUIREMENTS.md](../KASSA-REQUIREMENT
    ```
    (Med en annan Python än `python`: `PYTHON=/sökväg/python bash scripts/kassa-testprotokoll.sh`.)
 2. Gå igenom varje rad nedan i den driftsatta kassan enligt "Manuellt test". Fyll i resultat (G = godkänd, U = underkänd), datum och signatur.
-3. Rader markerade **KS** i kolumnen "Omtest" körs mot fiskaly: först i fiskalys testmiljö (TEST, dev med `kassa_control_system = "fiskaly"`), sedan igen i skarp miljö (LIVE) innan deklarationen lämnas. Mot simulatorn räknas de inte som godkända. Kontrollen mot fiskaly TEST körs också automatiskt (frivilligt): `KASSA_FISKALY_LIVE_TEST=1 python -m pytest -s tests/test_control_system_fiskaly.py -k test_environment`.
+3. Rader markerade **KS** i kolumnen "Omtest" körs mot fiskaly: först i fiskalys testmiljö (TEST, dev med `kassa_control_system = "fiskaly"`), sedan igen i skarp miljö (LIVE) innan deklarationen lämnas. Mot simulatorn räknas de inte som godkända. Kontrollen mot fiskaly TEST körs också automatiskt (frivilligt): `KASSA_FISKALY_LIVE_TEST=1 python -m pytest -s -q --tb=short -p no:faulthandler tests/test_control_system_fiskaly.py -k test_environment` (`--tb=short` så att pytest aldrig skriver ut argument).
 4. fiskaly erbjuder mallar för testprotokoll och tillverkardeklaration (enligt avtal). Jämför med mallen innan protokollet skickas.
 5. Ett nytt protokoll behövs för varje version som ändrar funktioner som omfattas av föreskriften (8 kap. 2 §).
 

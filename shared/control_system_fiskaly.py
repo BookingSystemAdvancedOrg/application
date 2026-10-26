@@ -51,6 +51,7 @@ needs a TRANSACTION after INTENTION::DUPLICATE. The parsers look in the
 documented places first and tests/test_control_system_fiskaly.py pins them.
 """
 
+import hashlib
 import json
 import os
 import random
@@ -95,8 +96,81 @@ SECRET_SECONDS = 900
 TOKEN_MARGIN = 60
 
 _secret = {"value": None, "at": 0.0}
-_tokens = {}
-_units = {}
+_tokens = {}      # (env, key fingerprint) -> Token
+_units = {}       # (env, tenantId) -> Creds
+
+
+# pytest prints a failing frame's arguments; these keep keys, secrets and
+# tokens out of every repr (and so out of tracebacks and logs).
+
+class Creds:
+    """An API key and secret: Booqy's GROUP key or one restaurant's UNIT key."""
+
+    __slots__ = ("key", "secret", "env", "server", "unit_id")
+
+    def __init__(self, key, secret, *, env=None, server=None, unit_id=None):
+        self.key, self.secret, self.env, self.server, self.unit_id = str(key), str(secret), env, server, unit_id
+
+    @classmethod
+    def of(cls, value):
+        if isinstance(value, cls) or value is None:
+            return value
+        return cls(value["key"], value["secret"], env=value.get("env"), server=value.get("server"),
+                   unit_id=value.get("unitId"))
+
+    def fingerprint(self):
+        return hashlib.sha256(self.key.encode("utf-8")).hexdigest()[:16]
+
+    def __repr__(self):
+        return f"Creds(unit={self.unit_id or 'GROUP'}, env={self.env}, key=<hidden>, secret=<hidden>)"
+
+    __str__ = __repr__
+
+
+class Token:
+    __slots__ = ("bearer", "until", "group")
+
+    def __init__(self, bearer, until, group):
+        self.bearer, self.until, self.group = bearer, until, group
+
+    def __repr__(self):
+        return f"Token(group={self.group}, bearer=<hidden>)"
+
+    __str__ = __repr__
+
+
+class Hidden(dict):
+    """A dict (a token request, a stored key) whose values never show."""
+
+    def __repr__(self):
+        return "{" + ", ".join(f"{k!r}: <hidden>" for k in self) + "}"
+
+    __str__ = __repr__
+
+
+def _hide(value):
+    """Every dict inside `value` as Hidden (answers carrying keys or tokens)."""
+    if isinstance(value, dict):
+        return Hidden({k: _hide(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_hide(v) for v in value]
+    return value
+
+
+class HiddenBytes(bytes):
+    def __repr__(self):
+        return f"<{len(self)} bytes hidden>"
+
+    __str__ = __repr__
+
+
+class Headers(dict):
+    """Request headers; the bearer never shows."""
+
+    def __repr__(self):
+        return repr({k: ("<hidden>" if k == "Authorization" else v) for k, v in self.items()})
+
+    __str__ = __repr__
 
 
 def _urllib(method, url, headers, body, timeout):
@@ -118,7 +192,7 @@ def _json(raw):
 
 
 def credentials():
-    """{"key", "secret", "env", "server"} from Secrets Manager (cached)."""
+    """Booqy's GROUP key (Creds with env and server) from Secrets Manager (cached)."""
     now = time.time()
     if _secret["value"] and now - _secret["at"] < SECRET_SECONDS:
         return _secret["value"]
@@ -127,14 +201,14 @@ def credentials():
         raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
     try:
         import boto3
-        value = json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)["SecretString"])
+        value = _hide(json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)["SecretString"]))
     except Exception:  # noqa: BLE001 - missing secret, no access, not JSON: all "not configured"
         raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED) from None
     env = str((value or {}).get("env") or "TEST").upper()
     if not isinstance(value, dict) or not value.get("api_key") or not value.get("api_secret") or env not in BASES:
         raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
-    _secret["value"] = {"key": str(value["api_key"]), "secret": str(value["api_secret"]), "env": env,
-                        "server": str(value.get("control_server_id") or CONTROL_SERVER_ID)}
+    _secret["value"] = Creds(value["api_key"], value["api_secret"], env=env,
+                             server=str(value.get("control_server_id") or CONTROL_SERVER_ID))
     _secret["at"] = now
     return _secret["value"]
 
@@ -150,8 +224,8 @@ def load_unit(tenant_id):
     """The restaurant's own fiskaly key, or None when there is none yet."""
     import boto3
     try:
-        raw = boto3.client("secretsmanager").get_secret_value(SecretId=_unit_secret_id(tenant_id))["SecretString"]
-        value = json.loads(raw)
+        value = _hide(json.loads(
+            boto3.client("secretsmanager").get_secret_value(SecretId=_unit_secret_id(tenant_id))["SecretString"]))
     except Exception as exc:  # noqa: BLE001 - never show the value; a missing secret is "none yet"
         if getattr(exc, "response", {}).get("Error", {}).get("Code") == "ResourceNotFoundException":
             return None
@@ -163,15 +237,15 @@ def store_unit(tenant_id, value):
     """Creates the restaurant's secret, or adds a new version to it."""
     import boto3
     client = boto3.client("secretsmanager")
-    secret_id, text = _unit_secret_id(tenant_id), json.dumps(value)
+    secret_id = _unit_secret_id(tenant_id)
     try:
         try:
-            client.create_secret(Name=secret_id, SecretString=text,
+            client.create_secret(Name=secret_id, SecretString=json.dumps(dict(value)),
                                  Description="fiskaly SIGN SE API key of one restaurant (Booqy Kassa)")
         except Exception as exc:  # noqa: BLE001
             if getattr(exc, "response", {}).get("Error", {}).get("Code") != "ResourceExistsException":
                 raise
-            client.put_secret_value(SecretId=secret_id, SecretString=text)
+            client.put_secret_value(SecretId=secret_id, SecretString=json.dumps(dict(value)))
     except Exception:  # noqa: BLE001 - e.g. scheduled for deletion; the value never reaches the error
         raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED) from None
 
@@ -254,7 +328,9 @@ def control_code(record):
     for text in [*_strings(compliance), *_data_tokens(record)]:
         if len(text) == cs.AVSTAMNING_LENGTH:
             return text
-    return data.strip() if isinstance(data, str) and data.strip() and len(_data_tokens(record)) == 1 else None
+    tokens = _data_tokens(record)
+    # A lone status name (OPENING answers compliance.data "STATUS_OK") is not a code.
+    return tokens[0] if len(tokens) == 1 and tokens[0].upper() not in NAMES else None
 
 
 def designation(system):
@@ -402,7 +478,7 @@ class FiskalyControlSystem(cs.ControlSystem):
         self._transport = transport or _urllib
         self._sleep = sleep
         self._clock = clock
-        self._creds = creds
+        self._creds = Creds.of(creds)
 
     # credentials and environment
 
@@ -414,14 +490,14 @@ class FiskalyControlSystem(cs.ControlSystem):
     @property
     def env(self):
         try:
-            return self._c()["env"]
+            return self._c().env
         except cs.Unreachable:
             return None
 
     @property
     def serial(self):
         try:
-            return self._c()["server"]
+            return self._c().server
         except cs.Unreachable:
             return CONTROL_SERVER_ID
 
@@ -435,13 +511,12 @@ class FiskalyControlSystem(cs.ControlSystem):
     def _token(self, deadline, unit=None):
         """The bearer of Booqy's GROUP key, or of a restaurant's own key."""
         c = unit or self._c()
-        cache = (self._c()["env"], c["key"])
+        cache = (self._c().env, c.fingerprint())
         cached = _tokens.get(cache)
-        if cached and cached["until"] > time.time() + TOKEN_MARGIN:
+        if cached and cached.until > time.time() + TOKEN_MARGIN:
             return cached
-        content = self._call("POST", "/tokens", {"content": {"type": "API_KEY", "key": c["key"],
-                                                             "secret": c["secret"]}},
-                             deadline=deadline).get("content") or {}
+        body = Hidden(content=Hidden(type="API_KEY", key=c.key, secret=c.secret))
+        content = self._call("POST", "/tokens", body, deadline=deadline).get("content") or {}
         auth = content.get("authentication") or {}
         if not auth.get("bearer"):
             raise cs.Unreachable(cs.STATUS_NOT_CONFIGURED)
@@ -449,8 +524,7 @@ class FiskalyControlSystem(cs.ControlSystem):
             until = datetime.fromisoformat(str(auth.get("expires_at")).replace("Z", "+00:00")).timestamp()
         except ValueError:
             until = time.time() + 300
-        _tokens[cache] = {"bearer": auth["bearer"], "until": until,
-                          "group": (content.get("organization") or {}).get("id")}
+        _tokens[cache] = Token(auth["bearer"], until, (content.get("organization") or {}).get("id"))
         return _tokens[cache]
 
     def _call(self, method, path, body=None, *, deadline, scope=None, idem=None, unit=None):
@@ -458,33 +532,37 @@ class FiskalyControlSystem(cs.ControlSystem):
         unitId); its token is used and the scope is that UNIT. Without it,
         Booqy's GROUP token (organizations and subjects only)."""
         if unit:
-            scope = unit["unitId"]
+            scope = unit.unit_id
         token_call = path == "/tokens"
         idem = idem or str(uuid.uuid4())   # the same key on every retry: fiskaly answers it once
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        if data is not None and token_call:
+            data = HiddenBytes(data)
         attempt, renewed = 0, False
         while True:
-            headers = {"X-Api-Version": API_VERSION, "Accept": "application/json"}
+            headers = Headers({"X-Api-Version": API_VERSION, "Accept": "application/json"})
             if data is not None:
                 headers["Content-Type"] = "application/json"
             if method in ("POST", "PATCH"):
                 headers["X-Idempotency-Key"] = idem
             if not token_call:
-                headers["Authorization"] = "Bearer " + self._token(deadline, unit)["bearer"]
+                headers["Authorization"] = "Bearer " + self._token(deadline, unit).bearer
             if scope:
                 headers["X-Scope-Identifier"] = scope
             left = deadline - self._clock()
             if left <= 0:
                 raise cs.Unreachable()
             try:
-                status, answer_headers, answer = self._transport(method, BASES[self._c()["env"]] + path, headers,
+                status, answer_headers, answer = self._transport(method, BASES[self._c().env] + path, headers,
                                                                  data, min(TIMEOUT, left))
             except (OSError, ValueError):
                 status, answer_headers, answer = None, {}, {}
+            if token_call or path == "/subjects":
+                answer = _hide(answer)      # a bearer, or a new key and secret
             if status is not None and 200 <= status < 300:
                 return answer
             if status == 401 and not token_call and not renewed:
-                _tokens.pop((self._c()["env"], (unit or self._c())["key"]), None)
+                _tokens.pop((self._c().env, (unit or self._c()).fingerprint()), None)
                 renewed = True
                 continue
             if status in (401, 403):
@@ -502,10 +580,14 @@ class FiskalyControlSystem(cs.ControlSystem):
                 raise cs.Unreachable()
             self._sleep(wait)
 
-    def _record(self, unit, content, *, deadline):
+    def _record(self, unit, content, *, deadline, poll=True):
+        """POST /records; a record still PROCESSING is polled until FINISHED.
+        `poll=False` for INTENTION::TRANSACTION and ::DUPLICATE: fiskaly
+        keeps those open (ACCEPTED, PROCESSING) until the TRANSACTION that
+        refers to them arrives, so waiting for them would never end."""
         record = self._call("POST", "/records", {"content": content}, unit=unit,
                             deadline=deadline).get("content") or {}
-        while record.get("mode") == "PROCESSING" and record.get("id"):
+        while poll and record.get("mode") == "PROCESSING" and record.get("id"):
             if self._clock() + POLL_SECONDS >= deadline:
                 raise cs.Unreachable()
             self._sleep(POLL_SECONDS)
@@ -517,9 +599,9 @@ class FiskalyControlSystem(cs.ControlSystem):
         """The restaurant's own key for `unit_id` (memory, then its secret).
         With `create`, a missing key is made with POST /subjects and stored;
         the UNIT id is already saved, so a retry never makes a second UNIT."""
-        env = self._c()["env"]
+        env = self._c().env
         cached = _units.get((env, tenant_id))
-        if cached and cached["unitId"] == unit_id:
+        if cached and cached.unit_id == unit_id:
             return cached
         value = load_unit(tenant_id)
         if not (value and value.get("env") == env and value.get("unitId") == unit_id):
@@ -531,10 +613,10 @@ class FiskalyControlSystem(cs.ControlSystem):
             credentials_ = subject.get("credentials") or {}
             if not credentials_.get("key") or not credentials_.get("secret"):
                 raise cs.Rejected("fiskaly returned no key for the restaurant")
-            value = {"env": env, "unitId": unit_id, "subjectId": subject.get("id"),
-                     "key": credentials_["key"], "secret": credentials_["secret"]}
+            value = Hidden(env=env, unitId=unit_id, subjectId=subject.get("id"),
+                           key=credentials_["key"], secret=credentials_["secret"])
             store_unit(tenant_id, value)
-        _units[(env, tenant_id)] = {"unitId": unit_id, "key": value["key"], "secret": value["secret"]}
+        _units[(env, tenant_id)] = Creds(value["key"], value["secret"], env=env, unit_id=unit_id)
         return _units[(env, tenant_id)]
 
     def _ref(self, register, deadline):
@@ -573,9 +655,13 @@ class FiskalyControlSystem(cs.ControlSystem):
         else:
             intention = {"type": "INTENTION", "system": {"id": ref["systemId"]},
                          "operation": {"type": "TRANSACTION", "details": details(data)}}
-        first = self._record(unit, intention, deadline=deadline)
-        self._allowed(first)
-        record, code = first, control_code(first) if data.kind == cs.COPY else None
+        first = self._record(unit, intention, deadline=deadline, poll=False)
+        if first.get("state") in ("REJECTED", "FAILED"):
+            self._allowed(first)
+        finished = first.get("mode") != "PROCESSING" and first.get("state") == "COMPLETED"
+        record, code = first, control_code(first) if data.kind == cs.COPY and finished else None
+        if code:
+            self._allowed(first)
         if not code:
             if not first.get("id"):
                 raise cs.Rejected("fiskaly returned no record id")
@@ -616,14 +702,14 @@ class FiskalyControlSystem(cs.ControlSystem):
         was stored."""
         from shared import kassa as k
         deadline = self._clock() + ENROL_BUDGET
-        env = self._c()["env"]
+        env = self._c().env
         tenant_id, location_id = register["tenantId"], register["locationId"]
         org = "".join(ch for ch in str(company.get("org") or "") if ch.isdigit())
         if len(org) != 10:
             # Enskild firma (personnummer): fiskaly wants the owner's name and gender; not offered yet.
             raise cs.Rejected("fiskaly needs a 10-digit organisation number")
         state = _state(tenant_id, env)
-        group = self._token(deadline).get("group")
+        group = self._token(deadline).group
         unit_id = state.get("unitId") or _save(tenant_id, env, "unitId", (self._call(
             "POST", "/organizations", {"content": {"type": "UNIT", "name": str(company.get("name"))[:128]}},
             scope=group, deadline=deadline, idem=_key(env, tenant_id, "unit")).get("content") or {}).get("id"))

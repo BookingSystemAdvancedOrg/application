@@ -56,10 +56,14 @@ class FakeFiskaly:
     def __init__(self):
         self.calls = []
         self.status = 1                 # status code of OPENING and TRANSACTION records
-        self.status_in = "compliance"   # compliance | logs | data
+        # Where the status goes: "name" is what fiskaly TEST did (2026-10-26):
+        # compliance.data "STATUS_OK" on OPENING. Others: compliance.status,
+        # "SE,<n>,<code>" in data, or the logs.
+        self.status_in = "name"         # name | compliance | data | logs
         self.fail = []                  # [(path prefix, HTTP status), ...] answered before the real handler
         self.processing = 0             # first GETs of a record still PROCESSING
         self.copy_code_on_intention = False
+        self.open_intentions = set()    # INTENTION::TRANSACTION / DUPLICATE without their TRANSACTION yet
         self.tokens = 0
         self.records = {}
         self.counter = 0
@@ -155,6 +159,9 @@ class FakeFiskaly:
             return 200, {}, {"content": self._record(payload["content"])}
         if method == "GET" and base == "/records":
             record = self.records[path.split("/")[2]]
+            if record["id"] in self.open_intentions:
+                # As in fiskaly TEST: open until its TRANSACTION arrives.
+                return 200, {}, {"content": {**record, "mode": "PROCESSING", "state": "ACCEPTED"}}
             if self.processing:
                 self.processing -= 1
                 return 200, {}, {"content": {**record, "mode": "PROCESSING"}}
@@ -169,16 +176,23 @@ class FakeFiskaly:
         kind, operation = content["type"], content["operation"]["type"]
         record = {"id": record_id, "type": f"{kind}::{operation}", "state": "COMPLETED", "mode": "FINISHED",
                   "system": content.get("system") or {"id": "sys"}}
-        signed = kind == "TRANSACTION" or operation == "OPENING" or (
+        signed = kind == "TRANSACTION" or operation in ("OPENING", "CLOSING") or (
             operation == "DUPLICATE" and self.copy_code_on_intention)
+        if kind == "TRANSACTION":
+            self.open_intentions.discard(content["record"]["id"])
+        if kind == "INTENTION" and not signed and operation in ("TRANSACTION", "DUPLICATE"):
+            record.update(mode="PROCESSING", state="ACCEPTED")
+            self.open_intentions.add(record_id)
         if signed:
             training = (content["operation"].get("details") or {}).get("training")
             self.counter += 1
             ok = self.status == 1
-            data = code(self.counter) if ok and not training and operation != "OPENING" else ""
+            data = code(self.counter) if ok and not training and operation not in ("OPENING", "CLOSING") else ""
             if not ok:
                 record["state"] = "FAILED" if self.status > 2 else "COMPLETED"
-            if self.status_in == "compliance":
+            if self.status_in == "name":
+                record["compliance"] = {"data": data or self.NAMES[self.status]}
+            elif self.status_in == "compliance":
                 record["compliance"] = {"status": self.status, **({"data": data} if data else {})}
             elif self.status_in == "data":
                 record["compliance"] = {"data": f"SE,{self.status}" + (f",{data}" if data else "")}

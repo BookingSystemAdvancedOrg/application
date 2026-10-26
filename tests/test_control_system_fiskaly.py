@@ -63,7 +63,7 @@ def make(fake=None, creds=CREDS):
     already has its own key (as after enrolment)."""
     fake = fake or FakeFiskaly()
     key, secret = fake.add_unit("unit-1")
-    fk._units[("TEST", "t1")] = {"unitId": "unit-1", "key": key, "secret": secret}
+    fk._units[("TEST", "t1")] = fk.Creds(key, secret, env="TEST", unit_id="unit-1")
     clock = Clock()
     return fk.FiskalyControlSystem(transport=fake, sleep=clock.sleep, clock=clock, creds=dict(creds)), fake, clock
 
@@ -101,7 +101,7 @@ def test_status_is_an_opening_record_and_the_token_is_reused():
 @pytest.mark.parametrize("number,name", [(1, cs.STATUS_OK), (2, cs.STATUS_NO_CONTACT), (3, cs.STATUS_CONTACT_AGAIN),
                                          (4, cs.STATUS_NOT_CONFIGURED), (5, cs.STATUS_CALL_MANUFACTURER),
                                          (6, cs.STATUS_REPORT_24H), (7, cs.STATUS_REPORT_48H)])
-@pytest.mark.parametrize("where", ["compliance", "data", "logs"])
+@pytest.mark.parametrize("where", ["name", "compliance", "data", "logs"])
 def test_every_status_code_maps_to_skatteverkets_name(number, name, where):
     fake = FakeFiskaly()
     fake.status, fake.status_in = number, where
@@ -132,6 +132,88 @@ def test_status_never_raises_when_fiskaly_is_down():
     assert clock.now <= fk.STATUS_BUDGET
 
 
+def test_opening_as_fiskaly_test_answers_it():
+    """fiskaly TEST, 2026-10-26: the status is compliance.data "STATUS_OK"."""
+    record = {"id": "r1", "type": "INTENTION::OPENING", "mode": "FINISHED", "state": "COMPLETED",
+              "compliance": {"data": "STATUS_OK"},
+              "transmission": {"request": {"content": "PD94"}, "response": {"content": "PD94"}},
+              "journal": {"signature": "abc", "signed_at": "2026-10-26T18:00:00Z"}}
+    assert fk.status_code(record) == 1 and fk.outcome(record) == cs.STATUS_OK
+    assert fk.control_code(record) is None
+    assert fk.outcome({**record, "compliance": {"data": "NO_CONTACT_WITH_KS"}}) == cs.STATUS_NO_CONTACT
+
+
+def test_sign_never_waits_for_the_open_intention():
+    """fiskaly keeps INTENTION::TRANSACTION PROCESSING / ACCEPTED until its
+    TRANSACTION arrives: polling it would hang until the budget ends."""
+    system, fake, clock = make()
+    registration = system.sign(REGISTER, receipt())
+    intention_id = registration.ref["intentionId"]
+    assert fake.records[intention_id]["state"] == "ACCEPTED"
+    assert not [c for c in fake.calls if c["method"] == "GET" and intention_id in c["path"]]
+    assert fake.open_intentions == set() and clock.sleeps == []
+    copy = system.sign(REGISTER, receipt(cs.COPY, serial=1, original_ref=registration.ref))
+    assert len(copy.control_code) == 113 and fake.open_intentions == set()
+
+
+def test_a_rejected_intention_stops_the_sale():
+    system, fake, _ = make()
+    original = fake._record
+
+    def rejecting(content):
+        record = original(content)
+        if content["type"] == "INTENTION":
+            record.update(state="REJECTED", mode="FINISHED", logs=[{"severity": "ERROR", "message": "bad"}])
+        return record
+
+    fake._record = rejecting
+    with pytest.raises(cs.Rejected):
+        system.sign(REGISTER, receipt())
+    assert fake.posted("/records")[-1]["body"]["content"]["type"] == "INTENTION"
+
+
+# --- keys, secrets and tokens never show ----------------------------------------------------
+
+def test_no_repr_shows_a_key_secret_or_token():
+    creds = fk.Creds("the-key", "the-secret", env="TEST", unit_id="u1")
+    token = fk.Token("the-bearer", 0, "group")
+    things = [creds, token, fk.Hidden(key="the-key", secret="the-secret"),
+              fk.HiddenBytes(b'{"secret": "the-secret"}'),
+              fk.Headers({"Authorization": "Bearer the-bearer", "X-Api-Version": "2026-06-01"}),
+              {("TEST", creds.fingerprint()): token}, {("TEST", "t1"): creds},
+              fk._hide({"content": {"credentials": {"key": "the-key", "secret": "the-secret"}}})]
+    for thing in things:
+        for text in (repr(thing), str(thing)):
+            assert "the-key" not in text and "the-secret" not in text and "the-bearer" not in text, text
+    assert "u1" in repr(creds) and "X-Api-Version" in repr(things[4])
+
+
+def _traceback_text(exc):
+    import traceback
+    # From the adapter down: the test's own frame holds the values it looks for.
+    return "".join(traceback.TracebackException(type(exc), exc, exc.__traceback__.tb_next,
+                                                capture_locals=True).format())
+
+
+def test_tracebacks_with_locals_show_no_key_secret_or_token(kassa_table):
+    system, fake, _ = make()
+    fk._units.clear()
+    new = {k: v for k, v in REGISTER.items() if k not in ("csRef", "designation")}
+    fake.fail = [("/taxpayers", 422)]          # after the unit's key was made and stored
+    with pytest.raises(cs.Rejected) as caught:
+        system.register_register(new, COMPANY)
+    unit_key, unit_secret = next(iter(fake.unit_keys.items()))
+    text = _traceback_text(caught.value)
+    secrets_ = [TEST_KEY, TEST_SECRET, unit_key, unit_secret[0], *fake.bearers]
+    assert not [x for x in secrets_ if x in text]
+    fake.fail = [("/records", 500)] * 10
+    with pytest.raises(cs.Unreachable) as caught:
+        system.sign({**REGISTER, "csRef": {**REF, "unitId": fk.load_unit("t1")["unitId"]}}, receipt())
+    text = _traceback_text(caught.value)
+    assert not [x for x in [TEST_KEY, TEST_SECRET, unit_key, unit_secret[0], *fake.bearers] if x in text]
+    assert "'Authorization': '<hidden>'" in text and "key=<hidden>" in text   # the frames were there
+
+
 # --- HTTP: 401, 429, 5xx, timeouts, refusals ----------------------------------------------
 
 def test_401_gets_a_new_token_once_and_retries():
@@ -146,7 +228,7 @@ def test_401_gets_a_new_token_once_and_retries():
 
 def test_a_refused_key_is_not_configured_and_never_echoes_the_secret():
     system, fake, _ = make()
-    fk._units[("TEST", "t1")]["secret"] = "wrong-secret"
+    fk._units[("TEST", "t1")].secret = "wrong-secret"
     with pytest.raises(cs.Unreachable) as caught:
         system.sign(REGISTER, receipt())
     assert caught.value.status == cs.STATUS_NOT_CONFIGURED
@@ -633,27 +715,30 @@ def xml_schema():
                     reason="set KASSA_FISKALY_LIVE_TEST=1 with AWS credentials that can read the fiskaly secret")
 def test_fiskaly_test_environment():
     """Against test.api.fiskaly.com (TEST only, never LIVE): enrol a register
-    for a throwaway tenant (a new UNIT and its own key), the startup check, a sale, its copy, a return, a
-    training receipt, the day's closing, then decommission. Prints each
-    record's compliance and logs, and the shape of the rest, so the parsers
-    (status code, control code, tillverkningsnummer) can be checked. The key
-    is read from FISKALY_SECRET_ID (default the dev secret) and never printed.
-    The tenant's fiskaly ids live in a moto table only."""
+    for a throwaway tenant (a new UNIT and its own key), the startup check, a
+    sale, its copy, a return, a training receipt, the day's closing, then
+    decommission. One line per call: compliance, logs, state and mode as
+    fiskaly sent them, the shape of the rest; failures in full. Never a key,
+    a secret or a token. Run with --tb=short so pytest prints no arguments.
+    The GROUP key is read from FISKALY_SECRET_ID (default the dev secret);
+    the restaurant's key and the fiskaly ids live in moto only."""
     creds = fk.credentials() if os.environ.setdefault("FISKALY_SECRET_ID", "booqy/dev/fiskaly-sign-se") else None
-    assert creds["env"] == "TEST", "the opt-in test runs against fiskaly TEST only"
-    seen = []
+    assert creds.env == "TEST", "the opt-in test runs against fiskaly TEST only"
 
     def recording(method, url, headers, body, timeout):
+        """One line per call, starting with the method. Failures also print
+        what was sent and fiskaly's whole answer. Never a key, a secret or a
+        token: /tokens prints its status only, /subjects only shapes."""
         status, answer_headers, answer = fk._urllib(method, url, headers, body, timeout)
         path = url.split("fiskaly.com", 1)[1]
-        if "/tokens" in path:
-            print("POST /tokens", status)          # never the key, the secret or the token
-            return status, answer_headers, answer
-        if status is None or status >= 300:
-            print("FAILED", method, path, status, "scope:", headers.get("X-Scope-Identifier"))
+        if path.startswith("/tokens"):
+            print(method, path, status)
+        elif status is None or status >= 300:
+            print(method, path, status, "FAILED scope:", headers.get("X-Scope-Identifier"))
             print("  sent:", (body or b"").decode("utf-8"))
             print("  answer:", json.dumps(answer, ensure_ascii=False))
-        seen.append((method, path, status, answer))
+        else:
+            print(method, path, status, json.dumps(shape(answer.get("content", answer)), ensure_ascii=False))
         return status, answer_headers, answer
 
     def shape(value):
@@ -685,22 +770,24 @@ def test_fiskaly_test_environment():
             print("tillverkningsnummer", enrolment.designation)
             print("status", system.status(register_row))
             sold = system.sign(register_row, receipt(serial=1, register_label=enrolment.designation))
-            print("control code length", len(sold.control_code))
+            print("record sale: control code length", len(sold.control_code))
             copy = system.sign(register_row, receipt(cs.COPY, serial=1, original_serial=1, original_at=AT,
                                                      original_ref=sold.ref, register_label=enrolment.designation))
-            print("copy code length", len(copy.control_code))
-            system.sign(register_row, receipt(returns_by_rate={12: 8950}, vat_by_rate={12: 959}, original_serial=1,
+            print("record copy: control code length", len(copy.control_code))
+            returned = system.sign(register_row, receipt(returns_by_rate={12: 8950}, vat_by_rate={12: 959}, original_serial=1,
                                               serial=2, register_label=enrolment.designation,
                                               lines=({"text": "Dagens soppa", "quantity": 1, "total": 8950, "rate": 12,
                                                       "vat": 959},),
                                               payments=({"method": "card", "amount": 8950, "last4": "4242"},)))
-            system.sign(register_row, receipt(cs.TRAINING, serial=1, payments=(),
-                                              register_label=enrolment.designation))
+            print("record return: control code length", len(returned.control_code))
+            training = system.sign(register_row, receipt(cs.TRAINING, serial=1, payments=(),
+                                                         register_label=enrolment.designation))
+            print("record training: control code length", len(training.control_code))
             system.close_day(register_row)
+            print("record closing: sent")
             system.pause_register(register_row)
+            print("record decommissioned")
         finally:
-            for method, path, status, answer in seen:
-                print(method, path, status, json.dumps(shape(answer.get("content", answer)), ensure_ascii=False))
             shared_dynamo._resource = None
             shared_dynamo._client = None
         assert len(sold.control_code) == cs.AVSTAMNING_LENGTH

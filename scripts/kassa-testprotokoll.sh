@@ -7,7 +7,8 @@
 # Needs the dev requirements (requirements-dev.txt) in the active Python.
 # The run against fiskaly's TEST environment is separate (opt-in, needs AWS
 # credentials that can read the fiskaly secret):
-#   KASSA_FISKALY_LIVE_TEST=1 python -m pytest -s tests/test_control_system_fiskaly.py -k test_environment
+#   KASSA_FISKALY_LIVE_TEST=1 python -m pytest -s -q --tb=short -p no:faulthandler \
+#     tests/test_control_system_fiskaly.py -k test_environment
 set -uo pipefail
 [ -d functions/kassa ] || { echo "run from the application repository root" >&2; exit 2; }
 PYTHON="${PYTHON:-python}"

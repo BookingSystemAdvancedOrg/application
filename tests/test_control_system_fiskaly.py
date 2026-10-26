@@ -755,14 +755,17 @@ def test_kassa_blocks_the_card_payment_when_fiskaly_says_no_contact(with_fiskaly
     assert status == 503
 
 
-def test_kassa_reports_a_rejected_receipt(with_fiskaly):
+def test_kassa_reports_a_rejected_receipt(with_fiskaly, caplog):
     env = with_fiskaly
     rid = register(env)
     b = bill(env, rid)
     pay(env, b["billId"], b["total"], "a" * 32)
     env["fiskaly"].fail = [("/records", 422)]
-    status, body = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})
+    with caplog.at_level("WARNING"):
+        status, body = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})
     assert status == 503 and body["error"] == "control_system_rejected"
+    logged = [r.getMessage() for r in caplog.records if "receipt_rejected" in r.getMessage()]
+    assert logged and "422 E_FAKE" in logged[0] and TEST_SECRET not in logged[0]
     status, body = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})
     assert status == 201 and body["document"]["seq"] == 1
 

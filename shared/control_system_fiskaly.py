@@ -53,6 +53,7 @@ alone. tests/fiskaly_fake.py answers the same way.
 
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -66,6 +67,7 @@ from decimal import Decimal
 from shared import control_system as cs
 from shared import dynamo
 
+logger = logging.getLogger(__name__)
 PROVIDER = "fiskaly"
 API_VERSION = "2026-06-01"
 BASES = {"TEST": "https://test.api.fiskaly.com", "LIVE": "https://live.api.fiskaly.com"}
@@ -655,7 +657,8 @@ class FiskalyControlSystem(cs.ControlSystem):
             code = outcome(record)
         except cs.Unreachable as exc:
             code = exc.status
-        except cs.Rejected:
+        except cs.Rejected as exc:
+            logger.warning(json.dumps({"fiskaly": "opening_rejected", "detail": str(exc)[:400]}, ensure_ascii=False))
             code = cs.STATUS_NOT_CONFIGURED
         return cs.Status(ok=code == cs.STATUS_OK, code=code, provider=self.provider, serial=self.serial)
 

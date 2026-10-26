@@ -36,6 +36,7 @@ control system, so the serial it saw is the serial written.
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -108,6 +109,7 @@ NOTICE_RECEIPT = "kassa_receipt"
 _ID = re.compile(r"[0-9a-f]{32}")
 _LINE_ID = re.compile(r"[0-9a-f]{8}")
 _LABEL = re.compile(r"[A-Za-z0-9ÅÄÖåäö][A-Za-z0-9ÅÄÖåäö \-]{0,15}")
+logger = logging.getLogger(__name__)
 _ser = TypeSerializer()
 _deser = TypeDeserializer()
 
@@ -356,9 +358,11 @@ def create_register(ctx, label, *, user, now, system, tenant_row):
     }
     try:
         enrolment = system.register_register(item, seller)
-    except cs.Unreachable:
+    except cs.Unreachable as exc:
+        logger.warning(json.dumps({"kassa": "enrol_unreachable", "status": exc.status}))
         raise Unavailable("control_system_unreachable") from None
-    except cs.Rejected:
+    except cs.Rejected as exc:
+        _log_rejected("enrol", exc)
         raise Unavailable("control_system_rejected") from None
     if enrolment:
         # The kassabeteckning the merchant registers with Skatteverket within 14 days.
@@ -1053,12 +1057,19 @@ def _register_receipt(ctx, register, lock, system, data, *, now, user):
         _unlock(ctx.location_id, register["registerId"], lock)
         _mark_down(ctx, register["registerId"], exc.status, now=now, user=user)
         raise Unavailable("control_system_unreachable") from None
-    except cs.Rejected:
+    except cs.Rejected as exc:
         _unlock(ctx.location_id, register["registerId"], lock)
+        _log_rejected("receipt", exc)
         raise Unavailable("control_system_rejected") from None
     except Exception:
         _unlock(ctx.location_id, register["registerId"], lock)
         raise
+
+
+def _log_rejected(step, exc):
+    """What the control system refused (its error code and message; a
+    provider adapter never puts a key or a secret in the exception)."""
+    logger.warning(json.dumps({"kassa": f"{step}_rejected", "detail": str(exc)[:400]}, ensure_ascii=False))
 
 
 def _cs_lines(lines):

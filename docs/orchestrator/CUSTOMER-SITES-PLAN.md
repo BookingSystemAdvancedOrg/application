@@ -231,10 +231,11 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
 - **Go-live gate:** `GET /site-config?tenantId=` returns `tenant.domain`
   (own domain, kind custom, certificate issued); the main-branch deploy
   refuses without it.
-- **OIDC:** `site-repo` sets each site repo's OIDC subject to
-  `repository_owner_id, repository_id, ref`, and the deploy role trusts
-  exactly that (dev branch in dev, main in prod). A site repo's token can
-  then never match a platform role's `repo:...` pattern, which matters
+- **OIDC:** the deploy role trusts exactly GitHub's default (in this org
+  immutable) subject `repo:<org>@<org id>/site-<slug>@<repo id>:ref:refs/heads/<dev|main>`.
+  A custom claim template was tried and dropped: with immutable subjects
+  GitHub still prefixes `repo:<org>@...`, so it protected nothing. Platform
+  roles must therefore trust only their own repo, never the whole org,
   because outside developers get write access to site repos.
 - **Onboarding/offboarding:** website step after ActivateTenant (failure:
   alert, tenant stays active, Retry on the Website tab); archive step in

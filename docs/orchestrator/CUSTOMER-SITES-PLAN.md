@@ -27,7 +27,7 @@ API on the restaurant's domain.
 Figma (Booqy design system + one file per customer)
    │  Code Connect: Figma component  ->  <BookingForm />, <Menu />, ...
    ▼
-GitHub org "booqy-sites"
+GitHub org BookingSystemAdvancedOrg (private repos, prefix site-)
    ├── site-kit        shared package (@booqy/site-kit, GitHub Packages)
    ├── site-template   starting point, today's customer site on site-kit
    └── site-<slug>     one per customer, created from the template
@@ -44,9 +44,16 @@ Each phase ends with something working in dev. Order matters: 1 before 3,
 2 can run in parallel with 1.
 
 ### Phase 0: owner setup (one time, owner)
-1. Create the GitHub organisation `booqy-sites` (Team plan) on github.com.
+1. GitHub: decided 2026-10-27, no new organisation. Customer sites live
+   in the existing `BookingSystemAdvancedOrg` as **private** repos named
+   `site-<slug>` (plus `site-kit` and `site-template`), on the **Free**
+   plan (unlimited private repos, 2,000 Actions minutes a month). Upgrade
+   to Team only for enforced reviews/protected branches or more minutes.
+   They can move to their own organisation later (repo transfer keeps
+   history).
 2. Approve the GitHub App (Phase 3) once it's registered: name "Booqy
-   Sites", installed on `booqy-sites` only.
+   Sites", installed on **selected repositories** (the `site-*` repos)
+   only, never on the platform repos.
 3. Figma: a Professional (or higher) team for Code Connect and the Booqy
    design system library; authorise the Figma connector in Claude Code
    (`/mcp`).
@@ -75,7 +82,7 @@ Extract everything that isn't "look" from customer-front-end into a package.
   build -w @booqy/site-kit` type checks and writes ESM, types and
   `site-kit.css` to `dist/`; `publishConfig` points at GitHub Packages but
   nothing is published. Exports: `.`, `./testing` (WithSite, siteConfig,
-  json) and `./styles.css`. Moves to `booqy-sites/site-kit` with Phase 3.
+  json) and `./styles.css`. Moves to its own private repo `BookingSystemAdvancedOrg/site-kit` with Phase 3.
 - **Into site-kit** (same folder layout as before, `src/shared` and
   `src/features`): `api`, `site`, `SiteProvider`/`SiteContext`,
   `locationApi` (openStatus), `layoutApi`, `bookingTerms`, `phone`,
@@ -122,8 +129,11 @@ Extract everything that isn't "look" from customer-front-end into a package.
   real components, no hand-written booking logic.
 
 ### Phase 3: automatic repo per customer (infrastructure + application + console)
-- **GitHub App** "Booqy Sites" (repo admin on `booqy-sites` only). Its
-  private key lives in Secrets Manager (prod account), never shown.
+- **GitHub App** "Booqy Sites" in `BookingSystemAdvancedOrg`, installed
+  on selected repositories only. It creates `site-<slug>` repos and
+  manages only repos named `site-*`; the `site-repo` Lambda refuses any
+  other name. Its private key lives in Secrets Manager (prod account),
+  never shown.
 - **Onboarding step:** after the tenant is active, the onboarding workflow
   calls a new Lambda `site-repo`:
   1. create `site-<slug>` from `site-template`;
@@ -148,10 +158,10 @@ Extract everything that isn't "look" from customer-front-end into a package.
   fallback is a CloudFront Function that rewrites the path from the
   tenant parameter.
 - **GitHub OIDC deploy role per customer**, trusted only for
-  `repo:booqy-sites/site-<slug>`, allowed to write only
+  `repo:BookingSystemAdvancedOrg/site-<slug>`, allowed to write only
   `sites/<tenantId>/*`. Branch `dev` may assume only the dev account's
   role; branch `main` only the prod account's. This is an IAM change (new
-  roles and a new OIDC trust for the `booqy-sites` org), owner-approved
+  roles whose trust is limited to `site-<slug>` repos), owner-approved
   before it's built; the existing OIDC/deploy roles stay untouched.
 - **Caching:** index.html no-cache, hashed assets immutable, as today, so
   no invalidations are needed.
@@ -163,9 +173,10 @@ Extract everything that isn't "look" from customer-front-end into a package.
 ### Phase 5: restaurant domain only (infrastructure + console)
 - Prod has no `<slug>.booqy.se` (already `tenant_subdomains_enabled =
   false` in prod).
-- **Go-live gate:** the console's "Publish to production" (merge to main
-  is blocked by a required status check) only passes once the restaurant
-  has an attached, verified domain. No domain, no prod site.
+- **Go-live gate:** the production deploy job itself asks Booqy whether
+  the restaurant has an attached, verified domain and refuses to deploy
+  otherwise (works on GitHub Free, where private repos have no branch
+  protection). No domain, no prod site.
 - **Dev preview** `<slug>.dev.booqy.se`: `noindex`, canonical to the
   restaurant's domain, only for the restaurant and us.
 - Links in emails and SMS that open the site use the restaurant's domain
@@ -211,12 +222,14 @@ On the customer's page, tab **Website**:
   site-kit.
 - **A bad site-kit release** reaches every site through update PRs. CI in
   each repo must pass before merge; patch-only auto-merge.
-- **GitHub App key leak** would allow creating or changing site repos (not
-  the platform). Stored in Secrets Manager, read only by `site-repo`,
-  rotated yearly.
+- **GitHub App key leak:** the app lives in the same organisation as the
+  platform, so it is installed on selected `site-*` repos only and never
+  gets "all repositories". Key stored in Secrets Manager, read only by
+  `site-repo`, rotated yearly. Moving sites to their own organisation
+  later removes this risk entirely.
 - **CloudFront parameter in origin path:** verify in Phase 4 before
   relying on it (fallback described).
-- **Cost:** GitHub Team per seat, Actions about 1-2 minutes per deploy,
+- **Cost:** GitHub Free to start (Team per seat later if needed), Actions about 1-2 minutes per deploy,
   S3 and CloudFront per site negligible.
 
 ## Rough effort

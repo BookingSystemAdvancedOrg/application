@@ -11,7 +11,7 @@ KASSA_FISKALY_LIVE_TEST=1 and AWS credentials that can read the secret."""
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -807,6 +807,34 @@ def test_open_day_needs_status_ok_from_fiskaly(with_fiskaly):
     env["fiskaly"].status = 1
     assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
     assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200    # already open: fine
+
+
+def test_z_closes_the_day_at_fiskaly_and_the_next_day_opens_again(with_fiskaly, caplog):
+    env = with_fiskaly
+    rid = register(env)
+    fake = env["fiskaly"]
+    assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
+    system_id = next(iter(fake.system_states))
+    assert system_id in fake.opened
+    sale(env, rid)
+    with caplog.at_level("INFO"):
+        status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    assert status == 200 and z["problems"] == [] and system_id not in fake.opened
+    assert any("closing_sent" in r.getMessage() for r in caplog.records)
+    env["clock"]["now"] += timedelta(days=1)
+    assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
+    kinds = [c["body"]["content"]["operation"]["type"] for c in fake.posted("/records")]
+    assert kinds.count("OPENING") == 2 and kinds.index("CLOSING") < len(kinds) - 1
+    assert system_id in fake.opened              # opened again, not "already opened"
+
+
+def test_a_failed_closing_is_shown_but_the_z_stands(with_fiskaly):
+    env = with_fiskaly
+    rid = register(env)
+    call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
+    env["fiskaly"].fail = [("/records", 500)] * 10
+    status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    assert status == 200 and z["problems"] == ["control_system_closing_failed"] and z["document"]["seq"] == 1
 
 
 def test_kassa_page_loads_never_send_opening(with_fiskaly):

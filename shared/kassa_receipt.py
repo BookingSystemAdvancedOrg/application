@@ -182,6 +182,8 @@ def _report(entry, data, kind):
         {"pair": [f"Kvittokopior, {data.get('copies', 0)} st", kr(data.get("copiesAmount"))]},
         {"pair": [f"Övningskvitton, {data.get('training', 0)} st", kr(data.get("trainingAmount"))]},
         {"pair": [f"Returer, {data.get('returns', 0)} st", kr(data.get("returnsAmount"))]},
+        *({"pair": [f"  varav moms {_rate(v['rate'])}", kr(v["amount"])]} for v in data.get("returnVat") or []),
+        *({"pair": [f"  återbetalt med {p['method'].lower()}", kr(p["amount"])]} for p in data.get("refunds") or []),
         {"pair": ["Rabatter", kr(data.get("discounts"))]},
         {"pair": [f"Övriga minskningar, {data.get('otherReductions', 0)} st", kr(data.get("otherReductionsAmount"))]},
         {"pair": [f"Oavslutade notor, {data.get('openBills', 0)} st", kr(data.get("openBillsAmount"))]},

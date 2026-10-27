@@ -464,6 +464,35 @@ def test_x_and_z_reports(env):
     assert receipts_of(env, rid)[-1]["data"]["zSeq"] == 3
 
 
+def test_z_report_counts_sales_and_returns_separately(env):
+    """Dev admin, 2026-10-27: one sale, all of it returned. KRAV 7 kap. 3 §:
+    the sales total, VAT per rate and sales per payment means follow the
+    sales; returns are their own item, with their VAT and refunds."""
+    rid = register(env)
+    b, done = sale(env, rid)
+    sold = receipts_of(env, rid)[-1]["data"]
+    lines = [{"lineId": line["lineId"], "quantity": line["quantity"]} for line in b["lines"]]
+    status, _ = call(env, "POST", f"registers/{rid}/receipts/1/return",
+                     body={"lines": lines, "reason": "Fel nota", "delivery": "print"})
+    assert status == 201
+    status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    data = journal(env, rid)[-1]["data"]
+    total = sold["total"]
+    sales_vat = [{"rate": v["rate"], "amount": v["vat"]} for v in sold["vat"]]
+    assert data["totalSales"] == total and data["vat"] == sales_vat
+    assert data["payments"] == [{"method": "Kort", "amount": total}]
+    assert data["returns"] == 1 and data["returnsAmount"] == total
+    assert data["returnVat"] == sales_vat and data["refunds"] == [{"method": "Kort", "amount": total}]
+    assert data["grandTotalSales"] == total and data["grandTotalReturn"] == total and data["grandTotalNet"] == 0
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in z["document"]["rows"]]
+    amount = kassa_receipt.kr(total)
+    assert f"Total försäljning {amount}" in texts and f"Betalt med kort {amount}" in texts
+    assert f"Returer, 1 st {amount}" in texts and f"  återbetalt med kort {amount}" in texts
+    for v in sold["vat"]:
+        assert f"Moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
+        assert f"  varav moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
+
+
 def test_day_status_flags_an_unclosed_day(env):
     rid = register(env)
     sale(env, rid)

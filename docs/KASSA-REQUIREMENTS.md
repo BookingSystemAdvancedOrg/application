@@ -156,6 +156,16 @@ after the discount (Booqy: before; the discount is in
   (always 0, no drawer), copies and amount, training receipts and amount,
   sales per payment method, returns and amount, discounts, other
   reductions, open bills and amount, grand totals sale, return, net.
+- The sales total, its groups, the VAT per rate and the payment means all
+  count sales only: 7 kap. 3 § f ("total försäljningssumma (summerade
+  försäljningsbelopp)"), h and p ("försäljningssumman fördelad på olika
+  betalningsmedel"). Returns are their own item (q, "antal returer och
+  belopp"); the printed report also shows the returns' VAT per rate and
+  the refunds per payment means under it, so every line adds up. The XML
+  has one VAT list and one payment list, the sales side. Found in the dev
+  admin on 2026-10-27, when a sale returned in full showed VAT and card 0,00
+  next to sales 168,00. **Osäkert:** whether Skatteverket expects VAT per
+  rate on the Z net of returns; the rule's wording follows the sales.
 
 ### Serial numbers
 

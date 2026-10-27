@@ -76,10 +76,10 @@ Kassan sparar notan av sig själv. "Sparar" syns medan den gör det.
 
 Rader som inte skickats till köket när kvittot skapas skrivs ut på köksnotan samtidigt som kvittot.
 
-### Makulera en nota
+### Ta bort en nota
 
-1. Tryck **Makulera** och bekräfta.
-2. Det går bara när notan inte har någon kortbetalning.
+1. Tryck **Ta bort nota** och bekräfta.
+2. Det går bara när notan inte har någon kortbetalning. Har gästen betalt men ångrat sig, tryck **Ångrade sig gästen? Återbetala** under kvittovalet och sedan **Återbetala**. Därefter går notan att ta bort.
 3. Det som redan skickats till köket registreras i journalen.
 
 ## 5. Rabatt

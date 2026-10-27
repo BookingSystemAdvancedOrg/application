@@ -164,7 +164,7 @@ def _report(event, ctx, register_id, kind, now, user, system):
     data = http.body(event, allowed={"print"}, required=False)
     entry = kassa.report(ctx, register_id, kind, user=user, now=now, tenant_row=ctx.tenant, system=system)
     document = kassa_receipt.document(entry, ctx.location)
-    problems = []
+    problems = ["control_system_closing_failed"] if entry.get("closing") is False else []
     if data.get("print") is True:
         try:
             printing.kassa_job(ctx.tenant_id, ctx.location_id, document, now)

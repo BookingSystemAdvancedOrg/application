@@ -1381,10 +1381,14 @@ def set_training(ctx, register_id, on, *, user, now):
 
 
 def summarize(entries, open_bills, register):
-    """KRAV 7 kap. 2-3 §§ from the journal since the last Z."""
+    """KRAV 7 kap. 2-3 §§ from the journal since the last Z. The sales total,
+    its groups, the VAT per rate and "försäljningssumman fördelad på olika
+    betalningsmedel" all count sales; returns are their own item ("antal
+    returer och belopp"), with their VAT and refunds alongside, so the
+    report adds up line by line (the XML has the sales side only)."""
     sales = returns = returns_amount = receipts = items = discounts = 0
     copies = copies_amount = training = training_amount = other = other_amount = 0
-    vat, groups, paid = {}, {}, {}
+    vat, groups, paid, return_vat, refunded = {}, {}, {}, {}, {}
     for entry in entries:
         data, kind = _plain(entry.get("data") or {}), entry.get("type")
         if kind == SALE:
@@ -1403,9 +1407,9 @@ def summarize(entries, open_bills, register):
             returns += 1
             returns_amount += _int(data.get("total"))
             for v in data.get("vat") or []:
-                vat[_int(v["rate"])] = vat.get(_int(v["rate"]), 0) - _int(v["vat"])
+                return_vat[_int(v["rate"])] = return_vat.get(_int(v["rate"]), 0) + _int(v["vat"])
             for p in data.get("payments") or []:
-                paid[p.get("method") or CARD] = paid.get(p.get("method") or CARD, 0) - _int(p.get("amount"))
+                refunded[p.get("method") or CARD] = refunded.get(p.get("method") or CARD, 0) + _int(p.get("amount"))
         elif kind == COPY:
             copies += 1
             copies_amount += _int((data.get("original") or {}).get("total"))
@@ -1424,6 +1428,8 @@ def summarize(entries, open_bills, register):
         "copies": copies, "copiesAmount": copies_amount, "training": training, "trainingAmount": training_amount,
         "payments": [{"method": k, "amount": v} for k, v in sorted(paid.items())] or [{"method": CARD, "amount": 0}],
         "returns": returns, "returnsAmount": returns_amount, "discounts": discounts,
+        "returnVat": [{"rate": k, "amount": v} for k, v in sorted(return_vat.items())],
+        "refunds": [{"method": k, "amount": v} for k, v in sorted(refunded.items())],
         "otherReductions": other, "otherReductionsAmount": other_amount,
         "openBills": len(open_bills), "openBillsAmount": open_amount,
         "grandTotalSales": gt_sales, "grandTotalReturn": gt_return, "grandTotalNet": gt_sales - gt_return,
@@ -1455,11 +1461,22 @@ def report(ctx, register_id, kind, *, user, now, tenant_row, system=None):
         raise ValueError("kind must be x or z")
     entry = _append(ctx, register, lock, kind, summary, now=now, user=user, sets=sets)
     if kind == ZREPORT and system is not None:
-        try:
-            system.close_day(register)
-        except Exception:  # noqa: BLE001 - the Z report stands; the next day starts with a status check
-            pass
+        entry["closing"] = close_control_system_day(register, system)
     return entry
+
+
+def close_control_system_day(register, system):
+    """After a Z: the control system hears the day ended. True if it did; a
+    failure never undoes the Z report ("Öppna dagen" opens the register at
+    the control system again either way)."""
+    try:
+        system.close_day(register)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(json.dumps({"kassa": "closing_failed", "register": register["registerId"],
+                                   "detail": str(exc)[:400]}, ensure_ascii=False))
+        return False
+    logger.info(json.dumps({"kassa": "closing_sent", "register": register["registerId"]}))
+    return True
 
 
 def day_status(ctx, register, now):

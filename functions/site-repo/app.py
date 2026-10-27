@@ -290,22 +290,26 @@ def deploy_policy(tenant_id):
 
 
 def _ensure_role(tenant_id, slug, repo):
+    """Create first: IAM judges GetRole on a role that doesn't exist yet
+    against its name without the /booqy-sites/ path, which this function's
+    policy (role/booqy-sites/*) doesn't cover. An existing role's ARN has
+    the path, so reading it afterwards is allowed."""
     iam = client("iam")
     name = role_name(slug)
     trust = json.dumps(trust_policy(repo))
     try:
-        role = iam.get_role(RoleName=name)["Role"]
-        tags = {t["Key"]: t["Value"] for t in role.get("Tags", [])}
-        if tags.get("tenantId") != tenant_id:
-            raise SiteRepoError(f"role {name} belongs to tenant {tags.get('tenantId')}, not {tenant_id}")
-        iam.update_assume_role_policy(RoleName=name, PolicyDocument=trust)
-    except iam.exceptions.NoSuchEntityException:
         role = iam.create_role(
             RoleName=name, Path=os.environ["DEPLOY_ROLE_PATH"], AssumeRolePolicyDocument=trust,
             PermissionsBoundary=os.environ["DEPLOY_BOUNDARY_ARN"], MaxSessionDuration=3600,
             Description=f"Deploys {repo['name']} ({_branch()}) to sites/{tenant_id}/ only",
             Tags=[{"Key": "tenantId", "Value": tenant_id}, {"Key": "repo", "Value": repo["name"]}],
         )["Role"]
+    except iam.exceptions.EntityAlreadyExistsException:
+        role = iam.get_role(RoleName=name)["Role"]
+        tags = {t["Key"]: t["Value"] for t in role.get("Tags", [])}
+        if tags.get("tenantId") != tenant_id:
+            raise SiteRepoError(f"role {name} belongs to tenant {tags.get('tenantId')}, not {tenant_id}")
+        iam.update_assume_role_policy(RoleName=name, PolicyDocument=trust)
     iam.put_role_policy(RoleName=name, PolicyName="deploy-own-site", PolicyDocument=json.dumps(deploy_policy(tenant_id)))
     return role["Arn"]
 
@@ -329,6 +333,8 @@ def _check_isolation(role_arn, tenant_id):
 
 
 def _delete_role(slug):
+    """Only called for a role setup recorded (SITE.roleArn): IAM refuses
+    reads of a missing role here (see _ensure_role) instead of NoSuchEntity."""
     iam = client("iam")
     name = role_name(slug)
     try:
@@ -487,7 +493,8 @@ def archive(tenant_id, gh=None):
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
     gh = gh or github()
-    _delete_role(profile["slug"])
+    if _site_row(tenant_id).get("roleArn"):
+        _delete_role(profile["slug"])
     status, repo = gh.call("GET", _repo_path(name), ok=(200, 404))
     archived = False
     if status == 200 and not repo.get("archived"):

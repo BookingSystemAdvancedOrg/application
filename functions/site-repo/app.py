@@ -316,20 +316,23 @@ def _ensure_role(tenant_id, slug, repo):
 
 def _check_isolation(role_arn, tenant_id):
     """The policy simulator, boundary and tag included: the role may write
-    its own folder and nothing in another tenant's."""
+    its own folder and nothing in another tenant's. One resource per call:
+    the simulator names its result by a resource pattern, not by the ARN
+    asked about, so each answer is only matched to its own question."""
     bucket = os.environ["SITES_BUCKET"]
     probes = {f"arn:aws:s3:::{bucket}/sites/{tenant_id}/index.html": "allowed",
               f"arn:aws:s3:::{bucket}/sites/isolation-probe-{tenant_id}/index.html": "implicitDeny",
               f"arn:aws:s3:::{bucket}/index.html": "implicitDeny"}
-    result = client("iam").simulate_principal_policy(
-        PolicySourceArn=role_arn, ActionNames=["s3:PutObject"], ResourceArns=list(probes),
-        ContextEntries=[{"ContextKeyName": "aws:PrincipalTag/tenantId", "ContextKeyValues": [tenant_id],
-                         "ContextKeyType": "string"}])
-    for evaluation in result["EvaluationResults"]:
-        expected = probes[evaluation["EvalResourceName"]]
-        if evaluation["EvalDecision"] != expected:
-            raise SiteRepoError(f"isolation check failed: s3:PutObject on {evaluation['EvalResourceName']} is "
-                                f"{evaluation['EvalDecision']}, expected {expected}")
+    for arn, expected in probes.items():
+        result = client("iam").simulate_principal_policy(
+            PolicySourceArn=role_arn, ActionNames=["s3:PutObject"], ResourceArns=[arn],
+            ContextEntries=[{"ContextKeyName": "aws:PrincipalTag/tenantId", "ContextKeyValues": [tenant_id],
+                             "ContextKeyType": "string"}])
+        evaluation = result["EvaluationResults"][0]
+        specific = evaluation.get("ResourceSpecificResults") or []
+        decision = specific[0]["EvalResourceDecision"] if specific else evaluation["EvalDecision"]
+        if decision != expected:
+            raise SiteRepoError(f"isolation check failed: s3:PutObject on {arn} is {decision}, expected {expected}")
 
 
 def _delete_role(slug):

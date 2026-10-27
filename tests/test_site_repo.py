@@ -194,10 +194,12 @@ def _simulated_isolation(fn):
         allowed = [s["Resource"] for s in policy["Statement"] if s["Sid"] == "OwnSiteFolder"]
 
         def simulate(**kwargs):
+            # Like IAM: the result is named by a pattern, not the ARN asked about.
             results = []
             for arn in kwargs["ResourceArns"]:
                 ok = any(arn.startswith(a.rstrip("*")) for a in allowed)
-                results.append({"EvalResourceName": arn, "EvalDecision": "allowed" if ok else "implicitDeny"})
+                results.append({"EvalResourceName": "arn:aws:s3:::${BucketName}/${KeyName}",
+                                "EvalDecision": "allowed" if ok else "implicitDeny"})
             return {"EvaluationResults": results}
 
         original = iam.simulate_principal_policy if hasattr(iam, "simulate_principal_policy") else None
@@ -261,7 +263,9 @@ def test_isolation_check_refuses_a_role_that_could_write_elsewhere(world, monkey
     fn = load_fn("site-repo", "site_repo_iso")
     stub = type("Iam", (), {})()
     stub.simulate_principal_policy = lambda **kw: {"EvaluationResults": [
-        {"EvalResourceName": arn, "EvalDecision": "allowed"} for arn in kw["ResourceArns"]]}
+        {"EvalResourceName": "arn:aws:s3:::${BucketName}/${KeyName}", "EvalDecision": "implicitDeny",
+         "ResourceSpecificResults": [{"EvalResourceName": arn, "EvalResourceDecision": "allowed"}]}
+        for arn in kw["ResourceArns"]]}
     fn._clients["iam"] = stub
     with pytest.raises(fn.SiteRepoError, match="isolation check failed"):
         fn._check_isolation("arn:aws:iam::1:role/booqy-sites/dev-site-test-roma", TENANT)

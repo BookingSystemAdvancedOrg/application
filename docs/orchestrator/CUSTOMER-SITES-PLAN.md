@@ -30,7 +30,7 @@ Figma (Booqy design system + one file per customer)
    │  Code Connect: Figma component  ->  <BookingForm />, <Menu />, ...
    ▼
 GitHub org BookingSystemAdvancedOrg (private repos, prefix site-)
-   ├── site-kit        shared package (@booqy/site-kit, GitHub Packages)
+   ├── site-kit        shared package (@bookingsystemadvancedorg/site-kit, GitHub Packages)
    ├── site-template   starting point, today's customer site on site-kit
    └── site-<slug>     one per customer, created from the template
           dev  -> builds -> dev account  S3 sites/<tenantId>/  -> <slug>.dev.booqy.se
@@ -134,8 +134,8 @@ Extract everything that isn't "look" from customer-front-end into a package.
 - **GitHub App** "Booqy Sites" in `BookingSystemAdvancedOrg`, installed
   on selected repositories only. It creates `site-<slug>` repos and
   manages only repos named `site-*`; the `site-repo` Lambda refuses any
-  other name. Its private key lives in Secrets Manager (prod account),
-  never shown.
+  other name. Its private key lives in Secrets Manager
+  (`booqy/<env>/github-app-sites`, in both accounts), never shown.
 - **Onboarding step:** after the tenant is active, the onboarding workflow
   calls a new Lambda `site-repo`:
   1. create `site-<slug>` from `site-template`;
@@ -206,6 +206,39 @@ On the customer's page, tab **Website**:
   owner) and update `TENANT-ONBOARDING.md`.
 - Dependabot in every site repo for `@booqy/site-kit`, with auto-merge of
   patch updates once CI is green.
+
+## Build design (Phases 3 to 6, built 2026-10-27)
+
+Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
+- **Repos:** `site-kit` (package `@bookingsystemadvancedorg/site-kit`:
+  GitHub Packages only accepts the owner's name as npm scope, so not
+  `@booqy`), `site-template` (customer-front-end's shell on the published
+  kit), `site-<slug>` generated from it. Private, branches `dev` and `main`.
+- **booqy.json** (in each site repo, public values only):
+  `{slug, name, environments: {dev|prod: {tenantId, apiBaseUrl,
+  menuImageBaseUrl, stripePublishableKey, turnstileSiteKey, previewUrl?,
+  domain?}}}`. Each environment's `site-repo` writes only its own section,
+  on `dev`. The build picks the section with `BOOQY_ENV`; outside prod it
+  adds `noindex` and a canonical link to `environments.prod.domain`.
+- **Repo variables:** `DEV_|PROD_` + `AWS_ROLE_ARN`, `SITE_BUCKET`,
+  `TENANT_ID`, `API_BASE_URL`. No secrets anywhere in a site repo.
+- **Serving:** a new sites bucket per account (the shared customer bucket
+  is synced with `--delete`), origin `tenant-site` with origin path
+  `/sites/{{tenantId}}` on the multi-tenant distribution (verified: AWS
+  supports tenant parameters in origin paths; no CloudFront Function).
+  `per_tenant_sites` switches the default behaviour per environment, so
+  restaurants on the shared build keep working until they have a site.
+- **Go-live gate:** `GET /site-config?tenantId=` returns `tenant.domain`
+  (own domain, kind custom, certificate issued); the main-branch deploy
+  refuses without it.
+- **OIDC:** `site-repo` sets each site repo's OIDC subject to
+  `repository_owner_id, repository_id, ref`, and the deploy role trusts
+  exactly that (dev branch in dev, main in prod). A site repo's token can
+  then never match a platform role's `repo:...` pattern, which matters
+  because outside developers get write access to site repos.
+- **Onboarding/offboarding:** website step after ActivateTenant (failure:
+  alert, tenant stays active, Retry on the Website tab); archive step in
+  offboarding.
 
 ## Decisions for the owner
 

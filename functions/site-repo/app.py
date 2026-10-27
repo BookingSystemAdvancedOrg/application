@@ -10,27 +10,36 @@ TRIGGER:
 PURPOSE:
     Every restaurant has its own private website repo site-<slug> in the
     GitHub organisation, created from site-template, that deploys to its own
-    folder sites/<tenantId>/ of the sites bucket through its own deploy role.
-    application/docs/orchestrator/CUSTOMER-SITES-PLAN.md, infrastructure
-    docs/CUSTOMER-SITE-RUNBOOK.md.
+    folder sites/<tenantId>/ of each account's sites bucket through its own
+    deploy role. application/docs/orchestrator/CUSTOMER-SITES-PLAN.md (D1),
+    infrastructure docs/CUSTOMER-SITE-RUNBOOK.md.
 
-    provision (idempotent, resumable; dev and prod share the repo, each
-    environment writes only its own part):
+    The PROD console is where a repo is born. provision in prod
+    (idempotent, resumable):
       1. the repo: found, unarchived, or generated from the template
          (branches dev and main, default dev);
       2. the repo's OIDC subject (repository_owner_id, repository_id, ref):
          site repos can't match the platform's own "repo:..." OIDC roles;
-      3. the deploy role /booqy-sites/<env->site-<slug>, with the fixed
-         permissions boundary and tag tenantId, trusted only for this repo's
-         dev branch (dev) or main branch (prod); checked with the IAM policy
-         simulator: may write its own folder, not another tenant's;
-      4. repo variables <ENV>_AWS_ROLE_ARN, <ENV>_SITE_BUCKET,
-         <ENV>_TENANT_ID, <ENV>_API_BASE_URL (not secrets);
-      5. booqy.json on dev: environments.<env> (tenantId, API URL, public
-         keys, site URL); the commit deploys dev, otherwise dev is deployed
-         with a workflow dispatch.
-    archive: this environment's role and variables go; the repo is archived
-    once no environment uses it any more. Never deleted.
+      3. the deploy role /booqy-sites/site-<slug>, with the fixed
+         permissions boundary and tag tenantId, trusted only for main;
+         checked with the IAM policy simulator: may write its own folder,
+         not another tenant's;
+      4. repo variables PROD_AWS_ROLE_ARN, PROD_SITE_BUCKET, PROD_TENANT_ID,
+         PROD_API_BASE_URL (not secrets) and booqy.json's prod section (on
+         dev);
+      5. the dev side, through the dev account's booqy-sites-prod-link role
+         (it may only invoke dev platform-tenants with a site task): an
+         empty dev tenant with the same slug (or the existing one), whose
+         own onboarding runs provision in dev.
+    provision in dev sets up the dev side of a repo prod created (dev role
+    trusted only for the dev branch, DEV_* variables, booqy.json's dev
+    section, first deploy). For a repo that doesn't exist it is a dry run
+    (status "simulated", a list of what prod would create), except slugs
+    starting with test- (repos site-test-<slug>), which dev creates itself
+    to test the automation.
+    archive: this environment's role and variables go (prod also asks dev
+    to remove its side); the repo is archived once no environment uses it.
+    Never deleted.
 
     Only repos named site-* are ever touched (GitHub App "Booqy Sites" is
     installed on those only, and every repo name is checked here).
@@ -39,12 +48,14 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, GITHUB_ORG, GITHUB_APP_SECRET_ID,
     SITE_TEMPLATE_REPO, SITES_BUCKET, DEPLOY_ROLE_PATH, DEPLOY_ROLE_PREFIX,
     DEPLOY_BOUNDARY_ARN, OIDC_PROVIDER_ARN, API_BASE_URL, MENU_IMAGE_BASE_URL,
-    PREVIEW_DOMAIN, STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY
+    PREVIEW_DOMAIN, STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY; prod only:
+    DEV_LINK_ROLE_ARN, DEV_PLATFORM_TENANTS_FUNCTION_ARN
 
 AWS RESOURCE ACCESS:
     Tenant table GetItem/PutItem/UpdateItem (PROFILE read, SITE row);
     the GitHub App secret; IAM on role/booqy-sites/* only (create and
-    put policy only with the boundary; never remove the boundary).
+    put policy only with the boundary; never remove the boundary); prod:
+    sts:AssumeRole on the dev account's booqy-sites-prod-link role.
 """
 
 import base64
@@ -391,15 +402,59 @@ def _dispatch(gh, name, branch):
     gh.call("POST", _repo_path(name, f"/actions/workflows/{WORKFLOW}/dispatches"), {"ref": branch})
 
 
+# ---------------------------------------------------------- dev side (prod)
+_MIRROR_FIELDS = ("name", "slug", "ownerEmail", "ownerName", "planId", "legalName", "orgNumber", "contactEmail",
+                  "contactPhone", "address")
+
+
+def _dev_link(task):
+    """Prod -> dev, the only way: assume the dev account's booqy-sites-prod-link
+    role (it may only invoke dev platform-tenants) and hand it a site task."""
+    creds = client("sts").assume_role(RoleArn=os.environ["DEV_LINK_ROLE_ARN"],
+                                      RoleSessionName=f"site-repo-{task['slug']}"[:64])["Credentials"]
+    lam = boto3.client("lambda", aws_access_key_id=creds["AccessKeyId"], aws_secret_access_key=creds["SecretAccessKey"],
+                       aws_session_token=creds["SessionToken"])
+    response = lam.invoke(FunctionName=os.environ["DEV_PLATFORM_TENANTS_FUNCTION_ARN"],
+                          Payload=json.dumps({"siteTask": task}).encode())
+    body = json.loads(response["Payload"].read() or b"{}")
+    if response.get("FunctionError") or body.get("error"):
+        raise SiteRepoError(f"dev side: {body.get('message') or body.get('errorMessage') or body.get('error')}")
+    return body
+
+
+def _linked():
+    return _env() == "prod" and bool(os.environ.get("DEV_LINK_ROLE_ARN"))
+
+
+def dry_run(tenant_id, profile):
+    name = repo_name(profile["slug"])
+    preview = os.environ.get("PREVIEW_DOMAIN", "")
+    return [
+        f"Repo {os.environ['GITHUB_ORG']}/{name} from {os.environ['SITE_TEMPLATE_REPO']} (private, branches dev and main)",
+        f"Deploy role {os.environ['DEPLOY_ROLE_PATH']}{role_name(profile['slug'])}: dev branch only, "
+        f"sites/{tenant_id}/ in {os.environ['SITES_BUCKET']} only",
+        "Repo variables DEV_AWS_ROLE_ARN, DEV_SITE_BUCKET, DEV_TENANT_ID, DEV_API_BASE_URL",
+        "booqy.json, dev section" + (f"; first deploy to https://{profile['slug']}.{preview}" if preview else ""),
+    ]
+
+
 # ------------------------------------------------------------------- actions
 def provision(tenant_id, gh=None):
     profile = _profile(tenant_id)
     if profile.get("status") in _FINISHED_TENANT:
         raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
     name = repo_name(profile.get("slug"))
-    _save_site(tenant_id, {"status": "creating", "repo": name})
+    gh = gh or github()
+    if _env() != "prod" and not profile["slug"].startswith("test-"):
+        # Dev only simulates: a repo is born in the prod console.
+        if gh.call("GET", _repo_path(name), ok=(200, 404))[0] == 404:
+            plan = dry_run(tenant_id, profile)
+            _save_site(tenant_id, {"status": "simulated", "repo": name, "dryRun": plan}, remove=("lastError",))
+            log.info(json.dumps({"action": "provision", "tenantId": tenant_id, "repo": name, "dryRun": True}))
+            return {"status": "simulated", "repo": name, "plan": plan}
+    _save_site(tenant_id, {"status": "creating", "repo": name}, remove=("dryRun",))
+    dev = None
     try:
-        gh = gh or github()
         repo = _ensure_repo(gh, name, profile)
         _ensure_oidc_subject(gh, name)
         role_arn = _ensure_role(tenant_id, profile["slug"], repo)
@@ -408,10 +463,15 @@ def provision(tenant_id, gh=None):
         committed = _write_booqy_json(gh, name, tenant_id, profile)
         if _env() != "prod" and not committed:
             _dispatch(gh, name, "dev")
+        if _linked():
+            dev = _dev_link({"action": "mirror", "prodTenantId": tenant_id,
+                             **{k: profile[k] for k in _MIRROR_FIELDS if profile.get(k) not in (None, "")}})
     except Exception as exc:
         _save_site(tenant_id, {"status": "failed", "lastError": str(exc)[:1000]})
         raise
     fields = {"status": "ready", "repoUrl": repo["html_url"], "repoId": repo["id"], "roleArn": role_arn}
+    if dev:
+        fields["devTenantId"] = dev.get("tenantId")
     if not _site_row(tenant_id).get("createdAt"):
         fields["createdAt"] = _now()
     _save_site(tenant_id, fields, remove=("lastError",))
@@ -429,6 +489,8 @@ def archive(tenant_id, gh=None):
     if status == 200 and not repo.get("archived"):
         for key in site_variables(tenant_id, "").keys() & _variable_names(gh, name):
             gh.call("DELETE", _repo_path(name, f"/actions/variables/{key}"))
+        if _linked():
+            _dev_link({"action": "archive", "slug": profile["slug"]})
         if not any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name)):
             gh.call("PATCH", _repo_path(name), {"archived": True})
             archived = True
@@ -456,6 +518,8 @@ def status(tenant_id, gh=None):
               "createdAt": row.get("createdAt"), "updatedAt": row.get("updatedAt"),
               "org": os.environ["GITHUB_ORG"], "environment": _env(),
               "config": environment_config(tenant_id, profile)}
+    if row.get("status") == "simulated":
+        return {**result, "plan": row.get("dryRun") or []}
     if row.get("status") in (None, "creating"):
         return result
     gh = gh or github()

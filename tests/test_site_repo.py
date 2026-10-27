@@ -20,6 +20,7 @@ from test_card_payments import load_fn
 REGION = "eu-north-1"
 TENANT = "t-roma"
 OTHER = "t-other"
+PLAIN = "t-plain"
 ORG = "BookingSystemAdvancedOrg"
 
 
@@ -131,6 +132,9 @@ def _env_for(environment):
         "API_BASE_URL": f"https://api-{environment}.example/", "MENU_IMAGE_BASE_URL": "https://img.example",
         "PREVIEW_DOMAIN": "" if environment == "prod" else "dev.booqy.se",
         "STRIPE_PUBLISHABLE_KEY": "pk_test_x", "TURNSTILE_SITE_KEY": "0x4AAA",
+        **({"DEV_LINK_ROLE_ARN": "arn:aws:iam::877653167825:role/booqy-sites-prod-link",
+            "DEV_PLATFORM_TENANTS_FUNCTION_ARN": "arn:aws:lambda:eu-north-1:877653167825:function:dev-platform-tenants:live"}
+           if environment == "prod" else {}),
     }
 
 
@@ -146,7 +150,7 @@ def world(monkeypatch):
             KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
             AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"},
                                   {"AttributeName": "SK", "AttributeType": "S"}])
-        for tid, slug in ((TENANT, "roma"), (OTHER, "other")):
+        for tid, slug in ((TENANT, "test-roma"), (OTHER, "test-other"), (PLAIN, "roma")):
             table.put_item(Item={"PK": f"TENANT#{tid}", "SK": "PROFILE", "slug": slug, "name": "Roma",
                                  "status": "active", "primaryDomain": f"{slug}.dev.booqy.se"})
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
@@ -173,9 +177,11 @@ def world(monkeypatch):
             # moto has no policy simulator: answer like IAM does for the
             # role's own policy (boundary with the tenantId tag).
             monkeypatch.setattr(fn, "_check_isolation", _simulated_isolation(fn))
+            monkeypatch.setattr(fn, "_dev_link", lambda task: links.append(task) or {"tenantId": "t-dev-roma"})
             return fn
 
-        yield {"use": use, "github": fake, "table": table, "iam": iam}
+        links = []
+        yield {"use": use, "github": fake, "table": table, "iam": iam, "links": links}
 
 
 def _simulated_isolation(fn):
@@ -208,44 +214,44 @@ def test_dev_creates_the_repo_from_the_template_and_deploys(world):
     fn = world["use"]("dev")
     out = fn.handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
-    repo = gh.repos["site-roma"]
-    assert out == {"status": "ready", "repo": "site-roma", "repoUrl": f"https://github.com/{ORG}/site-roma"}
+    repo = gh.repos["site-test-roma"]
+    assert out == {"status": "ready", "repo": "site-test-roma", "repoUrl": f"https://github.com/{ORG}/site-test-roma"}
     assert repo["private"] is True and repo["default_branch"] == "dev" and repo["branches"] == {"dev", "main"}
     assert repo["oidc"] == {"use_default": False, "include_claim_keys": ["repository_owner_id", "repository_id", "ref"]}
     assert repo["variables"] == {
-        "DEV_AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/booqy-sites/dev-site-roma",
+        "DEV_AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/booqy-sites/dev-site-test-roma",
         "DEV_SITE_BUCKET": "dev-restaurant-sites-123456789012", "DEV_TENANT_ID": TENANT,
         "DEV_API_BASE_URL": "https://api-dev.example"}
-    doc = gh.booqy_json("site-roma")
-    assert doc == {"slug": "roma", "name": "Roma", "environments": {"dev": {
+    doc = gh.booqy_json("site-test-roma")
+    assert doc == {"slug": "test-roma", "name": "Roma", "environments": {"dev": {
         "tenantId": TENANT, "apiBaseUrl": "https://api-dev.example", "menuImageBaseUrl": "https://img.example",
-        "stripePublishableKey": "pk_test_x", "turnstileSiteKey": "0x4AAA", "previewUrl": "https://roma.dev.booqy.se"}}}
+        "stripePublishableKey": "pk_test_x", "turnstileSiteKey": "0x4AAA", "previewUrl": "https://test-roma.dev.booqy.se"}}}
     # The booqy.json commit on dev is the first deploy; no extra dispatch.
     assert gh.dispatches == []
     site = world["table"].get_item(Key={"PK": f"TENANT#{TENANT}", "SK": "SITE"})["Item"]
-    assert site["status"] == "ready" and site["repo"] == "site-roma" and "lastError" not in site
+    assert site["status"] == "ready" and site["repo"] == "site-test-roma" and "lastError" not in site
 
 
 def test_the_deploy_role_writes_only_its_own_folder_from_its_own_branch(world):
     fn = world["use"]("dev")
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
-    role = world["iam"].get_role(RoleName="dev-site-roma")["Role"]
+    role = world["iam"].get_role(RoleName="dev-site-test-roma")["Role"]
     assert role["Path"] == "/booqy-sites/"
     assert role["PermissionsBoundary"]["PermissionsBoundaryArn"].endswith(":policy/booqy-sites/dev-booqy-sites-deploy-boundary")
     assert {t["Key"]: t["Value"] for t in role["Tags"]}["tenantId"] == TENANT
     trust = role["AssumeRolePolicyDocument"]["Statement"]
-    repo_id = world["github"].repos["site-roma"]["id"]
+    repo_id = world["github"].repos["site-test-roma"]["id"]
     assert trust == [{"Effect": "Allow", "Principal": {"Federated": _env_for("dev")["OIDC_PROVIDER_ARN"]},
                       "Action": "sts:AssumeRoleWithWebIdentity", "Condition": {"StringEquals": {
                           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                           "token.actions.githubusercontent.com:sub":
                               f"repository_owner_id:307760488:repository_id:{repo_id}:ref:refs/heads/dev"}}}]
-    policy = world["iam"].get_role_policy(RoleName="dev-site-roma", PolicyName="deploy-own-site")["PolicyDocument"]
+    policy = world["iam"].get_role_policy(RoleName="dev-site-test-roma", PolicyName="deploy-own-site")["PolicyDocument"]
     assert policy["Statement"][0]["Resource"] == f"arn:aws:s3:::dev-restaurant-sites-123456789012/sites/{TENANT}/*"
     assert policy["Statement"][1]["Condition"] == {"StringLike": {"s3:prefix": f"sites/{TENANT}/*"}}
     # Two customers: neither role names the other's folder.
     fn.handler({"action": "provision", "tenantId": OTHER}, None)
-    other = world["iam"].get_role_policy(RoleName="dev-site-other", PolicyName="deploy-own-site")["PolicyDocument"]
+    other = world["iam"].get_role_policy(RoleName="dev-site-test-other", PolicyName="deploy-own-site")["PolicyDocument"]
     assert TENANT not in json.dumps(other) and OTHER not in json.dumps(policy)
 
 
@@ -258,26 +264,26 @@ def test_isolation_check_refuses_a_role_that_could_write_elsewhere(world, monkey
         {"EvalResourceName": arn, "EvalDecision": "allowed"} for arn in kw["ResourceArns"]]}
     fn._clients["iam"] = stub
     with pytest.raises(fn.SiteRepoError, match="isolation check failed"):
-        fn._check_isolation("arn:aws:iam::1:role/booqy-sites/dev-site-roma", TENANT)
+        fn._check_isolation("arn:aws:iam::1:role/booqy-sites/dev-site-test-roma", TENANT)
 
 
 def test_prod_finds_the_dev_repo_and_adds_only_its_own_part(world):
     world["use"]("dev").handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
-    first_id = gh.repos["site-roma"]["id"]
+    first_id = gh.repos["site-test-roma"]["id"]
     world["table"].update_item(Key={"PK": f"TENANT#{TENANT}", "SK": "PROFILE"},
                                UpdateExpression="SET primaryDomain = :d", ExpressionAttributeValues={":d": "roma.se"})
     prod = world["use"]("prod")
     prod.handler({"action": "provision", "tenantId": TENANT}, None)
-    repo = gh.repos["site-roma"]
-    assert repo["id"] == first_id and len([n for n in gh.repos if n.startswith("site-roma")]) == 1
-    assert repo["variables"]["PROD_AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/booqy-sites/site-roma"
+    repo = gh.repos["site-test-roma"]
+    assert repo["id"] == first_id and len([n for n in gh.repos if n.startswith("site-test-roma")]) == 1
+    assert repo["variables"]["PROD_AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/booqy-sites/site-test-roma"
     assert repo["variables"]["DEV_TENANT_ID"] == TENANT
-    doc = gh.booqy_json("site-roma")
+    doc = gh.booqy_json("site-test-roma")
     assert set(doc["environments"]) == {"dev", "prod"}
     assert doc["environments"]["prod"]["domain"] == "roma.se"
     assert "previewUrl" not in doc["environments"]["prod"]
-    trust = world["iam"].get_role(RoleName="site-roma")["Role"]["AssumeRolePolicyDocument"]["Statement"][0]
+    trust = world["iam"].get_role(RoleName="site-test-roma")["Role"]["AssumeRolePolicyDocument"]["Statement"][0]
     assert trust["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"].endswith(":ref:refs/heads/main")
     # Prod never deploys from onboarding: main deploys on merge, behind the domain gate.
     assert gh.dispatches == []
@@ -287,13 +293,13 @@ def test_a_retry_changes_nothing_and_deploys_dev_again(world):
     fn = world["use"]("dev")
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
-    before = json.dumps({k: v for k, v in gh.repos["site-roma"].items() if k != "collaborators"}, default=sorted)
+    before = json.dumps({k: v for k, v in gh.repos["site-test-roma"].items() if k != "collaborators"}, default=sorted)
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
-    after = json.dumps({k: v for k, v in gh.repos["site-roma"].items() if k != "collaborators"}, default=sorted)
+    after = json.dumps({k: v for k, v in gh.repos["site-test-roma"].items() if k != "collaborators"}, default=sorted)
     assert before == after
     assert ("POST", f"/repos/{ORG}/site-template/generate") in gh.calls
     assert sum(1 for c in gh.calls if c == ("POST", f"/repos/{ORG}/site-template/generate")) == 1
-    assert gh.dispatches == [("site-roma", "dev")]
+    assert gh.dispatches == [("site-test-roma", "dev")]
 
 
 def test_a_failure_is_recorded_on_the_site_row(world, monkeypatch):
@@ -320,30 +326,30 @@ def test_archive_keeps_the_repo_while_the_other_environment_uses_it(world):
     world["use"]("prod").handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
     out = world["use"]("dev").handler({"action": "archive", "tenantId": TENANT}, None)
-    repo = gh.repos["site-roma"]
+    repo = gh.repos["site-test-roma"]
     assert out["repoArchived"] is False and not repo["archived"]
     assert set(repo["variables"]) == {"PROD_AWS_ROLE_ARN", "PROD_SITE_BUCKET", "PROD_TENANT_ID", "PROD_API_BASE_URL"}
     with pytest.raises(world["iam"].exceptions.NoSuchEntityException):
-        world["iam"].get_role(RoleName="dev-site-roma")
+        world["iam"].get_role(RoleName="dev-site-test-roma")
     out = world["use"]("prod").handler({"action": "archive", "tenantId": TENANT}, None)
     assert out["repoArchived"] is True and repo["archived"] is True and repo["variables"] == {}
-    assert "site-roma" in gh.repos                     # archived, never deleted
+    assert "site-test-roma" in gh.repos                     # archived, never deleted
 
 
 def test_prod_onboarding_unarchives_an_archived_repo(world):
     fn = world["use"]("dev")
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
     fn.handler({"action": "archive", "tenantId": TENANT}, None)
-    assert world["github"].repos["site-roma"]["archived"] is True
+    assert world["github"].repos["site-test-roma"]["archived"] is True
     world["use"]("prod").handler({"action": "provision", "tenantId": TENANT}, None)
-    assert world["github"].repos["site-roma"]["archived"] is False
+    assert world["github"].repos["site-test-roma"]["archived"] is False
 
 
 def test_status_invite_and_redeploy(world):
     fn = world["use"]("dev")
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
-    gh.repos["site-roma"]["runs"]["dev"] = {
+    gh.repos["site-test-roma"]["runs"]["dev"] = {
         "status": "completed", "conclusion": "success", "head_sha": "abcdef1234", "run_started_at": "2026-10-27T10:00:00Z",
         "actor": {"login": "dev-person"}, "event": "push", "html_url": "https://github.com/x/runs/1"}
     out = fn.handler({"action": "status", "tenantId": TENANT}, None)
@@ -351,11 +357,11 @@ def test_status_invite_and_redeploy(world):
     assert out["deploys"]["dev"]["sha"] == "abcdef1" and out["deploys"]["prod"] is None
     assert out["config"]["tenantId"] == TENANT and "private_key" not in json.dumps(out)
     assert fn.handler({"action": "invite", "tenantId": TENANT, "username": "@anna-dev"}, None)["result"] == "invited"
-    assert gh.repos["site-roma"]["collaborators"] == {"anna-dev"}
+    assert gh.repos["site-test-roma"]["collaborators"] == {"anna-dev"}
     with pytest.raises(fn.SiteRepoError, match="username"):
         fn.handler({"action": "invite", "tenantId": TENANT, "username": "a/b"}, None)
     assert fn.handler({"action": "redeploy", "tenantId": TENANT}, None) == {
-        "repo": "site-roma", "branch": "dev", "result": "started"}
+        "repo": "site-test-roma", "branch": "dev", "result": "started"}
 
 
 def test_an_offboarded_tenant_gets_no_new_repo(world):
@@ -365,7 +371,7 @@ def test_an_offboarded_tenant_gets_no_new_repo(world):
                                ExpressionAttributeValues={":s": "offboarded"})
     with pytest.raises(fn.SiteRepoError, match="offboarded"):
         fn.handler({"action": "provision", "tenantId": TENANT}, None)
-    assert "site-roma" not in world["github"].repos
+    assert "site-test-roma" not in world["github"].repos
 
 
 def test_the_app_jwt_is_rs256_and_short_lived(world):
@@ -376,3 +382,39 @@ def test_the_app_jwt_is_rs256_and_short_lived(world):
     token = fn._app_jwt("123", pem, 1_000_000)
     claims = jwt.decode(token, key.public_key(), algorithms=["RS256"], options={"verify_exp": False})
     assert claims == {"iat": 999_940, "exp": 1_000_540, "iss": "123"}
+
+
+def test_dev_only_simulates_a_repo_prod_has_not_created(world):
+    fn = world["use"]("dev")
+    out = fn.handler({"action": "provision", "tenantId": PLAIN}, None)
+    assert out["status"] == "simulated" and out["repo"] == "site-roma"
+    assert out["plan"][0].startswith(f"Repo {ORG}/site-roma from site-template")
+    assert "site-roma" not in world["github"].repos
+    with pytest.raises(world["iam"].exceptions.NoSuchEntityException):
+        world["iam"].get_role(RoleName="dev-site-roma")
+    status = fn.handler({"action": "status", "tenantId": PLAIN}, None)
+    assert status["status"] == "simulated" and status["plan"] == out["plan"]
+
+
+def test_prod_creates_the_repo_and_asks_dev_for_its_side(world):
+    prod = world["use"]("prod")
+    out = prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    assert out["status"] == "ready" and "site-roma" in world["github"].repos
+    assert world["links"] == [{"action": "mirror", "prodTenantId": PLAIN, "name": "Roma", "slug": "roma"}]
+    site = world["table"].get_item(Key={"PK": f"TENANT#{PLAIN}", "SK": "SITE"})["Item"]
+    assert site["devTenantId"] == "t-dev-roma"
+    # The dev tenant's own onboarding then finds the repo and sets up dev for real.
+    world["table"].put_item(Item={"PK": "TENANT#t-dev-roma", "SK": "PROFILE", "slug": "roma", "name": "Roma",
+                                  "status": "active"})
+    dev = world["use"]("dev")
+    assert dev.handler({"action": "provision", "tenantId": "t-dev-roma"}, None)["status"] == "ready"
+    variables = world["github"].repos["site-roma"]["variables"]
+    assert variables["DEV_TENANT_ID"] == "t-dev-roma" and variables["PROD_TENANT_ID"] == PLAIN
+    assert set(world["github"].booqy_json("site-roma")["environments"]) == {"dev", "prod"}
+
+
+def test_prod_archive_removes_the_dev_side_too(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    prod.handler({"action": "archive", "tenantId": PLAIN}, None)
+    assert world["links"][-1] == {"action": "archive", "slug": "roma"}

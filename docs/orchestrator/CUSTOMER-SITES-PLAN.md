@@ -238,30 +238,44 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
   because outside developers get write access to site repos.
 - **Onboarding/offboarding:** website step after ActivateTenant (failure:
   alert, tenant stays active, Retry on the Website tab); archive step in
-  offboarding.
+  offboarding. In prod the step creates the repo and then, through dev's
+  `booqy-sites-prod-link` role (lambda:InvokeFunction on dev
+  `platform-tenants` only), a `siteTask` that creates or adopts the empty
+  dev tenant; that tenant's own dev onboarding runs the same step, which in
+  dev only sets up a repo prod already created (else a dry run, status
+  `simulated`; `test-` slugs excepted).
 
 ## Decisions for the owner
 
-- **D1, environments and data. Decided 2026-10-27 (replaces the earlier
-  "test copy" idea): nothing is ever copied between environments.**
-  1. The customer is created in the **dev** console first. Dev onboarding
-     creates the private repo `site-<slug>` from `site-template` (branches
-     `dev` and `main` only), writes the dev section of `booqy.json`, sets
-     the dev repo variables and deploys, so `<slug>.dev.booqy.se` works at
-     once.
-  2. The developer works on `dev` (Figma + Claude); every push to `dev`
-     deploys to the dev account.
-  3. Restaurant data (menu, hours, everything) is entered by the restaurant
-     in the admin app, separately in dev (test data) and in prod.
-  4. When the site is ready the customer is created in the **prod**
-     console with the **same slug**. Prod onboarding finds `site-<slug>`
-     and does not create a new repo: it adds the prod section to
-     `booqy.json` and the prod repo variables. A customer created directly
-     in prod gets its repo the same way as in dev.
-  5. A PR `dev` -> `main`, merged, deploys to the prod account, but only if
-     the prod tenant has an attached, verified own domain: the deploy job
-     asks the Booqy API and refuses otherwise (GitHub Free has no branch
-     protection on private repos, so the gate lives in the deploy).
+- **D1, environments and data. Decided 2026-10-27 (owner correction; replaces
+  the "test copy" idea and the first dev-first version): the PROD console is
+  the only place a site repo is born; nothing is ever copied between
+  environments.**
+  1. Creating a customer in the **prod** console creates ONE private repo
+     `site-<slug>` (from `site-template`, branches `dev` and `main`) set up
+     for both environments: a prod deploy role (prod account, `main` only)
+     and, through the dev account, a matching **empty** dev tenant (same
+     slug, no data copied; the restaurant and developers enter test data in
+     the dev admin), its `<slug>.dev.booqy.se` and a dev deploy role (dev
+     account, `dev` only). Both roles under `/booqy-sites/` with the
+     permissions boundary, each limited to `sites/<tenantId>/*` in its own
+     account.
+  2. Prod reaches dev through one narrow role in the DEV account
+     (`booqy-sites-prod-link`), assumable only by prod's `site-repo`, that
+     may only invoke dev `platform-tenants` with a site task (create or
+     adopt the dev tenant by slug, archive its dev site). Dev never gets
+     rights in prod. Owner-approved 2026-10-27.
+  3. The **dev** console only simulates: the website step is a dry run that
+     shows what prod would create, and creates nothing; except slugs
+     starting with `test-` (repos `site-test-<slug>`) for testing the
+     automation. The dev console shows a prod-born repo read-only.
+  4. Push to `dev` deploys to the dev account; merge `dev` -> `main` deploys
+     to the prod account, only with the restaurant's own domain attached and
+     verified (the deploy job asks the Booqy API).
+  5. GitHub plan Free: no environment approvals on private repos, so the
+     workflow picks repo-level `DEV_*` / `PROD_*` variables by branch, and
+     each role's OIDC trust holds the branch condition. No approval button
+     before prod; the domain gate is the prod check.
 - **D2, who designs. Decided 2026-10-27: Booqy designs every customer's
   site in Figma.** Restaurants review and approve through a Figma view
   link; no outside designers, so the design system stays internal.

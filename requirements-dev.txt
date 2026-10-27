@@ -6,3 +6,4 @@ tzdata
 openapi-spec-validator==0.9.0
 xmlschema
 icalendar
+PyJWT[crypto]==2.10.1

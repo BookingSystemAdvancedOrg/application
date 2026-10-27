@@ -3609,12 +3609,19 @@ paths:
         booking site needs to render it: name, branding, enabled features,
         locations (address, contact, opening hours, booking rules), legal
         entity and the public Stripe / Turnstile keys. Pass exactly one of
-        `host` or `slug` (dev only - for `*.cloudfront.net` /
-        localhost). Unknown, pending or inactive: 404.
+        `host`, `tenantId` (a restaurant's own site repo, which knows its
+        tenant; also the prod deploy gate, which needs `tenant.domain`) or
+        `slug` (dev only - for `*.cloudfront.net` / localhost). Unknown,
+        pending or inactive: 404.
       security: []
       x-required-groups: []
       parameters:
         - name: host
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tenantId
           in: query
           required: false
           schema:
@@ -7353,6 +7360,10 @@ components:
               type: string
             slug:
               type: string
+            domain:
+              type: string
+              nullable: true
+              description: The restaurant's own domain once attached with its certificate issued; null before (a site repo's prod deploy refuses without it).
             branding:
               type: object
               description: logoUrl, heroImageUrl, faviconUrl, primaryColor, accentColor, tagline, about, instagramUrl, facebookUrl (only valid values).

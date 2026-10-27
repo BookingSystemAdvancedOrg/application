@@ -117,7 +117,8 @@ def test_suspended_tenant_is_not_found(site):
 
 
 @pytest.mark.parametrize("query", [{}, {"host": "a b"}, {"host": "x" * 300}, {"host": "a.se", "slug": "a"},
-                                   {"slug": "Bad_Slug"}, {"other": "1"}])
+                                   {"slug": "Bad_Slug"}, {"other": "1"}, {"tenantId": "a/b"},
+                                   {"tenantId": "x" * 65}, {"tenantId": TENANT_A, "host": "www.roma.se"}])
 def test_bad_requests(site, query):
     module, _ = site
     assert call(module, query)["statusCode"] == 400
@@ -225,3 +226,32 @@ def test_grace_period_is_public_in_minutes(site):
     by_id = {loc["locationId"]: loc for loc in body["locations"]}
     assert by_id[LOC_A]["gracePeriodMinutes"] == 15
     assert by_id[LOC_A2]["gracePeriodMinutes"] is None
+
+
+def test_a_site_repo_asks_by_tenant_id_in_every_environment(site, monkeypatch):
+    module, _ = site
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    body = json.loads(call(module, {"tenantId": TENANT_A})["body"])
+    assert body["tenant"]["tenantId"] == TENANT_A and body["tenant"]["name"] == "Roma"
+    assert call(module, {"tenantId": "t-unknown"})["statusCode"] == 404
+
+
+def test_own_domain_only_once_attached_and_verified(site):
+    """The prod deploy gate of a site repo: tenant.domain is the
+    restaurant's own domain only when it is a custom domain whose
+    certificate is issued (status active)."""
+    module, tenants = site
+    profile = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]
+    assert json.loads(call(module, {"tenantId": TENANT_A})["body"])["tenant"]["domain"] is None
+    tenants.put_item(Item={**profile, "primaryDomain": "new.roma.se"})
+    tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#new.roma.se"},
+                        UpdateExpression="SET kind = :k", ExpressionAttributeValues={":k": "custom"})
+    assert json.loads(call(module, {"tenantId": TENANT_A})["body"])["tenant"]["domain"] is None  # pending_dns
+    tenants.put_item(Item={**profile, "primaryDomain": "roma.dev.booqy.se"})
+    tenants.put_item(Item={"PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#roma.dev.booqy.se", "status": "active",
+                           "kind": "platform"})
+    assert json.loads(call(module, {"tenantId": TENANT_A})["body"])["tenant"]["domain"] is None  # not its own
+    tenants.put_item(Item={**profile, "primaryDomain": "www.roma.se"})
+    tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#www.roma.se"},
+                        UpdateExpression="SET kind = :k", ExpressionAttributeValues={":k": "custom"})
+    assert json.loads(call(module, {"tenantId": TENANT_A})["body"])["tenant"]["domain"] == "www.roma.se"

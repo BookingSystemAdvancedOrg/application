@@ -1,7 +1,9 @@
 # Per-customer websites: plan
 
-Status 2026-10-27: Phase 1 done (site-kit in customer-front-end), the rest
-is plan. Owner-approved direction:
+Status 2026-10-27: Phase 1 done (site-kit in customer-front-end); Phases
+3 to 6 built (see "Build design" below), waiting for the owner's GitHub App
+registration before the end-to-end test; Phase 2 (Figma) waits for the
+owner. Owner-approved direction:
 every restaurant gets its own front-end app in its own repo, designed in
 Figma and coded with Claude, with all booking/ordering/payment logic in one
 shared package. Guests only ever see the restaurant's own domain in the
@@ -207,11 +209,26 @@ On the customer's page, tab **Website**:
 
 ## Decisions for the owner
 
-- **D1, dev preview data. Decided 2026-10-27: (a).** The console gets
-  "Skapa testkopia i dev": a dev tenant with the same slug, copying menu,
-  opening hours and settings (no guest data). The repo's `dev` branch
-  deploys against that test copy, fully on test data and Stripe test
-  mode. The copy runs in Phase 3, right after the repo is created.
+- **D1, environments and data. Decided 2026-10-27 (replaces the earlier
+  "test copy" idea): nothing is ever copied between environments.**
+  1. The customer is created in the **dev** console first. Dev onboarding
+     creates the private repo `site-<slug>` from `site-template` (branches
+     `dev` and `main` only), writes the dev section of `booqy.json`, sets
+     the dev repo variables and deploys, so `<slug>.dev.booqy.se` works at
+     once.
+  2. The developer works on `dev` (Figma + Claude); every push to `dev`
+     deploys to the dev account.
+  3. Restaurant data (menu, hours, everything) is entered by the restaurant
+     in the admin app, separately in dev (test data) and in prod.
+  4. When the site is ready the customer is created in the **prod**
+     console with the **same slug**. Prod onboarding finds `site-<slug>`
+     and does not create a new repo: it adds the prod section to
+     `booqy.json` and the prod repo variables. A customer created directly
+     in prod gets its repo the same way as in dev.
+  5. A PR `dev` -> `main`, merged, deploys to the prod account, but only if
+     the prod tenant has an attached, verified own domain: the deploy job
+     asks the Booqy API and refuses otherwise (GitHub Free has no branch
+     protection on private repos, so the gate lives in the deploy).
 - **D2, who designs. Decided 2026-10-27: Booqy designs every customer's
   site in Figma.** Restaurants review and approve through a Figma view
   link; no outside designers, so the design system stays internal.

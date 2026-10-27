@@ -49,7 +49,7 @@ Each phase ends with something working in dev. Order matters: 1 before 3,
 3. Figma: a Professional (or higher) team for Code Connect and the Booqy
    design system library; authorise the Figma connector in Claude Code
    (`/mcp`).
-4. Decide D1 and D2 below.
+4. D1 and D2 are decided (below).
 
 ### Phase 1: `@booqy/site-kit` (code)
 Extract everything that isn't "look" from customer-front-end into a package.
@@ -158,9 +158,9 @@ On the customer's page, tab **Website**:
   opening hours and settings (no guest data). The repo's `dev` branch
   deploys against that test copy, fully on test data and Stripe test
   mode. The copy runs in Phase 3, right after the repo is created.
-- **D2, who designs.** Booqy designs every site in Figma, or the
-  restaurant may bring its own designer (then the designer gets view
-  access to the design system and their own Figma file).
+- **D2, who designs. Decided 2026-10-27: Booqy designs every customer's
+  site in Figma.** Restaurants review and approve through a Figma view
+  link; no outside designers, so the design system stays internal.
 
 ## Risks
 - **Template drift:** sites are copies; only site-kit updates reach them

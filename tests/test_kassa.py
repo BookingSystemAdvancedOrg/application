@@ -529,6 +529,14 @@ def test_older_reports_with_a_utc_since_print_in_swedish_time():
     assert kassa_receipt._when("2026-10-27T02:12:00") == "2026-10-27 02:12"         # already local
 
 
+def test_reports_without_sales_still_show_vat(env):
+    rid = register(env)
+    for kind in ("x", "z"):
+        status, body = call(env, "POST", f"registers/{rid}/{kind}", body={})
+        texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in body["document"]["rows"]]
+        assert status == 200 and "Moms 0,00" in texts and "Total försäljning 0,00" in texts
+
+
 def test_day_status_flags_an_unclosed_day(env):
     rid = register(env)
     sale(env, rid)

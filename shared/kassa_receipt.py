@@ -179,6 +179,9 @@ def _report(entry, data, kind):
         rows.append({"pair": [f"  {g['name']}", kr(g["amount"])]})
     for v in data.get("vat") or []:
         rows.append({"pair": [f"Moms {_rate(v['rate'])}", kr(v["amount"])]})
+    if not data.get("vat"):
+        # 7 kap. 2 § g, 3 § h: the VAT line is there even when nothing was sold.
+        rows.append({"pair": ["Moms", kr(0)]})
     for p in data.get("payments") or []:
         rows.append({"pair": [f"Betalt med {p['method'].lower()}", kr(p["amount"])]})
     rows += [

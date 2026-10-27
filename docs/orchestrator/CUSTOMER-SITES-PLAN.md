@@ -1,6 +1,7 @@
 # Per-customer websites: plan
 
-Status 2026-10-27: plan only, nothing built. Owner-approved direction:
+Status 2026-10-27: Phase 1 done (site-kit in customer-front-end), the rest
+is plan. Owner-approved direction:
 every restaurant gets its own front-end app in its own repo, designed in
 Figma and coded with Claude, with all booking/ordering/payment logic in one
 shared package. Guests only ever see the restaurant's own domain in the
@@ -67,6 +68,48 @@ Extract everything that isn't "look" from customer-front-end into a package.
   working. This becomes `site-template`.
 - Done when: today's test restaurant runs on site-kit in dev with no
   visible change and all tests green.
+
+**Done 2026-10-27** (customer-front-end `ed54324` on dev). What moved where:
+- **Package:** `customer-front-end/packages/site-kit` as an npm workspace,
+  `@booqy/site-kit` 0.1.0, own package.json, README and CHANGELOG. `npm run
+  build -w @booqy/site-kit` type checks and writes ESM, types and
+  `site-kit.css` to `dist/`; `publishConfig` points at GitHub Packages but
+  nothing is published. Exports: `.`, `./testing` (WithSite, siteConfig,
+  json) and `./styles.css`. Moves to `booqy-sites/site-kit` with Phase 3.
+- **Into site-kit** (same folder layout as before, `src/shared` and
+  `src/features`): `api`, `site`, `SiteProvider`/`SiteContext`,
+  `locationApi` (openStatus), `layoutApi`, `bookingTerms`, `phone`,
+  `calendar`, `storageRegistry`, `theme` + `ThemeToggle`, `visits`
+  (analytics), `useLocationInfo`, `useStickyCart`, `payment/*` (Stripe),
+  AddToCalendar, MarketingConsent, GuestDataNotice, DateInput, PhoneInput,
+  FlowSteps, Celebrate, Plate, OpeningHoursModal; features `boka`,
+  `bokning`, `meny` (now `Menu`, without the hero), `bestall`, `catering`,
+  `erbjudande`, `juridik`; the test fixtures (`src/test`). Flows are
+  exported as `BookingFlow`, `ManageBooking`, `OrderFlow`, `OrderStatus`,
+  `CateringFlow`, `CateringRequest`, `PrivacyPolicy`, `CookiePolicy`,
+  `BookingTermsPage`; API clients as namespaces (`bookingApi`, `orderApi`,
+  `cateringApi`, `menuApi`, `offerApi`, `layoutApi`).
+- **Settings:** `configureSiteKit({ apiBaseUrl, devTenantSlug,
+  menuImageBaseUrl, paymentFonts })` replaces `import.meta.env` inside the
+  kit; the site calls it in `main.tsx` from its `VITE_` variables.
+- **Styles:** `styles.css` = the old cascade in the same order (offer,
+  components (was customer.css), world, privacy, payment, catering, date
+  input, theme (tokens and base from index.css, light/dark)). Rules that
+  only style the shell (header, mobile menu, hero, footer, contact page)
+  moved to the site's `src/site.css`; the fonts (`@font-face`, woff2) stay
+  with the site.
+- **Stays in the app (future site-template):** `App.tsx` routes,
+  `CustomerLayout`, `BooqyWordmark`, `MenyPage` (hero + `<Menu />`),
+  `KontaktPage`, `OmOssPage`, `index.css` (fonts), `site.css`, assets.
+- **Tests:** 343 in the package (all moved tests plus the public API and
+  SiteProvider), 5 in the app (App on SiteProvider, CSP vs. storage
+  registry). Root `npm test`, `npm run lint`, `npm run build` cover both, so
+  the CI workflow is unchanged.
+- **Proof:** production builds before and after against the dev test
+  restaurant, start, menu, boka, beställ, checkout, catering, kontakt,
+  integritetspolicy, cookies, bokningsvillkor plus mobile menu, opening
+  hours and theme toggle, at 375/768/1280 px in light and dark: pixel
+  identical.
 
 ### Phase 2: Booqy design system in Figma (design + code)
 - A Figma library with the same components as site-kit, with variants and

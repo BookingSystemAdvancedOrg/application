@@ -217,7 +217,7 @@ def test_dev_creates_the_repo_from_the_template_and_deploys(world):
     repo = gh.repos["site-test-roma"]
     assert out == {"status": "ready", "repo": "site-test-roma", "repoUrl": f"https://github.com/{ORG}/site-test-roma"}
     assert repo["private"] is True and repo["default_branch"] == "dev" and repo["branches"] == {"dev", "main"}
-    assert repo["oidc"] == {"use_default": False, "include_claim_keys": ["repository_owner_id", "repository_id", "ref"]}
+    assert repo["oidc"] == {"use_default": True}
     assert repo["variables"] == {
         "DEV_AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/booqy-sites/dev-site-test-roma",
         "DEV_SITE_BUCKET": "dev-restaurant-sites-123456789012", "DEV_TENANT_ID": TENANT,
@@ -245,7 +245,7 @@ def test_the_deploy_role_writes_only_its_own_folder_from_its_own_branch(world):
                       "Action": "sts:AssumeRoleWithWebIdentity", "Condition": {"StringEquals": {
                           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                           "token.actions.githubusercontent.com:sub":
-                              f"repository_owner_id:307760488:repository_id:{repo_id}:ref:refs/heads/dev"}}}]
+                              f"repo:{ORG}@307760488/site-test-roma@{repo_id}:ref:refs/heads/dev"}}}]
     policy = world["iam"].get_role_policy(RoleName="dev-site-test-roma", PolicyName="deploy-own-site")["PolicyDocument"]
     assert policy["Statement"][0]["Resource"] == f"arn:aws:s3:::dev-restaurant-sites-123456789012/sites/{TENANT}/*"
     assert policy["Statement"][1]["Condition"] == {"StringLike": {"s3:prefix": f"sites/{TENANT}/*"}}
@@ -418,3 +418,11 @@ def test_prod_archive_removes_the_dev_side_too(world):
     prod.handler({"action": "provision", "tenantId": PLAIN}, None)
     prod.handler({"action": "archive", "tenantId": PLAIN}, None)
     assert world["links"][-1] == {"action": "archive", "slug": "roma"}
+
+
+def test_an_older_custom_oidc_subject_is_reset_to_the_default(world):
+    fn = world["use"]("dev")
+    world["github"]._repo("site-test-roma", default_branch="dev",
+                          oidc={"use_default": False, "include_claim_keys": ["repository_owner_id", "repository_id", "ref"]})
+    fn.handler({"action": "provision", "tenantId": TENANT}, None)
+    assert world["github"].repos["site-test-roma"]["oidc"] == {"use_default": True}

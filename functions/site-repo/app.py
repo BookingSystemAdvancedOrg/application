@@ -18,8 +18,8 @@ PURPOSE:
     (idempotent, resumable):
       1. the repo: found, unarchived, or generated from the template
          (branches dev and main, default dev);
-      2. the repo's OIDC subject (repository_owner_id, repository_id, ref):
-         site repos can't match the platform's own "repo:..." OIDC roles;
+      2. the repo's OIDC subject: GitHub's default, the immutable one
+         (repo:<org>@<org id>/<repo>@<repo id>:ref:...);
       3. the deploy role /booqy-sites/site-<slug>, with the fixed
          permissions boundary and tag tenantId, trusted only for main;
          checked with the IAM policy simulator: may write its own folder,
@@ -79,7 +79,6 @@ GITHUB_API = "https://api.github.com"
 REPO_PREFIX = "site-"
 _REPO = re.compile(r"site-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _USERNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
-OIDC_CLAIMS = ["repository_owner_id", "repository_id", "ref"]
 WORKFLOW = "deploy.yml"
 _FINISHED_TENANT = ("offboarding", "offboarded")
 
@@ -237,14 +236,19 @@ def _wait_for_branch(gh, name, branch, attempts=20, delay=1.5):
 
 
 def _ensure_oidc_subject(gh, name):
+    """GitHub's default subject, which in this organisation is the immutable
+    one (owner and repo ids in it): a repo deleted and re-created under the
+    same name can't use the old role. Resets an older custom template."""
     _, current = gh.call("GET", _repo_path(name, "/actions/oidc/customization/sub"), ok=(200, 404))
-    if not current or current.get("use_default") or current.get("include_claim_keys") != OIDC_CLAIMS:
-        gh.call("PUT", _repo_path(name, "/actions/oidc/customization/sub"),
-                {"use_default": False, "include_claim_keys": OIDC_CLAIMS})
+    if current and not current.get("use_default", True):
+        gh.call("PUT", _repo_path(name, "/actions/oidc/customization/sub"), {"use_default": True})
 
 
 def oidc_subject(repo, branch):
-    return f"repository_owner_id:{repo['owner']['id']}:repository_id:{repo['id']}:ref:refs/heads/{branch}"
+    """repo:<org>@<org id>/<repo>@<repo id>:ref:refs/heads/<branch>, the
+    immutable subject (the platform's own roles match the same format)."""
+    return (f"repo:{repo['owner']['login']}@{repo['owner']['id']}/{repo['name']}@{repo['id']}"
+            f":ref:refs/heads/{branch}")
 
 
 # ---------------------------------------------------------------------- IAM

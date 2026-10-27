@@ -153,14 +153,11 @@ On the customer's page, tab **Website**:
 
 ## Decisions for the owner
 
-- **D1, dev preview data.** A customer exists in prod; its repo's `dev`
-  branch needs a tenant to preview against.
-  - (a) **Recommended:** the console gets "Skapa testkopia i dev": a dev
-    tenant with the same slug, copying menu, opening hours and settings
-    (no guest data). The dev preview runs fully on test data and Stripe
-    test mode.
-  - (b) Preview against prod data with ordering and payments switched
-    off in preview.
+- **D1, dev preview data. Decided 2026-10-27: (a).** The console gets
+  "Skapa testkopia i dev": a dev tenant with the same slug, copying menu,
+  opening hours and settings (no guest data). The repo's `dev` branch
+  deploys against that test copy, fully on test data and Stripe test
+  mode. The copy runs in Phase 3, right after the repo is created.
 - **D2, who designs.** Booqy designs every site in Figma, or the
   restaurant may bring its own designer (then the designer gets view
   access to the design system and their own Figma file).

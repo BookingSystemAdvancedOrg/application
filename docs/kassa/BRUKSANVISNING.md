@@ -46,7 +46,7 @@ Varje försäljningsdag börjar med att växelkassan registreras.
 2. Skriv växelkassan. Kassan tar bara kort, så den är oftast 0 kr.
 3. Tryck **Öppna dagen**. Kassan frågar först kontrollsystemet om allt är i ordning. Svarar det inte, går dagen inte att öppna: se avsnitt 12.
 
-Säljer du innan dagen är öppnad, öppnar kassan den hos kontrollsystemet vid första kvittot. Växelkassan registreras ändå bara med **Öppna dagen**.
+Innan dagen är öppnad går det inte att ta betalt, göra kvitton eller returer (övningskvitton går). Z-rapporten avslutar dagen, så nästa försäljningsdag börjar med **Öppna dagen** igen.
 
 Knappen syns bara när dagen inte är öppnad.
 

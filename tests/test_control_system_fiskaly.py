@@ -740,7 +740,7 @@ def with_fiskaly(env, monkeypatch):
 
 def test_kassa_sale_copy_return_and_z_with_fiskaly(with_fiskaly, xml_schema):
     env = with_fiskaly
-    rid = register(env)
+    rid = register(env, open_day=False)
     status, state = call(env, "GET")
     reg = state["registers"][0]
     assert reg["designation"] == "SE01BQ0000000001" and reg["label"] == "Kassa 1"
@@ -800,7 +800,7 @@ def test_kassa_blocks_the_card_payment_when_fiskaly_cannot_be_reached(with_fiska
 
 def test_open_day_needs_status_ok_from_fiskaly(with_fiskaly):
     env = with_fiskaly
-    rid = register(env)
+    rid = register(env, open_day=False)
     env["fiskaly"].status = 2                         # NO_CONTACT_WITH_KS on the OPENING
     status, body = call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
     assert status == 503 and body["error"] == "control_system_unreachable"
@@ -811,7 +811,7 @@ def test_open_day_needs_status_ok_from_fiskaly(with_fiskaly):
 
 def test_z_closes_the_day_at_fiskaly_and_the_next_day_opens_again(with_fiskaly, caplog):
     env = with_fiskaly
-    rid = register(env)
+    rid = register(env, open_day=False)
     fake = env["fiskaly"]
     assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
     system_id = next(iter(fake.system_states))
@@ -822,10 +822,13 @@ def test_z_closes_the_day_at_fiskaly_and_the_next_day_opens_again(with_fiskaly, 
     assert status == 200 and z["problems"] == [] and system_id not in fake.opened
     assert any("closing_sent" in r.getMessage() for r in caplog.records)
     env["clock"]["now"] += timedelta(days=1)
-    assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
+    with caplog.at_level("INFO"):
+        assert call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})[0] == 200
     kinds = [c["body"]["content"]["operation"]["type"] for c in fake.posted("/records")]
     assert kinds.count("OPENING") == 2 and kinds.index("CLOSING") < len(kinds) - 1
     assert system_id in fake.opened              # opened again, not "already opened"
+    sent = [r.getMessage() for r in caplog.records if "opening_sent" in r.getMessage()]
+    assert len(sent) == 2 and all('"for": "open_day"' in m for m in sent)   # one OPENING per sales day
 
 
 def test_a_failed_closing_is_shown_but_the_z_stands(with_fiskaly):
@@ -840,7 +843,7 @@ def test_a_failed_closing_is_shown_but_the_z_stands(with_fiskaly):
 def test_kassa_page_loads_never_send_opening(with_fiskaly):
     """The dev admin bug: every load and poll sent OPENING, then 405."""
     env = with_fiskaly
-    register(env)
+    register(env, open_day=False)
     for _ in range(3):
         state = call(env, "GET")[1]
         assert state["registers"][0]["controlSystem"]["ok"] is True

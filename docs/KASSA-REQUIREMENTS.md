@@ -181,6 +181,18 @@ the number sent to it is the number written. Max 12 digits (schema).
 
 "Öppna dagen" registers the float (default 0 kr) at the start of each
 sales day and changes are journalled. Card only: no cash drawer.
+
+ANV 4 kap. 2 §: "Vid varje försäljningsdags början ska den växelkassa som
+hör till ett kassaregister registreras", and 4 kap. 5 § puts the Z report
+"vid försäljningsdagens slut". So the opening is explicit: a Z ends the
+sales day (`dayOpen` is cleared), "Öppna dagen" shows again, and no card
+payment, receipt or return is accepted until the day is opened
+(`day_not_open`; training receipts take no money and stay allowed). With
+fiskaly, "Öppna dagen" is also when INTENTION::OPENING is sent; each one is
+logged (`opening_sent`, or `already_open`). Found in the dev admin on
+2026-10-27: after a Z at 02:12 the next sale at 12:08 went through with
+no "Öppna dagen" (the day opened before the Z was still marked open), and
+fiskaly was opened implicitly by the receipt.
 **Uncertain:** whether a card-only register still needs a "kassalåda"
 (ANV 3 kap. 14 § says every registreringsenhet has at least one).
 

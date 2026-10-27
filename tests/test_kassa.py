@@ -128,10 +128,16 @@ def call(env, method, suffix="", *, body=None, query=None, role="owner_user", te
     return response["statusCode"], json.loads(response["body"])
 
 
-def register(env, label="Kassa 1"):
+def register(env, label="Kassa 1", *, open_day=True):
+    """A new register; by default with the day opened (växelkassa 0 kr), as
+    a sale needs (ANV 4 kap. 2 §)."""
     status, body = call(env, "POST", "registers", body={"label": label})
     assert status == 201, body
-    return body["register"]["registerId"]
+    register_id = body["register"]["registerId"]
+    if open_day:
+        status, body = call(env, "POST", f"registers/{register_id}/open-day", body={"float": 0})
+        assert status == 200, body
+    return register_id
 
 
 def bill(env, register_id, kind="table", table="5", lines=None, discount=None):
@@ -423,7 +429,7 @@ def test_only_one_copy_per_receipt(env):
 
 
 def test_training_mode(env):
-    rid = register(env)
+    rid = register(env, open_day=False)
     call(env, "POST", f"registers/{rid}/training", body={"on": True})
     b = bill(env, rid)
     assert b["training"] is True
@@ -460,6 +466,12 @@ def test_x_and_z_reports(env):
     call(env, "POST", f"registers/{rid}/x", body={})
     after = journal(env, rid)[-1]["data"]
     assert after["totalSales"] == 0 and after["grandTotalSales"] == 38750
+    assert reg_row(env, rid).get("dayOpen") is None             # the Z ended the sales day
+    assert call(env, "POST", "bills", body={"registerId": rid, "kind": "takeaway"})[0] == 201
+    status, body = call(env, "POST", f"bills/{bill(env, rid)['billId']}/payments",
+                        body={"checkoutId": "c" * 32, "readerId": "tmr_a1", "amount": 100})
+    assert status == 409 and body["error"] == "day_not_open"
+    call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
     sale(env, rid, checkout="b" * 32)
     assert receipts_of(env, rid)[-1]["data"]["zSeq"] == 3
 
@@ -491,6 +503,30 @@ def test_z_report_counts_sales_and_returns_separately(env):
     for v in sold["vat"]:
         assert f"Moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
         assert f"  varav moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
+
+
+def test_report_times_are_swedish_across_the_dst_change(env):
+    """Dev admin 2026-10-27: "Sedan senaste Z" was printed in UTC. Summer
+    time ended at 01:00 UTC on 25 October 2026."""
+    rid = register(env)
+    env["clock"]["now"] = datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc)     # 02:30 CEST
+    call(env, "POST", f"registers/{rid}/z", body={})
+    env["clock"]["now"] = datetime(2026, 10, 27, 1, 12, tzinfo=timezone.utc)     # 02:12 CET
+    status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in z["document"]["rows"]]
+    assert "Sedan senaste Z 2026-10-25 02:30" in texts and "Framtagen 2026-10-27 02:12" in texts
+    assert journal(env, rid)[-1]["data"]["since"] == "2026-10-25T02:30:00"
+    env["clock"]["now"] = datetime(2026, 10, 27, 11, 8, tzinfo=timezone.utc)
+    status, x = call(env, "POST", f"registers/{rid}/x", body={})
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in x["document"]["rows"]]
+    assert "Sedan senaste Z 2026-10-27 02:12" in texts and "Framtagen 2026-10-27 12:08" in texts
+
+
+def test_older_reports_with_a_utc_since_print_in_swedish_time():
+    assert kassa_receipt._when("2026-10-27T01:12:00Z") == "2026-10-27 02:12"
+    assert kassa_receipt._when("2026-10-25T00:30:00+00:00") == "2026-10-25 02:30"   # CEST
+    assert kassa_receipt._when("2026-10-25T01:30:00Z") == "2026-10-25 02:30"        # CET
+    assert kassa_receipt._when("2026-10-27T02:12:00") == "2026-10-27 02:12"         # already local
 
 
 def test_day_status_flags_an_unclosed_day(env):

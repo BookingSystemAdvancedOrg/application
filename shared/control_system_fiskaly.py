@@ -678,15 +678,18 @@ class FiskalyControlSystem(cs.ControlSystem):
         ref, unit = self._ref(register, deadline)
         self._open(ref, unit, deadline)
 
-    def _open(self, ref, unit, deadline):
+    def _open(self, ref, unit, deadline, why="open_day"):
         try:
             record = self._record(unit, {"type": "INTENTION", "system": {"id": ref["systemId"]},
                                          "operation": {"type": "OPENING"}}, deadline=deadline)
         except cs.Rejected as exc:
             if _ALREADY_OPEN.search(str(exc)):
+                logger.info(json.dumps({"fiskaly": "already_open", "system": ref["systemId"], "for": why}))
                 return
             raise
         self._allowed(record)
+        logger.info(json.dumps({"fiskaly": "opening_sent", "system": ref["systemId"], "for": why,
+                                "record": record.get("id")}))
 
     def _intention(self, ref, unit, content, *, deadline, poll=True):
         """A receipt's or copy's INTENTION. If fiskaly says the register isn't
@@ -697,7 +700,7 @@ class FiskalyControlSystem(cs.ControlSystem):
         except cs.Rejected as exc:
             if not _NOT_OPEN.search(str(exc)):
                 raise
-        self._open(ref, unit, deadline)
+        self._open(ref, unit, deadline, why="receipt")
         return self._record(unit, content, deadline=deadline, poll=poll)
 
     def sign(self, register, data):

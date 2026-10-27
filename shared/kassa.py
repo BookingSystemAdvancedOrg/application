@@ -974,7 +974,9 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
         raise Conflict("bill_closed")
     if bill.get("training"):
         raise Conflict("training_no_payment")
-    status = system.status(get_register(ctx, bill["registerId"]))
+    register = get_register(ctx, bill["registerId"])
+    _day_open(register)
+    status = system.status(register)
     if not status.ok:
         _mark_down(ctx, bill["registerId"], status.code, now=now, user=user_of(ctx))
         raise Unavailable("control_system_unreachable")
@@ -1011,6 +1013,14 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
             pass
         raise Conflict("changed_retry") from None
     return item
+
+
+def _day_open(register):
+    """ANV 4 kap. 2 §: "Vid varje försäljningsdags början ska den växelkassa
+    som hör till ett kassaregister registreras", and the Z ends the day (5 §).
+    So no sale or return until "Öppna dagen" (training takes no money)."""
+    if not register.get("dayOpen"):
+        raise Conflict("day_not_open")
 
 
 def undo_payment(ctx, bill_id, payment_id, *, now):
@@ -1100,6 +1110,8 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
     succeeded = [p for p in payments if p.get("status") == cp.SUCCEEDED]
     if not training and _paid(payments) != priced["total"]:
         raise Conflict("not_fully_paid")
+    if not training:
+        _day_open(get_register(ctx, bill["registerId"]))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
     register, lock = _lock(ctx.location_id, bill["registerId"])
@@ -1275,6 +1287,7 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
     if not reason:
         raise ValueError("reason is required")
     picked = _return_lines(original, pointer, lines)
+    _day_open(get_register(ctx, register_id))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
     status = system.status(get_register(ctx, register_id))
@@ -1448,14 +1461,16 @@ def report(ctx, register_id, kind, *, user, now, tenant_row, system=None):
         _unlock(ctx.location_id, register_id, lock)
         raise
     summary = summarize(entries, open_bills, register)
-    summary.update({"company": seller, "since": register.get("lastZAt"), "serialNumber": register["serialNumber"],
+    since = local_text(o.parse_iso(register["lastZAt"]), ctx.location) if register.get("lastZAt") else None
+    summary.update({"company": seller, "since": since, "serialNumber": register["serialNumber"],
                     "model": MODEL, "program": PROGRAM, "version": version()})
     sets = {}
     if kind == ZREPORT:
         z_seq = _int(register.get("zSeq")) + 1
         summary["zSeq"] = z_seq
+        # The Z is the end of the sales day (ANV 4 kap. 5 §): the next one starts with "Öppna dagen".
         sets = {"zSeq": z_seq, "lastZJseq": _int(register.get("jseq")) + 1, "lastZAt": o.iso(now),
-                "lastZDay": local(now, ctx.location).date().isoformat()}
+                "lastZDay": local(now, ctx.location).date().isoformat(), "dayOpen": None}
     elif kind != XREPORT:
         _unlock(ctx.location_id, register_id, lock)
         raise ValueError("kind must be x or z")

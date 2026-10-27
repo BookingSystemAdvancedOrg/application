@@ -16,6 +16,7 @@ or stores.
 import html
 import math
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from shared import kassa as k
 from shared.messages import _brand_color, restaurant_name
@@ -24,6 +25,7 @@ TEST_NOTICE = "Testläge - inte ett certifierat kassaregister än"
 TITLES = {k.SALE: "Kvitto", k.RETURN: "Returkvitto", k.TRAINING: "Övningskvitto", k.COPY: "Kvitto",
           k.XREPORT: "X-dagrapport", k.ZREPORT: "Z-dagrapport"}
 CODE_ROW = 30
+STOCKHOLM = ZoneInfo("Europe/Stockholm")
 _BRANDS = {"visa": "Visa", "mastercard": "Mastercard", "amex": "American Express", "maestro": "Maestro"}
 
 
@@ -33,11 +35,17 @@ def kr(ore, *, sign=False):
     return ("-" if ore < 0 else "+" if sign and ore > 0 else "") + text
 
 
-def _when(text):
+def _when(text, tz=STOCKHOLM):
+    """"2026-10-27T02:12:00" (local, as the journal keeps it) -> "2026-10-27
+    02:12". A time with a zone (UTC "...Z", older reports' "since") is shown
+    in Swedish time first."""
     try:
-        return datetime.fromisoformat(str(text)).strftime("%Y-%m-%d %H:%M")
+        when = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
     except ValueError:
         return str(text or "")
+    if when.tzinfo is not None:
+        when = when.astimezone(tz)
+    return when.strftime("%Y-%m-%d %H:%M")
 
 
 def _rate(rate):
@@ -165,7 +173,7 @@ def _report(entry, data, kind):
         rows.append({"pair": ["Tillverkningsnummer", data.get("serialNumber") or ""]})
         rows.append({"pair": ["Program", f"{data.get('program')} {data.get('version')}"]})
     if data.get("since"):
-        rows.append({"pair": ["Sedan senaste Z", _when(str(data["since"]).replace("Z", "")[:19])]})
+        rows.append({"pair": ["Sedan senaste Z", _when(data["since"])]})
     rows += [{"rule": True}, {"pair": ["Total försäljning", kr(data.get("totalSales"))], "bold": True}]
     for g in data.get("groups") or []:
         rows.append({"pair": [f"  {g['name']}", kr(g["amount"])]})

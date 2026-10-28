@@ -130,7 +130,7 @@ def _env_for(environment):
         "DEPLOY_BOUNDARY_ARN": f"arn:aws:iam::123456789012:policy/booqy-sites/{prefix}booqy-sites-deploy-boundary",
         "OIDC_PROVIDER_ARN": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
         "API_BASE_URL": f"https://api-{environment}.example/", "MENU_IMAGE_BASE_URL": "https://img.example",
-        "PREVIEW_DOMAIN": "" if environment == "prod" else "dev.booqy.se",
+        "PREVIEW_DOMAIN": "booqy.se" if environment == "prod" else "dev.booqy.se",
         "STRIPE_PUBLISHABLE_KEY": "pk_test_x", "TURNSTILE_SITE_KEY": "0x4AAA",
         **({"DEV_LINK_ROLE_ARN": "arn:aws:iam::877653167825:role/booqy-sites-prod-link",
             "DEV_PLATFORM_TENANTS_FUNCTION_ARN": "arn:aws:lambda:eu-north-1:877653167825:function:dev-platform-tenants:live"}
@@ -286,11 +286,14 @@ def test_prod_finds_the_dev_repo_and_adds_only_its_own_part(world):
     doc = gh.booqy_json("site-test-roma")
     assert set(doc["environments"]) == {"dev", "prod"}
     assert doc["environments"]["prod"]["domain"] == "roma.se"
-    assert "previewUrl" not in doc["environments"]["prod"]
+    assert doc["environments"]["prod"]["previewUrl"] == "https://test-roma.booqy.se"
     trust = world["iam"].get_role(RoleName="site-test-roma")["Role"]["AssumeRolePolicyDocument"]["Statement"][0]
     assert trust["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"].endswith(":ref:refs/heads/main")
-    # Prod never deploys from onboarding: main deploys on merge, behind the domain gate.
-    assert gh.dispatches == []
+    # Prod deploys main once at setup: live on <slug>.booqy.se, no own domain needed.
+    assert gh.dispatches == [("site-test-roma", "main")]
+    repo["runs"]["main"] = {"status": "completed", "conclusion": "success", "head_sha": "cffb0be0", "html_url": "u"}
+    prod.handler({"action": "provision", "tenantId": TENANT}, None)
+    assert gh.dispatches == [("site-test-roma", "main")]        # live already: Run setup again doesn't redeploy
 
 
 def test_a_retry_changes_nothing_and_deploys_dev_again(world):
@@ -430,3 +433,14 @@ def test_an_older_custom_oidc_subject_is_reset_to_the_default(world):
                           oidc={"use_default": False, "include_claim_keys": ["repository_owner_id", "repository_id", "ref"]})
     fn.handler({"action": "provision", "tenantId": TENANT}, None)
     assert world["github"].repos["site-test-roma"]["oidc"] == {"use_default": True}
+
+
+def test_prod_asks_dev_about_its_domain_through_the_link(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "devDomain", "tenantId": PLAIN, "op": "mount", "host": "dev.roma.se"}, None)
+    assert world["links"][-1] == {"action": "domain", "op": "mount", "slug": "roma", "host": "dev.roma.se"}
+    with pytest.raises(prod.SiteRepoError):
+        prod.handler({"action": "devDomain", "tenantId": PLAIN, "op": "delete"}, None)
+    dev = world["use"]("dev")
+    with pytest.raises(dev.SiteRepoError):
+        dev.handler({"action": "devDomain", "tenantId": TENANT, "op": "status"}, None)

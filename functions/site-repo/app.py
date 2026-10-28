@@ -5,7 +5,8 @@ TRIGGER:
       tenant-onboarding   provision   after the tenant is active
       tenant-offboarding  archive
       platform-tenants    status | provision (Retry) | invite {username} |
-                          redeploy | archive   (Booqy Console, Website tab)
+                          redeploy | archive | devDomain {op, host}
+                          (Booqy Console, Website tab)
 
 PURPOSE:
     Every restaurant has its own private website repo site-<slug> in the
@@ -27,7 +28,9 @@ PURPOSE:
       4. repo variables PROD_AWS_ROLE_ARN, PROD_SITE_BUCKET, PROD_TENANT_ID,
          PROD_API_BASE_URL (not secrets) and booqy.json's prod section (on
          dev);
-      5. the dev side, through the dev account's booqy-sites-prod-link role
+      5. the first prod deploy of main (until one succeeds): live on
+         <slug>.booqy.se at once; an own domain is never needed for it;
+      6. the dev side, through the dev account's booqy-sites-prod-link role
          (it may only invoke dev platform-tenants with a site task): an
          empty dev tenant with the same slug (or the existing one), whose
          own onboarding runs provision in dev.
@@ -40,6 +43,9 @@ PURPOSE:
     archive: this environment's role and variables go (prod also asks dev
     to remove its side); the repo is archived once no environment uses it.
     Never deleted.
+    devDomain (prod only): the Website tab's dev row, through the same link:
+    op "status" (dev's slug address and dev.<domain>'s state) or "mount"
+    (dev's domain-attach for dev.<domain>).
 
     Only repos named site-* are ever touched (GitHub App "Booqy Sites" is
     installed on those only, and every repo name is checked here).
@@ -476,6 +482,8 @@ def provision(tenant_id, gh=None):
         committed = _write_booqy_json(gh, name, tenant_id, profile)
         if _env() != "prod" and not committed:
             _dispatch(gh, name, "dev")
+        if _env() == "prod" and _needs_first_deploy(gh, name):
+            _dispatch(gh, name, "main")                 # live on <slug>.booqy.se, no domain needed
         if _linked():
             dev = _dev_link({"action": "mirror", "prodTenantId": tenant_id,
                              **{k: profile[k] for k in _MIRROR_FIELDS if profile.get(k) not in (None, "")}})
@@ -524,6 +532,13 @@ def _last_run(gh, name, branch):
             "event": run.get("event"), "url": run["html_url"]}
 
 
+def _needs_first_deploy(gh, name):
+    """main has never deployed (or its last finished deploy failed, as
+    every one did behind the old own-domain gate)."""
+    run = _last_run(gh, name, "main")
+    return not run or (run["status"] == "completed" and run["conclusion"] != "success")
+
+
 def status(tenant_id, gh=None):
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
@@ -566,6 +581,20 @@ def redeploy(tenant_id, gh=None):
     return {"repo": name, "branch": _branch(), "result": "started"}
 
 
+def dev_domain(tenant_id, op, host=None):
+    """Prod's Website tab, dev row: dev platform-tenants answers for its own
+    tenant with this slug (status, or mount = its domain-attach for host)."""
+    if not _linked():
+        raise SiteRepoError("no dev link in this environment")
+    if op not in ("status", "mount"):
+        raise SiteRepoError(f"unknown devDomain op {op!r}")
+    profile = _profile(tenant_id)
+    task = {"action": "domain", "op": op, "slug": profile["slug"]}
+    if host:
+        task["host"] = host
+    return _dev_link(task)
+
+
 ACTIONS = {"provision": provision, "archive": archive, "status": status, "redeploy": redeploy}
 
 
@@ -576,6 +605,8 @@ def handler(event, context):
         raise SiteRepoError("tenantId missing")
     if action == "invite":
         return invite(tenant_id, event.get("username"))
+    if action == "devDomain":
+        return dev_domain(tenant_id, event.get("op"), event.get("host"))
     if action not in ACTIONS:
         raise SiteRepoError(f"unknown action {action!r}")
     try:

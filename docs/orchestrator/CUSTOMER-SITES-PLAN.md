@@ -271,12 +271,14 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
      starting with `test-` (repos `site-test-<slug>`) for testing the
      automation. The dev console shows a prod-born repo read-only.
   4. Push to `dev` deploys to the dev account; merge `dev` -> `main` deploys
-     to the prod account, only with the restaurant's own domain attached and
-     verified (the deploy job asks the Booqy API).
+     to the prod account. Changed 2026-10-28 (owner): an own domain is no
+     longer required; every site is live on `<slug>.booqy.se` /
+     `<slug>.dev.booqy.se`, and the own domain is mounted per environment
+     from the Website tab (prod `www.<domain>`, dev `dev.<domain>`).
   5. GitHub plan Free: no environment approvals on private repos, so the
      workflow picks repo-level `DEV_*` / `PROD_*` variables by branch, and
      each role's OIDC trust holds the branch condition. No approval button
-     before prod; the domain gate is the prod check.
+     before prod; the merge to `main` is the release.
 - **D2, who designs. Decided 2026-10-27: Booqy designs every customer's
   site in Figma.** Restaurants review and approve through a Figma view
   link; no outside designers, so the design system stays internal.

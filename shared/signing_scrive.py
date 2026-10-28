@@ -88,8 +88,10 @@ def _request(config, method, path, data=None, content_type=None, raw=False):
         except ValueError:
             error = {}
         code = str(error.get("error_type") or f"http_{exc.code}")[:64]
+        explanations = (error.get("error_details") or {}).get("explanations") or [error.get("error_message")]
         logger.warning(json.dumps({"scrive": "error", "path": path.split("/")[-1], "status": exc.code,
-                                   "errorType": code}))
+                                   "errorType": code, "explanations": [str(e)[:200] for e in explanations if e][:6]},
+                                  ensure_ascii=False))
         if exc.code >= 500 or exc.code in (401, 403, 429):
             raise SigningUnavailable(code) from None
         raise SigningRejected(code) from None
@@ -129,14 +131,16 @@ def _days_to_sign(valid_until, today=None):
     return max(1, min(_MAX_DAYS_TO_SIGN, days))
 
 
-def _field(kind, value, order=None):
-    field = {"type": kind, "value": value or "", "is_obligatory": False, "should_be_filled_by_sender": False}
+def _field(kind, value, order=None, obligatory=False):
+    field = {"type": kind, "value": value or "", "is_obligatory": obligatory, "should_be_filled_by_sender": False}
     return {**field, "order": order} if order else field
 
 
 def _signatory(party, sign_order):
+    # se_bankid needs a personal number field: we don't know it, so the
+    # signer fills it in on Scrive's page (obligatory, not by the sender).
     fields = [_field("name", party.get("name") if party["role"] == "customer" else "", 1),
-              _field("email", party.get("email"))]
+              _field("email", party.get("email")), _field("personal_number", "", obligatory=True)]
     company = party.get("company") or (party.get("name") if party["role"] == "restaurant" else None)
     if company:
         fields.append(_field("company", company))

@@ -166,6 +166,9 @@ def test_create_uploads_the_signed_pdf_and_sets_both_parties(scrive):
         assert party["confirmation_delivery_method"] == "none" and party["notification_delivery_method"] == "none"
     fields = {f["type"]: f["value"] for f in restaurant["fields"]}
     assert fields["company"] == "Roma AB" and fields["name"] == ""
+    for party in (restaurant, customer):  # se_bankid: the signer fills in the personal number
+        pn = next(f for f in party["fields"] if f["type"] == "personal_number")
+        assert pn["value"] == "" and pn["is_obligatory"] is True and pn["should_be_filled_by_sender"] is False
     assert {f["type"]: f["value"] for f in customer["fields"]}["name"] == "Anna Svensson"
     assert restaurant["sign_success_redirect_url"] == f"https://admin.example.se/catering/{LOC_A}/{rid}?signering=klar"
     assert customer["sign_success_redirect_url"] == \

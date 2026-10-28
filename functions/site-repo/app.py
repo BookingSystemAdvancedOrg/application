@@ -4,9 +4,11 @@ TRIGGER:
     Direct invoke only (no API Gateway), {"action", "tenantId", ...}:
       tenant-onboarding   provision   after the tenant is active
       tenant-offboarding  archive
+      tenant-purge        delete
       platform-tenants    status | provision (Retry) | invite {username} |
                           redeploy | archive | devDomain {op, host}
-                          (Booqy Console, Website tab)
+                          (Booqy Console, Website tab); delete (Danger
+                          zone, Delete customer)
 
 PURPOSE:
     Every restaurant has its own private website repo site-<slug> in the
@@ -42,7 +44,13 @@ PURPOSE:
     to test the automation.
     archive: this environment's role and variables go (prod also asks dev
     to remove its side); the repo is archived once no environment uses it.
-    Never deleted.
+    delete (a deleted customer, or its data purged after the retention
+    period): archive first, then the repo is deleted for good once no
+    environment uses it, so the slug starts from a fresh template repo when
+    the customer comes back. Only prod deletes a repo prod helped set up
+    (booqy.json has a prod section); dev deletes only its own test- repos.
+    Needs the App's Administration: Read and write; a refusal is raised
+    with that hint (the callers record it and carry on).
     devDomain (prod only): the Website tab's dev row, through the same link:
     op "status" (dev's slug address and dev.<domain>'s state) or "mount"
     (dev's domain-attach for dev.<domain>).
@@ -521,6 +529,38 @@ def archive(tenant_id, gh=None):
     return {"status": "archived", "repo": name, "repoArchived": archived or bool(status == 200 and repo.get("archived"))}
 
 
+def delete(tenant_id, gh=None):
+    profile = _profile(tenant_id)
+    name = repo_name(profile.get("slug"))
+    gh = gh or github()
+    if gh.call("GET", _repo_path(name), ok=(200, 404))[0] == 404:
+        return {"status": "gone", "repo": name, "repoDeleted": False}
+    if _env() != "prod" and _prod_uses(gh, name):
+        archive(tenant_id, gh)
+        return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "prod owns this repo"}
+    archive(tenant_id, gh)
+    if any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name)):
+        return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "another environment still uses it"}
+    status, body = gh.call("DELETE", _repo_path(name), ok=(204, 403, 404))
+    if status == 403:
+        raise SiteRepoError(f"{name} NOT deleted: GitHub refused ({(body or {}).get('message', '403')}). The Booqy "
+                            "Sites App needs Repository permission Administration: Read and write; delete the "
+                            "archived repo by hand on GitHub meanwhile")
+    _save_site(tenant_id, {"status": "deleted", "repo": name, "deletedAt": _now()}, remove=("repoUrl", "repoId"))
+    log.info(json.dumps({"action": "delete", "tenantId": tenant_id, "repo": name}))
+    return {"status": "deleted", "repo": name, "repoDeleted": status == 204}
+
+
+def _prod_uses(gh, name):
+    """True unless dev made this repo alone: a prod-born repo (any slug not
+    starting with test-) or one prod has written its booqy.json section to."""
+    if not name.startswith(f"{REPO_PREFIX}test-"):
+        return True
+    status, current = gh.call("GET", _repo_path(name, "/contents/booqy.json?ref=dev"), ok=(200, 404))
+    doc = json.loads(base64.b64decode(current["content"])) if status == 200 else {}
+    return "prod" in doc.get("environments", {})
+
+
 def _last_run(gh, name, branch):
     _, runs = gh.call("GET", _repo_path(name, f"/actions/workflows/{WORKFLOW}/runs?branch={branch}&per_page=1"),
                       ok=(200, 404))
@@ -595,7 +635,7 @@ def dev_domain(tenant_id, op, host=None):
     return _dev_link(task)
 
 
-ACTIONS = {"provision": provision, "archive": archive, "status": status, "redeploy": redeploy}
+ACTIONS = {"provision": provision, "archive": archive, "delete": delete, "status": status, "redeploy": redeploy}
 
 
 def handler(event, context):

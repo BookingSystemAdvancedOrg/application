@@ -2,6 +2,8 @@
 passed, leaves every other tenant alone, and keeps only a tombstone."""
 
 import importlib.util
+import io
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -338,3 +340,45 @@ def test_no_fiskaly_key_is_fine(env, monkeypatch):
                 offboarded_at=NOW - timedelta(days=90), slug="gone")
     result = env["app"].handler({}, Context())
     assert result["purged"] == [GONE] and result["failed"] == []
+
+
+class FakeSiteRepo:
+    def __init__(self, answer=None, error=None):
+        self.calls, self.answer, self.error = [], answer, error
+
+    def invoke(self, **kwargs):
+        self.calls.append(json.loads(kwargs["Payload"]))
+        body = {"errorMessage": self.error} if self.error else self.answer
+        return {"Payload": io.BytesIO(json.dumps(body).encode()),
+                **({"FunctionError": "Unhandled"} if self.error else {})}
+
+
+def _audit_rows(env):
+    return [i for i in env["t"]["tenant"].query(KeyConditionExpression="PK = :p",
+                                                ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]
+            if i["SK"].startswith("AUDIT#")]
+
+
+def test_the_website_repo_is_deleted_and_logged(env, monkeypatch):
+    monkeypatch.setenv("SITE_REPO_FUNCTION_ARN", "arn:aws:lambda:eu-north-1:123456789012:function:dev-site-repo:live")
+    site = FakeSiteRepo({"status": "deleted", "repo": "site-gone", "repoDeleted": True})
+    env["app"]._clients[("lambda", None)] = site
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1), slug="gone")
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    assert site.calls == [{"action": "delete", "tenantId": GONE}]
+    [row] = _audit_rows(env)
+    assert row["action"] == "site_repo_deleted" and row["by"] == "tenant-purge"
+    assert row["details"] == {"repo": "site-gone", "status": "deleted"}
+
+
+def test_a_refused_repo_delete_is_reported_and_the_data_still_purged(env, monkeypatch):
+    monkeypatch.setenv("SITE_REPO_FUNCTION_ARN", "arn:aws:lambda:eu-north-1:123456789012:function:dev-site-repo:live")
+    env["app"]._clients[("lambda", None)] = FakeSiteRepo(error="site-gone NOT deleted: GitHub refused (403)")
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1), slug="gone")
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["status"] == "purged"
+    assert "Website repo NOT deleted: site-gone NOT deleted" in stone["purgeSummary"]["notes"][0]
+    [row] = _audit_rows(env)
+    assert row["action"] == "site_repo_delete_failed"
+    assert "Website repo NOT deleted" in env["sns"].calls[0]["Message"]

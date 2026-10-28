@@ -47,8 +47,10 @@ PURPOSE:
         that are still attached (reported: run domain-detach first)
 
     Kept: a small PROFILE tombstone (company name, org. and VAT number,
-    slug, plan, dates, Stripe account id, status "purged") with no personal
-    data, one activity log row about the website repo (written after the
+    slug, plan, dates, Stripe account id, the billing agreement without
+    who changed it, status "purged") with no personal data: the next
+    invoicing run still bills the days used before the customer left (a
+    "Delete customer" right after offboarding), one activity log row about the website repo (written after the
     log is deleted), the SLUG# claim (Booqy Console's New customer takes
     over a purged customer's slug, with a fresh repo), the STRIPE_ACCOUNT# claim (the restaurant keeps its
     Stripe account), catering documents (7-year Object Lock, bookkeeping),
@@ -423,6 +425,10 @@ def _tombstone(profile, now):
     account = (profile.get("stripe") or {}).get("accountId")
     if account:
         stone["stripe"] = {"accountId": account}
+    if isinstance(profile.get("billing"), dict):
+        # The agreement: the last invoice (the days used before leaving) is
+        # made on the next 25th, which may come after the purge.
+        stone["billing"] = {k: v for k, v in profile["billing"].items() if not k.endswith("By")}
     stone.update(status="purged", locationCount=0, purgedAt=iso(now), updatedAt=iso(now))
     return stone
 

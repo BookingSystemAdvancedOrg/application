@@ -129,7 +129,9 @@ def seed_tenant(e, tenant_id, location_id, *, status="active", purge_at=None, of
                "address": {"street": "Gatan 1", "postalCode": "12345", "city": "Stockholm"},
                "branding": {"logoUrl": "https://example.se/logo.png"}, "ownerEmail": "owner@example.se",
                "stripe": {"accountId": f"acct_{slug}", "chargesEnabled": True}, "locationCount": 1,
-               "entitlements": {"maxLocations": 3, "features": {"reservations": True}}, "createdAt": "2025-01-01T00:00:00Z"}
+               "entitlements": {"maxLocations": 3, "features": {"reservations": True}}, "createdAt": "2025-01-01T00:00:00Z",
+               "billing": {"customerId": f"cus_{slug}", "status": "active", "startsAt": "2026-05-01",
+                           "endsAt": "2026-10-19", "startedBy": "ops@booqy.se", "cancelRequestedBy": "ops@booqy.se"}}
     if purge_at:
         profile["purgeAt"] = _iso(purge_at)
     if offboarded_at:
@@ -207,6 +209,8 @@ def test_due_tenant_is_purged_and_neighbour_untouched(env):
     assert stone["orgNumber"] == "556677-8899" and stone["slug"] == "gone" and stone["GSI1PK"] == "TENANT"
     assert stone["stripe"] == {"accountId": "acct_gone"} and stone["locationCount"] == 0
     assert stone["entitlements"]["maxLocations"] == 3
+    # the agreement stays for its last invoice, without who changed it
+    assert stone["billing"] == {"customerId": "cus_gone", "status": "active", "startsAt": "2026-05-01", "endsAt": "2026-10-19"}
     for field in ("contactEmail", "contactPhone", "address", "branding", "ownerEmail"):
         assert field not in stone
     assert count(t["tenant"], f"TENANT#{GONE}") == 1                      # audit rows gone

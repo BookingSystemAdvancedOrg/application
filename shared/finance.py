@@ -8,7 +8,8 @@ these fields.
 
     from shared import finance
     finance.count(tenant_id, emails=1)       # today (UTC)
-    finance.count(tenant_id, location_id=loc, **finance.sms_counters(2, "reminder"))
+    finance.count(tenant_id, location_id=loc, day=finance.billing_day(),
+                  **finance.sms_counters(2, "reminder"))
 
 With a location the same ADD also goes on the location's row
 (LOC#<locationId>#DAY#<day> in the restaurant's partition), which is what
@@ -26,6 +27,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -48,6 +50,13 @@ def sms_counters(part_count, kind):
 def day_key(when=None):
     when = when or datetime.now(timezone.utc)
     return when.strftime("%Y-%m-%d")
+
+
+def billing_day(when=None):
+    """The Swedish calendar day: SMS parts are invoiced per period from the
+    25th to the 24th, so an SMS at 00:30 on the 25th belongs to the new
+    period, not to the 24th in UTC."""
+    return day_key((when or datetime.now(timezone.utc)).astimezone(ZoneInfo("Europe/Stockholm")))
 
 
 def tenant_pk(tenant_id):

@@ -306,8 +306,10 @@ def _send_sms(phone, text, tenant_row, location_id=None, kind="booking"):
     if _SENDER_ID.fullmatch(sender) and re.search(r"[A-Za-z]", sender):
         attributes["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender.replace(" ", "")}
     _client("sns").publish(PhoneNumber=phone, Message=text, MessageAttributes=attributes)
-    # Counted in parts (what the restaurant is invoiced for) and by type.
-    finance.count(tenant_row.get("tenantId"), location_id=location_id, **finance.sms_counters(sms.parts(text), kind))
+    # Counted in parts (what the restaurant is invoiced for) and by type, on
+    # the Swedish day: the invoice's period runs from the 25th to the 24th.
+    finance.count(tenant_row.get("tenantId"), location_id=location_id, day=finance.billing_day(),
+                  **finance.sms_counters(sms.parts(text), kind))
     bucket = _outbox_bucket()
     if bucket:
         # A copy for the outbox - best effort, the SMS itself already went out.

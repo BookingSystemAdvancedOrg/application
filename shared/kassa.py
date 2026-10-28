@@ -5,7 +5,9 @@ payments are Stripe Terminal card payments (shared/card_payments.py).
 
 Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
     PK LOCATION#<l>  SK REGISTER#<registerId>      a register (registreringsenhet):
-        label (kassabeteckning), serialNumber, counters receiptSeq (receipts
+        label (the till's name; the kassabeteckning unless the control system
+        assigned one: designation), csRef (the control system's ids),
+        serialNumber, counters receiptSeq (receipts
         and return receipts), copySeq, trainingSeq, zSeq, jseq (journal),
         gtSales, gtReturn (grand totals, öre), lastZJseq, lastZAt, lastZDay,
         float (växelkassa), dayOpen, training, lastHash, lockId/lockUntil
@@ -13,6 +15,12 @@ Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
         discount, card payment ids; closed/void bills expire after 90 days
     PK LOCATION#<l>  SK RCPT#<registerId>#<seq>    a sale receipt's pointer:
         jseq, payments, returned lines, returnCount, copyJseq (one copy)
+    PK LOCATION#<l>  SK SETUP                      "Kom igång med kassan" checklist
+    PK LOCATION#<l>  SK AUDIT#<registerId>#<at>#<id>  audit trail outside the
+        journal (written once, never changed): the felanmälan banner shown /
+        dismissed during a control system outage
+    PK TENANT#<t>    SK CS#<provider>#<env>         the control system's ids for
+        the tenant (shared/control_system_fiskaly.py)
 
 Journal table (KASSA_JOURNAL_TABLE_NAME), append-only, no TTL:
     PK REG#<registerId>  SK J#<jseq, 12 digits>   one registration: type, at
@@ -28,6 +36,7 @@ control system, so the serial it saw is the serial written.
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -66,6 +75,12 @@ TABLE_LABEL_MAX = 20
 MAX_FLOAT = 10_000_000
 BILL_TTL_DAYS = 90
 MAIL_TTL_HOURS = 24
+# "Felanmäl till Skatteverket": after this long without the control system,
+# or at once when the provider reports a fault to report (see
+# docs/KASSA-REQUIREMENTS.md, "När kontrollsystemet inte svarar").
+FELANMAL_AFTER_MINUTES = 30
+SETUP_ITEMS = ("anmalan", "skylt", "zrapport", "journal", "avbrott")
+OUTAGE_ACTIONS = ("shown", "dismissed")
 
 TABLE, TAKEAWAY = "table", "takeaway"
 BILL_KINDS = (TABLE, TAKEAWAY)
@@ -94,6 +109,7 @@ NOTICE_RECEIPT = "kassa_receipt"
 _ID = re.compile(r"[0-9a-f]{32}")
 _LINE_ID = re.compile(r"[0-9a-f]{8}")
 _LABEL = re.compile(r"[A-Za-z0-9ÅÄÖåäö][A-Za-z0-9ÅÄÖåäö \-]{0,15}")
+logger = logging.getLogger(__name__)
 _ser = TypeSerializer()
 _deser = TypeDeserializer()
 
@@ -242,7 +258,8 @@ def org_digits(value, today=None):
 
 
 def company(tenant_row, location):
-    """KRAV 7 kap. 1 § a-b: name, org.nr and the address where the sale is."""
+    """KRAV 7 kap. 1 § a-b: name, org.nr and the address where the sale is.
+    Goes on every receipt (so into the journal); legal_address() is extra."""
     seller = _seller(tenant_row, location)
     org = org_digits(seller.get("org"))
     if not org:
@@ -252,6 +269,19 @@ def company(tenant_row, location):
         raise Conflict("address_missing")
     return {"name": str(seller.get("name") or "")[:72], "org": org, "orgText": str(seller.get("org")),
             "address": address[:72], "restaurant": str((location or {}).get("name") or "")[:72]}
+
+
+def legal_address(tenant_row):
+    """The company's own address {street, postalCode, city} if Booqy Console
+    has it, for a control system that registers the company."""
+    address = (tenant_row or {}).get("address")
+    return address if isinstance(address, dict) else None
+
+
+def designation(register):
+    """The kassabeteckning: what the control system assigned (fiskaly's
+    tillverkningsnummer), else the till's own label."""
+    return register.get("designation") or register["label"]
 
 
 def user_of(ctx):
@@ -288,23 +318,29 @@ def clean_label(value):
     return label
 
 
-def register_view(register, system, location):
-    status = system.status(register)
+def register_view(register, system, location, status=None):
+    status = status or system.status(register)
     view = {k: _plain(register.get(k)) for k in (
         "registerId", "label", "serialNumber", "receiptSeq", "zSeq", "jseq", "training", "float", "dayOpen",
-        "lastZAt", "lastZDay", "createdAt")}
+        "lastZAt", "lastZDay", "createdAt", "csDownSince", "outageNoticeShown", "csEnrolledAt")}
     view.update({
+        "designation": designation(register),
+        "felanmal": felanmal_due(register, status, o.now_utc()),
         "model": MODEL, "program": PROGRAM, "manufacturer": MANUFACTURER, "version": version(),
-        "controlSystem": {"ok": status.ok, "code": status.code, "provider": status.provider,
-                          "serial": status.serial, "simulated": status.provider == cs.SIMULATOR},
+        "controlSystem": {"ok": status.ok, "code": status.code, "provider": status.provider, "name": system.name,
+                          "serial": status.serial, "simulated": status.provider == cs.SIMULATOR,
+                          "connected": not system.enrols
+                          or (register.get("csRef") or {}).get("provider") == system.provider,
+                          **({"unit": system.control_unit} if system.control_unit else {})},
         "simulateDown": bool(register.get("simulateDown")),
         "today": local(o.now_utc(), location).date().isoformat(),
     })
     return {k: v for k, v in view.items() if v is not None}
 
 
-def create_register(ctx, label, *, user, now, system):
+def create_register(ctx, label, *, user, now, system, tenant_row):
     label = clean_label(label)
+    seller = {**company(tenant_row, ctx.location), "legalAddress": legal_address(tenant_row)} if system.enrols else None
     existing = list_registers(ctx.location_id)
     if len(existing) >= MAX_REGISTERS:
         raise Conflict("register_limit")
@@ -321,12 +357,21 @@ def create_register(ctx, label, *, user, now, system):
         "createdAt": o.iso(now), "createdBy": ctx.sub, "version": 1,
     }
     try:
-        system.register_register(item)
-    except cs.Unreachable:
+        enrolment = system.register_register(item, seller)
+    except cs.Unreachable as exc:
+        logger.warning(json.dumps({"kassa": "enrol_unreachable", "status": exc.status}))
         raise Unavailable("control_system_unreachable") from None
+    except cs.Rejected as exc:
+        _log_rejected("enrol", exc)
+        raise Unavailable("control_system_rejected") from None
+    if enrolment:
+        # The kassabeteckning the merchant registers with Skatteverket within 14 days.
+        item.update({"designation": enrolment.designation, "csRef": enrolment.ref,
+                     "csEnrolledAt": o.iso(now)})
     _table().put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
     register, lock = _lock(ctx.location_id, register_id)
-    return _append(ctx, register, lock, START, {"model": MODEL, "version": version()}, now=now, user=user)
+    return _append(ctx, register, lock, START, {"model": MODEL, "version": version(),
+                                                "designation": designation(register)}, now=now, user=user)
 
 
 # --- the register lock and the journal ---------------------------------------------------
@@ -373,8 +418,10 @@ def _append(ctx, register, lock_id, kind, data, *, now, user, sets=None, extra=N
         **journal_key(register_id, jseq), "jseq": jseq, "type": kind, "at": o.iso(now),
         "local": local_text(now, ctx.location), "regDay": f"REG#{register_id}#{local(now, ctx.location).date()}",
         "user": user, "tenantId": ctx.tenant_id, "locationId": location_id, "registerId": register_id,
-        "label": register["label"], "data": _plain(data), "prevHash": register.get("lastHash") or "0" * 64,
+        "label": designation(register), "data": _plain(data), "prevHash": register.get("lastHash") or "0" * 64,
     }
+    if designation(register) != register["label"]:
+        entry["registerName"] = register["label"]
     entry["hash"] = entry_hash(entry)
     names, values, assignments = {}, {":j": jseq, ":h": entry["hash"], ":prev": previous, ":lock": lock_id,
                                       ":one": 1, ":zero": 0}, []
@@ -439,6 +486,119 @@ def journal_entry(register_id, jseq):
     if not item:
         raise NotFound
     return item
+
+
+def felanmal_due(register, status, now):
+    """True when staff should report the outage to Skatteverket: down for
+    FELANMAL_AFTER_MINUTES, or the provider says so (status code)."""
+    if status.ok or not register.get("csDownSince"):
+        return False
+    if status.code in cs.REPORT_NOW:
+        return True
+    try:
+        since = o.parse_iso(register["csDownSince"])
+    except (TypeError, ValueError):
+        return True
+    return (now - since).total_seconds() >= FELANMAL_AFTER_MINUTES * 60
+
+
+def _mark_down(ctx, register_id, code, *, now, user):
+    """The control system stopped answering: remember since when and journal
+    the status code once (KS 5 kap. 12 §: on every change)."""
+    try:
+        _table().update_item(
+            Key=register_key(ctx.location_id, register_id), UpdateExpression="SET csDownSince = :now, csDownCode = :code",
+            ConditionExpression="attribute_exists(PK) AND attribute_not_exists(csDownSince)",
+            ExpressionAttributeValues={":now": o.iso(now), ":code": code})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        return False
+    _status_event(ctx, register_id, code, now=now, user=user)
+    return True
+
+
+def _mark_up(ctx, register_id, *, now, user):
+    try:
+        _table().update_item(
+            Key=register_key(ctx.location_id, register_id),
+            UpdateExpression="REMOVE csDownSince, csDownCode, outageNoticeShown",
+            ConditionExpression="attribute_exists(csDownSince)")
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        return False
+    _status_event(ctx, register_id, cs.STATUS_CONTACT_AGAIN, now=now, user=user)
+    return True
+
+
+def check_control_system(ctx, register, system, *, now, user):
+    """Asks the control system and records an outage starting or ending.
+    Returns (register as it is now, status)."""
+    status = system.status(register)
+    register_id = register["registerId"]
+    if status.ok and register.get("csDownSince"):
+        _mark_up(ctx, register_id, now=now, user=user)
+        register = {k: v for k, v in register.items() if k not in ("csDownSince", "csDownCode", "outageNoticeShown")}
+    elif not status.ok and not register.get("csDownSince"):
+        _mark_down(ctx, register_id, status.code, now=now, user=user)
+        register = {**register, "csDownSince": o.iso(now), "csDownCode": status.code}
+    return register, status
+
+
+def outage_notice(ctx, register_id, action, *, user, now):
+    """Audit trail: the felanmälan banner was shown (once per outage) or
+    dismissed. Kept outside the journal (no SKVFS 2021:16 element)."""
+    if action not in OUTAGE_ACTIONS:
+        raise ValueError("action must be shown or dismissed")
+    register = get_register(ctx, register_id)
+    down_since = register.get("csDownSince")
+    if not down_since:
+        raise Conflict("control_system_up")
+    if action == "shown":
+        try:
+            _table().update_item(Key=register_key(ctx.location_id, register_id),
+                                 UpdateExpression="SET outageNoticeShown = :since",
+                                 ConditionExpression="csDownSince = :since AND attribute_not_exists(outageNoticeShown)",
+                                 ExpressionAttributeValues={":since": down_since})
+        except ClientError as exc:
+            if not _conditional(exc):
+                raise
+            return None
+    item = {"PK": pk(ctx.location_id), "SK": f"AUDIT#{register_id}#{o.iso(now)}#{new_id()[:8]}",
+            "tenantId": ctx.tenant_id, "registerId": register_id, "type": "felanmalan_banner", "action": action,
+            "downSince": down_since, "user": user, "at": o.iso(now)}
+    _table().put_item(Item=item, ConditionExpression="attribute_not_exists(SK)")
+    return item
+
+
+def audit_entries(ctx, register_id):
+    items = _table().query(KeyConditionExpression=Key("PK").eq(pk(ctx.location_id))
+                           & Key("SK").begins_with(f"AUDIT#{register_id}#"), ConsistentRead=True).get("Items") or []
+    return [i for i in items if i.get("tenantId") == ctx.tenant_id]
+
+
+def get_setup(ctx):
+    item = _table().get_item(Key={"PK": pk(ctx.location_id), "SK": "SETUP"}, ConsistentRead=True).get("Item") or {}
+    items = _plain(item.get("items") or {})
+    return {key: items.get(key) or {"done": False} for key in SETUP_ITEMS}
+
+
+def set_setup_item(ctx, key, done, *, user, now):
+    """"Kom igång med kassan": one item ticked or unticked (per location)."""
+    if key not in SETUP_ITEMS:
+        raise ValueError("unknown checklist item")
+    if not isinstance(done, bool):
+        raise ValueError("done must be true or false")
+    _table().update_item(
+        Key={"PK": pk(ctx.location_id), "SK": "SETUP"},
+        UpdateExpression="SET #i = if_not_exists(#i, :empty), tenantId = :t",
+        ExpressionAttributeNames={"#i": "items"}, ExpressionAttributeValues={":empty": {}, ":t": ctx.tenant_id})
+    _table().update_item(
+        Key={"PK": pk(ctx.location_id), "SK": "SETUP"}, UpdateExpression="SET #i.#k = :v",
+        ExpressionAttributeNames={"#i": "items", "#k": key},
+        ExpressionAttributeValues={":v": {"done": done, "by": user, "at": o.iso(now)}})
+    return get_setup(ctx)
 
 
 def _status_event(ctx, register_id, code, *, now, user):
@@ -814,7 +974,11 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
         raise Conflict("bill_closed")
     if bill.get("training"):
         raise Conflict("training_no_payment")
-    if not system.status(get_register(ctx, bill["registerId"])).ok:
+    register = get_register(ctx, bill["registerId"])
+    _day_open(register)
+    status = system.status(register)
+    if not status.ok:
+        _mark_down(ctx, bill["registerId"], status.code, now=now, user=user_of(ctx))
         raise Unavailable("control_system_unreachable")
     payments = payments_of(ctx, bill)
     known = next((p for p in payments if p.get("paymentId") == checkout_id), None)
@@ -851,6 +1015,14 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
     return item
 
 
+def _day_open(register):
+    """ANV 4 kap. 2 §: "Vid varje försäljningsdags början ska den växelkassa
+    som hör till ett kassaregister registreras", and the Z ends the day (5 §).
+    So no sale or return until "Öppna dagen" (training takes no money)."""
+    if not register.get("dayOpen"):
+        raise Conflict("day_not_open")
+
+
 def undo_payment(ctx, bill_id, payment_id, *, now):
     """Before the receipt: a paid part back to the card (the guest changed
     their mind). After the receipt it is a return."""
@@ -884,7 +1056,7 @@ def _card_rows(payments):
     for p in payments:
         card = p.get("card") or {}
         out.append({"paymentId": p["paymentId"], "method": CARD, "amount": _int(p.get("amount")),
-                    "brand": card.get("brand"), "last4": card.get("last4")})
+                    "brand": card.get("brand"), "last4": card.get("last4"), "funding": card.get("funding")})
     return out
 
 
@@ -893,8 +1065,33 @@ def _register_receipt(ctx, register, lock, system, data, *, now, user):
         return system.sign(register, data)
     except cs.Unreachable as exc:
         _unlock(ctx.location_id, register["registerId"], lock)
-        _status_event(ctx, register["registerId"], exc.status, now=now, user=user)
+        _mark_down(ctx, register["registerId"], exc.status, now=now, user=user)
         raise Unavailable("control_system_unreachable") from None
+    except cs.Rejected as exc:
+        _unlock(ctx.location_id, register["registerId"], lock)
+        _log_rejected("receipt", exc)
+        raise Unavailable("control_system_rejected") from None
+    except Exception:
+        _unlock(ctx.location_id, register["registerId"], lock)
+        raise
+
+
+def _log_rejected(step, exc):
+    """What the control system refused (its error code and message; a
+    provider adapter never puts a key or a secret in the exception)."""
+    logger.warning(json.dumps({"kassa": f"{step}_rejected", "detail": str(exc)[:400]}, ensure_ascii=False))
+
+
+def _cs_lines(lines):
+    """Receipt lines as the control system takes them (gross after discount)."""
+    return tuple({"text": str(line.get("name") or ""), "quantity": _int(line.get("quantity")),
+                  "total": _int(line.get("total")), "rate": _int(line.get("vatRate")), "vat": _int(line.get("vat"))}
+                 for line in lines)
+
+
+def _cs_payments(rows):
+    return tuple({"method": "card", "amount": _int(p.get("amount")), "last4": p.get("last4"),
+                  "funding": p.get("funding")} for p in rows)
 
 
 def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
@@ -913,6 +1110,8 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
     succeeded = [p for p in payments if p.get("status") == cp.SUCCEEDED]
     if not training and _paid(payments) != priced["total"]:
         raise Conflict("not_fully_paid")
+    if not training:
+        _day_open(get_register(ctx, bill["registerId"]))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
     register, lock = _lock(ctx.location_id, bill["registerId"])
@@ -920,9 +1119,10 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
     seq = _int(register.get(field)) + 1
     data = cs.ReceiptData(
         kind=cs.TRAINING if training else cs.NORMAL, at=local(now, ctx.location), org_number=seller["org"],
-        register_label=register["label"], address=seller["address"], serial=seq,
+        register_label=designation(register), address=seller["address"], serial=seq,
         sales_by_rate={v["rate"]: v["gross"] for v in priced["vat"]},
-        vat_by_rate={v["rate"]: v["vat"] for v in priced["vat"]})
+        vat_by_rate={v["rate"]: v["vat"] for v in priced["vat"]},
+        lines=_cs_lines(priced["lines"]), payments=_cs_payments(_card_rows(succeeded)), user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     receipt = {
         "seq": seq, "zSeq": _int(register.get("zSeq")) + 1, "company": seller, "billId": bill_id,
@@ -934,7 +1134,7 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
         "gross": priced["gross"], "total": priced["total"], "vat": priced["vat"],
         "payments": _card_rows(succeeded), "controlCode": registration.control_code,
         "csSerial": registration.serial, "offline": registration.offline, "electronic": delivery == EMAIL,
-        "testMode": test_mode(system),
+        "testMode": test_mode(system), "csRef": registration.ref, "csMessage": registration.message or None,
     }
     sets = {field: seq}
     if not training:
@@ -1016,14 +1216,21 @@ def copy_receipt(ctx, register_id, seq, *, delivery, email, user, now, system, t
     email = check_delivery(ctx, system, delivery, email)
     register, lock = _lock(ctx.location_id, register_id)
     copy_seq = _int(register.get("copySeq")) + 1
+    sold = _plain(original["data"])
     data = cs.ReceiptData(kind=cs.COPY, at=local(now, ctx.location), org_number=seller["org"],
-                          register_label=register["label"], address=seller["address"], serial=copy_seq,
-                          original_at=datetime.fromisoformat(original["local"]), original_serial=int(seq))
+                          register_label=designation(register), address=seller["address"], serial=copy_seq,
+                          original_at=datetime.fromisoformat(original["local"]), original_serial=int(seq),
+                          original_ref=sold.get("csRef"),
+                          sales_by_rate={v["rate"]: v["gross"] for v in sold.get("vat") or []},
+                          vat_by_rate={v["rate"]: v["vat"] for v in sold.get("vat") or []},
+                          lines=_cs_lines(sold.get("lines") or []), payments=_cs_payments(sold.get("payments") or []),
+                          user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     copy = {"copySeq": copy_seq, "originalSeq": int(seq), "originalAt": original["local"],
             "originalJseq": _int(original["jseq"]), "original": _plain(original["data"]),
             "zSeq": _int(register.get("zSeq")) + 1, "controlCode": registration.control_code,
-            "csSerial": registration.serial, "electronic": delivery == EMAIL, "testMode": test_mode(system)}
+            "csSerial": registration.serial, "electronic": delivery == EMAIL, "testMode": test_mode(system),
+            "csRef": registration.ref, "csMessage": registration.message or None}
 
     def extra(jseq):
         return [{"Update": {
@@ -1080,9 +1287,12 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
     if not reason:
         raise ValueError("reason is required")
     picked = _return_lines(original, pointer, lines)
+    _day_open(get_register(ctx, register_id))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
-    if not system.status(get_register(ctx, register_id)).ok:
+    status = system.status(get_register(ctx, register_id))
+    if not status.ok:
+        _mark_down(ctx, register_id, status.code, now=now, user=user)
         raise Unavailable("control_system_unreachable")
     total = sum(amount for _, _, amount, _ in picked)
     count = _int(pointer.get("returnCount")) + 1
@@ -1111,8 +1321,12 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
     register, lock = _lock(ctx.location_id, register_id)
     rseq = _int(register.get("receiptSeq")) + 1
     data = cs.ReceiptData(kind=cs.NORMAL, at=local(now, ctx.location), org_number=seller["org"],
-                          register_label=register["label"], address=seller["address"], serial=rseq,
-                          returns_by_rate=sums_by_rate, vat_by_rate=vat_by_rate)
+                          register_label=designation(register), address=seller["address"], serial=rseq,
+                          returns_by_rate=sums_by_rate, vat_by_rate=vat_by_rate, original_serial=int(seq),
+                          lines=tuple({"text": str(line.get("name") or ""), "quantity": quantity, "total": amount,
+                                       "rate": _int(line["vatRate"]), "vat": vat}
+                                      for line, quantity, amount, vat in picked),
+                          payments=_cs_payments(refunds), user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     returned = _plain(pointer.get("returned") or {})
     for line, quantity, amount, vat in picked:
@@ -1129,6 +1343,7 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
                                  "vat": vat_by_rate[r]} for r in sorted(sums_by_rate)],
         "payments": refunds, "controlCode": registration.control_code, "csSerial": registration.serial,
         "offline": registration.offline, "electronic": delivery == EMAIL, "testMode": test_mode(system),
+        "csRef": registration.ref, "csMessage": registration.message or None,
     }
 
     def extra(jseq):
@@ -1145,9 +1360,21 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
 
 # --- float, training, reports -----------------------------------------------------------
 
-def open_day(ctx, register_id, amount, *, user, now):
-    """Växelkassa at the start of the sales day (ANV 4 kap. 2 §)."""
+def open_day(ctx, register_id, amount, *, user, now, system):
+    """Växelkassa at the start of the sales day (ANV 4 kap. 2 §). The
+    control system's startup check first: no day without STATUS_OK."""
     amount = o._whole(amount, 0, MAX_FLOAT, "float")
+    register, status = check_control_system(ctx, get_register(ctx, register_id), system, now=now, user=user)
+    if not status.ok:
+        raise Unavailable("control_system_unreachable")
+    try:
+        system.open_day(register)
+    except cs.Unreachable as exc:
+        _mark_down(ctx, register_id, exc.status, now=now, user=user)
+        raise Unavailable("control_system_unreachable") from None
+    except cs.Rejected as exc:
+        _log_rejected("open_day", exc)
+        raise Unavailable("control_system_rejected") from None
     register, lock = _lock(ctx.location_id, register_id)
     change = amount - _int(register.get("float"))
     day = local(now, ctx.location).date().isoformat()
@@ -1167,10 +1394,14 @@ def set_training(ctx, register_id, on, *, user, now):
 
 
 def summarize(entries, open_bills, register):
-    """KRAV 7 kap. 2-3 §§ from the journal since the last Z."""
+    """KRAV 7 kap. 2-3 §§ from the journal since the last Z. The sales total,
+    its groups, the VAT per rate and "försäljningssumman fördelad på olika
+    betalningsmedel" all count sales; returns are their own item ("antal
+    returer och belopp"), with their VAT and refunds alongside, so the
+    report adds up line by line (the XML has the sales side only)."""
     sales = returns = returns_amount = receipts = items = discounts = 0
     copies = copies_amount = training = training_amount = other = other_amount = 0
-    vat, groups, paid = {}, {}, {}
+    vat, groups, paid, return_vat, refunded = {}, {}, {}, {}, {}
     for entry in entries:
         data, kind = _plain(entry.get("data") or {}), entry.get("type")
         if kind == SALE:
@@ -1189,9 +1420,9 @@ def summarize(entries, open_bills, register):
             returns += 1
             returns_amount += _int(data.get("total"))
             for v in data.get("vat") or []:
-                vat[_int(v["rate"])] = vat.get(_int(v["rate"]), 0) - _int(v["vat"])
+                return_vat[_int(v["rate"])] = return_vat.get(_int(v["rate"]), 0) + _int(v["vat"])
             for p in data.get("payments") or []:
-                paid[p.get("method") or CARD] = paid.get(p.get("method") or CARD, 0) - _int(p.get("amount"))
+                refunded[p.get("method") or CARD] = refunded.get(p.get("method") or CARD, 0) + _int(p.get("amount"))
         elif kind == COPY:
             copies += 1
             copies_amount += _int((data.get("original") or {}).get("total"))
@@ -1210,14 +1441,17 @@ def summarize(entries, open_bills, register):
         "copies": copies, "copiesAmount": copies_amount, "training": training, "trainingAmount": training_amount,
         "payments": [{"method": k, "amount": v} for k, v in sorted(paid.items())] or [{"method": CARD, "amount": 0}],
         "returns": returns, "returnsAmount": returns_amount, "discounts": discounts,
+        "returnVat": [{"rate": k, "amount": v} for k, v in sorted(return_vat.items())],
+        "refunds": [{"method": k, "amount": v} for k, v in sorted(refunded.items())],
         "otherReductions": other, "otherReductionsAmount": other_amount,
         "openBills": len(open_bills), "openBillsAmount": open_amount,
         "grandTotalSales": gt_sales, "grandTotalReturn": gt_return, "grandTotalNet": gt_sales - gt_return,
     }
 
 
-def report(ctx, register_id, kind, *, user, now, tenant_row):
-    """X (any time, no number) or Z (numbered, closes the period)."""
+def report(ctx, register_id, kind, *, user, now, tenant_row, system=None):
+    """X (any time, no number) or Z (numbered, closes the period; then the
+    control system hears that the day ended, best effort)."""
     seller = company(tenant_row, ctx.location)
     register, lock = _lock(ctx.location_id, register_id)
     try:
@@ -1227,18 +1461,37 @@ def report(ctx, register_id, kind, *, user, now, tenant_row):
         _unlock(ctx.location_id, register_id, lock)
         raise
     summary = summarize(entries, open_bills, register)
-    summary.update({"company": seller, "since": register.get("lastZAt"), "serialNumber": register["serialNumber"],
+    since = local_text(o.parse_iso(register["lastZAt"]), ctx.location) if register.get("lastZAt") else None
+    summary.update({"company": seller, "since": since, "serialNumber": register["serialNumber"],
                     "model": MODEL, "program": PROGRAM, "version": version()})
     sets = {}
     if kind == ZREPORT:
         z_seq = _int(register.get("zSeq")) + 1
         summary["zSeq"] = z_seq
+        # The Z is the end of the sales day (ANV 4 kap. 5 §): the next one starts with "Öppna dagen".
         sets = {"zSeq": z_seq, "lastZJseq": _int(register.get("jseq")) + 1, "lastZAt": o.iso(now),
-                "lastZDay": local(now, ctx.location).date().isoformat()}
+                "lastZDay": local(now, ctx.location).date().isoformat(), "dayOpen": None}
     elif kind != XREPORT:
         _unlock(ctx.location_id, register_id, lock)
         raise ValueError("kind must be x or z")
-    return _append(ctx, register, lock, kind, summary, now=now, user=user, sets=sets)
+    entry = _append(ctx, register, lock, kind, summary, now=now, user=user, sets=sets)
+    if kind == ZREPORT and system is not None:
+        entry["closing"] = close_control_system_day(register, system)
+    return entry
+
+
+def close_control_system_day(register, system):
+    """After a Z: the control system hears the day ended. True if it did; a
+    failure never undoes the Z report ("Öppna dagen" opens the register at
+    the control system again either way)."""
+    try:
+        system.close_day(register)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(json.dumps({"kassa": "closing_failed", "register": register["registerId"],
+                                   "detail": str(exc)[:400]}, ensure_ascii=False))
+        return False
+    logger.info(json.dumps({"kassa": "closing_sent", "register": register["registerId"]}))
+    return True
 
 
 def day_status(ctx, register, now):

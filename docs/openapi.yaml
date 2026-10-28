@@ -3609,12 +3609,19 @@ paths:
         booking site needs to render it: name, branding, enabled features,
         locations (address, contact, opening hours, booking rules), legal
         entity and the public Stripe / Turnstile keys. Pass exactly one of
-        `host` or `slug` (dev only - for `*.cloudfront.net` /
-        localhost). Unknown, pending or inactive: 404.
+        `host`, `tenantId` (a restaurant's own site repo, which knows its
+        tenant; also the prod deploy gate, which needs `tenant.domain`) or
+        `slug` (dev only - for `*.cloudfront.net` / localhost). Unknown,
+        pending or inactive: 404.
       security: []
       x-required-groups: []
       parameters:
         - name: host
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tenantId
           in: query
           required: false
           schema:
@@ -5854,7 +5861,7 @@ paths:
               schema: {type: object}
     post:
       tags: [Kassa]
-      summary: 'A new register (kassabeteckning, max 16 characters)'
+      summary: 'A new register (name max 16 characters); with a real control system it is enrolled there and gets its kassabeteckning (503 control_system_unreachable / control_system_rejected)'
       operationId: createKassaRegister
       security:
         - bearerAuth: []
@@ -5898,7 +5905,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'Register the float (växelkassa) at the start of the day'
+      summary: 'Register the float (växelkassa) at the start of the day, after the control system''s startup check (503 control_system_unreachable unless STATUS_OK)'
       operationId: openKassaDay
       security:
         - bearerAuth: []
@@ -6159,6 +6166,90 @@ paths:
           content:
             application/json:
               schema: {type: object}
+  /locations/{locationId}/kassa/registers/{registerId}/outage-notice:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Kassa]
+      summary: 'Audit trail: the felanmälan banner was shown (once per outage) or dismissed'
+      operationId: kassaOutageNotice
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      parameters:
+        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action: {type: string, enum: [shown, dismissed]}
+      responses:
+        '200':
+          description: 'OK. 409 control_system_up when there is no outage.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/setup:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: '"Kom igång med kassan" checklist of the location'
+      operationId: getKassaSetup
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+    put:
+      tags: [Kassa]
+      summary: 'Tick or untick a checklist item (owner only, checked in the handler)'
+      operationId: setKassaSetup
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [item, done]
+              properties:
+                item: {type: string, enum: [anmalan, skylt, zrapport, journal, avbrott]}
+                done: {type: boolean}
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
+  /locations/{locationId}/kassa/manual:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Kassa]
+      summary: 'The user manual (docs/kassa/BRUKSANVISNING.md) as Markdown'
+      operationId: getKassaManual
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: {type: object}
   /locations/{locationId}/kassa/bills:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -6353,7 +6444,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable); printed or e-mailed'
+      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable, or control_system_rejected when the control system refused the data); printed or e-mailed'
       operationId: finalizeKassaBill
       security:
         - bearerAuth: []
@@ -7269,6 +7360,10 @@ components:
               type: string
             slug:
               type: string
+            domain:
+              type: string
+              nullable: true
+              description: The restaurant's own domain once attached with its certificate issued; null before (a site repo's prod deploy refuses without it).
             branding:
               type: object
               description: logoUrl, heroImageUrl, faviconUrl, primaryColor, accentColor, tagline, about, instagramUrl, facebookUrl (only valid values).

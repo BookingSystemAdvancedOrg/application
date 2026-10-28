@@ -1,0 +1,246 @@
+"""A fake fiskaly SIGN SE (Unified API 2026-06-01) for tests: the transport
+FiskalyControlSystem takes. Every request body is validated against
+fiskaly's own OpenAPI spec (tests/fixtures/fiskaly, the published
+fiskaly.uapi.sign-se.2026-06-01.yaml), so a payload fiskaly would refuse
+fails here. Answers follow fiskaly's documented examples (Postman collection,
+integration guide): {"content": {...}}, the control code in
+compliance.data, the status in compliance.status, the tillverkningsnummer in
+compliance.technical_security_system_id. No network.
+
+Keys as in fiskaly TEST (2026-10-26): Booqy's GROUP key may only create
+organizations and subjects; anything inside a UNIT (taxpayers, locations,
+systems, records) needs that UNIT's own key from POST /subjects, and the
+GROUP token gets 405 "non-unit organization" there, X-Scope-Identifier or
+not. Errors carry their code and message in "content", as fiskaly's do."""
+
+import json
+import re
+import uuid
+from pathlib import Path
+
+import jsonschema
+import yaml
+
+SPEC_PATH = Path(__file__).parent / "fixtures" / "fiskaly" / "fiskaly.uapi.sign-se.2026-06-01.yaml"
+_SPEC = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
+_ROOT = {"components": _SPEC["components"]}
+REQUEST_SCHEMAS = {
+    ("POST", "/tokens"): "TokenCreateRequest", ("POST", "/organizations"): "OrganizationCreateRequest",
+    ("POST", "/taxpayers"): "TaxpayerCreateRequest", ("PATCH", "/taxpayers"): "TaxpayerUpdateRequest",
+    ("POST", "/locations"): "LocationCreateRequest", ("PATCH", "/locations"): "LocationUpdateRequest",
+    ("POST", "/systems"): "SystemCreateRequest", ("PATCH", "/systems"): "SystemUpdateRequest",
+    ("POST", "/records"): "RecordCreateRequest", ("POST", "/subjects"): "SubjectCreateRequest",
+}
+UNIT_PATHS = ("/taxpayers", "/locations", "/systems", "/records")
+TEST_KEY = "test-key"
+TEST_SECRET = "test-secret-value"
+
+
+def validate(schema_name, body):
+    """Errors of `body` against a component schema of fiskaly's spec."""
+    schema = {"$ref": f"#/components/schemas/{schema_name}", **_ROOT}
+    return [error.message for error in jsonschema.Draft7Validator(schema).iter_errors(body)]
+
+
+def uuid7():
+    raw = uuid.uuid4().hex
+    return f"{raw[:8]}-{raw[8:12]}-7{raw[13:16]}-8{raw[17:20]}-{raw[20:32]}"
+
+
+SERVER = "ISTCSKSVERIFY0001"     # kontrollserverns ID in fiskaly TEST
+
+
+def code(n):
+    """A 113-character avstämningskod shaped like fiskaly TEST's: 32
+    characters, ';', 80 ending in '==='."""
+    head = (f"N{n:04d}" + "IKLXBBLGMPOTG6DDPXHVTI5TA7SGART")[:32]
+    return head + ";" + ("6LRFC2MVYYVNH5N3TYJT5PGQR6LSDXKV2KRIN6VSBITSYR2M4IYNTQXN4KHOHRHJZCAIMNH2KQCX2" + "A" * 10)[:77] + "==="
+
+
+class FakeFiskaly:
+    def __init__(self):
+        self.calls = []
+        self.status = 1                 # status code of OPENING and TRANSACTION records
+        # Where the status goes: "name" is what fiskaly TEST does (2026-10-26):
+        # compliance.data "STATUS_OK" on OPENING, and on a receipt
+        # "<server>,<code>,<status>,<text>". Fallbacks the adapter also reads:
+        # compliance.status, or the logs.
+        self.status_in = "name"         # name | compliance | logs
+        self.fail = []                  # [(path prefix, HTTP status), ...] answered before the real handler
+        self.processing = 0             # first GETs of a record still PROCESSING
+        self.open_intentions = set()    # INTENTION::TRANSACTION without its TRANSACTION yet
+        # Registers opened with INTENTION::OPENING (closed again by CLOSING).
+        # As in fiskaly TEST: a second OPENING is 405 "already opened". The
+        # refusal of a receipt on a closed register is our guess at the wording.
+        self.opened = set()
+        self.system_states = {}
+        self.tokens = 0
+        self.records = {}
+        self.counter = 0
+        self.expired = set()
+        self.units = set()
+        self.unit_keys = {}             # key -> (secret, unit id)
+        self.bearers = {}               # bearer -> organization id
+
+    def add_unit(self, unit_id):
+        """A UNIT with its own key, as if enrolled earlier: (key, secret)."""
+        self.units.add(unit_id)
+        key, secret = f"unit-key-{len(self.unit_keys) + 1}", f"unit-secret-{len(self.unit_keys) + 1}"
+        self.unit_keys[key] = (secret, unit_id)
+        return key, secret
+
+    @staticmethod
+    def _error(status, code, message):
+        return status, {}, {"content": {"status": status, "code": code, "error": code, "message": message}}
+
+    # transport(method, url, headers, body, timeout) -> (status, headers, json)
+    def __call__(self, method, url, headers, body, timeout):
+        path = url.split("fiskaly.com", 1)[1]
+        payload = json.loads(body) if body else None
+        self.calls.append({"method": method, "path": path, "headers": dict(headers), "body": payload})
+        for i, (prefix, status) in enumerate(self.fail):
+            if path.startswith(prefix):
+                self.fail.pop(i)
+                if status == "timeout":
+                    raise TimeoutError("timed out")
+                return status, {}, {"status": status, "code": "E_FAKE", "error": "fake", "message": "fake failure"}
+        assert headers.get("X-Api-Version") == "2026-06-01"
+        if method in ("POST", "PATCH"):
+            assert headers.get("X-Idempotency-Key"), "fiskaly requires X-Idempotency-Key on POST and PATCH"
+            assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[34][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                                headers["X-Idempotency-Key"]), "fiskaly accepts only UUID v3 or v4 idempotency keys"
+        base = "/" + path.strip("/").split("/")[0].split("?")[0]
+        schema = REQUEST_SCHEMAS.get((method, base))
+        if schema:
+            errors = validate(schema, payload)
+            if errors:
+                return 400, {}, {"status": 400, "code": "E_BAD_REQUEST", "error": "Bad Request", "message": errors[0]}
+        if path == "/tokens":
+            key, secret = payload["content"]["key"], payload["content"]["secret"]
+            if key == TEST_KEY and secret == TEST_SECRET:
+                org, prefix = "group-org", "jwt-"
+            elif key in self.unit_keys and self.unit_keys[key][0] == secret:
+                org, prefix = self.unit_keys[key][1], "jwt-u"
+            else:
+                return self._error(401, "E_UNAUTHORIZED", "invalid key")
+            self.tokens += 1
+            bearer = f"{prefix}{self.tokens}"
+            self.bearers[bearer] = org
+            return 200, {}, {"content": {"id": uuid7(), "authentication": {
+                "type": "JWT", "bearer": bearer, "expires_at": "2099-01-01T00:00:00Z",
+                "issued_at": "2026-10-25T10:00:00Z"}, "organization": {"id": org}}}
+        bearer = headers.get("Authorization", "").removeprefix("Bearer ")
+        if bearer not in self.bearers or bearer in self.expired:
+            return self._error(401, "E_UNAUTHORIZED", "expired")
+        org, scope = self.bearers[bearer], headers.get("X-Scope-Identifier")
+        if base in UNIT_PATHS:
+            if org == "group-org":
+                return self._error(405, "E_METHOD_NOT_ALLOWED",
+                                   f"operation invalid for non-unit organization '{org}'")
+            if scope != org:
+                return self._error(403, "E_FORBIDDEN", "scope is not the token's unit")
+        if method == "POST" and base == "/organizations":
+            assert org == "group-org" and scope == "group-org"
+            unit_id = uuid7()
+            self.units.add(unit_id)
+            return 200, {}, {"content": {"id": unit_id, "state": "ENABLED", "organization": {"id": org},
+                                         **payload["content"]}}
+        if method == "POST" and base == "/subjects":
+            if org != "group-org" or scope not in self.units:
+                return self._error(403, "E_FORBIDDEN", "subjects need the group key and a unit scope")
+            key, secret = self.add_unit(scope)
+            return 200, {}, {"content": {"id": str(uuid.uuid4()), "state": "ENABLED", **payload["content"],
+                                         "credentials": {"key": key, "secret": secret}}}
+        if method == "POST" and base in ("/taxpayers", "/locations"):
+            return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", **payload["content"]}}
+        if method == "POST" and base == "/systems":
+            return 200, {}, {"content": {"id": uuid7(), "state": "ACQUIRED", "mode": "INACTIVE"}}
+        if method == "GET" and base == "/systems":
+            system_id = path.split("/")[2]
+            state = self.system_states.get(system_id, "COMMISSIONED")
+            return 200, {}, {"content": {"id": system_id, "state": state,
+                                         "mode": "OPERATIVE" if state == "COMMISSIONED" else "INACTIVE"}}
+        if method == "PATCH" and base == "/systems":
+            self.system_states[path.split("/")[2]] = payload["content"].get("state")
+            if payload["content"].get("state") == "COMMISSIONED":
+                self.counter += 1
+                return 200, {}, {"content": {"id": path.split("/")[2], "state": "COMMISSIONED", "mode": "OPERATIVE",
+                                             "compliance": {"software": {"name": "Booqy Kassa", "version": "1.0.0"},
+                                                            "technical_security_system_id":
+                                                                f"SE01BQ{self.counter:010d}"}}}
+            return 200, {}, {"content": {"id": path.split("/")[2], "state": payload["content"]["state"]}}
+        if method == "PATCH":
+            return 200, {}, {"content": {"id": path.split("/")[2], **payload["content"]}}
+        if method == "POST" and base == "/records":
+            content = payload["content"]
+            system_id, operation = (content.get("system") or {}).get("id"), content["operation"]["type"]
+            if content["type"] == "INTENTION" and operation == "OPENING":
+                if system_id in self.opened:
+                    return self._error(405, "E_METHOD_NOT_ALLOWED", "record operation invalid: cannot open cash "
+                                       "register: cash register is already opened")
+                self.opened.add(system_id)
+            elif content["type"] == "INTENTION" and system_id not in self.opened:
+                return self._error(405, "E_METHOD_NOT_ALLOWED",
+                                   "record operation invalid: cash register is not opened")
+            elif content["type"] == "INTENTION" and operation == "CLOSING":
+                self.opened.discard(system_id)
+            if content["type"] == "TRANSACTION":
+                target = self.records.get(content["record"]["id"]) or {}
+                if target.get("type") != "INTENTION::TRANSACTION":
+                    # fiskaly TEST, 2026-10-26, e.g. a RECEIPT after INTENTION::DUPLICATE
+                    return self._error(405, "E_METHOD_NOT_ALLOWED", "RECEIPT record can only be connected to a "
+                                       "previously created INTENTION::TRANSACTION record")
+            return 200, {}, {"content": self._record(content)}
+        if method == "GET" and base == "/records":
+            record = self.records[path.split("/")[2]]
+            if record["id"] in self.open_intentions:
+                # As in fiskaly TEST: open until its TRANSACTION arrives.
+                return 200, {}, {"content": {**record, "mode": "PROCESSING", "state": "ACCEPTED"}}
+            if self.processing:
+                self.processing -= 1
+                return 200, {}, {"content": {**record, "mode": "PROCESSING"}}
+            return 200, {}, {"content": {**record, "mode": "FINISHED"}}
+        return 404, {}, {"status": 404, "code": "E_NOT_FOUND", "error": "Not Found", "message": path}
+
+    NAMES = {1: "STATUS_OK", 2: "NO_CONTACT_WITH_KS", 3: "CONTACT_WITH_KS", 4: "NOT_CONFIGURED",
+             5: "CONTACT_MANUFACTURER", 6: "REPORT_ERROR_24H", 7: "ANMAL_FEL_48H"}
+
+    def _record(self, content):
+        record_id = uuid7()
+        kind, operation = content["type"], content["operation"]["type"]
+        record = {"id": record_id, "type": f"{kind}::{operation}", "state": "COMPLETED", "mode": "FINISHED",
+                  "system": content.get("system") or {"id": "sys"}}
+        # A DUPLICATE (copy) finishes at once: status and server, no code of its own.
+        signed = kind == "TRANSACTION" or operation in ("OPENING", "CLOSING", "DUPLICATE")
+        if kind == "TRANSACTION":
+            self.open_intentions.discard(content["record"]["id"])
+        if kind == "INTENTION" and operation == "TRANSACTION":
+            record.update(mode="PROCESSING", state="ACCEPTED")
+            self.open_intentions.add(record_id)
+        if signed:
+            training = (content["operation"].get("details") or {}).get("training")
+            self.counter += 1
+            ok = self.status == 1
+            data = code(self.counter) if ok and not training and kind == "TRANSACTION" else ""
+            if not ok:
+                record["state"] = "FAILED" if self.status > 2 else "COMPLETED"
+            if self.status_in == "name":
+                name = self.NAMES[self.status]
+                if operation in ("OPENING", "CLOSING"):
+                    record["compliance"] = {"data": name}
+                else:
+                    text = "Kvitto får skrivas ut" if ok else "Kvitto får inte skrivas ut"
+                    record["compliance"] = {"data": f"{SERVER},{data},{name},{text}"}
+            elif self.status_in == "compliance":
+                record["compliance"] = {"status": self.status, **({"data": data} if data else {})}
+            else:
+                record["logs"] = [{"severity": "WARNING", "message": f"TCS status {self.NAMES[self.status]}"}]
+                if data:
+                    record["compliance"] = {"data": data}
+        if self.processing and kind == "TRANSACTION":
+            record["mode"] = "PROCESSING"
+        self.records[record_id] = record
+        return record
+
+    def posted(self, path):
+        return [c for c in self.calls if c["method"] == "POST" and c["path"] == path]

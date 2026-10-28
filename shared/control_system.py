@@ -5,26 +5,32 @@ control unit or control system (SKVFS 2014:9 3 kap. 1 §, 4 kap. 9 §). The
 register sends each receipt's data and must get a control code back before
 the sale or return is registered; without it, no receipt.
 
-The certified provider is not chosen yet (docs/KASSA-REQUIREMENTS.md), so
-the till talks to this one small interface:
+The till talks to this one small interface:
 
     status(register)            -> Status: may a receipt be made right now?
+                                   (read-only; asked when Kassa loads, before
+                                   every card payment and return)
+    open_day(register)          -> the day starts ("Öppna dagen")
     sign(register, data)        -> Registration (control code, the control
-                                   system's manufacturing number, offline flag)
-                                   or raises Unreachable
-    register_register(register) -> enrol a new register with the provider
+                                   system's manufacturing number, the
+                                   provider's reference) or raises
+                                   Unreachable / Rejected
+    register_register(register, company)
+                                -> Enrolment (the kassabeteckning the
+                                   provider assigned) or None
     pause_register(register)    -> take a register out of use
+    close_day(register)         -> the day ended (after the Z report)
 
-and the only implementation is SimulatedControlSystem for dev and test
-mode. The likely provider (fiskaly SIGN SE: one TLS request per sale with
-a client certificate, a control code back, registers managed by API) and
-the other certified ones (Axena KS4POS, Loomis Control System) fit this
-shape; a real provider becomes one adapter class here, and nothing
-provider-specific lives outside it.
+Two implementations: SimulatedControlSystem (dev and test mode) and the
+fiskaly SIGN SE adapter (shared/control_system_fiskaly.py), picked by
+KASSA_CONTROL_SYSTEM (Terraform var kassa_control_system). Nothing
+provider-specific lives outside the adapter; another certified provider
+(Axena KS4POS, Loomis Control System) would be one more adapter.
 
 ReceiptData carries what SKVFS 2020:9 5 kap. 34 § (tabell A, B, C) says a
 control program receives per receipt, and kvittodata() renders it in that
-format, so a provider adapter only maps fields.
+format; it also carries the receipt's lines and payments for providers
+that want them (fiskaly does).
 """
 
 import hashlib
@@ -38,21 +44,37 @@ COPY = "kopia"         # kvittokopia (tabell B)
 TRAINING = "ovning"    # övningskvitto (tabell C)
 KINDS = (NORMAL, COPY, TRAINING)
 
+# Status codes a control program sends (SKVFS 2020:9 5 kap. 12 §).
 STATUS_OK = "STATUS_OK"
 STATUS_NO_CONTACT = "EJ_KONTAKT_MED_KS"
+STATUS_CONTACT_AGAIN = "KONTAKT_MED_KS"
+STATUS_NOT_CONFIGURED = "EJ_KONFIGURERAD"
+STATUS_CALL_MANUFACTURER = "KONTAKTA_TILLVERKARE"
+STATUS_REPORT_24H = "ANMAL_FEL_24H"
+STATUS_REPORT_48H = "ANMAL_FEL_48H"
+# The provider itself says the fault must be reported or fixed by it.
+REPORT_NOW = (STATUS_CALL_MANUFACTURER, STATUS_REPORT_24H, STATUS_REPORT_48H)
 
 CODE_LENGTH = 59                  # Kontrollkod in Skatteverket's XML schema
+AVSTAMNING_LENGTH = 113           # Avstamningskod (a control system's code, SKVFS 2020:9)
 SERIAL_LENGTH = 17                # TillverkningsnummerForKontrollsystemet
+DESIGNATION_MAX = 16              # kassabeteckning (tabell A N3)
 SIMULATOR_SERIAL = "BOOQYSIMULATOR001"
 SIMULATOR = "simulator"
 
 
 class Unreachable(Exception):
-    """The control system can't be asked right now: no receipt may be made."""
+    """The control system can't be asked right now, or answered with a status
+    code that forbids a receipt: no receipt may be made."""
 
     def __init__(self, status=STATUS_NO_CONTACT):
         super().__init__(status)
         self.status = status
+
+
+class Rejected(Exception):
+    """The control system refused the request itself (our data was wrong):
+    no receipt, and retrying the same request won't help."""
 
 
 @dataclass(frozen=True)
@@ -68,6 +90,14 @@ class Registration:
     control_code: str
     serial: str
     offline: bool = False
+    ref: dict | None = None           # the provider's ids for this receipt (copies refer to it)
+    message: str = ""                 # the control system's text for staff ("Kvitto får skrivas ut")
+
+
+@dataclass(frozen=True)
+class Enrolment:
+    designation: str                  # kassabeteckning the provider assigned (max 16)
+    ref: dict | None = None           # the provider's ids for the register
 
 
 def _amount(ore):
@@ -99,7 +129,11 @@ class ReceiptData:
     returns_by_rate: dict = field(default_factory=dict)  # {rate: gross öre, positive}
     vat_by_rate: dict = field(default_factory=dict)      # {rate: VAT öre}
     original_at: datetime | None = None                  # copies
-    original_serial: int | None = None                   # copies
+    original_serial: int | None = None                   # copies; returns: the sale returned
+    original_ref: dict | None = None                     # copies: Registration.ref of the original
+    lines: tuple = ()        # ({"text", "quantity", "total", "rate", "vat"}, ...) gross öre after discount
+    payments: tuple = ()     # ({"method": "card", "amount", "last4", "funding"}, ...)
+    user: str = ""
 
     def kvittodata(self):
         """The fields of SKVFS 2020:9 5 kap. 34 § in their formats."""
@@ -127,9 +161,15 @@ class ReceiptData:
 
 
 class ControlSystem:
-    """The port. `register` is the kassa register row (shared/kassa.py)."""
+    """The port. `register` is the kassa register row (shared/kassa.py),
+    `company` kassa.company() (name, org, address, addressParts)."""
 
     provider = ""
+    serial = ""              # TillverkningsnummerForKontrollsystemet / kontrollserverns ID
+    certifiable = True       # False: receipts are never real (simulator, a provider's test environment)
+    enrols = True            # register_register needs the company (org.nr, address)
+    name = ""                # shown to staff
+    control_unit = None      # what the merchant reports to Skatteverket as the kontrollenhet
 
     def status(self, register):
         raise NotImplementedError
@@ -137,11 +177,17 @@ class ControlSystem:
     def sign(self, register, data):
         raise NotImplementedError
 
-    def register_register(self, register):
+    def register_register(self, register, company):
         raise NotImplementedError
 
     def pause_register(self, register):
         raise NotImplementedError
+
+    def open_day(self, register):
+        return None
+
+    def close_day(self, register):
+        return None
 
 
 class SimulatedControlSystem(ControlSystem):
@@ -152,6 +198,10 @@ class SimulatedControlSystem(ControlSystem):
     so the error path can be tried."""
 
     provider = SIMULATOR
+    serial = SIMULATOR_SERIAL
+    certifiable = False
+    enrols = False
+    name = "Simulator (testläge)"
 
     def __init__(self, key=None):
         self._key = (key or os.environ.get("KASSA_SIMULATOR_KEY") or "booqy-kassa-simulator").encode()
@@ -161,7 +211,7 @@ class SimulatedControlSystem(ControlSystem):
         return Status(ok=not down, code=STATUS_NO_CONTACT if down else STATUS_OK, provider=self.provider,
                       serial=SIMULATOR_SERIAL)
 
-    def register_register(self, register):
+    def register_register(self, register, company):
         return None
 
     def pause_register(self, register):
@@ -176,13 +226,17 @@ class SimulatedControlSystem(ControlSystem):
 
 
 def for_location(location):
-    """The control system of a location. Only the simulator exists today;
-    a configured real provider would be picked here."""
+    """The control system of a location: the one the environment is set to
+    (KASSA_CONTROL_SYSTEM: "fiskaly" or, by default, the simulator)."""
+    if os.environ.get("KASSA_CONTROL_SYSTEM") == "fiskaly":
+        from shared.control_system_fiskaly import FiskalyControlSystem
+        return FiskalyControlSystem()
     return SimulatedControlSystem()
 
 
 def certified(system):
     """Whether receipts from `system` may be presented as real ones: never
-    for the simulator, and only once the owner switched the label
-    (KASSA_CERTIFIED, Terraform var kassa_certified)."""
-    return system.provider != SIMULATOR and os.environ.get("KASSA_CERTIFIED") == "true"
+    for the simulator or a provider's test environment, and only once the
+    owner switched the label (KASSA_CERTIFIED, Terraform var kassa_certified)."""
+    return (system.provider != SIMULATOR and bool(system.certifiable)
+            and os.environ.get("KASSA_CERTIFIED") == "true")

@@ -1082,6 +1082,10 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
 **Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
 
+### 30b. `site-repo`
+**Trigger:** direct invoke only: tenant-onboarding `{"action": "provision"}` after the tenant is active, tenant-offboarding `{"action": "archive"}`, platform-tenants for the Website tab (`status`, `provision` = Retry, `invite`, `redeploy`, `archive`)
+**Purpose:** The restaurant's own website repo `site-<slug>` (GitHub App "Booqy Sites", private key in Secrets Manager `booqy/<env>/github-app-sites`): generated from `site-template` (branches dev and main), the repo's OIDC subject set to repository ids, a deploy role `/booqy-sites/<env->site-<slug>` with the fixed boundary (S3 `sites/<tenantId>/` only, checked with the policy simulator), repo variables `<ENV>_AWS_ROLE_ARN|SITE_BUCKET|TENANT_ID|API_BASE_URL`, and this environment's section of `booqy.json` on dev (the commit deploys dev). Dev and prod share the repo, each writes only its own part. Archive removes this environment's role and variables and archives the repo when no environment uses it; never deletes. Refuses any repo not named `site-*`. Outcome on the tenant's `SITE` row. `docs/orchestrator/CUSTOMER-SITES-PLAN.md`, infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
+
 ### 30a. `dlq-replay`
 **Trigger:** EventBridge Scheduler (`dlq_replay_interval_minutes`), input `{"queue": "all", "max": 50}`
 **Purpose:** Drains the dead-letter queues (lifecycle, notification and print stream pointers, scheduled invocations) by redelivering each message to the owning Lambda's live alias; deletes it only on success. After 3 failed replays it emails the alerts topic once and parks the message; expired stream pointers are reconciled (catering-lifecycle) or escalated. Scheduled targets must be on the `REPLAYABLE_FUNCTION_ARNS` allow-list.
@@ -1175,6 +1179,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
 | 30a | `dlq-replay` | EventBridge Scheduler (`dlq_replay_interval_minutes`) | - |
+| 30b | `site-repo` | Direct invoke (onboarding, offboarding, platform-tenants) | n/a |
 | 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |
 | 32 | `insights-rollup` | EventBridge Scheduler (nightly), by hand (`{from, to}`) | - |
 | 33 | `insights` | API GW `GET /insights` | JWT (owner, staff without amounts) |

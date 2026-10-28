@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from decimal import Decimal
 
+from shared import control_system as cs
 from shared import kassa as k
 
 INSTANS = "http://xmls.skatteverket.se/se/skatteverket/td/instans/utredningsstod/1.0"
@@ -105,6 +106,12 @@ def _sums(parent, data, sign, *, payments_label=None):
         _add(row, "TotaltMervardesskattebeloppPerSkattesats", amount(sign * int(v["vat"])))
 
 
+def _code_element(code, control_unit, control_system):
+    """Kontrollkod (59 characters, a control unit) or Avstamningskod (113, a
+    control system such as fiskaly's): the schema offers both."""
+    return control_system if len(str(code or "")) == cs.AVSTAMNING_LENGTH else control_unit
+
+
 def _receipt(parent, entry, data, location, kind):
     sign = -1 if kind == k.RETURN else 1
     el = _add(parent, {k.SALE: "Kassakvitto", k.RETURN: "Returkvitto", k.TRAINING: "Ovningskvitto"}[kind])
@@ -125,7 +132,7 @@ def _receipt(parent, entry, data, location, kind):
     _add(el, "LopnummerForZDagrapportPaKvitto", data.get("zSeq"))
     _add(el, "TillverkningsnummerForKontrollsystemet", data.get("csSerial"))
     if kind != k.TRAINING:
-        _add(el, "Kontrollkod", data.get("controlCode"))
+        _add(el, _code_element(data.get("controlCode"), "Kontrollkod", "Avstamningskod"), data.get("controlCode"))
 
 
 def _copy(parent, entry, data, location):
@@ -139,12 +146,16 @@ def _copy(parent, entry, data, location):
     _add(el, "Kassabeteckning", entry.get("label"))
     _articles(el, original.get("lines") or [], location, 1, data.get("originalAt"))
     _sums(el, original, 1)
-    _add(el, "KontrollkodPaKopiaAvKassakvitto", data.get("controlCode"))
+    if len(str(data.get("controlCode") or "")) == cs.CODE_LENGTH:
+        # The schema has room for a control unit's 59-character code only; a
+        # control system's 113-character one stays in the journal (Osäkert).
+        _add(el, "KontrollkodPaKopiaAvKassakvitto", data.get("controlCode"))
     if data.get("electronic"):
         _add(el, "ElektroniskKopiaAvKassakvitto", "JA")
     _add(el, "LopnummerForZDagrapportPaKvitto", data.get("zSeq"))
     _add(el, "TillverkningsnummerForKontrollsystemet", data.get("csSerial"))
-    _add(el, "KontrollkodForKvittotSomKopianAvser", original.get("controlCode"))
+    _add(el, _code_element(original.get("controlCode"), "KontrollkodForKvittotSomKopianAvser",
+                           "AvstamningskodForKvittotSomKopianAvser"), original.get("controlCode"))
 
 
 def _report(parent, entry, data, kind):
@@ -250,20 +261,20 @@ def _handelse(parent, entry, location):
         body(h)
 
 
-def export(*, register, entries, company, location, start, end, user, now):
+def export(*, register, entries, company, location, start, end, user, now, control_system_serial=None):
     """The XML file (bytes) for `entries` of one register in [start, end]
     (local "YYYY-MM-DDTHH:MM:SS")."""
     if not entries:
         raise k.Conflict("nothing_to_export")
     root = ET.Element(f"{{{INSTANS}}}{ROOT}")
     _add(root, "InloggadAnvandareVidExportAvDataFranJournalminnet", _t72(user))
-    _add(root, "BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfran", register["label"])
+    _add(root, "BeteckningPaDetKassaregisterSomExportAvDataFranJournalminnetSkerIfran", k.designation(register))
     _add(root, "TidpunktForNarExportAvDataFranJournalminnetSker", k.local_text(now, location))
     period = _add(root, "ValdPeriodForExportAvDataFranJournalminne")
     _add(period, "ValdStarttidpunktForExportAvDataFranJournalminnet", start)
     _add(period, "ValdSluttidpunktForExportAvDataFranJournalminnet", end)
     chosen = _add(root, "BeteckningPaValdaKassaregisterForExportAvDataFranJournalminnenLISTA")
-    _add(chosen, "BeteckningPaValtKassaregisterForExportAvDataFranJournalminnet", register["label"])
+    _add(chosen, "BeteckningPaValtKassaregisterForExportAvDataFranJournalminnet", k.designation(register))
     info = _add(root, "InformationOmForetaget")
     _add(info, "OrganisationsnummerEllerPersonnummer", company["org"])
     _add(info, "ForetagetsNamn", _t72(company["name"]))
@@ -276,11 +287,10 @@ def export(*, register, entries, company, location, start, end, user, now):
     _add(system, "ModellbeteckningForKassaregistret", k.MODEL)
     _add(system, "ModellEllerProgramForKassaregistret", k.PROGRAM)
     _add(system, "VersionsnummerForKassaregistret", _t72(k.version()))
-    _add(system, "Kassabeteckning", register["label"])
+    _add(system, "Kassabeteckning", k.designation(register))
     serial = next((k._plain(e.get("data") or {}).get("csSerial") for e in reversed(entries)
                    if (e.get("data") or {}).get("csSerial")), None)
-    from shared import control_system as cs
-    _add(system, "TillverkningsnummerForKontrollsystemet", serial or cs.SIMULATOR_SERIAL)
+    _add(system, "TillverkningsnummerForKontrollsystemet", serial or control_system_serial or cs.SIMULATOR_SERIAL)
     registrations = _add(root, "RegistreringLISTA")
     for entry in sorted(entries, key=lambda e: int(e.get("jseq") or 0)):
         _handelse(registrations, entry, location)

@@ -128,10 +128,16 @@ def call(env, method, suffix="", *, body=None, query=None, role="owner_user", te
     return response["statusCode"], json.loads(response["body"])
 
 
-def register(env, label="Kassa 1"):
+def register(env, label="Kassa 1", *, open_day=True):
+    """A new register; by default with the day opened (växelkassa 0 kr), as
+    a sale needs (ANV 4 kap. 2 §)."""
     status, body = call(env, "POST", "registers", body={"label": label})
     assert status == 201, body
-    return body["register"]["registerId"]
+    register_id = body["register"]["registerId"]
+    if open_day:
+        status, body = call(env, "POST", f"registers/{register_id}/open-day", body={"float": 0})
+        assert status == 200, body
+    return register_id
 
 
 def bill(env, register_id, kind="table", table="5", lines=None, discount=None):
@@ -202,7 +208,7 @@ def test_full_sale_end_to_end(env):
     assert doc["title"] == "Kvitto" and doc["seq"] == 1
     assert kassa_receipt.TEST_NOTICE in texts
     assert any("Org.nr 556677-8899" in t for t in texts) and any("Götgatan 1" in t for t in texts)
-    assert any(t.startswith("Kassa Kassa 1") for t in texts)
+    assert any(t.startswith("Kassabeteckning Kassa 1") for t in texts)
     assert any("Kort Visa **** 4242" in t for t in texts)
     assert any(t == "Kontrollsystem: BOOQYSIMULATOR001" for t in texts)
     sale_entry = receipts_of(env, rid)[0]
@@ -323,7 +329,9 @@ def test_journal_is_written_append_only():
                                   for line in journal_writes)
     for name in ("data-retention", "tenant-purge", "guest-privacy"):
         text = (APP / "functions" / name / "app.py").read_text()
-        assert "KASSA_JOURNAL" not in text and "kassa-journal" not in text and "kassa" not in text.lower()
+        assert "KASSA_JOURNAL" not in text and "kassa-journal" not in text and "KASSA_TABLE" not in text
+        if name != "tenant-purge":   # tenant-purge deletes only Kassa's fiskaly key secret
+            assert "kassa" not in text.lower()
     assert "KASSA" not in (APP / "shared" / "retention.py").read_text().upper()
 
 
@@ -421,7 +429,7 @@ def test_only_one_copy_per_receipt(env):
 
 
 def test_training_mode(env):
-    rid = register(env)
+    rid = register(env, open_day=False)
     call(env, "POST", f"registers/{rid}/training", body={"on": True})
     b = bill(env, rid)
     assert b["training"] is True
@@ -458,8 +466,75 @@ def test_x_and_z_reports(env):
     call(env, "POST", f"registers/{rid}/x", body={})
     after = journal(env, rid)[-1]["data"]
     assert after["totalSales"] == 0 and after["grandTotalSales"] == 38750
+    assert reg_row(env, rid).get("dayOpen") is None             # the Z ended the sales day
+    assert call(env, "POST", "bills", body={"registerId": rid, "kind": "takeaway"})[0] == 201
+    status, body = call(env, "POST", f"bills/{bill(env, rid)['billId']}/payments",
+                        body={"checkoutId": "c" * 32, "readerId": "tmr_a1", "amount": 100})
+    assert status == 409 and body["error"] == "day_not_open"
+    call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
     sale(env, rid, checkout="b" * 32)
     assert receipts_of(env, rid)[-1]["data"]["zSeq"] == 3
+
+
+def test_z_report_counts_sales_and_returns_separately(env):
+    """Dev admin, 2026-10-27: one sale, all of it returned. KRAV 7 kap. 3 §:
+    the sales total, VAT per rate and sales per payment means follow the
+    sales; returns are their own item, with their VAT and refunds."""
+    rid = register(env)
+    b, done = sale(env, rid)
+    sold = receipts_of(env, rid)[-1]["data"]
+    lines = [{"lineId": line["lineId"], "quantity": line["quantity"]} for line in b["lines"]]
+    status, _ = call(env, "POST", f"registers/{rid}/receipts/1/return",
+                     body={"lines": lines, "reason": "Fel nota", "delivery": "print"})
+    assert status == 201
+    status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    data = journal(env, rid)[-1]["data"]
+    total = sold["total"]
+    sales_vat = [{"rate": v["rate"], "amount": v["vat"]} for v in sold["vat"]]
+    assert data["totalSales"] == total and data["vat"] == sales_vat
+    assert data["payments"] == [{"method": "Kort", "amount": total}]
+    assert data["returns"] == 1 and data["returnsAmount"] == total
+    assert data["returnVat"] == sales_vat and data["refunds"] == [{"method": "Kort", "amount": total}]
+    assert data["grandTotalSales"] == total and data["grandTotalReturn"] == total and data["grandTotalNet"] == 0
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in z["document"]["rows"]]
+    amount = kassa_receipt.kr(total)
+    assert f"Total försäljning {amount}" in texts and f"Betalt med kort {amount}" in texts
+    assert f"Returer, 1 st {amount}" in texts and f"  återbetalt med kort {amount}" in texts
+    for v in sold["vat"]:
+        assert f"Moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
+        assert f"  varav moms {v['rate']} % {kassa_receipt.kr(v['vat'])}" in texts
+
+
+def test_report_times_are_swedish_across_the_dst_change(env):
+    """Dev admin 2026-10-27: "Sedan senaste Z" was printed in UTC. Summer
+    time ended at 01:00 UTC on 25 October 2026."""
+    rid = register(env)
+    env["clock"]["now"] = datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc)     # 02:30 CEST
+    call(env, "POST", f"registers/{rid}/z", body={})
+    env["clock"]["now"] = datetime(2026, 10, 27, 1, 12, tzinfo=timezone.utc)     # 02:12 CET
+    status, z = call(env, "POST", f"registers/{rid}/z", body={})
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in z["document"]["rows"]]
+    assert "Sedan senaste Z 2026-10-25 02:30" in texts and "Framtagen 2026-10-27 02:12" in texts
+    assert journal(env, rid)[-1]["data"]["since"] == "2026-10-25T02:30:00"
+    env["clock"]["now"] = datetime(2026, 10, 27, 11, 8, tzinfo=timezone.utc)
+    status, x = call(env, "POST", f"registers/{rid}/x", body={})
+    texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in x["document"]["rows"]]
+    assert "Sedan senaste Z 2026-10-27 02:12" in texts and "Framtagen 2026-10-27 12:08" in texts
+
+
+def test_older_reports_with_a_utc_since_print_in_swedish_time():
+    assert kassa_receipt._when("2026-10-27T01:12:00Z") == "2026-10-27 02:12"
+    assert kassa_receipt._when("2026-10-25T00:30:00+00:00") == "2026-10-25 02:30"   # CEST
+    assert kassa_receipt._when("2026-10-25T01:30:00Z") == "2026-10-25 02:30"        # CET
+    assert kassa_receipt._when("2026-10-27T02:12:00") == "2026-10-27 02:12"         # already local
+
+
+def test_reports_without_sales_still_show_vat(env):
+    rid = register(env)
+    for kind in ("x", "z"):
+        status, body = call(env, "POST", f"registers/{rid}/{kind}", body={})
+        texts = [" ".join(r.get("pair") or [r.get("text") or ""]) for r in body["document"]["rows"]]
+        assert status == 200 and "Moms 0,00" in texts and "Total försäljning 0,00" in texts
 
 
 def test_day_status_flags_an_unclosed_day(env):
@@ -580,3 +655,91 @@ def test_print_device_renders_a_kassa_job(env, monkeypatch):
                                                         {"pair": ["Totalt", "387,50"], "bold": True}]}, NOW)
     body = device._render({**job, "attempts": 1}, {"name": "Kassan"}, None, {"paperWidth": 58}, NOW)
     assert b"KOPIA" in body and b"387,50" in body and b"KAN VARA DUBBLETT" not in body
+
+
+# --- outages, felanmälan, checklist, manual -------------------------------------------------
+
+def test_outage_start_and_end_are_recorded_once(env):
+    rid = register(env)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "GET")
+    call(env, "GET")
+    assert reg_row(env, rid)["csDownSince"] == "2026-10-24T12:00:00Z"
+    statuses = [e["data"]["code"] for e in journal(env, rid) if e["type"] == kassa.STATUS]
+    assert statuses == ["EJ_KONTAKT_MED_KS"]
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": False})
+    call(env, "GET")
+    assert "csDownSince" not in reg_row(env, rid)
+    assert [e["data"]["code"] for e in journal(env, rid) if e["type"] == kassa.STATUS] == [
+        "EJ_KONTAKT_MED_KS", "KONTAKT_MED_KS"]
+
+
+def test_felanmal_banner_after_thirty_minutes(env):
+    rid = register(env)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    assert call(env, "GET")[1]["registers"][0]["felanmal"] is False
+    env["clock"]["now"] = NOW + timedelta(minutes=29)
+    assert call(env, "GET")[1]["registers"][0]["felanmal"] is False
+    env["clock"]["now"] = NOW + timedelta(minutes=30)
+    state = call(env, "GET")[1]
+    assert state["registers"][0]["felanmal"] is True and state["felanmalAfterMinutes"] == 30
+
+
+def test_provider_status_asks_for_felanmalan_at_once(env):
+    reg = {"csDownSince": "2026-10-24T12:00:00Z"}
+    status = cs.Status(ok=False, code=cs.STATUS_REPORT_24H, provider="x", serial="s")
+    assert kassa.felanmal_due(reg, status, NOW) is True
+    assert kassa.felanmal_due(reg, cs.Status(ok=False, code=cs.STATUS_NO_CONTACT, provider="x", serial="s"), NOW) is False
+
+
+def test_outage_notice_is_audited(env):
+    rid = register(env)
+    assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": "shown"})[1] == {
+        "error": "control_system_up"}
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "GET")
+    for action in ("shown", "shown", "dismissed", "dismissed"):
+        assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": action})[0] == 200
+    audit = sorted(i["action"] for i in env["res"].Table("test-kassa").scan()["Items"] if i["SK"].startswith("AUDIT#"))
+    assert audit == ["dismissed", "dismissed", "shown"]
+    assert reg_row(env, rid)["outageNoticeShown"] == "2026-10-24T12:00:00Z"
+
+
+def test_failed_payment_check_marks_the_outage(env):
+    rid = register(env)
+    b = bill(env, rid)
+    call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
+    call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "a" * 32, "readerId": "tmr_a1",
+                                                             "amount": 1000})
+    assert reg_row(env, rid)["csDownCode"] == "EJ_KONTAKT_MED_KS"
+
+
+def test_setup_checklist_per_location(env):
+    status, body = call(env, "GET", "setup")
+    assert status == 200 and body["items"]["anmalan"] == {"done": False}
+    status, body = call(env, "PUT", "setup", body={"item": "anmalan", "done": True})
+    assert status == 200 and body["items"]["anmalan"]["done"] is True and body["items"]["anmalan"]["by"] == "anna@roma.se"
+    assert call(env, "PUT", "setup", body={"item": "x", "done": True})[0] == 400
+    assert call(env, "PUT", "setup", body={"item": "skylt", "done": True}, role="staff_user", sub=STAFF_A_SUB)[1] == {
+        "error": "owner_only"}
+    assert call(env, "GET", "setup", tenant_id=TENANT_B, location_id=LOC_B)[1]["items"]["anmalan"] == {"done": False}
+
+
+def test_manual_is_served_from_the_docs(env):
+    status, body = call(env, "GET", "manual")
+    assert status == 200 and body["markdown"].startswith("# Bruksanvisning för Booqy Kassa")
+
+
+def test_state_carries_the_company_for_the_manual_sheet(env):
+    register(env)
+    assert call(env, "GET")[1]["company"]["org"] == "5566778899"
+
+
+def test_identity_and_version_can_be_read(env, monkeypatch):
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_VERSION", "42")
+    rid = register(env)
+    reg = call(env, "GET", f"registers/{rid}")[1]["register"]
+    assert reg["model"] == "Booqy Kassa SE" and "SE" in reg["model"].split()
+    assert reg["manufacturer"] == "Booqy" and reg["version"] == f"{kassa.KASSA_VERSION}+42"
+    assert len(reg["serialNumber"]) == 17 and reg["serialNumber"].isalnum()
+    assert reg["controlSystem"]["serial"] == cs.SIMULATOR_SERIAL

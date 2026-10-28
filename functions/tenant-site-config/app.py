@@ -2,6 +2,7 @@
 
 TRIGGER:
     API Gateway -- GET /site-config?host=<hostname>   -- Auth: NONE
+                   GET /site-config?tenantId=<id>     (a site repo's own build and its prod deploy gate)
                    GET /site-config?slug=<slug>       (dev only)
 
 PURPOSE:
@@ -15,7 +16,13 @@ PURPOSE:
     Resolution: global row DOMAIN#<host>/TENANT -> tenantId, and the
     tenant's own TENANT#<t>/DOMAIN#<host> row must be active (Booqy Console
     writes both). Outside prod, sites on *.cloudfront.net / localhost can't
-    be mapped by host, so SLUG#<slug>/TENANT is accepted instead.
+    be mapped by host, so SLUG#<slug>/TENANT is accepted instead. A
+    restaurant's own site repo (site-<slug>) knows its tenantId and may ask
+    by it in every environment.
+
+    tenant.domain is the restaurant's own domain once it is attached and its
+    certificate issued (kind custom, status active), else null. The prod
+    deploy of a site repo refuses to go live without it.
 
     Unknown host/slug, inactive domain or inactive tenant: 404 (the site
     shows "not available"). Only public fields are returned - never owner
@@ -41,6 +48,7 @@ from shared import tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+_TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
 _FEATURES = ("reservations", "ordering", "catering", "terminal", "marketing")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
@@ -71,11 +79,22 @@ def _tenant_of(key):
     return tenant_id if isinstance(tenant_id, str) and tenant_id else None
 
 
-def _domain_active(tenant_id, host):
-    item = dynamo.table(os.environ["TENANT_TABLE_NAME"]).get_item(
+def _domain_row(tenant_id, host):
+    return dynamo.table(os.environ["TENANT_TABLE_NAME"]).get_item(
         Key={"PK": tenant.tenant_pk(tenant_id), "SK": f"DOMAIN#{host}"}
-    ).get("Item")
-    return bool(item) and item.get("status") == "active"
+    ).get("Item") or {}
+
+
+def _domain_active(tenant_id, host):
+    return _domain_row(tenant_id, host).get("status") == "active"
+
+
+def _own_domain(tenant_id, row):
+    domain = row.get("primaryDomain")
+    if not isinstance(domain, str) or not domain:
+        return None
+    item = _domain_row(tenant_id, domain)
+    return domain if item.get("status") == "active" and item.get("kind") == "custom" else None
 
 
 def _branding(raw):
@@ -169,7 +188,7 @@ def _public_location(row, tenant_row):
 
 
 def _site_config(params):
-    unknown = sorted(set(params) - {"host", "slug"})
+    unknown = sorted(set(params) - {"host", "slug", "tenantId"})
     if unknown or len(params) != 1:
         raise ValueError
     if "host" in params:
@@ -177,6 +196,11 @@ def _site_config(params):
         tenant_id = _tenant_of(f"DOMAIN#{host}")
         if not tenant_id or not _domain_active(tenant_id, host):
             return None
+    elif "tenantId" in params:
+        tenant_id = params["tenantId"]
+        if not isinstance(tenant_id, str) or not _TENANT_ID.fullmatch(tenant_id.strip()):
+            raise ValueError
+        tenant_id = tenant_id.strip()
     else:
         if os.environ["ENVIRONMENT"] == "prod":
             raise ValueError
@@ -200,6 +224,7 @@ def _site_config(params):
             "tenantId": tenant_id,
             "name": row.get("name"),
             "slug": row.get("slug"),
+            "domain": _own_domain(tenant_id, row),
             "branding": _branding(row.get("branding")),
             "features": {f: bool(features.get(f)) for f in _FEATURES},
         },
@@ -235,7 +260,7 @@ def handler(event, context):
     try:
         config = _site_config(http.query(event))
     except ValueError:
-        return http.respond(400, {"error": "pass host=<hostname> (or slug= in dev)"},
+        return http.respond(400, {"error": "pass host=<hostname>, tenantId=<id> (or slug= in dev)"},
                             {"Cache-Control": "no-store"})
     except (BotoCoreError, ClientError):
         return http.respond(503, {"error": "site configuration unavailable"},

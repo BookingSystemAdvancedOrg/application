@@ -6,11 +6,17 @@ the paper and the e-mail always say the same thing.
 Row shapes: {"text", "bold", "big", "center"}, {"pair": [left, right]},
 {"rule": true}. "KOPIA" and "ÖVNING" are big (double width and height):
 SKVFS 2014:9 5 kap. 5 § wants them at least twice the size of amounts.
-Pure functions; nothing here sends or stores.
+The control code (59 characters from a control unit or the simulator, 113
+from a control system such as fiskaly's) is split into rows of at most
+CODE_ROW characters, so it wraps the same on 80 mm (48 columns) and 58 mm
+(32 columns) paper and in the e-mail. Pure functions; nothing here sends
+or stores.
 """
 
 import html
+import math
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from shared import kassa as k
 from shared.messages import _brand_color, restaurant_name
@@ -18,6 +24,8 @@ from shared.messages import _brand_color, restaurant_name
 TEST_NOTICE = "Testläge - inte ett certifierat kassaregister än"
 TITLES = {k.SALE: "Kvitto", k.RETURN: "Returkvitto", k.TRAINING: "Övningskvitto", k.COPY: "Kvitto",
           k.XREPORT: "X-dagrapport", k.ZREPORT: "Z-dagrapport"}
+CODE_ROW = 30
+STOCKHOLM = ZoneInfo("Europe/Stockholm")
 _BRANDS = {"visa": "Visa", "mastercard": "Mastercard", "amex": "American Express", "maestro": "Maestro"}
 
 
@@ -27,11 +35,17 @@ def kr(ore, *, sign=False):
     return ("-" if ore < 0 else "+" if sign and ore > 0 else "") + text
 
 
-def _when(text):
+def _when(text, tz=STOCKHOLM):
+    """"2026-10-27T02:12:00" (local, as the journal keeps it) -> "2026-10-27
+    02:12". A time with a zone (UTC "...Z", older reports' "since") is shown
+    in Swedish time first."""
     try:
-        return datetime.fromisoformat(str(text)).strftime("%Y-%m-%d %H:%M")
+        when = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
     except ValueError:
         return str(text or "")
+    if when.tzinfo is not None:
+        when = when.astimezone(tz)
+    return when.strftime("%Y-%m-%d %H:%M")
 
 
 def _rate(rate):
@@ -60,6 +74,8 @@ def _lines(data, sign):
         quantity = int(line.get("quantity") or 0)
         gross = int(line.get("gross") if line.get("gross") is not None else line.get("total") or 0)
         rows.append({"pair": [f"{quantity} x {line.get('name')}", kr(sign * gross)]})
+        if quantity > 1 and line.get("unitPrice") is not None:
+            rows.append({"text": f"  à {kr(int(line['unitPrice']))}"})
         if line.get("note"):
             rows.append({"text": f"  {line['note']}"})
         if int(line.get("discount") or 0):
@@ -78,9 +94,20 @@ def _totals(data, sign):
     return rows
 
 
-def _codes(data):
-    rows = [{"rule": True}, {"text": "Kontrollkod:"}, {"text": data.get("controlCode") or ""},
-            {"text": f"Kontrollsystem: {data.get('csSerial') or ''}"}]
+def code_rows(code):
+    """The code in even rows of at most CODE_ROW characters, never cut."""
+    code = str(code or "")
+    if not code:
+        return [{"text": ""}]
+    size = math.ceil(len(code) / math.ceil(len(code) / CODE_ROW))
+    return [{"text": code[i:i + size], "code": True} for i in range(0, len(code), size)]
+
+
+def _codes(data, *, copy_code=None):
+    rows = [{"rule": True}, {"text": "Kontrollkod:"}, *code_rows(data.get("controlCode"))]
+    if copy_code:
+        rows += [{"text": "Kontrollkod för kopian:"}, *code_rows(copy_code)]
+    rows.append({"text": f"Kontrollsystem: {data.get('csSerial') or ''}"})
     if data.get("offline"):
         rows.append({"text": "Offline", "bold": True})
     if data.get("electronic"):
@@ -88,7 +115,7 @@ def _codes(data):
     return rows
 
 
-def _receipt(entry, data, kind, *, copy_of=None):
+def _receipt(entry, data, kind, *, copy_of=None, copy_code=None):
     sign = -1 if kind == k.RETURN else 1
     rows = []
     if data.get("testMode"):
@@ -101,7 +128,9 @@ def _receipt(entry, data, kind, *, copy_of=None):
     rows.append({"rule": True})
     rows.append({"pair": [TITLES[kind], f"Nr {data.get('seq')}"], "bold": True})
     rows.append({"pair": ["Datum", _when(copy_of["local"] if copy_of else entry.get("local"))]})
-    rows.append({"pair": ["Kassa", entry.get("label") or ""]})
+    rows.append({"pair": ["Kassabeteckning", entry.get("label") or ""]})
+    if entry.get("registerName"):
+        rows.append({"pair": ["Kassa", entry["registerName"]]})
     if data.get("billKind") == k.TABLE and data.get("tableLabel"):
         rows.append({"pair": ["Bord", data["tableLabel"]]})
     elif data.get("billKind") == k.TAKEAWAY:
@@ -118,7 +147,7 @@ def _receipt(entry, data, kind, *, copy_of=None):
         for p in data["payments"]:
             rows.append({"pair": [f"{label}, {_card(p)}", kr(sign * int(p.get("amount") or 0))]})
     if kind != k.TRAINING:
-        rows += _codes(data)
+        rows += _codes(data, copy_code=copy_code)
     else:
         rows += [{"rule": True}, {"text": f"Kontrollsystem: {data.get('csSerial') or ''}"}]
     if kind == k.TRAINING:
@@ -137,18 +166,22 @@ def _report(entry, data, kind):
     rows += [{"text": TITLES[kind], "bold": True, "big": True, "center": True},
              {"text": c.get("name"), "bold": True, "center": True},
              {"text": f"Org.nr {c.get('orgText') or c.get('org')}", "center": True}, {"rule": True},
-             {"pair": ["Framtagen", _when(entry.get("local"))]}, {"pair": ["Kassa", entry.get("label") or ""]}]
+             {"pair": ["Framtagen", _when(entry.get("local"))]},
+             {"pair": ["Kassabeteckning", entry.get("label") or ""]}]
     if kind == k.ZREPORT:
         rows.append({"pair": ["Z-nummer", str(data.get("zSeq"))], "bold": True})
         rows.append({"pair": ["Tillverkningsnummer", data.get("serialNumber") or ""]})
         rows.append({"pair": ["Program", f"{data.get('program')} {data.get('version')}"]})
     if data.get("since"):
-        rows.append({"pair": ["Sedan senaste Z", _when(str(data["since"]).replace("Z", "")[:19])]})
+        rows.append({"pair": ["Sedan senaste Z", _when(data["since"])]})
     rows += [{"rule": True}, {"pair": ["Total försäljning", kr(data.get("totalSales"))], "bold": True}]
     for g in data.get("groups") or []:
         rows.append({"pair": [f"  {g['name']}", kr(g["amount"])]})
     for v in data.get("vat") or []:
         rows.append({"pair": [f"Moms {_rate(v['rate'])}", kr(v["amount"])]})
+    if not data.get("vat"):
+        # 7 kap. 2 § g, 3 § h: the VAT line is there even when nothing was sold.
+        rows.append({"pair": ["Moms", kr(0)]})
     for p in data.get("payments") or []:
         rows.append({"pair": [f"Betalt med {p['method'].lower()}", kr(p["amount"])]})
     rows += [
@@ -160,6 +193,8 @@ def _report(entry, data, kind):
         {"pair": [f"Kvittokopior, {data.get('copies', 0)} st", kr(data.get("copiesAmount"))]},
         {"pair": [f"Övningskvitton, {data.get('training', 0)} st", kr(data.get("trainingAmount"))]},
         {"pair": [f"Returer, {data.get('returns', 0)} st", kr(data.get("returnsAmount"))]},
+        *({"pair": [f"  varav moms {_rate(v['rate'])}", kr(v["amount"])]} for v in data.get("returnVat") or []),
+        *({"pair": [f"  återbetalt med {p['method'].lower()}", kr(p["amount"])]} for p in data.get("refunds") or []),
         {"pair": ["Rabatter", kr(data.get("discounts"))]},
         {"pair": [f"Övriga minskningar, {data.get('otherReductions', 0)} st", kr(data.get("otherReductionsAmount"))]},
         {"pair": [f"Oavslutade notor, {data.get('openBills', 0)} st", kr(data.get("openBillsAmount"))]},
@@ -182,7 +217,8 @@ def document(entry, location=None):
         original = {**data.get("original", {}), "controlCode": data.get("originalControlCode") or
                     data.get("original", {}).get("controlCode"), "electronic": data.get("electronic"),
                     "testMode": data.get("testMode")}
-        rows = _receipt(entry, original, k.SALE, copy_of={"local": data.get("originalAt")})
+        rows = _receipt(entry, original, k.SALE, copy_of={"local": data.get("originalAt")},
+                        copy_code=data.get("controlCode"))
         rows.insert(-2, {"text": f"Kopia nr {data.get('copySeq')}, {_when(entry.get('local'))}"})
         total = original.get("total")
         kind_title = "Kopia av kvitto"

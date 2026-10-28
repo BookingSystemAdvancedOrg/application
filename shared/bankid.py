@@ -11,6 +11,9 @@ provider in shared/signing.py, which is what the handlers use:
     {"provider": "simulator"}
         Dev only (refused when ENVIRONMENT=prod), shared/signing.py.
 
+    {"provider": "scrive", "baseUrl", "apiToken", "apiSecret", "accessToken", "accessSecret"}
+        Scrive Document API v2, shared/signing_scrive.py (testbed refused in prod).
+
     start(end_user_ip, visible_text, document_hash)
         -> {"orderRef", "autoStartToken", "qrStartToken", "qrStartSecret", "startedAt"}
     collect(order)
@@ -32,7 +35,7 @@ import urllib.request
 
 import boto3
 
-PROVIDERS = ("bankid", "bankid_direct", "simulator")
+PROVIDERS = ("bankid", "bankid_direct", "simulator", "scrive")
 _HOSTS = {"test": "https://appapi2.test.bankid.com", "prod": "https://appapi2.bankid.com"}
 _TIMEOUT = 15
 _cache = {"config": None, "at": 0.0, "context": None}
@@ -69,6 +72,9 @@ def _config():
             raise SigningUnavailable("signing provider is not configured")
         if config["provider"] == "simulator" and os.environ.get("ENVIRONMENT") == "prod":
             raise SigningUnavailable("the signing simulator only runs in dev")
+        if config["provider"] == "scrive":
+            from shared.signing_scrive import check_config
+            check_config(config, os.environ.get("ENVIRONMENT"))
         _cache.update(config=config, at=now, context=None)
     return _cache["config"]
 

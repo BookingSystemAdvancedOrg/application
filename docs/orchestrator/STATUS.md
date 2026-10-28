@@ -3,13 +3,13 @@
 Single source of truth for the restaurant-features work (brief: `docs/ORCHESTRATOR.md`).
 On restart, read this file first and resume.
 
-Updated: 2026-10-22
+Updated: 2026-10-28
 
 ## Issues
 
 | # | Issue | Priority | Phase | Branch | Agent | Status | Blockers |
 |---|-------|----------|-------|--------|-------|--------|----------|
-| 5 | Catering | 1 | Done in dev (M1-M5, reviewed, fixed) | dev | none | done | signing adapter waits for Scrive/SEB decision |
+| 5 | Catering | 1 | Done in dev (M1-M5, reviewed, fixed); Scrive adapter built 2026-10-28 | dev | none | done | Scrive testbed credentials in the dev secret, then the end-to-end test; prod blockers in PLAN.md issue 5 |
 | 3 | Booking time limits | 2 | Done in dev (reviewed, fixed) | dev | none | done | none |
 | 2 | Kitchen printing | 3 | Done in dev (reviewed, fixed) | dev | none | done | test with the real mC-Print3 |
 | 4 | Cookies and email marketing | 4 | Done in dev (reviewed, fixed) | dev | none | done | dmarc@booqy.se mailbox; data-retention DRY_RUN still on |
@@ -40,6 +40,7 @@ Phase 1 (`PLAN.md`): done 2026-10-22, waiting for the owner's answers (PLAN.md s
 
 - 2026-10-23: All five issues implemented, reviewed by a non-author agent and fixed, on dev. Extra: dlq-replay moved to application/functions (it was never built; DLQs were not replayed), with a parking-timeout bug fix.
 - 2026-10-23: Owner rule: no git commands until everything is finished locally; then a few large commits per changed repo and push to dev. No merge to main.
+- 2026-10-28: Signing provider decision: **Scrive, 2026-10-28** (after the Scrive and SEB meetings). Adapter `shared/signing_scrive.py` (Document API v2) behind `shared/signing.py`, recorded-response tests `tests/test_signing_scrive.py`; the simulator stays for dev and tests. Dev end-to-end on api-testbed.scrive.com waits for the owner's credentials in `dev-catering/signing-provider`.
 
 ## Rule changes
 

@@ -10,13 +10,19 @@ The provider is the `provider` field of the signing-provider secret
                    page instead (start answers a URL, the return completes it).
     bankid_direct  BankID's RP API v6 (shared/bankid.py), the same certificate
                    for every restaurant. "bankid" is the older name.
+    scrive         Scrive Document API v2 (shared/signing_scrive.py): one
+                   document per offer version, both parties sign with BankID
+                   on Scrive's page (start answers a redirect), callbacks
+                   carry the order's token, the sealed PDF is the evidence.
 
 A signing order is a plain dict the caller stores on the request
 (`signing.order`) and passes back in; the functions return what changed
 in it. Parties sign in order: the restaurant, then the customer.
 
     create_order(request, offer, pdf_bytes, parties, callback_url) -> order
-        parties: [{"role": "restaurant" | "customer", "name", "email"}]
+        parties: [{"role": "restaurant" | "customer", "name", "email", "company"?, "returnUrl"?}]
+        returnUrl: where a provider's own signing page sends the party back
+        (Scrive fixes it per party when the document is created)
     start(order, role, end_user_ip, return_url) -> (result, order)
         return_url: where a provider's own signing page sends the party back
         result {"kind": "bankid", "autoStartToken", "qrData"} | {"kind": "redirect", "url"}
@@ -26,8 +32,9 @@ in it. Parties sign in order: the restaurant, then the customer.
     qr(order, role) -> the current BankID QR string (kind "bankid" only)
     cancel(order) -> None (best effort)
     status(order) -> {"complete", "parties": [{"role", "signedAt"?, "method"}]}
-    fetch_evidence(order) -> {filename: bytes} for the whole order (none here: the
-        simulator and direct BankID hand evidence over per signature in collect)
+    fetch_evidence(order) -> {filename: bytes} for the whole order (Scrive: the
+        sealed PDF; raises EvidenceNotReady until it is sealed). None for the
+        simulator and direct BankID: they hand evidence over per signature in collect
     verify_webhook(order, headers, raw_body, query) -> {"eventId"} | None (reject)
 
 A provider with webhooks puts a random per-order token in the callback URL
@@ -43,7 +50,9 @@ import secrets
 import time
 
 from shared import bankid
+from shared import signing_scrive as scrive
 from shared.bankid import SigningRejected, SigningUnavailable  # noqa: F401 - re-exported
+from shared.signing_scrive import EvidenceNotReady  # noqa: F401 - re-exported
 
 ROLES = ("restaurant", "customer")
 _ROLE_TEXT = {"restaurant": "Restaurangen godkänner offerten.", "customer": "Jag godkänner offerten och villkoren."}
@@ -65,7 +74,7 @@ def _now():
 def create_order(request, offer, pdf_bytes, parties, callback_url=None):
     sha = hashlib.sha256(pdf_bytes).hexdigest()
     token = secrets.token_urlsafe(24)
-    return {
+    order = {
         "provider": provider(),
         "ref": f"{request['requestId']}-v{int(offer['version']):04d}-{token[:8]}",
         "pdfSha256": sha,
@@ -77,6 +86,9 @@ def create_order(request, offer, pdf_bytes, parties, callback_url=None):
         "sessions": {},
         "createdAt": _now(),
     }
+    if order["provider"] == "scrive":
+        return scrive.create_order(_config(), order, offer, pdf_bytes, parties)
+    return order
 
 
 def _party(order, role):
@@ -94,6 +106,8 @@ def start(order, role, end_user_ip, return_url=None):
     sessions = dict(order.get("sessions") or {})
     if (sessions.get(role) or {}).get("signedAt"):
         raise SigningRejected("already_signed")
+    if order["provider"] == "scrive":
+        return scrive.start(_config(), order, role)
     if order["provider"] == "simulator":
         if _config().get("startKind") == "redirect":
             sessions[role] = {"kind": "redirect", "startedAt": _now()}
@@ -129,6 +143,9 @@ def _evidence_file(order, role, completion):
 
 
 def collect(order, role):
+    if order.get("provider") == "scrive":  # the state is Scrive's, with or without a started session
+        _party(order, role)
+        return scrive.collect(_config(), order, role)
     sessions = order.get("sessions") or {}
     session = sessions.get(role)
     if not session:
@@ -161,12 +178,18 @@ def collect(order, role):
 def cancel(order):
     if not order or order.get("provider") == "simulator":
         return
+    if order.get("provider") == "scrive":
+        if order.get("documentId"):
+            scrive.cancel(_config(), order)
+        return
     for session in (order.get("sessions") or {}).values():
         if session.get("orderRef") and not session.get("signedAt"):
             bankid.cancel(session)
 
 
 def status(order):
+    if order.get("provider") == "scrive":
+        return scrive.status(_config(), order)
     parties = []
     for p in order.get("parties") or []:
         session = (order.get("sessions") or {}).get(p["role"]) or {}
@@ -175,16 +198,23 @@ def status(order):
 
 
 def fetch_evidence(order):
+    if (order or {}).get("provider") == "scrive":
+        return scrive.fetch_evidence(_config(), order)
     return {}
 
 
 def verify_webhook(order, headers, raw_body, query):
-    """Neither the simulator nor direct BankID calls back; a callback carrying
-    the order's own token is accepted (lets dev exercise the webhook path)."""
+    """The order's own random token (`t`) in constant time, for every
+    provider (Scrive does not sign its callbacks). Neither the simulator nor
+    direct BankID calls back; accepting their token lets dev exercise the
+    webhook path. The body is never trusted, only used to name the event."""
     token = (query or {}).get("t")
     expected = (order or {}).get("callbackToken")
     if not isinstance(token, str) or not expected or not hmac.compare_digest(token, expected):
         return None
+    if order.get("provider") == "scrive":
+        event_id = scrive.callback_event_id(order, raw_body)
+        return {"eventId": event_id} if event_id else None
     try:
         event_id = json.loads(raw_body or "{}").get("eventId")
     except ValueError:

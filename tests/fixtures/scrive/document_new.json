@@ -1,0 +1,37 @@
+{
+  "id": "9222115557379108034",
+  "title": "offert-v0001",
+  "parties": [
+    {
+      "id": "9222115557378174612",
+      "user_id": "9206820953483508036",
+      "is_author": true,
+      "signatory_role": "signing_party",
+      "fields": [
+        {"type": "name", "order": 1, "value": "Booqy API", "is_obligatory": true, "should_be_filled_by_sender": true},
+        {"type": "email", "value": "api@booqy.se", "is_obligatory": true, "should_be_filled_by_sender": true}
+      ],
+      "sign_order": 1,
+      "sign_time": null,
+      "seen_time": null,
+      "rejected_time": null,
+      "delivery_method": "email",
+      "authentication_method_to_view": "standard",
+      "authentication_method_to_sign": "standard",
+      "confirmation_delivery_method": "email",
+      "api_delivery_url": null
+    }
+  ],
+  "file": {"id": "9222115557375404110", "name": "offert-v0001.pdf"},
+  "sealed_file": null,
+  "ctime": "2026-10-28T10:00:00Z",
+  "mtime": "2026-10-28T10:00:00Z",
+  "timeout_time": null,
+  "status": "preparation",
+  "days_to_sign": 90,
+  "days_to_remind": null,
+  "lang": "en",
+  "api_callback_url": null,
+  "is_saved": false,
+  "object_version": 1
+}

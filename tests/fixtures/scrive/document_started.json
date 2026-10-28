@@ -1,0 +1,71 @@
+{
+  "id": "9222115557379108034",
+  "title": "Offert catering v1",
+  "parties": [
+    {
+      "id": "9222115557378174612",
+      "is_author": true,
+      "signatory_role": "viewer",
+      "fields": [
+        {"type": "name", "order": 1, "value": "Booqy API", "is_obligatory": true, "should_be_filled_by_sender": true},
+        {"type": "email", "value": "api@booqy.se", "is_obligatory": true, "should_be_filled_by_sender": true}
+      ],
+      "sign_order": 1,
+      "sign_time": null,
+      "rejected_time": null,
+      "delivery_method": "api",
+      "api_delivery_url": null
+    },
+    {
+      "id": "9222115557378174613",
+      "is_author": false,
+      "signatory_role": "signing_party",
+      "fields": [
+        {"type": "name", "order": 1, "value": "", "is_obligatory": false, "should_be_filled_by_sender": false},
+        {"type": "email", "value": "owner@roma.example.se", "is_obligatory": false, "should_be_filled_by_sender": false},
+        {"type": "company", "value": "Roma AB", "is_obligatory": false, "should_be_filled_by_sender": false},
+        {"type": "personal_number", "value": "", "is_obligatory": false, "should_be_filled_by_sender": false}
+      ],
+      "sign_order": 1,
+      "sign_time": null,
+      "seen_time": null,
+      "rejected_time": null,
+      "delivery_method": "api",
+      "authentication_method_to_view": "standard",
+      "authentication_method_to_sign": "se_bankid",
+      "confirmation_delivery_method": "none",
+      "api_delivery_url": "/s/9222115557379108034/9222115557378174613/5a0c1e2b3d4f6a7b"
+    },
+    {
+      "id": "9222115557378174614",
+      "is_author": false,
+      "signatory_role": "signing_party",
+      "fields": [
+        {"type": "name", "order": 1, "value": "Anna Svensson", "is_obligatory": false, "should_be_filled_by_sender": false},
+        {"type": "email", "value": "anna@example.se", "is_obligatory": false, "should_be_filled_by_sender": false},
+        {"type": "personal_number", "value": "", "is_obligatory": false, "should_be_filled_by_sender": false}
+      ],
+      "sign_order": 2,
+      "sign_time": null,
+      "seen_time": null,
+      "rejected_time": null,
+      "delivery_method": "api",
+      "authentication_method_to_view": "standard",
+      "authentication_method_to_sign": "se_bankid",
+      "confirmation_delivery_method": "none",
+      "api_delivery_url": "/s/9222115557379108034/9222115557378174614/9e8d7c6b5a4f3e2d"
+    }
+  ],
+  "file": {"id": "9222115557375404110", "name": "offert-v0001.pdf"},
+  "sealed_file": null,
+  "ctime": "2026-10-28T10:00:00Z",
+  "mtime": "2026-10-28T10:00:02Z",
+  "timeout_time": "2026-11-04T22:59:59Z",
+  "status": "pending",
+  "days_to_sign": 7,
+  "days_to_remind": null,
+  "lang": "sv",
+  "api_callback_url": "https://api.example.se/webhooks/signing/catering?l=...&r=...&t=...",
+  "is_saved": false,
+  "object_version": 3
+}

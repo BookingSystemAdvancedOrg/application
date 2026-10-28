@@ -1,5 +1,7 @@
 # Catering signing: hand-off for the provider decision
 
+**Implemented: Scrive, 2026-10-28** (`shared/signing_scrive.py`, tests in `tests/test_signing_scrive.py`). Still open from "Done when": dev end-to-end on api-testbed.scrive.com once the owner has put the credentials in `dev-catering/signing-provider` (steps in `infrastructure/docs/PLATFORM-SETUP.md` section 5), and replacing the modelled responses in `tests/fixtures/scrive/` with real testbed ones. Delete this file when both are done.
+
 ## Trigger
 When the owner says something like **"start on the BankID signing for catering, we chose Scrive"** (or **SEB**), this file is the brief. Read it, `STATUS.md`, `CONVENTIONS.md` and `PLAN.md` (issue 5), then build the chosen adapter as described below. Do not ask again which provider to use. Ask only for what is listed under "Owner provides" if it is missing.
 

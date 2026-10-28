@@ -20,13 +20,17 @@ PURPOSE:
          request's status and version
       4. the event is written as AUDIT#SIGNING#<eventId> (dedupe + audit)
     A failure answers 503 and logs SIGNING_WEBHOOK_FAILED (alarm), so
-    the provider retries; step 3 is idempotent.
+    the provider retries; step 3 is idempotent. Two cases also answer 503 for
+    a retry but alarm only when they last: the provider has not sealed the
+    signed document yet (Scrive seals after the last signature; alarm after
+    SEAL_ALARM_MINUTES), and a party's own status call recording the same
+    signature at the same moment (a conflict, logged as a race).
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DOCUMENTS_BUCKET_NAME, SIGNING_PROVIDER_SECRET_ARN,
-    DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS
+    DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS, DOCUMENT_LOCK_YEAR_END
 
 AWS RESOURCE ACCESS:
     catering-requests: GetItem, UpdateItem; catering-request-history: GetItem, PutItem;
@@ -37,6 +41,7 @@ AWS RESOURCE ACCESS:
 import base64
 import json
 import logging
+from datetime import datetime, timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -46,6 +51,8 @@ from shared import signing
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+SEAL_ALARM_MINUTES = 30
 
 
 def _respond(status, body):
@@ -88,6 +95,11 @@ def handler(event, context):
             done = []  # the order is no longer the current one (new version, declined, signed)
         history.put_item(Item={**key, "action": "signing_webhook", "by": "provider", "at": c.iso(c.now_utc()),
                                "recorded": done}, ConditionExpression="attribute_not_exists(SK)")
+    except signing.EvidenceNotReady:
+        return _seal_pending(item)
+    except c.InvalidState as exc:
+        logger.info(json.dumps({"signingWebhook": "race", "requestId": item["requestId"], "code": exc.code}))
+        return _respond(503, {"error": "retry"})
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return _respond(200, {"result": "duplicate"})
@@ -97,6 +109,18 @@ def handler(event, context):
         return _failed(item, exc)
     logger.info(json.dumps({"signingWebhook": "handled", "requestId": item["requestId"], "recorded": done}))
     return _respond(200, {"result": "handled", "recorded": done})
+
+
+def _seal_pending(item):
+    fresh = c.load(item["locationId"], item["requestId"])
+    signed_at = fresh.get("signedAt")
+    late = bool(signed_at) and datetime.fromisoformat(signed_at.replace("Z", "+00:00")) \
+        < c.now_utc() - timedelta(minutes=SEAL_ALARM_MINUTES)
+    if late:
+        logger.error("SIGNING_WEBHOOK_FAILED %s", json.dumps({"requestId": item["requestId"], "error": "seal_pending"}))
+    else:
+        logger.info(json.dumps({"signingWebhook": "seal_pending", "requestId": item["requestId"]}))
+    return _respond(503, {"error": "seal_pending"})
 
 
 def _failed(item, exc):

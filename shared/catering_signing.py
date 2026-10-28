@@ -18,6 +18,13 @@ binding: the request is `signed` and the evidence package is written under
 was signed, pdfVersionId), both parties' evidence and a manifest of SHA-256
 hashes, every object with its own Object Lock retention (DOCUMENT_LOCK_MODE /
 DOCUMENT_LOCK_DAYS; the bucket has no default lock).
+
+A provider that seals the document itself (Scrive) adds its sealed PDF to
+the package. Sealing runs after the last signature, so when it is not ready
+yet the request is signed anyway (the contract is binding) with
+`signing.sealPending`; the provider's next callback stores the sealed PDF
+(store_sealed) and the webhook answers 503 until then, so the provider
+retries.
 """
 
 import hashlib
@@ -26,9 +33,10 @@ import os
 from datetime import timedelta
 
 import boto3
+from botocore.exceptions import ClientError
 
 from shared import catering as c
-from shared import signing
+from shared import signing, site
 
 RESTAURANT = "restaurant"
 CUSTOMER = "customer"
@@ -50,12 +58,22 @@ def bucket():
     return os.environ["CATERING_DOCUMENTS_BUCKET_NAME"]
 
 
+def retain_until(now=None):
+    """DOCUMENT_LOCK_DAYS from now; with DOCUMENT_LOCK_YEAR_END (prod) rounded
+    up to the end of that calendar year, since Bokföringslagen counts the
+    7 years from the end of the year the record belongs to."""
+    until = (now or c.now_utc()) + timedelta(days=int(os.environ["DOCUMENT_LOCK_DAYS"]))
+    if os.environ.get("DOCUMENT_LOCK_YEAR_END") == "true":
+        until = until.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=0)
+    return until
+
+
 def put_locked(key, body, content_type):
     """Writes an evidence object with its own retention (C7); -> its version id."""
     extra = {}
     mode, days = os.environ.get("DOCUMENT_LOCK_MODE"), os.environ.get("DOCUMENT_LOCK_DAYS")
     if mode and days:
-        extra = {"ObjectLockMode": mode, "ObjectLockRetainUntilDate": c.now_utc() + timedelta(days=int(days))}
+        extra = {"ObjectLockMode": mode, "ObjectLockRetainUntilDate": retain_until()}
     return _s3().put_object(Bucket=bucket(), Key=key, Body=body, ContentType=content_type,
                             ChecksumAlgorithm="SHA256", **extra).get("VersionId")
 
@@ -91,6 +109,21 @@ def _current(item):
             or int(s.get("offerVersion") or 0) != int(item.get("currentOfferVersion") or 0):
         raise NotReady("not_signable")
     return s
+
+
+def restaurant_return_url(item):
+    """Where the provider's signing page sends the restaurant back (admin)."""
+    admin = c.admin_url(os.environ.get("ADMIN_DASHBOARD_URL"), item)
+    return f"{admin}?signering=klar" if admin else None
+
+
+def customer_return_url(tenant_id, tenant_row, item):
+    """Where the provider's signing page sends the guest back (the site)."""
+    base, slug = site.base(tenant_id, tenant_row)
+    if not base:
+        return None
+    page = site.page(base, slug, f"/catering/{item['locationId']}/{item['requestId']}")
+    return f"{page}{'&' if slug else '?'}signering=klar"
 
 
 def restaurant_signed(item):
@@ -139,8 +172,15 @@ def poll(item, role, ip):
         c.transact([c.audit_put(item["requestId"], f"signing_failed_{role}", role, c.now_utc(),
                                 hint=result.get("hint"))])
         return {"state": "failed", "hint": result.get("hint")}
-    record(item, role, {**result["signer"], "method": order["sessions"][role].get("method") or "bankid"},
-           result.get("evidence") or {}, ip, order)
+    try:
+        record(item, role, {**result["signer"], "method": order["sessions"][role].get("method") or "bankid"},
+               result.get("evidence") or {}, ip, order)
+    except c.InvalidState:
+        # The provider's callback recorded it a moment earlier (same signature).
+        fresh = c.load(item["locationId"], item["requestId"])
+        if ((fresh.get("signing") or {}).get("signatures") or {}).get(role):
+            return {"state": "signed"}
+        raise
     return {"state": "signed"}
 
 
@@ -190,7 +230,7 @@ def record(item, role, signer, evidence, ip, order):
         values[":n"] = c.notice(c.N_OFFER_SENT, now, version=version)
         c.transact([c.head_update(item, sets=sets, values=values, names=names), audit])
         return
-    signed_key, signed_version, signatures = _finalize(item, s, signatures, prefix, pdf)
+    signed_key, signed_version, signatures, sealed = _finalize(item, s, signatures, prefix, pdf)
     signature = {**{k: entry.get(k) for k in ("name", "personalNumberMasked", "role", "method", "evidenceKey")},
                  "signedAt": entry["signedAt"], "documentHash": (item.get("offer") or {}).get("documentHash"),
                  "pdfSha256": s["pdfSha256"], "provider": order.get("provider"), "signedPdfKey": signed_key}
@@ -199,6 +239,12 @@ def record(item, role, signer, evidence, ip, order):
     values.update({":sig": {k: v for k, v in signature.items() if v is not None}, ":v": version,
                    ":n": c.notice(c.N_SIGNED, now), ":pdf": signed_key, ":pv": signed_version or "-",
                    ":sigs": signatures})
+    if sealed == "pending":
+        sets.append("signing.sealPending = :true")
+        values[":true"] = True
+    elif sealed:
+        sets += ["sealedPdfKey = :sk", "sealedPdfVersionId = :sv"]
+        values.update({":sk": sealed[0], ":sv": sealed[1] or "-"})
     c.transact([c.head_update(item, to_status=c.SIGNED, sets=sets, values=values, names=names), audit])
 
 
@@ -206,8 +252,15 @@ def _finalize(item, s, signatures, prefix, pdf):
     """The evidence package once the contract is binding: the signed PDF (a
     locked copy of the version the parties signed), the restaurant's
     evidence moved in from offers/, the provider's own evidence, and a
-    manifest of hashes. -> (pdf key, its version id, signatures)."""
-    files = {"offer.pdf": pdf, **signing.fetch_evidence(s["order"])}
+    manifest of hashes. -> (pdf key, its version id, signatures, sealed):
+    sealed is (key, version id) of the provider's sealed PDF, "pending" or None."""
+    files = {"offer.pdf": pdf}
+    sealed = None
+    try:
+        provider_files = signing.fetch_evidence(s["order"])
+    except signing.EvidenceNotReady:
+        provider_files, sealed = {}, "pending"
+    files.update(provider_files)
     restaurant = dict(signatures.get(RESTAURANT) or {})
     if restaurant.get("evidenceKey") and "/offers/" in restaurant["evidenceKey"]:
         name = restaurant["evidenceKey"].rsplit("/", 1)[1].split("-", 1)[1]
@@ -218,17 +271,57 @@ def _finalize(item, s, signatures, prefix, pdf):
         version = put_locked(prefix + name, body,
                              "application/pdf" if name.endswith(".pdf") else "application/json")
         pdf_version = version if name == "offer.pdf" else pdf_version
+        if name in provider_files and name.endswith(".pdf"):
+            sealed = (prefix + name, version)
     manifest = {"requestId": item["requestId"], "offerVersion": int(s["offerVersion"]), "pdfSha256": s["pdfSha256"],
                 "files": {name: hashlib.sha256(body).hexdigest() for name, body in files.items()},
                 "signatures": signatures, "createdAt": c.iso(c.now_utc())}
     put_locked(prefix + "manifest.json", json.dumps(manifest, ensure_ascii=False, default=str).encode("utf-8"),
                "application/json")
-    return prefix + "offer.pdf", pdf_version, signatures
+    return prefix + "offer.pdf", pdf_version, signatures, sealed
+
+
+def store_sealed(item):
+    """Adds the provider's sealed PDF to a signed request's locked package
+    (raises EvidenceNotReady while the provider is still sealing)."""
+    s = item["signing"]
+    files = signing.fetch_evidence(s["order"])
+    prefix = signed_prefix(item, s["offerVersion"])
+    sealed = None
+    for name, body in files.items():
+        version = put_locked(prefix + name, body, "application/pdf" if name.endswith(".pdf") else "application/json")
+        sealed = (prefix + name, version) if name.endswith(".pdf") else sealed
+    now = c.now_utc()
+    put_locked(prefix + "manifest-sealed.json", json.dumps({
+        "requestId": item["requestId"], "offerVersion": int(s["offerVersion"]),
+        "files": {name: hashlib.sha256(body).hexdigest() for name, body in files.items()},
+        "createdAt": c.iso(now)}).encode("utf-8"), "application/json")
+    sets, values = ["updatedAt = :now"], {":now": c.iso(now)}
+    if sealed:
+        sets += ["sealedPdfKey = :sk", "sealedPdfVersionId = :sv"]
+        values.update({":sk": sealed[0], ":sv": sealed[1] or "-"})
+    try:
+        c.dynamo.table(c.requests_table()).update_item(
+            Key=c.request_key(item["locationId"], item["requestId"]),
+            UpdateExpression=f"SET {', '.join(sets)} REMOVE signing.sealPending",
+            ConditionExpression="signing.sealPending = :true AND signing.offerVersion = :v",
+            ExpressionAttributeValues={**values, ":true": True, ":v": int(s["offerVersion"])})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        return  # stored by a concurrent callback
+    c.transact([c.audit_put(item["requestId"], "sealed", "provider", now, version=int(s["offerVersion"]),
+                            sealedPdfKey=sealed[0] if sealed else None)])
 
 
 def apply_status(item):
     """Webhook: re-reads the order from the provider and records each party
-    that has signed there but not here, in signing order."""
+    that has signed there but not here, in signing order; then stores the
+    provider's sealed PDF if it was not ready when the contract became
+    binding (raises EvidenceNotReady while it still is not)."""
+    if (item.get("signing") or {}).get("sealPending"):
+        store_sealed(item)
+        return ["sealed"]
     s = _current(item)
     state = signing.status(s["order"])
     done = []
@@ -241,6 +334,8 @@ def apply_status(item):
                    result.get("evidence") or {}, None, order)
             done.append(party["role"])
             item = c.load(item["locationId"], item["requestId"])
+            if (item.get("signing") or {}).get("sealPending"):
+                raise signing.EvidenceNotReady("sealing")  # recorded; the provider's retry stores the seal
             if item.get("status") != c.OFFER_SENT:
                 break
             s = item["signing"]
@@ -258,9 +353,10 @@ def document_ref(item, doc_id):
     if doc_id == "offer":
         s = item.get("signing") or {}
         return s.get("pdfKey"), s.get("pdfVersionId")
-    if doc_id == "signed":
-        version = item.get("signedPdfVersionId")
-        return item.get("signedPdfKey"), version if version and version != "-" else None
+    if doc_id == "signed":  # the provider's sealed PDF when there is one, else our locked copy
+        key, version = ((item.get("sealedPdfKey"), item.get("sealedPdfVersionId")) if item.get("sealedPdfKey")
+                        else (item.get("signedPdfKey"), item.get("signedPdfVersionId")))
+        return key, version if version and version != "-" else None
     if doc_id == "signature":
         return (item.get("signature") or {}).get("evidenceKey"), None
     return None, None

@@ -5471,13 +5471,15 @@ paths:
         - Catering
       summary: Signing provider callback
       operationId: cateringSigningWebhook
-      description: 'Called by the signing provider with ?l=<locationId>&r=<requestId>&t=<per-order token>. Verified against the request''s current signing order (401 otherwise), deduplicated on AUDIT#SIGNING#<eventId>, and the order''s state is always read again from the provider. 503 makes the provider retry.'
+      description: 'Called by the signing provider (Scrive: a form body with document_id and document_json) with ?l=<locationId>&r=<requestId>&t=<per-order token>. Verified against the request''s current signing order (the token in constant time, 401 otherwise; the body is never trusted), deduplicated on AUDIT#SIGNING#<eventId>, and the order''s state is always read again from the provider. 503 makes the provider retry, also while the provider has not sealed a signed document yet (seal_pending).'
       security: []
       x-required-groups: []
       requestBody:
         required: false
         content:
           application/json:
+            schema: {$ref: '#/components/schemas/LooseObject'}
+          application/x-www-form-urlencoded:
             schema: {$ref: '#/components/schemas/LooseObject'}
       responses:
         '200':

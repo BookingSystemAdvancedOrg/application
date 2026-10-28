@@ -190,6 +190,19 @@ def test_prod_without_a_domain_sends_no_link(env, monkeypatch):
     assert "/bokning/" not in ses.calls[0]["Message"]["Body"]["Text"]["Data"]
 
 
+def test_prod_without_a_domain_links_to_the_slug_address(env, monkeypatch):
+    module, ses, _ = env
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("SITE_DOMAIN", "booqy.se")
+    tenants = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
+    tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
+                        UpdateExpression="SET slug = :s", ExpressionAttributeValues={":s": "roma"})
+    shared_tenant.reset_caches()
+    run(module, record(booking(), event_name="INSERT"))
+    text = ses.calls[0]["Message"]["Body"]["Text"]["Data"]
+    assert f"https://roma.booqy.se/bokning/{LOC_A}/" in text and "restaurang=" not in text
+
+
 def test_same_notice_id_is_never_sent_twice(env):
     module, ses, sns = env
     item = booking()

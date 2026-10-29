@@ -386,3 +386,25 @@ def test_a_refused_repo_delete_is_reported_and_the_data_still_purged(env, monkey
     [row] = _audit_rows(env)
     assert row["action"] == "site_repo_delete_failed"
     assert "Website repo NOT deleted" in env["sns"].calls[0]["Message"]
+
+
+def test_no_query_filters_on_a_key_attribute(env):
+    # moto accepts a FilterExpression on PK/SK; DynamoDB refuses it
+    # (ValidationException), so every Query is checked here.
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seen = []
+
+    def check(params, **_):
+        body = json.loads(params["body"] or b"{}")
+        if "FilterExpression" in body:
+            names = set((body.get("ExpressionAttributeNames") or {}).values())
+            seen.append(names)
+            assert not names & {"PK", "SK"}, body["FilterExpression"]
+
+    events = boto3.DEFAULT_SESSION.events
+    events.register("before-call.dynamodb.Query", check)
+    try:
+        assert env["app"].handler({}, Context())["purged"] == [GONE]
+    finally:
+        events.unregister("before-call.dynamodb.Query", check)

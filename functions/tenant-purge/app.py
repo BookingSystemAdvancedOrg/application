@@ -223,8 +223,10 @@ def _purge_marketing(tenant_id, budget, counts):
     campaigns = _query_keys(table_name, Key("PK").eq(f"TENANT#{tenant_id}#CMP") & Key("SK").begins_with("CMP#"))
     for campaign in campaigns:
         counts["marketing"] += _delete_partition(table_name, f"CMP#{tenant_id}#{str(campaign['SK'])[4:]}", budget)
-    queued = [{"PK": i["PK"], "SK": i["SK"]} for i in _query_keys(
-        table_name, Key("PK").eq("SCHEDULE"), filter_expression=Attr("SK").contains(f"#{tenant_id}#"))]
+    # DynamoDB refuses a FilterExpression on the sort key, so the queue
+    # (small: only scheduled sends) is matched here.
+    queued = [{"PK": i["PK"], "SK": i["SK"]} for i in _query_keys(table_name, Key("PK").eq("SCHEDULE"))
+              if f"#{tenant_id}#" in str(i["SK"])]
     counts["marketing"] += _delete_keys(table_name, queued, budget)
     for part in MARKETING_PARTS:
         counts["marketing"] += _delete_partition(table_name, f"TENANT#{tenant_id}#{part}", budget)

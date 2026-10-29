@@ -166,6 +166,8 @@ def test_create_uploads_the_signed_pdf_and_sets_both_parties(scrive):
         assert party["confirmation_delivery_method"] == "none" and party["notification_delivery_method"] == "none"
     fields = {f["type"]: f["value"] for f in restaurant["fields"]}
     assert fields["company"] == "Roma AB" and fields["name"] == ""
+    name = next(f for f in restaurant["fields"] if f["type"] == "name")  # the signer types it
+    assert name["is_obligatory"] is True and name["should_be_filled_by_sender"] is False
     for party in (restaurant, customer):  # se_bankid: the signer fills in the personal number
         pn = next(f for f in party["fields"] if f["type"] == "personal_number")
         assert pn["value"] == "" and pn["is_obligatory"] is True and pn["should_be_filled_by_sender"] is False

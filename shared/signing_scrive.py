@@ -159,7 +159,10 @@ def _field(kind, value, order=None, obligatory=False):
 def _signatory(party, sign_order, method="se_bankid"):
     # se_bankid needs a personal number field: we don't know it, so the
     # signer fills it in on Scrive's page (obligatory, not by the sender).
-    fields = [_field("name", party.get("name") if party["role"] == "customer" else "", 1),
+    # Nor do we know who signs for the restaurant: they type their name, so
+    # the verifikat names a person and not only the company.
+    restaurant = party["role"] == "restaurant"
+    fields = [_field("name", "" if restaurant else party.get("name"), 1, obligatory=restaurant),
               _field("email", party.get("email")),
               _field("personal_number", "", obligatory=method == "se_bankid")]
     company = party.get("company") or (party.get("name") if party["role"] == "restaurant" else None)

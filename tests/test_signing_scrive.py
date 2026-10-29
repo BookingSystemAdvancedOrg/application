@@ -201,6 +201,26 @@ def test_a_failed_update_trashes_the_draft_and_answers_503(scrive):
     assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
 
 
+def test_a_sign_method_scrive_has_not_enabled_is_named_in_the_error(scrive):
+    scrive.scrive.fail["start"] = (409, "error_sign_method_disabled.json")
+    from test_catering import create
+    rid = body_of(create(scrive))["requestId"]
+    response = staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
+    assert response["statusCode"] == 409
+    assert body_of(response) == {"error": "signing_authentication_to_sign_method_disabled"}
+    assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
+
+
+def test_dev_can_sign_without_bankid_while_scrive_enables_it(scrive):
+    boto3.client("secretsmanager", region_name=REGION).put_secret_value(
+        SecretId="signing", SecretString=json.dumps({**SECRET, "signMethod": "standard"}))
+    bankid.reset_cache()
+    sent_offer(scrive, sign=False)
+    for party in scrive.scrive.updates[0]["parties"][1:]:
+        assert party["authentication_method_to_sign"] == "standard"
+        assert next(f for f in party["fields"] if f["type"] == "personal_number")["is_obligatory"] is False
+
+
 # --- start and collect ------------------------------------------------------------------------
 
 def test_start_redirects_to_scrive_and_the_restaurant_signs_first(scrive):
@@ -372,6 +392,12 @@ def test_cancel_failures_are_best_effort(scrive):
 def test_a_bad_secret_is_refused(config, environment):
     with pytest.raises(signing.SigningUnavailable):
         signing_scrive.check_config(config, environment)
+
+
+@pytest.mark.parametrize("method, environment", [("standard", "prod"), ("sms_pin", "dev")])
+def test_prod_signs_only_with_bankid(method, environment):
+    with pytest.raises(signing.SigningUnavailable):
+        signing_scrive.check_config({**SECRET, "baseUrl": "https://scrive.com", "signMethod": method}, environment)
 
 
 def test_prod_accepts_the_production_host():

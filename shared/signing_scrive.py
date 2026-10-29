@@ -23,6 +23,10 @@ The secret (SIGNING_PROVIDER_SECRET_ARN):
     PLAINTEXT: client credentials identifier/secret, token credentials
     identifier/secret). In prod the testbed is refused.
 
+    Optional, dev only: "signMethod": "standard" signs without BankID (a
+    click on Scrive's page), to test the flow while a Scrive account does
+    not have se_bankid yet. Prod refuses anything but se_bankid.
+
 Errors: Scrive unreachable, 5xx, 401/403 (credentials) -> SigningUnavailable
 (503, alarm); any other 4xx -> SigningRejected(<error_type>) (409).
 """
@@ -45,7 +49,7 @@ logger = logging.getLogger()
 
 _TIMEOUT = 12
 _MAX_DAYS_TO_SIGN = 90
-METHOD = "scrive_se_bankid"
+SIGN_METHODS = ("se_bankid", "standard")
 CLOSED = "closed"
 _DEAD = ("canceled", "timedout", "rejected", "document_error")
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -65,6 +69,18 @@ def check_config(config, environment):
     if not all(isinstance(config.get(k), str) and config[k] for k in
                ("apiToken", "apiSecret", "accessToken", "accessSecret")):
         raise SigningUnavailable("scrive credentials are missing")
+    method = config.get("signMethod", "se_bankid")
+    if method not in SIGN_METHODS or (environment == "prod" and method != "se_bankid"):
+        raise SigningUnavailable("scrive signMethod must be se_bankid (standard only outside prod)")
+
+
+def _sign_method(config):
+    return config.get("signMethod") or "se_bankid"
+
+
+def _method(party):
+    """What the signer actually used, as Scrive recorded it."""
+    return f"scrive_{party.get('authentication_method_to_sign') or 'se_bankid'}"
 
 
 def _auth(config):
@@ -87,10 +103,14 @@ def _request(config, method, path, data=None, content_type=None, raw=False):
             error = json.loads(exc.read() or b"{}")
         except ValueError:
             error = {}
-        code = str(error.get("error_type") or f"http_{exc.code}")[:64]
+        # A refused start lists the exact reasons (e.g. authentication_to_sign_method_disabled).
+        reasons = [e.get("type") for e in (error.get("error_details") or {}).get("errors") or []
+                   if isinstance(e, dict) and e.get("type")]
+        code = str((reasons or [None])[0] or error.get("error_type") or f"http_{exc.code}")[:64]
         explanations = (error.get("error_details") or {}).get("explanations") or [error.get("error_message")]
         logger.warning(json.dumps({"scrive": "error", "path": path.split("/")[-1], "status": exc.code,
-                                   "errorType": code, "explanations": [str(e)[:200] for e in explanations if e][:6]},
+                                   "errorType": code, "scriveErrorType": error.get("error_type"),
+                                   "explanations": [str(e)[:200] for e in explanations if e][:6]},
                                   ensure_ascii=False))
         if exc.code >= 500 or exc.code in (401, 403, 429):
             raise SigningUnavailable(code) from None
@@ -136,18 +156,19 @@ def _field(kind, value, order=None, obligatory=False):
     return {**field, "order": order} if order else field
 
 
-def _signatory(party, sign_order):
+def _signatory(party, sign_order, method="se_bankid"):
     # se_bankid needs a personal number field: we don't know it, so the
     # signer fills it in on Scrive's page (obligatory, not by the sender).
     fields = [_field("name", party.get("name") if party["role"] == "customer" else "", 1),
-              _field("email", party.get("email")), _field("personal_number", "", obligatory=True)]
+              _field("email", party.get("email")),
+              _field("personal_number", "", obligatory=method == "se_bankid")]
     company = party.get("company") or (party.get("name") if party["role"] == "restaurant" else None)
     if company:
         fields.append(_field("company", company))
     signatory = {"signatory_role": "signing_party", "sign_order": sign_order, "fields": fields,
                  "delivery_method": "api", "confirmation_delivery_method": "none",
                  "notification_delivery_method": "none",
-                 "authentication_method_to_view": "standard", "authentication_method_to_sign": "se_bankid"}
+                 "authentication_method_to_view": "standard", "authentication_method_to_sign": method}
     if party.get("returnUrl"):
         signatory["sign_success_redirect_url"] = party["returnUrl"]
         signatory["reject_redirect_url"] = party["returnUrl"]
@@ -172,7 +193,7 @@ def create_order(config, order, offer, pdf_bytes, parties):
     document = _request(config, "POST", "documents/new", body, content_type)
     document_id = str(document["id"])
     try:
-        signatories = [_signatory(p, n) for n, p in enumerate(parties, start=1)]
+        signatories = [_signatory(p, n, _sign_method(config)) for n, p in enumerate(parties, start=1)]
         update = {"title": title, "lang": "sv", "timezone": "Europe/Stockholm",
                   "days_to_sign": _days_to_sign(offer.get("validUntil")),
                   "days_to_remind": None, "api_callback_url": order.get("callbackUrl"),
@@ -249,7 +270,7 @@ def collect(config, order, role):
             "signTime": party.get("sign_time"), "authenticationToSign": party.get("authentication_method_to_sign"),
             "fields": [{"type": f.get("type"), "value": f.get("value")} for f in party.get("fields") or []],
         }, ensure_ascii=False).encode("utf-8")}
-        session = {**(sessions.get(role) or {"kind": "redirect"}), "signedAt": int(time.time()), "method": METHOD,
+        session = {**(sessions.get(role) or {"kind": "redirect"}), "signedAt": int(time.time()), "method": _method(party),
                    "signer": signer}
         return {"state": "signed", "signer": signer, "evidence": evidence}, \
             {**order, "sessions": {**sessions, role: session}}
@@ -264,7 +285,7 @@ def status(config, order):
     for p in order.get("parties") or []:
         party = _scrive_party(document, order, p["role"])
         parties.append({"role": p["role"], "signedAt": party.get("sign_time"),
-                        "method": METHOD if party.get("sign_time") else None})
+                        "method": _method(party) if party.get("sign_time") else None})
     return {"complete": document.get("status") == CLOSED, "parties": parties, "documentStatus": document.get("status")}
 
 

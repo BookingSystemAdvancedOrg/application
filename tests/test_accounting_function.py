@@ -5,6 +5,7 @@ balance transactions, as SIE, CSV and JSON. DynamoDB is moto; Stripe's
 balance transaction list is a fake. Tenant isolation: another tenant's
 location answers 404, staff 403."""
 
+from error_body import err
 import base64
 import json
 from datetime import datetime, timezone
@@ -137,7 +138,7 @@ def test_settings_default_save_conflict_and_reset(app):
     status, saved = call(app, "PUT", "", body={"accounts": {**view["accounts"], "stripe": "1581"}, "series": "A",
                                                 "fiscalYearStartMonth": 5, "version": 0})
     assert status == 200 and saved["accounts"]["stripe"] == "1581" and saved["version"] == 1
-    assert call(app, "PUT", "", body={"accounts": {}, "version": 0}) == (409, {"error": "changed_retry"})
+    assert call(app, "PUT", "", body={"accounts": {}, "version": 0}) == (409, err("changed_retry"))
     status, error = call(app, "PUT", "", body={"accounts": {"bank": "193"}, "version": 1})
     assert status == 400 and "4-digit" in error["error"]
     status, reset = call(app, "PUT", "", body={"accounts": view["defaults"], "version": 1})
@@ -202,7 +203,7 @@ def test_stripe_refusal_is_a_502(app, monkeypatch):
         raise stripe_client.StripeError(403, {"message": "key lacks rak_balance_transaction_read"})
     monkeypatch.setattr(stripe_client, "request", refuse)
     status, body = call(app, "GET", "/export", query={"from": "2026-10-20", "to": "2026-10-20"})
-    assert (status, body) == (502, {"error": "stripe_refused"})
+    assert (status, body) == (502, err("stripe_refused"))
 
 
 def test_locations_sharing_the_stripe_account_get_one_file_with_cost_centres(app, env):

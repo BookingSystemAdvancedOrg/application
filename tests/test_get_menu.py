@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
@@ -230,7 +231,7 @@ def test_unknown_location_returns_404(app_and_table):
     response = app.handler(make_event(location_id="location-without-tenant"), None)
 
     assert response["statusCode"] == 404
-    assert response_body(response) == {"error": "not found"}
+    assert response_body(response) == err("not found")
 
 
 def test_suspended_tenant_has_no_public_menu(app_and_table):
@@ -301,7 +302,7 @@ def test_invalid_location_id_returns_400_without_reading(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert response_body(response) == {"error": "locationId is required"}
+    assert response_body(response) == err("locationId is required")
     table_factory.assert_not_called()
 
 
@@ -319,7 +320,7 @@ def test_oversized_location_id_returns_400_without_reading(
     )
 
     assert response["statusCode"] == 400
-    assert response_body(response) == {"error": "locationId is invalid"}
+    assert response_body(response) == err("locationId is invalid")
     table_factory.assert_not_called()
 
 
@@ -337,7 +338,7 @@ def test_non_get_method_returns_405_before_reading(
 
     assert response["statusCode"] == 405
     assert response["headers"]["Allow"] == "GET"
-    assert response_body(response) == {"error": "method not allowed"}
+    assert response_body(response) == err("method not allowed")
     table_factory.assert_not_called()
 
 
@@ -433,7 +434,7 @@ def test_malformed_query_results_return_sanitized_503(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
 
 
 def test_repeated_pagination_key_returns_503_instead_of_looping(
@@ -455,7 +456,7 @@ def test_repeated_pagination_key_returns_503_instead_of_looping(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
     assert menu_table.query.call_count == 2
 
 
@@ -490,7 +491,7 @@ def test_inconsistent_active_records_return_503(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
 
 
 @pytest.mark.parametrize(
@@ -523,7 +524,7 @@ def test_dynamodb_failures_return_sanitized_503(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
     assert "sensitive AWS message" not in response["body"]
 
 
@@ -577,9 +578,7 @@ def test_every_proxy_route_requires_jwt_before_reading(
     )
 
     assert response["statusCode"] == 401
-    assert response_body(response) == {
-        "error": "no JWT claims on this request"
-    }
+    assert response_body(response) == err("no JWT claims on this request")
     table_factory.assert_not_called()
 
 
@@ -602,9 +601,7 @@ def test_protected_route_requires_a_jwt_subject_before_reading(
     )
 
     assert response["statusCode"] == 401
-    assert response_body(response) == {
-        "error": "JWT is missing a subject"
-    }
+    assert response_body(response) == err("JWT is missing a subject")
     table_factory.assert_not_called()
 
 
@@ -626,7 +623,7 @@ def test_protected_route_rejects_the_wrong_group_before_reading(
     )
 
     assert response["statusCode"] == 403
-    assert response_body(response) == {"error": "no_tenant"}
+    assert response_body(response) == err("no_tenant")
     table_factory.assert_not_called()
 
 
@@ -646,7 +643,7 @@ def test_protected_route_rejects_missing_or_malformed_groups(
     )
 
     assert response["statusCode"] == 403
-    assert response_body(response) == {"error": "no_tenant"}
+    assert response_body(response) == err("no_tenant")
     table_factory.assert_not_called()
 
 
@@ -673,9 +670,9 @@ def test_each_staff_group_can_list_management_items(
 @pytest.mark.parametrize(
     ("location_id", "expected_body"),
     [
-        (None, {"error": "locationId is required"}),
-        ("", {"error": "locationId is required"}),
-        ("x" * 129, {"error": "locationId is invalid"}),
+        (None, err("locationId is required")),
+        ("", err("locationId is required")),
+        ("x" * 129, err("locationId is invalid")),
     ],
 )
 def test_protected_route_validates_location_after_auth_without_reading(
@@ -824,19 +821,19 @@ def test_protected_item_missing_from_location_returns_404(
     )
 
     assert response["statusCode"] == 404
-    assert response_body(response) == {"error": "menu item not found"}
+    assert response_body(response) == err("menu item not found")
 
 
 @pytest.mark.parametrize(
     ("proxy", "expected_status", "expected_body"),
     [
-        ("unknown", 404, {"error": "not found"}),
-        ("items/a/b", 404, {"error": "not found"}),
-        ("items//item-id", 404, {"error": "not found"}),
+        ("unknown", 404, err("not found")),
+        ("items/a/b", 404, err("not found")),
+        ("items//item-id", 404, err("not found")),
         (
             f"items/{'x' * 129}",
             400,
-            {"error": "menuItemId is invalid"},
+            err("menuItemId is invalid"),
         ),
     ],
 )
@@ -880,7 +877,7 @@ def test_protected_non_get_method_returns_405_before_reading(
 
     assert response["statusCode"] == 405
     assert response["headers"]["Allow"] == "GET"
-    assert response_body(response) == {"error": "method not allowed"}
+    assert response_body(response) == err("method not allowed")
     table_factory.assert_not_called()
 
 
@@ -918,9 +915,7 @@ def test_protected_reads_reject_inconsistent_records_with_409(
     )
 
     assert response["statusCode"] == 409
-    assert response_body(response) == {
-        "error": "menu item record is inconsistent"
-    }
+    assert response_body(response) == err("menu item record is inconsistent")
 
 
 @pytest.mark.parametrize(
@@ -964,9 +959,7 @@ def test_protected_item_rejects_each_corrupt_management_field(
     )
 
     assert response["statusCode"] == 409
-    assert response_body(response) == {
-        "error": "menu item record is inconsistent"
-    }
+    assert response_body(response) == err("menu item record is inconsistent")
 
 
 @pytest.mark.parametrize(
@@ -995,7 +988,7 @@ def test_malformed_protected_list_results_return_503(
     )
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
 
 
 @pytest.mark.parametrize(
@@ -1025,7 +1018,7 @@ def test_malformed_protected_item_results_return_503(
     )
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
 
 
 @pytest.mark.parametrize(
@@ -1061,7 +1054,7 @@ def test_protected_dynamodb_failures_return_sanitized_503(
     )
 
     assert response["statusCode"] == 503
-    assert response_body(response) == {"error": "menu service unavailable"}
+    assert response_body(response) == err("menu service unavailable")
     assert "sensitive AWS message" not in response["body"]
 
 

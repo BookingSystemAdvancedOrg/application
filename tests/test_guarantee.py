@@ -3,6 +3,7 @@ late-cancellation and no-show fees, retries that can't double-charge,
 refunds, expiry of abandoned bookings and the Stripe webhook backstop.
 Stripe is a recording fake; DynamoDB/Secrets Manager are moto."""
 
+from error_body import err
 import hashlib
 import hmac
 import importlib.util
@@ -173,7 +174,7 @@ def test_confirm_before_the_card_is_done_is_409(g, status):
     _, body = book(g)
     g["stripe"].setup_status = status
     response = confirm(g, body["reservationId"], body["manageToken"])
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "card_not_confirmed"}
+    assert response["statusCode"] == 409 and body_of(response) == err("card_not_confirmed")
     assert stored(g, body["reservationId"])["status"] == "pending"
 
 
@@ -199,7 +200,7 @@ def test_stripe_down_at_booking_writes_nothing(g, monkeypatch):
         raise stripe_client.StripeUnavailable("down")
     monkeypatch.setattr(stripe_client, "request", down)
     response, body = book(g)
-    assert response["statusCode"] == 503 and body == {"error": "payment_unavailable"}
+    assert response["statusCode"] == 503 and body == err("payment_unavailable")
     assert "table-b" in free_tables_at(g, "18:00") and markers(g) == []
 
 
@@ -215,7 +216,7 @@ def test_abandoned_booking_expires_and_frees_the_tables(g):
     assert stored(g, rid)["status"] == "expired" and markers(g) == []
     assert "table-b" in free_tables_at(g, "18:00")
     late = confirm(g, rid, body["manageToken"])
-    assert late["statusCode"] == 409 and body_of(late) == {"error": "expired"}
+    assert late["statusCode"] == 409 and body_of(late) == err("expired")
 
 
 def test_guest_can_drop_a_pending_booking_for_free(g):
@@ -247,7 +248,7 @@ def test_late_cancel_asks_first_then_charges_the_accepted_fee(g):
     assert body_of(guest_get(g, rid, token))["guarantee"]["cancellationFee"] == 30000
 
     ask = cancel(g, rid, token)
-    assert ask["statusCode"] == 409 and body_of(ask) == {"error": "fee_applies", "fee": 30000, "currency": "sek"}
+    assert ask["statusCode"] == 409 and body_of(ask) == err("fee_applies", fee=30000, currency="sek")
     assert stored(g, rid)["status"] == "reserved"
 
     done = cancel(g, rid, token, acceptFee=True)

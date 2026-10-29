@@ -3,6 +3,7 @@ customer (BankID-like or a provider's page), simple acceptance, the generic
 signing webhook (verification, dedupe, re-fetch), rate limits and the offer
 PDF."""
 
+from error_body import err
 import json
 
 import boto3
@@ -36,11 +37,11 @@ def webhook(env, rid, token, body=None):  # noqa: F811
 def test_simple_acceptance_is_off_by_default_and_needs_the_restaurant_first(env):  # noqa: F811
     rid, token = sent_offer(env)
     response = guest(env, "POST", "/accept", rid, token, {"name": "Anna Svensson", "acceptTerms": True})
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "acceptance_not_allowed"}
+    assert response["statusCode"] == 409 and body_of(response) == err("acceptance_not_allowed")
     allow_acceptance(env)
     other, other_token = sent_offer(env, sign=False, phone="0701234568", email="b@example.se")
     response = guest(env, "POST", "/accept", other, other_token, {"name": "Bo", "acceptTerms": True})
-    assert body_of(response) == {"error": "awaiting_restaurant"}
+    assert body_of(response) == err("awaiting_restaurant")
 
 
 def test_private_guest_accepts_without_bankid(env):  # noqa: F811
@@ -62,7 +63,7 @@ def test_company_acceptance_needs_role_and_authority(env):  # noqa: F811
     allow_acceptance(env)
     rid, token = sent_offer(env, **COMPANY)
     bad = guest(env, "POST", "/accept", rid, token, {"name": "Karl Ek", "acceptTerms": True})
-    assert body_of(bad) == {"error": "confirmAuthority must be true"}
+    assert body_of(bad) == err("confirmAuthority must be true")
     ok = guest(env, "POST", "/accept", rid, token, {"name": "Karl Ek", "role": "VD", "confirmAuthority": True,
                                                     "acceptTerms": True})
     assert body_of(ok)["status"] == "signed"
@@ -158,7 +159,7 @@ def test_signing_attempts_are_limited(guarded):
     for _ in range(10):
         assert guest(guarded, "POST", "/sign", rid, token)["statusCode"] == 200
     limited = guest(guarded, "POST", "/sign", rid, token)
-    assert limited["statusCode"] == 429 and body_of(limited) == {"error": "too_many_requests"}
+    assert limited["statusCode"] == 429 and body_of(limited) == err("too_many_requests")
 
 
 # --- reminders (M5) -------------------------------------------------------------------------
@@ -257,7 +258,7 @@ def test_a_pdf_that_does_not_match_the_hash_is_refused_not_locked(env):  # noqa:
     guest(env, "POST", "/sign", rid, token)
     guest(env, "POST", "/sign/status", rid, token)
     response = guest(env, "POST", "/sign/status", rid, token)
-    assert response["statusCode"] == 503 and body_of(response) == {"error": "document_mismatch"}
+    assert response["statusCode"] == 503 and body_of(response) == err("document_mismatch")
     assert c.load(LOC_A, rid)["status"] == "offer_sent"
     listed = _s3().list_objects_v2(Bucket=BUCKET, Prefix=f"{TENANT_A}/signed/{rid}/").get("Contents") or []
     assert listed == []
@@ -310,7 +311,7 @@ def test_restaurant_cannot_sign_an_expired_offer(env):  # noqa: F811
     env.res.Table("test-catering-requests").update_item(
         Key=c.request_key(LOC_A, rid), UpdateExpression="SET validUntil = :v", ExpressionAttributeValues={":v": "2026-09-30"})
     response = staff(env, "POST", "/restaurant-sign", request_id=rid)
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "offer_expired"}
+    assert response["statusCode"] == 409 and body_of(response) == err("offer_expired")
 
 
 def test_a_failed_send_keeps_the_open_order(env):  # noqa: F811
@@ -319,7 +320,7 @@ def test_a_failed_send_keeps_the_open_order(env):  # noqa: F811
     rid, _ = sent_offer(env)
     first = c.load(LOC_A, rid)["signing"]["order"]["ref"]
     big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
-    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == {"error": "capacity_full"}
+    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == err("capacity_full")
     assert first not in cancelled and c.load(LOC_A, rid)["signing"]["order"]["ref"] == first
 
 

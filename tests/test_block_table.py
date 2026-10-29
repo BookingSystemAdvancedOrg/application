@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -636,7 +637,7 @@ def test_missing_claims_returns_401_before_aws_access(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -676,7 +677,7 @@ def test_wrong_group_returns_403_before_aws_access(
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     table_factory.assert_not_called()
 
 
@@ -693,7 +694,7 @@ def test_group_authorization_precedes_body_validation(
         None,
     )
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     table_factory.assert_not_called()
 
 
@@ -711,7 +712,7 @@ def test_only_post_is_supported_before_auth_or_aws(
 
     response = app.handler(event, None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "POST"
     table_factory.assert_not_called()
 
@@ -746,7 +747,7 @@ def test_rejects_invalid_path_before_user_lookup(
 
     response = app.handler(event, None)
 
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     table_factory.assert_not_called()
 
 
@@ -773,7 +774,7 @@ def test_rejects_invalid_body_before_user_lookup(
 
     response = app.handler(make_event(body=raw_body), None)
 
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     table_factory.assert_not_called()
 
 
@@ -793,7 +794,7 @@ def test_rejects_invalid_base64_before_user_lookup(
     assert_response(
         response,
         400,
-        {"error": "request body must be valid base64"},
+        err("request body must be valid base64"),
     )
     table_factory.assert_not_called()
 
@@ -834,7 +835,7 @@ def test_rejects_invalid_request_fields_before_user_lookup(
 
     response = app.handler(make_event(body=body), None)
 
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     table_factory.assert_not_called()
 
 
@@ -943,7 +944,7 @@ def test_missing_disabled_or_unauthorized_staff_profile_is_denied(
         if expected_status == 503
         else "forbidden"
     )
-    assert_response(response, expected_status, {"error": expected_error})
+    assert_response(response, expected_status, err(expected_error))
 
 
 @pytest.mark.parametrize(
@@ -969,7 +970,7 @@ def test_ambiguous_or_scoped_privileged_identity_is_denied(
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
 
 
 @pytest.mark.parametrize(
@@ -1003,7 +1004,7 @@ def test_corrupt_user_profile_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "block-table service unavailable"},
+        err("block-table service unavailable"),
     )
 
 
@@ -1021,7 +1022,7 @@ def test_malformed_user_table_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "block-table service unavailable"},
+        err("block-table service unavailable"),
     )
 
 
@@ -1055,7 +1056,7 @@ def test_user_lookup_failures_return_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "block-table service unavailable"},
+        err("block-table service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
 
@@ -1155,7 +1156,7 @@ def test_table_must_exist_in_layout_effective_for_slot(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -1174,7 +1175,7 @@ def test_slot_crossing_scheduled_cutover_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "requested slot crosses a layout activation cutover"},
+        err("requested slot crosses a layout activation cutover"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1217,11 +1218,9 @@ def test_scheduling_transition_rejects_slot_reaching_future_side(
     assert_response(
         response,
         409,
-        {
-            "error": (
+        err((
                 "layout activation is still being scheduled; retry request"
-            )
-        },
+            )),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1252,7 +1251,7 @@ def test_overdue_scheduled_cutover_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue; retry request"},
+        err("layout activation cutover is overdue; retry request"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1271,7 +1270,7 @@ def test_incomplete_pending_activation_state_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
 
 
@@ -1292,7 +1291,7 @@ def test_invalid_environment_with_pending_state_returns_503(
     assert_response(
         response,
         503,
-        {"error": "block-table service unavailable"},
+        err("block-table service unavailable"),
     )
 
 
@@ -1313,7 +1312,7 @@ def test_prod_pending_target_must_observe_28_day_delay(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1335,7 +1334,7 @@ def test_missing_pending_snapshot_for_future_slot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1354,7 +1353,7 @@ def test_archived_current_snapshot_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1411,7 +1410,7 @@ def test_invalid_pending_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1608,7 +1607,7 @@ def test_invalid_table_label_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1695,7 +1694,7 @@ def test_cash_register_with_requested_id_is_not_a_table(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -1739,7 +1738,7 @@ def test_floor_area_with_requested_id_is_not_a_table(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -1773,7 +1772,7 @@ def test_floor_area_rejects_type_specific_fields(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1795,7 +1794,7 @@ def test_invalid_floor_area_geometry_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1848,7 +1847,7 @@ def test_invalid_cash_register_variant_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1870,7 +1869,7 @@ def test_invalid_cash_register_geometry_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1940,7 +1939,7 @@ def test_invalid_door_kind_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -1956,7 +1955,7 @@ def test_floor_with_requested_id_is_not_a_table(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -2030,7 +2029,7 @@ def test_invalid_stored_layout_version_is_not_idempotent(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "slot occupancy record is inconsistent"},
+        err("slot occupancy record is inconsistent"),
     )
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == corrupt
 
@@ -2113,7 +2112,7 @@ def test_unblock_never_deletes_reservation_hold(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "slot is occupied by a reservation"},
+        err("slot is occupied by a reservation"),
     )
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
 
@@ -2141,7 +2140,7 @@ def test_missing_location_returns_404(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
 
 
 def test_missing_active_layout_returns_table_404(app_and_tables):
@@ -2151,7 +2150,7 @@ def test_missing_active_layout_returns_table_404(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
 
 
 def test_missing_active_snapshot_is_a_conflict(app_and_tables):
@@ -2165,7 +2164,7 @@ def test_missing_active_snapshot_is_a_conflict(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2175,7 +2174,7 @@ def test_table_must_exist_in_active_snapshot(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "table not found"})
+    assert_response(response, 404, err("table not found"))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -2222,7 +2221,7 @@ def test_inconsistent_floor_relationships_return_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -2248,7 +2247,7 @@ def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -2270,7 +2269,7 @@ def test_duplicate_id_across_floor_and_table_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
@@ -2299,7 +2298,7 @@ def test_inactive_snapshot_is_rejected(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2330,7 +2329,7 @@ def test_rejects_non_bookable_slot(app_and_tables, body, message):
 
     response = app.handler(make_event(body=body), None)
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -2368,7 +2367,7 @@ def test_rejects_duration_that_is_not_whole_minutes(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "location record is inconsistent"},
+        err("location record is inconsistent"),
     )
 
 
@@ -2380,7 +2379,7 @@ def test_existing_reservation_prevents_block(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 409, {"error": "slot is already occupied"})
+    assert_response(response, 409, err("slot is already occupied"))
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
 
 
@@ -2394,7 +2393,7 @@ def test_overlapping_old_duration_hold_prevents_block(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 409, {"error": "slot is already occupied"})
+    assert_response(response, 409, err("slot is already occupied"))
 
 
 def test_adjacent_hold_does_not_prevent_block(app_and_tables):
@@ -2431,7 +2430,7 @@ def test_conditional_write_race_cannot_overwrite_reservation(
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 409, {"error": "slot is already occupied"})
+    assert_response(response, 409, err("slot is already occupied"))
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == reservation
 
 
@@ -2493,7 +2492,7 @@ def test_corrupt_manual_hold_is_not_accepted_as_idempotent(
     assert_response(
         response,
         409,
-        {"error": "slot occupancy record is inconsistent"},
+        err("slot occupancy record is inconsistent"),
     )
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == corrupt
 
@@ -2550,7 +2549,7 @@ def test_rejects_dst_unsafe_slots(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
 
 
@@ -2581,7 +2580,7 @@ def test_conditional_delete_race_preserves_replacement_reservation(
     assert_response(
         response,
         409,
-        {"error": "slot is occupied by a reservation"},
+        err("slot is occupied by a reservation"),
     )
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
 
@@ -2620,7 +2619,7 @@ def test_conditional_delete_race_preserves_layout_version_change(
         None,
     )
 
-    assert_response(response, 409, {"error": "slot changed; retry request"})
+    assert_response(response, 409, err("slot changed; retry request"))
     assert tables["occupancy"].get_item(Key=slot_key())["Item"] == replacement
 
 
@@ -2676,7 +2675,7 @@ def test_dependency_failure_is_sanitized(app_and_tables, monkeypatch):
     assert_response(
         response,
         503,
-        {"error": "block-table service unavailable"},
+        err("block-table service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
 
@@ -2694,7 +2693,7 @@ def test_profile_of_another_tenant_is_forbidden(app_and_tables):
 
     response = app.handler(event, None)
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
 
 
 def test_owner_of_another_tenant_gets_404_for_this_location(app_and_tables):
@@ -2707,7 +2706,7 @@ def test_owner_of_another_tenant_gets_404_for_this_location(app_and_tables):
 
     response = app.handler(event, None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
     assert tables["occupancy"].scan()["Items"] == []
 
 
@@ -2722,7 +2721,7 @@ def test_reservations_feature_is_required(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 403, {"error": "feature_not_in_plan"})
+    assert_response(response, 403, err("feature_not_in_plan"))
 
 
 def test_blocks_any_half_hour_start(app_and_tables):
@@ -2745,7 +2744,7 @@ def test_a_closed_special_day_has_nothing_to_block(app_and_tables):
     response = app.handler(make_event(body=valid_body()), None)
 
     assert response["statusCode"] == 400
-    assert response_body(response) == {"error": "requested slot is outside the booking schedule"}
+    assert response_body(response) == err("requested slot is outside the booking schedule")
 
 
 def test_special_hours_decide_what_can_be_blocked(app_and_tables):
@@ -2802,5 +2801,5 @@ def test_block_loses_to_a_booking_that_took_the_lock_meanwhile(app_and_tables, m
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 409, {"error": "slot changed; retry request"})
+    assert_response(response, 409, err("slot changed; retry request"))
     assert "Item" not in tables["occupancy"].get_item(Key=slot_key())

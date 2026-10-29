@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from pathlib import Path
@@ -99,7 +100,7 @@ def test_missing_claims_returns_401_before_using_s3(app_and_s3):
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     s3.generate_presigned_url.assert_not_called()
 
@@ -118,7 +119,7 @@ def test_malformed_claims_return_401_before_using_s3(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     s3.generate_presigned_url.assert_not_called()
 
@@ -132,7 +133,7 @@ def test_missing_subject_returns_401_before_using_s3(app_and_s3, sub):
     assert_response(
         response,
         401,
-        {"error": "JWT is missing a subject"},
+        err("JWT is missing a subject"),
     )
     s3.generate_presigned_url.assert_not_called()
 
@@ -154,7 +155,7 @@ def test_wrong_group_returns_403_before_using_s3(app_and_s3, groups, error):
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": error})
+    assert_response(response, 403, err(error))
     s3.generate_presigned_url.assert_not_called()
 
 
@@ -166,7 +167,7 @@ def test_authorization_happens_before_method_and_query_validation(app_and_s3):
         None,
     )
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     s3.generate_presigned_url.assert_not_called()
 
 
@@ -194,7 +195,7 @@ def test_non_get_method_returns_405_without_using_s3(
 
     response = app.handler(make_event(method=method), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
     s3.generate_presigned_url.assert_not_called()
 
@@ -213,7 +214,7 @@ def test_missing_or_malformed_query_returns_400_without_using_s3(
     assert_response(
         response,
         400,
-        {"error": "query parameters are required"},
+        err("query parameters are required"),
     )
     s3.generate_presigned_url.assert_not_called()
 
@@ -232,11 +233,9 @@ def test_unknown_query_parameters_are_rejected_without_using_s3(app_and_s3):
     assert_response(
         response,
         400,
-        {
-            "error": (
+        err((
                 "unsupported query parameters: distributionId, key"
-            )
-        },
+            )),
     )
     s3.generate_presigned_url.assert_not_called()
 
@@ -274,7 +273,7 @@ def test_invalid_location_id_returns_400_without_using_s3(
         if not isinstance(location_id, str) or not location_id.strip()
         else "locationId is invalid"
     )
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     s3.generate_presigned_url.assert_not_called()
 
 
@@ -301,7 +300,7 @@ def test_invalid_content_type_returns_400_without_using_s3(
             "contentType must be image/avif, image/jpeg, image/png, or image/webp"
         )
     )
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     s3.generate_presigned_url.assert_not_called()
 
 
@@ -410,7 +409,7 @@ def test_invalid_presigner_result_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "image upload service unavailable"},
+        err("image upload service unavailable"),
     )
 
 
@@ -443,7 +442,7 @@ def test_presigner_failures_return_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "image upload service unavailable"},
+        err("image upload service unavailable"),
     )
     assert "sensitive AWS message" not in response["body"]
 
@@ -455,7 +454,7 @@ def test_other_tenants_location_gets_no_upload_url(app_and_s3):
     response = app.handler(
         make_event(query={"locationId": LOC_B, "contentType": "image/webp"}), None)
 
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     s3.generate_presigned_url.assert_not_called()
 
 

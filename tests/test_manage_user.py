@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -275,7 +276,7 @@ def test_missing_claims_returns_401_before_dispatch_or_aws(app_state):
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
@@ -299,7 +300,7 @@ def test_missing_subject_returns_401_without_aws(app_state):
 
     response = app.handler(make_event(sub=""), None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
 
@@ -320,7 +321,7 @@ def test_wrong_caller_group_returns_403_before_body_or_aws(
         None,
     )
 
-    assert_response(response, 403, {"error": error})
+    assert_response(response, 403, err(error))
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
 
@@ -330,7 +331,7 @@ def test_unknown_route_returns_404_without_aws(app_state):
 
     response = app.handler(make_event(proxy="unknown/path"), None)
 
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
 
@@ -356,7 +357,7 @@ def test_known_route_wrong_method_returns_405(
 
     response = app.handler(make_event(method=method, proxy=proxy), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == allowed
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
@@ -409,7 +410,7 @@ def test_owner_cannot_get_another_privileged_user(app_state, role):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert cognito.mock_calls == []
     assert get_user(user_table) == stored
 
@@ -431,7 +432,7 @@ def test_owner_single_get_denies_a_staff_mirror_with_privileged_live_group(
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     cognito.admin_list_groups_for_user.assert_called_once_with(
         UserPoolId=USER_POOL_ID,
         Username=TARGET_SUB,
@@ -447,7 +448,7 @@ def test_get_user_returns_404_without_calling_cognito(app_state):
         None,
     )
 
-    assert_response(response, 404, {"error": "user not found"})
+    assert_response(response, 404, err("user not found"))
     assert cognito.mock_calls == []
 
 
@@ -615,7 +616,7 @@ def test_malformed_list_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "user service unavailable"},
+        err("user service unavailable"),
     )
     assert cognito.mock_calls == []
 
@@ -641,7 +642,7 @@ def test_list_users_rejects_a_repeated_last_evaluated_key(
     assert_response(
         response,
         503,
-        {"error": "user service unavailable"},
+        err("user service unavailable"),
     )
     assert scanning_table.query.call_count == 2
     assert cognito.mock_calls == []
@@ -679,7 +680,7 @@ def test_inconsistent_user_in_list_returns_409(
     assert_response(
         response,
         409,
-        {"error": "user record is inconsistent"},
+        err("user record is inconsistent"),
     )
     assert cognito.mock_calls == []
 
@@ -704,7 +705,7 @@ def test_list_dynamodb_failure_is_sanitized_and_does_not_call_cognito(
     assert_response(
         response,
         503,
-        {"error": "user service unavailable"},
+        err("user service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
     assert cognito.mock_calls == []
@@ -736,7 +737,7 @@ def test_malformed_single_user_read_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "user service unavailable"},
+        err("user service unavailable"),
     )
     assert cognito.mock_calls == []
 
@@ -807,7 +808,7 @@ def test_owner_cannot_invite_privileged_user(app_state, group):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert user_table.scan()["Items"] == []
     assert cognito.mock_calls == []
 
@@ -871,7 +872,7 @@ def test_ambiguous_create_transport_failure_does_not_delete_user(app_state):
 
     response = app.handler(make_event(body=invite_body()), None)
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert user_table.scan()["Items"] == []
     cognito.admin_add_user_to_group.assert_not_called()
     cognito.admin_delete_user.assert_not_called()
@@ -934,7 +935,7 @@ def test_dynamodb_invite_failure_deletes_new_cognito_user(
 
     response = app.handler(make_event(body=invite_body()), None)
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert user_table.scan()["Items"] == []
     cognito.admin_delete_user.assert_called_once_with(
         UserPoolId=USER_POOL_ID,
@@ -1029,7 +1030,7 @@ def test_owner_cannot_update_privileged_profile(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table)["name"] == "Test User"
     assert cognito.mock_calls == []
 
@@ -1046,7 +1047,7 @@ def test_profile_target_not_found_returns_404(app_state):
         None,
     )
 
-    assert_response(response, 404, {"error": "user not found"})
+    assert_response(response, 404, err("user not found"))
     assert cognito.mock_calls == []
 
 
@@ -1103,7 +1104,7 @@ def test_owner_is_denied_when_cognito_group_diverges_from_staff_record(
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table) == original
     assert cognito.mock_calls == [
         call.admin_list_groups_for_user(
@@ -1140,7 +1141,7 @@ def test_profile_dynamodb_failure_restores_cognito_attributes(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert cognito.admin_update_user_attributes.call_args_list == [
         call(
@@ -1207,7 +1208,7 @@ def test_owner_cannot_change_privileged_status(app_state, action):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert cognito.mock_calls == []
 
 
@@ -1230,7 +1231,7 @@ def test_self_deactivation_is_forbidden(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert cognito.mock_calls == []
 
 
@@ -1254,7 +1255,7 @@ def test_self_reactivation_is_forbidden(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table, CALLER_SUB)["status"] == "disabled"
     cognito.admin_enable_user.assert_not_called()
 
@@ -1267,7 +1268,7 @@ def test_status_target_not_found_returns_404(app_state):
         None,
     )
 
-    assert_response(response, 404, {"error": "user not found"})
+    assert_response(response, 404, err("user not found"))
     assert cognito.mock_calls == []
 
 
@@ -1284,7 +1285,7 @@ def test_status_cognito_transport_error_is_sanitized(app_state):
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
 
 
@@ -1307,7 +1308,7 @@ def test_status_dynamodb_failure_reverses_cognito_change(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert cognito.mock_calls == [
         call.admin_list_groups_for_user(
@@ -1345,7 +1346,7 @@ def test_owner_cannot_promote_staff_to_owner(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table) == original
     cognito.admin_add_user_to_group.assert_not_called()
     cognito.admin_remove_user_from_group.assert_not_called()
@@ -1385,7 +1386,7 @@ def test_owner_cannot_promote_staff(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table) == user_item()
     assert cognito.mock_calls == []
 
@@ -1411,7 +1412,7 @@ def test_self_group_change_is_forbidden(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert cognito.mock_calls == []
 
 
@@ -1459,7 +1460,7 @@ def test_delete_missing_dynamodb_target_returns_404_without_cognito(
         None,
     )
 
-    assert_response(response, 404, {"error": "user not found"})
+    assert_response(response, 404, err("user not found"))
     cognito.admin_delete_user.assert_not_called()
 
 
@@ -1475,7 +1476,7 @@ def test_owner_cannot_delete_privileged_user(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table) is not None
     assert cognito.mock_calls == []
 
@@ -1500,7 +1501,7 @@ def test_self_delete_is_forbidden(app_state):
         None,
     )
 
-    assert_response(response, 403, {"error": "forbidden"})
+    assert_response(response, 403, err("forbidden"))
     assert get_user(user_table, CALLER_SUB) is not None
     assert cognito.mock_calls == []
 
@@ -1528,7 +1529,7 @@ def test_delete_dependency_failures_are_sanitized_and_keep_record(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert "sensitive AWS detail" not in response["body"]
 
@@ -1574,7 +1575,7 @@ def test_profile_rollback_uses_live_cognito_values_and_verification_flags(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     cognito.admin_get_user.assert_called_once_with(
         UserPoolId=USER_POOL_ID,
@@ -1728,7 +1729,7 @@ def test_status_write_failure_does_not_inverse_unchanged_cognito(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     cognito.admin_disable_user.assert_not_called()
     cognito.admin_enable_user.assert_not_called()
@@ -1822,7 +1823,7 @@ def test_ambiguous_invite_write_retries_without_cognito_compensation(
 
     response = app.handler(make_event(body=invite_body()), None)
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) is None
     assert failing_table.put_item.call_count == 2
     cognito.admin_delete_user.assert_not_called()
@@ -1851,7 +1852,7 @@ def test_ambiguous_profile_write_retries_without_cognito_compensation(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert failing_table.put_item.call_count == 2
     assert cognito.admin_update_user_attributes.call_args_list == [
@@ -1885,7 +1886,7 @@ def test_ambiguous_status_write_retries_without_cognito_inverse(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert failing_table.put_item.call_count == 2
     cognito.admin_disable_user.assert_called_once()
@@ -1911,7 +1912,7 @@ def test_ambiguous_delete_retries_and_preserves_prior_dynamodb_state(
         None,
     )
 
-    assert_response(response, 503, {"error": "user service unavailable"})
+    assert_response(response, 503, err("user service unavailable"))
     assert get_user(user_table) == original
     assert failing_table.delete_item.call_count == 2
     cognito.admin_delete_user.assert_called_once()
@@ -2081,7 +2082,7 @@ def test_other_tenants_user_is_404_and_untouched(app_state, method, proxy, body)
 
     response = app.handler(make_event(method=method, proxy=proxy, body=body), None)
 
-    assert_response(response, 404, {"error": "user not found"})
+    assert_response(response, 404, err("user not found"))
     assert get_user(user_table) == victim
     assert cognito.mock_calls == []
 
@@ -2139,7 +2140,7 @@ def test_invite_to_another_tenants_location_is_rejected(app_state):
 
     response = app.handler(make_event(body=invite_body(location_id="b-location")), None)
 
-    assert_response(response, 400, {"error": "locationId is not a location of this restaurant"})
+    assert_response(response, 400, err("locationId is not a location of this restaurant"))
     assert cognito.mock_calls == []
 
 
@@ -2217,7 +2218,7 @@ def test_guide_starts_not_done_and_is_marked_done_once_for_any_role(app_state, g
 def test_guide_never_creates_a_profile_row(app_state):
     app, user_table, _ = app_state
     response = app.handler(make_event(method="PUT", proxy="me/guide", groups='["staff_user"]'), None)
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     assert get_user(user_table, CALLER_SUB) is None
 
 
@@ -2225,7 +2226,7 @@ def test_guide_ignores_a_profile_of_another_tenant(app_state):
     app, user_table, _ = app_state
     put_user(user_table, user_item(sub=CALLER_SUB, tenant_id=TENANT_B))
     response = app.handler(make_event(method="PUT", proxy="me/guide"), None)
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     response = app.handler(make_event(method="GET", proxy="me/guide"), None)
     assert_response(response, 200, {"completed": False, "completedAt": None})
     assert "guideCompletedAt" not in get_user(user_table, CALLER_SUB)

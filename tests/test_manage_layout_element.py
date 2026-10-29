@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -264,7 +265,7 @@ def test_missing_claims_returns_401_before_dispatch_or_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -299,7 +300,7 @@ def test_missing_subject_returns_401_without_dynamodb(
 
     response = app.handler(make_event(sub=sub), None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     table_factory.assert_not_called()
 
 
@@ -318,7 +319,7 @@ def test_wrong_group_returns_403_without_dynamodb(
 
     response = app.handler(make_event(groups=groups), None)
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     table_factory.assert_not_called()
 
 
@@ -356,7 +357,7 @@ def test_known_route_wrong_method_returns_405_without_dynamodb(
 
     response = app.handler(make_event(method=method, proxy=proxy), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == allow
     table_factory.assert_not_called()
 
@@ -376,7 +377,7 @@ def test_unknown_proxy_returns_404_without_dynamodb(
 
     response = app.handler(make_event(proxy=proxy), None)
 
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     table_factory.assert_not_called()
 
 
@@ -405,7 +406,7 @@ def test_missing_location_id_returns_400_without_dynamodb(
 
     response = app.handler(event, None)
 
-    assert_response(response, 400, {"error": "locationId is required"})
+    assert_response(response, 400, err("locationId is required"))
     table_factory.assert_not_called()
 
 
@@ -421,8 +422,8 @@ def test_oversized_path_values_are_rejected(app_and_table):
         None,
     )
 
-    assert_response(location_response, 400, {"error": "locationId is invalid"})
-    assert_response(element_response, 400, {"error": "elementId is invalid"})
+    assert_response(location_response, 400, err("locationId is invalid"))
+    assert_response(element_response, 400, err("elementId is invalid"))
 
 
 @pytest.mark.parametrize(
@@ -538,11 +539,11 @@ def test_floor_area_requires_explicit_positive_height(app_and_table):
         None,
     )
 
-    assert_response(missing_response, 400, {"error": "height is required"})
+    assert_response(missing_response, 400, err("height is required"))
     assert_response(
         zero_response,
         400,
-        {"error": "height must be greater than zero"},
+        err("height must be greater than zero"),
     )
     assert table_items(layout_table) == []
 
@@ -578,7 +579,7 @@ def test_floor_area_rejects_other_type_specific_fields(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for floorArea: {field}"},
+        err(f"fields not valid for floorArea: {field}"),
     )
     assert table_items(layout_table) == []
 
@@ -709,7 +710,7 @@ def test_cash_register_requires_all_common_geometry(
 
     response = app.handler(make_event(method="POST", body=body), None)
 
-    assert_response(response, 400, {"error": f"{field} is required"})
+    assert_response(response, 400, err(f"{field} is required"))
     assert table_items(layout_table) == []
 
 
@@ -739,7 +740,7 @@ def test_cash_register_validates_common_geometry(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert table_items(layout_table) == []
 
 
@@ -773,7 +774,7 @@ def test_cash_register_rejects_other_type_specific_fields(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for cashRegister: {field}"},
+        err(f"fields not valid for cashRegister: {field}"),
     )
     assert table_items(layout_table) == []
 
@@ -840,7 +841,7 @@ def test_create_rejects_invalid_door_kind(app_and_table, kind):
     assert_response(
         response,
         400,
-        {"error": "kind must be entrance or kitchen"},
+        err("kind must be entrance or kitchen"),
     )
     assert table_items(layout_table) == []
 
@@ -866,7 +867,7 @@ def test_create_rejects_door_kind_for_other_element_types(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for {element_type}: kind"},
+        err(f"fields not valid for {element_type}: kind"),
     )
     assert table_items(layout_table) == []
 
@@ -931,7 +932,7 @@ def test_common_create_fields_are_required(app_and_table, field):
 
     response = app.handler(make_event(method="POST", body=body), None)
 
-    assert_response(response, 400, {"error": f"{field} is required"})
+    assert_response(response, 400, err(f"{field} is required"))
     assert table_items(layout_table) == []
 
 
@@ -958,7 +959,7 @@ def test_variant_create_fields_are_required(
 
     response = app.handler(make_event(method="POST", body=body), None)
 
-    assert_response(response, 400, {"error": f"{field} is required"})
+    assert_response(response, 400, err(f"{field} is required"))
     assert table_items(layout_table) == []
 
 
@@ -1038,7 +1039,7 @@ def test_rejects_malformed_request_bodies(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert table_items(layout_table) == []
 
 
@@ -1096,7 +1097,7 @@ def test_dimensions_must_be_greater_than_zero(
         None,
     )
 
-    assert_response(response, 400, {"error": f"{field} must be greater than zero"})
+    assert_response(response, 400, err(f"{field} must be greater than zero"))
     assert table_items(layout_table) == []
 
 
@@ -1222,7 +1223,7 @@ def test_create_rejects_invalid_optional_label(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert table_items(layout_table) == []
 
 
@@ -1247,7 +1248,7 @@ def test_create_rejects_label_for_unsupported_element_types(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for {element_type}: label"},
+        err(f"fields not valid for {element_type}: label"),
     )
     assert table_items(layout_table) == []
 
@@ -1259,7 +1260,7 @@ def test_nonfinite_json_numbers_are_rejected(app_and_table, literal):
 
     response = app.handler(make_event(method="POST", body=body), None)
 
-    assert_response(response, 400, {"error": "request body must be valid JSON"})
+    assert_response(response, 400, err("request body must be valid JSON"))
     assert table_items(layout_table) == []
 
 
@@ -1273,7 +1274,7 @@ def test_dynamodb_unrepresentable_numbers_are_rejected(
 
     response = app.handler(make_event(method="POST", body=body), None)
 
-    assert_response(response, 400, {"error": "x is outside the supported range"})
+    assert_response(response, 400, err("x is outside the supported range"))
     assert table_items(layout_table) == []
 
 
@@ -1287,7 +1288,7 @@ def test_create_collision_returns_409_without_overwriting(app_and_table):
         None,
     )
 
-    assert_response(response, 409, {"error": "layout element already exists"})
+    assert_response(response, 409, err("layout element already exists"))
     assert get_item(layout_table) == existing
 
 
@@ -1388,7 +1389,7 @@ def test_missing_item_returns_404(app_and_table, method):
         None,
     )
 
-    assert_response(response, 404, {"error": "layout element not found"})
+    assert_response(response, 404, err("layout element not found"))
 
 
 def test_partial_update_merges_and_replaces_audit_fields(
@@ -1519,7 +1520,7 @@ def test_label_cannot_be_cleared_or_made_invalid(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert get_item(layout_table) == original
 
 
@@ -1547,7 +1548,7 @@ def test_update_rejects_label_for_unsupported_element_types(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for {element_type}: label"},
+        err(f"fields not valid for {element_type}: label"),
     )
     assert get_item(layout_table) == original
 
@@ -1566,7 +1567,7 @@ def test_labelled_table_type_is_immutable(app_and_table):
         None,
     )
 
-    assert_response(response, 400, {"error": "type cannot be changed"})
+    assert_response(response, 400, err("type cannot be changed"))
     assert get_item(layout_table) == original
 
 
@@ -1643,7 +1644,7 @@ def test_cash_register_type_is_immutable(app_and_table):
         None,
     )
 
-    assert_response(response, 400, {"error": "type cannot be changed"})
+    assert_response(response, 400, err("type cannot be changed"))
     assert get_item(layout_table) == original
 
 
@@ -1729,7 +1730,7 @@ def test_invalid_door_kind_update_does_not_change_item(
     assert_response(
         response,
         400,
-        {"error": "kind must be entrance or kitchen"},
+        err("kind must be entrance or kitchen"),
     )
     assert get_item(layout_table) == original
 
@@ -1758,7 +1759,7 @@ def test_update_rejects_door_kind_for_other_element_types(
     assert_response(
         response,
         400,
-        {"error": f"fields not valid for {element_type}: kind"},
+        err(f"fields not valid for {element_type}: kind"),
     )
     assert get_item(layout_table) == original
 
@@ -1883,7 +1884,7 @@ def test_invalid_partial_updates_do_not_change_item(
         None,
     )
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     assert get_item(layout_table) == original
 
 
@@ -1952,7 +1953,7 @@ def test_inconsistent_stored_element_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout element record is inconsistent"},
+        err("layout element record is inconsistent"),
     )
 
 
@@ -1982,7 +1983,7 @@ def test_inconsistent_stored_kind_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout element record is inconsistent"},
+        err("layout element record is inconsistent"),
     )
 
 
@@ -2041,7 +2042,7 @@ def test_inconsistent_stored_label_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout element record is inconsistent"},
+        err("layout element record is inconsistent"),
     )
 
 
@@ -2076,7 +2077,7 @@ def test_stale_update_returns_409_and_preserves_concurrent_winner(
     assert_response(
         response,
         409,
-        {"error": "layout element changed; retry request"},
+        err("layout element changed; retry request"),
     )
     assert get_item(layout_table) == winner
 
@@ -2133,7 +2134,7 @@ def test_dynamodb_failures_return_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout service unavailable"},
+        err("layout service unavailable"),
     )
     assert "sensitive AWS message" not in response["body"]
 
@@ -2157,7 +2158,7 @@ def test_malformed_query_results_return_503(
     assert_response(
         response,
         503,
-        {"error": "layout service unavailable"},
+        err("layout service unavailable"),
     )
 
 

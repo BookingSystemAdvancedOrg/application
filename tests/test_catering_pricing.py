@@ -2,6 +2,7 @@
 tiers and lead time by guests, delivery bands from the road distance, VAT
 per line, the request snapshot and the Stripe tax rate per VAT rate."""
 
+from error_body import err
 import json
 from decimal import Decimal
 
@@ -66,7 +67,7 @@ def test_quote_beyond_the_first_band_and_outside_the_area(menu):
     assert body_of(quote(menu))["deliveryFee"] == 79500
     set_settings(menu, deliveryBands=[{"upToKm": 10, "price": 300}, {"upToKm": 20, "price": 500}], maxDeliveryKm=20)
     response = quote(menu)
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "catering_outside_area"}
+    assert response["statusCode"] == 409 and body_of(response) == err("catering_outside_area")
 
 
 def test_quote_without_a_located_address_leaves_the_fee_to_the_restaurant(menu):
@@ -115,7 +116,7 @@ def test_lead_time_by_guests(menu):
     assert body_of(quote(menu, guests=60))["earliestDate"] == "2026-10-15"
     # 60 guests on the 10th: too soon; 40 guests on the 10th: fine
     late = create(menu, items=None, packages=[{"packageId": PACKAGE_ID}], guests=60, deliveryDate="2026-10-10")
-    assert body_of(late) == {"error": "catering_too_soon"}
+    assert body_of(late) == err("catering_too_soon")
     ok = create(menu, items=None, packages=[{"packageId": PACKAGE_ID}], guests=40, deliveryDate="2026-10-10",
                 phone="0701234568", email="b@example.se")
     assert ok["statusCode"] == 201
@@ -176,7 +177,7 @@ def test_geo_distance(monkeypatch):
 
 def test_company_request_needs_a_signatory(menu):
     missing = create(menu, **{**COMPANY, "signatoryName": None})
-    assert body_of(missing) == {"error": "signatoryName is required"}
+    assert body_of(missing) == err("signatoryName is required")
 
 
 def test_settings_report_whether_the_delivery_origin_is_found(env):  # noqa: F811
@@ -208,7 +209,7 @@ def test_legacy_menu_item_follows_its_schedule(env):  # noqa: F811
     from test_catering import MENU_TABLE, menu_item
     env.res.Table(MENU_TABLE).put_item(Item=menu_item("later", "Julbord", "300", availableFrom="2026-12-01T00:00:00Z"))
     response = create(env, items=[{"menuItemId": "later", "quantity": 20}])
-    assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}
+    assert response["statusCode"] == 400 and body_of(response) == err("menu_item_unavailable")
 
 
 def test_tier_follows_what_is_ordered_not_only_the_guest_count(menu):
@@ -216,7 +217,7 @@ def test_tier_follows_what_is_ordered_not_only_the_guest_count(menu):
     body = body_of(quote(menu, guests=100, packages=None, dishes=[{"dishId": DISH_ID, "quantity": 20}]))
     assert body["discount"] == 0 and body["ruleRefs"]["tierGuests"] == 20
     too_many = quote(menu, guests=40, packages=[{"packageId": PACKAGE_ID, "quantity": 41}])
-    assert body_of(too_many) == {"error": "Buffé Roma is for at most 40 guests"}
+    assert body_of(too_many) == err("Buffé Roma is for at most 40 guests")
 
 
 def test_distance_is_cached_and_lookups_are_guarded(monkeypatch):

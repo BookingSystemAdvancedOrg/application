@@ -2,6 +2,7 @@
 schema (tests/fixtures/skv_kassaregister_xsd) for every kind of
 registration Kassa makes, and the export endpoint is owner-only."""
 
+from error_body import err
 from pathlib import Path
 
 import pytest
@@ -63,7 +64,7 @@ def test_export_period_and_owner_only(env):
     rid = register(env)
     assert call(env, "GET", f"registers/{rid}/export", query={"from": "2026-10-25", "to": "2026-10-24"})[0] == 400
     assert call(env, "GET", f"registers/{rid}/export", query={"from": "2026-10-20", "to": "2026-10-21"}) == (
-        409, {"error": "nothing_to_export"})
+        409, err("nothing_to_export"))
 
 
 def test_amounts_and_numbers():

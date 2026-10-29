@@ -1,3 +1,4 @@
+from error_body import err
 import hashlib
 import importlib.util
 import json
@@ -756,7 +757,7 @@ def test_public_active_layout_rejects_invalid_door_kind(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -799,7 +800,7 @@ def test_public_active_layout_rejects_cash_register_non_label_variants(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -834,7 +835,7 @@ def test_public_active_layout_rejects_invalid_cash_register_label(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -938,7 +939,7 @@ def test_public_active_layout_rejects_invalid_table_label(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -971,7 +972,7 @@ def test_only_exact_top_level_route_key_bypasses_authentication(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -986,7 +987,7 @@ def test_public_active_wrong_method_returns_405_before_dynamodb(
 
     response = app.handler(make_public_event(method="POST"), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
     table_factory.assert_not_called()
 
@@ -1019,7 +1020,7 @@ def test_public_active_missing_activation_state_returns_404(
 
     response = app.handler(make_public_event(), None)
 
-    assert_response(response, 404, {"error": "active layout not found"})
+    assert_response(response, 404, err("active layout not found"))
 
 
 @pytest.mark.parametrize(
@@ -1057,7 +1058,7 @@ def test_public_active_corrupt_activation_state_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
 
 
@@ -1074,7 +1075,7 @@ def test_public_active_missing_referenced_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1116,7 +1117,7 @@ def test_public_active_inconsistent_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1141,7 +1142,7 @@ def test_public_active_rejects_archived_snapshot(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1293,7 +1294,7 @@ def test_public_active_rejects_persistent_state_version_race(
     assert_response(
         response,
         409,
-        {"error": "active layout changed; retry request"},
+        err("active layout changed; retry request"),
     )
     assert snapshot_table.get_item.call_count == 6
 
@@ -1318,7 +1319,7 @@ def test_public_active_malformed_state_read_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "active layout service unavailable"},
+        err("active layout service unavailable"),
     )
 
 
@@ -1340,7 +1341,7 @@ def test_public_active_malformed_snapshot_read_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "active layout service unavailable"},
+        err("active layout service unavailable"),
     )
 
 
@@ -1369,7 +1370,7 @@ def test_public_active_dependency_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "active layout service unavailable"},
+        err("active layout service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -1389,7 +1390,7 @@ def test_archive_authenticates_before_validating_path_or_reading_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -1409,7 +1410,7 @@ def test_archive_requires_subject_before_validating_path_or_reading_dynamodb(
 
     response = app.handler(event, None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     table_factory.assert_not_called()
 
 
@@ -1433,7 +1434,7 @@ def test_archive_requires_owner_or_super_user_before_validating_path(
     )
 
     expected = "owner_only" if "staff_user" in groups else "no_tenant"
-    assert_response(response, 403, {"error": expected})
+    assert_response(response, 403, err(expected))
     table_factory.assert_not_called()
 
 
@@ -1449,7 +1450,7 @@ def test_archive_exact_route_rejects_wrong_method_before_dynamodb(
 
     response = app.handler(make_archive_event(method=method), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "DELETE"
     table_factory.assert_not_called()
 
@@ -1476,7 +1477,7 @@ def test_only_exact_archive_route_dispatches_delete(
         None,
     )
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
     assert snapshot_table.get_item(
         Key={"PK": original["PK"], "SK": original["SK"]}
@@ -1517,7 +1518,7 @@ def test_archive_requires_string_version_id_before_dynamodb(
         None,
     )
 
-    assert_response(response, 400, {"error": "versionId is required"})
+    assert_response(response, 400, err("versionId is required"))
     table_factory.assert_not_called()
 
 
@@ -1553,7 +1554,7 @@ def test_archive_rejects_noncanonical_version_id_before_dynamodb(
     assert_response(
         response,
         400,
-        {"error": "versionId must be a positive integer"},
+        err("versionId must be a positive integer"),
     )
     table_factory.assert_not_called()
 
@@ -1636,7 +1637,7 @@ def test_archive_missing_snapshot_returns_404(app_and_table):
 
     response = app.handler(make_archive_event(), None)
 
-    assert_response(response, 404, {"error": "layout version not found"})
+    assert_response(response, 404, err("layout version not found"))
 
 
 def test_archive_accepts_maximum_length_canonical_version_id(
@@ -1649,7 +1650,7 @@ def test_archive_accepts_maximum_length_canonical_version_id(
         None,
     )
 
-    assert_response(response, 404, {"error": "layout version not found"})
+    assert_response(response, 404, err("layout version not found"))
 
 
 def test_archive_inactive_snapshot_without_activation_state(
@@ -1684,7 +1685,7 @@ def test_current_layout_version_cannot_be_archived(app_and_table):
     assert_response(
         response,
         409,
-        {"error": "current layout version cannot be archived"},
+        err("current layout version cannot be archived"),
     )
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
@@ -1711,7 +1712,7 @@ def test_pending_layout_version_cannot_be_archived(app_and_table):
     assert_response(
         response,
         409,
-        {"error": "pending layout version cannot be archived"},
+        err("pending layout version cannot be archived"),
     )
     assert snapshot_table.get_item(
         Key={"PK": pending["PK"], "SK": pending["SK"]}
@@ -1743,7 +1744,7 @@ def test_pending_cutover_requires_whole_utc_minute(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     assert snapshot_table.get_item(
         Key={"PK": target["PK"], "SK": target["SK"]}
@@ -1776,7 +1777,7 @@ def test_corrupt_activation_state_prevents_archive(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     assert snapshot_table.get_item(
         Key={"PK": target["PK"], "SK": target["SK"]}
@@ -1800,7 +1801,7 @@ def test_corrupt_snapshot_prevents_archive(app_and_table, snapshot):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert snapshot_table.get_item(
         Key={"PK": snapshot["PK"], "SK": snapshot["SK"]}
@@ -1827,7 +1828,7 @@ def test_archived_pending_snapshot_is_not_treated_as_safe_idempotency(
     assert_response(
         response,
         409,
-        {"error": "pending layout version cannot be archived"},
+        err("pending layout version cannot be archived"),
     )
     assert snapshot_table.get_item(
         Key={
@@ -1920,7 +1921,7 @@ def test_concurrent_activation_prevents_archive(
     assert_response(
         response,
         409,
-        {"error": "current layout version cannot be archived"},
+        err("current layout version cannot be archived"),
     )
     transaction_client.transact_write_items.assert_called_once()
     stored = snapshot_table.get_item(
@@ -1961,7 +1962,7 @@ def test_concurrent_pending_reservation_prevents_archive(
     assert_response(
         response,
         409,
-        {"error": "pending layout version cannot be archived"},
+        err("pending layout version cannot be archived"),
     )
     transaction_client.transact_write_items.assert_called_once()
     stored = snapshot_table.get_item(
@@ -2052,7 +2053,7 @@ def test_persistent_concurrent_snapshot_changes_return_409_without_archive(
     assert_response(
         response,
         409,
-        {"error": "layout version changed; retry request"},
+        err("layout version changed; retry request"),
     )
     assert transaction_client.transact_write_items.call_count == 2
     stored = snapshot_table.get_item(
@@ -2159,7 +2160,7 @@ def test_uncommitted_archive_timeout_retries_once_then_returns_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
     assert transaction_client.transact_write_items.call_count == 2
     stored = snapshot_table.get_item(
@@ -2202,7 +2203,7 @@ def test_archive_transaction_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
     assert "sensitive" not in response["body"]
     transaction_client.transact_write_items.assert_called_once()
@@ -2244,7 +2245,7 @@ def test_archive_read_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
     assert "sensitive" not in response["body"]
     transaction_factory.assert_not_called()
@@ -2265,7 +2266,7 @@ def test_missing_claims_returns_401_before_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -2280,7 +2281,7 @@ def test_missing_subject_returns_401_before_dynamodb(
 
     response = app.handler(make_event(sub=" "), None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     table_factory.assert_not_called()
 
 
@@ -2294,7 +2295,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["customer"]'), None)
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     table_factory.assert_not_called()
 
 
@@ -2308,7 +2309,7 @@ def test_wrong_method_returns_405_before_dynamodb(
 
     response = app.handler(make_event(method="POST"), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
     table_factory.assert_not_called()
 
@@ -2437,7 +2438,7 @@ def test_corrupt_archive_metadata_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2543,7 +2544,7 @@ def test_malformed_query_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
 
 
@@ -2568,7 +2569,7 @@ def test_repeated_pagination_key_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
     assert query_table.query.call_count == 2
 
@@ -2597,7 +2598,7 @@ def test_dependency_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout version service unavailable"},
+        err("layout version service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -2643,7 +2644,7 @@ def test_corrupt_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2681,7 +2682,7 @@ def test_missing_snapshot_field_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2741,7 +2742,7 @@ def test_corrupt_embedded_element_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2903,7 +2904,7 @@ def test_floor_area_rejects_variant_fields_for_staff(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -3009,7 +3010,7 @@ def test_invalid_floor_relationship_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -3025,7 +3026,7 @@ def test_duplicate_versions_return_409(app_and_table, monkeypatch):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -3042,7 +3043,7 @@ def test_duplicate_element_ids_return_409(app_and_table, monkeypatch):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 

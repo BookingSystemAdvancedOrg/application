@@ -3,6 +3,7 @@ cancel, staff list / status / edit / move - against moto DynamoDB with the
 real availability engine, so a booking is validated exactly as the guest's
 availability was computed. Includes double-booking and tenant isolation."""
 
+from error_body import err
 import importlib.util
 import json
 from datetime import datetime, timezone
@@ -253,7 +254,7 @@ def test_guest_books_a_table_and_it_disappears_from_availability(env):
 def test_same_table_twice_is_refused(env):
     assert guest_booking(env)["statusCode"] == 201
     second = guest_booking(env, party=2)
-    assert second["statusCode"] == 409 and body_of(second) == {"error": "table_taken"}
+    assert second["statusCode"] == 409 and body_of(second) == err("table_taken")
 
 
 def test_concurrent_bookings_cannot_both_win(env, monkeypatch):
@@ -277,7 +278,7 @@ def test_concurrent_bookings_cannot_both_win(env, monkeypatch):
     second = guest_booking(env, start="16:00", tables=("table-c",), party=4)
 
     assert first["statusCode"] == 201
-    assert second["statusCode"] == 409 and body_of(second) == {"error": "table_taken"}
+    assert second["statusCode"] == 409 and body_of(second) == err("table_taken")
 
 
 @pytest.mark.parametrize("change, message", [
@@ -512,7 +513,7 @@ def test_guest_cannot_cancel_after_the_start(env):
     created = body_of(guest_booking(env))
     env["clock"].value = datetime(2026, 9, 20, 16, 5, tzinfo=timezone.utc)
     response = guest_cancel(env, created["reservationId"], created["manageToken"])
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "already_started"}
+    assert response["statusCode"] == 409 and body_of(response) == err("already_started")
 
 
 # --- staff -----------------------------------------------------------------------------
@@ -680,8 +681,8 @@ def test_a_booking_from_before_the_half_hour_grid_can_still_change_tables(env, m
 def test_arrive_no_show_and_undo_rules(env):
     rid = body_of(guest_booking(env))["reservationId"]
     env["clock"].value = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)  # 4 h before
-    assert body_of(set_status(env, rid, "arrived")) == {"error": "too_early"}
-    assert body_of(set_status(env, rid, "no_show")) == {"error": "grace_period_not_over"}
+    assert body_of(set_status(env, rid, "arrived")) == err("too_early")
+    assert body_of(set_status(env, rid, "no_show")) == err("grace_period_not_over")
 
     env["clock"].value = datetime(2026, 9, 20, 16, 0, tzinfo=timezone.utc)
     arrived = set_status(env, rid, "arrived", who=STAFF_A)
@@ -703,7 +704,7 @@ def test_restaurant_cancels_and_frees_the_table(env):
     response = set_status(env, rid, "cancelled")
     assert body_of(response)["status"] == "cancelled_by_restaurant"
     assert "table-b" in free_tables_at(env, "18:00")
-    assert body_of(set_status(env, rid, "cancelled")) == {"error": "not_cancellable"}
+    assert body_of(set_status(env, rid, "cancelled")) == err("not_cancellable")
 
 
 def test_move_to_another_table_and_time(env):
@@ -736,7 +737,7 @@ def test_move_onto_a_taken_table_is_refused(env):
     first = body_of(guest_booking(env))["reservationId"]
     guest_booking(env, tables=("table-c",), party=4)
     response = edit(env, first, {"tableIds": ["table-c"]})
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "table_taken"}
+    assert response["statusCode"] == 409 and body_of(response) == err("table_taken")
     assert "table-b" not in free_tables_at(env, "18:00")  # original hold untouched
 
 
@@ -795,11 +796,11 @@ def test_late_arrival_is_refused_when_the_table_was_given_away(env):
 
     response = set_status(env, rid, "arrived")
 
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "table_taken"}
+    assert response["statusCode"] == 409 and body_of(response) == err("table_taken")
     listed = {i["reservationId"]: i["status"] for i in body_of(staff_list(env))["items"]}
     assert listed[rid] == "no_show"
     # Cancelling the no-show doesn't touch the walk-in's hold.
-    assert body_of(set_status(env, rid, "cancelled")) == {"error": "not_cancellable"}
+    assert body_of(set_status(env, rid, "cancelled")) == err("not_cancellable")
 
 
 def test_late_arrival_after_the_end_is_refused(env):
@@ -807,7 +808,7 @@ def test_late_arrival_after_the_end_is_refused(env):
     env["clock"].value = datetime(2026, 9, 20, 16, 20, tzinfo=timezone.utc)
     set_status(env, rid, "no_show")
     env["clock"].value = datetime(2026, 9, 20, 18, 0, tzinfo=timezone.utc)
-    assert body_of(set_status(env, rid, "arrived")) == {"error": "already_ended"}
+    assert body_of(set_status(env, rid, "arrived")) == err("already_ended")
 
 
 def test_concurrent_transaction_is_a_conflict_not_an_outage(monkeypatch):
@@ -1060,7 +1061,7 @@ def test_one_ip_address_gets_a_few_booking_attempts(guard):
     results = [online_attempt(guard, start=s, phone=f"07012345{i}0", email=f"g{i}@example.se")
                for i, s in enumerate(starts)]
     assert [r["statusCode"] for r in results] == [201, 201, 429]
-    assert body_of(results[2]) == {"error": "too_many_requests"}
+    assert body_of(results[2]) == err("too_many_requests")
     assert 0 < int(results[2]["headers"]["Retry-After"]) <= 600
     # Another address is not affected.
     assert online_attempt(guard, ip="198.51.100.7", start="16:00", phone="0709999999",

@@ -3,6 +3,7 @@
 booking - or runs out / is let go and the tables are free again. Same moto
 setup as test_reservations (real availability engine, real locks)."""
 
+from error_body import err
 from datetime import timedelta
 
 from boto3.dynamodb.conditions import Key
@@ -53,8 +54,8 @@ def test_confirming_tables_holds_them_for_15_minutes(env):
     assert held["tableIds"] == ["table-b"] and held["manageToken"] and held["cardRequired"] is False
     assert "table-b" not in free_tables_at(env, "18:00")
     # Someone else can neither hold nor book it meanwhile.
-    assert body_of(hold(env)) == {"error": "table_taken"}
-    assert body_of(guest_booking(env)) == {"error": "table_taken"}
+    assert body_of(hold(env)) == err("table_taken")
+    assert body_of(guest_booking(env)) == err("table_taken")
     # Staff don't see a hold as a booking.
     assert body_of(staff_list(env))["items"] == []
 
@@ -84,11 +85,11 @@ def test_a_hold_that_ran_out_frees_the_tables_at_once(env):
 
     assert "table-b" in free_tables_at(env, "18:00")  # before any sweep
     late = book_held(env, held)
-    assert late["statusCode"] == 409 and body_of(late) == {"error": "hold_expired"}
+    assert late["statusCode"] == 409 and body_of(late) == err("hold_expired")
     # Another guest takes the table over.
     taken = guest_booking(env, name="Bo Berg", email="bo@example.se", phone="0709999999")
     assert taken["statusCode"] == 201, taken
-    assert body_of(book_held(env, held)) == {"error": "hold_expired"}
+    assert body_of(book_held(env, held)) == err("hold_expired")
 
     # The sweep tidies the old hold without touching the new booking's row.
     reminders = load("reservation-reminders", "res_reminders_holds")
@@ -108,7 +109,7 @@ def test_letting_go_frees_the_tables_and_is_idempotent(env):
     assert second["statusCode"] == 200 and body_of(second) == {"released": False}
     assert "table-b" in free_tables_at(env, "18:00") and rows(env) == []
     assert stored(env, held["holdId"])["status"] == "expired"
-    assert body_of(book_held(env, held)) == {"error": "hold_expired"}
+    assert body_of(book_held(env, held)) == err("hold_expired")
 
 
 def test_letting_go_never_cancels_a_booking(env):
@@ -168,7 +169,7 @@ def test_card_not_confirmed_before_the_hold_ran_out(g):
         "POST", "/locations/{locationId}/reservations/{reservationId}/confirm",
         reservation=held["holdId"], headers={"x-manage-token": held["manageToken"]}), None)
 
-    assert late["statusCode"] == 409 and body_of(late) == {"error": "expired"}
+    assert late["statusCode"] == 409 and body_of(late) == err("expired")
     assert "table-b" in free_tables_at(g, "18:00")
 
 

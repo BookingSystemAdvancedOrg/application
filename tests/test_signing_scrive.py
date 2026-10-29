@@ -4,6 +4,7 @@ responses in tests/fixtures/scrive/ (no network): create, start, the
 callback token, out-of-order and duplicate callbacks, the sealed PDF in
 the locked package, cancel on a new version, errors."""
 
+from error_body import err
 import copy
 import hashlib
 import io
@@ -199,7 +200,7 @@ def test_a_failed_update_trashes_the_draft_and_answers_503(scrive):
     from test_catering import create
     rid = body_of(create(scrive))["requestId"]
     response = staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
-    assert response["statusCode"] == 503 and body_of(response) == {"error": "signing_unavailable"}
+    assert response["statusCode"] == 503 and body_of(response) == err("signing_unavailable")
     assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
 
 
@@ -209,7 +210,7 @@ def test_a_sign_method_scrive_has_not_enabled_is_named_in_the_error(scrive):
     rid = body_of(create(scrive))["requestId"]
     response = staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
     assert response["statusCode"] == 409
-    assert body_of(response) == {"error": "signing_authentication_to_sign_method_disabled"}
+    assert body_of(response) == err("signing_authentication_to_sign_method_disabled")
     assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
 
 
@@ -280,7 +281,7 @@ def test_a_party_that_rejects_or_a_document_that_timed_out_fails(scrive):
     scrive.scrive.party(RESTAURANT_PARTY)["rejected_time"] = None
     scrive.scrive.document["status"] = "timedout"
     response = staff(scrive, "POST", "/restaurant-sign", request_id=rid)
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "signing_document_timedout"}
+    assert response["statusCode"] == 409 and body_of(response) == err("signing_document_timedout")
 
 
 # --- callbacks --------------------------------------------------------------------------------
@@ -343,7 +344,7 @@ def test_a_seal_that_is_not_ready_is_stored_on_a_later_callback(scrive):
     token_t = item["signing"]["order"]["callbackToken"]
     body = callback_body(scrive.scrive.document)
     response = webhook(scrive, rid, token_t, body)
-    assert response["statusCode"] == 503 and body_of(response) == {"error": "seal_pending"}
+    assert response["statusCode"] == 503 and body_of(response) == err("seal_pending")
     assert not [h for h in c.history(rid) if h["action"] == "signing_webhook"]  # not deduped: Scrive retries
     scrive.scrive.close(sealed=True)
     assert body_of(webhook(scrive, rid, token_t, body)) == {"result": "handled", "recorded": ["sealed"]}

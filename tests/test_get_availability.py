@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from datetime import datetime, timezone
@@ -601,7 +602,7 @@ def test_non_get_method_returns_405_before_parsing(app, monkeypatch, method):
         None,
     )
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
     boundary.assert_not_called()
 
@@ -621,7 +622,7 @@ def test_non_get_method_returns_405_before_parsing(app, monkeypatch, method):
 def test_malformed_event_returns_405(app, event):
     response = app.handler(event, None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "GET"
 
 
@@ -648,7 +649,7 @@ def test_invalid_location_id_returns_400(
 
     response = app.handler(make_event(location_id=location_id), None)
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     boundary.assert_not_called()
 
 
@@ -688,7 +689,7 @@ def test_invalid_query_returns_400(app, monkeypatch, query, message):
 
     response = app.handler(make_event(query=query), None)
 
-    assert_response(response, 400, {"error": message})
+    assert_response(response, 400, err(message))
     boundary.assert_not_called()
 
 
@@ -707,7 +708,7 @@ def test_query_validation_reports_sorted_unsupported_fields(app):
     assert_response(
         response,
         400,
-        {"error": "unsupported query parameters: alpha, zeta"},
+        err("unsupported query parameters: alpha, zeta"),
     )
 
 
@@ -844,7 +845,7 @@ def test_invalid_table_label_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1000,7 +1001,7 @@ def test_invalid_floor_area_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1054,7 +1055,7 @@ def test_invalid_cash_register_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1089,7 +1090,7 @@ def test_invalid_cash_register_floor_relationship_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1124,7 +1125,7 @@ def test_invalid_floor_area_floor_relationship_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1154,7 +1155,7 @@ def test_invalid_door_kind_in_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1216,7 +1217,7 @@ def test_missing_location_returns_404(app_and_tables, monkeypatch):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
     boundary.assert_not_called()
 
 
@@ -1276,7 +1277,7 @@ def test_past_date_is_rejected_before_layout_read(
         None,
     )
 
-    assert_response(response, 400, {"error": "date must not be in the past"})
+    assert_response(response, 400, err("date must not be in the past"))
     snapshot.get_item.assert_not_called()
 
 
@@ -1342,7 +1343,7 @@ def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
     assert_response(
         response,
         400,
-        {"error": "date must not be more than 21 days ahead"},
+        err("date must not be more than 21 days ahead"),
     )
     location.get_item.assert_called_once()
     snapshot.get_item.assert_not_called()
@@ -1483,7 +1484,7 @@ def test_inconsistent_location_returns_409(app_and_tables, location):
     assert_response(
         response,
         409,
-        {"error": "location record is inconsistent"},
+        err("location record is inconsistent"),
     )
 
 
@@ -1497,7 +1498,7 @@ def test_activation_state_without_snapshot_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1526,7 +1527,7 @@ def test_inconsistent_active_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1561,7 +1562,7 @@ def test_inconsistent_floor_relationships_return_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1586,7 +1587,7 @@ def test_inconsistent_floor_schema_returns_409(app_and_tables, floor):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1729,11 +1730,9 @@ def test_scheduling_transition_conflicts_when_slot_reaches_future_side(
     assert_response(
         response,
         409,
-        {
-            "error": (
+        err((
                 "layout activation is still being scheduled; retry request"
-            )
-        },
+            )),
     )
 
 
@@ -1899,7 +1898,7 @@ def test_malformed_pending_target_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1918,7 +1917,7 @@ def test_archived_current_snapshot_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1935,7 +1934,7 @@ def test_incomplete_pending_activation_state_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
 
 
@@ -1954,7 +1953,7 @@ def test_invalid_environment_with_pending_state_returns_503(
     assert_response(
         response,
         503,
-        {"error": "availability service unavailable"},
+        err("availability service unavailable"),
     )
 
 
@@ -1978,7 +1977,7 @@ def test_pending_target_before_replacement_delay_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2001,7 +2000,7 @@ def test_archived_pending_target_returns_409(app_and_tables):
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -2026,7 +2025,7 @@ def test_overdue_scheduled_cutover_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue; retry request"},
+        err("layout activation cutover is overdue; retry request"),
     )
 
 
@@ -2058,7 +2057,7 @@ def test_snapshot_dependency_failure_is_sanitized(
     assert_response(
         response,
         503,
-        {"error": "availability service unavailable"},
+        err("availability service unavailable"),
     )
     assert "sensitive snapshot detail" not in response["body"]
 
@@ -2094,7 +2093,7 @@ def test_location_dependency_failure_is_sanitized(
     assert_response(
         response,
         503,
-        {"error": "availability service unavailable"},
+        err("availability service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
 
@@ -2437,7 +2436,7 @@ def test_inconsistent_occupancy_returns_409(app_and_tables, item):
     assert_response(
         response,
         409,
-        {"error": "slot occupancy record is inconsistent"},
+        err("slot occupancy record is inconsistent"),
     )
 
 
@@ -2477,7 +2476,7 @@ def test_malformed_occupancy_response_returns_503(
     assert_response(
         response,
         503,
-        {"error": "availability service unavailable"},
+        err("availability service unavailable"),
     )
 
 
@@ -2517,7 +2516,7 @@ def test_occupancy_dependency_failure_is_sanitized(
     assert_response(
         response,
         503,
-        {"error": "availability service unavailable"},
+        err("availability service unavailable"),
     )
     assert "sensitive occupancy detail" not in response["body"]
 
@@ -2533,7 +2532,7 @@ def test_location_row_without_matching_id_is_not_found(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
 
 
 @pytest.mark.parametrize("status", ["suspended", "offboarded", "provisioning"])
@@ -2547,7 +2546,7 @@ def test_inactive_restaurant_has_no_availability(app_and_tables, status):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
 
 
 def test_plan_without_reservations_has_no_availability(app_and_tables):
@@ -2560,7 +2559,7 @@ def test_plan_without_reservations_has_no_availability(app_and_tables):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "location not found"})
+    assert_response(response, 404, err("location not found"))
 
 
 def test_first_start_is_at_least_thirty_minutes_away(app_and_tables, monkeypatch):

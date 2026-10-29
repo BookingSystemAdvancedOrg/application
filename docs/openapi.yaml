@@ -8528,7 +8528,23 @@ components:
       properties:
         error:
           type: string
-          description: Sanitized, client-facing error message.
+          description: >-
+            Sanitized error: a snake_case code, or (older routes) a short
+            English validation message. Kept as is for existing clients.
+        code:
+          type: string
+          pattern: '^[a-z][a-z0-9_]*$'
+          description: >-
+            Stable machine-readable code; present whenever `error` is not
+            itself a code. Clients map `code ?? error` to their own copy and
+            never show `error` to end users. Validation messages get
+            `invalid_value`, `required`, `invalid_json`, `unsupported_fields`
+            or the status default (`invalid_request`, `unauthorized`,
+            `forbidden`, `not_found`, `method_not_allowed`, `conflict`,
+            `too_large`, `too_many_requests`, `internal_error`).
+        field:
+          type: string
+          description: The request field a validation error is about, when it names one (e.g. `partySize`, `notifications.reminderHours`).
 
     GatewayUnauthorizedResponse:
       type: object

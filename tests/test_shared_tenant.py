@@ -1,5 +1,6 @@
 """The tenant rules every handler relies on (shared/tenant.py)."""
 
+from error_body import err as error_body
 import json
 
 import boto3
@@ -148,7 +149,7 @@ def test_error_response_shape(aws):
         tenant.for_jwt(ev(TENANT_A), location_id=LOC_B)
     except tenant.TenantError as exc:
         r = exc.response()
-    assert r["statusCode"] == 404 and json.loads(r["body"]) == {"error": "not found"}
+    assert r["statusCode"] == 404 and json.loads(r["body"]) == error_body("not found")
 
 
 def test_old_platform_row_with_same_id_does_not_confuse_resolution(aws):

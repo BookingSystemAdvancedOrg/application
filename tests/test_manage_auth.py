@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from pathlib import Path
@@ -70,7 +71,7 @@ def test_unknown_route_returns_404(app):
     response = app.handler(make_event(proxy="unknown"), None)
 
     assert response["statusCode"] == 404
-    assert json.loads(response["body"]) == {"error": "not found"}
+    assert json.loads(response["body"]) == err("not found")
 
 
 def test_non_post_method_returns_405(app):
@@ -78,7 +79,7 @@ def test_non_post_method_returns_405(app):
 
     assert response["statusCode"] == 405
     assert response["headers"]["Allow"] == "POST"
-    assert json.loads(response["body"]) == {"error": "method not allowed"}
+    assert json.loads(response["body"]) == err("method not allowed")
 
 @pytest.mark.parametrize(
     ("body", "expected_error"),
@@ -96,7 +97,7 @@ def test_rejects_invalid_request_body(app, body, expected_error):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
 @pytest.mark.parametrize(
     ("body", "expected_error"),
     [
@@ -115,7 +116,7 @@ def test_login_requires_credentials(app, body, expected_error):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}   
+    assert json.loads(response["body"]) == err(expected_error)   
 
 
 
@@ -263,9 +264,7 @@ def test_login_maps_cognito_errors(
     response = app.handler(event, None)
 
     assert response["statusCode"] == expected_status
-    assert json.loads(response["body"]) == {
-        "error": expected_message,
-    }
+    assert json.loads(response["body"]) == err(expected_message)
     assert "sensitive AWS message" not in response["body"]
     assert response["headers"]["Cache-Control"] == "no-store"
 
@@ -288,9 +287,7 @@ def test_login_maps_transport_errors_to_502(app):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 502
-    assert json.loads(response["body"]) == {
-        "error": "authentication service unavailable",
-    }
+    assert json.loads(response["body"]) == err("authentication service unavailable")
     assert response["headers"]["Cache-Control"] == "no-store"
 
 
@@ -367,7 +364,7 @@ def test_challenge_validates_request(app, body, expected_error):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     cognito.respond_to_auth_challenge.assert_not_called()
 
 
@@ -489,7 +486,7 @@ def test_challenge_maps_cognito_errors(app, error_code, expected_message):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_message}
+    assert json.loads(response["body"]) == err(expected_message)
     assert "sensitive AWS message" not in response["body"]
     assert response["headers"]["Cache-Control"] == "no-store"
 
@@ -516,9 +513,7 @@ def test_challenge_maps_transport_errors_to_502(app):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 502
-    assert json.loads(response["body"]) == {
-        "error": "authentication service unavailable",
-    }
+    assert json.loads(response["body"]) == err("authentication service unavailable")
     assert response["headers"]["Cache-Control"] == "no-store"
 
 
@@ -540,9 +535,7 @@ def test_refresh_requires_refresh_token(app, refresh_token):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "refreshToken is required",
-    }
+    assert json.loads(response["body"]) == err("refreshToken is required")
     cognito.get_tokens_from_refresh_token.assert_not_called()
 
 
@@ -626,9 +619,7 @@ def test_refresh_maps_cognito_errors(app):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "invalid username or password",
-    }
+    assert json.loads(response["body"]) == err("invalid username or password")
     assert "sensitive AWS message" not in response["body"]
     assert response["headers"]["Cache-Control"] == "no-store"
 
@@ -651,9 +642,7 @@ def test_refresh_maps_transport_errors_to_502(app):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 502
-    assert json.loads(response["body"]) == {
-        "error": "authentication service unavailable",
-    }
+    assert json.loads(response["body"]) == err("authentication service unavailable")
     assert response["headers"]["Cache-Control"] == "no-store"
 
 
@@ -678,7 +667,7 @@ def test_login_maps_tenant_refusals_to_stable_codes(app, error_code, message, ex
     response = app.handler(event, None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": expected}
+    assert json.loads(response["body"]) == err(expected)
 
 
 # --- forgot password ----------------------------------------------------------------
@@ -761,7 +750,7 @@ def test_forgot_password_needs_an_email_address(app, body, expected_error):
     response = app.handler(auth_event("forgot-password", body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     app._cognito_client.forgot_password.assert_not_called()
 
 
@@ -796,7 +785,7 @@ def test_forgot_password_too_often_for_one_account(app, error_code):
     response = app.handler(auth_event("forgot-password", {"username": "staff@example.com"}), None)
 
     assert response["statusCode"] == 429
-    assert json.loads(response["body"]) == {"error": "too many attempts"}
+    assert json.loads(response["body"]) == err("too many attempts")
 
 
 @pytest.mark.parametrize(
@@ -811,7 +800,7 @@ def test_a_broken_reset_email_is_not_hidden(app, caplog, error_code):
     response = app.handler(auth_event("forgot-password", {"username": "staff@example.com"}), None)
 
     assert response["statusCode"] == 502
-    assert json.loads(response["body"]) == {"error": "authentication service unavailable"}
+    assert json.loads(response["body"]) == err("authentication service unavailable")
     assert error_code in caplog.text
 
 
@@ -836,7 +825,7 @@ def test_forgot_password_is_limited_per_ip_address(app, guard):
     ]
 
     assert [r["statusCode"] for r in codes] == [202, 202, 429]
-    assert json.loads(codes[2]["body"]) == {"error": "too many attempts"}
+    assert json.loads(codes[2]["body"]) == err("too many attempts")
     assert 0 < int(codes[2]["headers"]["Retry-After"]) <= 900
     assert app._cognito_client.forgot_password.call_count == 2
     # Another address isn't affected.
@@ -893,7 +882,7 @@ def test_reset_password_validates_the_request(app, change, expected_error):
     response = app.handler(auth_event("reset-password", body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     app._cognito_client.confirm_forgot_password.assert_not_called()
 
 
@@ -922,7 +911,7 @@ def test_reset_password_maps_cognito_errors(app, error_code, message, expected_s
     response = app.handler(auth_event("reset-password", RESET), None)
 
     assert response["statusCode"] == expected_status
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     assert response["headers"]["Cache-Control"] == "no-store"
 
 

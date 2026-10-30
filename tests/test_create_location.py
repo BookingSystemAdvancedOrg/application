@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -208,9 +209,7 @@ def test_missing_claims_returns_401_without_writing(app_and_table):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "no JWT claims on this request",
-    }
+    assert json.loads(response["body"]) == err("no JWT claims on this request")
     assert table_items(location_table) == []
 
 
@@ -220,9 +219,7 @@ def test_missing_subject_returns_401_without_writing(app_and_table):
     response = app.handler(make_event(sub=None), None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "JWT is missing a subject",
-    }
+    assert json.loads(response["body"]) == err("JWT is missing a subject")
     assert table_items(location_table) == []
 
 
@@ -235,7 +232,7 @@ def test_wrong_group_returns_403_without_writing(app_and_table, groups, error):
     response = app.handler(make_event(groups=groups), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": error}
+    assert json.loads(response["body"]) == err(error)
     assert table_items(location_table) == []
 
 
@@ -247,7 +244,7 @@ def test_authorization_happens_before_body_validation(app_and_table):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "owner_only"}
+    assert json.loads(response["body"]) == err("owner_only")
     assert table_items(location_table) == []
 
 
@@ -274,7 +271,7 @@ def test_non_post_method_returns_405_without_writing(app_and_table):
 
     assert response["statusCode"] == 405
     assert response["headers"]["Allow"] == "POST"
-    assert json.loads(response["body"]) == {"error": "method not allowed"}
+    assert json.loads(response["body"]) == err("method not allowed")
     assert table_items(location_table) == []
 
 
@@ -299,7 +296,7 @@ def test_rejects_invalid_request_body(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     assert table_items(location_table) == []
 
 
@@ -327,9 +324,7 @@ def test_rejects_invalid_base64_body(app_and_table):
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "request body must be valid base64",
-    }
+    assert json.loads(response["body"]) == err("request body must be valid base64")
     assert table_items(location_table) == []
 
 
@@ -370,7 +365,7 @@ def test_rejects_invalid_string_fields(
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     assert table_items(location_table) == []
 
 
@@ -383,9 +378,7 @@ def test_create_requires_location_contact_fields(app_and_table, field):
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": f"{field} is required",
-    }
+    assert json.loads(response["body"]) == err(f"{field} is required")
     assert table_items(location_table) == []
 
 
@@ -437,7 +430,7 @@ def test_rejects_invalid_booking_policy(
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     assert table_items(location_table) == []
 
 
@@ -449,9 +442,7 @@ def test_requires_all_weekdays(app_and_table):
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "businessHours is missing: sunday",
-    }
+    assert json.loads(response["body"]) == err("businessHours is missing: sunday")
     assert table_items(location_table) == []
 
 
@@ -512,7 +503,7 @@ def test_rejects_invalid_business_hours(
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": expected_error}
+    assert json.loads(response["body"]) == err(expected_error)
     assert table_items(location_table) == []
 
 
@@ -540,9 +531,7 @@ def test_rejects_caller_controlled_or_unknown_fields(
     response = app.handler(make_event(body), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": f"unsupported fields: {field}",
-    }
+    assert json.loads(response["body"]) == err(f"unsupported fields: {field}")
     assert table_items(location_table) == []
 
 
@@ -615,9 +604,7 @@ def test_location_id_collision_returns_409_without_overwriting(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location already exists",
-    }
+    assert json.loads(response["body"]) == err("location already exists")
     stored = location_table.get_item(
         Key={"PK": f"TENANT#{TENANT_A}", "SK": "LOCATION#existing-id"}
     )["Item"]
@@ -641,9 +628,7 @@ def test_sanitizes_dynamodb_errors(app_and_table, monkeypatch):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert json.loads(response["body"]) == {
-        "error": "location service unavailable",
-    }
+    assert json.loads(response["body"]) == err("location service unavailable")
     assert "sensitive AWS message" not in response["body"]
 
 
@@ -660,9 +645,7 @@ def test_maps_transport_errors_to_503(app_and_table, monkeypatch):
     # Retried once with the same idempotency token, then given up.
     assert ddb.transact_write_items.call_count == 2
     assert response["statusCode"] == 503
-    assert json.loads(response["body"]) == {
-        "error": "location service unavailable",
-    }
+    assert json.loads(response["body"]) == err("location service unavailable")
 
 
 @pytest.mark.parametrize("groups", ['["owner_user"]'])
@@ -779,7 +762,7 @@ def test_update_rejects_invalid_partial_body(
     )
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": error}
+    assert json.loads(response["body"]) == err(error)
     assert get_location(location_table) == original
 
 
@@ -988,7 +971,7 @@ def test_mutating_a_missing_location_returns_404(app_and_table, method):
     )
 
     assert response["statusCode"] == 404
-    assert json.loads(response["body"]) == {"error": "location not found"}
+    assert json.loads(response["body"]) == err("location not found")
     assert table_items(location_table) == []
 
 
@@ -1031,9 +1014,7 @@ def test_inconsistent_stored_location_returns_409_without_mutation(
     )
 
     assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location record is inconsistent",
-    }
+    assert json.loads(response["body"]) == err("location record is inconsistent")
     assert get_location(location_table) == corrupt
 
 
@@ -1064,9 +1045,7 @@ def test_invalid_stored_contact_returns_409_without_mutation(
     )
 
     assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location record is inconsistent",
-    }
+    assert json.loads(response["body"]) == err("location record is inconsistent")
     assert get_location(location_table) == corrupt
 
 
@@ -1098,9 +1077,7 @@ def test_concurrent_update_returns_409_and_preserves_winner(
     )
 
     assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location changed; retry request",
-    }
+    assert json.loads(response["body"]) == err("location changed; retry request")
     assert get_location(location_table) == winner
 
 
@@ -1193,7 +1170,7 @@ def test_plan_limit_is_enforced(app_and_table):
 
     assert first["statusCode"] == 201
     assert second["statusCode"] == 409
-    assert json.loads(second["body"]) == {"error": "plan_limit_reached"}
+    assert json.loads(second["body"]) == err("plan_limit_reached")
     assert len(table_items(location_table)) == 1 and location_count() == 1
 
 
@@ -1207,7 +1184,7 @@ def test_inactive_tenant_cannot_create(app_and_table):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert json.loads(response["body"]) == err("tenant_inactive")
     assert table_items(location_table) == []
 
 
@@ -1310,7 +1287,7 @@ def test_suspension_a_moment_ago_reads_as_inactive_not_quota(app_and_table):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert json.loads(response["body"]) == err("tenant_inactive")
 
 
 def test_owner_sets_and_removes_the_card_guarantee_and_online_party_cap(app_and_table):

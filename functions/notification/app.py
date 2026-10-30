@@ -41,8 +41,10 @@ PURPOSE:
     email twice because of a failing SMS.
 
     The manage link is rebuilt from the booking (shared/manage_link.py) on
-    the tenant's active domain; without one (dev) on CUSTOMER_SITE_URL with
-    ?restaurang=<slug>. In prod without a domain the message has no link.
+    the tenant's site (shared/site.py): its own domain once attached, else
+    its slug address (<slug>.booqy.se); in dev without either on
+    CUSTOMER_SITE_URL with ?restaurang=<slug>. Without any the message has
+    no link.
 
     Food orders (shared/order_messages.py):
 
@@ -68,7 +70,7 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     RESERVATION_TABLE_NAME, ORDER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME
     (route those tables' stream records), CATERING_LINK_SIGNING_KEY_SECRET_ARN,
-    NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, CUSTOMER_SITE_URL,
+    NO_REPLY_EMAIL_ADDRESS (SES From), ADMIN_DASHBOARD_URL, SITE_DOMAIN, CUSTOMER_SITE_URL,
     RESERVATION_LINK_KEY_SECRET_ARN,
     SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes),
     MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox"),
@@ -108,12 +110,11 @@ from email.message import EmailMessage
 from email.utils import formataddr
 
 import boto3
-from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import card_messages, card_payments, catering, catering_messages, dynamo, finance, manage_link, messages
-from shared import kassa, kassa_receipt, order_messages, orders, sms, tenant
+from shared import card_messages, card_payments, catering, catering_messages, finance, manage_link, messages
+from shared import kassa, kassa_receipt, order_messages, orders, site, sms, tenant
 from shared import calendar_invite
 
 logger = logging.getLogger()
@@ -167,26 +168,13 @@ def _retryable(exc):
 # --- where the guest's link points ----------------------------------------------------
 
 def _site(tenant_id, tenant_row):
-    """(base_url, slug) of the tenant's public site, or (None, None)."""
+    """(base_url, slug) of the tenant's public site (shared/site.py), or (None, None)."""
     try:
-        rows = dynamo.table(os.environ["TENANT_TABLE_NAME"]).query(
-            KeyConditionExpression=Key("PK").eq(tenant.tenant_pk(tenant_id))
-            & Key("SK").begins_with("DOMAIN#")
-        ).get("Items") or []
-    except ClientError as exc:
+        return site.base(tenant_id, tenant_row)
+    except (BotoCoreError, ClientError) as exc:
         if _retryable(exc):
             raise Retry from exc
         raise
-    active = sorted(
-        (r for r in rows if r.get("status") == "active" and isinstance(r.get("domain"), str)),
-        key=lambda r: (r["domain"] != tenant_row.get("primaryDomain"), r["domain"]),
-    )
-    if active:
-        return f"https://{active[0]['domain']}", None
-    base = os.environ.get("CUSTOMER_SITE_URL")
-    if base and os.environ.get("ENVIRONMENT") != "prod" and tenant_row.get("slug"):
-        return base, tenant_row["slug"]
-    return None, None
 
 
 # --- sending ---------------------------------------------------------------------------
@@ -306,8 +294,10 @@ def _send_sms(phone, text, tenant_row, location_id=None, kind="booking"):
     if _SENDER_ID.fullmatch(sender) and re.search(r"[A-Za-z]", sender):
         attributes["AWS.SNS.SMS.SenderID"] = {"DataType": "String", "StringValue": sender.replace(" ", "")}
     _client("sns").publish(PhoneNumber=phone, Message=text, MessageAttributes=attributes)
-    # Counted in parts (what the restaurant is invoiced for) and by type.
-    finance.count(tenant_row.get("tenantId"), location_id=location_id, **finance.sms_counters(sms.parts(text), kind))
+    # Counted in parts (what the restaurant is invoiced for) and by type, on
+    # the Swedish day: the invoice's period runs from the 25th to the 24th.
+    finance.count(tenant_row.get("tenantId"), location_id=location_id, day=finance.billing_day(),
+                  **finance.sms_counters(sms.parts(text), kind))
     bucket = _outbox_bucket()
     if bucket:
         # A copy for the outbox - best effort, the SMS itself already went out.

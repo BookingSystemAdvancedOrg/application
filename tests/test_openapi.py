@@ -1,3 +1,4 @@
+from error_body import err
 from pathlib import Path
 
 import pytest
@@ -828,17 +829,11 @@ def test_get_availability_contract_matches_handler(openapi_document):
     ]
     assert "activation transition" in conflict["description"]
     assert "inconsistent or changing" in conflict["description"]
-    assert conflict_examples["activationState"]["value"] == {
-        "error": "layout activation state is inconsistent"
-    }
-    assert conflict_examples["schedulingActivation"]["value"] == {
-        "error": (
+    assert conflict_examples["activationState"]["value"] == err("layout activation state is inconsistent")
+    assert conflict_examples["schedulingActivation"]["value"] == err((
             "layout activation is still being scheduled; retry request"
-        )
-    }
-    assert conflict_examples["overdueActivation"]["value"] == {
-        "error": "layout activation cutover is overdue; retry request"
-    }
+        ))
+    assert conflict_examples["overdueActivation"]["value"] == err("layout activation cutover is overdue; retry request")
 
 
 def test_block_table_contract_matches_handler(openapi_document):
@@ -944,23 +939,13 @@ def test_block_table_contract_matches_handler(openapi_document):
     conflict = document["components"]["responses"]["TableBlockConflict"]
     assert "activation transition" in conflict["description"]
     conflict_examples = conflict["content"]["application/json"]["examples"]
-    assert conflict_examples["activationState"]["value"] == {
-        "error": "layout activation state is inconsistent"
-    }
-    assert conflict_examples["schedulingActivation"]["value"] == {
-        "error": (
+    assert conflict_examples["activationState"]["value"] == err("layout activation state is inconsistent")
+    assert conflict_examples["schedulingActivation"]["value"] == err((
             "layout activation is still being scheduled; retry request"
-        )
-    }
-    assert conflict_examples["overdueActivation"]["value"] == {
-        "error": "layout activation cutover is overdue; retry request"
-    }
-    assert conflict_examples["cutoverCrossing"]["value"] == {
-        "error": "requested slot crosses a layout activation cutover"
-    }
-    assert conflict_examples["layout"]["value"] == {
-        "error": "published layout record is inconsistent"
-    }
+        ))
+    assert conflict_examples["overdueActivation"]["value"] == err("layout activation cutover is overdue; retry request")
+    assert conflict_examples["cutoverCrossing"]["value"] == err("requested slot crosses a layout activation cutover")
+    assert conflict_examples["layout"]["value"] == err("published layout record is inconsistent")
 
     service_unavailable = document["components"]["responses"][
         "BlockTableServiceUnavailable"
@@ -1622,34 +1607,24 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     ]
     assert activation_conflict["content"]["application/json"][
         "examples"
-    ]["archived"]["value"] == {
-        "error": "archived layout version cannot be activated"
-    }
+    ]["archived"]["value"] == err("archived layout version cannot be activated")
     conflict_examples = activation_conflict["content"]["application/json"][
         "examples"
     ]
-    assert conflict_examples["pending"]["value"] == {
-        "error": "another layout activation is pending"
-    }
-    assert conflict_examples["overdue"]["value"] == {
-        "error": "layout activation cutover is overdue"
-    }
-    assert conflict_examples["futureWithoutCurrent"]["value"] == {
-        "error": "future activation requires a current layout version"
-    }
-    assert conflict_examples["tooEarly"]["value"] == {
-        "error": (
+    assert conflict_examples["pending"]["value"] == err("another layout activation is pending")
+    assert conflict_examples["overdue"]["value"] == err("layout activation cutover is overdue")
+    assert conflict_examples["futureWithoutCurrent"]["value"] == err("future activation requires a current layout version")
+    assert conflict_examples["tooEarly"]["value"] == err((
             "layout version cannot activate before "
             "2026-10-21T10:01:00Z"
-        )
-    }
+        ))
 
     service_unavailable = document["components"]["responses"][
         "LayoutActivationServiceUnavailable"
     ]
     assert service_unavailable["content"]["application/json"]["examples"][
         "unavailable"
-    ]["value"] == {"error": "layout activation service unavailable"}
+    ]["value"] == err("layout activation service unavailable")
 
     version_parameter = document["components"]["parameters"][
         "LayoutVersionId"
@@ -1804,9 +1779,7 @@ def test_pending_layout_activation_contract_matches_handler(
     not_found = document["components"]["responses"][
         "PendingLayoutActivationNotFound"
     ]
-    assert not_found["content"]["application/json"]["example"] == {
-        "error": "pending layout activation not found"
-    }
+    assert not_found["content"]["application/json"]["example"] == err("pending layout activation not found")
     conflict_examples = document["components"]["responses"][
         "PendingLayoutActivationConflict"
     ]["content"]["application/json"]["examples"]
@@ -1864,12 +1837,8 @@ def test_archive_layout_version_contract_matches_handler(openapi_document):
         "LayoutVersionArchiveConflict"
     ]
     examples = conflict["content"]["application/json"]["examples"]
-    assert examples["current"]["value"] == {
-        "error": "current layout version cannot be archived"
-    }
-    assert examples["pending"]["value"] == {
-        "error": "pending layout version cannot be archived"
-    }
+    assert examples["current"]["value"] == err("current layout version cannot be archived")
+    assert examples["pending"]["value"] == err("pending layout version cannot be archived")
 
 
 def test_menu_image_upload_contract_uses_cloudfront_key_prefix(

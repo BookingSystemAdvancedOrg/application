@@ -10,7 +10,7 @@ PURPOSE:
     Deletes an offboarded restaurant's data once its retention period is
     over (docs/MULTI_TENANCY.md, Offboarding). The date is the PROFILE row's
     purgeAt: written by the offboarding workflow (offboarded + the retention
-    days), set to "now" by Booqy Console's "Delete data now", and filled in
+    days), set to "now" by Booqy Console's "Delete customer", and filled in
     here for restaurants offboarded before this existed (offboardedAt +
     retention, but never sooner than BACKFILL_GRACE_DAYS from today, so an
     old offboarding isn't deleted the moment this ships).
@@ -39,13 +39,20 @@ PURPOSE:
         registered through us, and the hosted zone is deleted once the
         domain no longer points at it (a zone still in use is kept and
         reported, so the restaurant's email doesn't stop working)
+      * the website repo site-<slug> on GitHub (site-repo "delete", when
+        SITE_REPO_FUNCTION_ARN is set; prod also cleans up dev's side): a
+        refusal (e.g. the GitHub App lacks Administration write) is
+        reported and doesn't stop the purge
       * the tenant's own rows (audit log, domain orders), except domains
         that are still attached (reported: run domain-detach first)
 
     Kept: a small PROFILE tombstone (company name, org. and VAT number,
-    slug, plan, dates, Stripe account id, status "purged") with no personal
-    data, the SLUG# claim (an old address never moves to another
-    restaurant), the STRIPE_ACCOUNT# claim (the restaurant keeps its
+    slug, plan, dates, Stripe account id, the billing agreement without
+    who changed it, status "purged") with no personal data: the next
+    invoicing run still bills the days used before the customer left (a
+    "Delete customer" right after offboarding), one activity log row about the website repo (written after the
+    log is deleted), the SLUG# claim (Booqy Console's New customer takes
+    over a purged customer's slug, with a fresh repo), the STRIPE_ACCOUNT# claim (the restaurant keeps its
     Stripe account), catering documents (7-year Object Lock, bookkeeping),
     and whatever Stripe holds. Point-in-time backups keep deleted rows for
     up to 35 days.
@@ -65,7 +72,8 @@ ENV_VARS:
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
     MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
-    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/)
+    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/), SITE_REPO_FUNCTION_ARN
+    (empty: site repos are off)
 
 AWS RESOURCE ACCESS:
     Query/GetItem/UpdateItem/PutItem/DeleteItem/BatchWriteItem on the tenant
@@ -76,13 +84,14 @@ AWS RESOURCE ACCESS:
     zone deletion (never the platform's own zones), route53domains
     DisableDomainAutoRenew, secretsmanager:DeleteSecret on
     booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
-    lambda:InvokeFunction on itself (continuation).
+    lambda:InvokeFunction on itself (continuation) and on site-repo.
 """
 
 import json
 import logging
 import os
 import urllib.parse
+import uuid
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -214,8 +223,10 @@ def _purge_marketing(tenant_id, budget, counts):
     campaigns = _query_keys(table_name, Key("PK").eq(f"TENANT#{tenant_id}#CMP") & Key("SK").begins_with("CMP#"))
     for campaign in campaigns:
         counts["marketing"] += _delete_partition(table_name, f"CMP#{tenant_id}#{str(campaign['SK'])[4:]}", budget)
-    queued = [{"PK": i["PK"], "SK": i["SK"]} for i in _query_keys(
-        table_name, Key("PK").eq("SCHEDULE"), filter_expression=Attr("SK").contains(f"#{tenant_id}#"))]
+    # DynamoDB refuses a FilterExpression on the sort key, so the queue
+    # (small: only scheduled sends) is matched here.
+    queued = [{"PK": i["PK"], "SK": i["SK"]} for i in _query_keys(table_name, Key("PK").eq("SCHEDULE"))
+              if f"#{tenant_id}#" in str(i["SK"])]
     counts["marketing"] += _delete_keys(table_name, queued, budget)
     for part in MARKETING_PARTS:
         counts["marketing"] += _delete_partition(table_name, f"TENANT#{tenant_id}#{part}", budget)
@@ -352,6 +363,36 @@ def _release_claim(tenant_id, host):
             raise
 
 
+def _delete_site_repo(tenant_id, report):
+    """site-repo "delete". Returns the activity log entry (action, details),
+    or None when site repos are off."""
+    arn = os.environ.get("SITE_REPO_FUNCTION_ARN")
+    if not arn:
+        return None
+    try:
+        response = _client("lambda").invoke(
+            FunctionName=arn, Payload=json.dumps({"action": "delete", "tenantId": tenant_id}).encode())
+        body = json.loads(response["Payload"].read() or b"{}")
+        if response.get("FunctionError"):
+            raise RuntimeError(body.get("errorMessage") or "site-repo failed")
+    except Exception as e:  # reported; the data is purged either way
+        error = (str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}")[:500]
+        report["notes"].append(f"Website repo NOT deleted: {error}")
+        return "site_repo_delete_failed", {"error": error}
+    if body.get("status") == "kept":
+        report["notes"].append(f"Website repo {body.get('repo')} {body.get('status')}"
+                               + (f" ({body['reason']})" if body.get("reason") else ""))
+    return ("site_repo_deleted" if body.get("repoDeleted") else "site_repo_not_deleted"), \
+        {k: body[k] for k in ("repo", "status", "reason") if body.get(k)}
+
+
+def _audit(tenant_id, action, details, now):
+    at = iso(now)
+    dynamo.table(os.environ["TENANT_TABLE_NAME"]).put_item(Item={
+        "PK": f"TENANT#{tenant_id}", "SK": f"AUDIT#{at}#{uuid.uuid4().hex[:12]}", "action": action,
+        "by": "tenant-purge", "at": at, "details": details})
+
+
 def _purge_tenant_rows(tenant_id, budget, report):
     """Every TENANT#<t> row except PROFILE. Zones are handled first (a zone
     still in use keeps its row, so the operator can see it); attached
@@ -386,6 +427,10 @@ def _tombstone(profile, now):
     account = (profile.get("stripe") or {}).get("accountId")
     if account:
         stone["stripe"] = {"accountId": account}
+    if isinstance(profile.get("billing"), dict):
+        # The agreement: the last invoice (the days used before leaving) is
+        # made on the next 25th, which may come after the purge.
+        stone["billing"] = {k: v for k, v in profile["billing"].items() if not k.endswith("By")}
     stone.update(status="purged", locationCount=0, purgedAt=iso(now), updatedAt=iso(now))
     return stone
 
@@ -412,7 +457,10 @@ def purge_tenant(tenant_id, budget):
     _purge_users(tenant_id, budget, counts)
     _purge_images(tenant_id, budget, counts)
     _purge_fiskaly_key(tenant_id, counts)
+    repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)
+    if repo:
+        _audit(tenant_id, *repo, now_utc())
     budget.check()
     stone = _tombstone(profile, now_utc())
     stone["purgeSummary"] = {**counts, "zonesKept": report["zonesKept"], "notes": report["notes"]}

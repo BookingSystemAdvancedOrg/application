@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from decimal import Decimal
@@ -169,9 +170,7 @@ def test_missing_claims_returns_401_before_reading(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "no JWT claims on this request",
-    }
+    assert json.loads(response["body"]) == err("no JWT claims on this request")
     table_factory.assert_not_called()
 
 
@@ -243,9 +242,7 @@ def test_public_info_missing_location_returns_404_without_claims(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 404
-    assert json.loads(response["body"]) == {
-        "error": "location not found",
-    }
+    assert json.loads(response["body"]) == err("location not found")
 
 
 def test_public_info_validates_path_before_reading(
@@ -261,9 +258,7 @@ def test_public_info_validates_path_before_reading(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "locationId is required",
-    }
+    assert json.loads(response["body"]) == err("locationId is required")
     table_factory.assert_not_called()
 
 
@@ -295,9 +290,7 @@ def test_malformed_claims_return_401_before_reading(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "no JWT claims on this request",
-    }
+    assert json.loads(response["body"]) == err("no JWT claims on this request")
     table_factory.assert_not_called()
 
 
@@ -312,9 +305,7 @@ def test_missing_subject_returns_401_before_reading(
     response = app.handler(make_event(sub=None), None)
 
     assert response["statusCode"] == 401
-    assert json.loads(response["body"]) == {
-        "error": "JWT is missing a subject",
-    }
+    assert json.loads(response["body"]) == err("JWT is missing a subject")
     table_factory.assert_not_called()
 
 
@@ -335,7 +326,7 @@ def test_wrong_group_returns_403_before_reading(
 
     # No tenant role in the token -> refused before anything is read.
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "no_tenant"}
+    assert json.loads(response["body"]) == err("no_tenant")
     table_factory.assert_not_called()
 
 
@@ -348,7 +339,7 @@ def test_authorization_happens_before_path_validation(app_and_table):
     )
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "no_tenant"}
+    assert json.loads(response["body"]) == err("no_tenant")
 
 
 @pytest.mark.parametrize(
@@ -379,7 +370,7 @@ def test_non_get_method_returns_405_before_reading(
 
     assert response["statusCode"] == 405
     assert response["headers"]["Allow"] == "GET"
-    assert json.loads(response["body"]) == {"error": "method not allowed"}
+    assert json.loads(response["body"]) == err("method not allowed")
     table_factory.assert_not_called()
 
 
@@ -406,9 +397,7 @@ def test_invalid_location_id_returns_400_before_reading(
     response = app.handler(event, None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {
-        "error": "locationId is required",
-    }
+    assert json.loads(response["body"]) == err("locationId is required")
     table_factory.assert_not_called()
 
 
@@ -418,9 +407,7 @@ def test_missing_location_returns_404(app_and_table):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 404
-    assert json.loads(response["body"]) == {
-        "error": "location not found",
-    }
+    assert json.loads(response["body"]) == err("location not found")
 
 
 def test_returns_full_logical_location_without_internal_keys(app_and_table):
@@ -477,7 +464,7 @@ def test_other_tenants_location_is_404_like_a_missing_one(app_and_table):
     for groups in ('["owner_user"]', '["staff_user"]'):
         response = app.handler(make_event(groups=groups, tenant_id=TENANT_B), None)
         assert response["statusCode"] == 404
-        assert json.loads(response["body"]) == {"error": "location not found"}
+        assert json.loads(response["body"]) == err("location not found")
 
 
 def test_list_contains_only_the_callers_tenant(app_and_table):
@@ -507,7 +494,7 @@ def test_inactive_tenant_is_refused(app_and_table):
     public = app.handler(public_info_event(), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "tenant_inactive"}
+    assert json.loads(response["body"]) == err("tenant_inactive")
     assert public["statusCode"] == 404
 
 
@@ -542,9 +529,7 @@ def test_dynamodb_failures_return_sanitized_503(
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 503
-    assert json.loads(response["body"]) == {
-        "error": "location service unavailable",
-    }
+    assert json.loads(response["body"]) == err("location service unavailable")
     assert "sensitive AWS message" not in response["body"]
 
 
@@ -574,7 +559,7 @@ def test_staff_cannot_list_the_location_directory_before_reading(
     response = app.handler(make_event(location_id=_UNSET), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "owner_only"}
+    assert json.loads(response["body"]) == err("owner_only")
     table_factory.assert_not_called()
 
 
@@ -682,9 +667,7 @@ def test_malformed_list_response_returns_sanitized_503(
     )
 
     assert response["statusCode"] == 503
-    assert json.loads(response["body"]) == {
-        "error": "location service unavailable",
-    }
+    assert json.loads(response["body"]) == err("location service unavailable")
 
 
 def test_list_rejects_a_repeated_last_evaluated_key(
@@ -741,9 +724,7 @@ def test_inconsistent_location_in_list_returns_409(
     )
 
     assert response["statusCode"] == 409
-    assert json.loads(response["body"]) == {
-        "error": "location record is inconsistent",
-    }
+    assert json.loads(response["body"]) == err("location record is inconsistent")
 
 
 def test_location_with_only_one_contact_field_is_returned(app_and_table):
@@ -776,9 +757,7 @@ def test_list_dynamodb_failure_returns_sanitized_503(
     )
 
     assert response["statusCode"] == 503
-    assert json.loads(response["body"]) == {
-        "error": "location service unavailable",
-    }
+    assert json.loads(response["body"]) == err("location service unavailable")
 
 
 def test_single_read_returns_optional_update_audit_fields(app_and_table):
@@ -804,5 +783,5 @@ def test_single_read_rejects_an_overlong_location_id_before_dynamodb(
     response = app.handler(make_event(location_id="x" * 129), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": "locationId is invalid"}
+    assert json.loads(response["body"]) == err("locationId is invalid")
     table_factory.assert_not_called()

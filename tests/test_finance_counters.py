@@ -83,3 +83,13 @@ def test_refused_requests_log_nothing(aws, caplog):
     with pytest.raises(tenant.TenantError):
         tenant.for_public("no-such-location")
     assert not [r for r in caplog.records if r.name == "shared.tenant.requests"]
+
+
+def test_sms_are_counted_on_the_swedish_day():
+    """Periods run from the 25th to the 24th in Sweden: an SMS at 00:30 on
+    the 25th (22:30 UTC on the 24th in summer, 23:30 in winter) belongs to
+    the new period."""
+    from datetime import datetime, timezone
+    assert finance.billing_day(datetime(2026, 7, 24, 22, 30, tzinfo=timezone.utc)) == "2026-07-25"
+    assert finance.billing_day(datetime(2026, 11, 24, 23, 30, tzinfo=timezone.utc)) == "2026-11-25"
+    assert finance.billing_day(datetime(2026, 11, 24, 22, 59, tzinfo=timezone.utc)) == "2026-11-24"

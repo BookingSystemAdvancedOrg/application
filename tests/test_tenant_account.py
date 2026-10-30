@@ -1,6 +1,7 @@
 """tenant-account: GET/PATCH /tenant and the Stripe onboarding link - always
 the token's own tenant, never one named in the request."""
 
+from error_body import err
 import importlib.util
 import io
 import json
@@ -170,7 +171,7 @@ def test_suspended_tenant_is_refused(app):
 
     response = module.handler(make_event(), None)
 
-    assert response["statusCode"] == 403 and body_of(response) == {"error": "tenant_inactive"}
+    assert response["statusCode"] == 403 and body_of(response) == err("tenant_inactive")
 
 
 def test_owner_edits_only_self_service_fields(app):
@@ -215,7 +216,7 @@ def test_invalid_edits_are_rejected(app, body, error):
 
     response = module.handler(make_event("PATCH", body=body), None)
 
-    assert response["statusCode"] == 400 and body_of(response) == {"error": error}
+    assert response["statusCode"] == 400 and body_of(response) == err(error)
     assert tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"] == before
 
 
@@ -237,7 +238,7 @@ def test_update_never_asks_for_the_whole_row(app, monkeypatch):
 def test_staff_cannot_change_anything(app, method, path):
     module, _ = app
     response = module.handler(make_event(method, path, body={"senderName": "x"}, role="staff_user"), None)
-    assert response["statusCode"] == 403 and body_of(response) == {"error": "owner_only"}
+    assert response["statusCode"] == 403 and body_of(response) == err("owner_only")
 
 
 def test_account_link_is_for_the_callers_stripe_account(app, monkeypatch):
@@ -269,7 +270,7 @@ def test_account_link_without_stripe_account_is_409(app):
 
     response = module.handler(make_event("POST", "/tenant/stripe/account-link"), None)
 
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "no_stripe_account"}
+    assert response["statusCode"] == 409 and body_of(response) == err("no_stripe_account")
 
 
 def test_stripe_failure_is_sanitized_503(app, monkeypatch):

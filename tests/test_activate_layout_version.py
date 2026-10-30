@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import hashlib
 import importlib.util
@@ -347,7 +348,7 @@ def test_missing_claims_returns_401_before_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -362,7 +363,7 @@ def test_missing_subject_returns_401_before_dynamodb(
 
     response = app.handler(make_event(sub=" "), None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     table_factory.assert_not_called()
 
 
@@ -376,7 +377,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["staff_user"]'), None)
 
-    assert_response(response, 403, {"error": "owner_only"})
+    assert_response(response, 403, err("owner_only"))
     table_factory.assert_not_called()
 
 
@@ -390,7 +391,7 @@ def test_wrong_method_returns_405_before_dynamodb(
 
     response = app.handler(make_event(method="GET"), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "POST"
     table_factory.assert_not_called()
 
@@ -408,7 +409,7 @@ def test_wrong_pending_activation_method_returns_route_specific_405(
         None,
     )
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "DELETE"
     table_factory.assert_not_called()
 
@@ -448,7 +449,7 @@ def test_cancel_authorization_runs_before_aws_access(
 
     response = app.handler(event, None)
 
-    assert_response(response, status_code, {"error": message})
+    assert_response(response, status_code, err(message))
     table_factory.assert_not_called()
     scheduler_factory.assert_not_called()
 
@@ -518,16 +519,16 @@ def test_cancel_invalid_location_returns_400_before_aws_access(
         (
             "claims",
             401,
-            {"error": "no JWT claims on this request"},
+            err("no JWT claims on this request"),
         ),
-        ("subject", 401, {"error": "JWT is missing a subject"}),
-        ("group", 403, {"error": "owner_only"}),
-        ("method", 405, {"error": "method not allowed"}),
-        ("location", 400, {"error": "locationId is required"}),
+        ("subject", 401, err("JWT is missing a subject")),
+        ("group", 403, err("owner_only")),
+        ("method", 405, err("method not allowed")),
+        ("location", 400, err("locationId is required")),
         (
             "version",
             400,
-            {"error": "versionId must be a positive integer"},
+            err("versionId must be a positive integer"),
         ),
     ],
 )
@@ -644,7 +645,7 @@ def test_non_ascii_base64_body_returns_stable_400_before_dynamodb(
     assert_response(
         response,
         400,
-        {"error": "request body must be valid base64"},
+        err("request body must be valid base64"),
     )
     table_factory.assert_not_called()
 
@@ -669,12 +670,10 @@ def test_timestamp_utc_normalization_overflow_returns_stable_400(
     assert_response(
         response,
         400,
-        {
-            "error": (
+        err((
                 "effectiveFrom must be a timezone-aware "
                 "ISO 8601 timestamp"
-            )
-        },
+            )),
     )
     table_factory.assert_not_called()
 
@@ -852,7 +851,7 @@ def test_unknown_version_returns_404_without_state(app_and_table):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 404, {"error": "layout version not found"})
+    assert_response(response, 404, err("layout version not found"))
     assert "Item" not in snapshot_table.get_item(Key=state_key())
 
 
@@ -869,7 +868,7 @@ def test_archived_version_cannot_be_activated(app_and_table):
     assert_response(
         response,
         409,
-        {"error": "archived layout version cannot be activated"},
+        err("archived layout version cannot be activated"),
     )
     assert snapshot_table.get_item(
         Key={"PK": archived["PK"], "SK": archived["SK"]}
@@ -900,7 +899,7 @@ def test_archived_replacement_cannot_be_scheduled(
     assert_response(
         response,
         409,
-        {"error": "archived layout version cannot be activated"},
+        err("archived layout version cannot be activated"),
     )
     scheduler_factory.assert_not_called()
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
@@ -1112,7 +1111,7 @@ def test_invalid_pending_target_previous_lifecycle_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -1346,7 +1345,7 @@ def test_cancel_rejects_overdue_activation_without_changes(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue"},
+        err("layout activation cutover is overdue"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -1386,7 +1385,7 @@ def test_cancel_legacy_scheduled_activation_fails_closed(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -1577,7 +1576,7 @@ def test_cancel_returns_409_when_cutover_worker_wins_transaction_race(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"][
         "currentVersion"
@@ -1651,7 +1650,7 @@ def test_cancel_does_not_delete_schedule_when_finalization_wins_race(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     stored_state = snapshot_table.get_item(Key=state_key())["Item"]
     assert stored_state["pendingStatus"] == "scheduled"
@@ -1684,7 +1683,7 @@ def test_cancel_repeated_dynamodb_failure_is_sanitized(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert dynamodb.transact_write_items.call_count == 2
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
@@ -1845,7 +1844,7 @@ def test_reschedule_without_pending_activation_returns_404(
     assert_response(
         response,
         404,
-        {"error": "pending layout activation not found"},
+        err("pending layout activation not found"),
     )
     scheduler_factory.assert_not_called()
 
@@ -1996,7 +1995,7 @@ def test_reschedule_rejects_invalid_body_before_aws_access(
         None,
     )
 
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     table_factory.assert_not_called()
     scheduler_factory.assert_not_called()
 
@@ -2018,7 +2017,7 @@ def test_wrong_reschedule_method_returns_route_specific_405(
         None,
     )
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "PUT"
     table_factory.assert_not_called()
 
@@ -2058,7 +2057,7 @@ def test_reschedule_authorization_runs_before_body_and_aws_access(
 
     response = app.handler(event, None)
 
-    assert_response(response, status_code, {"error": message})
+    assert_response(response, status_code, err(message))
     table_factory.assert_not_called()
     scheduler_factory.assert_not_called()
 
@@ -2134,11 +2133,9 @@ def test_reschedule_requires_minimum_lead_for_changed_cutover(
     assert_response(
         response,
         400,
-        {
-            "error": (
+        err((
                 "future effectiveFrom must be at least 60 seconds from now"
-            )
-        },
+            )),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -2178,12 +2175,10 @@ def test_reschedule_cannot_bypass_target_eligibility(
     assert_response(
         response,
         409,
-        {
-            "error": (
+        err((
                 "layout version cannot activate before "
                 "2026-09-09T10:06:00Z"
-            )
-        },
+            )),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -2219,7 +2214,7 @@ def test_reschedule_rejects_overdue_existing_cutover(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue"},
+        err("layout activation cutover is overdue"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -2259,7 +2254,7 @@ def test_reschedule_legacy_scheduled_activation_fails_closed(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
@@ -2304,7 +2299,7 @@ def test_reschedule_scheduler_failure_leaves_resumable_intent(
     assert_response(
         failed_response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     reserved_state = snapshot_table.get_item(Key=state_key())["Item"]
     assert reserved_state["pendingStatus"] == "scheduling"
@@ -2467,7 +2462,7 @@ def test_reschedule_repeated_dynamodb_failure_preserves_old_schedule(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert dynamodb.transact_write_items.call_count == 2
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
@@ -2545,7 +2540,7 @@ def test_reschedule_returns_409_when_cutover_worker_wins_race(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"][
         "currentVersion"
@@ -3189,12 +3184,10 @@ def test_ineligible_replacement_request_is_rejected_without_writes(
     assert_response(
         response,
         409,
-        {
-            "error": (
+        err((
                 "layout version cannot activate before "
                 "2026-09-07T10:32:00Z"
-            )
-        },
+            )),
     )
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
@@ -3663,7 +3656,7 @@ def test_unstaged_current_with_cutoff_returns_409(app_and_table, field):
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
 
 
@@ -3735,7 +3728,7 @@ def test_unknown_environment_returns_503_without_transition_writes(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
@@ -3767,7 +3760,7 @@ def test_created_at_delay_overflow_is_a_stored_record_conflict(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
@@ -3987,7 +3980,7 @@ def test_explicit_request_cannot_replace_pending_activation(
     assert_response(
         response,
         409,
-        {"error": "another layout activation is pending"},
+        err("another layout activation is pending"),
     )
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
@@ -4184,7 +4177,7 @@ def test_missing_schedule_recovery_restores_previous_target_lifecycle(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     stored_state = snapshot_table.get_item(Key=state_key())["Item"]
     assert stored_state["pendingStatus"] == "scheduling"
@@ -4267,7 +4260,7 @@ def test_disabled_future_schedule_returns_503_without_changes(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     scheduler.delete_schedule.assert_not_called()
     scheduler.create_schedule.assert_not_called()
@@ -4332,7 +4325,7 @@ def test_scheduling_backup_must_match_unstaged_target_lifecycle(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -4364,7 +4357,7 @@ def test_overdue_scheduling_intent_returns_409_without_changes(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue"},
+        err("layout activation cutover is overdue"),
     )
     scheduler.get_schedule.assert_not_called()
     scheduler.delete_schedule.assert_not_called()
@@ -4414,7 +4407,7 @@ def test_overdue_scheduled_activation_returns_409_without_changes(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue"},
+        err("layout activation cutover is overdue"),
     )
     scheduler.get_schedule.assert_not_called()
     scheduler.delete_schedule.assert_not_called()
@@ -4455,7 +4448,7 @@ def test_overdue_pending_does_not_attempt_schedule_recovery(
     assert_response(
         response,
         409,
-        {"error": "layout activation cutover is overdue"},
+        err("layout activation cutover is overdue"),
     )
     scheduler.get_schedule.assert_not_called()
     scheduler.delete_schedule.assert_not_called()
@@ -4505,7 +4498,7 @@ def test_different_request_while_activation_pending_returns_409(
     assert_response(
         response,
         409,
-        {"error": "another layout activation is pending"},
+        err("another layout activation is pending"),
     )
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
@@ -4523,7 +4516,7 @@ def test_multiple_current_versions_return_409_without_writes(app_and_table):
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     assert "Item" not in snapshot_table.get_item(Key=state_key())
 
@@ -4566,7 +4559,7 @@ def test_corrupt_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -4586,7 +4579,7 @@ def test_current_snapshot_without_effective_from_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -4625,7 +4618,7 @@ def test_invalid_archive_metadata_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
     assert "Item" not in snapshot_table.get_item(Key=state_key())
 
@@ -4647,7 +4640,7 @@ def test_archived_current_snapshot_makes_activation_state_inconsistent(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
 
 
@@ -4682,7 +4675,7 @@ def test_archived_pending_snapshot_makes_activation_state_inconsistent(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -4757,7 +4750,7 @@ def test_malformed_query_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
 
 
@@ -4776,7 +4769,7 @@ def test_malformed_state_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
 
 
@@ -4810,7 +4803,7 @@ def test_invalid_activation_state_returns_409(
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 409, {"error": message})
+    assert_response(response, 409, err(message))
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
     )["Item"] == current
@@ -4863,7 +4856,7 @@ def test_invalid_pending_state_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -4901,7 +4894,7 @@ def test_pending_cutover_requires_whole_utc_minute(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -4935,7 +4928,7 @@ def test_pending_token_must_match_persisted_activation_identity(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -4960,7 +4953,7 @@ def test_pending_state_without_target_snapshot_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -5004,7 +4997,7 @@ def test_scheduled_lifecycle_mismatch_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation state is inconsistent"},
+        err("layout activation state is inconsistent"),
     )
     scheduler_factory.assert_not_called()
 
@@ -5040,7 +5033,7 @@ def test_schedule_failure_leaves_resumable_safe_state(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert "sensitive" not in response["body"]
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
@@ -5092,7 +5085,7 @@ def test_malformed_schedule_response_leaves_resumable_state(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == (
         pending_activation_state(
@@ -5370,7 +5363,7 @@ def test_concurrent_lifecycle_backup_change_blocks_finalization(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     scheduler.create_schedule.assert_called_once()
     stored_state = snapshot_table.get_item(Key=state_key())["Item"]
@@ -5466,7 +5459,7 @@ def test_read_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -5493,7 +5486,7 @@ def test_transaction_cancellation_returns_409_without_partial_write(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert snapshot_table.get_item(
         Key={"PK": original["PK"], "SK": original["SK"]}
@@ -5527,7 +5520,7 @@ def test_stale_target_condition_prevents_partial_state_write(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert "Item" not in snapshot_table.get_item(Key=state_key())
     stored = snapshot_table.get_item(
@@ -5598,7 +5591,7 @@ def test_concurrent_created_at_change_prevents_policy_write(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     assert snapshot_table.get_item(
@@ -5645,7 +5638,7 @@ def test_concurrent_archive_prevents_partial_activation_write(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     assert "Item" not in snapshot_table.get_item(Key=state_key())
     stored = snapshot_table.get_item(
@@ -5695,7 +5688,7 @@ def test_immediate_replacement_race_has_no_partial_write_or_schedule(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     scheduler_factory.assert_not_called()
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
@@ -5878,7 +5871,7 @@ def test_concurrent_change_after_unexplained_cancellation_returns_409(
     assert_response(
         response,
         409,
-        {"error": "layout activation changed; retry request"},
+        err("layout activation changed; retry request"),
     )
     scheduler_factory.assert_not_called()
     stored_state = snapshot_table.get_item(Key=state_key())["Item"]
@@ -5937,7 +5930,7 @@ def test_unexplained_uncommitted_immediate_failure_returns_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert "sensitive" not in response["body"]
     scheduler_factory.assert_not_called()
@@ -5983,7 +5976,7 @@ def test_non_conflict_transaction_cancellation_returns_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -6005,7 +5998,7 @@ def test_transaction_dependency_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout activation service unavailable"},
+        err("layout activation service unavailable"),
     )
     assert "sensitive" not in response["body"]
 

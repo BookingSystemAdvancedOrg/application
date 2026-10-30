@@ -1,3 +1,4 @@
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -209,7 +210,7 @@ def assert_error(response, status_code):
     assert_response(response, status_code)
     body = response_body(response)
     assert isinstance(body, dict)
-    assert set(body) == {"error"}
+    assert set(body) <= {"error", "code", "field"}
     assert isinstance(body["error"], str)
     assert body["error"]
 
@@ -304,7 +305,7 @@ def test_missing_claims_returns_401_before_dispatch_or_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -326,7 +327,7 @@ def test_malformed_claims_return_401_without_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -346,7 +347,7 @@ def test_missing_subject_returns_401_without_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "JWT is missing a subject"},
+        err("JWT is missing a subject"),
     )
     table_factory.assert_not_called()
 
@@ -366,7 +367,7 @@ def test_wrong_group_returns_403_without_dynamodb(
 
     response = app.handler(make_event(method="POST", groups=groups), None)
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     table_factory.assert_not_called()
 
 
@@ -384,7 +385,7 @@ def test_authorization_happens_before_route_path_and_body_validation(
 
     response = app.handler(event, None)
 
-    assert_response(response, 403, {"error": "no_tenant"})
+    assert_response(response, 403, err("no_tenant"))
     assert table_items(menu_table) == []
 
 
@@ -431,7 +432,7 @@ def test_known_route_wrong_method_returns_405(
         None,
     )
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == expected_allow
     assert table_items(menu_table) == []
 
@@ -457,7 +458,7 @@ def test_unknown_route_returns_404_without_dynamodb(
 
     response = app.handler(make_event(method="POST", proxy=proxy), None)
 
-    assert_response(response, 404, {"error": "not found"})
+    assert_response(response, 404, err("not found"))
     table_factory.assert_not_called()
 
 
@@ -517,7 +518,7 @@ def test_body_routes_reject_missing_or_invalid_json(
         None,
     )
 
-    assert_response(response, 400, {"error": expected_error})
+    assert_response(response, 400, err(expected_error))
     assert table_items(menu_table) == []
 
 
@@ -531,7 +532,7 @@ def test_invalid_base64_body_returns_400_without_write(app_and_table):
     assert_response(
         response,
         400,
-        {"error": "request body must be valid base64"},
+        err("request body must be valid base64"),
     )
     assert table_items(menu_table) == []
 
@@ -673,7 +674,7 @@ def test_large_price_cannot_bypass_decimal_place_validation(
     assert_response(
         response,
         400,
-        {"error": "price must have at most two decimal places"},
+        err("price must have at most two decimal places"),
     )
     assert table_items(menu_table) == []
 
@@ -733,7 +734,7 @@ def test_price_above_the_limit_is_refused(app_and_table):
             make_event(method="POST", body=body_with_price_literal(literal)),
             None,
         )
-        assert_response(response, 400, {"error": "price may be at most 10000 kr"})
+        assert_response(response, 400, err("price may be at most 10000 kr"))
     assert table_items(menu_table) == []
 
 
@@ -1036,7 +1037,7 @@ def test_mutations_reject_corrupt_stored_item_without_changing_it(
     assert_response(
         response,
         409,
-        {"error": "menu item record is inconsistent"},
+        err("menu item record is inconsistent"),
     )
     assert get_item(menu_table) == corrupt
 
@@ -1324,7 +1325,7 @@ def test_mutation_read_failures_return_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
 
@@ -1349,7 +1350,7 @@ def test_create_nonconditional_dynamodb_error_is_sanitized(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
 
@@ -1385,7 +1386,7 @@ def test_existing_item_write_errors_are_sanitized(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     assert "sensitive AWS detail" not in response["body"]
     assert get_item(menu_table) == menu_item()
@@ -1408,7 +1409,7 @@ def test_uncommitted_ambiguous_create_retries_then_returns_503(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     assert table_spy.put_item.call_count == 2
     assert get_item(menu_table) is None
@@ -1467,7 +1468,7 @@ def test_uncommitted_ambiguous_update_retries_then_returns_503(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     method_name, _ = captured_write(table_spy)
     assert getattr(table_spy, method_name).call_count == 2
@@ -1538,7 +1539,7 @@ def test_uncommitted_ambiguous_delete_retries_then_returns_503(
     assert_response(
         response,
         503,
-        {"error": "menu service unavailable"},
+        err("menu service unavailable"),
     )
     assert table_spy.delete_item.call_count == 2
     assert get_item(menu_table) == original
@@ -1611,7 +1612,7 @@ def test_new_image_must_belong_to_this_tenant_and_location(app_and_table, image_
     response = app.handler(make_event(method="POST", body=valid_body(imageKey=image_key)), None)
 
     assert response["statusCode"] == 400
-    assert json.loads(response["body"]) == {"error": "imageKey must be an image uploaded for this location"}
+    assert json.loads(response["body"]) == err("imageKey must be an image uploaded for this location")
     assert menu_table.scan()["Items"] == []
 
 
@@ -1674,7 +1675,7 @@ def test_create_without_schedule_returns_null_bounds(app_and_table):
 def test_create_rejects_invalid_schedule(app_and_table, schedule, error):
     app, menu_table = app_and_table
     response = app.handler(make_event(method="POST", body={**valid_body(), **schedule}), None)
-    assert_response(response, 400, {"error": error})
+    assert_response(response, 400, err(error))
     assert menu_table.scan()["Items"] == []
 
 
@@ -1683,7 +1684,7 @@ def test_partial_update_checks_end_against_the_stored_start(app_and_table):
     put_item(menu_table, menu_item(availableFrom=SCHED_UNTIL))
     response = app.handler(make_event(method="PUT", proxy=f"items/{ITEM_ID}",
                                       body={"availableUntil": SCHED_FROM}), None)
-    assert_response(response, 400, {"error": "availableUntil must be after availableFrom"})
+    assert_response(response, 400, err("availableUntil must be after availableFrom"))
     assert "availableUntil" not in get_item(menu_table)
 
 

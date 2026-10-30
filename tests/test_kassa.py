@@ -5,6 +5,7 @@ chain, returns, the one copy, training mode, X and Z reports, discounts,
 the feature flag and tenant isolation. DynamoDB is moto; Stripe is the
 recording fake from test_card_payments with partial refunds."""
 
+from error_body import err
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -231,10 +232,9 @@ def test_receipt_cannot_be_made_without_full_payment(env):
     rid = register(env)
     b = bill(env, rid)
     assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"}) == (
-        409, {"error": "not_fully_paid"})
+        409, err("not_fully_paid"))
     pay(env, b["billId"], 10000, "a" * 32, approve=False)
-    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == {
-        "error": "payment_in_progress"}
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == err("payment_in_progress")
     assert reg_row(env, rid)["receiptSeq"] == 0
 
 
@@ -244,7 +244,7 @@ def test_split_payment_two_cards(env):
     pay(env, b["billId"], 20000, "a" * 32)
     assert call(env, "POST", f"bills/{b['billId']}/payments",
                 body={"checkoutId": "c" * 32, "readerId": "tmr_a1", "amount": 20000}) == (
-        409, {"error": "amount_too_large"})
+        409, err("amount_too_large"))
     pay(env, b["billId"], 18750, "b" * 32)
     status, done = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})
     assert status == 201
@@ -257,8 +257,7 @@ def test_bill_is_locked_once_a_card_payment_runs(env):
     pay(env, b["billId"], 1000, "a" * 32, approve=False)
     current = call(env, "GET", f"bills/{b['billId']}")[1]
     assert current["locked"] is True
-    assert call(env, "PUT", f"bills/{b['billId']}", body={"version": current["version"], "lines": []})[1] == {
-        "error": "bill_has_payments"}
+    assert call(env, "PUT", f"bills/{b['billId']}", body={"version": current["version"], "lines": []})[1] == err("bill_has_payments")
 
 
 # --- control system ------------------------------------------------------------------------
@@ -269,7 +268,7 @@ def test_control_system_down_stops_card_payment_before_money_is_taken(env):
     call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
     assert call(env, "POST", f"bills/{b['billId']}/payments",
                 body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": 38750}) == (
-        503, {"error": "control_system_unreachable"})
+        503, err("control_system_unreachable"))
     assert env["stripe"].count("/v1/payment_intents") == 0
 
 
@@ -280,7 +279,7 @@ def test_no_receipt_without_control_code_and_no_number_burned(env):
     pay(env, b["billId"], b["total"], "b" * 32)
     call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
     assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"}) == (
-        503, {"error": "control_system_unreachable"})
+        503, err("control_system_unreachable"))
     assert reg_row(env, rid)["receiptSeq"] == 1
     assert journal(env, rid)[-1]["type"] == kassa.STATUS
     assert call(env, "GET", f"bills/{b['billId']}")[1]["status"] == "open"
@@ -349,7 +348,7 @@ def test_removing_a_sent_line_is_journalled(env):
         ("Dagens soppa", 1), ("Pasta carbonara", 1)]
     # a sent line can't be changed upwards or re-noted
     assert call(env, "PUT", f"bills/{b['billId']}", body={"version": after["version"], "lines": [
-        {"lineId": pasta["lineId"], "quantity": 3, "note": "utan lök"}]})[1] == {"error": "line_sent"}
+        {"lineId": pasta["lineId"], "quantity": 3, "note": "utan lök"}]})[1] == err("line_sent")
 
 
 def test_prices_are_fixed_when_the_line_is_added(env):
@@ -366,7 +365,7 @@ def test_takeaway_vat_and_no_alcohol(env):
     b = bill(env, rid, kind="takeaway", table=None, lines=[{"menuItemId": "pasta", "quantity": 1}])
     assert b["vat"][0]["rate"] == 6  # reduced food VAT 2026-04-01 to 2027-12-31 (shared/orders.py)
     assert call(env, "PUT", f"bills/{b['billId']}", body={"version": b["version"], "lines": [
-        {"menuItemId": "wine", "quantity": 1}]})[1] == {"error": "alcohol_not_for_takeaway"}
+        {"menuItemId": "wine", "quantity": 1}]})[1] == err("alcohol_not_for_takeaway")
     wine = bill(env, rid, lines=[{"menuItemId": "wine", "quantity": 2}])
     assert wine["vat"][0]["rate"] == 25
 
@@ -399,8 +398,7 @@ def test_partial_return_refunds_the_card_and_continues_the_series(env):
     row = reg_row(env, rid)
     assert row["receiptSeq"] == 2 and row["gtReturn"] == 14900
     assert call(env, "POST", f"registers/{rid}/receipts/1/return", body={
-        "lines": [{"lineId": pasta["lineId"], "quantity": 2}], "reason": "x", "delivery": "print"})[1] == {
-        "error": "return_too_large"}
+        "lines": [{"lineId": pasta["lineId"], "quantity": 2}], "reason": "x", "delivery": "print"})[1] == err("return_too_large")
     status, again = call(env, "POST", f"registers/{rid}/receipts/1/return", body={
         "lines": [{"lineId": pasta["lineId"], "quantity": 1}], "reason": "Kall", "delivery": "screen"})
     assert status == 201 and again["document"]["seq"] == 3
@@ -424,7 +422,7 @@ def test_only_one_copy_per_receipt(env):
     assert rows.count("KOPIA") == 2 and any(r and r.startswith("Kopia nr 1") for r in rows)
     assert next(r for r in copy["document"]["rows"] if r.get("text") == "KOPIA")["big"] is True
     assert call(env, "POST", f"registers/{rid}/receipts/1/copy", body={"delivery": "print"}) == (
-        409, {"error": "copy_exists"})
+        409, err("copy_exists"))
     assert reg_row(env, rid)["copySeq"] == 1
 
 
@@ -434,8 +432,7 @@ def test_training_mode(env):
     b = bill(env, rid)
     assert b["training"] is True
     assert call(env, "POST", f"bills/{b['billId']}/payments",
-                body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": 1000})[1] == {
-        "error": "training_no_payment"}
+                body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": 1000})[1] == err("training_no_payment")
     status, done = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})
     assert status == 201 and done["document"]["title"] == "Övningskvitto"
     assert [r.get("text") for r in done["document"]["rows"] if r.get("big")].count("ÖVNING") == 2
@@ -569,10 +566,9 @@ def test_screen_only_in_test_mode_and_printer_needed(env, monkeypatch):
     b = bill(env, rid)
     pay(env, b["billId"], b["total"], "a" * 32)
     env["res"].Table("test-print").delete_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"})
-    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == {"error": "no_printer"}
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == err("no_printer")
     monkeypatch.setattr(cs, "certified", lambda system: True)
-    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})[1] == {
-        "error": "receipt_must_be_printed"}
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})[1] == err("receipt_must_be_printed")
 
 
 def test_kassa_print_job_reaches_the_printer(env):
@@ -586,7 +582,7 @@ def test_kassa_print_job_reaches_the_printer(env):
 def test_feature_flag_is_off_by_default(env):
     env["res"].Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, name="Roma", orgNumber="556677-8899"))
     shared_tenant.reset_caches()
-    assert call(env, "GET") == (403, {"error": "feature_not_in_plan"})
+    assert call(env, "GET") == (403, err("feature_not_in_plan"))
 
 
 def test_state_says_test_mode(env):
@@ -605,8 +601,7 @@ def test_other_tenants_register_is_not_found(env):
 
 def test_staff_can_sell_but_not_create_registers_or_export(env):
     rid = register(env)
-    assert call(env, "POST", "registers", body={"label": "Baren"}, role="staff_user", sub=STAFF_A_SUB)[1] == {
-        "error": "owner_only"}
+    assert call(env, "POST", "registers", body={"label": "Baren"}, role="staff_user", sub=STAFF_A_SUB)[1] == err("owner_only")
     assert call(env, "GET", f"registers/{rid}/export", query={"from": "2026-10-24", "to": "2026-10-24"},
                 role="staff_user", sub=STAFF_A_SUB)[0] == 403
     status, _ = call(env, "POST", "bills", body={"registerId": rid, "kind": "takeaway"}, role="staff_user",
@@ -616,7 +611,7 @@ def test_staff_can_sell_but_not_create_registers_or_export(env):
 
 def test_register_labels_are_unique_and_limited(env):
     register(env, "Kassa 1")
-    assert call(env, "POST", "registers", body={"label": "kassa 1"})[1] == {"error": "label_taken"}
+    assert call(env, "POST", "registers", body={"label": "kassa 1"})[1] == err("label_taken")
     assert call(env, "POST", "registers", body={"label": "x" * 17})[0] == 400
 
 
@@ -627,8 +622,7 @@ def test_org_number_is_required(env):
     rid = register(env)
     b = bill(env, rid)
     pay(env, b["billId"], b["total"], "a" * 32)
-    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == {
-        "error": "org_number_missing"}
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == err("org_number_missing")
 
 
 def test_org_digits():
@@ -694,8 +688,7 @@ def test_provider_status_asks_for_felanmalan_at_once(env):
 
 def test_outage_notice_is_audited(env):
     rid = register(env)
-    assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": "shown"})[1] == {
-        "error": "control_system_up"}
+    assert call(env, "POST", f"registers/{rid}/outage-notice", body={"action": "shown"})[1] == err("control_system_up")
     call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
     call(env, "GET")
     for action in ("shown", "shown", "dismissed", "dismissed"):
@@ -720,8 +713,7 @@ def test_setup_checklist_per_location(env):
     status, body = call(env, "PUT", "setup", body={"item": "anmalan", "done": True})
     assert status == 200 and body["items"]["anmalan"]["done"] is True and body["items"]["anmalan"]["by"] == "anna@roma.se"
     assert call(env, "PUT", "setup", body={"item": "x", "done": True})[0] == 400
-    assert call(env, "PUT", "setup", body={"item": "skylt", "done": True}, role="staff_user", sub=STAFF_A_SUB)[1] == {
-        "error": "owner_only"}
+    assert call(env, "PUT", "setup", body={"item": "skylt", "done": True}, role="staff_user", sub=STAFF_A_SUB)[1] == err("owner_only")
     assert call(env, "GET", "setup", tenant_id=TENANT_B, location_id=LOC_B)[1]["items"]["anmalan"] == {"done": False}
 
 

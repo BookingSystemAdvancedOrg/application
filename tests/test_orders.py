@@ -4,6 +4,7 @@ the restaurant's screen (status moves, ready SMS, cancel with refund, pause,
 table codes) and the guest messages. DynamoDB/Secrets Manager are moto;
 Stripe, SES and SNS are recording fakes."""
 
+from error_body import err
 import hashlib
 import hmac
 import importlib.util
@@ -301,7 +302,7 @@ def test_too_large_an_order_is_refused_and_logged_without_guest_data(env, caplog
     with caplog.at_level("WARNING"):
         response = post_order(env, items=[{"menuItemId": "car", "quantity": 1}])
     assert response["statusCode"] == 400
-    assert body_of(response) == {"error": "order total is too large"}
+    assert body_of(response) == err("order total is too large")
     refused = [r.getMessage() for r in caplog.records if "order refused" in r.getMessage()]
     assert refused == ["order refused: 400 order total is too large"]
     assert not any("anna" in r.getMessage().lower() or "4670" in r.getMessage() for r in caplog.records)
@@ -376,7 +377,7 @@ def test_payment_domain_is_checked_once_and_never_blocks_the_order(env):
 def test_embedded_must_be_a_boolean(env):
     response = post_order(env, embedded="yes")
     assert response["statusCode"] == 400
-    assert body_of(response) == {"error": "embedded must be true or false"}
+    assert body_of(response) == err("embedded must be true or false")
 
 
 def test_table_order_needs_this_locations_qr_code(env):
@@ -391,11 +392,11 @@ def test_table_order_needs_this_locations_qr_code(env):
                            {"rate": 25, "gross": 19000, "net": 15200, "vat": 3800}]
 
     other = o.table_code(TENANT_A, LOC_A2, "t-7", "Bord 7")
-    assert body_of(post_order(env, mode="table", tableCode=other)) == {"error": "table code is invalid"}
-    assert body_of(post_order(env, mode="table")) == {"error": "table code is invalid"}
+    assert body_of(post_order(env, mode="table", tableCode=other)) == err("table code is invalid")
+    assert body_of(post_order(env, mode="table")) == err("table code is invalid")
     tampered = code.replace(code.split(".")[0], o._b64(b'{"t":"t-7","n":"VIP"}'))
     assert post_order(env, mode="table", tableCode=tampered)["statusCode"] == 400
-    assert body_of(post_order(env, tableCode=code)) == {"error": "tableCode is only for table orders"}
+    assert body_of(post_order(env, tableCode=code)) == err("tableCode is only for table orders")
 
 
 @pytest.mark.parametrize("items, error", [
@@ -406,7 +407,7 @@ def test_table_order_needs_this_locations_qr_code(env):
 ])
 def test_unorderable_items_are_refused(env, items, error):
     response = post_order(env, items=items)
-    assert response["statusCode"] == 400 and body_of(response) == {"error": error}
+    assert response["statusCode"] == 400 and body_of(response) == err(error)
     assert env["stripe"].calls == []
 
 
@@ -428,7 +429,7 @@ def test_another_restaurants_dish_cannot_be_ordered(env):
 def test_ordering_only_while_open(env, change, error):
     set_location(env, **change)
     response = post_order(env)
-    assert response["statusCode"] == 409 and body_of(response) == {"error": error}
+    assert response["statusCode"] == 409 and body_of(response) == err(error)
 
 
 def test_expired_pause_and_special_hours_allow_orders(env):
@@ -442,7 +443,7 @@ def test_no_stripe_account_no_orders(env):
     env["res"].Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, slug="roma",
                                                             stripe={"accountId": ACCOUNT, "chargesEnabled": False}))
     shared_tenant.reset_caches()
-    assert body_of(post_order(env)) == {"error": "ordering_no_payments"}
+    assert body_of(post_order(env)) == err("ordering_no_payments")
 
 
 def test_tenant_without_ordering_feature_gets_404(env):
@@ -461,7 +462,7 @@ def test_tenant_without_ordering_feature_gets_404(env):
     ({"notes": "x" * 301}, "notes may be at most 300 characters"),
 ])
 def test_request_validation(env, change, error):
-    assert body_of(post_order(env, **change)) == {"error": error}
+    assert body_of(post_order(env, **change)) == err(error)
 
 
 def test_stripe_rejecting_the_checkout_fails_the_order(env):
@@ -630,7 +631,7 @@ def test_kitchen_flow_and_ready_sms_notice_for_pickup(env):
     assert item["notice"]["type"] == "order_ready" and item["notice"]["id"] != notice_before["id"]
     assert item["readyAt"] == "2026-09-08T12:00:00Z"
     assert body_of(set_status(env, oid, "completed"))["status"] == "completed"
-    assert body_of(set_status(env, oid, "preparing")) == {"error": "cannot_move_completed_to_preparing"}
+    assert body_of(set_status(env, oid, "preparing")) == err("cannot_move_completed_to_preparing")
 
 
 def test_table_order_ready_sends_nothing(env):
@@ -662,12 +663,12 @@ def test_stale_screen_gets_409(env):
     created = place_and_pay(env)
     oid = created["orderId"]
     event = staff_event("PUT", f"{oid}/status", body={"status": "ready", "expectedStatus": "preparing"})
-    assert body_of(env["m"]["staff"].handler(event, None)) == {"error": "changed_retry"}
+    assert body_of(env["m"]["staff"].handler(event, None)) == err("changed_retry")
 
 
 def test_unpaid_orders_cannot_be_moved(env):
     created = body_of(post_order(env))
-    assert body_of(set_status(env, created["orderId"], "ready")) == {"error": "cannot_move_pending_payment_to_ready"}
+    assert body_of(set_status(env, created["orderId"], "ready")) == err("cannot_move_pending_payment_to_ready")
 
 
 def test_other_tenant_and_other_location_staff_see_nothing(env):
@@ -684,7 +685,7 @@ def test_pause_and_resume(env):
     assert body["ordering"] == {"open": False, "reason": "paused", "pausedUntil": "2026-09-08T12:30:00Z",
                                 "pickup": True, "table": True, "prepMinutes": 20}
     shared_tenant.reset_caches()
-    assert body_of(post_order(env)) == {"error": "ordering_paused"}
+    assert body_of(post_order(env)) == err("ordering_paused")
     body = body_of(env["m"]["staff"].handler(staff_event("PUT", "pause", body={"minutes": 0}), None))
     assert body["ordering"]["open"] is True
     assert post_order(env)["statusCode"] == 201
@@ -887,7 +888,7 @@ def test_discount_code_lowers_every_line_and_is_held_for_the_order(env):
     assert held["status"] == "reserved" and held["orderId"] == body["orderId"]
     # Another guest can't use it while this one is paying.
     again = post_order(env, discountCode="ABCD-EFGH", email="bertil@example.se", phone="070-765 43 21")
-    assert again["statusCode"] == 409 and body_of(again) == {"error": "discount_used"}
+    assert again["statusCode"] == 409 and body_of(again) == err("discount_used")
 
 
 def test_discount_code_refusals(env):
@@ -898,7 +899,7 @@ def test_discount_code_refusals(env):
     for value, error in (("NOPE-NOPE", "discount_invalid"), ("EXPD-CODE", "discount_expired"),
                          ("MINI-MUMS", "discount_min_order"), ("USED-CODE", "discount_used"), ("x", "discount_invalid")):
         response = post_order(env, discountCode=value)
-        assert response["statusCode"] == 409 and body_of(response) == {"error": error}, value
+        assert response["statusCode"] == 409 and body_of(response) == err(error), value
     assert env["stripe"].calls == []
 
 
@@ -924,7 +925,7 @@ def test_codes_need_marketing_in_the_plan(env):
     _, code = _with_codes(env, features={"ordering": True})
     code()
     response = post_order(env, discountCode="ABCD-EFGH")
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_invalid"}
+    assert response["statusCode"] == 409 and body_of(response) == err("discount_invalid")
 
 
 def test_code_is_personal(env):
@@ -932,7 +933,7 @@ def test_code_is_personal(env):
     _, code = _with_codes(env)
     code(ownerKey=offer.owner_key(TENANT_A, "someone@else.se"))
     response = post_order(env, discountCode="ABCD-EFGH")
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_other_email"}
+    assert response["statusCode"] == 409 and body_of(response) == err("discount_other_email")
     code("WXYZ-WXYZ", ownerKey=offer.owner_key(TENANT_A, "anna@example.se"))
     assert post_order(env, discountCode="WXYZ-WXYZ", email="Anna+x@example.se")["statusCode"] == 201
 
@@ -957,7 +958,7 @@ def test_code_held_by_a_paid_or_open_order_is_refused(env):
     first = body_of(post_order(env, discountCode="ABCD-EFGH"))
     # Someone else (no personal code: legacy) can't take it over while it can still be paid.
     other = post_order(env, discountCode="ABCD-EFGH", email="bertil@example.se", phone="070-765 43 21")
-    assert other["statusCode"] == 409 and body_of(other) == {"error": "discount_used"}
+    assert other["statusCode"] == 409 and body_of(other) == err("discount_used")
     webhook(env, stripe_event("checkout.session.completed", paid_session(env, first["orderId"])))
     again = post_order(env, discountCode="ABCD-EFGH")
     assert again["statusCode"] == 409
@@ -968,7 +969,7 @@ def test_discount_never_goes_under_stripes_minimum(env):
     code(percent=50)
     env["res"].Table(MENU_TABLE).put_item(Item=menu_item(LOC_A, "mint", "Mint", "5"))
     response = post_order(env, discountCode="ABCD-EFGH", items=[{"menuItemId": "mint", "quantity": 1}])
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "discount_min_order"}
+    assert response["statusCode"] == 409 and body_of(response) == err("discount_min_order")
 
 
 @pytest.mark.parametrize("schedule", [
@@ -978,7 +979,7 @@ def test_discount_never_goes_under_stripes_minimum(env):
 def test_dish_outside_its_schedule_is_refused(env, schedule):
     env["res"].Table(MENU_TABLE).put_item(Item={**menu_item(LOC_A, "pizza", "Margherita", "125"), **schedule})
     response = post_order(env)
-    assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}
+    assert response["statusCode"] == 400 and body_of(response) == err("menu_item_unavailable")
     assert env["stripe"].calls == []
 
 
@@ -986,7 +987,7 @@ def test_dish_with_a_corrupt_schedule_is_unavailable(env):
     env["res"].Table(MENU_TABLE).put_item(Item={**menu_item(LOC_A, "pizza", "Margherita", "125"),
                                                 "availableUntil": "2026-09-08 12:00"})
     response = post_order(env)
-    assert response["statusCode"] == 400 and body_of(response) == {"error": "menu_item_unavailable"}
+    assert response["statusCode"] == 400 and body_of(response) == err("menu_item_unavailable")
     assert env["stripe"].calls == []
 
 

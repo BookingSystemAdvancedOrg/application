@@ -47,7 +47,8 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DOCUMENTS_BUCKET_NAME, CATERING_DOCUMENT_FUNCTION_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION,
-    SIGNING_PROVIDER_SECRET_ARN, SIGNING_WEBHOOK_URL, ADMIN_DASHBOARD_URL, DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS
+    SIGNING_PROVIDER_SECRET_ARN, SIGNING_WEBHOOK_URL, ADMIN_DASHBOARD_URL, SITE_DOMAIN, CUSTOMER_SITE_URL,
+    DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS, DOCUMENT_LOCK_YEAR_END
 """
 
 import base64
@@ -227,9 +228,11 @@ def _send(event):
     pdf = _render_pdf(ctx, item, version, document)
     order = signing.create_order(item, {**offer, "summary": _summary(ctx, item, offer)}, pdf["bytes"], [
         {"role": sign.RESTAURANT, "name": ctx.tenant.get("legalName") or ctx.tenant.get("name"),
-         "email": settings.get("notifyEmail") or ctx.location.get("email")},
+         "email": settings.get("notifyEmail") or ctx.location.get("email"),
+         "returnUrl": sign.restaurant_return_url(item)},
         {"role": sign.CUSTOMER, "name": (item.get("signatory") or {}).get("name") or item.get("customerName"),
-         "email": item.get("customerEmail")},
+         "email": item.get("customerEmail"), "company": item.get("companyName"),
+         "returnUrl": sign.customer_return_url(ctx.tenant_id, ctx.tenant, item)},
     ], _callback_url(item))
     signing_record = {"offerVersion": version, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
                       "pdfSha256": pdf["sha256"], "order": order, "signatures": {}}
@@ -307,9 +310,8 @@ def _restaurant_sign(event):
     tz = ZoneInfo(ctx.location.get("timezone") or "Europe/Stockholm")
     if item.get("validUntil") and date.fromisoformat(item["validUntil"]) < c.now_utc().astimezone(tz).date():
         raise c.InvalidState("offer_expired")
-    admin = c.admin_url(os.environ.get("ADMIN_DASHBOARD_URL"), item)
     return http.respond(200, sign.begin(item, sign.RESTAURANT, http.source_ip(event),
-                                        f"{admin}?signering=klar" if admin else None))
+                                        sign.restaurant_return_url(item)))
 
 
 def _restaurant_sign_status(event):
@@ -453,7 +455,7 @@ def handler(event, context):
     except signing.SigningRejected as exc:
         return http.error(409, f"signing_{exc.code}")
     except signing.SigningUnavailable:
-        logger.exception("signing unavailable")
+        logger.exception("SIGNING_UNAVAILABLE")
         return http.error(503, "signing_unavailable")
     except stripe.StripeError as exc:
         logger.error(json.dumps({"stripe": "rejected", "code": exc.code, "message": str(exc)}))

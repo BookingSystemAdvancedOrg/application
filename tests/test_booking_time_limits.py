@@ -4,6 +4,7 @@ table edits keep it, and staff extend or shorten a booking on the 15-minute
 grid (rule, max, windows without extension, closing time, conflicts on every
 table). Same moto setup as test_reservations."""
 
+from error_body import err
 from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
@@ -142,7 +143,7 @@ def test_extension_works_for_an_arrived_guest(env):
 def test_longer_than_the_max_needs_an_override_which_is_logged(env):
     with_rules(env)
     rid = booked(env)["reservationId"]
-    assert body_of(extend(env, rid, "20:15")) == {"error": "extension_too_long"}
+    assert body_of(extend(env, rid, "20:15")) == err("extension_too_long")
     response = extend(env, rid, "20:15", overrideRule=True)
     assert response["statusCode"] == 200, response
     assert body_of(response)["history"][-1]["override"] is True
@@ -152,14 +153,14 @@ def test_longer_than_the_max_needs_an_override_which_is_logged(env):
 def test_a_not_extendable_rule_refuses_without_override(env):
     with_rules(env)
     rid = booked(env, start="12:00")["reservationId"]
-    assert body_of(extend(env, rid, "13:15")) == {"error": "not_extendable"}
+    assert body_of(extend(env, rid, "13:15")) == err("not_extendable")
     assert extend(env, rid, "13:15", overrideRule=True)["statusCode"] == 200
 
 
 def test_an_extension_may_not_run_into_a_window_without_extension(env):
     with_rules(env)
     rid = booked(env, start="10:00")["reservationId"]  # 10:00-11:30, runs into the buffet by its start rule
-    assert body_of(extend(env, rid, "11:45")) == {"error": "window_not_extendable"}
+    assert body_of(extend(env, rid, "11:45")) == err("window_not_extendable")
     assert extend(env, rid, "11:45", overrideRule=True)["statusCode"] == 200
 
 
@@ -167,14 +168,14 @@ def test_never_past_closing_even_with_override(env):
     with_rules(env)
     rid = booked(env, start="20:00")["reservationId"]  # 20:00-21:30, closes 22:00
     assert extend(env, rid, "22:00")["statusCode"] == 200
-    assert body_of(extend(env, rid, "22:15", overrideRule=True)) == {"error": "after_closing"}
+    assert body_of(extend(env, rid, "22:15", overrideRule=True)) == err("after_closing")
 
 
 def test_extension_conflicting_with_the_next_booking_is_refused(env):
     with_rules(env)
     rid = booked(env)["reservationId"]
     booked(env, start="19:30")  # same table-b afterwards
-    assert body_of(extend(env, rid, "19:45")) == {"error": "table_taken"}
+    assert body_of(extend(env, rid, "19:45")) == err("table_taken")
     assert stored(env, rid)["endTime"] == "19:30"
 
 
@@ -183,7 +184,7 @@ def test_every_table_of_a_combination_is_checked(env):
     staff = staff_booking(env, tableIds=["table-a", "table-b"], partySize=5, startTime="18:00")
     rid = body_of(staff)["reservationId"]
     booked(env, start="19:30", tables=("table-a",), party=2)
-    assert body_of(extend(env, rid, "20:00")) == {"error": "table_taken"}
+    assert body_of(extend(env, rid, "20:00")) == err("table_taken")
 
 
 def test_staff_may_shorten_and_the_table_frees_up(env):
@@ -204,12 +205,12 @@ def test_extension_input_is_checked(env):
     assert body_of(edit(env, rid, {"endTime": "19:45", "partySize": 2}))["error"] == "endTime is changed on its own"
     assert body_of(extend(env, rid, "19:30"))["endTime"] == "19:30"  # unchanged = no-op
     assert set_status(env, rid, "cancelled")["statusCode"] == 200
-    assert body_of(extend(env, rid, "19:45")) == {"error": "not_extendable"}
+    assert body_of(extend(env, rid, "19:45")) == err("not_extendable")
 
 
 def test_a_legacy_booking_extends_only_with_override(env):
     rid = booked(env)["reservationId"]  # no rules: 18:00-20:00, not extendable
-    assert body_of(extend(env, rid, "20:30")) == {"error": "not_extendable"}
+    assert body_of(extend(env, rid, "20:30")) == err("not_extendable")
     body = body_of(extend(env, rid, "20:30", overrideRule=True))
     assert body["endTime"] == "20:30" and body["bookingRule"]["durationMinutes"] == 120
 

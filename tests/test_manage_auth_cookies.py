@@ -1,5 +1,6 @@
 """Cookie sessions in manage-auth: the refresh token never reaches script."""
 
+from error_body import err
 import importlib.util
 import json
 from pathlib import Path
@@ -182,7 +183,7 @@ def test_cookie_routes_refuse_foreign_origin(app, route):
         event(route, headers={"origin": "https://evil.example"}, cookies=["__Secure-booqy_rt=rt"]), None)
 
     assert response["statusCode"] == 403
-    assert json.loads(response["body"]) == {"error": "origin not allowed"}
+    assert json.loads(response["body"]) == err("origin not allowed")
     cognito.get_tokens_from_refresh_token.assert_not_called()
     cognito.revoke_token.assert_not_called()
 

@@ -2,6 +2,8 @@
 passed, leaves every other tenant alone, and keeps only a tombstone."""
 
 import importlib.util
+import io
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -127,7 +129,9 @@ def seed_tenant(e, tenant_id, location_id, *, status="active", purge_at=None, of
                "address": {"street": "Gatan 1", "postalCode": "12345", "city": "Stockholm"},
                "branding": {"logoUrl": "https://example.se/logo.png"}, "ownerEmail": "owner@example.se",
                "stripe": {"accountId": f"acct_{slug}", "chargesEnabled": True}, "locationCount": 1,
-               "entitlements": {"maxLocations": 3, "features": {"reservations": True}}, "createdAt": "2025-01-01T00:00:00Z"}
+               "entitlements": {"maxLocations": 3, "features": {"reservations": True}}, "createdAt": "2025-01-01T00:00:00Z",
+               "billing": {"customerId": f"cus_{slug}", "status": "active", "startsAt": "2026-05-01",
+                           "endsAt": "2026-10-19", "startedBy": "ops@booqy.se", "cancelRequestedBy": "ops@booqy.se"}}
     if purge_at:
         profile["purgeAt"] = _iso(purge_at)
     if offboarded_at:
@@ -205,6 +209,8 @@ def test_due_tenant_is_purged_and_neighbour_untouched(env):
     assert stone["orgNumber"] == "556677-8899" and stone["slug"] == "gone" and stone["GSI1PK"] == "TENANT"
     assert stone["stripe"] == {"accountId": "acct_gone"} and stone["locationCount"] == 0
     assert stone["entitlements"]["maxLocations"] == 3
+    # the agreement stays for its last invoice, without who changed it
+    assert stone["billing"] == {"customerId": "cus_gone", "status": "active", "startsAt": "2026-05-01", "endsAt": "2026-10-19"}
     for field in ("contactEmail", "contactPhone", "address", "branding", "ownerEmail"):
         assert field not in stone
     assert count(t["tenant"], f"TENANT#{GONE}") == 1                      # audit rows gone
@@ -338,3 +344,67 @@ def test_no_fiskaly_key_is_fine(env, monkeypatch):
                 offboarded_at=NOW - timedelta(days=90), slug="gone")
     result = env["app"].handler({}, Context())
     assert result["purged"] == [GONE] and result["failed"] == []
+
+
+class FakeSiteRepo:
+    def __init__(self, answer=None, error=None):
+        self.calls, self.answer, self.error = [], answer, error
+
+    def invoke(self, **kwargs):
+        self.calls.append(json.loads(kwargs["Payload"]))
+        body = {"errorMessage": self.error} if self.error else self.answer
+        return {"Payload": io.BytesIO(json.dumps(body).encode()),
+                **({"FunctionError": "Unhandled"} if self.error else {})}
+
+
+def _audit_rows(env):
+    return [i for i in env["t"]["tenant"].query(KeyConditionExpression="PK = :p",
+                                                ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]
+            if i["SK"].startswith("AUDIT#")]
+
+
+def test_the_website_repo_is_deleted_and_logged(env, monkeypatch):
+    monkeypatch.setenv("SITE_REPO_FUNCTION_ARN", "arn:aws:lambda:eu-north-1:123456789012:function:dev-site-repo:live")
+    site = FakeSiteRepo({"status": "deleted", "repo": "site-gone", "repoDeleted": True})
+    env["app"]._clients[("lambda", None)] = site
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1), slug="gone")
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    assert site.calls == [{"action": "delete", "tenantId": GONE}]
+    [row] = _audit_rows(env)
+    assert row["action"] == "site_repo_deleted" and row["by"] == "tenant-purge"
+    assert row["details"] == {"repo": "site-gone", "status": "deleted"}
+
+
+def test_a_refused_repo_delete_is_reported_and_the_data_still_purged(env, monkeypatch):
+    monkeypatch.setenv("SITE_REPO_FUNCTION_ARN", "arn:aws:lambda:eu-north-1:123456789012:function:dev-site-repo:live")
+    env["app"]._clients[("lambda", None)] = FakeSiteRepo(error="site-gone NOT deleted: GitHub refused (403)")
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1), slug="gone")
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["status"] == "purged"
+    assert "Website repo NOT deleted: site-gone NOT deleted" in stone["purgeSummary"]["notes"][0]
+    [row] = _audit_rows(env)
+    assert row["action"] == "site_repo_delete_failed"
+    assert "Website repo NOT deleted" in env["sns"].calls[0]["Message"]
+
+
+def test_no_query_filters_on_a_key_attribute(env):
+    # moto accepts a FilterExpression on PK/SK; DynamoDB refuses it
+    # (ValidationException), so every Query is checked here.
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seen = []
+
+    def check(params, **_):
+        body = json.loads(params["body"] or b"{}")
+        if "FilterExpression" in body:
+            names = set((body.get("ExpressionAttributeNames") or {}).values())
+            seen.append(names)
+            assert not names & {"PK", "SK"}, body["FilterExpression"]
+
+    events = boto3.DEFAULT_SESSION.events
+    events.register("before-call.dynamodb.Query", check)
+    try:
+        assert env["app"].handler({}, Context())["purged"] == [GONE]
+    finally:
+        events.unregister("before-call.dynamodb.Query", check)

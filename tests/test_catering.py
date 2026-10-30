@@ -5,6 +5,7 @@ lifecycle (company invoice, expiry timers), the Stripe webhook and the
 notifications. DynamoDB, S3 and Secrets Manager are moto; Stripe, SES, SNS
 and EventBridge Scheduler are recording fakes."""
 
+from error_body import err
 import base64
 import hashlib
 import hmac
@@ -378,7 +379,7 @@ def test_request_rules(env, change, status, error):
 
 def test_company_request_and_pickup(env):
     no_signatory = create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234")
-    assert body_of(no_signatory) == {"error": "signatoryAuthority must be true"}
+    assert body_of(no_signatory) == err("signatoryAuthority must be true")
     body = body_of(create(env, customerType="company", companyName="Acme AB", orgNumber="5560001234",
                           invoiceReference="Kalle", fulfilment="pickup", deliveryAddress=None,
                           signatoryName="Karl Ek", signatoryRole="VD", signatoryAuthority=True))
@@ -390,7 +391,7 @@ def test_company_request_and_pickup(env):
 
 def test_catering_off_or_not_in_plan(env):
     env.res.Table(LOCATION_TABLE).put_item(Item=location_item(TENANT_A, LOC_A, cateringSettings={**SETTINGS, "enabled": False}))
-    assert body_of(create(env)) == {"error": "catering_disabled"}
+    assert body_of(create(env)) == err("catering_disabled")
     env.res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, slug="roma", features={"reservations": True}))
     shared_tenant.reset_caches()
     assert create(env)["statusCode"] == 404
@@ -435,9 +436,9 @@ def test_send_offer_versions_and_capacity(env):
 def test_offer_capacity_full_and_validation(env):
     rid = body_of(create(env))["requestId"]
     big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
-    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == {"error": "capacity_full"}
+    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == err("capacity_full")
     pricey = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 10000.01, "quantity": 1}]}
-    assert body_of(staff(env, "PUT", "/offer", body=pricey, request_id=rid)) == {"error": "price may be at most 10000 kr"}
+    assert body_of(staff(env, "PUT", "/offer", body=pricey, request_id=rid)) == err("price may be at most 10000 kr")
     at_limit = {**OFFER, "lines": [{"name": "Tårta", "unitPrice": 10000, "quantity": 1}]}
     assert staff(env, "PUT", "/offer", body=at_limit, request_id=rid)["statusCode"] == 200
     late = {**OFFER, "validUntil": "2026-10-25"}
@@ -501,7 +502,7 @@ def test_simulator_is_refused_in_prod(env):
     env.monkeypatch.setenv("ENVIRONMENT", "prod")
     bankid.reset_cache()
     rid = body_of(create(env))["requestId"]
-    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)) == {"error": "signing_unavailable"}
+    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)) == err("signing_unavailable")
     assert c.load(LOC_A, rid)["status"] == "requested"
 
 
@@ -513,7 +514,7 @@ def test_a_new_offer_version_during_signing_is_not_signed(env):
     assert c.load(LOC_A, rid)["status"] == "offer_sent"
     # v2 needs the restaurant's signature again before the guest can sign
     assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
-    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "awaiting_restaurant"}
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == err("awaiting_restaurant")
 
 
 def test_bankid_qr_code_format():
@@ -588,7 +589,7 @@ def test_no_new_attempt_while_a_completed_session_settles(env):
     guest(env, "POST", "/checkout", rid, token, {"embedded": True})
     env.stripe.session_status = "complete"
     response = guest(env, "POST", "/checkout", rid, token, {"embedded": True})
-    assert response["statusCode"] == 409 and body_of(response) == {"error": "payment_in_progress"}
+    assert response["statusCode"] == 409 and body_of(response) == err("payment_in_progress")
 
 
 def test_checkout_rejects_unknown_fields(env):
@@ -612,7 +613,7 @@ def test_guest_rejects_the_offer(env):
     rid, token = sent_offer(env)
     assert body_of(guest(env, "POST", "/reject", rid, token, {"reason": "För dyrt"}))["status"] == "rejected"
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 100
-    assert body_of(guest(env, "POST", "/sign", rid, token)) == {"error": "not_signable"}
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == err("not_signable")
 
 
 # --- company: lifecycle invoices ------------------------------------------------------------------------

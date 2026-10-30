@@ -32,6 +32,7 @@ class FakeGitHub:
         self.calls = []
         self.dispatches = []
         self.next_id = 1000
+        self.refuse_delete = False
 
     def _repo(self, name, **extra):
         self.next_id += 1
@@ -71,6 +72,11 @@ class FakeGitHub:
         if repo is None:
             return 404, {"message": "Not Found"}
         if rest == "":
+            if method == "DELETE":
+                if self.refuse_delete:
+                    return 403, {"message": "Must have admin rights to Repository."}
+                del self.repos[name]
+                return 204, None
             if method == "PATCH":
                 repo.update(data)
             return 200, self._public(repo)
@@ -340,7 +346,7 @@ def test_archive_keeps_the_repo_while_the_other_environment_uses_it(world):
         world["iam"].get_role(RoleName="dev-site-test-roma")
     out = world["use"]("prod").handler({"action": "archive", "tenantId": TENANT}, None)
     assert out["repoArchived"] is True and repo["archived"] is True and repo["variables"] == {}
-    assert "site-test-roma" in gh.repos                     # archived, never deleted
+    assert "site-test-roma" in gh.repos                     # archived, not deleted
 
 
 def test_prod_onboarding_unarchives_an_archived_repo(world):
@@ -444,3 +450,60 @@ def test_prod_asks_dev_about_its_domain_through_the_link(world):
     dev = world["use"]("dev")
     with pytest.raises(dev.SiteRepoError):
         dev.handler({"action": "devDomain", "tenantId": TENANT, "op": "status"}, None)
+
+
+def test_prod_delete_archives_both_sides_then_deletes_the_repo(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    out = prod.handler({"action": "delete", "tenantId": PLAIN}, None)
+    assert out == {"status": "deleted", "repo": "site-roma", "repoDeleted": True}
+    assert "site-roma" not in world["github"].repos
+    assert world["links"][-1] == {"action": "archive", "slug": "roma"}
+    site = world["table"].get_item(Key={"PK": f"TENANT#{PLAIN}", "SK": "SITE"})["Item"]
+    assert site["status"] == "deleted" and "roleArn" not in site
+    # Run again (a purge that stopped halfway): nothing left to do.
+    assert prod.handler({"action": "delete", "tenantId": PLAIN}, None)["status"] == "gone"
+
+
+def test_delete_keeps_a_repo_another_environment_still_uses(world):
+    world["use"]("dev").handler({"action": "provision", "tenantId": TENANT}, None)
+    world["use"]("prod").handler({"action": "provision", "tenantId": TENANT}, None)
+    out = world["use"]("dev").handler({"action": "delete", "tenantId": TENANT}, None)
+    assert out["status"] == "kept" and "site-test-roma" in world["github"].repos
+    assert not any(v.startswith("DEV_") for v in world["github"].repos["site-test-roma"]["variables"])
+
+
+def test_dev_never_deletes_a_repo_prod_set_up(world):
+    world["github"]._repo("site-roma", default_branch="dev")
+    world["table"].put_item(Item={"PK": "TENANT#t-dev-roma", "SK": "PROFILE", "slug": "roma", "name": "Roma",
+                                  "status": "offboarded"})
+    out = world["use"]("dev").handler({"action": "delete", "tenantId": "t-dev-roma"}, None)
+    assert out["status"] == "kept" and "site-roma" in world["github"].repos
+
+
+def test_dev_deletes_its_own_test_repo(world):
+    dev = world["use"]("dev")
+    dev.handler({"action": "provision", "tenantId": TENANT}, None)
+    assert dev.handler({"action": "delete", "tenantId": TENANT}, None)["repoDeleted"] is True
+    assert "site-test-roma" not in world["github"].repos
+
+
+def test_delete_without_admin_permission_fails_with_a_hint_and_keeps_the_repo_archived(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    world["github"].refuse_delete = True
+    with pytest.raises(prod.SiteRepoError, match="Administration: Read and write"):
+        prod.handler({"action": "delete", "tenantId": PLAIN}, None)
+    assert world["github"].repos["site-roma"]["archived"] is True
+
+
+def test_a_new_customer_with_a_deleted_slug_gets_a_fresh_repo(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    old_id = world["github"].repos["site-roma"]["id"]
+    prod.handler({"action": "delete", "tenantId": PLAIN}, None)
+    world["table"].put_item(Item={"PK": "TENANT#t-roma-2", "SK": "PROFILE", "slug": "roma", "name": "Roma",
+                                  "status": "active"})
+    assert prod.handler({"action": "provision", "tenantId": "t-roma-2"}, None)["status"] == "ready"
+    repo = world["github"].repos["site-roma"]
+    assert repo["id"] != old_id and repo["variables"]["PROD_TENANT_ID"] == "t-roma-2"

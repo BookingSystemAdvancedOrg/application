@@ -1,3 +1,4 @@
+from error_body import err
 import importlib.util
 import json
 from datetime import datetime, timezone
@@ -231,7 +232,7 @@ def test_missing_claims_returns_401_before_dynamodb(
     assert_response(
         response,
         401,
-        {"error": "no JWT claims on this request"},
+        err("no JWT claims on this request"),
     )
     table_factory.assert_not_called()
 
@@ -246,7 +247,7 @@ def test_missing_subject_returns_401_before_dynamodb(
 
     response = app.handler(make_event(sub=" "), None)
 
-    assert_response(response, 401, {"error": "JWT is missing a subject"})
+    assert_response(response, 401, err("JWT is missing a subject"))
     table_factory.assert_not_called()
 
 
@@ -260,7 +261,7 @@ def test_wrong_group_returns_403_before_dynamodb(
 
     response = app.handler(make_event(groups='["staff_user"]'), None)
 
-    assert_response(response, 403, {"error": "owner_only"})
+    assert_response(response, 403, err("owner_only"))
     table_factory.assert_not_called()
 
 
@@ -274,7 +275,7 @@ def test_wrong_method_returns_405_before_dynamodb(
 
     response = app.handler(make_event(method="GET"), None)
 
-    assert_response(response, 405, {"error": "method not allowed"})
+    assert_response(response, 405, err("method not allowed"))
     assert response["headers"]["Allow"] == "POST"
     table_factory.assert_not_called()
 
@@ -588,7 +589,7 @@ def test_invalid_element_label_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -616,7 +617,7 @@ def test_unsupported_element_label_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -666,7 +667,7 @@ def test_invalid_floor_relationship_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -719,7 +720,7 @@ def test_inconsistent_live_element_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -841,7 +842,7 @@ def test_floor_area_rejects_type_specific_fields(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -865,7 +866,7 @@ def test_multi_floor_floor_area_requires_valid_floor_id(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -901,7 +902,7 @@ def test_invalid_cash_register_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -926,7 +927,7 @@ def test_multi_floor_cash_register_requires_valid_floor_id(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -1000,7 +1001,7 @@ def test_invalid_door_kind_returns_409_without_snapshot(
     assert_response(
         response,
         409,
-        {"error": "live layout element is inconsistent"},
+        err("live layout element is inconsistent"),
     )
     assert snapshot_table.scan()["Items"] == []
 
@@ -1034,7 +1035,7 @@ def test_inconsistent_published_version_returns_409(
     assert_response(
         response,
         409,
-        {"error": "published layout record is inconsistent"},
+        err("published layout record is inconsistent"),
     )
 
 
@@ -1071,7 +1072,7 @@ def test_malformed_live_query_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
 
 
@@ -1098,7 +1099,7 @@ def test_malformed_snapshot_query_response_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
 
 
@@ -1131,7 +1132,7 @@ def test_repeated_pagination_key_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
     assert live_query_table.query.call_count == 2
 
@@ -1161,7 +1162,7 @@ def test_dynamodb_query_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -1184,7 +1185,7 @@ def test_non_ambiguous_put_failure_returns_sanitized_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
     assert "sensitive" not in response["body"]
 
@@ -1255,7 +1256,7 @@ def test_repeated_version_collisions_return_409(
     assert_response(
         response,
         409,
-        {"error": "layout version changed; retry request"},
+        err("layout version changed; retry request"),
     )
     assert snapshot_table.scan()["Count"] == 2
 
@@ -1396,7 +1397,7 @@ def test_repeated_ambiguous_put_failure_returns_503(
     assert_response(
         response,
         503,
-        {"error": "layout publishing service unavailable"},
+        err("layout publishing service unavailable"),
     )
     assert failed_put.call_count == 2
     assert snapshot_table.scan()["Items"] == []

@@ -39,8 +39,8 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DOCUMENTS_BUCKET_NAME, LINK_SIGNING_KEY_SECRET_ARN,
-    SIGNING_PROVIDER_SECRET_ARN, STRIPE_SECRET_ARN, STRIPE_API_VERSION, CUSTOMER_SITE_URL,
-    REQUEST_GUARD_TABLE_NAME, DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS
+    SIGNING_PROVIDER_SECRET_ARN, STRIPE_SECRET_ARN, STRIPE_API_VERSION, SITE_DOMAIN, CUSTOMER_SITE_URL,
+    REQUEST_GUARD_TABLE_NAME, DOCUMENT_LOCK_MODE, DOCUMENT_LOCK_DAYS, DOCUMENT_LOCK_YEAR_END
 """
 
 import json
@@ -114,14 +114,6 @@ def _guard(event, item, kind):
                          (f"catering-{kind}-ip", http.source_ip(event), *SIGN_IP_LIMIT)], c.now_utc())
 
 
-def _return_url(ctx, item):
-    base, slug = site.base(ctx.tenant_id, ctx.tenant)
-    if not base:
-        return None
-    page = site.page(base, slug, f"/catering/{item['locationId']}/{item['requestId']}")
-    return f"{page}{'&' if slug else '?'}signering=klar"
-
-
 def _sign(event):
     ctx, item = _context(event)
     http.body(event, allowed=set(), required=False)
@@ -130,7 +122,8 @@ def _sign(event):
     _offer_still_valid(item, ctx.location, c.now_utc())
     _guard(event, item, "sign")
     return http.respond(200, {"status": "pending", **sign.begin(item, sign.CUSTOMER, http.source_ip(event),
-                                                                 _return_url(ctx, item))})
+                                                                 sign.customer_return_url(ctx.tenant_id, ctx.tenant,
+                                                                                          item))})
 
 
 def _sign_status(event):
@@ -298,7 +291,7 @@ def handler(event, context):
     except signing.SigningRejected as exc:
         return http.error(409, f"signing_{exc.code}")
     except signing.SigningUnavailable:
-        logger.exception("signing unavailable")
+        logger.exception("SIGNING_UNAVAILABLE")
         return http.error(503, "signing_unavailable")
     except stripe.StripeError as exc:
         logger.error(json.dumps({"stripe": "rejected", "code": exc.code, "message": str(exc)}))

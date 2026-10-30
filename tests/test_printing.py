@@ -3,6 +3,7 @@ order stream (idempotent), the cancellation slip, the CloudPRNT device flow
 (auth, MAC, lease, confirm, backoff, FAILED), the admin API and the sweep.
 DynamoDB is moto."""
 
+from error_body import err
 import base64
 import importlib.util
 import json
@@ -405,7 +406,7 @@ def test_cancel_racing_the_printer_still_prints_makulerad(env, monkeypatch):
 def test_reprint_refuses_cancelled_orders(env):
     add_printer(env)
     env["res"].Table("test-order").put_item(Item=order(status="cancelled"))
-    assert api(env, "POST", "jobs", {"orderId": ORDER_ID}) == (409, {"error": "order_cancelled"})
+    assert api(env, "POST", "jobs", {"orderId": ORDER_ID}) == (409, err("order_cancelled"))
 
 
 def test_confirm_returns_actual_status_when_it_loses_the_race(env):

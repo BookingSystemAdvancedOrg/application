@@ -177,7 +177,8 @@ jobs:
           export SHORT_SHA
           touch release-results.txt
           status=0
-          xargs -r -P "$(wc -l < release-list.txt)" -L 1 bash -c '
+          export AWS_RETRY_MODE=adaptive AWS_MAX_ATTEMPTS=20
+          xargs -r -P 12 -L 1 bash -c '
             if bash .github/scripts/lambda-release.sh --function "$0" --image "$1" \
                  --app "$CODEDEPLOY_APP" --topic "$ALERT_TOPIC_ARN" --environment "$ENVIRONMENT" \
                  --source "application@$SHORT_SHA" --notify failure > "release-$0.log" 2>&1; then

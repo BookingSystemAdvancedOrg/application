@@ -128,6 +128,31 @@ def test_template_validation():
         m.validate_template(starter)
 
 
+def test_template_theme_is_optional_and_checked():
+    base = {"name": "n", "subject": "s", "blocks": [{"type": "divider"}]}
+    assert m.validate_template(base)["theme"] is None
+    assert m.validate_template({**base, "theme": {}})["theme"] is None
+    assert m.validate_template({**base, "theme": {"color": "#AA3300", "background": ""}})["theme"] == {"color": "#aa3300"}
+    for bad in ({"color": "red"}, {"background": "#12345"}, {"font": "x"}, "dark"):
+        with pytest.raises(ValueError, match="theme"):
+            m.validate_template({**base, "theme": bad})
+
+
+def test_render_uses_the_template_theme():
+    blocks = [{"type": "button", "label": "Boka", "destination": "book"}]
+    kw = dict(tenant_row={"branding": {"primaryColor": "#336699"}}, restaurant="Bistro", values={}, menu_items={},
+              site_url="https://site.example", link_for=lambda i, u: u, unsubscribe_url="https://u.example/x")
+    plain = m.validate_template({"name": "n", "subject": "s", "blocks": blocks})
+    _, _, html_body = m.render_email(plain, **kw)
+    assert "background:#336699" in html_body and "background:#f4f2ee" in html_body
+    themed = m.validate_template({"name": "n", "subject": "s", "blocks": blocks,
+                                  "theme": {"color": "#f6f1ea", "background": "#1a120e"}})
+    _, _, html_body = m.render_email(themed, **kw)
+    assert "#336699" not in html_body
+    assert "background:#f6f1ea;color:#1a1a1a" in html_body  # light colour, dark text on the button
+    assert "background:#1a120e" in html_body and "color:#d9d2c8" in html_body  # light small print on dark
+
+
 def test_render_escapes_and_has_unsubscribe():
     template = m.validate_template({"name": "n", "subject": "Hej {förnamn}", "blocks": [
         {"type": "text", "text": "<b>fett</b> för {förnamn}"},

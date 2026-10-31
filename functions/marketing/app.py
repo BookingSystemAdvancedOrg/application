@@ -6,9 +6,9 @@ TRIGGER:
     GET    /marketing/overview?from=&to=&locationId=   visits, results and campaigns for a period
     GET    /marketing/starters                         ready-made templates to start from
     GET    /marketing/templates                        the restaurant's templates
-    POST   /marketing/templates
+    POST   /marketing/templates                        {name, subject, preheader?, blocks, theme?}
     GET    /marketing/templates/{id}
-    PUT    /marketing/templates/{id}
+    PUT    /marketing/templates/{id}                   same body; theme = {color?, background?} "#rrggbb"
     DELETE /marketing/templates/{id}
     POST   /marketing/preview                          {template} -> {subject, html} (nothing sent)
     GET    /marketing/audience?type=&days=&locationId= how many subscribers an audience reaches
@@ -73,7 +73,7 @@ RESUME_DAYS = 31  # a paused campaign can be continued the next month, not much 
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SID = re.compile(r"[0-9a-f]{24}")
 _CAMPAIGN_FIELDS = {"name", "templateId", "subject", "audience"}
-_TEMPLATE_FIELDS = {"name", "subject", "preheader", "blocks"}
+_TEMPLATE_FIELDS = {"name", "subject", "preheader", "blocks", "theme"}
 
 
 def _table():
@@ -198,7 +198,7 @@ def _tpl_key(tenant_id, template_id):
 
 
 def _tpl_view(item):
-    return {k: item.get(k) for k in ("templateId", "name", "subject", "preheader", "blocks", "createdAt", "updatedAt")}
+    return {k: item.get(k) for k in ("templateId", "name", "subject", "preheader", "blocks", "theme", "createdAt", "updatedAt")}
 
 
 def _templates(ctx, method, rest, event):
@@ -231,10 +231,10 @@ def _templates(ctx, method, rest, event):
         try:
             out = table.update_item(
                 Key=key, ConditionExpression="attribute_exists(PK)",
-                UpdateExpression="SET #n = :n, subject = :s, preheader = :p, blocks = :b, updatedAt = :u",
+                UpdateExpression="SET #n = :n, subject = :s, preheader = :p, blocks = :b, theme = :t, updatedAt = :u",
                 ExpressionAttributeNames={"#n": "name"},
                 ExpressionAttributeValues={":n": data["name"], ":s": data["subject"], ":p": data["preheader"],
-                                           ":b": data["blocks"], ":u": m.now_iso()},
+                                           ":b": data["blocks"], ":t": data["theme"], ":u": m.now_iso()},
                 ReturnValues="ALL_NEW")
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
@@ -379,7 +379,7 @@ def _frozen_template(ctx, campaign):
     item = _table().get_item(Key=_tpl_key(ctx.tenant_id, campaign["templateId"])).get("Item")
     if not item:
         raise ValueError("the campaign's template no longer exists")
-    template = m.validate_template(_decimal_safe({k: item.get(k) for k in ("name", "subject", "preheader", "blocks")}))
+    template = m.validate_template(_decimal_safe({k: item.get(k) for k in ("name", "subject", "preheader", "blocks", "theme")}))
     if campaign.get("subject"):
         template["subject"] = campaign["subject"]
     return template

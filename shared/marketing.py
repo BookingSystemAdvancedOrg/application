@@ -338,6 +338,28 @@ def validate_block(block, index):
     return {"type": kind, "size": size}
 
 
+def validate_theme(theme):
+    """A template's own colours: `color` (header bar, buttons, code box) and
+    `background` (around the email), each "#rrggbb". Empty or missing means
+    the restaurant's brand colour and the light default background."""
+    if theme in (None, {}):
+        return None
+    if not isinstance(theme, dict):
+        raise ValueError("theme must be an object")
+    unknown = set(theme) - {"color", "background"}
+    if unknown:
+        raise ValueError(f"theme has unknown fields: {', '.join(sorted(unknown))}")
+    out = {}
+    for key in ("color", "background"):
+        value = theme.get(key)
+        if value in (None, ""):
+            continue
+        if not isinstance(value, str) or not _COLOR.fullmatch(value):
+            raise ValueError(f"theme.{key} must be a colour like #1a120e")
+        out[key] = value.lower()
+    return out or None
+
+
 def validate_template(body):
     name = _text(body.get("name"), "name", max_length=80, required=True)
     subject = _text(body.get("subject"), "subject", max_length=120, required=True)
@@ -348,7 +370,8 @@ def validate_template(body):
     if len(blocks) > MAX_BLOCKS:
         raise ValueError(f"at most {MAX_BLOCKS} blocks")
     return {"name": name, "subject": subject, "preheader": preheader,
-            "blocks": [validate_block(b, i) for i, b in enumerate(blocks)]}
+            "blocks": [validate_block(b, i) for i, b in enumerate(blocks)],
+            "theme": validate_theme(body.get("theme"))}
 
 
 def starter_templates():
@@ -430,6 +453,7 @@ def in_audience(subscriber, audience, today):
 # --- rendering -----------------------------------------------------------------------
 
 _DEFAULT_COLOR = "#1f2a24"
+_DEFAULT_BACKGROUND = "#f4f2ee"
 
 
 def brand_color(tenant_row):
@@ -496,8 +520,12 @@ def render_email(template, *, tenant_row, restaurant, values, menu_items, site_u
     `link_for(index, url)` turns the index-th link into a tracked link (the
     click redirect) or returns it unchanged (preview, test send)."""
     e = html.escape
-    color = brand_color(tenant_row)
+    theme = template.get("theme") or {}
+    color = theme.get("color") or brand_color(tenant_row)
     ink = _ink_on(color)
+    background = theme.get("background") or _DEFAULT_BACKGROUND
+    # the small print under the email stays readable on a dark background too
+    fine_print = "#8a8a8a" if _ink_on(background) == "#1a1a1a" else "#d9d2c8"
     subject = fill(template["subject"], values)
     preheader = fill(template.get("preheader") or "", values)
     parts_html, parts_text = [], []
@@ -573,14 +601,14 @@ def render_email(template, *, tenant_row, restaurant, values, menu_items, site_u
     html_body = (
         '<!doctype html><html lang="sv"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>'
-        f'{e(subject)}</title></head><body style="margin:0;background:#f4f2ee">'
+        f'{e(subject)}</title></head><body style="margin:0;background:{background}">'
         f'<div style="display:none;max-height:0;overflow:hidden;opacity:0">{e(preheader)}</div>'
         '<div style="max-width:600px;margin:0 auto;padding:24px 16px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a">'
         f'<div style="background:{color};border-radius:10px 10px 0 0;padding:18px 28px">{header}</div>'
         f'<div style="background:#ffffff;border-radius:0 0 10px 10px;padding:28px">{"".join(parts_html)}</div>'
-        f'<p style="margin:16px 4px 0;color:#8a8a8a;font-size:12px">{e(footer)} '
-        f'<a href="{e(unsubscribe_url, quote=True)}" style="color:#8a8a8a">{unsub_label}</a></p>'
+        f'<p style="margin:16px 4px 0;color:{fine_print};font-size:12px">{e(footer)} '
+        f'<a href="{e(unsubscribe_url, quote=True)}" style="color:{fine_print}">{unsub_label}</a></p>'
         '</div></body></html>'
     )
     return subject, text, html_body

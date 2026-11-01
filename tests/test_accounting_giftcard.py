@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hooks_fake import install_hook, no_hooks
+from hooks_fake import entitle, install_hook, no_hooks, record_invocations
 from shared import accounting as acc
 from test_accounting import parse_sie
 from tenant_support import LOC_A, TENANT_A
@@ -37,7 +37,15 @@ def test_without_gift_cards_the_export_is_byte_identical(app, monkeypatch, fmt):
     assert content == (GOLDEN / f"export.{fmt}").read_bytes()
 
 
+def test_without_gift_cards_no_lambda_is_invoked(app, monkeypatch):
+    seen = record_invocations(monkeypatch)
+    for fmt in ("sie", "csv", "json"):
+        assert _export(app, fmt) == (GOLDEN / f"export.{fmt}").read_bytes()
+    assert seen == []
+
+
 def test_a_feature_with_no_events_changes_nothing(app, monkeypatch):
+    entitle(TENANT_A, "giftCards")
     calls = install_hook(monkeypatch, "gift-cards", "accounting.events", lambda r: {"ok": True, "events": []})
     assert _export(app, "sie") == (GOLDEN / "export.sie").read_bytes()
     assert calls[0]["tenantId"] == TENANT_A and calls[0]["locationId"] == LOC_A
@@ -67,6 +75,7 @@ EXPIRED = {"day": "2026-10-24", "postings": [
 
 
 def test_feature_postings_are_booked_balanced_with_the_new_accounts(app, env, monkeypatch):
+    entitle(TENANT_A, "giftCards")
     install_hook(monkeypatch, "gift-cards", "accounting.events",
                  lambda r: {"ok": True, "events": [SOLD, REDEEMED, EXPIRED]})
     status, body = call(app, "GET", "/export", query={"from": "2026-10-23", "to": "2026-10-24", "format": "json"})
@@ -108,6 +117,7 @@ def test_kassa_gift_card_payment_debits_the_liability(app, env, monkeypatch):
     lambda r: {"ok": True, "events": [{"day": "2025-01-01", "postings": []}]},
 ])
 def test_a_failing_or_wrong_feature_makes_the_export_503(app, monkeypatch, answer):
+    entitle(TENANT_A, "giftCards")
     install_hook(monkeypatch, "gift-cards", "accounting.events", answer)
     status, body = call(app, "GET", "/export", query={**MONTH, "format": "sie"})
     assert status == 503 and body["error"] == "service_unavailable"

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from hooks_fake import install_hook
+from hooks_fake import install_hook, record_invocations
 from shared import dish_margin
 from shared import insights as ins
 from shared import tenant as shared_tenant
@@ -50,6 +50,14 @@ def test_off_the_answer_is_unchanged_and_no_hook_is_called(rollup, api, monkeypa
     calls = install_hook(monkeypatch, "dish-margin", "insights.dishCosts", lambda r: COSTS)
     assert api.handler(event(QUERY), None)["body"] == before
     assert calls == []
+
+
+def test_without_dish_margin_no_lambda_is_invoked(rollup, api, monkeypatch):
+    rollup.handler({}, None)
+    seen = record_invocations(monkeypatch)
+    for role in ("owner_user", "staff_user"):
+        assert api.handler(event(QUERY, role=role), None)["statusCode"] == 200
+    assert seen == []
 
 
 def test_owner_with_dish_margin_gets_costs_applied(rollup, api, env, monkeypatch):

@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from hooks_fake import install_hook, no_hooks
+from hooks_fake import entitle, install_hook, no_hooks, record_invocations
 from test_guarantee import (ACCOUNT, LOC_A, START, body_of, confirmed_booking, g, hook, staff_status,  # fixtures
                             stored, stripe_event)
 from test_reservations import env  # fixture used by g
@@ -19,9 +19,20 @@ def environment(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
 
 
+@pytest.fixture
+def gift_cards(g):
+    entitle(TENANT_A, "giftCards")
+
+
+def test_gift_cards_off_never_invokes(g, hook, monkeypatch):
+    seen = record_invocations(monkeypatch)
+    assert body_of(hook(stripe_event("payment_intent.succeeded", GIFT)))["result"] == "ignored:feature_off"
+    assert seen == []
+
+
 @pytest.mark.parametrize("kind", ["payment_intent.succeeded", "payment_intent.payment_failed", "charge.refunded",
                                   "charge.dispute.closed"])
-def test_gift_card_events_go_to_the_feature(g, hook, monkeypatch, kind):
+def test_gift_card_events_go_to_the_feature(g, gift_cards, hook, monkeypatch, kind):
     calls = install_hook(monkeypatch, "gift-cards", "stripe.event", lambda r: {"ok": True, "result": "sold"})
     response = hook(stripe_event(kind, GIFT))
     assert response["statusCode"] == 200 and body_of(response)["result"] == "sold"
@@ -30,14 +41,14 @@ def test_gift_card_events_go_to_the_feature(g, hook, monkeypatch, kind):
     assert req["tenantId"] == TENANT_A and req["hook"] == "stripe.event"
 
 
-def test_hook_failure_answers_500_so_stripe_retries(g, hook, monkeypatch):
+def test_hook_failure_answers_500_so_stripe_retries(g, gift_cards, hook, monkeypatch):
     install_hook(monkeypatch, "gift-cards", "stripe.event", lambda r: 1 / 0)
     assert hook(stripe_event("payment_intent.succeeded", GIFT))["statusCode"] == 500
     install_hook(monkeypatch, "gift-cards", "stripe.event", lambda r: {"ok": True, "result": "sold"})
     assert body_of(hook(stripe_event("payment_intent.succeeded", GIFT)))["result"] == "sold"
 
 
-def test_refusal_not_deployed_and_missing_tenant(g, hook, monkeypatch):
+def test_refusal_not_deployed_and_missing_tenant(g, gift_cards, hook, monkeypatch):
     no_hooks(monkeypatch)
     assert body_of(hook(stripe_event("payment_intent.succeeded", GIFT)))["result"] == "ignored:not_deployed"
     install_hook(monkeypatch, "gift-cards", "stripe.event", lambda r: {"ok": False, "status": 404, "code": "x"})

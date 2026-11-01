@@ -213,7 +213,9 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
 
 
 def _gift_card_answer(tenant_id, payload):
-    answer = feature_hooks.call("checkout.giftcard", {"tenantId": tenant_id, **payload}).get("gift-cards")
+    # Only reached with giftCards on (checked in _create), so the target is entitled.
+    answer = feature_hooks.call("checkout.giftcard", {"tenantId": tenant_id, **payload},
+                                targets=["gift-cards"]).get("gift-cards")
     if answer is None:  # gift cards on, but the feature isn't deployed
         raise feature_hooks.HookFailed("gift-cards")
     return answer

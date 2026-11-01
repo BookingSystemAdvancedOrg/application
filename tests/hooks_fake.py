@@ -49,3 +49,29 @@ def install_hook(monkeypatch, feature_id, hook, fn):
 def no_hooks(monkeypatch):
     """Every target answers 'not deployed' without touching AWS."""
     monkeypatch.setattr(feature_hooks, "invoke", _Fake())
+
+
+def record_invocations(monkeypatch):
+    """Replaces the invoker with one that only records: the returned list
+    stays empty when nothing tries to invoke a feature Lambda."""
+    seen = []
+
+    def invoker(name, body, timeout):
+        seen.append(name)
+        raise feature_hooks.NotDeployed(name)
+    monkeypatch.setattr(feature_hooks, "invoke", invoker)
+    return seen
+
+
+def entitle(tenant_id, *keys):
+    """Turns entitlement keys on for a tenant in the moto tenant table."""
+    import boto3
+
+    from shared import tenant as shared_tenant
+    from tenant_support import REGION, TENANT_TABLE
+    table = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
+    for key in keys:
+        table.update_item(Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
+                          UpdateExpression="SET entitlements.features.#k = :t",
+                          ExpressionAttributeNames={"#k": key}, ExpressionAttributeValues={":t": True})
+    shared_tenant.reset_caches()

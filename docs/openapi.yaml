@@ -7402,9 +7402,8 @@ components:
             features:
               type: object
               description: |
-                reservations, ordering, catering, terminal, marketing; the
-                contract adds giftCards, waitlist and siteBuilder (not served
-                yet, see infrastructure docs/build/STATUS.md). Never kassa.
+                reservations, ordering, catering, terminal, marketing,
+                siteBuilder, giftCards, waitlist. Never kassa.
               additionalProperties:
                 type: boolean
             site:

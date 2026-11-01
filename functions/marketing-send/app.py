@@ -263,7 +263,9 @@ def _segment_page(table, tenant_id, audience, cursor):
     payload = {"tenantId": tenant_id, "op": "page", "exportId": audience.get("exportId")}
     if cursor:
         payload["cursor"] = cursor
-    answer = feature_hooks.call("marketing.segment", payload).get("guest-crm")
+    from shared import tenant
+    targets = feature_hooks.targets_for("marketing.segment", tenant.get_tenant(tenant_id))
+    answer = feature_hooks.call("marketing.segment", payload, targets=targets).get("guest-crm")
     if answer is None or not answer["ok"]:
         raise feature_hooks.HookFailed("guest-crm")
     rows = []

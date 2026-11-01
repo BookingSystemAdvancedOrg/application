@@ -1049,7 +1049,8 @@ def _gift_card_hook(ctx, op, bill_id, payment_id):
     try:
         answer = feature_hooks.call("kassa.giftcard", {
             "tenantId": ctx.tenant_id, "op": op, "locationId": ctx.location_id, "billId": bill_id,
-            "paymentId": payment_id}).get("gift-cards")
+            "paymentId": payment_id},
+            targets=feature_hooks.targets_for("kassa.giftcard", ctx.tenant)).get("gift-cards")
     except feature_hooks.HookFailed:
         answer = None
     if answer is None:

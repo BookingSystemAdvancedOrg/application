@@ -284,7 +284,10 @@ def _hook(ctx, name, email, phone):
                 if i}
     payload = {"tenantId": ctx.tenant_id, "subjects": subjects}
     payload.update({k: v for k, v in (("email", email), ("phone", phone)) if v})
-    results = feature_hooks.call(name, payload)
+    # Only features the tenant has on are asked (no invoke for anyone in Run 0).
+    # Open item for features C/E (Run 1): erasing data a feature kept after
+    # the tenant turned it off.
+    results = feature_hooks.call(name, payload, targets=feature_hooks.targets_for(name, ctx.tenant))
     for feature_id, answer in results.items():
         if not answer["ok"]:
             logger.error(json.dumps({"hook": name, "feature": feature_id, "code": answer.get("code")}))

@@ -196,7 +196,8 @@ def get_insights(event):
     if money and features.get("dishMargin"):
         answer = feature_hooks.call("insights.dishCosts", {
             "tenantId": ctx.tenant_id, "locationIds": [loc["locationId"] for loc in locations],
-            "first": first, "last": last}).get("dish-margin")
+            "first": first, "last": last},
+            targets=feature_hooks.targets_for("insights.dishCosts", ctx.tenant)).get("dish-margin")
         if answer is not None:
             if not answer["ok"]:
                 raise feature_hooks.HookFailed("dish-margin")

@@ -105,3 +105,24 @@ def test_purge_gets_the_long_timeout(monkeypatch):
     feature_hooks.call("tenant.purge", {"tenantId": "t"}, targets=["waitlist"])
     feature_hooks.call("stripe.event", {"tenantId": "t"})
     assert seen == [60, 10]
+
+
+def test_targets_for_follows_the_entitlements():
+    row = {"entitlements": {"features": {"giftCards": True, "waitlist": False}}}
+    assert feature_hooks.targets_for("privacy.export", row) == ["gift-cards"]
+    assert feature_hooks.targets_for("privacy.export", {}) == []
+    assert feature_hooks.targets_for("tenant.purge", None) == []
+
+
+def test_empty_targets_invoke_nothing(monkeypatch):
+    seen = []
+    monkeypatch.setattr(feature_hooks, "invoke", lambda *a: seen.append(a))
+    assert feature_hooks.call("privacy.export", {"tenantId": "t"}, targets=[]) == {}
+    assert seen == []
+
+
+def test_access_denied_is_skipped_for_purge_only(monkeypatch):
+    _real_with(monkeypatch, lambda kw: (_ for _ in ()).throw(_client_error("AccessDeniedException")))
+    assert feature_hooks.call("tenant.purge", {"tenantId": "t"}) == {}
+    with pytest.raises(feature_hooks.HookFailed):
+        feature_hooks.call("privacy.export", {"tenantId": "t"})

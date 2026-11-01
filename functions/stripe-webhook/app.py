@@ -49,7 +49,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import feature_hooks, guarantee
+from shared import feature_hooks, guarantee, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -159,8 +159,11 @@ def _gift_card(kind, account, obj):
     tenant_id = (obj.get("metadata") or {}).get("tenantId")
     if not tenant_id:
         return "ignored:no_tenant"
+    targets = feature_hooks.targets_for("stripe.event", tenant.get_tenant(str(tenant_id)))
+    if not targets:
+        return "ignored:feature_off"
     answer = feature_hooks.call("stripe.event", {"tenantId": tenant_id, "type": kind, "account": account,
-                                                 "object": obj}).get("gift-cards")
+                                                 "object": obj}, targets=targets).get("gift-cards")
     if answer is None:
         return "ignored:not_deployed"
     return str(answer.get("result")) if answer["ok"] else f"refused:{answer.get('code')}"

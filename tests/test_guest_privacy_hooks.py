@@ -3,15 +3,31 @@ privacy.export / privacy.erase hooks (CONTRACTS.md 9.2, AP7)."""
 
 import json
 
-from hooks_fake import install_hook, no_hooks
+from hooks_fake import entitle, install_hook, no_hooks, record_invocations
 from shared import consent
 from tenant_support import TENANT_A, TENANT_B, with_tenant_claims
 from test_guest_privacy import call, env, guest  # fixtures used by name
 
 ITEMS = [{"cardId": "c1", "last4": "1234"}]
+FEATURES = ("giftCards", "waitlist", "guestCrm", "googleBusiness")
+
+
+def test_without_the_new_features_nothing_is_invoked(env, guest, monkeypatch):
+    seen = record_invocations(monkeypatch)
+    assert call(env, "GET", "/privacy/guests", query={"email": "anna@example.se"})[1]["features"] == {}
+    assert call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[1]["features"] == {}
+    assert seen == []
+
+
+def test_only_entitled_features_are_asked(env, guest, monkeypatch):
+    entitle(TENANT_A, "waitlist")
+    seen = record_invocations(monkeypatch)
+    call(env, "GET", "/privacy/guests", query={"email": "anna@example.se"})
+    assert seen == ["dev-waitlist"]
 
 
 def test_export_merges_feature_items_and_sends_subjects(env, guest, monkeypatch):
+    entitle(TENANT_A, *FEATURES)
     calls = install_hook(monkeypatch, "gift-cards", "privacy.export", lambda r: {"ok": True, "items": ITEMS})
     install_hook(monkeypatch, "waitlist", "privacy.export", lambda r: {"ok": True, "items": []})
     status, body = call(env, "GET", "/privacy/guests", query={"email": "anna@example.se", "phone": "0701234567"})
@@ -26,6 +42,7 @@ def test_export_merges_feature_items_and_sends_subjects(env, guest, monkeypatch)
 
 
 def test_not_deployed_features_are_skipped(env, guest, monkeypatch):
+    entitle(TENANT_A, *FEATURES)
     no_hooks(monkeypatch)
     status, body = call(env, "GET", "/privacy/guests", query={"email": "anna@example.se"})
     assert status == 200 and body["features"] == {}
@@ -34,6 +51,7 @@ def test_not_deployed_features_are_skipped(env, guest, monkeypatch):
 
 
 def test_erase_runs_after_own_steps_and_adds_counts(env, guest, monkeypatch, caplog):
+    entitle(TENANT_A, *FEATURES)
     seen = {}
 
     def erase(req):
@@ -49,6 +67,7 @@ def test_erase_runs_after_own_steps_and_adds_counts(env, guest, monkeypatch, cap
 
 
 def test_a_failing_feature_makes_the_call_503_and_erase_can_run_again(env, guest, monkeypatch):
+    entitle(TENANT_A, *FEATURES)
     install_hook(monkeypatch, "waitlist", "privacy.erase", lambda r: 1 / 0)
     install_hook(monkeypatch, "guest-crm", "privacy.export", lambda r: {"ok": False, "status": 409, "code": "busy"})
     assert call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[0] == 503
@@ -59,6 +78,8 @@ def test_a_failing_feature_makes_the_call_503_and_erase_can_run_again(env, guest
 
 
 def test_staff_and_other_tenants(env, guest, monkeypatch):
+    entitle(TENANT_A, *FEATURES)
+    entitle(TENANT_B, *FEATURES)
     calls = install_hook(monkeypatch, "gift-cards", "privacy.export", lambda r: {"ok": True, "items": []})
     assert call(env, "GET", "/privacy/guests", query={"email": "a@b.se"}, role="staff_user")[0] == 403
     assert calls == []

@@ -52,7 +52,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, order_payments
+from shared import dynamo, feature_hooks, order_payments, tenant
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -125,9 +125,14 @@ def _reverse_gift_card(item, now):
     gift = item.get("giftCard")
     if not gift or gift.get("reversedAt") or item.get("status") != o.FAILED:
         return
+    # Open item for feature E (Run 1): a reserve left behind when the tenant
+    # turned giftCards off before the order failed.
+    targets = feature_hooks.targets_for("checkout.giftcard", tenant.get_tenant(item["tenantId"]))
+    if not targets:
+        return
     answer = feature_hooks.call("checkout.giftcard", {
         "tenantId": item["tenantId"], "op": "reverse", "locationId": item["locationId"],
-        "orderId": item["orderId"]}).get("gift-cards")
+        "orderId": item["orderId"]}, targets=targets).get("gift-cards")
     if answer is None or not answer["ok"]:
         raise feature_hooks.HookFailed("gift-cards")
     try:

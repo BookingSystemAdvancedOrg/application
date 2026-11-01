@@ -334,7 +334,8 @@ def _segment(ctx, raw):
             or not _EXPORT_ID.fullmatch(raw["exportId"]):
         raise ValueError("audience.exportId is invalid")
     answer = feature_hooks.call("marketing.segment", {"tenantId": ctx.tenant_id, "op": "describe",
-                                                      "exportId": raw["exportId"]}).get("guest-crm")
+                                                      "exportId": raw["exportId"]},
+                                targets=feature_hooks.targets_for("marketing.segment", ctx.tenant)).get("guest-crm")
     if answer is None:
         raise feature_hooks.HookFailed("guest-crm")
     if not answer["ok"]:

@@ -811,9 +811,13 @@ def feature_events(location, first, last):
     an export without them would be wrong, so it is refused (503)."""
     if not location.get("tenantId"):
         return []
+    from shared import tenant
+    targets = feature_hooks.targets_for("accounting.events", tenant.get_tenant(location["tenantId"]))
+    if not targets:
+        return []
     answers = feature_hooks.call("accounting.events", {"tenantId": location["tenantId"],
                                                        "locationId": location["locationId"],
-                                                       "first": first, "last": last})
+                                                       "first": first, "last": last}, targets=targets)
     out = []
     for feature_id, answer in sorted(answers.items()):
         try:

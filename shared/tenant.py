@@ -216,6 +216,14 @@ def require_feature(tenant_row: dict, feature: Union[str, tuple, None]) -> None:
         raise TenantError(403, "feature_not_in_plan")
 
 
+def ever_on(tenant_row: dict, key: str) -> bool:
+    """A feature that is on now or has ever been on (`entitlements.featuresEver`,
+    stamped by the console): its data may still exist, so erase, export,
+    bookkeeping and payment events must still reach it."""
+    entitlements = (tenant_row or {}).get("entitlements") or {}
+    return bool((entitlements.get("features") or {}).get(key)) or key in (entitlements.get("featuresEver") or ())
+
+
 def limit(tenant_row: dict, name: str) -> int:
     """A plan limit (`entitlements.limits`); missing counts as the contract
     default. An unknown name raises KeyError (a typo must not read as 0)."""

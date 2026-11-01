@@ -3,7 +3,7 @@ privacy.export / privacy.erase hooks (CONTRACTS.md 9.2, AP7)."""
 
 import json
 
-from hooks_fake import entitle, install_hook, no_hooks, record_invocations
+from hooks_fake import entitle, ever_entitled, install_hook, no_hooks, record_invocations
 from shared import consent
 from tenant_support import TENANT_A, TENANT_B, with_tenant_claims
 from test_guest_privacy import call, env, guest  # fixtures used by name
@@ -88,3 +88,15 @@ def test_staff_and_other_tenants(env, guest, monkeypatch):
     body = json.loads(out["body"])
     assert out["statusCode"] == 200 and [b["reservationId"] for b in body["bookings"]] == ["b"]
     assert calls[-1]["tenantId"] == TENANT_B
+
+
+def test_a_feature_turned_off_but_once_on_is_still_asked(env, guest, monkeypatch):
+    ever_entitled(TENANT_A, "giftCards")
+    calls = install_hook(monkeypatch, "gift-cards", "privacy.export", lambda r: {"ok": True, "items": ITEMS})
+    erased = install_hook(monkeypatch, "gift-cards", "privacy.erase",
+                          lambda r: {"ok": True, "erased": {"purchase": 1}, "kept": {}})
+    assert call(env, "GET", "/privacy/guests", query={"email": "anna@example.se"})[1]["features"] == {
+        "gift-cards": ITEMS}
+    body = call(env, "POST", "/privacy/guests/erase", {"email": "anna@example.se"})[1]
+    assert body["features"] == {"gift-cards": {"erased": {"purchase": 1}, "kept": {}}}
+    assert len(calls) == 1 and len(erased) == 1

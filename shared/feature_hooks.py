@@ -14,9 +14,9 @@ answers 503 (API) or retries on its next run (jobs). `{"ok": false, ...}`
 answers are returned as they are; what they mean is the caller's call.
 
 Tenant-scoped callers pass `targets=targets_for(hook, tenant_row)`: a
-feature is only asked when the tenant has its entitlement, so a tenant
-without the new features never causes a Lambda invoke (and needs no IAM
-grant). tenant.purge asks every target; there an AccessDenied counts as
+feature is only asked when the tenant has its entitlement (`ever=True`: on
+now or ever on, CONTRACTS.md 9.2), so a tenant without the new features
+never causes a Lambda invoke (and needs no IAM grant). tenant.purge asks every target; there an AccessDenied counts as
 "not deployed" too, so offboarding never fails on a feature that isn't
 wired up yet.
 
@@ -57,10 +57,13 @@ class NotDeployed(Exception):
     """The target function (or its live alias) doesn't exist."""
 
 
-def targets_for(hook: str, tenant_row) -> list:
-    """The hook's targets whose entitlement the tenant has on."""
+def targets_for(hook: str, tenant_row, *, ever: bool = False) -> list:
+    """The hook's targets whose entitlement the tenant has on (`ever`: or
+    has ever had on)."""
+    from shared import tenant
     features = ((tenant_row or {}).get("entitlements") or {}).get("features") or {}
-    return [f for f in contracts.HOOKS[hook]["targets"] if features.get(_FEATURE_KEY[f])]
+    return [f for f in contracts.HOOKS[hook]["targets"]
+            if (tenant.ever_on(tenant_row, _FEATURE_KEY[f]) if ever else features.get(_FEATURE_KEY[f]))]
 
 
 def prefix() -> str:

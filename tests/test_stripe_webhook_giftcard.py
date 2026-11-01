@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from hooks_fake import entitle, install_hook, no_hooks, record_invocations
+from hooks_fake import entitle, ever_entitled, install_hook, no_hooks, record_invocations
 from test_guarantee import (ACCOUNT, LOC_A, START, body_of, confirmed_booking, g, hook, staff_status,  # fixtures
                             stored, stripe_event)
 from test_reservations import env  # fixture used by g
@@ -77,3 +77,10 @@ def test_other_kinds_never_reach_the_hook_and_settle_as_before(g, hook, monkeypa
                                   "kind": "booking"}}
     assert body_of(hook(stripe_event("payment_intent.succeeded", obj)))["result"] == "recorded"
     assert calls == []
+
+
+def test_gift_card_event_after_the_feature_was_turned_off_still_arrives(g, hook, monkeypatch):
+    ever_entitled(TENANT_A, "giftCards")
+    calls = install_hook(monkeypatch, "gift-cards", "stripe.event", lambda r: {"ok": True, "result": "refunded"})
+    assert body_of(hook(stripe_event("charge.refunded", GIFT)))["result"] == "refunded"
+    assert len(calls) == 1

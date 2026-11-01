@@ -7,7 +7,7 @@ import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
 from hooks_fake import install_hook, no_hooks
-from shared import feature_hooks
+from shared import feature_hooks, tenant
 
 
 @pytest.fixture(autouse=True)
@@ -126,3 +126,12 @@ def test_access_denied_is_skipped_for_purge_only(monkeypatch):
     assert feature_hooks.call("tenant.purge", {"tenantId": "t"}) == {}
     with pytest.raises(feature_hooks.HookFailed):
         feature_hooks.call("privacy.export", {"tenantId": "t"})
+
+
+def test_ever_on_and_targets_for_ever():
+    row = {"entitlements": {"features": {"guestCrm": True}, "featuresEver": {"giftCards"}}}
+    assert tenant.ever_on(row, "giftCards") and tenant.ever_on(row, "guestCrm")
+    assert not tenant.ever_on(row, "waitlist") and not tenant.ever_on({}, "giftCards")
+    assert tenant.ever_on({"entitlements": {"featuresEver": ["waitlist"]}}, "waitlist")
+    assert feature_hooks.targets_for("privacy.export", row) == ["guest-crm"]
+    assert feature_hooks.targets_for("privacy.export", row, ever=True) == ["guest-crm", "gift-cards"]

@@ -75,3 +75,15 @@ def entitle(tenant_id, *keys):
                           UpdateExpression="SET entitlements.features.#k = :t",
                           ExpressionAttributeNames={"#k": key}, ExpressionAttributeValues={":t": True})
     shared_tenant.reset_caches()
+
+
+def ever_entitled(tenant_id, *keys):
+    """Marks keys as once on (`entitlements.featuresEver`), while they stay off."""
+    import boto3
+
+    from shared import tenant as shared_tenant
+    from tenant_support import REGION, TENANT_TABLE
+    boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
+        Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
+        UpdateExpression="SET entitlements.featuresEver = :e", ExpressionAttributeValues={":e": set(keys)})
+    shared_tenant.reset_caches()

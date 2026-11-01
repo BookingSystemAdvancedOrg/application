@@ -222,11 +222,11 @@ hooks:
   privacy.export:
     caller: guest-privacy
     targets: [guest-crm, google-business, gift-cards, waitlist]
-    gate: always
+    gate: on or ever on
   privacy.erase:
     caller: guest-privacy
     targets: [guest-crm, google-business, gift-cards, waitlist]
-    gate: always
+    gate: on or ever on
   tenant.purge:
     caller: tenant-purge
     targets: [meta-ads, site-builder, guest-crm, google-business, gift-cards, waitlist, social-posting, personalliggare, accounting-sync, dish-margin]
@@ -234,11 +234,11 @@ hooks:
   stripe.event:
     caller: stripe-webhook
     targets: [gift-cards]
-    gate: always
+    gate: on or ever on
   checkout.giftcard:
     caller: payment-intent, webhook-payment-intent
     targets: [gift-cards]
-    gate: giftCards on and giftCardCode present (reserve); order carries giftCard (reverse)
+    gate: "giftCards on and giftCardCode present (reserve); order carries giftCard (reverse, refund: regardless of the flag)"
   kassa.giftcard:
     caller: kassa
     targets: [gift-cards]
@@ -246,7 +246,7 @@ hooks:
   accounting.events:
     caller: shared/accounting.location_events
     targets: [gift-cards]
-    gate: always
+    gate: on or ever on
   insights.dishCosts:
     caller: insights
     targets: [dish-margin]

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hooks_fake import entitle, install_hook, no_hooks, record_invocations
+from hooks_fake import entitle, ever_entitled, install_hook, no_hooks, record_invocations
 from shared import accounting as acc
 from test_accounting import parse_sie
 from tenant_support import LOC_A, TENANT_A
@@ -121,3 +121,10 @@ def test_a_failing_or_wrong_feature_makes_the_export_503(app, monkeypatch, answe
     install_hook(monkeypatch, "gift-cards", "accounting.events", answer)
     status, body = call(app, "GET", "/export", query={**MONTH, "format": "sie"})
     assert status == 503 and body["error"] == "service_unavailable"
+
+
+def test_sie_history_still_has_a_feature_turned_off(app, monkeypatch):
+    ever_entitled(TENANT_A, "giftCards")
+    install_hook(monkeypatch, "gift-cards", "accounting.events", lambda r: {"ok": True, "events": [SOLD]})
+    records = parse_sie(_export(app, "sie", {"from": "2026-10-23", "to": "2026-10-23"}))
+    assert "2421" in {r[1][0] for r in records if r[0] == "#KONTO"}

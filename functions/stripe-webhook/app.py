@@ -159,7 +159,7 @@ def _gift_card(kind, account, obj):
     tenant_id = (obj.get("metadata") or {}).get("tenantId")
     if not tenant_id:
         return "ignored:no_tenant"
-    targets = feature_hooks.targets_for("stripe.event", tenant.get_tenant(str(tenant_id)))
+    targets = feature_hooks.targets_for("stripe.event", tenant.get_tenant(str(tenant_id)), ever=True)
     if not targets:
         return "ignored:feature_off"
     answer = feature_hooks.call("stripe.event", {"tenantId": tenant_id, "type": kind, "account": account,

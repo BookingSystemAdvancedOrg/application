@@ -812,7 +812,7 @@ def feature_events(location, first, last):
     if not location.get("tenantId"):
         return []
     from shared import tenant
-    targets = feature_hooks.targets_for("accounting.events", tenant.get_tenant(location["tenantId"]))
+    targets = feature_hooks.targets_for("accounting.events", tenant.get_tenant(location["tenantId"]), ever=True)
     if not targets:
         return []
     answers = feature_hooks.call("accounting.events", {"tenantId": location["tenantId"],

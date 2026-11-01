@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "2cd079cbe969"
+CONTRACTS_HASH = "8f521abc8986"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -591,11 +591,11 @@ class WaitlistTableOfferedDetail(TypedDict):
 
 HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
                        'targets': ['gift-cards'],
-                       'gate': 'always'},
+                       'gate': 'on or ever on'},
  'checkout.giftcard': {'caller': 'payment-intent, webhook-payment-intent',
                        'targets': ['gift-cards'],
                        'gate': 'giftCards on and giftCardCode present (reserve); order carries '
-                               'giftCard (reverse)'},
+                               'giftCard (reverse, refund: regardless of the flag)'},
  'insights.dishCosts': {'caller': 'insights',
                         'targets': ['dish-margin'],
                         'gate': 'dishMargin on and caller is owner'},
@@ -608,11 +608,11 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
               'gate': 'operator route hit'},
  'privacy.erase': {'caller': 'guest-privacy',
                    'targets': ['guest-crm', 'google-business', 'gift-cards', 'waitlist'],
-                   'gate': 'always'},
+                   'gate': 'on or ever on'},
  'privacy.export': {'caller': 'guest-privacy',
                     'targets': ['guest-crm', 'google-business', 'gift-cards', 'waitlist'],
-                    'gate': 'always'},
- 'stripe.event': {'caller': 'stripe-webhook', 'targets': ['gift-cards'], 'gate': 'always'},
+                    'gate': 'on or ever on'},
+ 'stripe.event': {'caller': 'stripe-webhook', 'targets': ['gift-cards'], 'gate': 'on or ever on'},
  'tenant.purge': {'caller': 'tenant-purge',
                   'targets': ['meta-ads',
                               'site-builder',

@@ -44,6 +44,12 @@ PURPOSE:
         request not yet delivered or closed) is kept and listed as "kept":
         the restaurant cancels it first, then erases again
 
+    Feature data (guest register, reviews, gift cards, queue) is asked
+    for through the privacy.export / privacy.erase hooks
+    (shared/feature_hooks.py) after this function's own steps: the export
+    gets `features: {<feature-id>: items}`, the erasure their counts. A
+    failing feature makes the whole call 503; erasure is safe to repeat.
+
     Logs carry the tenant id and counts only, never the guest's address.
 
 ENV_VARS:
@@ -68,7 +74,8 @@ from datetime import datetime, timedelta, timezone
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import catering, consent, dynamo, http, marketing, orders, privacy_notice, retention, tenant
+from shared import catering, consent, dynamo, feature_hooks, http, marketing, orders, privacy_notice, retention
+from shared import tenant
 from shared import marketing_offer as offer
 from shared import reservations as r
 
@@ -270,6 +277,21 @@ def _marketing_rows(tenant_id, email):
     return sub, address, code
 
 
+def _hook(ctx, name, email, phone):
+    """privacy.export / privacy.erase on every deployed feature. A failure
+    or a refusal raises HookFailed (the caller answers 503)."""
+    subjects = {c: consent.subject(ctx.tenant_id, c, i) for c, i in ((consent.EMAIL, email), (consent.SMS, phone))
+                if i}
+    payload = {"tenantId": ctx.tenant_id, "subjects": subjects}
+    payload.update({k: v for k, v in (("email", email), ("phone", phone)) if v})
+    results = feature_hooks.call(name, payload)
+    for feature_id, answer in results.items():
+        if not answer["ok"]:
+            logger.error(json.dumps({"hook": name, "feature": feature_id, "code": answer.get("code")}))
+            raise feature_hooks.HookFailed(feature_id)
+    return results
+
+
 def _export(ctx, email, phone):
     out = {"email": email, "phone": phone, "bookings": [], "orders": [], "cateringRequests": [], "cardPayments": []}
     name = consent.table_name()
@@ -282,9 +304,11 @@ def _export(ctx, email, phone):
     keys = {kind: key for kind, _, _, key in _GUEST_ROWS}
     for kind, _, item in _guest_rows(ctx, email, phone):
         out[keys[kind]].append(_catering_export(item) if kind == "catering" else _export_view(item))
+    out["features"] = {f: a.get("items") or [] for f, a in _hook(ctx, "privacy.export", email, phone).items()}
     out["exportedAt"] = consent.now_iso()
     logger.info(json.dumps({"guestData": "exported", "tenantId": ctx.tenant_id,
-                            "rows": sum(len(out[k]) for k in keys.values())}))
+                            "rows": sum(len(out[k]) for k in keys.values()),
+                            "featureItems": {f: len(v) for f, v in out["features"].items()}}))
     return out
 
 
@@ -372,9 +396,11 @@ def _erase(ctx, email, phone):
         if item.get("anonymisedAt"):
             continue
         result["anonymised"] += int(_anonymise(table_name, kind, item, now))
+    result["features"] = {f: {"erased": a.get("erased") or {}, "kept": a.get("kept") or {}}
+                          for f, a in _hook(ctx, "privacy.erase", email, phone).items()}
     logger.info(json.dumps({"guestData": "erased", "tenantId": ctx.tenant_id, "anonymised": result["anonymised"],
                             "kept": len(result["kept"]), "marketingRows": result["marketingRowsDeleted"],
-                            "channels": result["consentWithdrawn"]}))
+                            "channels": result["consentWithdrawn"], "features": result["features"]}))
     return result
 
 
@@ -403,6 +429,9 @@ def handler(event, context):
         return exc.response()
     except ValueError as exc:
         return http.error(400, str(exc))
+    except feature_hooks.HookFailed as exc:
+        logger.error(json.dumps({"guestPrivacy": "feature_failed", "feature": exc.feature_id}))
+        return http.error(503, "privacy service unavailable")
     except (BotoCoreError, ClientError):
         logger.exception("guest-privacy failed")
         return http.error(503, "privacy service unavailable")

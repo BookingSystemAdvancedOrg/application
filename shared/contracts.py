@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "f35c2b734385"
+CONTRACTS_HASH = "235176d9c89a"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -612,7 +612,10 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
  'privacy.export': {'caller': 'guest-privacy',
                     'targets': ['guest-crm', 'google-business', 'gift-cards', 'waitlist'],
                     'gate': 'on or ever on'},
- 'stripe.event': {'caller': 'stripe-webhook', 'targets': ['gift-cards'], 'gate': 'on or ever on'},
+ 'stripe.event': {'caller': 'stripe-webhook',
+                  'targets': ['gift-cards'],
+                  'gate': 'on or ever on; gift-cards ignores the event unless account is the '
+                          "card's own stripeAccountId"},
  'tenant.purge': {'caller': 'tenant-purge',
                   'targets': ['meta-ads',
                               'site-builder',

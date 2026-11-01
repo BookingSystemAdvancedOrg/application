@@ -234,7 +234,7 @@ hooks:
   stripe.event:
     caller: stripe-webhook
     targets: [gift-cards]
-    gate: on or ever on
+    gate: "on or ever on; gift-cards ignores the event unless account is the card's own stripeAccountId"
   checkout.giftcard:
     caller: payment-intent, webhook-payment-intent, manage-order
     targets: [gift-cards]

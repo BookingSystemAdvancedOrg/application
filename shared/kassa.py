@@ -6,8 +6,9 @@ Gift cards (only with the giftCards feature): the gift-cards feature
 redeems the card, then the bill gets {paymentId, method "Presentkort",
 amount, last4, cardId, balanceAfter} in `giftCards` after the
 kassa.giftcard hook (op verify) confirmed it; undo before the receipt is op
-reverse. A receipt with a gift card payment is not possible yet: the
-control system port has no voucher payment means (see _cs_payments).
+reverse. While the control system port has no voucher payment means
+(ControlSystem.voucher_method is None) a gift card payment is refused up
+front (501), so no card is debited on a bill whose receipt can't be made.
 
 Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
     PK LOCATION#<l>  SK REGISTER#<registerId>      a register (registreringsenhet):
@@ -1087,6 +1088,10 @@ def add_gift_card_payment(ctx, bill_id, payment_id, *, system, now):
     known = next((g for g in _plain(bill.get("giftCards") or []) if g["paymentId"] == payment_id), None)
     if known:
         return known
+    if not system.voucher_method:
+        # Blocks feature E (legal check): refused before the card is debited,
+        # since _cs_payments could not report it on the receipt.
+        raise GiftCardReceiptUnsupported("gift card payments need a voucher payment means in the control system")
     if bill.get("training"):
         raise Conflict("training_no_payment")
     register = get_register(ctx, bill["registerId"])
@@ -1184,14 +1189,20 @@ def _cs_lines(lines):
                  for line in lines)
 
 
-def _cs_payments(rows):
-    if any(p.get("method") == GIFT_CARD for p in rows):
-        # Blocks feature E: the control system port (shared/control_system.py)
-        # has no voucher payment means, and how a gift card is reported is a
-        # legal check. Only reachable with giftCards on.
-        raise GiftCardReceiptUnsupported("gift card receipts need a voucher payment means in the control system")
-    return tuple({"method": "card", "amount": _int(p.get("amount")), "last4": p.get("last4"),
-                  "funding": p.get("funding")} for p in rows)
+def _cs_payments(rows, system):
+    out = []
+    for p in rows:
+        if p.get("method") == GIFT_CARD:
+            # How a gift card is reported is a legal check (blocks feature E);
+            # add_gift_card_payment refuses earlier, this is the last guard.
+            if not system.voucher_method:
+                raise GiftCardReceiptUnsupported("gift card receipts need a voucher payment means in the control system")
+            out.append({"method": system.voucher_method, "amount": _int(p.get("amount")), "last4": p.get("last4"),
+                        "funding": None})
+        else:
+            out.append({"method": "card", "amount": _int(p.get("amount")), "last4": p.get("last4"),
+                        "funding": p.get("funding")})
+    return tuple(out)
 
 
 def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
@@ -1214,7 +1225,7 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
         _day_open(get_register(ctx, bill["registerId"]))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
-    cs_payments = _cs_payments(_card_rows(succeeded))
+    cs_payments = _cs_payments(_card_rows(succeeded), system)
     register, lock = _lock(ctx.location_id, bill["registerId"])
     field = "trainingSeq" if training else "receiptSeq"
     seq = _int(register.get(field)) + 1
@@ -1324,7 +1335,7 @@ def copy_receipt(ctx, register_id, seq, *, delivery, email, user, now, system, t
                           original_ref=sold.get("csRef"),
                           sales_by_rate={v["rate"]: v["gross"] for v in sold.get("vat") or []},
                           vat_by_rate={v["rate"]: v["vat"] for v in sold.get("vat") or []},
-                          lines=_cs_lines(sold.get("lines") or []), payments=_cs_payments(sold.get("payments") or []),
+                          lines=_cs_lines(sold.get("lines") or []), payments=_cs_payments(sold.get("payments") or [], system),
                           user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     copy = {"copySeq": copy_seq, "originalSeq": int(seq), "originalAt": original["local"],
@@ -1427,7 +1438,7 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
                           lines=tuple({"text": str(line.get("name") or ""), "quantity": quantity, "total": amount,
                                        "rate": _int(line["vatRate"]), "vat": vat}
                                       for line, quantity, amount, vat in picked),
-                          payments=_cs_payments(refunds), user=user)
+                          payments=_cs_payments(refunds, system), user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     returned = _plain(pointer.get("returned") or {})
     for line, quantity, amount, vat in picked:

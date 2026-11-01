@@ -1,12 +1,14 @@
 """Gift cards in Kassa (CONTRACTS.md 9.2 kassa.giftcard, AP12): a bill
 payment {kind: "giftcard", paymentId} only with giftCards and kassa on,
-verified and undone through the gift-cards feature. A receipt with a gift
-card is refused until the control system has a voucher payment means."""
+verified and undone through the gift-cards feature. Until the control
+system port has a voucher payment means (ControlSystem.voucher_method) the
+payment itself is refused with 501, before any card is debited."""
 
 import pytest
 
 from error_body import err
 from hooks_fake import install_hook, no_hooks
+from shared import control_system as cs
 from shared import kassa, kassa_receipt
 from shared import tenant as shared_tenant
 from tenant_support import LOC_A, LOC_B, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE
@@ -20,6 +22,11 @@ def giftcards_on(env, tenant_id=TENANT_A):
         Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
         UpdateExpression="SET entitlements.features.giftCards = :t", ExpressionAttributeValues={":t": True})
     shared_tenant.reset_caches()
+
+
+def voucher_ok(monkeypatch):
+    """The future: the control system port reports gift cards as vouchers."""
+    monkeypatch.setattr(cs.ControlSystem, "voucher_method", "voucher")
 
 
 def verify(amount, balance=15000):
@@ -44,6 +51,7 @@ def test_off_is_refused_without_a_hook_call(env, monkeypatch):
 
 
 def test_verify_adds_the_payment_and_a_retry_is_idempotent(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     calls = install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
     b = bill(env, register(env))
@@ -66,6 +74,7 @@ def test_verify_adds_the_payment_and_a_retry_is_idempotent(env, monkeypatch):
     (lambda r: 1 / 0, 503, "gift_card_unavailable"),
 ])
 def test_refused_or_failing_feature(env, monkeypatch, answer, status, code):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     install_hook(monkeypatch, "gift-cards", "kassa.giftcard", answer)
     b = bill(env, register(env))
@@ -74,6 +83,7 @@ def test_refused_or_failing_feature(env, monkeypatch, answer, status, code):
 
 
 def test_not_deployed_is_503(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     no_hooks(monkeypatch)
     b = bill(env, register(env))
@@ -81,6 +91,7 @@ def test_not_deployed_is_503(env, monkeypatch):
 
 
 def test_more_than_the_rest_is_reversed_and_refused(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     calls = install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10 ** 6))
     b = bill(env, register(env))
@@ -108,6 +119,7 @@ def test_other_tenant_or_location_is_404(env, monkeypatch):
 
 
 def test_training_bill_takes_no_gift_card(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
     rid = register(env)
@@ -117,6 +129,7 @@ def test_training_bill_takes_no_gift_card(env, monkeypatch):
 
 
 def test_undo_before_the_receipt_reverses(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     calls = install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
     b = bill(env, register(env))
@@ -127,21 +140,44 @@ def test_undo_before_the_receipt_reverses(env, monkeypatch):
     assert call(env, "GET", f"bills/{b['billId']}")[1]["paid"] == 0
 
 
-def test_a_gift_card_receipt_is_refused_and_burns_nothing(env, monkeypatch):
+def test_without_a_voucher_means_the_payment_is_refused_before_the_card_is_debited(env, monkeypatch):
+    giftcards_on(env)
+    calls = install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
+    rid = register(env)
+    b = bill(env, rid)
+    assert gift(env, b["billId"]) == (501, err("gift_card_receipt_not_supported"))
+    assert calls == []
+    assert call(env, "GET", f"bills/{b['billId']}")[1]["paid"] == 0
+    # the rest of the till is untouched: a card sale on the same bill still closes it
+    pay(env, b["billId"], b["total"], "a" * 32)
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[0] == 201
+    assert kassa.verify_chain(journal(env, rid)) is None
+
+
+def test_with_a_voucher_means_the_receipt_reports_the_gift_card(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
+    seen = {}
+    original = cs.SimulatedControlSystem.sign
+
+    def spy(self, register, data):
+        seen["payments"] = data.payments
+        return original(self, register, data)
+    monkeypatch.setattr(cs.SimulatedControlSystem, "sign", spy)
     rid = register(env)
     b = bill(env, rid)
     gift(env, b["billId"])
     pay(env, b["billId"], b["total"] - 10000, "a" * 32)
-    before = journal(env, rid)
-    status, body = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})
-    assert (status, body) == (501, err("gift_card_receipt_not_supported"))
-    assert journal(env, rid) == before and receipts_of(env, rid) == []
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[0] == 201
+    assert {"method": "voucher", "amount": 10000, "last4": "1234", "funding": None} in seen["payments"]
+    assert any(p["method"] == "card" for p in seen["payments"])
+    assert kassa.verify_chain(journal(env, rid)) is None
     assert "lockId" not in reg_row(env, rid)
 
 
 def test_journal_chain_still_verifies_after_gift_card_undo_and_a_card_sale(env, monkeypatch):
+    voucher_ok(monkeypatch)
     giftcards_on(env)
     install_hook(monkeypatch, "gift-cards", "kassa.giftcard", verify(10000))
     rid = register(env)

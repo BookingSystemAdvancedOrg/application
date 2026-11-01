@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "8f521abc8986"
+CONTRACTS_HASH = "f35c2b734385"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -592,7 +592,7 @@ class WaitlistTableOfferedDetail(TypedDict):
 HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
                        'targets': ['gift-cards'],
                        'gate': 'on or ever on'},
- 'checkout.giftcard': {'caller': 'payment-intent, webhook-payment-intent',
+ 'checkout.giftcard': {'caller': 'payment-intent, webhook-payment-intent, manage-order',
                        'targets': ['gift-cards'],
                        'gate': 'giftCards on and giftCardCode present (reserve); order carries '
                                'giftCard (reverse, refund: regardless of the flag)'},

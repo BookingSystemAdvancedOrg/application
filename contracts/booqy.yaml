@@ -236,7 +236,7 @@ hooks:
     targets: [gift-cards]
     gate: on or ever on
   checkout.giftcard:
-    caller: payment-intent, webhook-payment-intent
+    caller: payment-intent, webhook-payment-intent, manage-order
     targets: [gift-cards]
     gate: "giftCards on and giftCardCode present (reserve); order carries giftCard (reverse, refund: regardless of the flag)"
   kassa.giftcard:
@@ -319,7 +319,7 @@ storage:
   GIFT_CARD_PURCHASE_KEY:
     key: booqy-giftcard-purchase
     kind: sessionStorage
-    setBy: Presentkort
+    setBy: Webbplatsen
     purposeSv: Kommer ihåg ditt presentkortsköp medan kortbetalningen bekräftas, så att tack-sidan kan visa det.
     lifetimeSv: Tills köpet är klart eller fliken stängs
     category: nödvändig
@@ -327,7 +327,7 @@ storage:
   WAITLIST_TOKEN_PREFIX:
     key: booqy-waitlist-
     kind: localStorage
-    setBy: Kö
+    setBy: Webbplatsen
     purposeSv: Sparar din plats i kön så att du ser när ditt bord är klart.
     lifetimeSv: Till slutet av dagen du ställde dig i kö
     category: nödvändig

@@ -143,6 +143,38 @@ def _refund_gift_card(item, now):
     return result["Attributes"]
 
 
+def _cancel_gift_card_order(item, ctx, now, current):
+    """Stripe first (only the charged part, nothing when the card covered it),
+    recorded on the order; then the card's part back, once; then cancelled.
+    A Stripe failure leaves the order as it was and the card not credited."""
+    record = item.get("refund")
+    if record is None:
+        charged = order_payments.charged_amount(item)
+        refund = order_payments.refund(item, now, ctx.sub) if charged > 0 else {}
+        record = {"amount": int(refund.get("amount") or charged), "at": o.iso(now), "refundId": refund.get("id"),
+                  "status": refund.get("status")}
+        try:
+            dynamo.table(o.order_table()).update_item(
+                Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+                UpdateExpression="SET #rf = :refund", ConditionExpression="attribute_exists(PK) AND "
+                                                                         "attribute_not_exists(#rf)",
+                ExpressionAttributeNames={"#rf": "refund"}, ExpressionAttributeValues={":refund": record})
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+        item = o.load(item["locationId"], item["orderId"])
+        record = item["refund"]
+    item = _refund_gift_card(item, now)
+    amount = int(record.get("amount") or 0)
+    updated = _update_status(
+        item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
+        extra_sets=["paymentStatus = :refunded"], extra_values={":refunded": o.PAY_REFUNDED},
+        history_extra={"refunded": amount, "giftCardRefunded": int(item["giftCard"].get("refundedOre") or 0)})
+    logger.info(json.dumps({"order": "cancelled", "orderId": item["orderId"], "refund": record.get("refundId"),
+                            "giftCard": True}))
+    return updated
+
+
 def _set_status(event, location_id, ctx, order_id):
     data = http.body(event, allowed={"status", "expectedStatus"})
     target = data.get("status")
@@ -161,12 +193,9 @@ def _set_status(event, location_id, ctx, order_id):
 
     if target == o.CANCELLED:
         if item.get("giftCard"):
-            item = _refund_gift_card(item, now)
-        if order_payments.charged_amount(item) > 0 or not item.get("giftCard"):
-            refund = order_payments.refund(item, now, ctx.sub)
-            amount = int(refund.get("amount") or order_payments.charged_amount(item))
-        else:
-            refund, amount = {}, 0
+            return http.respond(200, o.staff_view(_cancel_gift_card_order(item, ctx, now, current)))
+        refund = order_payments.refund(item, now, ctx.sub)
+        amount = int(refund.get("amount") or item["totalAmount"])
         updated = _update_status(
             item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
             extra_sets=["paymentStatus = :refunded", "refund = :refund"],

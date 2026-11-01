@@ -206,21 +206,30 @@ def test_cancel_of_a_fully_covered_order_makes_no_stripe_refund(env, monkeypatch
     assert [c["op"] for c in calls] == ["reserve", "refund"]
 
 
-def test_a_repeated_cancel_never_refunds_twice(env, monkeypatch):
+def test_stripe_failure_leaves_the_card_uncredited_and_a_retry_credits_it_once(env, monkeypatch):
     oid, calls = _paid_gift_order(env, monkeypatch, 10000)
-    env["stripe"].fail = stripe_client.StripeError(400, {"message": "no", "code": "x"})
-    assert set_status(env, oid, "cancelled")["statusCode"] == 502   # card part back, Stripe failed
+    before = stored(env, oid)
+    env["stripe"].fail = stripe_client.StripeError(400, {"message": "no", "code": "balance_insufficient"})
+    assert set_status(env, oid, "cancelled")["statusCode"] == 502
+    assert stored(env, oid) == before
+    assert [c["op"] for c in calls] == ["reserve"]
     env["stripe"].fail = None
     assert body_of(set_status(env, oid, "cancelled"))["status"] == "cancelled"
     assert set_status(env, oid, "cancelled")["statusCode"] == 409
     assert [c["op"] for c in calls] == ["reserve", "refund"]
+    assert len([c for c in env["stripe"].calls if c["path"] == "/v1/refunds"]) == 2  # failed + succeeded, one key
+    assert stored(env, oid)["refund"]["amount"] == 25000
 
 
-def test_cancel_failure_of_the_feature_is_503_and_keeps_the_order(env, monkeypatch):
-    oid, _ = _paid_gift_order(env, monkeypatch, 10000)
+def test_card_failure_after_the_stripe_refund_retries_without_a_second_stripe_refund(env, monkeypatch):
+    oid, calls = _paid_gift_order(env, monkeypatch, 10000)
     install_hook(monkeypatch, "gift-cards", "checkout.giftcard", lambda r: 1 / 0)
     assert set_status(env, oid, "cancelled")["statusCode"] == 503
-    assert stored(env, oid)["status"] == "confirmed" and env["stripe"].calls == []
+    assert stored(env, oid)["status"] == "confirmed" and stored(env, oid)["refund"]
+    refunds = install_hook(monkeypatch, "gift-cards", "checkout.giftcard", reserve(10000))
+    env["stripe"].calls.clear()
+    assert body_of(set_status(env, oid, "cancelled"))["status"] == "cancelled"
+    assert env["stripe"].calls == [] and [c["op"] for c in refunds] == ["refund"]
 
 
 def test_orders_without_a_gift_card_cancel_as_before(env, monkeypatch):

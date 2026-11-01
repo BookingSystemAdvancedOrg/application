@@ -437,7 +437,7 @@ def in_audience(subscriber, audience, today):
     if location and location not in (subscriber.get("locations") or []):
         return False
     kind = audience.get("type", "all")
-    if kind == "all":
+    if kind in ("all", "segment"):  # a segment's members come from guest-crm (marketing-send)
         return True
     last = subscriber.get("lastVisit")
     if not isinstance(last, str):

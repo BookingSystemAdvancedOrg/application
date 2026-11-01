@@ -25,6 +25,11 @@ PURPOSE:
         month - a campaign that reaches it stops as "paused_limit";
       * paced at MARKETING_SEND_RATE emails per second; a run stops a minute
         before its timeout and the next run continues from the saved cursor.
+    A Guest CRM segment audience ({type: "segment", exportId}) is paged
+    through the guest-crm feature (marketing.segment hook, op page); its
+    subscriber ids are read from the marketing table and go through the
+    same subscribed, consent and claim checks. A failing feature pauses the
+    campaign until the next run.
     The content was frozen when the campaign was sent (template, dishes,
     links, sender), so editing a template afterwards changes nothing.
 
@@ -52,7 +57,7 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import consent, dynamo, finance, marketing as m, marketing_mail
+from shared import consent, dynamo, feature_hooks, finance, marketing as m, marketing_mail
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -253,6 +258,22 @@ def _still_sending(table, campaign):
     return bool(item) and item.get("status") == "sending"
 
 
+def _segment_page(table, tenant_id, audience, cursor):
+    """(subscriber rows, next cursor) of a Guest CRM segment."""
+    payload = {"tenantId": tenant_id, "op": "page", "exportId": audience.get("exportId")}
+    if cursor:
+        payload["cursor"] = cursor
+    answer = feature_hooks.call("marketing.segment", payload).get("guest-crm")
+    if answer is None or not answer["ok"]:
+        raise feature_hooks.HookFailed("guest-crm")
+    rows = []
+    for sid in answer.get("subscriberIds") or []:
+        item = table.get_item(Key=m.sub_key(tenant_id, str(sid))).get("Item")
+        if item:
+            rows.append(item)
+    return rows, answer.get("cursor") or None
+
+
 def _run_campaign(table, campaign, schedule_sk, deadline):
     tenant_id, campaign_id = campaign["tenantId"], campaign["campaignId"]
     audience = campaign.get("audience") or {"type": "all"}
@@ -265,11 +286,15 @@ def _run_campaign(table, campaign, schedule_sk, deadline):
             # Avbryt takes effect within one page (at most PAGE emails).
             if not _still_sending(table, campaign):
                 return "cancelled", cursor
-            params = {"KeyConditionExpression": Key("PK").eq(m.sub_pk(tenant_id)), "Limit": PAGE}
-            if cursor:
-                params["ExclusiveStartKey"] = cursor
-            page = table.query(**params)
-            for subscriber in page.get("Items") or []:
+            if audience.get("type") == "segment":
+                items, next_cursor = _segment_page(table, tenant_id, audience, cursor)
+            else:
+                params = {"KeyConditionExpression": Key("PK").eq(m.sub_pk(tenant_id)), "Limit": PAGE}
+                if cursor:
+                    params["ExclusiveStartKey"] = cursor
+                page = table.query(**params)
+                items, next_cursor = page.get("Items") or [], page.get("LastEvaluatedKey")
+            for subscriber in items:
                 if time.monotonic() > deadline:
                     return "paused", cursor
                 if not m.in_audience(subscriber, audience, today):
@@ -295,7 +320,7 @@ def _run_campaign(table, campaign, schedule_sk, deadline):
                 spent = time.monotonic() - started
                 if spent < interval:
                     time.sleep(interval - spent)
-            cursor = page.get("LastEvaluatedKey")
+            cursor = next_cursor
             if not cursor:
                 return "done", None
             # Save progress after each page so a crash resumes here.
@@ -332,7 +357,7 @@ def handler(event, context):
             continue
         try:
             outcome, cursor = _run_campaign(table, campaign, entry["SK"], deadline)
-        except (BotoCoreError, ClientError):
+        except (BotoCoreError, ClientError, feature_hooks.HookFailed):
             logger.exception("marketing campaign run failed; next run resumes")
             table.update_item(Key={"PK": m.cmp_pk(tenant_id), "SK": f"CMP#{campaign_id}"},
                               UpdateExpression="REMOVE leaseUntil")

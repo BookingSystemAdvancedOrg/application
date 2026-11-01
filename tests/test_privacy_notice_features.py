@@ -27,5 +27,5 @@ def test_paragraphs_present_when_on():
 def test_template_unchanged_without_new_features():
     legacy = _text(None)
     assert _text(features_on()) == legacy
-    assert "—" not in _text(features_on("guestCrm", "waitlist"))
-    assert "–" not in _text(features_on("guestCrm", "waitlist"))
+    assert chr(0x2014) not in _text(features_on("guestCrm", "waitlist"))
+    assert chr(0x2013) not in _text(features_on("guestCrm", "waitlist"))

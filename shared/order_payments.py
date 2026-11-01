@@ -74,12 +74,17 @@ def retrieve_session(item):
                           account=item["stripeAccountId"])
 
 
+def charged_amount(item):
+    """What the guest pays by card: the total less a gift card's part (öre)."""
+    return int(item.get("totalAmount") or 0) - int((item.get("giftCard") or {}).get("debitedOre") or 0)
+
+
 def session_matches(session, item):
     meta = (session or {}).get("metadata") or {}
     return (meta.get("orderId") == item.get("orderId")
             and meta.get("locationId") == item.get("locationId")
             and (not item.get("checkoutSessionId") or session.get("id") == item["checkoutSessionId"])
-            and session.get("amount_total") == item.get("totalAmount")
+            and session.get("amount_total") == (charged_amount(item) if item.get("giftCard") else item.get("totalAmount"))
             and (session.get("currency") or "").lower() == o.CURRENCY)
 
 

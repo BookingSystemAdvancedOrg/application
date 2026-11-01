@@ -26,6 +26,12 @@ PURPOSE:
     are no-ops. Test-mode events reaching prod (and live ones reaching dev)
     are ignored.
 
+    Gift cards: the four event types above plus charge.dispute.closed whose
+    object carries metadata.kind = "giftcard" go to the gift-cards feature
+    (stripe.event hook, shared/feature_hooks.py) with type, account and
+    object, and its result is answered; a failing feature answers 500 so
+    Stripe retries. Nothing else changes.
+
     Answers 200 for anything handled or deliberately ignored, 400 for a bad
     signature, 500 for a transient failure (Stripe retries).
 
@@ -43,7 +49,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import guarantee
+from shared import feature_hooks, guarantee, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -51,6 +57,8 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _SECRET_CACHE_SECONDS = 300
+_GIFT_CARD_TYPES = ("payment_intent.succeeded", "payment_intent.payment_failed", "charge.refunded",
+                    "charge.dispute.closed")
 _secret = {"value": None, "at": 0.0}
 
 
@@ -146,6 +154,21 @@ def _charge_refunded(obj, account, now):
     return "recorded"
 
 
+def _gift_card(kind, account, obj):
+    """The gift-cards feature's answer to a gift card payment event."""
+    tenant_id = (obj.get("metadata") or {}).get("tenantId")
+    if not tenant_id:
+        return "ignored:no_tenant"
+    targets = feature_hooks.targets_for("stripe.event", tenant.get_tenant(str(tenant_id)), ever=True)
+    if not targets:
+        return "ignored:feature_off"
+    answer = feature_hooks.call("stripe.event", {"tenantId": tenant_id, "type": kind, "account": account,
+                                                 "object": obj}, targets=targets).get("gift-cards")
+    if answer is None:
+        return "ignored:not_deployed"
+    return str(answer.get("result")) if answer["ok"] else f"refused:{answer.get('code')}"
+
+
 def handler(event, context):
     method = ((event.get("requestContext") or {}).get("http") or {}).get("method", "POST")
     if method != "POST":
@@ -170,6 +193,8 @@ def handler(event, context):
     try:
         if not account:
             result = "ignored:no_account"
+        elif kind in _GIFT_CARD_TYPES and (obj.get("metadata") or {}).get("kind") == "giftcard":
+            result = _gift_card(kind, account, obj)
         elif kind == "setup_intent.succeeded":
             result = _setup_succeeded(obj, account, now)
         elif kind == "payment_intent.succeeded":
@@ -180,7 +205,7 @@ def handler(event, context):
             result = _charge_refunded(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict):
+    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict, feature_hooks.HookFailed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

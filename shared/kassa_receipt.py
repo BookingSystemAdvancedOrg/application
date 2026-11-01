@@ -53,6 +53,8 @@ def _rate(rate):
 
 
 def _card(p):
+    if p.get("method") == k.GIFT_CARD:
+        return f"Presentkort ****{p.get('last4') or ''}, kvar {kr(p.get('balanceAfter'))} kr"
     if p.get("last4"):
         brand = _BRANDS.get(str(p.get("brand") or "").lower(), str(p.get("brand") or "Kort").capitalize())
         return f"Kort {brand} **** {p['last4']}"

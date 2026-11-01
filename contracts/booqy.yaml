@@ -1,0 +1,343 @@
+# The single source of the Booqy feature contract (infrastructure
+# docs/build/CONTRACTS.md sections 1-10). Edit here, then run
+# `python scripts/gen_contracts.py` to regenerate every target.
+# Field types: string, int, bool, date, month, datetime, enum[a,b], list[T],
+# a mapping for an object; a trailing `?` on a field name = optional.
+
+features:
+  # display order; existing = already in the plan matrix before Run 0
+  - {key: reservations, id: reservations, labelSv: Bokningar, labelEn: Reservations, existing: true, siteConfig: true}
+  - {key: ordering, id: ordering, labelSv: Beställningar, labelEn: Online ordering, existing: true, siteConfig: true}
+  - {key: catering, id: catering, labelSv: Catering, labelEn: Catering, existing: true, siteConfig: true}
+  - {key: terminal, id: terminal, labelSv: Ta betalt, labelEn: Card terminal, existing: true, siteConfig: true}
+  - {key: marketing, id: marketing, labelSv: Marknadsföring, labelEn: Marketing, existing: true, siteConfig: true}
+  - {key: kassa, id: kassa, labelSv: Kassa, labelEn: Kassa (cash register), existing: true, siteConfig: false}
+  - {key: metaAds, id: meta-ads, labelSv: Annonser, labelEn: Meta ads, existing: false, siteConfig: false}
+  - {key: siteBuilder, id: site-builder, labelSv: Webbplats, labelEn: Site builder, existing: false, siteConfig: true}
+  - {key: guestCrm, id: guest-crm, labelSv: Gäster, labelEn: Guest CRM, existing: false, siteConfig: false}
+  - {key: googleBusiness, id: google-business, labelSv: Google-företagsprofil, labelEn: Google Business Profile, existing: false, siteConfig: false}
+  - {key: giftCards, id: gift-cards, labelSv: Presentkort, labelEn: Gift cards, existing: false, siteConfig: true}
+  - {key: waitlist, id: waitlist, labelSv: Kö, labelEn: Waitlist, existing: false, siteConfig: true}
+  - {key: socialPosting, id: social-posting, labelSv: Inlägg, labelEn: Social posting, existing: false, siteConfig: false}
+  - {key: personalliggare, id: personalliggare, labelSv: Personalliggare, labelEn: Staff ledger (personalliggare), existing: false, siteConfig: false}
+  - {key: accountingSync, id: accounting-sync, labelSv: Direktbokföring, labelEn: Fortnox/Visma posting, existing: false, siteConfig: false}
+  - {key: dishMargin, id: dish-margin, labelSv: Marginal per rätt, labelEn: Margin per dish, existing: false, siteConfig: false}
+
+limits:
+  siteBuilderAiEditsPerMonth:
+    feature: siteBuilder
+    type: int
+    min: 0
+    max: 1000
+    default: 0
+    labelSv: AI-ändringar av webbplatsen per månad
+    labelEn: AI site edits per month
+
+events:
+  bus: booqy-events
+  common:
+    tenantId: string
+    occurredAt: datetime
+    version: int
+  sources:
+    booqy.meta-ads:
+      MetaConnection.Connected:
+        adAccountId: string
+        pageId: string
+        instagramId?: string
+      MetaConnection.Disconnected:
+        reason: "enum[owner,token_revoked,offboarding]"
+      MetaCampaign.Created:
+        campaignId: string
+        locationId: string
+        goal: "enum[bookings,orders,catering,awareness]"
+        budgetSek: int
+        endDate: date
+      MetaCampaign.Activated:
+        campaignId: string
+        locationId: string
+      MetaCampaign.Paused:
+        campaignId: string
+        by: "enum[owner,cap,kill_switch]"
+      MetaSpend.CapReached:
+        month: month
+        spendSek: int
+        capSek: int
+    booqy.site-builder:
+      SiteVersion.Published:
+        versionNo: int
+        previousNo?: int
+        source: "enum[builder,custom]"
+        kind: "enum[publish,rollback]"
+      SitePublish.Failed:
+        publishId: string
+        code: string
+      SiteRelease.Proposed:
+        commitSha: string
+    booqy.guest-crm:
+      GuestVisit.Recorded:
+        locationId: string
+        kind: "enum[booking,order,catering]"
+        sourceId: string
+        guestKey: string
+        channels: "list[enum[email,sms]]"
+        contactRef:
+          table: "enum[reservation,order,catering]"
+          pk: string
+          sk: string
+        returning: bool
+        at: datetime
+      GuestProfile.Erased:
+        guestId: string
+      GuestSegment.Exported:
+        segmentId: string
+        exportId: string
+        count: int
+    booqy.google-business:
+      GoogleConnection.Connected: {}
+      GoogleConnection.Disconnected:
+        reason: "enum[owner,token_revoked,offboarding]"
+      GoogleHours.Synced:
+        locationId: string
+        changed: bool
+      GoogleHours.SyncFailed:
+        locationId: string
+        code: string
+      ReviewRequest.Sent:
+        locationId: string
+        kind: "enum[booking,order]"
+        sourceId: string
+        channel: "enum[email,sms]"
+    booqy.gift-cards:
+      GiftCard.Sold:
+        cardId: string
+        locationId: string
+        amountOre: int
+        expiresAt: datetime
+      GiftCard.Redeemed:
+        cardId: string
+        locationId: string
+        amountOre: int
+        balanceAfterOre: int
+        channel: "enum[online,kassa]"
+        txId: string
+      GiftCard.RedemptionReversed:
+        cardId: string
+        locationId: string
+        amountOre: int
+        txId: string
+      GiftCard.Expired:
+        cardId: string
+        amountOre: int
+      GiftCard.Refunded:
+        cardId: string
+        amountOre: int
+    booqy.waitlist:
+      Waitlist.Joined:
+        locationId: string
+        entryId: string
+        date: date
+        source: "enum[site,staff]"
+        partySize: int
+      Waitlist.TableOffered:
+        locationId: string
+        entryId: string
+        date: date
+        reservationId: string
+        tableIds: "list[string]"
+        expiresAt: datetime
+      Waitlist.Converted:
+        locationId: string
+        entryId: string
+        date: date
+        reservationId: string
+        how: "enum[accepted,seated]"
+      Waitlist.OfferExpired:
+        locationId: string
+        entryId: string
+        date: date
+        reservationId: string
+      Waitlist.Left:
+        locationId: string
+        entryId: string
+        date: date
+        by: "enum[guest,staff]"
+    booqy.social-posting:
+      SocialPost.Scheduled:
+        postId: string
+        locationId: string
+        scheduledAt: datetime
+        channels: "list[enum[facebook,instagram]]"
+      SocialPost.Published:
+        postId: string
+        locationId: string
+        channel: "enum[facebook,instagram]"
+        metaPostId: string
+        permalink: string
+      SocialPost.Failed:
+        postId: string
+        locationId: string
+        channel: "enum[facebook,instagram]"
+        code: string
+    booqy.personalliggare:
+      Personalliggare.CheckedIn:
+        locationId: string
+        seq: int
+        personId: string
+        eventTime: datetime
+      Personalliggare.CheckedOut:
+        locationId: string
+        seq: int
+        personId: string
+        eventTime: datetime
+      Personalliggare.Corrected:
+        locationId: string
+        seq: int
+        personId: string
+        correctsSeq: int
+        kind: "enum[check_in,check_out]"
+    booqy.accounting-sync:
+      AccountingSync.Connected:
+        provider: "enum[fortnox,visma]"
+      AccountingSync.Disconnected:
+        provider: "enum[fortnox,visma]"
+        reason: "enum[owner,revoked]"
+      AccountingSync.DayPosted:
+        scope: string
+        day: date
+        provider: "enum[fortnox,visma]"
+        voucherId: string
+      AccountingSync.PostingFailed:
+        scope: string
+        day: date
+        code: string
+        retryable: bool
+    booqy.dish-margin:
+      DishMargin.CostSet:
+        locationId: string
+        menuItemId: string
+        validFrom: date
+
+hooks:
+  privacy.export:
+    caller: guest-privacy
+    targets: [guest-crm, google-business, gift-cards, waitlist]
+    gate: on or ever on
+  privacy.erase:
+    caller: guest-privacy
+    targets: [guest-crm, google-business, gift-cards, waitlist]
+    gate: on or ever on
+  tenant.purge:
+    caller: tenant-purge
+    targets: [meta-ads, site-builder, guest-crm, google-business, gift-cards, waitlist, social-posting, personalliggare, accounting-sync, dish-margin]
+    gate: always
+  stripe.event:
+    caller: stripe-webhook
+    targets: [gift-cards]
+    gate: "on or ever on; gift-cards ignores the event unless account is the card's own stripeAccountId"
+  checkout.giftcard:
+    caller: payment-intent, webhook-payment-intent, manage-order
+    targets: [gift-cards]
+    gate: "giftCards on and giftCardCode present (reserve); order carries giftCard (reverse, refund: regardless of the flag)"
+  kassa.giftcard:
+    caller: kassa
+    targets: [gift-cards]
+    gate: giftCards and kassa on
+  accounting.events:
+    caller: shared/accounting.location_events
+    targets: [gift-cards]
+    gate: on or ever on
+  insights.dishCosts:
+    caller: insights
+    targets: [dish-margin]
+    gate: dishMargin on and caller is owner
+  marketing.segment:
+    caller: marketing, marketing-send
+    targets: [guest-crm]
+    gate: "audience {type: segment, exportId}"
+  platform:
+    caller: platform-tenants
+    targets: [meta-ads, site-builder, google-business, personalliggare]
+    gate: operator route hit
+
+consoleForwardOps:
+  meta-ads.settings.get: {route: A14, target: meta-ads, audit: null}
+  meta-ads.settings.put: {route: A15, target: meta-ads, audit: meta_ads_settings_changed}
+  meta-ads.tenant.pause: {route: A16, target: meta-ads, audit: meta_ads_paused/meta_ads_resumed}
+  meta-ads.tenant.get: {route: A17, target: meta-ads, audit: null}
+  site-builder.get: {route: B11, target: site-builder, audit: null}
+  site-builder.mode.put: {route: B12, target: site-builder, audit: site_mode_changed}
+  site-builder.release.ready: {route: B13, target: site-builder, audit: site_release_proposed}
+  google-business.tenant.get: {route: D11, target: google-business, audit: null}
+  personalliggare.export: {route: H9, target: personalliggare, audit: staff_ledger_exported}
+
+clients:
+  meta: {env: META_CLIENT, tfvar: meta_client}
+  google_business: {env: GOOGLE_BUSINESS_CLIENT, tfvar: google_business_client}
+  fortnox: {env: FORTNOX_CLIENT, tfvar: fortnox_client}
+  visma: {env: VISMA_CLIENT, tfvar: visma_client}
+  bedrock: {env: BEDROCK_CLIENT, tfvar: bedrock_client}
+
+siteConfig:
+  tenantFeatures: [reservations, ordering, catering, terminal, marketing, siteBuilder, giftCards, waitlist]
+  tenant.site:
+    mode: "enum[builder,custom]"
+    version: int
+  location.waitlist:
+    publicJoin: bool
+
+slots:
+  # feature: a key or a list (any of); null = always shown
+  admin:
+    marketing.tab.annonser: {feature: metaAds, ownerOnly: true, host: MarknadsforingPage tab Annonser}
+    marketing.tab.omdomen: {feature: googleBusiness, ownerOnly: true, host: MarknadsforingPage tab Omdömen}
+    marketing.tab.inlagg: {feature: socialPosting, ownerOnly: true, host: MarknadsforingPage tab Inlägg}
+    marketing.oversikt.ads: {feature: metaAds, ownerOnly: true, host: OverviewTab below the tiles}
+    marketing.mottagare.segments: {feature: guestCrm, ownerOnly: true, host: SubscribersTab top}
+    marketing.kampanjer.audience: {feature: guestCrm, ownerOnly: true, host: CampaignsTab audience picker}
+    installningar.verksamhet.google: {feature: googleBusiness, ownerOnly: true, host: InstallningarPage verksamhet profil}
+    installningar.verksamhet.waitlist: {feature: waitlist, ownerOnly: true, host: InstallningarPage verksamhet bord}
+    installningar.bokforing.sync: {feature: accountingSync, ownerOnly: true, host: InstallningarPage ekonomi bokforing}
+    bokningar.panel.waitlist: {feature: waitlist, ownerOnly: false, host: BokningarPage next to the day list}
+    bokningar.reservation.badge: {feature: guestCrm, ownerOnly: false, host: BokningarPage reservation row}
+    kassa.payment.giftcard: {feature: giftCards, ownerOnly: false, host: KassaPage bill payment actions}
+    meny.dish.cost: {feature: dishMargin, ownerOnly: true, host: DishModal below price}
+    meny.dish.share: {feature: socialPosting, ownerOnly: true, host: MenyPage dish actions}
+    statistik.dishes.margin: {feature: dishMargin, ownerOnly: true, host: StatistikPage dishes section}
+    statistik.signals: {feature: dishMargin, ownerOnly: true, host: features/statistik/insights.ts signals()}
+  console:
+    tenant.integrations.metaAds: {feature: metaAds, ownerOnly: false, host: TenantPage Integrations tab}
+    tenant.integrations.googleBusiness: {feature: googleBusiness, ownerOnly: false, host: TenantPage Integrations tab}
+    tenant.website.siteBuilder: {feature: siteBuilder, ownerOnly: false, host: TenantPage Website tab}
+    tenant.offboard.personalliggare: {feature: null, ownerOnly: false, host: TenantPage Suspend or offboard tab}
+    settings.metaAds: {feature: null, ownerOnly: false, host: SettingsPage}
+  site:
+    boka.full: {feature: waitlist, ownerOnly: false, host: booking flow when no times are free}
+    bestall.checkout.giftcard: {feature: giftCards, ownerOnly: false, host: order checkout form}
+
+storage:
+  GIFT_CARD_PURCHASE_KEY:
+    key: booqy-giftcard-purchase
+    kind: sessionStorage
+    setBy: Webbplatsen
+    purposeSv: Kommer ihåg ditt presentkortsköp medan kortbetalningen bekräftas, så att tack-sidan kan visa det.
+    lifetimeSv: Tills köpet är klart eller fliken stängs
+    category: nödvändig
+    feature: giftCards
+  WAITLIST_TOKEN_PREFIX:
+    key: booqy-waitlist-
+    kind: localStorage
+    setBy: Webbplatsen
+    purposeSv: Sparar din plats i kön så att du ser när ditt bord är klart.
+    lifetimeSv: Till slutet av dagen du ställde dig i kö
+    category: nödvändig
+    feature: waitlist
+
+enums:
+  ConnectionStatus: [connected, needs_reauth, disconnected]
+  ClientMode: [simulator, real]
+  GuestChannel: [email, sms]
+  GuestSourceKind: [booking, order, catering]
+  SocialChannel: [facebook, instagram]
+  AccountingProvider: [fortnox, visma]
+  SiteMode: [builder, custom]

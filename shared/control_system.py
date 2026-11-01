@@ -170,6 +170,8 @@ class ControlSystem:
     enrols = True            # register_register needs the company (org.nr, address)
     name = ""                # shown to staff
     control_unit = None      # what the merchant reports to Skatteverket as the kontrollenhet
+    voucher_method = None    # the payment means a gift card is reported as; None = the port can't
+                             # take gift cards yet (legal check, blocks feature E; shared/kassa.py)
 
     def status(self, register):
         raise NotImplementedError

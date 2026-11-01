@@ -23,6 +23,9 @@ PURPOSE:
     from the stored orders, card payments, Kassa journal, card guarantee
     fees, catering requests and the connected account's Stripe balance
     transactions every time, so exporting a day again gives the same entry.
+    Features add their own postings through the accounting.events hook
+    (gift cards: roles giftCardLiability 2421 and giftCardBreakage 3990); a
+    failing feature makes the export 503 rather than leave money out.
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
@@ -49,7 +52,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import accounting as acc
 from shared import accounting_export as ax
-from shared import dynamo, http, tenant
+from shared import dynamo, feature_hooks, http, tenant
 from shared import stripe_client as stripe
 from shared.order_messages import _seller
 
@@ -177,6 +180,9 @@ def handler(event, context):
         return http.error(502, "stripe_refused")
     except stripe.StripeUnavailable:
         return http.error(503, "stripe_unavailable")
+    except feature_hooks.HookFailed as exc:
+        logger.error(json.dumps({"accounting": "feature_failed", "feature": exc.feature_id}))
+        return http.error(503, "service_unavailable")
     except (BotoCoreError, ClientError):
         logger.exception("accounting unavailable")
         return http.error(503, "service_unavailable")

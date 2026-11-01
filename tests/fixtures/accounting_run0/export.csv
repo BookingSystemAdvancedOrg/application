@@ -1,0 +1,18 @@
+﻿Datum;Verifikation;Konto;Kontonamn;Debet;Kredit;Kostnadsställe;Text
+2026-10-20;B293;3001;Försäljning inom Sverige, 25 % moms;;100,00;;Försäljning 25 % moms
+2026-10-20;B293;3002;Försäljning inom Sverige, 12 % moms;;357,14;;Avgifter uteblivna gäster och sena avbokningar 12 % moms
+2026-10-20;B293;3002;Försäljning inom Sverige, 12 % moms;;200,00;;Försäljning 12 % moms
+2026-10-20;B293;2611;Utgående moms på försäljning inom Sverige, 25 %;;25,00;;Utgående moms 25 %
+2026-10-20;B293;2621;Utgående moms på försäljning inom Sverige, 12 %;;66,86;;Utgående moms 12 %
+2026-10-20;B293;1580;Fordringar för kontokort och kuponger;400,00;;;Kortgaranti (Stripe)
+2026-10-20;B293;1580;Fordringar för kontokort och kuponger;349,00;;;Onlinebetalningar (Stripe)
+2026-10-20;B293;1580;Fordringar för kontokort och kuponger;;13,10;;Stripe-avgifter
+2026-10-20;B293;1580;Fordringar för kontokort och kuponger;;500,00;;Utbetalning från Stripe till bank
+2026-10-20;B293;1930;Företagskonto/checkkonto/affärskonto;500,00;;;Utbetalning från Stripe till bank
+2026-10-20;B293;6570;Bankkostnader;13,10;;;Stripe-avgifter
+2026-10-21;B294;3003;Försäljning inom Sverige, 6 % moms;;50,00;;Försäljning 6 % moms
+2026-10-21;B294;2631;Utgående moms på försäljning inom Sverige, 6 %;;3,00;;Utgående moms 6 %
+2026-10-21;B294;1580;Fordringar för kontokort och kuponger;53,00;;;Kort i restaurangen (Stripe Terminal)
+2026-10-22;B295;3002;Försäljning inom Sverige, 12 % moms;;1000,00;;Catering 12 % moms
+2026-10-22;B295;2621;Utgående moms på försäljning inom Sverige, 12 %;;120,00;;Utgående moms 12 %
+2026-10-22;B295;1510;Kundfordringar;1120,00;;;Kundfakturor catering

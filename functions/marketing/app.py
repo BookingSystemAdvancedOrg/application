@@ -12,6 +12,7 @@ TRIGGER:
     DELETE /marketing/templates/{id}
     POST   /marketing/preview                          {template} -> {subject, html} (nothing sent)
     GET    /marketing/audience?type=&days=&locationId= how many subscribers an audience reaches
+           (type=segment&exportId=: a Guest CRM segment export, guestCrm only)
     GET    /marketing/campaigns
     POST   /marketing/campaigns                        {name, templateId, subject?, audience}
     GET    /marketing/campaigns/{id}
@@ -33,7 +34,10 @@ PURPOSE:
     marketing-send; this function freezes what is sent (template, dishes,
     links, sender) when the owner presses Skicka, so later edits change
     nothing in a campaign that is on its way. Audiences are only ever
-    subscribers who opted in (marketing-sync).
+    subscribers who opted in (marketing-sync). With guestCrm an audience may
+    be {type: "segment", exportId}: the guest-crm feature describes it
+    (marketing.segment hook, op describe) on save and send; marketing-send
+    pages through it and still checks consent per recipient.
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
@@ -60,7 +64,7 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, marketing as m, marketing_mail, site, tenant
+from shared import dynamo, feature_hooks, http, marketing as m, marketing_mail, site, tenant
 from shared import marketing_offer as offer
 from shared import menu as menu_rules
 
@@ -73,6 +77,15 @@ RESUME_DAYS = 31  # a paused campaign can be continued the next month, not much 
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SID = re.compile(r"[0-9a-f]{24}")
 _CAMPAIGN_FIELDS = {"name", "templateId", "subject", "audience"}
+_EXPORT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+class _Refused(Exception):
+    """The guest-crm feature refused a segment (its status and code)."""
+
+    def __init__(self, status, code):
+        super().__init__(code)
+        self.status, self.code = status, code
 _TEMPLATE_FIELDS = {"name", "subject", "preheader", "blocks", "theme"}
 
 
@@ -313,7 +326,27 @@ def _preview(ctx, event):
 
 # --- audience -----------------------------------------------------------------------------
 
+def _segment(ctx, raw):
+    """A Guest CRM segment audience and how many it reaches (guest-crm, op
+    describe). Needs guestCrm."""
+    tenant.require_feature(ctx.tenant, "guestCrm")
+    if set(raw) - {"type", "exportId"} or not isinstance(raw.get("exportId"), str) \
+            or not _EXPORT_ID.fullmatch(raw["exportId"]):
+        raise ValueError("audience.exportId is invalid")
+    answer = feature_hooks.call("marketing.segment", {"tenantId": ctx.tenant_id, "op": "describe",
+                                                      "exportId": raw["exportId"]},
+                                targets=feature_hooks.targets_for("marketing.segment", ctx.tenant)).get("guest-crm")
+    if answer is None:
+        raise feature_hooks.HookFailed("guest-crm")
+    if not answer["ok"]:
+        raise _Refused(answer.get("status") if answer.get("status") in (400, 404, 409) else 409,
+                       str(answer.get("code") or "segment_refused"))
+    return {"type": "segment", "exportId": raw["exportId"]}, int(answer.get("count") or 0)
+
+
 def _audience_count(ctx, audience):
+    if audience.get("type") == "segment":
+        return _segment(ctx, audience)[1]
     table = _table()
     rows = _query_all(table, KeyConditionExpression=Key("PK").eq(m.sub_pk(ctx.tenant_id)),
                       ProjectionExpression="#st, lastVisit, locations",
@@ -323,6 +356,9 @@ def _audience_count(ctx, audience):
 
 
 def _audience(ctx, query):
+    if query.get("type") == "segment":
+        audience, count = _segment(ctx, {"type": "segment", "exportId": query.get("exportId")})
+        return _ok(200, {"audience": audience, "count": count})
     audience = {"type": query.get("type") or "all"}
     if query.get("days"):
         try:
@@ -369,7 +405,10 @@ def _validate_campaign(ctx, data):
         subject = subject.strip()
     else:
         subject = None
-    audience = m.validate_audience(data.get("audience") or {"type": "all"})
+    raw = data.get("audience") or {"type": "all"}
+    if isinstance(raw, dict) and raw.get("type") == "segment":
+        return {"name": name, "templateId": template_id, "subject": subject, "audience": _segment(ctx, raw)[0]}
+    audience = m.validate_audience(raw)
     if audience.get("locationId") and not tenant.get_location(ctx.tenant_id, audience["locationId"]):
         raise ValueError("audience.locationId is not one of the restaurant's locations")
     return {"name": name, "templateId": template_id, "subject": subject, "audience": audience}
@@ -684,8 +723,13 @@ def handler(event, context):
         return http.error(404, "not found")
     except tenant.TenantError as exc:
         return exc.response()
+    except _Refused as exc:
+        return http.error(exc.status, exc.code)
     except ValueError as exc:
         return http.error(400, str(exc))
+    except feature_hooks.HookFailed:
+        logger.error(json.dumps({"marketing": "segment_unavailable"}))
+        return http.error(503, "marketing service unavailable")
     except (BotoCoreError, ClientError):
         logger.exception("marketing failed")
         return http.error(503, "marketing service unavailable")

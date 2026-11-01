@@ -61,8 +61,16 @@ PURPOSE:
     finished by the next one. Stream consumers only react to INSERT and
     MODIFY, so these deletes send no emails or SMS to guests.
 
-    One summary email per run that did something (purged, scheduled or
-    failed), through the alert topic.
+    Feature data (CONTRACTS.md 9): after the steps above every deployed
+    feature gets the tenant.purge hook (shared/feature_hooks.py) with the
+    tenant's location ids (kept on PROFILE as purgeLocationIds, since the
+    location rows are gone by then) and the sweep round. Only when every
+    one answers done: true is the tombstone written; otherwise the tenant
+    stays offboarded and the next run asks again. A failing feature is
+    reported like any other failure.
+
+    One summary email per run that did something (purged, scheduled,
+    waiting on features or failed), through the alert topic.
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, TENANT_LIST_INDEX_NAME,
@@ -99,7 +107,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
-from shared import dynamo
+from shared import dynamo, feature_hooks
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -435,7 +443,30 @@ def _tombstone(profile, now):
     return stone
 
 
-def purge_tenant(tenant_id, budget):
+def _location_ids(tenant_id, profile):
+    """The tenant's location ids, from PROFILE once recorded (a later run no
+    longer finds the location rows)."""
+    if isinstance(profile.get("purgeLocationIds"), list):
+        return [str(i) for i in profile["purgeLocationIds"]]
+    rows = _query_keys(os.environ["LOCATION_TABLE_NAME"], Key("PK").eq(f"TENANT#{tenant_id}"),
+                       projection="PK, SK, locationId")
+    return sorted(r.get("locationId") or str(r["SK"]).removeprefix("LOCATION#") for r in rows)
+
+
+def _purge_features(tenant_id, location_ids, round_):
+    """tenant.purge on every deployed feature; the ids of those not done yet.
+    A failing feature raises HookFailed (reported, retried next run)."""
+    answers = feature_hooks.call("tenant.purge", {"tenantId": tenant_id, "locationIds": location_ids,
+                                                  "round": round_})
+    for feature_id, answer in answers.items():
+        if not answer["ok"]:
+            raise feature_hooks.HookFailed(feature_id)
+    logger.info(json.dumps({"purgeFeatures": tenant_id, "counts": {f: a.get("counts") for f, a in answers.items()}},
+                           default=str))
+    return sorted(f for f, a in answers.items() if a.get("done") is not True)
+
+
+def purge_tenant(tenant_id, budget, round_=0):
     """Deletes one tenant's data. Returns a report, or None when the tenant
     isn't due (status changed, date moved)."""
     table = dynamo.table(os.environ["TENANT_TABLE_NAME"])
@@ -448,10 +479,12 @@ def purge_tenant(tenant_id, budget):
     counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
                              "fiskalyKey")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
-              "zonesDeleted": [], "zonesKept": [], "notes": []}
+              "zonesDeleted": [], "zonesKept": [], "notes": [], "waitingOn": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
-    table.update_item(Key=key, UpdateExpression="SET purgeStartedAt = if_not_exists(purgeStartedAt, :n)",
-                      ExpressionAttributeValues={":n": iso(now)})
+    location_ids = _location_ids(tenant_id, profile)
+    table.update_item(Key=key, UpdateExpression="SET purgeStartedAt = if_not_exists(purgeStartedAt, :n), "
+                                                "purgeLocationIds = if_not_exists(purgeLocationIds, :l)",
+                      ExpressionAttributeValues={":n": iso(now), ":l": location_ids})
     _purge_locations(tenant_id, budget, counts)
     _purge_marketing(tenant_id, budget, counts)
     _purge_users(tenant_id, budget, counts)
@@ -462,6 +495,9 @@ def purge_tenant(tenant_id, budget):
     if repo:
         _audit(tenant_id, *repo, now_utc())
     budget.check()
+    report["waitingOn"] = _purge_features(tenant_id, location_ids, round_)
+    if report["waitingOn"]:
+        return report
     stone = _tombstone(profile, now_utc())
     stone["purgeSummary"] = {**counts, "zonesKept": report["zonesKept"], "notes": report["notes"]}
     try:
@@ -517,7 +553,7 @@ def _continue(context, event):
 
 def _notify(result):
     topic = os.environ.get("ALERT_TOPIC_ARN")
-    if not topic or not (result["purged"] or result["scheduled"] or result["failed"]):
+    if not topic or not (result["purged"] or result["scheduled"] or result["failed"] or result["waiting"]):
         return
     env_name = os.environ.get("ENVIRONMENT", "dev")
     lines = []
@@ -530,6 +566,9 @@ def _notify(result):
                              ("Hosted zones kept", r["zonesKept"]), ("Check", r["notes"])):
             if items:
                 lines.append(f"  {label}: {', '.join(items)}")
+    for w in result["waiting"]:
+        lines.append(f"Waiting: {w['name']} ({w['tenantId']}): {', '.join(w['waitingOn'])} not done yet "
+                     "(the next run asks again).")
     for s in result["scheduled"]:
         lines.append(f"Scheduled: {s['name']} ({s['tenantId']}) is deleted on {s['purgeAt'][:10]}.")
     for f in result["failed"]:
@@ -547,7 +586,7 @@ def handler(event, context):
     event = event if isinstance(event, dict) else {}
     budget = Budget(context)
     now = now_utc()
-    result = {"purged": [], "scheduled": [], "failed": [], "continued": False}
+    result = {"purged": [], "scheduled": [], "failed": [], "waiting": [], "continued": False}
     due = []
     for profile in _profiles():
         if profile.get("status") != "offboarded" or not profile.get("tenantId"):
@@ -564,8 +603,10 @@ def handler(event, context):
     for tenant_id in sorted(due):
         try:
             budget.check()
-            report = purge_tenant(tenant_id, budget)
-            if report:
+            report = purge_tenant(tenant_id, budget, int(event.get("round", 0)))
+            if report and report["waitingOn"]:
+                result["waiting"].append(report)
+            elif report:
                 result["purged"].append(report)
         except OutOfTime:
             round_ = int(event.get("round", 0)) + 1
@@ -579,6 +620,7 @@ def handler(event, context):
             result["failed"].append({"tenantId": tenant_id, "error": f"{type(e).__name__}: {e}"[:300]})
     _notify(result)
     summary = {"purged": [r["tenantId"] for r in result["purged"]], "scheduled": len(result["scheduled"]),
-               "failed": [f["tenantId"] for f in result["failed"]], "continued": result["continued"]}
+               "failed": [f["tenantId"] for f in result["failed"]], "continued": result["continued"],
+               "waiting": [w["tenantId"] for w in result["waiting"]]}
     logger.info(json.dumps(summary))
     return summary

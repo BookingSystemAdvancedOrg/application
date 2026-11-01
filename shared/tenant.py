@@ -31,11 +31,11 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 from boto3.dynamodb.conditions import Key
 
-from shared import dpa, dynamo
+from shared import contracts, dpa, dynamo
 from shared.responses import json_response
 
 # One line per request that resolved to a tenant. finance-rollup counts
@@ -54,7 +54,7 @@ def _log_request(tenant_id: str, kind: str, location_id: Optional[str] = None) -
 
 
 ROLES = ("owner_user", "staff_user")
-FEATURES = ("reservations", "ordering", "catering", "terminal", "kassa")
+FEATURES = contracts.FEATURE_KEYS
 
 _tenant_cache: dict = {}
 _location_tenant_cache: dict = {}
@@ -202,12 +202,26 @@ def list_locations(tenant_id: str) -> list:
 
 # --- checks --------------------------------------------------------------------
 
-def require_feature(tenant_row: dict, feature: Optional[str]) -> None:
+def require_feature(tenant_row: dict, feature: Union[str, tuple, None]) -> None:
+    """A key must be on; a tuple of keys means any of them (an empty tuple
+    refuses)."""
+    features = ((tenant_row.get("entitlements") or {}).get("features") or {})
+    if isinstance(feature, tuple):
+        if not any(features.get(f) for f in feature):
+            raise TenantError(403, "feature_not_in_plan")
+        return
     if not feature:
         return
-    features = ((tenant_row.get("entitlements") or {}).get("features") or {})
     if not features.get(feature):
         raise TenantError(403, "feature_not_in_plan")
+
+
+def limit(tenant_row: dict, name: str) -> int:
+    """A plan limit (`entitlements.limits`); missing counts as the contract
+    default. An unknown name raises KeyError (a typo must not read as 0)."""
+    default = contracts.LIMITS[name]["default"]
+    value = ((tenant_row.get("entitlements") or {}).get("limits") or {}).get(name)
+    return default if value is None else int(value)
 
 
 def _claims(event: dict) -> dict:
@@ -252,7 +266,7 @@ def for_jwt(
     event: dict,
     *,
     location_id: Optional[str] = None,
-    feature: Optional[str] = None,
+    feature: Union[str, tuple, None] = None,
     owner_only: bool = False,
 ) -> TenantContext:
     """Tenant-pool JWT routes. Raises TenantError (401/403/404)."""
@@ -285,7 +299,7 @@ def for_jwt(
     return TenantContext(tenant_id, tenant_row, role, sub, location, claims)
 
 
-def for_public(location_id: str, *, feature: Optional[str] = None) -> TenantContext:
+def for_public(location_id: str, *, feature: Union[str, tuple, None] = None) -> TenantContext:
     """Public (no-login) routes: the location decides the tenant. Unknown
     locations, inactive tenants and features outside the plan all look like
     nothing is there (404) - a suspended restaurant's site simply has no

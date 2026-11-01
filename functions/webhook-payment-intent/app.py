@@ -52,7 +52,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, order_payments, tenant
+from shared import dynamo, feature_hooks, order_payments
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -115,24 +115,15 @@ def _order(meta, account):
     return item
 
 
-def _charged(item):
-    """What Stripe charged: the total less a gift card's part."""
-    return int(item.get("totalAmount") or 0) - int((item.get("giftCard") or {}).get("debitedOre") or 0)
-
-
 def _reverse_gift_card(item, now):
     """Gives a failed order's gift card amount back, once."""
     gift = item.get("giftCard")
     if not gift or gift.get("reversedAt") or item.get("status") != o.FAILED:
         return
-    # Open item for feature E (Run 1): a reserve left behind when the tenant
-    # turned giftCards off before the order failed.
-    targets = feature_hooks.targets_for("checkout.giftcard", tenant.get_tenant(item["tenantId"]))
-    if not targets:
-        return
+    # Regardless of the flag (CONTRACTS.md 9.2): the order carries the card.
     answer = feature_hooks.call("checkout.giftcard", {
         "tenantId": item["tenantId"], "op": "reverse", "locationId": item["locationId"],
-        "orderId": item["orderId"]}, targets=targets).get("gift-cards")
+        "orderId": item["orderId"]}, targets=["gift-cards"]).get("gift-cards")
     if answer is None or not answer["ok"]:
         raise feature_hooks.HookFailed("gift-cards")
     try:
@@ -150,8 +141,7 @@ def _session_event(kind, session, account, now):
     item = _order(session.get("metadata"), account)
     if not item:
         return "ignored"
-    if not order_payments.session_matches(session, {**item, "totalAmount": _charged(item)} if item.get("giftCard")
-                                          else item):
+    if not order_payments.session_matches(session, item):
         logger.warning(json.dumps({"ignored": "session_mismatch", "orderId": item["orderId"]}))
         return "ignored:mismatch"
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
@@ -172,7 +162,7 @@ def _charge_refunded(charge, account, now):
     refunded = int(charge.get("amount_refunded") or 0)
     if refunded <= int((item.get("refund") or {}).get("amount") or 0):
         return "already_recorded"
-    full = refunded >= _charged(item)
+    full = refunded >= order_payments.charged_amount(item)
     updates = ["#rf = :refund", "updatedAt = :now",
                "history = list_append(if_not_exists(history, :empty), :entry)"]
     values = {":refund": {"amount": refunded, "at": o.iso(now)}, ":now": o.iso(now),

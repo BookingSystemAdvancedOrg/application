@@ -6,6 +6,7 @@ code go through exactly the same checkout as before."""
 import pytest
 
 from hooks_fake import install_hook, no_hooks
+from test_orders import set_status, status_event
 from shared import orders as o
 from shared import stripe_client
 from shared import tenant as shared_tenant
@@ -165,3 +166,70 @@ def test_session_for_the_full_total_does_not_match_a_gift_card_order(env, monkey
     body = body_of(post_order(env, giftCardCode="ABCD"))
     full = dict(paid_session(env, body["orderId"]), amount_total=TOTAL)
     assert body_of(webhook(env, stripe_event("checkout.session.completed", full)))["result"] == "ignored:mismatch"
+
+
+def test_status_page_settles_a_part_gift_card_order(env, monkeypatch):
+    giftcards_on(env)
+    install_hook(monkeypatch, "gift-cards", "checkout.giftcard", reserve(10000))
+    body = body_of(post_order(env, giftCardCode="ABCD"))
+    assert env["stripe"].session["amount_total"] == TOTAL - 10000
+    env["stripe"].session.update(payment_status="paid", status="complete", payment_intent="pi_9")
+    page = body_of(env["m"]["get"].handler(status_event(body["orderId"], body["statusToken"]), None))
+    assert page["status"] == "confirmed"
+
+
+def _paid_gift_order(env, monkeypatch, debited):
+    giftcards_on(env)
+    calls = install_hook(monkeypatch, "gift-cards", "checkout.giftcard", reserve(debited))
+    body = body_of(post_order(env, giftCardCode="ABCD"))
+    if debited < TOTAL:
+        webhook(env, stripe_event("checkout.session.completed", paid_session(env, body["orderId"])))
+    env["stripe"].calls.clear()
+    return body["orderId"], calls
+
+
+def test_cancel_refunds_the_card_part_and_stripe_only_the_charged_part(env, monkeypatch):
+    oid, calls = _paid_gift_order(env, monkeypatch, 10000)
+    result = body_of(set_status(env, oid, "cancelled"))
+    assert result["status"] == "cancelled" and result["paymentStatus"] == "refunded"
+    assert [c["op"] for c in calls] == ["reserve", "refund"]
+    (refund,) = env["stripe"].calls
+    assert refund["path"] == "/v1/refunds" and refund["key"] == f"refund-{oid}"
+    item = stored(env, oid)
+    assert item["giftCard"]["refundedAt"] and item["giftCard"]["refundedOre"] == 10000
+
+
+def test_cancel_of_a_fully_covered_order_makes_no_stripe_refund(env, monkeypatch):
+    oid, calls = _paid_gift_order(env, monkeypatch, TOTAL)
+    result = body_of(set_status(env, oid, "cancelled"))
+    assert result["status"] == "cancelled" and env["stripe"].calls == []
+    assert [c["op"] for c in calls] == ["reserve", "refund"]
+
+
+def test_a_repeated_cancel_never_refunds_twice(env, monkeypatch):
+    oid, calls = _paid_gift_order(env, monkeypatch, 10000)
+    env["stripe"].fail = stripe_client.StripeError(400, {"message": "no", "code": "x"})
+    assert set_status(env, oid, "cancelled")["statusCode"] == 502   # card part back, Stripe failed
+    env["stripe"].fail = None
+    assert body_of(set_status(env, oid, "cancelled"))["status"] == "cancelled"
+    assert set_status(env, oid, "cancelled")["statusCode"] == 409
+    assert [c["op"] for c in calls] == ["reserve", "refund"]
+
+
+def test_cancel_failure_of_the_feature_is_503_and_keeps_the_order(env, monkeypatch):
+    oid, _ = _paid_gift_order(env, monkeypatch, 10000)
+    install_hook(monkeypatch, "gift-cards", "checkout.giftcard", lambda r: 1 / 0)
+    assert set_status(env, oid, "cancelled")["statusCode"] == 503
+    assert stored(env, oid)["status"] == "confirmed" and env["stripe"].calls == []
+
+
+def test_orders_without_a_gift_card_cancel_as_before(env, monkeypatch):
+    from test_orders import place_and_pay
+    calls = install_hook(monkeypatch, "gift-cards", "checkout.giftcard", reserve(10000))
+    created = place_and_pay(env)
+    env["stripe"].calls.clear()
+    result = body_of(set_status(env, created["orderId"], "cancelled"))
+    assert result["paymentStatus"] == "refunded" and result["refund"]["amount"] == 25000
+    (refund,) = env["stripe"].calls
+    assert refund["params"]["payment_intent"] == "pi_1" and calls == []
+    assert "giftCard" not in stored(env, created["orderId"])

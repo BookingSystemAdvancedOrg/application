@@ -396,7 +396,7 @@ def create(ctx, *, checkout_id, reader_id, amount=None, order_id=None, note=None
                 return load(location_id, owner), False
             except NotFound:
                 raise InvalidState("order_being_paid") from None
-        amount = int(order["totalAmount"])
+        amount = order_payments.charged_amount(order)
     else:
         amount = validate_amount(amount)
     if order is not None or kassa_bill_id:

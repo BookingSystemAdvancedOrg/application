@@ -29,7 +29,9 @@ PURPOSE:
     through the guest-crm feature (marketing.segment hook, op page); its
     subscriber ids are read from the marketing table and go through the
     same subscribed, consent and claim checks. A failing feature pauses the
-    campaign until the next run.
+    campaign until the next run; a tenant that has (and never had) guestCrm
+    gets the campaign stopped as "paused" with pausedReason
+    "segment_unavailable" instead of retrying forever.
     The content was frozen when the campaign was sent (template, dishes,
     links, sender), so editing a template afterwards changes nothing.
 
@@ -258,13 +260,19 @@ def _still_sending(table, campaign):
     return bool(item) and item.get("status") == "sending"
 
 
+class SegmentUnavailable(Exception):
+    """No guest-crm target for this tenant (guestCrm off and never on)."""
+
+
 def _segment_page(table, tenant_id, audience, cursor):
     """(subscriber rows, next cursor) of a Guest CRM segment."""
     payload = {"tenantId": tenant_id, "op": "page", "exportId": audience.get("exportId")}
     if cursor:
         payload["cursor"] = cursor
     from shared import tenant
-    targets = feature_hooks.targets_for("marketing.segment", tenant.get_tenant(tenant_id))
+    targets = feature_hooks.targets_for("marketing.segment", tenant.get_tenant(tenant_id), ever=True)
+    if not targets:
+        raise SegmentUnavailable()
     answer = feature_hooks.call("marketing.segment", payload, targets=targets).get("guest-crm")
     if answer is None or not answer["ok"]:
         raise feature_hooks.HookFailed("guest-crm")
@@ -359,6 +367,13 @@ def handler(event, context):
             continue
         try:
             outcome, cursor = _run_campaign(table, campaign, entry["SK"], deadline)
+        except SegmentUnavailable:
+            logger.warning(json.dumps({"marketing": "segment_unavailable", "tenantId": tenant_id,
+                                       "campaignId": campaign_id}))
+            _finish(table, campaign, "paused", entry["SK"], cursor=campaign.get("cursor"),
+                    pausedReason="segment_unavailable")
+            handled += 1
+            continue
         except (BotoCoreError, ClientError, feature_hooks.HookFailed):
             logger.exception("marketing campaign run failed; next run resumes")
             table.update_item(Key={"PK": m.cmp_pk(tenant_id), "SK": f"CMP#{campaign_id}"},

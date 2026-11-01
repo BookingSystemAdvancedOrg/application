@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import boto3
 import pytest
 
-from hooks_fake import install_hook, no_hooks
+from hooks_fake import install_hook, no_hooks, record_invocations
 from shared import consent, dynamo
 from shared import marketing as m
 from shared import tenant as shared_tenant
@@ -145,3 +145,22 @@ def test_existing_audiences_unchanged_with_guest_crm_on(env, monkeypatch):
     assert body_of(admin(fn, "GET", "/marketing/audience", query={"type": "all"})) == {
         "audience": {"type": "all"}, "count": 2}
     assert calls == []
+
+
+def test_segment_campaign_without_guest_crm_ever_is_stopped_not_retried(env, monkeypatch):
+    guest_crm_on()
+    fn, sender = load("marketing"), load("marketing-send")
+    make_subscribers(env, 1)
+    install_hook(monkeypatch, "guest-crm", "marketing.segment", segment_hook([sid("guest0@example.se")]))
+    cmp = body_of(segment_campaign(fn))
+    admin(fn, "POST", f"/marketing/campaigns/{cmp['campaignId']}/send", {})
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
+        UpdateExpression="SET entitlements.features.guestCrm = :f", ExpressionAttributeValues={":f": False})
+    shared_tenant.reset_caches()
+    seen = record_invocations(monkeypatch)
+    assert sender.handler({"source": "schedule"}, CTX) == {"campaigns": 1}
+    stored = env.table.get_item(Key={"PK": m.cmp_pk(TENANT_A), "SK": f"CMP#{cmp['campaignId']}"})["Item"]
+    assert stored["status"] == "paused" and stored["pausedReason"] == "segment_unavailable"
+    assert seen == [] and outbox(env) == []
+    assert sender.handler({"source": "schedule"}, CTX) == {"campaigns": 0}

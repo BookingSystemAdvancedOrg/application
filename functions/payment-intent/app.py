@@ -34,6 +34,15 @@ PURPOSE:
     "confirmed" when Stripe reports the payment (webhook-payment-intent, or
     the status page asking get-order).
 
+    Gift cards (`giftCardCode`, CONTRACTS.md 6.E): refused with 400
+    gift_cards_off unless the tenant has giftCards. Otherwise the
+    gift-cards feature reserves the card's amount for the order
+    (checkout.giftcard hook, op reserve) after any discount; the order
+    stores giftCard {cardId, last4, debitedOre} and Stripe charges the
+    rest as one line. A card that covers everything: no Stripe call, the
+    order is confirmed at once. A refused card is 409 with the feature's
+    code; a failure after the reserve gives the amount back (op reverse).
+
     Multi-tenant: the location decides the tenant; tenants without the
     "ordering" feature, or inactive ones, get 404.
 
@@ -55,7 +64,8 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import consent, dynamo, http, manage_link, marketing, order_payments, payment_domains, request_guard
+from shared import consent, dynamo, feature_hooks, http, manage_link, marketing, order_payments, payment_domains
+from shared import request_guard
 from shared import site
 from shared import marketing_offer as offer
 from shared import tenant, turnstile
@@ -69,7 +79,7 @@ logger.setLevel(logging.INFO)
 _PATH = "/order"
 _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email", "notes",
            "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn",
-           "embedded", "marketingConsent"}
+           "embedded", "marketingConsent", "giftCardCode"}
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 _NOTES_MAX = 300
@@ -127,6 +137,11 @@ def _create(event):
         raise ValueError("discountCode must be text")
     if not isinstance(data.get("embedded", False), bool):
         raise ValueError("embedded must be true or false")
+    if data.get("giftCardCode") not in (None, ""):
+        if not isinstance(data["giftCardCode"], str) or len(data["giftCardCode"]) > 64:
+            raise ValueError("giftCardCode must be text")
+        if not ((ctx.tenant.get("entitlements") or {}).get("features") or {}).get("giftCards"):
+            raise ValueError("gift_cards_off")
     now = o.now_utc()
 
     counted = _guard(event, data, guest, now)
@@ -182,14 +197,50 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
             offer.release_code(codes, ctx.tenant_id, terms["code"], order_id)
             raise o.Closed("discount_min_order")
         total = discounted
+    gift = None
     try:
+        if data.get("giftCardCode"):
+            gift = _reserve_gift_card(ctx, location_id, order_id, data["giftCardCode"], total)
         return _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_date, lines, total,
                                    discount, table_id, table_label, base, slug, order_id, now,
-                                   embedded=data.get("embedded") is True)
+                                   embedded=data.get("embedded") is True, gift=gift)
     except Exception:
         if discount:
             offer.release_code(dynamo.table(marketing_table()), ctx.tenant_id, discount["code"], order_id)
+        if gift:
+            _reverse_gift_card(ctx.tenant_id, location_id, order_id)
         raise
+
+
+def _gift_card_answer(tenant_id, payload):
+    answer = feature_hooks.call("checkout.giftcard", {"tenantId": tenant_id, **payload}).get("gift-cards")
+    if answer is None:  # gift cards on, but the feature isn't deployed
+        raise feature_hooks.HookFailed("gift-cards")
+    return answer
+
+
+def _reserve_gift_card(ctx, location_id, order_id, code, total):
+    """{cardId, last4, debitedOre} reserved for this order, or raises Closed
+    (409) with the feature's code."""
+    answer = _gift_card_answer(ctx.tenant_id, {"op": "reserve", "locationId": location_id, "orderId": order_id,
+                                               "code": code, "totalOre": total})
+    if not answer["ok"]:
+        raise o.Closed(str(answer.get("code") or "gift_card_refused"))
+    gift = {"cardId": answer["cardId"], "last4": answer["cardLast4"], "debitedOre": int(answer["debitedOre"])}
+    rest = total - gift["debitedOre"]
+    if gift["debitedOre"] <= 0 or rest < 0 or 0 < rest < MIN_CHARGE_ORE:
+        _reverse_gift_card(ctx.tenant_id, location_id, order_id)
+        raise o.Closed("gift_card_min_order")
+    return gift
+
+
+def _reverse_gift_card(tenant_id, location_id, order_id):
+    """Gives a reserved amount back. Best effort here: the order never got
+    paid, and the feature also reverses on its own expiry."""
+    try:
+        _gift_card_answer(tenant_id, {"op": "reverse", "locationId": location_id, "orderId": order_id})
+    except feature_hooks.HookFailed:
+        logger.error(json.dumps({"giftCard": "reverse_failed", "orderId": order_id}))
 
 
 def marketing_table():
@@ -227,7 +278,7 @@ def _hold_released(location_id, order_id, email, now):
 
 
 def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_date, lines, total, discount,
-                        table_id, table_label, base, slug, order_id, now, *, embedded=False):
+                        table_id, table_label, base, slug, order_id, now, *, embedded=False, gift=None):
     date_str = local_date.isoformat()
     item = {
         **o.order_key(location_id, date_str, order_id),
@@ -244,6 +295,7 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
         "vat": o.vat_breakdown(lines),
         "currency": o.CURRENCY,
         **({"discount": discount} if discount else {}),
+        **({"giftCard": gift} if gift else {}),
         **{k: v for k, v in guest.items() if v is not None and k not in ("marketingOptIn", "orderMarketingOptIn")},
         **({"marketingOptIn": True} if guest.get("orderMarketingOptIn") else {}),
         "prepMinutes": policy["prepMinutes"],
@@ -269,12 +321,23 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
                  "ConditionExpression": "attribute_not_exists(PK)"}},
     ])
 
+    charge = total - (gift or {}).get("debitedOre", 0)
+    if gift and charge == 0:
+        order_payments.settle_paid(item, {}, now, "guest", method="giftcard")
+        logger.info(json.dumps({"order": "created", "orderId": order_id, "tenantId": ctx.tenant_id,
+                                "mode": mode, "total": total, "giftCard": True}))
+        return http.respond(201, {"orderId": order_id, "locationId": location_id, "statusToken": token,
+                                  "totalAmount": total, "giftCard": {"last4": gift["last4"], "debitedOre": total},
+                                  "chargedAmount": 0})
     if embedded:
         payment_domains.ensure(account, lambda: site.hosts(ctx.tenant_id, ctx.tenant))
     status_page = site.page(base, slug, f"/bestallning/{location_id}/{order_id}")
     cancel_page = site.page(base, slug, "/bestall") + ("&" if slug else "?") + f"avbruten={order_id}"
+    # With a gift card Stripe charges the rest as one line (the order keeps its dishes).
+    checkout_item = {**item, "lines": [{"name": f"Beställning, presentkort ****{gift['last4']} avdraget",
+                                        "unitPrice": charge, "quantity": 1}]} if gift else item
     try:
-        session = order_payments.create_checkout(item, account, status_page, cancel_page, now,
+        session = order_payments.create_checkout(checkout_item, account, status_page, cancel_page, now,
                                                  embedded=embedded)
     except stripe.StripeError as exc:
         logger.error(json.dumps({"checkout": "rejected", "orderId": order_id, "code": exc.code,
@@ -291,6 +354,8 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
                             "mode": mode, "total": total}))
     payment = ({"clientSecret": session["client_secret"], "stripeAccount": account}
                if embedded else {"checkoutUrl": session["url"]})
+    if gift:
+        payment.update(giftCard={"last4": gift["last4"], "debitedOre": gift["debitedOre"]}, chargedAmount=charge)
     return http.respond(201, {"orderId": order_id, "locationId": location_id, **payment,
                               "statusToken": token, "totalAmount": total})
 
@@ -327,6 +392,9 @@ def handler(event, context):
     except ValueError as exc:
         _refused(event, 400, str(exc))
         return http.error(400, str(exc))
+    except feature_hooks.HookFailed:
+        logger.error("order refused: 503 gift_card_unavailable")
+        return http.error(503, "gift_card_unavailable")
     except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):
         logger.exception("order service unavailable")
         return http.error(503, "order service unavailable")

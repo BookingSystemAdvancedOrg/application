@@ -22,6 +22,12 @@ PURPOSE:
     Confirming writes the order_confirmed notice: the Order table's stream
     sends the guest's SMS and receipt e-mail (notification).
 
+    Gift cards: an order with giftCard was charged totalAmount minus
+    giftCard.debitedOre, so that is the amount the session must match. When
+    such an order fails (expired, payment failed) the reserved amount is
+    given back once (checkout.giftcard hook, op reverse), recorded as
+    giftCard.reversedAt; a failing feature answers 500 so Stripe retries.
+
     Every event is matched to its order by metadata (locationId, orderId)
     AND the event's connected account must be the order's stripeAccountId,
     and the session must be the order's own (id and amount) - one
@@ -46,7 +52,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, order_payments
+from shared import dynamo, feature_hooks, order_payments
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -109,11 +115,38 @@ def _order(meta, account):
     return item
 
 
+def _charged(item):
+    """What Stripe charged: the total less a gift card's part."""
+    return int(item.get("totalAmount") or 0) - int((item.get("giftCard") or {}).get("debitedOre") or 0)
+
+
+def _reverse_gift_card(item, now):
+    """Gives a failed order's gift card amount back, once."""
+    gift = item.get("giftCard")
+    if not gift or gift.get("reversedAt") or item.get("status") != o.FAILED:
+        return
+    answer = feature_hooks.call("checkout.giftcard", {
+        "tenantId": item["tenantId"], "op": "reverse", "locationId": item["locationId"],
+        "orderId": item["orderId"]}).get("gift-cards")
+    if answer is None or not answer["ok"]:
+        raise feature_hooks.HookFailed("gift-cards")
+    try:
+        dynamo.table(o.order_table()).update_item(
+            Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+            UpdateExpression="SET giftCard.reversedAt = :now, giftCard.reversedOre = :ore",
+            ConditionExpression="attribute_exists(giftCard) AND attribute_not_exists(giftCard.reversedAt)",
+            ExpressionAttributeValues={":now": o.iso(now), ":ore": int(answer.get("reversedOre") or 0)})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
 def _session_event(kind, session, account, now):
     item = _order(session.get("metadata"), account)
     if not item:
         return "ignored"
-    if not order_payments.session_matches(session, item):
+    if not order_payments.session_matches(session, {**item, "totalAmount": _charged(item)} if item.get("giftCard")
+                                          else item):
         logger.warning(json.dumps({"ignored": "session_mismatch", "orderId": item["orderId"]}))
         return "ignored:mismatch"
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
@@ -121,7 +154,10 @@ def _session_event(kind, session, account, now):
             return "waiting"
         return "confirmed" if order_payments.settle_paid(item, session, now, "stripe") else "already_settled"
     reason = "checkout_expired" if kind == "checkout.session.expired" else "payment_failed"
-    return "failed" if order_payments.settle_failed(item, now, "stripe", reason) else "already_settled"
+    failed = order_payments.settle_failed(item, now, "stripe", reason)
+    if item.get("giftCard"):
+        _reverse_gift_card(failed or item, now)
+    return "failed" if failed else "already_settled"
 
 
 def _charge_refunded(charge, account, now):
@@ -131,7 +167,7 @@ def _charge_refunded(charge, account, now):
     refunded = int(charge.get("amount_refunded") or 0)
     if refunded <= int((item.get("refund") or {}).get("amount") or 0):
         return "already_recorded"
-    full = refunded >= int(item.get("totalAmount") or 0)
+    full = refunded >= _charged(item)
     updates = ["#rf = :refund", "updatedAt = :now",
                "history = list_append(if_not_exists(history, :empty), :entry)"]
     values = {":refund": {"amount": refunded, "at": o.iso(now)}, ":now": o.iso(now),
@@ -188,7 +224,7 @@ def handler(event, context):
             result = _charge_refunded(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, feature_hooks.HookFailed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

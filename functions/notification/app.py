@@ -62,6 +62,15 @@ PURPOSE:
       kassa_receipt      e-mail: a Kassa receipt or copy, already rendered
                          (order table, KASSAMAIL# items, shared/kassa_receipt.py)
 
+    Feature notices (CONTRACTS.md 9.4): a direct invoke (InvocationType
+    Event, retries 0) with {"notice": {"version": 1, "kind":
+    "<feature-id>.<message>", "tenantId", "locationId"?, "channel": "email" |
+    "sms", "to", "subject"?, "text", "html"?, "replyTo": "location" |
+    "tenant" | null}} sends one message the feature already wrote, with the
+    restaurant's sender name and From, Reply-To, the SMS prefixes, part
+    counting and the dev outbox. A bad payload is logged (never `to` or the
+    text) and dropped.
+
     Order SMS don't depend on tenant.notifications.sms - telling the guest
     the food is ready is what ordering is - but still go to Nordic numbers
     only. The same once-per-notice-id and 24 h rules apply.
@@ -114,7 +123,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import card_messages, card_payments, catering, catering_messages, finance, manage_link, messages
-from shared import kassa, kassa_receipt, order_messages, orders, site, sms, tenant
+from shared import contracts, kassa, kassa_receipt, marketing, order_messages, orders, site, sms, tenant
 from shared import calendar_invite
 
 logger = logging.getLogger()
@@ -634,7 +643,71 @@ def _catering(record):
     return "sent"
 
 
+# --- feature notices (direct invoke) ----------------------------------------------------
+
+_NOTICE_KIND = re.compile(r"([a-z][a-z-]*)\.([a-z][a-z-]*)")
+_NOTICE_FIELDS = {"version", "kind", "tenantId", "locationId", "channel", "to", "subject", "text", "html",
+                  "replyTo"}
+
+
+def _notice_payload(notice):
+    """The checked notice, or raises ValueError (the reason, never the contents)."""
+    if not isinstance(notice, dict) or set(notice) - _NOTICE_FIELDS or notice.get("version") != 1:
+        raise ValueError("bad_envelope")
+    match = _NOTICE_KIND.fullmatch(str(notice.get("kind") or ""))
+    if not match or match.group(1) not in contracts.FEATURE_IDS.values():
+        raise ValueError("bad_kind")
+    if not isinstance(notice.get("tenantId"), str) or not notice["tenantId"]:
+        raise ValueError("bad_tenant")
+    if notice.get("locationId") is not None and not isinstance(notice["locationId"], str):
+        raise ValueError("bad_location")
+    if notice.get("replyTo") not in ("location", "tenant", None):
+        raise ValueError("bad_reply_to")
+    if not isinstance(notice.get("text"), str) or not notice["text"].strip():
+        raise ValueError("bad_text")
+    channel, to = notice.get("channel"), notice.get("to")
+    if channel == "email":
+        if not marketing.valid_email(to) or not isinstance(notice.get("subject"), str) or not notice["subject"]:
+            raise ValueError("bad_email")
+        if notice.get("html") is not None and not isinstance(notice["html"], str):
+            raise ValueError("bad_html")
+    elif channel == "sms":
+        if not sms_allowed(to):
+            raise ValueError("bad_phone")
+    else:
+        raise ValueError("bad_channel")
+    return notice
+
+
+def _direct_notice(notice):
+    try:
+        notice = _notice_payload(notice)
+    except ValueError as exc:
+        logger.warning(json.dumps({"directNotice": "dropped", "reason": str(exc)}))
+        return {"status": "dropped", "reason": str(exc)}
+    kind, tenant_id, location_id = notice["kind"], notice["tenantId"], notice.get("locationId")
+    tenant_row = tenant.get_tenant(tenant_id)
+    location = tenant.get_location(tenant_id, location_id) if tenant_row and location_id else None
+    if not tenant_row or tenant_row.get("status") != "active" or (location_id and not location):
+        logger.warning(json.dumps({"directNotice": "dropped", "reason": "inactive", "kind": kind,
+                                   "tenantId": tenant_id}))
+        return {"status": "dropped", "reason": "inactive"}
+    if notice["channel"] == "email":
+        reply_to = [] if notice.get("replyTo") is None else \
+            _reply_to(tenant_row, location if notice["replyTo"] == "location" else None)
+        _send_email(notice["to"], notice["subject"], notice["text"], notice.get("html"),
+                    source=_from_address(tenant_row, location), reply_to=reply_to, tenant_id=tenant_id,
+                    location_id=location_id)
+    else:
+        _send_sms(notice["to"], notice["text"], tenant_row, location_id, kind=kind)
+    logger.info(json.dumps({"directNotice": "sent", "kind": kind, "channel": notice["channel"],
+                            "tenantId": tenant_id}))
+    return {"status": "sent"}
+
+
 def handler(event, context):
+    if isinstance(event, dict) and "notice" in event:
+        return _direct_notice(event["notice"])
     reservation_table = os.environ.get("RESERVATION_TABLE_NAME")
     catering_table = os.environ.get("CATERING_REQUESTS_TABLE_NAME")
     order_table = os.environ.get("ORDER_TABLE_NAME")

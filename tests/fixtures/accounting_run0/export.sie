@@ -1,0 +1,45 @@
+#FLAGGA 0
+#FORMAT PC8
+#SIETYP 4
+#PROGRAM "Booqy" 1.0
+#GEN 20261102
+#FNAMN "Rîkeri èkesson AB"
+#ORGNR 556677-8899
+#RAR 0 20260101 20261231
+#VALUTA SEK
+#KONTO 1510 "Kundfordringar"
+#KONTO 1580 "Fordringar fîr kontokort och kuponger"
+#KONTO 1930 "Fîretagskonto/checkkonto/affÑrskonto"
+#KONTO 2611 "UtgÜende moms pÜ fîrsÑljning inom Sverige, 25 %"
+#KONTO 2621 "UtgÜende moms pÜ fîrsÑljning inom Sverige, 12 %"
+#KONTO 2631 "UtgÜende moms pÜ fîrsÑljning inom Sverige, 6 %"
+#KONTO 3001 "FîrsÑljning inom Sverige, 25 % moms"
+#KONTO 3002 "FîrsÑljning inom Sverige, 12 % moms"
+#KONTO 3003 "FîrsÑljning inom Sverige, 6 % moms"
+#KONTO 6570 "Bankkostnader"
+#VER "B" 293 20261020 "Booqy dagsfîrsÑljning 2026-10-20 Sîdermalm"
+{
+   #TRANS 3001 {} -100.00 20261020 "FîrsÑljning 25 % moms"
+   #TRANS 3002 {} -357.14 20261020 "Avgifter uteblivna gÑster och sena avbokningar 12 % moms"
+   #TRANS 3002 {} -200.00 20261020 "FîrsÑljning 12 % moms"
+   #TRANS 2611 {} -25.00 20261020 "UtgÜende moms 25 %"
+   #TRANS 2621 {} -66.86 20261020 "UtgÜende moms 12 %"
+   #TRANS 1580 {} 400.00 20261020 "Kortgaranti (Stripe)"
+   #TRANS 1580 {} 349.00 20261020 "Onlinebetalningar (Stripe)"
+   #TRANS 1580 {} -13.10 20261020 "Stripe-avgifter"
+   #TRANS 1580 {} -500.00 20261020 "Utbetalning frÜn Stripe till bank"
+   #TRANS 1930 {} 500.00 20261020 "Utbetalning frÜn Stripe till bank"
+   #TRANS 6570 {} 13.10 20261020 "Stripe-avgifter"
+}
+#VER "B" 294 20261021 "Booqy dagsfîrsÑljning 2026-10-21 Sîdermalm"
+{
+   #TRANS 3003 {} -50.00 20261021 "FîrsÑljning 6 % moms"
+   #TRANS 2631 {} -3.00 20261021 "UtgÜende moms 6 %"
+   #TRANS 1580 {} 53.00 20261021 "Kort i restaurangen (Stripe Terminal)"
+}
+#VER "B" 295 20261022 "Booqy dagsfîrsÑljning 2026-10-22 Sîdermalm"
+{
+   #TRANS 3002 {} -1000.00 20261022 "Catering 12 % moms"
+   #TRANS 2621 {} -120.00 20261022 "UtgÜende moms 12 %"
+   #TRANS 1510 {} 1120.00 20261022 "Kundfakturor catering"
+}

@@ -40,7 +40,8 @@ def template(row, periods=None):
     org = f" (org.nr {row['orgNumber']})" if row.get("orgNumber") else ""
     address = _address(row)
     contact = _contact(row)
-    marketing = bool(((row.get("entitlements") or {}).get("features") or {}).get("marketing"))
+    features = (row.get("entitlements") or {}).get("features") or {}
+    marketing = bool(features.get("marketing"))
     lines = [
         f"## Personuppgiftsansvarig",
         f"{legal}{org}{', ' + address if address else ''} ansvarar för behandlingen av dina personuppgifter."
@@ -68,6 +69,18 @@ def template(row, periods=None):
             "- Besöksstatistik: vi räknar besök per dag och varifrån de kom, utan cookies och utan att spara din "
             "IP-adress eller något id (berättigat intresse).",
         ]
+    # Wording of the two paragraphs below awaits legal review (ADR-C, ADR-F).
+    if features.get("guestCrm"):
+        lines.append(
+            "- Gästregister: vi samlar dina bokningar, beställningar och cateringförfrågningar hos oss under din "
+            "e-post eller ditt telefonnummer, så att vi känner igen dig när du kommer tillbaka och kan ge dig bättre "
+            "service (rättslig grund: berättigat intresse). Du kan när som helst invända mot det genom att "
+            "kontakta oss.")
+    if features.get("waitlist"):
+        lines.append(
+            "- Kö: ställer du dig i kö till ett bord sparar vi namn, telefonnummer och antal gäster för att kunna "
+            "skicka ett sms när bordet är klart (rättslig grund: avtal). Uppgifterna raderas 30 dagar efter dagen "
+            "du stod i kö.")
     lines += [
         "",
         "## Hur länge uppgifterna sparas",

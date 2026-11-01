@@ -43,17 +43,16 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, catering, consent, dynamo, guarantee, http, orders, privacy_notice, retention
+from shared import booking_rules, catering, consent, contracts, dynamo, guarantee, http, orders, privacy_notice, retention
 from shared import tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
-# Contract wants contracts.SITE_CONFIG_FEATURES here (adds siteBuilder,
-# giftCards, waitlist; kassa stays out: staff-only, nothing guest-facing).
-# Held back: the existing site-config test pins exactly these five keys.
-_FEATURES = ("reservations", "ordering", "catering", "terminal", "marketing")
+# The guest-facing flags (CONTRACTS.md 7). kassa stays out: staff-only,
+# nothing about it is shown to guests.
+_FEATURES = contracts.SITE_CONFIG_FEATURES
 _SITE_MODES = ("builder", "custom")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
                      "about", "faviconUrl", "instagramUrl", "facebookUrl")

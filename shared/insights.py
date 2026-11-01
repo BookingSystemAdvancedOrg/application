@@ -71,7 +71,9 @@ CATERING_WON = frozenset({"signed", "confirmed", "delivered", "closed"})
 
 MONEY_FIELDS = ("revenue", "orderRevenue", "cateringRevenue", "tableRevenue", "pickupRevenue",
                 "avgOrder", "feesCharged", "feesRefunded", "avgCatering", "cardRevenue", "cardRefunded",
-                "inPersonRevenue")
+                "inPersonRevenue",
+                # margin per dish (dishMargin, owner only): dishes and summary
+                "cost", "margin", "marginPct", "missingCost", "targetMarginPct")
 
 
 # --- small helpers -----------------------------------------------------------------
@@ -693,7 +695,7 @@ def without_money(summary):
     """The staff view: the same figures with every amount removed."""
     out = {k: v for k, v in summary.items() if k not in MONEY_FIELDS}
     out["catering"] = {k: v for k, v in (summary.get("catering") or {}).items() if k not in MONEY_FIELDS}
-    out["dishes"] = [{k: v for k, v in d.items() if k != "revenue"} for d in summary.get("dishes") or ()]
+    out["dishes"] = [{k: v for k, v in d.items() if k not in MONEY_FIELDS} for d in summary.get("dishes") or ()]
     out["byDay"] = [{k: v for k, v in d.items() if k not in MONEY_FIELDS} for d in summary.get("byDay") or ()]
     return out
 

@@ -24,6 +24,11 @@ PURPOSE:
     "operations" by default, "none" = 403); every amount is removed for
     staff on the server.
 
+    Margin per dish: an owner of a tenant with dishMargin gets the dishes'
+    costs from the dish-margin feature (insights.dishCosts hook) and
+    shared/dish_margin.apply adds the margin fields; a failing feature is
+    503. Without dishMargin the answer is unchanged.
+
 ENV_VARS:
     ENVIRONMENT, INSIGHTS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, RESERVATION_TABLE_NAME,
@@ -44,7 +49,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, tenant
+from shared import dish_margin, feature_hooks, http, tenant
 from shared import insights as ins
 from shared import insights_store as store
 
@@ -187,6 +192,16 @@ def get_insights(event):
     compare = compare_range(first, last, compare_mode)
     now = now_utc()
     summary, previous, pending, built_at = _summaries(ctx, locations, first, last, compare, service, channel, now)
+    features = (ctx.tenant.get("entitlements") or {}).get("features") or {}
+    if money and features.get("dishMargin"):
+        answer = feature_hooks.call("insights.dishCosts", {
+            "tenantId": ctx.tenant_id, "locationIds": [loc["locationId"] for loc in locations],
+            "first": first, "last": last}).get("dish-margin")
+        if answer is not None:
+            if not answer["ok"]:
+                raise feature_hooks.HookFailed("dish-margin")
+            summary = dish_margin.apply(summary, {"targetMarginPct": answer.get("targetMarginPct"),
+                                                  "costs": answer.get("costs") or {}})
     if not money:
         summary = ins.without_money(summary)
         previous = ins.without_money(previous) if previous else None
@@ -215,7 +230,7 @@ def handler(event, context):
         return get_insights(event)
     except tenant.TenantError as exc:
         return exc.response()
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, feature_hooks.HookFailed):
         logger.exception("insights failed")
         return http.error(503, "service_unavailable")
     except Exception:  # noqa: BLE001 - never leak a stack trace

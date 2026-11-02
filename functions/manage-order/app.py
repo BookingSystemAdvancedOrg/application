@@ -12,7 +12,10 @@ TRIGGER:
          restaurant has started on it, ready around now + prepMinutes (the
          estimate is set again from this moment); ready on a pickup order
          sends the "ready" SMS; cancelled refunds the whole order with
-         Stripe and tells the guest.
+         Stripe and tells the guest. An order paid partly or fully with a
+         gift card gets the card's part back through the gift-cards feature
+         (checkout.giftcard op refund, once: giftCard.refundedAt) and only
+         the charged part from Stripe (nothing when the card covered it).
     PUT  /locations/{locationId}/orders/pause   {"minutes": 0-240}
          Stop taking orders for a while (0 = take orders again).
     POST /locations/{locationId}/orders/table-codes
@@ -44,7 +47,7 @@ from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, http, manage_link, order_payments, site, tenant
+from shared import dynamo, feature_hooks, http, manage_link, order_payments, site, tenant
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -114,6 +117,64 @@ def _update_status(item, target, ctx, now, *, expected, extra_sets=None, extra_v
     return result["Attributes"]
 
 
+def _refund_gift_card(item, now):
+    """The gift card's part back to the card, once (giftCard.refundedAt;
+    the feature is also idempotent per order). Regardless of the flag: the
+    order carries the card (CONTRACTS.md 9.2)."""
+    gift = item["giftCard"]
+    if gift.get("refundedAt"):
+        return item
+    answer = feature_hooks.call("checkout.giftcard", {
+        "tenantId": item["tenantId"], "op": "refund", "locationId": item["locationId"],
+        "orderId": item["orderId"]}, targets=["gift-cards"]).get("gift-cards")
+    if answer is None or not answer["ok"]:
+        raise feature_hooks.HookFailed("gift-cards")
+    try:
+        result = dynamo.table(o.order_table()).update_item(
+            Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+            UpdateExpression="SET giftCard.refundedAt = :now, giftCard.refundedOre = :ore",
+            ConditionExpression="attribute_exists(giftCard) AND attribute_not_exists(giftCard.refundedAt)",
+            ExpressionAttributeValues={":now": o.iso(now), ":ore": int(answer.get("reversedOre") or 0)},
+            ReturnValues="ALL_NEW")
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        return o.load(item["locationId"], item["orderId"])
+    return result["Attributes"]
+
+
+def _cancel_gift_card_order(item, ctx, now, current):
+    """Stripe first (only the charged part, nothing when the card covered it),
+    recorded on the order; then the card's part back, once; then cancelled.
+    A Stripe failure leaves the order as it was and the card not credited."""
+    record = item.get("refund")
+    if record is None:
+        charged = order_payments.charged_amount(item)
+        refund = order_payments.refund(item, now, ctx.sub) if charged > 0 else {}
+        record = {"amount": int(refund.get("amount") or charged), "at": o.iso(now), "refundId": refund.get("id"),
+                  "status": refund.get("status")}
+        try:
+            dynamo.table(o.order_table()).update_item(
+                Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+                UpdateExpression="SET #rf = :refund", ConditionExpression="attribute_exists(PK) AND "
+                                                                         "attribute_not_exists(#rf)",
+                ExpressionAttributeNames={"#rf": "refund"}, ExpressionAttributeValues={":refund": record})
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+        item = o.load(item["locationId"], item["orderId"])
+        record = item["refund"]
+    item = _refund_gift_card(item, now)
+    amount = int(record.get("amount") or 0)
+    updated = _update_status(
+        item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
+        extra_sets=["paymentStatus = :refunded"], extra_values={":refunded": o.PAY_REFUNDED},
+        history_extra={"refunded": amount, "giftCardRefunded": int(item["giftCard"].get("refundedOre") or 0)})
+    logger.info(json.dumps({"order": "cancelled", "orderId": item["orderId"], "refund": record.get("refundId"),
+                            "giftCard": True}))
+    return updated
+
+
 def _set_status(event, location_id, ctx, order_id):
     data = http.body(event, allowed={"status", "expectedStatus"})
     target = data.get("status")
@@ -131,6 +192,8 @@ def _set_status(event, location_id, ctx, order_id):
     now = o.now_utc()
 
     if target == o.CANCELLED:
+        if item.get("giftCard"):
+            return http.respond(200, o.staff_view(_cancel_gift_card_order(item, ctx, now, current)))
         refund = order_payments.refund(item, now, ctx.sub)
         amount = int(refund.get("amount") or item["totalAmount"])
         updated = _update_status(
@@ -244,6 +307,9 @@ def handler(event, context):
         return http.error(502, "refund_failed")
     except stripe.StripeUnavailable:
         return http.error(503, "payment_unavailable")
+    except feature_hooks.HookFailed:
+        logger.error(json.dumps({"refund": "gift_card_unavailable"}))
+        return http.error(503, "gift_card_unavailable")
     except ValueError as exc:
         return http.error(400, str(exc))
     except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):

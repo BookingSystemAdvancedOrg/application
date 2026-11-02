@@ -1,7 +1,14 @@
 """Kassa: the till in the admin app, built for Skatteverket's cash register
 rules (SKVFS 2014:9 as amended by 2021:17, 2014:10 as amended by 2021:18,
-2021:16). How each rule is met: docs/KASSA-REQUIREMENTS.md. Card only:
+2021:16). How each rule is met: docs/KASSA-REQUIREMENTS.md. Card
 payments are Stripe Terminal card payments (shared/card_payments.py).
+Gift cards (only with the giftCards feature): the gift-cards feature
+redeems the card, then the bill gets {paymentId, method "Presentkort",
+amount, last4, cardId, balanceAfter} in `giftCards` after the
+kassa.giftcard hook (op verify) confirmed it; undo before the receipt is op
+reverse. While the control system port has no voucher payment means
+(ControlSystem.voucher_method is None) a gift card payment is refused up
+front (501), so no card is debited on a bill whose receipt can't be made.
 
 Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
     PK LOCATION#<l>  SK REGISTER#<registerId>      a register (registreringsenhet):
@@ -12,7 +19,8 @@ Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
         gtSales, gtReturn (grand totals, öre), lastZJseq, lastZAt, lastZDay,
         float (växelkassa), dayOpen, training, lastHash, lockId/lockUntil
     PK LOCATION#<l>  SK BILL#<billId>              an open bill (nota): lines,
-        discount, card payment ids; closed/void bills expire after 90 days
+        discount, card payment ids, gift card payments (giftCards);
+        closed/void bills expire after 90 days
     PK LOCATION#<l>  SK RCPT#<registerId>#<seq>    a sale receipt's pointer:
         jseq, payments, returned lines, returnCount, copyJseq (one copy)
     PK LOCATION#<l>  SK SETUP                      "Kom igång med kassan" checklist
@@ -52,7 +60,7 @@ from botocore.exceptions import ClientError
 
 from shared import card_payments as cp
 from shared import control_system as cs
-from shared import dynamo, printing
+from shared import dynamo, feature_hooks, printing
 from shared import orders as o
 from shared.order_messages import _seller
 
@@ -104,6 +112,7 @@ DELETED = "radera"                # RaderaRegistreradArtikel
 
 CATEGORY_NAMES = {"starters": "Förrätter", "mains": "Varmrätter", "desserts": "Efterrätter", "drinks": "Drycker"}
 CARD = "Kort"
+GIFT_CARD = "Presentkort"
 NOTICE_RECEIPT = "kassa_receipt"
 
 _ID = re.compile(r"[0-9a-f]{32}")
@@ -124,6 +133,11 @@ class Conflict(Exception):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
+
+class GiftCardReceiptUnsupported(NotImplementedError):
+    """A receipt with a gift card payment: the control system port has no
+    voucher payment means yet (legal check, blocks feature E)."""
 
 
 class Unavailable(Exception):
@@ -702,7 +716,14 @@ def payments_of(ctx, bill):
             out.append(cp.load(ctx.location_id, payment_id))
         except cp.NotFound:
             continue
-    return out
+    # Gift card payments count as paid from the moment they are on the bill.
+    return out + [{**_plain(g), "status": cp.SUCCEEDED} for g in bill.get("giftCards") or []]
+
+
+def payment_view(p):
+    if p.get("method") == GIFT_CARD:
+        return {k: p.get(k) for k in ("paymentId", "method", "amount", "last4", "balanceAfter", "status")}
+    return cp.view(p)
 
 
 def _paid(payments):
@@ -726,7 +747,7 @@ def bill_view(ctx, bill, payments=None):
             "gross", "discount", "total", "vat")} for line in priced["lines"]],
         "gross": priced["gross"], "discountAmount": priced["discount"], "total": priced["total"],
         "vat": priced["vat"], "paid": paid, "remaining": priced["total"] - paid,
-        "payments": [cp.view(p) for p in payments],
+        "payments": [payment_view(p) for p in payments],
         "locked": bool(_live(payments)),
     })
     return {k: v for k, v in view.items() if v is not None}
@@ -1023,12 +1044,88 @@ def _day_open(register):
         raise Conflict("day_not_open")
 
 
+def _gift_card_hook(ctx, op, bill_id, payment_id):
+    """The gift-cards feature's answer to kassa.giftcard. A refusal is 409
+    with its code; a failure or a missing feature is 503."""
+    try:
+        answer = feature_hooks.call("kassa.giftcard", {
+            "tenantId": ctx.tenant_id, "op": op, "locationId": ctx.location_id, "billId": bill_id,
+            "paymentId": payment_id},
+            targets=feature_hooks.targets_for("kassa.giftcard", ctx.tenant)).get("gift-cards")
+    except feature_hooks.HookFailed:
+        answer = None
+    if answer is None:
+        raise Unavailable("gift_card_unavailable")
+    if not answer["ok"]:
+        raise Conflict(str(answer.get("code") or "gift_card_refused"))
+    return answer
+
+
+def _set_gift_cards(ctx, bill, gift_cards, now):
+    try:
+        _table().update_item(
+            Key=bill_key(ctx.location_id, bill["billId"]),
+            UpdateExpression="SET giftCards = :g, version = version + :one, updatedAt = :now",
+            ConditionExpression="version = :v AND #s = :open",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":g": gift_cards, ":one": 1, ":now": o.iso(now), ":v": bill["version"],
+                                       ":open": OPEN})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        raise Conflict("changed_retry") from None
+
+
+def add_gift_card_payment(ctx, bill_id, payment_id, *, system, now):
+    """A gift card the gift-cards feature already redeemed for this bill
+    (txId = paymentId): verified with it, then part of the bill's payments.
+    A repeat with the same paymentId returns the stored payment."""
+    if not valid_id(payment_id):
+        raise ValueError("paymentId is invalid")
+    bill = get_bill(ctx, bill_id)
+    if bill.get("status") != OPEN:
+        raise Conflict("bill_closed")
+    known = next((g for g in _plain(bill.get("giftCards") or []) if g["paymentId"] == payment_id), None)
+    if known:
+        return known
+    if not system.voucher_method:
+        # Blocks feature E (legal check): refused before the card is debited,
+        # since _cs_payments could not report it on the receipt.
+        raise GiftCardReceiptUnsupported("gift card payments need a voucher payment means in the control system")
+    if bill.get("training"):
+        raise Conflict("training_no_payment")
+    register = get_register(ctx, bill["registerId"])
+    _day_open(register)
+    status = system.status(register)
+    if not status.ok:
+        _mark_down(ctx, bill["registerId"], status.code, now=now, user=user_of(ctx))
+        raise Unavailable("control_system_unreachable")
+    answer = _gift_card_hook(ctx, "verify", bill_id, payment_id)
+    amount = _int(answer.get("amountOre"))
+    priced = price(bill)
+    remaining = priced["total"] - sum(_int(p.get("amount")) for p in _live(payments_of(ctx, bill)))
+    if amount <= 0 or amount > remaining:
+        _gift_card_hook(ctx, "reverse", bill_id, payment_id)
+        raise Conflict("amount_too_large")
+    payment = {"paymentId": payment_id, "method": GIFT_CARD, "amount": amount, "last4": str(answer["cardLast4"]),
+               "cardId": str(answer["cardId"]), "balanceAfter": _int(answer.get("balanceAfterOre")),
+               "at": o.iso(now)}
+    _set_gift_cards(ctx, bill, [*_plain(bill.get("giftCards") or []), payment], now)
+    return payment
+
+
 def undo_payment(ctx, bill_id, payment_id, *, now):
     """Before the receipt: a paid part back to the card (the guest changed
     their mind). After the receipt it is a return."""
     bill = get_bill(ctx, bill_id)
     if bill.get("status") != OPEN:
         raise Conflict("bill_closed")
+    gift_cards = _plain(bill.get("giftCards") or [])
+    gift = next((g for g in gift_cards if g["paymentId"] == payment_id), None)
+    if gift:
+        answer = _gift_card_hook(ctx, "reverse", bill_id, payment_id)
+        _set_gift_cards(ctx, bill, [g for g in gift_cards if g["paymentId"] != payment_id], now)
+        return {**gift, "status": "reversed", "balanceAfter": _int(answer.get("balanceAfterOre"))}
     if payment_id not in (bill.get("payments") or []):
         raise NotFound
     item = cp.load(ctx.location_id, payment_id)
@@ -1054,6 +1151,9 @@ def check_delivery(ctx, system, delivery, email):
 def _card_rows(payments):
     out = []
     for p in payments:
+        if p.get("method") == GIFT_CARD:
+            out.append({k: p.get(k) for k in ("paymentId", "method", "amount", "last4", "cardId", "balanceAfter")})
+            continue
         card = p.get("card") or {}
         out.append({"paymentId": p["paymentId"], "method": CARD, "amount": _int(p.get("amount")),
                     "brand": card.get("brand"), "last4": card.get("last4"), "funding": card.get("funding")})
@@ -1089,9 +1189,20 @@ def _cs_lines(lines):
                  for line in lines)
 
 
-def _cs_payments(rows):
-    return tuple({"method": "card", "amount": _int(p.get("amount")), "last4": p.get("last4"),
-                  "funding": p.get("funding")} for p in rows)
+def _cs_payments(rows, system):
+    out = []
+    for p in rows:
+        if p.get("method") == GIFT_CARD:
+            # How a gift card is reported is a legal check (blocks feature E);
+            # add_gift_card_payment refuses earlier, this is the last guard.
+            if not system.voucher_method:
+                raise GiftCardReceiptUnsupported("gift card receipts need a voucher payment means in the control system")
+            out.append({"method": system.voucher_method, "amount": _int(p.get("amount")), "last4": p.get("last4"),
+                        "funding": None})
+        else:
+            out.append({"method": "card", "amount": _int(p.get("amount")), "last4": p.get("last4"),
+                        "funding": p.get("funding")})
+    return tuple(out)
 
 
 def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
@@ -1114,6 +1225,7 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
         _day_open(get_register(ctx, bill["registerId"]))
     seller = company(tenant_row, ctx.location)
     email = check_delivery(ctx, system, delivery, email)
+    cs_payments = _cs_payments(_card_rows(succeeded), system)
     register, lock = _lock(ctx.location_id, bill["registerId"])
     field = "trainingSeq" if training else "receiptSeq"
     seq = _int(register.get(field)) + 1
@@ -1122,7 +1234,7 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
         register_label=designation(register), address=seller["address"], serial=seq,
         sales_by_rate={v["rate"]: v["gross"] for v in priced["vat"]},
         vat_by_rate={v["rate"]: v["vat"] for v in priced["vat"]},
-        lines=_cs_lines(priced["lines"]), payments=_cs_payments(_card_rows(succeeded)), user=user)
+        lines=_cs_lines(priced["lines"]), payments=cs_payments, user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     receipt = {
         "seq": seq, "zSeq": _int(register.get("zSeq")) + 1, "company": seller, "billId": bill_id,
@@ -1223,7 +1335,7 @@ def copy_receipt(ctx, register_id, seq, *, delivery, email, user, now, system, t
                           original_ref=sold.get("csRef"),
                           sales_by_rate={v["rate"]: v["gross"] for v in sold.get("vat") or []},
                           vat_by_rate={v["rate"]: v["vat"] for v in sold.get("vat") or []},
-                          lines=_cs_lines(sold.get("lines") or []), payments=_cs_payments(sold.get("payments") or []),
+                          lines=_cs_lines(sold.get("lines") or []), payments=_cs_payments(sold.get("payments") or [], system),
                           user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     copy = {"copySeq": copy_seq, "originalSeq": int(seq), "originalAt": original["local"],
@@ -1326,7 +1438,7 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
                           lines=tuple({"text": str(line.get("name") or ""), "quantity": quantity, "total": amount,
                                        "rate": _int(line["vatRate"]), "vat": vat}
                                       for line, quantity, amount, vat in picked),
-                          payments=_cs_payments(refunds), user=user)
+                          payments=_cs_payments(refunds, system), user=user)
     registration = _register_receipt(ctx, register, lock, system, data, now=now, user=user)
     returned = _plain(pointer.get("returned") or {})
     for line, quantity, amount, vat in picked:

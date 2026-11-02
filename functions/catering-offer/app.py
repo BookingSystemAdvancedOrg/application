@@ -92,6 +92,15 @@ _LINE_REFS = ("menuItemId", "dishId", "packageId")
 
 
 
+def default_valid_until(today, days, delivery_date):
+    """The restaurant's validity days, but never past the delivery day (a
+    request a few days out would otherwise be refused without a date)."""
+    valid = (today + timedelta(days=days)).isoformat()
+    if delivery_date and today.isoformat() <= delivery_date < valid:
+        return delivery_date
+    return valid
+
+
 def _unit_price(value):
     unit = c.kronor_to_ore(value, "unitPrice")
     if unit > prices.MAX_ITEM_PRICE_ORE:
@@ -155,7 +164,7 @@ def _offer_from(data, item, settings, location, now):
         raise ValueError("offer total must be more than 0 kr")
     if totals["total"] > c.MAX_TOTAL_ORE:
         raise ValueError(f"offer total may be at most {c.MAX_TOTAL_ORE // 100} kr")
-    valid = data.get("validUntil") or (today + timedelta(days=settings["offerValidDays"])).isoformat()
+    valid = data.get("validUntil") or default_valid_until(today, settings["offerValidDays"], item.get("deliveryDate"))
     try:
         valid_day = date.fromisoformat(valid)
     except (TypeError, ValueError):

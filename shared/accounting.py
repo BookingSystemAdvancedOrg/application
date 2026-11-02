@@ -29,6 +29,11 @@ wherever one is stored):
     Stripe            balance transactions on the connected account: card
                       fees, Stripe's own fees, payouts to the bank and
                       anything else that moves the Stripe balance
+    features          the accounting.events hook (shared/feature_hooks.py):
+                      gift cards sold, redeemed online, expired (breakage)
+                      come from the gift-cards feature as ready postings.
+                      A Kassa payment with a gift card debits the gift card
+                      liability instead of the settlement account
 
 Everything paid through Stripe goes via the settlement account
 (avräkningskonto), so its balance is the Stripe balance and the bank
@@ -62,7 +67,7 @@ from zoneinfo import ZoneInfo
 from boto3.dynamodb.conditions import Attr, Key
 
 from shared import catering as c
-from shared import dynamo
+from shared import dynamo, feature_hooks
 from shared import orders as o
 from shared import reservations as r
 from shared import stripe_client as stripe
@@ -93,6 +98,10 @@ DEFAULT_ACCOUNTS = {
     "refundsOwed": ("2890", "Övriga kortfristiga skulder"),
     "unclassified": ("2999", "OBS-konto"),
     "rounding": ("3740", "Öres- och kronutjämning"),
+    # Gift cards (feature E). Last, so the order and names of the roles above
+    # stay as they were; an account appears in a file only when a line uses it.
+    "giftCardLiability": ("2421", "Ej inlösta presentkort"),
+    "giftCardBreakage": ("3990", "Övriga ersättningar och intäkter"),
 }
 ROLES = tuple(DEFAULT_ACCOUNTS)
 # What each role is, for a renamed account's #KONTO line and the admin card.
@@ -102,6 +111,7 @@ ROLE_LABELS = {
     "stripe": "Stripe-avräkning", "bank": "Bank", "receivables": "Kundfordringar",
     "advances": "Förskott från kunder", "cardFees": "Kortavgifter", "tips": "Dricks",
     "refundsOwed": "Återbetalningar att göra", "unclassified": "OBS-konto", "rounding": "Öresavrundning",
+    "giftCardLiability": "Ej inlösta presentkort", "giftCardBreakage": "Presentkort som inte lösts in",
 }
 VAT_RATES = (25, 12, 6)
 
@@ -121,6 +131,8 @@ T_STRIPE_OTHER = "Övrig Stripe-händelse (kontrollera)"
 T_FREE_AMOUNT = "Kortbetalning utan momsuppgift"
 T_REFUNDS_OWED = "Återbetalning catering att göra"
 T_ROUNDING = "Öresavrundning"
+T_GIFT_CARD = "Presentkort i kassan"
+GIFT_CARD = "Presentkort"
 
 _ACCOUNT = re.compile(r"[1-8]\d{3}")
 _SERIES = re.compile(r"[A-Z]")
@@ -523,9 +535,15 @@ def kassa_events(entries, tz):
         if kind not in ("kassakvitto", "returkvitto"):
             continue
         day = str(entry.get("local") or "")[:10] or local_day(entry.get("at"), tz)
-        paid = sum(int(p.get("amount") or 0) for p in data.get("payments") or [])
-        other = [p for p in data.get("payments") or [] if (p.get("method") or "Kort") != "Kort"]
+        payments = data.get("payments") or []
+        gift = sum(int(p.get("amount") or 0) for p in payments if p.get("method") == GIFT_CARD)
+        paid = sum(int(p.get("amount") or 0) for p in payments) - gift
+        other = [p for p in payments if (p.get("method") or "Kort") not in ("Kort", GIFT_CARD)]
         event = sale(day, data.get("vat") or [], "stripe", T_TERMINAL, paid, refund=kind == "returkvitto")
+        if gift:
+            sign = -1 if kind == "returkvitto" else 1
+            event.postings.append(Posting("giftCardLiability", sign * gift,
+                                          _refund_text(T_GIFT_CARD) if sign < 0 else T_GIFT_CARD))
         if other:
             event.warnings.append("Kassan har betalningar med annat sätt än kort: kontrollera.")
         out.append(event)
@@ -787,8 +805,39 @@ def list_balance_transactions(account, start, end):
         params["starting_after"] = data[-1]["id"]
 
 
+def feature_events(location, first, last):
+    """Events the features book themselves (accounting.events hook). A
+    failing feature, or postings this module can't book, raise HookFailed:
+    an export without them would be wrong, so it is refused (503)."""
+    if not location.get("tenantId"):
+        return []
+    from shared import tenant
+    targets = feature_hooks.targets_for("accounting.events", tenant.get_tenant(location["tenantId"]), ever=True)
+    if not targets:
+        return []
+    answers = feature_hooks.call("accounting.events", {"tenantId": location["tenantId"],
+                                                       "locationId": location["locationId"],
+                                                       "first": first, "last": last}, targets=targets)
+    out = []
+    for feature_id, answer in sorted(answers.items()):
+        try:
+            if not answer["ok"]:
+                raise ValueError(answer.get("code"))
+            for raw in answer.get("events") or []:
+                if not _DAY.fullmatch(str(raw["day"])) or not first <= raw["day"] <= last:
+                    raise ValueError("day")
+                postings = [Posting(p["role"], int(p["amount"]), str(p["text"])) for p in raw["postings"]]
+                if any(p.role not in ROLES for p in postings) or sum(p.amount for p in postings):
+                    raise ValueError("postings")
+                out.append(Event(raw["day"], postings, [str(w) for w in raw.get("warnings") or []]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise feature_hooks.HookFailed(feature_id) from exc
+    return out
+
+
 def location_events(location, first, last):
-    """Every event of the period from one location's own records."""
+    """Every event of the period from one location's own records, then the
+    features'."""
     tz = zone(location)
     location_id = location["locationId"]
     catering = load_catering(location_id, first, last, tz)
@@ -798,6 +847,7 @@ def location_events(location, first, last):
     events += kassa_events(load_kassa(location_id, first, last), tz)
     events += guarantee_events(load_reservations(location_id, first, last), first, last, tz)
     events += catering_events(catering, first, last, tz)
+    events += feature_events(location, first, last)
     accounts = {i.get("stripeAccountId") for i, _, _ in catering if _acct(i.get("stripeAccountId"))}
     return events, accounts
 

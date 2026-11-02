@@ -12,7 +12,7 @@ import hmac
 import importlib.util
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -444,6 +444,15 @@ def test_offer_capacity_full_and_validation(env):
     late = {**OFFER, "validUntil": "2026-10-25"}
     assert "after the delivery date" in body_of(staff(env, "POST", "/offer/send", body=late, request_id=rid))["error"]
     assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid, role="staff_user")["statusCode"] == 403
+
+
+def test_default_valid_until_never_passes_the_delivery_day():
+    default = load("catering-offer", "cat_offer_default").default_valid_until
+    today = date(2026, 10, 30)
+    assert default(today, 7, "2026-11-03") == "2026-11-03"
+    assert default(today, 7, "2026-12-01") == "2026-11-06"
+    assert default(today, 7, None) == "2026-11-06"
+    assert default(today, 7, "2026-10-29") == "2026-11-06"  # past delivery: left to the usual refusal
 
 
 def test_decline_releases_capacity_and_tells_the_guest(env):

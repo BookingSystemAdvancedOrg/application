@@ -1,7 +1,10 @@
+import ast
+import copy
 from error_body import err
 from pathlib import Path
 
 import pytest
+import yaml
 from openapi_spec_validator import validate
 from openapi_spec_validator.readers import read_from_filename
 
@@ -1868,3 +1871,118 @@ def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
     assert "menu-images/{tenantId}/locations/" in upload["properties"]["imageKey"][
         "description"
     ]
+
+
+# --- feature fragments (CONTRACTS.md 15) ----------------------------------------------
+
+FRAGMENT_DIR = SPEC_PATH.parent / "openapi"
+FUNCTIONS_DIR = Path(__file__).parents[1] / "functions"
+
+
+def handler_routes(feature_id, functions_dir=FUNCTIONS_DIR):
+    """The keys of the module-level ROUTES dict of functions/<id>/app.py, as
+    {(METHOD, path)} (read with ast: nothing is imported)."""
+    tree = ast.parse((functions_dir / feature_id / "app.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] \
+            if isinstance(node, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "ROUTES" for t in targets) and isinstance(node.value, ast.Dict):
+            keys = [ast.literal_eval(k) for k in node.value.keys]
+            return {(k.split(" ", 1)[0].upper(), k.split(" ", 1)[1].replace("+}", "}")) for k in keys}
+    raise AssertionError(f"functions/{feature_id}/app.py has no module-level ROUTES dict")
+
+
+def merge_fragments(base, fragment_dir=FRAGMENT_DIR, functions_dir=FUNCTIONS_DIR):
+    """The base document with every fragment merged in; raises
+    AssertionError on a broken rule (docs/openapi/README.md)."""
+    from shared import contracts
+    merged = copy.deepcopy(base)
+    schemas = merged.setdefault("components", {}).setdefault("schemas", {})
+    for path in sorted(fragment_dir.glob("*.yaml")) if fragment_dir.is_dir() else []:
+        feature_id = path.stem
+        assert feature_id in contracts.FEATURE_IDS.values(), f"{path.name}: unknown feature id"
+        fragment = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        assert set(fragment) <= {"paths", "components"}, f"{path.name}: only paths and components"
+        assert set(fragment.get("components") or {}) <= {"schemas"}, f"{path.name}: only components.schemas"
+        operations = set()
+        for route, item in (fragment.get("paths") or {}).items():
+            assert route not in merged["paths"], f"{path.name}: duplicate path {route}"
+            merged["paths"][route] = item
+            operations |= {(m.upper(), route) for m in item if m in HTTP_METHODS}
+        for name, schema in ((fragment.get("components") or {}).get("schemas") or {}).items():
+            assert name not in schemas, f"{path.name}: duplicate schema {name}"
+            schemas[name] = schema
+        assert operations == handler_routes(feature_id, functions_dir), \
+            f"{path.name}: documented operations differ from ROUTES"
+    return merged
+
+
+def test_merged_document_with_feature_fragments_is_valid(openapi_document):
+    document, base_uri = openapi_document
+    validate(merge_fragments(document), base_uri=base_uri)
+
+
+def _fragment_setup(tmp_path, routes, fragment):
+    functions = tmp_path / "functions" / "waitlist"
+    functions.mkdir(parents=True)
+    (functions / "app.py").write_text(f"ROUTES = {routes!r}\n", encoding="utf-8")
+    fragments = tmp_path / "openapi"
+    fragments.mkdir()
+    (fragments / "waitlist.yaml").write_text(yaml.safe_dump(fragment), encoding="utf-8")
+    return fragments, tmp_path / "functions"
+
+
+_OPERATION = {"summary": "x", "operationId": "waitlistGet", "responses": {"200": {"description": "OK"}},
+              "security": [], "x-required-groups": []}
+
+
+def test_a_matching_fragment_merges_and_validates(openapi_document, tmp_path):
+    document, base_uri = openapi_document
+    fragments, functions = _fragment_setup(
+        tmp_path, {"GET /public/locations/{locationId}/waitlist": None},
+        {"paths": {"/public/locations/{locationId}/waitlist": {
+            "parameters": [{"name": "locationId", "in": "path", "required": True, "schema": {"type": "string"}}],
+            "get": _OPERATION}},
+         "components": {"schemas": {"WaitlistEntry": {"type": "object"}}}})
+    merged = merge_fragments(document, fragments, functions)
+    validate(merged, base_uri=base_uri)
+    assert "WaitlistEntry" in merged["components"]["schemas"]
+
+
+@pytest.mark.parametrize("routes, fragment, message", [
+    ({"GET /waitlist-x": None, "POST /waitlist-x": None}, {"paths": {"/waitlist-x": {"get": _OPERATION}}},
+     "differ from ROUTES"),
+    ({"GET /order": None}, {"paths": {"/order": {"get": _OPERATION}}}, "duplicate path"),
+    ({}, {"components": {"schemas": {"OrderCreated": {"type": "object"}}}}, "duplicate schema"),
+    ({}, {"info": {}}, "only paths and components"),
+])
+def test_a_broken_fragment_fails(openapi_document, tmp_path, routes, fragment, message):
+    document, _ = openapi_document
+    fragments, functions = _fragment_setup(tmp_path, routes, fragment)
+    with pytest.raises(AssertionError, match=message):
+        merge_fragments(document, fragments, functions)
+
+
+# --- Run 0 addendum (features K and L) -------------------------------------------------
+
+@pytest.mark.parametrize("feature_id", ["events-tickets", "phone-agent"])
+def test_addendum_fragment_present_once_the_handler_exists(feature_id):
+    if not (FUNCTIONS_DIR / feature_id / "app.py").exists():
+        pytest.skip(f"functions/{feature_id}/app.py not built yet (Run 2)")
+    assert (FRAGMENT_DIR / f"{feature_id}.yaml").exists(), f"docs/openapi/{feature_id}.yaml missing"
+
+
+@pytest.mark.parametrize("feature_id", ["events-tickets", "phone-agent"])
+def test_addendum_feature_ids_are_accepted_as_fragments(openapi_document, tmp_path, feature_id):
+    document, base_uri = openapi_document
+    (tmp_path / "functions" / feature_id).mkdir(parents=True)
+    (tmp_path / "functions" / feature_id / "app.py").write_text("ROUTES = {}\n", encoding="utf-8")
+    (tmp_path / "openapi").mkdir()
+    (tmp_path / "openapi" / f"{feature_id}.yaml").write_text("paths: {}\n", encoding="utf-8")
+    validate(merge_fragments(document, tmp_path / "openapi", tmp_path / "functions"), base_uri=base_uri)
+
+
+def test_site_config_documents_the_events_flag(openapi_document):
+    document, _ = openapi_document
+    features = document["components"]["schemas"]["SiteConfig"]["properties"]["tenant"]["properties"]["features"]
+    assert "giftCards, waitlist, events." in " ".join(features["description"].split())

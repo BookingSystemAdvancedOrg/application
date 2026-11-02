@@ -4374,7 +4374,10 @@ paths:
         every location of the restaurant, matched on e-mail (any case) or
         phone. Keys, link hashes and expiry fields are left out. A catering
         request carries its signature (name, masked personal number, signedAt)
-        and the guest's own events (signing with IP and method).
+        and the guest's own events (signing with IP and method). `features`
+        holds what each feature (guest register, reviews, gift cards, queue)
+        stores about the guest, by feature id; 503 when a feature can't
+        answer.
       security:
         - bearerAuth: []
       x-required-groups: [owner_user]
@@ -4398,6 +4401,10 @@ paths:
                   bookings: {type: array, items: {type: object, additionalProperties: true}}
                   orders: {type: array, items: {type: object, additionalProperties: true}}
                   cateringRequests: {type: array, items: {type: object, additionalProperties: true}}
+                  features:
+                    type: object
+                    description: feature id -> the items that feature stores about the guest.
+                    additionalProperties: {type: array, items: {type: object, additionalProperties: true}}
         '400':
           description: Neither email nor phone, or an invalid one.
 
@@ -4438,6 +4445,14 @@ paths:
                   consentWithdrawn: {type: array, items: {type: string, enum: [email, sms]}}
                   marketingRowsDeleted: {type: integer}
                   anonymised: {type: integer}
+                  features:
+                    type: object
+                    description: feature id -> {erased, kept} counts per kind of row.
+                    additionalProperties:
+                      type: object
+                      properties:
+                        erased: {type: object, additionalProperties: {type: integer}}
+                        kept: {type: object, additionalProperties: {type: integer}}
                   kept:
                     type: array
                     items:
@@ -6409,13 +6424,26 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required: [checkoutId, readerId, amount]
-              properties:
-                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                readerId: {type: string, pattern: '^tmr_'}
-                amount: {type: integer, minimum: 300, description: Öre}
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [checkoutId, readerId, amount]
+                  properties:
+                    checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                    readerId: {type: string, pattern: '^tmr_'}
+                    amount: {type: integer, minimum: 300, description: Öre}
+                - type: object
+                  description: |
+                    A gift card the gift-cards feature already redeemed for this
+                    bill (txId = paymentId). Needs giftCards (403
+                    feature_not_in_plan). A receipt with a gift card is 501
+                    gift_card_receipt_not_supported until the control system
+                    can report it.
+                  additionalProperties: false
+                  required: [kind, paymentId]
+                  properties:
+                    kind: {type: string, enum: [giftcard]}
+                    paymentId: {type: string, pattern: '^[0-9a-f]{32}$'}
       responses:
         '201':
           description: 'OK.'
@@ -7373,8 +7401,19 @@ components:
                 type: string
             features:
               type: object
+              description: |
+                reservations, ordering, catering, terminal, marketing,
+                siteBuilder, giftCards, waitlist, events. Never kassa
+                (and never phoneAgent).
               additionalProperties:
                 type: boolean
+            site:
+              type: object
+              description: Only when siteBuilder is on and the site builder wrote it.
+              required: [mode, version]
+              properties:
+                mode: {type: string, enum: [builder, custom]}
+                version: {type: integer, minimum: 0, description: The live version (0 = nothing published).}
         legal:
           type: object
           properties:
@@ -7442,6 +7481,12 @@ components:
                 description: Special days from today through the next 60 days.
                 items:
                   $ref: '#/components/schemas/SpecialDay'
+              waitlist:
+                type: object
+                description: Only when waitlist is on and the location has queue settings.
+                required: [publicJoin]
+                properties:
+                  publicJoin: {type: boolean}
         stripe:
           type: object
           properties:
@@ -8106,6 +8151,11 @@ components:
         byHour, byWeekday (0 = Monday), byDay, heat [{weekday, hour,
         occupancy}].
 
+        Margin per dish (owners only, when the restaurant has dishMargin):
+        dishes also carry cost, margin (öre) and marginPct, and the summary
+        missingCost (dishes without a cost) and targetMarginPct. Staff never
+        get these five fields.
+
     TenantUpdateRequest:
       type: object
       additionalProperties: false
@@ -8316,6 +8366,18 @@ components:
             The site pays on its own page with Stripe's Payment Element: the
             response carries clientSecret and stripeAccount instead of
             checkoutUrl.
+        giftCardCode:
+          type: string
+          maxLength: 64
+          description: |
+            A gift card (feature giftCards). 400 gift_cards_off when the
+            restaurant doesn't sell gift cards. The card pays what it can
+            (after any discount) and Stripe charges the rest; a card that
+            covers everything confirms the order at once (no checkout).
+            409 with the gift card's code when it can't be used (e.g.
+            card_expired, insufficient_balance), gift_card_min_order when
+            less than 3 kr would be left to pay by card; 503
+            gift_card_unavailable.
 
     OrderCreated:
       type: object
@@ -8344,6 +8406,15 @@ components:
         totalAmount:
           type: integer
           description: Öre.
+        giftCard:
+          type: object
+          description: With giftCardCode only.
+          properties:
+            last4: {type: string}
+            debitedOre: {type: integer}
+        chargedAmount:
+          type: integer
+          description: With giftCardCode only. What the guest pays by card (öre); 0 = no checkout.
 
     OrderLine:
       type: object

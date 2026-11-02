@@ -26,6 +26,8 @@ TRIGGER:
         POST bills/{b}/send                   kitchen ticket for new lines
         POST bills/{b}/void                   throw away an unpaid bill
         POST bills/{b}/payments               {checkoutId, readerId, amount}: card on a reader
+                                              {kind: "giftcard", paymentId}: a gift card the
+                                              gift-cards feature redeemed (giftCards on)
         POST bills/{b}/payments/{p}/undo      a paid part back to the card (before the receipt)
         POST bills/{b}/finalize               {delivery, email?}: control code, receipt
 
@@ -315,6 +317,13 @@ def _bill_route(event, method, ctx, parts, now, user, system):
         http.body(event, allowed=set(), required=False)
         kassa.void_bill(ctx, bill_id, user=user, now=now)
         return http.respond(200, {"billId": bill_id, "status": kassa.VOID})
+    if action == "payments" and len(parts) == 3 and (http.body(event) or {}).get("kind") == "giftcard":
+        tenant.require_feature(ctx.tenant, "giftCards")
+        data = http.body(event, allowed={"kind", "paymentId"})
+        payment = kassa.add_gift_card_payment(ctx, bill_id, data.get("paymentId"), system=system, now=now)
+        logger.info(json.dumps({"kassa": "payment", "bill": bill_id, "paymentId": payment["paymentId"],
+                                "method": "giftcard"}))
+        return http.respond(201, kassa.payment_view({**payment, "status": cp.SUCCEEDED}))
     if action == "payments" and len(parts) == 3:
         data = http.body(event, allowed={"checkoutId", "readerId", "amount"})
         item = kassa.start_payment(ctx, bill_id, checkout_id=data.get("checkoutId"), reader_id=data.get("readerId"),
@@ -324,7 +333,7 @@ def _bill_route(event, method, ctx, parts, now, user, system):
         return http.respond(201, cp.view(item))
     if action == "payments" and len(parts) == 5 and parts[4] == "undo":
         http.body(event, allowed=set(), required=False)
-        return http.respond(200, cp.view(kassa.undo_payment(ctx, bill_id, parts[3], now=now)))
+        return http.respond(200, kassa.payment_view(kassa.undo_payment(ctx, bill_id, parts[3], now=now)))
     if action == "finalize" and len(parts) == 3:
         data = http.body(event, allowed={"delivery", "email"})
         entry, delivered = kassa.finalize(ctx, bill_id, delivery=data.get("delivery"), email=data.get("email"),
@@ -392,6 +401,9 @@ def handler(event, context):
         return http.error(409, exc.code)
     except kassa.Unavailable as exc:
         return http.error(503, exc.code)
+    except kassa.GiftCardReceiptUnsupported:
+        logger.error(json.dumps({"kassa": "gift_card_receipt_not_supported"}))
+        return http.error(501, "gift_card_receipt_not_supported")
     except stripe.StripeError as exc:
         logger.error(json.dumps({"stripe": "rejected", "path": path, "code": exc.code, "message": str(exc)}))
         return http.error(502, "stripe_refused")

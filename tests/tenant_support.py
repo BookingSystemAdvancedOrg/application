@@ -11,6 +11,7 @@ Use inside an active moto `mock_aws()` context:
 
 import boto3
 
+from shared import contracts
 from shared import tenant as shared_tenant
 
 REGION = "eu-north-1"
@@ -29,7 +30,19 @@ OWNER_A_SUB = "owner-a-sub"
 OWNER_B_SUB = "owner-b-sub"
 STAFF_A_SUB = "staff-a-sub"
 
+# Legacy default on purpose: without kassa and marketing. Adding them would turn
+# those features on in hundreds of existing tests and change what they test.
 ALL_FEATURES = {"reservations": True, "ordering": True, "catering": True, "terminal": True}
+# Every new key off: twelve after the Run 0 addendum (events, phoneAgent).
+NEW_FEATURES = {k: False for k in contracts.NEW_FEATURE_KEYS}
+
+
+def features_on(*keys):
+    """The legacy defaults plus `keys` turned on (every other new key off)."""
+    unknown = set(keys) - set(contracts.FEATURE_KEYS)
+    if unknown:
+        raise KeyError(f"unknown feature keys {sorted(unknown)}")
+    return {**ALL_FEATURES, **NEW_FEATURES, **{k: True for k in keys}}
 
 
 def _pk_sk(name, extra_attrs=(), gsis=()):
@@ -45,12 +58,15 @@ def _pk_sk(name, extra_attrs=(), gsis=()):
     )
 
 
-def tenant_row(tenant_id, *, status="active", features=None, max_locations=3, **extra):
+def tenant_row(tenant_id, *, status="active", features=None, limits=None, max_locations=3, **extra):
+    entitlements = {"maxLocations": max_locations,
+                    "features": dict(ALL_FEATURES if features is None else features)}
+    if limits is not None:
+        entitlements["limits"] = dict(limits)
     return {
         "PK": f"TENANT#{tenant_id}", "SK": "PROFILE", "tenantId": tenant_id,
         "name": f"Tenant {tenant_id[2]}", "status": status,
-        "entitlements": {"maxLocations": max_locations,
-                         "features": dict(ALL_FEATURES if features is None else features)},
+        "entitlements": entitlements,
         "locationCount": 0, **extra,
     }
 
@@ -91,13 +107,16 @@ def create_tables(monkeypatch, *, location_table=LOCATION_TABLE_DEFAULT, user_ta
 
 
 def seed_tenancy(monkeypatch, *, location_table=LOCATION_TABLE_DEFAULT, user_table=USER_TABLE_DEFAULT,
-                 existing=(), tenant_a=None, tenant_b=None, locations_a=None, locations_b=None):
+                 existing=(), tenant_a=None, tenant_b=None, locations_a=None, locations_b=None,
+                 features_a=None, features_b=None):
     """Two active tenants: A with LOC_A + LOC_A2 and a staff user on LOC_A,
-    B with LOC_B. Override rows/locations with the keyword arguments."""
+    B with LOC_B. Override rows/locations with the keyword arguments;
+    `features_a`/`features_b` set the default rows' features (e.g.
+    `features_on("giftCards")`)."""
     create_tables(monkeypatch, location_table=location_table, user_table=user_table, existing=existing)
     res = boto3.resource("dynamodb", region_name=REGION)
-    res.Table(TENANT_TABLE).put_item(Item=tenant_a or tenant_row(TENANT_A))
-    res.Table(TENANT_TABLE).put_item(Item=tenant_b or tenant_row(TENANT_B))
+    res.Table(TENANT_TABLE).put_item(Item=tenant_a or tenant_row(TENANT_A, features=features_a))
+    res.Table(TENANT_TABLE).put_item(Item=tenant_b or tenant_row(TENANT_B, features=features_b))
     for item in (locations_a if locations_a is not None else
                  [location_row(TENANT_A, LOC_A), location_row(TENANT_A, LOC_A2)]):
         res.Table(location_table).put_item(Item=item)

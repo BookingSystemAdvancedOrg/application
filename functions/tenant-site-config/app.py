@@ -43,14 +43,17 @@ from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, catering, consent, dynamo, guarantee, http, orders, privacy_notice, retention
+from shared import booking_rules, catering, consent, contracts, dynamo, guarantee, http, orders, privacy_notice, retention
 from shared import tenant
 
 _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
-_FEATURES = ("reservations", "ordering", "catering", "terminal", "marketing")
+# The guest-facing flags (CONTRACTS.md 7). kassa stays out: staff-only,
+# nothing about it is shown to guests.
+_FEATURES = contracts.SITE_CONFIG_FEATURES
+_SITE_MODES = ("builder", "custom")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
                      "about", "faviconUrl", "instagramUrl", "facebookUrl")
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -162,8 +165,26 @@ def _ordering(row, tenant_row):
     return {"pickup": policy["pickup"], "table": policy["table"], "prepMinutes": policy["prepMinutes"]}
 
 
+def _site(row):
+    """PROFILE.site {mode, version} (written by site-builder), or None."""
+    site = row.get("site")
+    if not isinstance(site, dict) or site.get("mode") not in _SITE_MODES:
+        return None
+    try:
+        version = int(site.get("version"))
+    except (TypeError, ValueError):
+        return None
+    return {"mode": site["mode"], "version": version} if version >= 0 else None
+
+
+def _waitlist(row):
+    """Location row waitlist {publicJoin} (written by waitlist), or None."""
+    value = row.get("waitlist")
+    return {"publicJoin": value.get("publicJoin") is True} if isinstance(value, dict) else None
+
+
 def _public_location(row, tenant_row):
-    return {
+    out = {
         # Card guarantee terms shown BEFORE booking (None = no card asked).
         "guarantee": guarantee.public_policy(row, tenant_row),
         "locationId": row.get("locationId"),
@@ -185,6 +206,11 @@ def _public_location(row, tenant_row):
         # Catering calculator on for this location (details: GET .../catering/settings).
         "catering": catering.settings_of(row)["enabled"],
     }
+    features = (tenant_row.get("entitlements") or {}).get("features") or {}
+    waitlist = _waitlist(row) if features.get("waitlist") else None
+    if waitlist is not None:
+        out["waitlist"] = waitlist
+    return out
 
 
 def _site_config(params):
@@ -219,7 +245,8 @@ def _site_config(params):
         tenant.list_locations(tenant_id),
         key=lambda r: (str(r.get("createdAt") or "~"), str(r.get("name") or ""), r.get("SK", "")),
     )
-    return {
+    site = _site(row) if features.get("siteBuilder") else None
+    config = {
         "tenant": {
             "tenantId": tenant_id,
             "name": row.get("name"),
@@ -249,6 +276,9 @@ def _site_config(params):
             "marketingConsent": consent.public_text(row.get("name")) if features.get("marketing") else None,
         },
     }
+    if site is not None:
+        config["tenant"]["site"] = site
+    return config
 
 
 def handler(event, context):

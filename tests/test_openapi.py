@@ -1961,3 +1961,28 @@ def test_a_broken_fragment_fails(openapi_document, tmp_path, routes, fragment, m
     fragments, functions = _fragment_setup(tmp_path, routes, fragment)
     with pytest.raises(AssertionError, match=message):
         merge_fragments(document, fragments, functions)
+
+
+# --- Run 0 addendum (features K and L) -------------------------------------------------
+
+@pytest.mark.parametrize("feature_id", ["events-tickets", "phone-agent"])
+def test_addendum_fragment_present_once_the_handler_exists(feature_id):
+    if not (FUNCTIONS_DIR / feature_id / "app.py").exists():
+        pytest.skip(f"functions/{feature_id}/app.py not built yet (Run 2)")
+    assert (FRAGMENT_DIR / f"{feature_id}.yaml").exists(), f"docs/openapi/{feature_id}.yaml missing"
+
+
+@pytest.mark.parametrize("feature_id", ["events-tickets", "phone-agent"])
+def test_addendum_feature_ids_are_accepted_as_fragments(openapi_document, tmp_path, feature_id):
+    document, base_uri = openapi_document
+    (tmp_path / "functions" / feature_id).mkdir(parents=True)
+    (tmp_path / "functions" / feature_id / "app.py").write_text("ROUTES = {}\n", encoding="utf-8")
+    (tmp_path / "openapi").mkdir()
+    (tmp_path / "openapi" / f"{feature_id}.yaml").write_text("paths: {}\n", encoding="utf-8")
+    validate(merge_fragments(document, tmp_path / "openapi", tmp_path / "functions"), base_uri=base_uri)
+
+
+def test_site_config_documents_the_events_flag(openapi_document):
+    document, _ = openapi_document
+    features = document["components"]["schemas"]["SiteConfig"]["properties"]["tenant"]["properties"]["features"]
+    assert "giftCards, waitlist, events." in " ".join(features["description"].split())

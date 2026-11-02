@@ -77,3 +77,22 @@ def test_another_tenants_site_and_waitlist_never_show(site):
     assert all("waitlist" not in loc for loc in body["locations"])
     other = _body(module, "other")
     assert other["tenant"]["site"] == SITE and other["locations"][0]["waitlist"] == {"publicJoin": True}
+
+
+@pytest.mark.parametrize("features, expected", [(None, False), (features_on(), False), (features_on("events"), True)])
+def test_events_flag_follows_the_entitlement(site, features, expected):
+    """Run 0 addendum (ADR-K): tenant.features.events, and nothing else."""
+    module, tenants = site
+    _set(tenants, TENANT_A, "roma", features)
+    body = _body(module)
+    assert body["tenant"]["features"]["events"] is expected
+    assert "phoneAgent" not in body["tenant"]["features"]
+    assert not any(k.startswith("event") for k in body["tenant"] if k != "features")
+
+
+def test_events_on_for_another_tenant_does_not_leak(site):
+    module, tenants = site
+    _set(tenants, TENANT_A, "roma", features_on())
+    _set(tenants, TENANT_B, "other", features_on("events"))
+    assert _body(module, "roma")["tenant"]["features"]["events"] is False
+    assert _body(module, "other")["tenant"]["features"]["events"] is True

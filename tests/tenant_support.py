@@ -33,6 +33,7 @@ STAFF_A_SUB = "staff-a-sub"
 # Legacy default on purpose: without kassa and marketing. Adding them would turn
 # those features on in hundreds of existing tests and change what they test.
 ALL_FEATURES = {"reservations": True, "ordering": True, "catering": True, "terminal": True}
+# Every new key off: twelve after the Run 0 addendum (events, phoneAgent).
 NEW_FEATURES = {k: False for k in contracts.NEW_FEATURE_KEYS}
 
 

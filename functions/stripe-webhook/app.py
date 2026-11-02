@@ -26,11 +26,13 @@ PURPOSE:
     are no-ops. Test-mode events reaching prod (and live ones reaching dev)
     are ignored.
 
-    Gift cards: the four event types above plus charge.dispute.closed whose
-    object carries metadata.kind = "giftcard" go to the gift-cards feature
+    Gift cards and event tickets: the four event types above plus
+    charge.dispute.closed whose object carries metadata.kind = "giftcard"
+    (or "ticket") go to the gift-cards (or events-tickets) feature
     (stripe.event hook, shared/feature_hooks.py) with type, account and
     object, and its result is answered; a failing feature answers 500 so
-    Stripe retries. Nothing else changes.
+    Stripe retries. Any other kind is handled as before. Nothing else
+    changes.
 
     Answers 200 for anything handled or deliberately ignored, 400 for a bad
     signature, 500 for a transient failure (Stripe retries).
@@ -59,6 +61,8 @@ logger.setLevel(logging.INFO)
 _SECRET_CACHE_SECONDS = 300
 _GIFT_CARD_TYPES = ("payment_intent.succeeded", "payment_intent.payment_failed", "charge.refunded",
                     "charge.dispute.closed")
+# metadata.kind -> the stripe.event target that owns those payments (CONTRACTS.md 9.2)
+_FEATURE_KINDS = {"giftcard": "gift-cards", "ticket": "events-tickets"}
 _secret = {"value": None, "at": 0.0}
 
 
@@ -154,16 +158,16 @@ def _charge_refunded(obj, account, now):
     return "recorded"
 
 
-def _gift_card(kind, account, obj):
-    """The gift-cards feature's answer to a gift card payment event."""
+def _feature_payment(feature_id, kind, account, obj):
+    """The owning feature's answer to a gift card or ticket payment event."""
     tenant_id = (obj.get("metadata") or {}).get("tenantId")
     if not tenant_id:
         return "ignored:no_tenant"
     targets = feature_hooks.targets_for("stripe.event", tenant.get_tenant(str(tenant_id)), ever=True)
-    if not targets:
+    if feature_id not in targets:
         return "ignored:feature_off"
     answer = feature_hooks.call("stripe.event", {"tenantId": tenant_id, "type": kind, "account": account,
-                                                 "object": obj}, targets=targets).get("gift-cards")
+                                                 "object": obj}, targets=[feature_id]).get(feature_id)
     if answer is None:
         return "ignored:not_deployed"
     return str(answer.get("result")) if answer["ok"] else f"refused:{answer.get('code')}"
@@ -193,8 +197,8 @@ def handler(event, context):
     try:
         if not account:
             result = "ignored:no_account"
-        elif kind in _GIFT_CARD_TYPES and (obj.get("metadata") or {}).get("kind") == "giftcard":
-            result = _gift_card(kind, account, obj)
+        elif kind in _GIFT_CARD_TYPES and (obj.get("metadata") or {}).get("kind") in _FEATURE_KINDS:
+            result = _feature_payment(_FEATURE_KINDS[obj["metadata"]["kind"]], kind, account, obj)
         elif kind == "setup_intent.succeeded":
             result = _setup_succeeded(obj, account, now)
         elif kind == "payment_intent.succeeded":

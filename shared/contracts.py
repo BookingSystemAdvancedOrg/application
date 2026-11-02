@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "235176d9c89a"
+CONTRACTS_HASH = "8049da171e01"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -20,7 +20,9 @@ FEATURE_KEYS = ('reservations',
  'socialPosting',
  'personalliggare',
  'accountingSync',
- 'dishMargin')
+ 'dishMargin',
+ 'events',
+ 'phoneAgent')
 NEW_FEATURE_KEYS = ('metaAds',
  'siteBuilder',
  'guestCrm',
@@ -30,8 +32,10 @@ NEW_FEATURE_KEYS = ('metaAds',
  'socialPosting',
  'personalliggare',
  'accountingSync',
- 'dishMargin')
-FeatureKey = Literal["reservations", "ordering", "catering", "terminal", "marketing", "kassa", "metaAds", "siteBuilder", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin"]
+ 'dishMargin',
+ 'events',
+ 'phoneAgent')
+FeatureKey = Literal["reservations", "ordering", "catering", "terminal", "marketing", "kassa", "metaAds", "siteBuilder", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin", "events", "phoneAgent"]
 FEATURE_IDS = {'reservations': 'reservations',
  'ordering': 'ordering',
  'catering': 'catering',
@@ -47,7 +51,9 @@ FEATURE_IDS = {'reservations': 'reservations',
  'socialPosting': 'social-posting',
  'personalliggare': 'personalliggare',
  'accountingSync': 'accounting-sync',
- 'dishMargin': 'dish-margin'}
+ 'dishMargin': 'dish-margin',
+ 'events': 'events-tickets',
+ 'phoneAgent': 'phone-agent'}
 SITE_CONFIG_FEATURES = ('reservations',
  'ordering',
  'catering',
@@ -55,20 +61,24 @@ SITE_CONFIG_FEATURES = ('reservations',
  'marketing',
  'siteBuilder',
  'giftCards',
- 'waitlist')
+ 'waitlist',
+ 'events')
 
-LIMITS = {'siteBuilderAiEditsPerMonth': {'feature': 'siteBuilder', 'min': 0, 'max': 1000, 'default': 0}}
-LimitKey = Literal["siteBuilderAiEditsPerMonth"]
+LIMITS = {'phoneAgentMinutesPerMonth': {'feature': 'phoneAgent', 'min': 0, 'max': 100000, 'default': 0},
+ 'siteBuilderAiEditsPerMonth': {'feature': 'siteBuilder', 'min': 0, 'max': 1000, 'default': 0}}
+LimitKey = Literal["phoneAgentMinutesPerMonth", "siteBuilderAiEditsPerMonth"]
 
 EVENT_BUS = "booqy-events"
 EVENT_COMMON_FIELDS = {'tenantId': 'string', 'occurredAt': 'datetime', 'version': 'int'}
 EVENT_SOURCES = ('booqy.accounting-sync',
  'booqy.dish-margin',
+ 'booqy.events-tickets',
  'booqy.gift-cards',
  'booqy.google-business',
  'booqy.guest-crm',
  'booqy.meta-ads',
  'booqy.personalliggare',
+ 'booqy.phone-agent',
  'booqy.site-builder',
  'booqy.social-posting',
  'booqy.waitlist')
@@ -91,6 +101,38 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                            'menuItemId': 'string',
                                                            'validFrom': 'date'},
                                               'optional': {}}},
+ 'booqy.events-tickets': {'Event.Published': {'required': {'locationId': 'string',
+                                                           'eventId': 'string',
+                                                           'occurrences': 'int'},
+                                              'optional': {}},
+                          'EventOccurrence.Cancelled': {'required': {'locationId': 'string',
+                                                                     'eventId': 'string',
+                                                                     'occurrenceId': 'string',
+                                                                     'ticketsToRefund': 'int'},
+                                                        'optional': {}},
+                          'Ticket.CheckedIn': {'required': {'locationId': 'string',
+                                                            'occurrenceId': 'string',
+                                                            'ticketId': 'string'},
+                                               'optional': {}},
+                          'Ticket.Refunded': {'required': {'locationId': 'string',
+                                                           'occurrenceId': 'string',
+                                                           'ticketId': 'string',
+                                                           'amountOre': 'int',
+                                                           'by': 'enum[owner,cancellation]'},
+                                              'optional': {}},
+                          'Ticket.Sold': {'required': {'locationId': 'string',
+                                                       'eventId': 'string',
+                                                       'occurrenceId': 'string',
+                                                       'orderId': 'string',
+                                                       'qty': 'int',
+                                                       'amountOre': 'int'},
+                                          'optional': {}},
+                          'Ticket.Transferred': {'required': {'locationId': 'string',
+                                                              'occurrenceId': 'string',
+                                                              'ticketId': 'string',
+                                                              'newTicketId': 'string',
+                                                              'kind': 'enum[gift,resale]'},
+                                                 'optional': {}}},
  'booqy.gift-cards': {'GiftCard.Expired': {'required': {'cardId': 'string', 'amountOre': 'int'},
                                            'optional': {}},
                       'GiftCard.Redeemed': {'required': {'cardId': 'string',
@@ -179,6 +221,36 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                                       'correctsSeq': 'int',
                                                                       'kind': 'enum[check_in,check_out]'},
                                                          'optional': {}}},
+ 'booqy.phone-agent': {'PhoneCall.Answered': {'required': {'locationId': 'string',
+                                                           'callId': 'string',
+                                                           'language': 'enum[sv,en]'},
+                                              'optional': {}},
+                       'PhoneCall.Ended': {'required': {'locationId': 'string',
+                                                        'callId': 'string',
+                                                        'durationSec': 'int',
+                                                        'billedMinutes': 'int',
+                                                        'outcome': 'enum[booked,moved,cancelled,info,transferred,callback,abandoned,refused,error]'},
+                                           'optional': {'reservationId': 'string',
+                                                        'callbackId': 'string'}},
+                       'PhoneCall.Refused': {'required': {'locationId': 'string',
+                                                          'callId': 'string',
+                                                          'reason': 'enum[cap,kill_switch,hours,paused,entitlement]'},
+                                             'optional': {}},
+                       'PhoneCallback.Closed': {'required': {'locationId': 'string',
+                                                             'callbackId': 'string'},
+                                                'optional': {}},
+                       'PhoneCallback.Requested': {'required': {'locationId': 'string',
+                                                                'callbackId': 'string',
+                                                                'callId': 'string'},
+                                                   'optional': {}},
+                       'PhoneMinutes.CapReached': {'required': {'periodEnd': 'date',
+                                                                'minutes': 'int',
+                                                                'capMinutes': 'int'},
+                                                   'optional': {}},
+                       'PhoneNumber.Provisioned': {'required': {'locationId': 'string'},
+                                                   'optional': {}},
+                       'PhoneNumber.Released': {'required': {'locationId': 'string'},
+                                                'optional': {}}},
  'booqy.site-builder': {'SitePublish.Failed': {'required': {'publishId': 'string',
                                                             'code': 'string'},
                                                'optional': {}},
@@ -277,6 +349,68 @@ class DishMarginCostSetDetail(TypedDict):
     locationId: str
     menuItemId: str
     validFrom: str
+
+
+class EventPublishedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    eventId: str
+    occurrences: int
+
+
+class EventOccurrenceCancelledDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    eventId: str
+    occurrenceId: str
+    ticketsToRefund: int
+
+
+class TicketCheckedInDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    occurrenceId: str
+    ticketId: str
+
+
+class TicketRefundedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    occurrenceId: str
+    ticketId: str
+    amountOre: int
+    by: Literal["owner", "cancellation"]
+
+
+class TicketSoldDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    eventId: str
+    occurrenceId: str
+    orderId: str
+    qty: int
+    amountOre: int
+
+
+class TicketTransferredDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    occurrenceId: str
+    ticketId: str
+    newTicketId: str
+    kind: Literal["gift", "resale"]
 
 
 class GiftCardExpiredDetail(TypedDict):
@@ -479,6 +613,77 @@ class PersonalliggareCorrectedDetail(TypedDict):
     kind: Literal["check_in", "check_out"]
 
 
+class PhoneCallAnsweredDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    callId: str
+    language: Literal["sv", "en"]
+
+
+class PhoneCallEndedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    callId: str
+    durationSec: int
+    billedMinutes: int
+    outcome: Literal["booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error"]
+    reservationId: NotRequired[str]
+    callbackId: NotRequired[str]
+
+
+class PhoneCallRefusedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    callId: str
+    reason: Literal["cap", "kill_switch", "hours", "paused", "entitlement"]
+
+
+class PhoneCallbackClosedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    callbackId: str
+
+
+class PhoneCallbackRequestedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+    callbackId: str
+    callId: str
+
+
+class PhoneMinutesCapReachedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    periodEnd: str
+    minutes: int
+    capMinutes: int
+
+
+class PhoneNumberProvisionedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+
+
+class PhoneNumberReleasedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    locationId: str
+
+
 class SitePublishFailedDetail(TypedDict):
     tenantId: str
     occurredAt: str
@@ -590,8 +795,11 @@ class WaitlistTableOfferedDetail(TypedDict):
 
 
 HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
-                       'targets': ['gift-cards'],
+                       'targets': ['gift-cards', 'events-tickets'],
                        'gate': 'on or ever on'},
+ 'billing.usage': {'caller': 'platform-tenants',
+                   'targets': ['phone-agent'],
+                   'gate': 'phoneAgent on or ever on'},
  'checkout.giftcard': {'caller': 'payment-intent, webhook-payment-intent, manage-order',
                        'targets': ['gift-cards'],
                        'gate': 'giftCards on and giftCardCode present (reserve); order carries '
@@ -599,23 +807,41 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
  'insights.dishCosts': {'caller': 'insights',
                         'targets': ['dish-margin'],
                         'gate': 'dishMargin on and caller is owner'},
+ 'insights.events': {'caller': 'insights',
+                     'targets': ['events-tickets'],
+                     'gate': 'events on or ever on'},
  'kassa.giftcard': {'caller': 'kassa', 'targets': ['gift-cards'], 'gate': 'giftCards and kassa on'},
  'marketing.segment': {'caller': 'marketing, marketing-send',
                        'targets': ['guest-crm'],
                        'gate': 'audience {type: segment, exportId}'},
  'platform': {'caller': 'platform-tenants',
-              'targets': ['meta-ads', 'site-builder', 'google-business', 'personalliggare'],
+              'targets': ['meta-ads',
+                          'site-builder',
+                          'google-business',
+                          'personalliggare',
+                          'phone-agent'],
               'gate': 'operator route hit'},
  'privacy.erase': {'caller': 'guest-privacy',
-                   'targets': ['guest-crm', 'google-business', 'gift-cards', 'waitlist'],
+                   'targets': ['guest-crm',
+                               'google-business',
+                               'gift-cards',
+                               'waitlist',
+                               'events-tickets',
+                               'phone-agent'],
                    'gate': 'on or ever on'},
  'privacy.export': {'caller': 'guest-privacy',
-                    'targets': ['guest-crm', 'google-business', 'gift-cards', 'waitlist'],
+                    'targets': ['guest-crm',
+                                'google-business',
+                                'gift-cards',
+                                'waitlist',
+                                'events-tickets',
+                                'phone-agent'],
                     'gate': 'on or ever on'},
  'stripe.event': {'caller': 'stripe-webhook',
-                  'targets': ['gift-cards'],
-                  'gate': 'on or ever on; gift-cards ignores the event unless account is the '
-                          "card's own stripeAccountId"},
+                  'targets': ['gift-cards', 'events-tickets'],
+                  'gate': 'on or ever on; target by metadata.kind (giftcard: gift-cards, ticket: '
+                          'events-tickets); the feature ignores the event unless account is the '
+                          'stripeAccountId on its own purchase, TX or order row'},
  'tenant.purge': {'caller': 'tenant-purge',
                   'targets': ['meta-ads',
                               'site-builder',
@@ -626,19 +852,29 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
                               'social-posting',
                               'personalliggare',
                               'accounting-sync',
-                              'dish-margin'],
+                              'dish-margin',
+                              'events-tickets',
+                              'phone-agent'],
                   'gate': 'always'}}
 
-CLIENTS = {'bedrock': {'env': 'BEDROCK_CLIENT', 'tfvar': 'bedrock_client'},
+CLIENTS = {'agent_model': {'env': 'AGENT_MODEL_CLIENT', 'tfvar': 'agent_model_client'},
+ 'bedrock': {'env': 'BEDROCK_CLIENT', 'tfvar': 'bedrock_client'},
  'fortnox': {'env': 'FORTNOX_CLIENT', 'tfvar': 'fortnox_client'},
  'google_business': {'env': 'GOOGLE_BUSINESS_CLIENT', 'tfvar': 'google_business_client'},
  'meta': {'env': 'META_CLIENT', 'tfvar': 'meta_client'},
- 'visma': {'env': 'VISMA_CLIENT', 'tfvar': 'visma_client'}}
+ 'telephony': {'env': 'TELEPHONY_CLIENT', 'tfvar': 'telephony_client'},
+ 'visma': {'env': 'VISMA_CLIENT', 'tfvar': 'visma_client'},
+ 'voice': {'env': 'VOICE_CLIENT', 'tfvar': 'voice_client'}}
 
 AccountingProvider = Literal["fortnox", "visma"]
+CallOutcome = Literal["booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error"]
+CallRefusedReason = Literal["cap", "kill_switch", "hours", "paused", "entitlement"]
 ClientMode = Literal["simulator", "real"]
 ConnectionStatus = Literal["connected", "needs_reauth", "disconnected"]
 GuestChannel = Literal["email", "sms"]
 GuestSourceKind = Literal["booking", "order", "catering"]
+PhoneAgentMode = Literal["after_hours", "overflow", "always"]
 SiteMode = Literal["builder", "custom"]
 SocialChannel = Literal["facebook", "instagram"]
+TicketStatus = Literal["valid", "checked_in", "transferred", "refunded", "void"]
+TransferKind = Literal["gift", "resale"]

@@ -85,7 +85,9 @@ def test_real_invoker_live_alias_and_not_found(monkeypatch):
     fake = _real_with(monkeypatch, behaviour)
     assert feature_hooks.call("privacy.export", {"tenantId": "t"}) == {"gift-cards": {"ok": True}}
     assert {r["Qualifier"] for r in fake.requests} == {"live"}
-    assert len(fake.requests) == 4
+    # every target asked once: the four Run 0 features plus events-tickets and phone-agent (addendum)
+    assert [r["FunctionName"] for r in fake.requests] == [
+        f"dev-{f}" for f in ("guest-crm", "google-business", "gift-cards", "waitlist", "events-tickets", "phone-agent")]
 
 
 @pytest.mark.parametrize("behaviour", [
@@ -103,7 +105,7 @@ def test_purge_gets_the_long_timeout(monkeypatch):
     seen = []
     monkeypatch.setattr(feature_hooks, "invoke", lambda name, body, timeout: seen.append(timeout) or (None, b'{"ok": true}'))
     feature_hooks.call("tenant.purge", {"tenantId": "t"}, targets=["waitlist"])
-    feature_hooks.call("stripe.event", {"tenantId": "t"})
+    feature_hooks.call("stripe.event", {"tenantId": "t"}, targets=["gift-cards"])
     assert seen == [60, 10]
 
 

@@ -67,3 +67,23 @@ def test_fixture_defaults_keep_every_new_feature_off():
     assert not features_on().get("kassa")
     with pytest.raises(KeyError):
         features_on("giftCard")
+
+
+def test_addendum_keys_and_phone_minutes_limit():
+    """Run 0 addendum (ADR-K, ADR-L): both keys off in the fixtures, gates
+    refuse them, and the minutes limit defaults to 0 like every limit."""
+    assert len(NEW_FEATURES) == 12 and NEW_FEATURES["events"] is False and NEW_FEATURES["phoneAgent"] is False
+    assert features_on("phoneAgent")["phoneAgent"] is True and features_on("phoneAgent")["events"] is False
+    assert tenant.limit(tenant_row(TENANT_A), "phoneAgentMinutesPerMonth") == 0
+    assert tenant.limit({}, "phoneAgentMinutesPerMonth") == 0
+    row = tenant_row(TENANT_A, limits={"phoneAgentMinutesPerMonth": 300})
+    assert row["entitlements"]["limits"] == {"phoneAgentMinutesPerMonth": 300}
+    assert tenant.limit(row, "phoneAgentMinutesPerMonth") == 300
+    assert tenant.limit(row, "siteBuilderAiEditsPerMonth") == 0
+
+
+def test_addendum_features_refused_when_off(aws):
+    a = with_tenant_claims({}, TENANT_A)
+    assert err(tenant.for_jwt, a, feature="events") == (403, "feature_not_in_plan")
+    assert err(tenant.for_jwt, a, feature="phoneAgent") == (403, "feature_not_in_plan")
+    assert err(tenant.for_public, LOC_A, feature="events") == (404, "not found")

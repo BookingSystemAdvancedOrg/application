@@ -39,14 +39,63 @@ def test_yaml_is_consistent():
 
 def test_feature_counts():
     from shared import contracts
-    assert len(contracts.FEATURE_KEYS) == 16 and len(contracts.NEW_FEATURE_KEYS) == 10
+    assert len(contracts.FEATURE_KEYS) == 18 and len(contracts.NEW_FEATURE_KEYS) == 12
     assert set(contracts.SITE_CONFIG_FEATURES) <= set(contracts.FEATURE_KEYS)
     assert "kassa" not in contracts.SITE_CONFIG_FEATURES
+
+
+def test_run0_addendum_entries():
+    """CONTRACTS.md 17: features K and L."""
+    from shared import contracts
+    assert contracts.FEATURE_KEYS[-2:] == ("events", "phoneAgent")
+    assert contracts.FEATURE_IDS["events"] == "events-tickets" and contracts.FEATURE_IDS["phoneAgent"] == "phone-agent"
+    assert "events" in contracts.SITE_CONFIG_FEATURES and "phoneAgent" not in contracts.SITE_CONFIG_FEATURES
+    assert contracts.LIMITS["phoneAgentMinutesPerMonth"] == {"feature": "phoneAgent", "min": 0, "max": 100000,
+                                                              "default": 0}
+    purge = contracts.HOOKS["tenant.purge"]["targets"]
+    assert len(purge) == len(set(purge)) == 12
+    assert set(purge) == {contracts.FEATURE_IDS[k] for k in contracts.NEW_FEATURE_KEYS}
+    for hook in ("privacy.export", "privacy.erase"):
+        assert contracts.HOOKS[hook]["targets"][-2:] == ["events-tickets", "phone-agent"]
+    assert contracts.HOOKS["stripe.event"]["targets"] == ["gift-cards", "events-tickets"]
+    assert contracts.HOOKS["accounting.events"]["targets"] == ["gift-cards", "events-tickets"]
+    assert contracts.HOOKS["insights.events"]["targets"] == ["events-tickets"]
+    assert contracts.HOOKS["billing.usage"]["targets"] == ["phone-agent"]
+    assert contracts.HOOKS["platform"]["targets"][-1] == "phone-agent"
+    assert {"booqy.events-tickets", "booqy.phone-agent"} <= set(contracts.EVENT_SOURCES)
+    assert len(contracts.EVENTS["booqy.events-tickets"]) == 6 and len(contracts.EVENTS["booqy.phone-agent"]) == 8
+    assert contracts.EVENTS["booqy.phone-agent"]["PhoneCall.Ended"]["optional"] == {
+        "reservationId": "string", "callbackId": "string"}
+    assert {k: contracts.CLIENTS[k]["env"] for k in ("voice", "telephony", "agent_model")} == {
+        "voice": "VOICE_CLIENT", "telephony": "TELEPHONY_CLIENT", "agent_model": "AGENT_MODEL_CLIENT"}
+    ops = gen.load(RAW)["consoleForwardOps"]
+    assert [op for op in ops if op.startswith("phone-agent.")] == [
+        "phone-agent.tenant.get", "phone-agent.tenant.pause", "phone-agent.settings.get", "phone-agent.settings.put"]
+    slots = DATA["slots"]
+    assert {s for s, v in slots["admin"].items() if v["feature"] in ("events", "phoneAgent")} == {
+        "bokningar.panel.callbacks", "bokningar.reservation.call", "statistik.events"}
+    assert {s for s, v in slots["console"].items() if v["feature"] == "phoneAgent"} == {
+        "tenant.integrations.phoneAgent", "settings.phoneAgent"}
+
+
+def test_storage_registries():
+    storage = DATA["storage"]
+    assert set(storage) == {"siteKit", "admin"}
+    assert storage["siteKit"]["TICKET_PURCHASE_KEY"]["key"] == "booqy-ticket-purchase"
+    assert storage["admin"]["EVENT_SCAN_KEY_PREFIX"] == {
+        **storage["admin"]["EVENT_SCAN_KEY_PREFIX"], "key": "booqy-event-scan-", "kind": "IndexedDB",
+        "feature": "events", "category": "nödvändig"}
+    assert "export const STORAGE_KEYS = {\n  \"EVENT_SCAN_KEY_PREFIX\": \"booqy-event-scan-\"\n} as const;" \
+        in TEXTS["admin"]
+    assert "export const TICKET_PURCHASE_KEY = 'booqy-ticket-purchase';" in TEXTS["site-kit"]
+    assert "EVENT_SCAN_KEY_PREFIX" not in TEXTS["site-kit"] and "TICKET_PURCHASE_KEY" not in TEXTS["admin"]
 
 
 @pytest.mark.parametrize("detail_type, ok", [
     ("GiftCard.Sold", True), ("Waitlist.Left", True), ("DishMargin.CostSet", True),
     ("Personalliggare.CheckedOut", True), ("MetaSpend.CapReached", True), ("ReviewRequest.Sent", True),
+    ("Ticket.Sold", True), ("Ticket.CheckedIn", True), ("PhoneMinutes.CapReached", True),
+    ("PhoneNumber.Provisioned", True), ("EventOccurrence.Cancelled", True),
     ("GiftCard.sold", False), ("GiftCard.Sell", False), ("giftCard.Sold", False), ("GiftCardSold", False),
 ])
 def test_detail_type_rule(detail_type, ok):
@@ -68,6 +117,12 @@ def test_validate_catches_bad_contracts():
     assert _broken(lambda d: d["features"].append(dict(d["features"][0])))
     assert _broken(lambda d: d["siteConfig"]["tenantFeatures"].append("kassa"))
     assert _broken(lambda d: d["limits"]["siteBuilderAiEditsPerMonth"].__setitem__("feature", "x"))
+    assert _broken(lambda d: d["storage"]["admin"]["EVENT_SCAN_KEY_PREFIX"].__setitem__("feature", "event"))
+    assert _broken(lambda d: d["storage"].__setitem__("console", {}))
+    assert _broken(lambda d: d["storage"]["admin"].__setitem__(
+        "TICKET_PURCHASE_KEY", d["storage"]["siteKit"]["TICKET_PURCHASE_KEY"]))
+    assert _broken(lambda d: d["hooks"]["tenant.purge"]["targets"].append("phone-agents"))
+    assert _broken(lambda d: d["features"].pop())
 
 
 def test_duplicate_yaml_keys_are_refused():

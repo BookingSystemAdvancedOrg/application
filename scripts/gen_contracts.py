@@ -41,6 +41,7 @@ DETAIL_TYPE_RE = re.compile(r"^[A-Z][A-Za-z]+\.(?=[A-Z])[A-Za-z]*(ed|Set|Left|Se
 ENUM_RE = re.compile(r"^enum\[([a-z_,]+)\]$")
 LIST_RE = re.compile(r"^list\[(.+)\]$")
 SCALARS = {"string", "int", "bool", "date", "month", "datetime"}
+STORAGE_REGISTRIES = {"siteKit", "admin"}
 
 
 # --- loading and validation ------------------------------------------------------
@@ -86,8 +87,8 @@ def validate(data: dict) -> list[str]:
     for name, values in (("feature key", keys), ("feature id", ids)):
         dupes = sorted({v for v in values if values.count(v) > 1})
         errors += [f"duplicate {name} {d}" for d in dupes]
-    if len(keys) != 16 or sum(not f["existing"] for f in features) != 10:
-        errors.append("expected 16 features, 10 of them new")
+    if len(keys) != 18 or sum(not f["existing"] for f in features) != 12:
+        errors.append("expected 18 features, 12 of them new")
     new_ids = {f["id"] for f in features if not f["existing"]}
     for name, lim in data["limits"].items():
         if lim["feature"] not in keys:
@@ -117,9 +118,14 @@ def validate(data: dict) -> list[str]:
             wanted = s["feature"] if isinstance(s["feature"], list) else [s["feature"]]
             errors += [f"{host} slot {slot}: unknown feature {k}" for k in wanted
                        if k not in keys and not (k is None and len(wanted) == 1)]
-    for name, s in data["storage"].items():
-        if s["feature"] not in keys:
-            errors.append(f"storage {name}: unknown feature {s['feature']}")
+    if set(data["storage"]) != STORAGE_REGISTRIES:
+        errors.append(f"storage: expected the registries {sorted(STORAGE_REGISTRIES)}")
+    names = [n for registry in data["storage"].values() for n in registry]
+    errors += [f"storage {n}: in more than one registry" for n in sorted({n for n in names if names.count(n) > 1})]
+    for registry, entries in data["storage"].items():
+        for name, s in entries.items():
+            if s["feature"] not in keys:
+                errors.append(f"storage {registry}.{name}: unknown feature {s['feature']}")
     site_features = [f["key"] for f in features if f["siteConfig"]]
     if sorted(data["siteConfig"]["tenantFeatures"]) != sorted(site_features):
         errors.append("siteConfig.tenantFeatures differs from the features with siteConfig: true")
@@ -278,8 +284,10 @@ def _ts_head(digest: str) -> list[str]:
 
 
 def gen_admin(data: dict, digest: str) -> str:
+    storage = _sorted({name: s["key"] for name, s in data["storage"]["admin"].items()})
     return "\n".join(_ts_head(digest) + _ts_features(data) + [""] + _ts_limits(data) + [""]
                      + _ts_slots(data, "admin", "AdminSlotId", "ADMIN_SLOTS", False) + [""]
+                     + [f"export const STORAGE_KEYS = {_ts(storage)} as const;", ""]
                      + _ts_enums(data)) + "\n"
 
 
@@ -291,7 +299,7 @@ def gen_console_web(data: dict, digest: str) -> str:
 
 def gen_site_kit(data: dict, digest: str) -> str:
     sc = data["siteConfig"]
-    storage = data["storage"]
+    storage = data["storage"]["siteKit"]
     return "\n".join(_ts_head(digest) + _ts_features(data, labels=False) + [
         f"export const SITE_CONFIG_FEATURES = {_ts(sc['tenantFeatures'])} as const;",
         "export type SiteFeatureKey = (typeof SITE_CONFIG_FEATURES)[number];", "",

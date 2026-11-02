@@ -27,3 +27,12 @@ fails on:
   templates as in API Gateway, `{proxy+}` written `{proxy}` here).
 
 Operator routes (`/platform/...`) are documented in Booqy Console, not here.
+
+Run 0 addendum: `events-tickets.yaml` (feature K, ADR-K) and
+`phone-agent.yaml` (feature L, ADR-L) are expected as soon as
+`functions/events-tickets/app.py` and `functions/phone-agent/app.py`
+exist (Run 2); until then `tests/test_openapi.py` skips that check. The
+phone agent's provider webhooks (`/public/phone-agent/...`) belong in its
+fragment; its agent turn endpoint is a Function URL, not an API route, and
+is not documented here. `/site-config` documents `tenant.features.events`
+in `docs/openapi.yaml`.

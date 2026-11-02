@@ -7403,7 +7403,8 @@ components:
               type: object
               description: |
                 reservations, ordering, catering, terminal, marketing,
-                siteBuilder, giftCards, waitlist. Never kassa.
+                siteBuilder, giftCards, waitlist, events. Never kassa
+                (and never phoneAgent).
               additionalProperties:
                 type: boolean
             site:

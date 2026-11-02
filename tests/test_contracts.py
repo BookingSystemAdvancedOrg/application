@@ -75,7 +75,12 @@ def test_run0_addendum_entries():
     assert {s for s, v in slots["admin"].items() if v["feature"] in ("events", "phoneAgent")} == {
         "bokningar.panel.callbacks", "bokningar.reservation.call", "statistik.events"}
     assert {s for s, v in slots["console"].items() if v["feature"] == "phoneAgent"} == {
-        "tenant.integrations.phoneAgent", "settings.phoneAgent"}
+        "tenant.integrations.phoneAgent"}
+    # the console Settings page is platform-wide: no tenant feature, like settings.metaAds (DECISIONS.md 2026-11-02)
+    assert slots["console"]["settings.phoneAgent"]["feature"] is None
+    assert slots["console"]["settings.metaAds"]["feature"] is None
+    # staff see the Statistik events slot with money removed: gate is on or ever on, never owner-only
+    assert DATA["hooks"]["insights.events"]["gate"] == "events on or ever on"
 
 
 def test_storage_registries():

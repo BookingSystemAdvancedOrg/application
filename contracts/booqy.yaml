@@ -406,7 +406,7 @@ slots:
     tenant.offboard.personalliggare: {feature: null, ownerOnly: false, host: TenantPage Suspend or offboard tab}
     settings.metaAds: {feature: null, ownerOnly: false, host: SettingsPage}
     tenant.integrations.phoneAgent: {feature: phoneAgent, ownerOnly: false, host: TenantPage}
-    settings.phoneAgent: {feature: phoneAgent, ownerOnly: false, host: SettingsPage}
+    settings.phoneAgent: {feature: null, ownerOnly: false, host: SettingsPage}
   site:
     boka.full: {feature: waitlist, ownerOnly: false, host: booking flow when no times are free}
     bestall.checkout.giftcard: {feature: giftCards, ownerOnly: false, host: order checkout form}

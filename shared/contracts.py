@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "7061eb9601d5"
+CONTRACTS_HASH = "8049da171e01"
 
 FEATURE_KEYS = ('reservations',
  'ordering',

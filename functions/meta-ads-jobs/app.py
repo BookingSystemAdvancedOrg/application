@@ -348,7 +348,13 @@ STRANDED_AFTER = timedelta(minutes=10)
 
 def _start_execution(campaign_id, payload):
     """Same execution name as A8 (the campaign id): a start the API already
-    made is a no-op (ExecutionAlreadyExists)."""
+    made is a no-op (ExecutionAlreadyExists).
+
+    Known limit: if that existing execution has already finished (e.g. it
+    failed before its MarkFailed task ran), the campaign keeps `publishing`
+    with this ARN and the sweep skips it from then on; the owner must retry.
+    DescribeExecution is deliberately not granted to this function, so the
+    sweep cannot tell a running execution from a finished one."""
     arn = os.environ["PUBLISH_STATE_MACHINE_ARN"]
     try:
         return boto3.client("stepfunctions").start_execution(
@@ -404,7 +410,12 @@ def run_sweep(job):
     for tenant_id in connected_tenants():
         if ads.blocked_by(tenant_id):
             paused += ads.pause_all(tenant_id, "kill_switch")
-        stranded = restart_stranded(tenant_id)
+        try:
+            stranded = restart_stranded(tenant_id)
+        except Exception as exc:  # one tenant must not stop the kill-switch pause of the rest
+            logger.error(json.dumps({"sweep": "restart_failed", "tenantId": tenant_id,
+                                     "type": type(exc).__name__}))
+            continue
         started, failed = started + stranded["started"], failed + stranded["failed"]
     return {"paused": paused, "started": started, "failed": failed}
 

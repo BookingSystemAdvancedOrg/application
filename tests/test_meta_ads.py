@@ -564,6 +564,24 @@ def test_kill_switch_sweep_pauses_every_active_campaign(env):
     assert ads.get_campaign(TENANT_A, CAMP)["status"] == "paused"
 
 
+def test_a_tenant_whose_restart_fails_does_not_stop_the_kill_switch_for_the_rest(env, monkeypatch):
+    connect(env)
+    _active(env)
+    assert env.api.handler({"hook": "platform", "op": "meta-ads.settings.put", "tenantId": None,
+                            "body": {"killSwitch": True, "maxMonthlyCapSek": 20000}})["ok"]
+    broken = "tenant-broken"
+    monkeypatch.setattr(env.jobs, "connected_tenants", lambda: [broken, TENANT_A])
+    real_restart = env.jobs.restart_stranded
+
+    def restart(tenant_id):
+        if tenant_id == broken:
+            raise RuntimeError("campaign query failed")
+        return real_restart(tenant_id)
+    monkeypatch.setattr(env.jobs, "restart_stranded", restart)
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 1, "started": 0, "failed": 0}
+    assert ads.get_campaign(TENANT_A, CAMP)["status"] == "paused"
+
+
 # --- A14-A17 operator hooks and purge -------------------------------------------------
 
 def test_a14_to_a17_platform_ops(env):

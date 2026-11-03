@@ -290,6 +290,40 @@ def test_hist_row_and_count_are_one_write_so_a_crash_cannot_lose_a_count(env, mo
     assert len([i for i in all_items(env, TENANT_A) if i["SK"].startswith("HIST#")]) == 2
 
 
+def _cancelled(*codes):
+    from botocore.exceptions import ClientError
+    return ClientError({"Error": {"Code": "TransactionCanceledException", "Message": "cancelled"},
+                        "CancellationReasons": [{"Code": c} for c in codes]}, "TransactWriteItems")
+
+
+@pytest.mark.parametrize("reasons", [("TransactionConflict", "None"), ("ThrottlingError", "None"),
+                                     ("None", "TransactionConflict"), ()])
+def test_a_cancelled_transaction_that_is_not_a_duplicate_raises(env, monkeypatch, reasons):
+    """Only the HIST Put (item 0) failing its condition means 'already
+    counted'. A conflict or throttle must raise so the stream retries the
+    record, instead of silently dropping the visit."""
+    from botocore.exceptions import ClientError
+    client = crm.table().meta.client
+
+    def cancel(**kwargs):
+        raise _cancelled(*reasons)
+    monkeypatch.setattr(client, "transact_write_items", cancel)
+    with pytest.raises(ClientError):
+        crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+
+
+def test_a_failed_put_condition_still_means_already_counted(env, monkeypatch):
+    crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+    client = crm.table().meta.client
+
+    def duplicate(**kwargs):
+        raise _cancelled("ConditionalCheckFailed", "None")
+    monkeypatch.setattr(client, "transact_write_items", duplicate)
+    result = crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+    assert result["new"] is False
+    assert profile_of(env, TENANT_A, "anna@example.se")["visits"] == 1
+
+
 def test_merge_moves_counted_rows_in_one_transaction_and_a_replay_does_not_double(env, monkeypatch):
     stream(env, RES_TABLE, booking("r1", email="anna@example.se", when="2026-09-01T18:00:00Z"))
     stream(env, RES_TABLE, booking("r2", email=None, phone="+46702222222", when="2026-09-05T18:00:00Z"))

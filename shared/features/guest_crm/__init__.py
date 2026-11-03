@@ -117,8 +117,20 @@ def _epoch(at: datetime) -> int:
 
 
 def _conditional_failed(exc: ClientError) -> bool:
-    return exc.response.get("Error", {}).get("Code") in ("ConditionalCheckFailedException",
-                                                          "TransactionCanceledException")
+    return exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
+
+
+def _put_already_exists(exc: ClientError) -> bool:
+    """True only when the HIST Put (item 0 of the transaction) failed its
+    attribute_not_exists condition. Any other cancellation (TransactionConflict,
+    ThrottlingError, ...) must surface, or the visit would be silently dropped."""
+    if _conditional_failed(exc):
+        return True
+    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = exc.response.get("CancellationReasons") or []
+    first = reasons[0] if reasons else None
+    return isinstance(first, dict) and first.get("Code") == "ConditionalCheckFailed"
 
 
 def _int(value) -> int:
@@ -283,7 +295,7 @@ def _put_and_bump(tenant_id, guest_id, row, counted) -> bool:
                         "ExpressionAttributeValues": {":one": 1, ":amt": _int(row.get("amountOre"))}}},
         ])
     except ClientError as exc:
-        if not _conditional_failed(exc):
+        if not _put_already_exists(exc):
             raise
         return False
     _touch(tenant_id, guest_id, row["at"], row["locationId"])

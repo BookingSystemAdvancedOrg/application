@@ -1,0 +1,684 @@
+paths:
+  /tenant/meta-ads/connection:
+    get:
+      tags:
+      - Meta ads
+      summary: Connection status, DSA, cap and month spend
+      operationId: metaAdsConnectionGet
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsConnection'
+        '400': &id002
+          description: Validation error.
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': &id003
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403': &id004
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only (owner only).
+          content:
+            application/json:
+              schema: *id001
+        '404': &id005
+          description: Unknown or another tenant's location, menu item or campaign (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '502': &id006
+          description: meta_unavailable (or ai_unavailable for copy).
+          content:
+            application/json:
+              schema: *id001
+        '503': &id007
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+      description: Accepts a tenant with metaAds or socialPosting on.
+    put:
+      tags:
+      - Meta ads
+      summary: Choose assets, DSA payer/beneficiary and the monthly cap
+      operationId: metaAdsConnectionPut
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsConnection'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '409':
+          description: not_connected, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+      description: Accepts a tenant with metaAds or socialPosting on.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                adAccountId: &id008
+                  type: string
+                pageId: *id008
+                instagramId:
+                  type: string
+                  nullable: true
+                dsa:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    beneficiary: *id008
+                    payor: *id008
+                  required:
+                  - beneficiary
+                  - payor
+                monthlyCapSek: &id009
+                  type: integer
+                version: *id009
+              required:
+              - pageId
+              - version
+    delete:
+      tags:
+      - Meta ads
+      summary: 'Disconnect: pause campaigns, delete the token'
+      operationId: metaAdsConnectionDelete
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '204':
+          description: Disconnected (also when already).
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      description: Accepts a tenant with metaAds or socialPosting on.
+  /tenant/meta-ads/connection/start:
+    post:
+      tags:
+      - Meta ads
+      summary: Start Facebook Login for Business
+      operationId: metaAdsConnectionStart
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Where to send the owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  authorizeUrl: *id008
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      description: Accepts a tenant with metaAds or socialPosting on.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+  /tenant/meta-ads/connection/callback:
+    post:
+      tags:
+      - Meta ads
+      summary: Finish the login (single-use state)
+      operationId: metaAdsConnectionCallback
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsConnection'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      description: Accepts a tenant with metaAds or socialPosting on.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code: *id008
+                state: *id008
+              required:
+              - code
+              - state
+  /tenant/meta-ads/assets:
+    get:
+      tags:
+      - Meta ads
+      summary: Businesses, ad accounts, pages, Instagram and what is missing
+      operationId: metaAdsAssets
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Assets.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  businesses:
+                    type: array
+                    items:
+                      type: object
+                  adAccounts:
+                    type: array
+                    items:
+                      type: object
+                  pages:
+                    type: array
+                    items:
+                      type: object
+                  instagram:
+                    type: array
+                    items:
+                      type: object
+                  missing:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        kind:
+                          type: string
+                          enum:
+                          - business
+                          - ad_account
+                          - page
+                          - instagram
+                          - payment_method
+                        deepLink: *id008
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '409':
+          description: not_connected.
+          content:
+            application/json:
+              schema: *id001
+      description: Accepts a tenant with metaAds or socialPosting on.
+  /locations/{locationId}/meta-ads/copy:
+    post:
+      tags:
+      - Meta ads
+      summary: Three Swedish text suggestions for a dish
+      operationId: metaAdsCopy
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Suggestions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        headline:
+                          type: string
+                          maxLength: 40
+                        primaryText:
+                          type: string
+                          maxLength: 125
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '429':
+          description: quota_exceeded (200 per month).
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                menuItemId: *id008
+                goal:
+                  $ref: '#/components/schemas/MetaAdsGoal'
+              required:
+              - menuItemId
+              - goal
+      parameters:
+      - &id010
+        name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+  /locations/{locationId}/meta-ads/campaigns:
+    post:
+      tags:
+      - Meta ads
+      summary: Create a campaign (always PAUSED on Meta; client ULID campaignId)
+      operationId: metaAdsCampaignCreate
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '202':
+          description: Publishing (or the stored campaign on retry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsCampaign'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '409':
+          description: not_connected, assets_missing, cap_exceeded, kill_switch.
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                campaignId: *id008
+                goal:
+                  $ref: '#/components/schemas/MetaAdsGoal'
+                menuItemId: *id008
+                headline:
+                  type: string
+                  maxLength: 40
+                primaryText:
+                  type: string
+                  maxLength: 125
+                budgetSek:
+                  type: integer
+                  minimum: 100
+                  maximum: 20000
+                days:
+                  type: integer
+                  minimum: 3
+                  maximum: 30
+                radiusKm:
+                  type: integer
+                  minimum: 1
+                  maximum: 40
+              required:
+              - campaignId
+              - goal
+              - menuItemId
+              - headline
+              - primaryText
+              - budgetSek
+              - days
+              - radiusKm
+      parameters:
+      - *id010
+    get:
+      tags:
+      - Meta ads
+      summary: Campaigns of a location
+      operationId: metaAdsCampaignList
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Campaigns.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  campaigns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MetaAdsCampaign'
+                  cursor:
+                    type: string
+                    nullable: true
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      parameters:
+      - *id010
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+  /locations/{locationId}/meta-ads/campaigns/{campaignId}:
+    get:
+      tags:
+      - Meta ads
+      summary: One campaign (+ Meta preview link once created)
+      operationId: metaAdsCampaignGet
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Campaign.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/MetaAdsCampaign'
+                - type: object
+                  properties:
+                    previewUrl: *id008
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      parameters:
+      - *id010
+      - &id011
+        name: campaignId
+        in: path
+        required: true
+        schema:
+          type: string
+  /locations/{locationId}/meta-ads/campaigns/{campaignId}/activate:
+    post:
+      tags:
+      - Meta ads
+      summary: Starta annonsen
+      operationId: metaAdsCampaignActivate
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsCampaign'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '409':
+          description: cap_exceeded, kill_switch, invalid_status, changed_retry, not_connected.
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                version: *id009
+              required:
+              - version
+      parameters:
+      - *id010
+      - *id011
+  /locations/{locationId}/meta-ads/campaigns/{campaignId}/pause:
+    post:
+      tags:
+      - Meta ads
+      summary: Pausa
+      operationId: metaAdsCampaignPause
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsCampaign'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+        '409':
+          description: invalid_status, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                version: *id009
+              required:
+              - version
+      parameters:
+      - *id010
+      - *id011
+  /locations/{locationId}/meta-ads/insights:
+    get:
+      tags:
+      - Meta ads
+      summary: Spend, reach, clicks and cost per booking/order
+      operationId: metaAdsInsights
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Rows and totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAdsInsights'
+        '400': *id002
+        '401': *id003
+        '403': *id004
+        '404': *id005
+        '502': *id006
+        '503': *id007
+      parameters:
+      - *id010
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+components:
+  schemas:
+    MetaAdsGoal:
+      type: string
+      enum:
+      - bookings
+      - orders
+      - catering
+      - awareness
+    MetaAdsConnection:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - connected
+          - needs_reauth
+          - disconnected
+        assets:
+          type: object
+          properties:
+            adAccountId: *id008
+            pageId: *id008
+            instagramId: *id008
+            businessId: *id008
+        dsa:
+          type: object
+          properties:
+            beneficiary: *id008
+            payor: *id008
+        monthlyCapSek: *id009
+        spendThisMonthSek: *id009
+        killSwitch:
+          type: boolean
+        missingPermissions:
+          type: array
+          items: *id008
+        version: *id009
+    MetaAdsCampaign:
+      type: object
+      properties:
+        campaignId: *id008
+        locationId: *id008
+        goal:
+          $ref: '#/components/schemas/MetaAdsGoal'
+        status:
+          type: string
+          enum:
+          - publishing
+          - paused
+          - active
+          - completed
+          - failed
+          - rejected
+        creative:
+          type: object
+          properties:
+            menuItemId: *id008
+            imageKey: *id008
+            headline: *id008
+            primaryText: *id008
+            cta: *id008
+        budgetSek: *id009
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        radiusKm: *id009
+        utmCampaign: *id008
+        version: *id009
+        createdAt: *id008
+        error:
+          type: object
+          properties:
+            code: *id008
+    MetaAdsInsights:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              campaignId: *id008
+              day: *id008
+              spendSek: *id009
+              reach: *id009
+              clicks: *id009
+              bookings: *id009
+              orders: *id009
+              costPerBookingSek:
+                type: integer
+                nullable: true
+              costPerOrderSek:
+                type: integer
+                nullable: true
+        totals:
+          type: object

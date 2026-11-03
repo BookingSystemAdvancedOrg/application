@@ -64,7 +64,7 @@ SOCIAL_SCOPES = ("pages_manage_posts", "instagram_content_publish")
 OBJECTIVES = {"bookings": "OUTCOME_TRAFFIC", "orders": "OUTCOME_TRAFFIC", "catering": "OUTCOME_LEADS",
               "awareness": "OUTCOME_AWARENESS"}
 CTAS = {"bookings": "BOOK_TRAVEL", "orders": "ORDER_NOW", "catering": "LEARN_MORE", "awareness": "LEARN_MORE"}
-LANDING = {"bookings": "/boka", "orders": "/bestall", "catering": "/catering", "awareness": "/"}
+LANDING = {"bookings": "/boka-bord", "orders": "/bestall", "catering": "/catering", "awareness": "/"}
 
 DEEP_LINKS = {
     "business": "https://business.facebook.com/overview",

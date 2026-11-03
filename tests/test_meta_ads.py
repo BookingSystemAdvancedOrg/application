@@ -639,3 +639,28 @@ def test_two_tenant_isolation(env, monkeypatch):
     monkeypatch.setattr(ads, "get_token", lambda t: read.append(t) or real(t))
     published_campaign(env)
     assert set(read) == {TENANT_A}
+
+
+# --- landing paths ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("goal,path", [("bookings", "/boka-bord"), ("orders", "/bestall"),
+                                       ("catering", "/catering"), ("awareness", "/")])
+def test_landing_url_uses_the_full_customer_site_path_for_each_goal(goal, path):
+    url = ads.landing_url("https://bistro.booqy.se/", goal, "C1234567890ABC")
+    assert url == (f"https://bistro.booqy.se{path}?utm_source=facebook&utm_medium=paid_social"
+                   f"&utm_campaign=booqy-c123456789")
+
+
+def test_landing_paths_cover_every_goal_and_match_marketing_destinations():
+    assert set(ads.LANDING) == set(ads.GOALS)
+    dest = {"bookings": "book", "orders": "order", "catering": "catering", "awareness": "home"}
+    assert {g: mkt._DEST_PATHS[d] for g, d in dest.items()} == ads.LANDING
+
+
+def test_landing_paths_are_routed_by_the_customer_app():
+    app_tsx = Path(__file__).parents[2] / "customer-front-end" / "src" / "App.tsx"
+    if not app_tsx.exists():
+        pytest.skip("customer-front-end is not checked out beside application")
+    routed = set(re.findall(r'path="([^"*:]+)"', app_tsx.read_text()))
+    for goal, path in ads.LANDING.items():
+        assert path == "/" or path.lstrip("/") in routed, goal

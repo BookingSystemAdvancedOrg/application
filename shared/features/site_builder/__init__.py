@@ -45,6 +45,15 @@ MIN_CONTRAST = 4.5
 
 _CLIENT_ID = re.compile(r"[0-9A-Za-z_-]{8,64}")
 
+# First path segments the customer app (customer-front-end src/App.tsx) routes
+# itself, plus the S3 prefixes under sites/<t>/ and the built assets folder.
+# A builder page with one of these slugs would never be shown, so it is refused.
+RESERVED_SLUGS = frozenset({
+    "meny", "boka-bord", "bokningsvillkor", "bokning", "bestall", "bestallning", "catering", "om-oss",
+    "kontakt", "integritetspolicy", "cookies", "presentkort", "ko", "forhandsvisning", "evenemang",
+    "biljett", "assets", "v", "releases", "preview",
+})
+
 
 class SiteError(Exception):
     def __init__(self, status: int, code: str, field: Optional[str] = None):
@@ -185,7 +194,7 @@ def validate_doc(doc, tenant_id: str, location_ids) -> None:
     for i, page_id in enumerate(page_ids):
         if page_ids.index(page_id) != i:
             raise SiteError(400, "schema_invalid", f"/pages/{i}/id")
-        if slugs.index(slugs[i]) != i:
+        if slugs.index(slugs[i]) != i or slugs[i] in RESERVED_SLUGS:
             raise SiteError(400, "schema_invalid", f"/pages/{i}/slug")
     if "" not in slugs:
         raise SiteError(400, "schema_invalid", "/pages")

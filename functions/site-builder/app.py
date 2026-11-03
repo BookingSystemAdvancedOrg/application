@@ -201,9 +201,42 @@ def _unlock(tenant_id, publish_id):
             raise
 
 
+def _start(ctx, publish_id, kind):
+    """Starts the execution (idempotent by name) and stores its ARN. When
+    StartExecution fails the row is marked failed (code start_failed) and the
+    tenant lock released, so nothing stays stuck; a retry with the same
+    publishId starts it again."""
+    row_key = sb.key(ctx.tenant_id, f"PUBLISH#{publish_id}")
+    try:
+        arn = _start_execution(publish_id, {"tenantId": ctx.tenant_id, "publishId": publish_id, "kind": kind})
+    except (BotoCoreError, ClientError):
+        sb.table().update_item(Key=row_key, UpdateExpression="SET #s = :f, #e = :e",
+                               ExpressionAttributeNames={"#s": "status", "#e": "error"},
+                               ExpressionAttributeValues={":f": "failed", ":e": {"code": "start_failed"}})
+        _unlock(ctx.tenant_id, publish_id)
+        raise
+    sb.table().update_item(Key=row_key, UpdateExpression="SET executionArn = :a",
+                           ExpressionAttributeValues={":a": arn})
+
+
 def _existing_publish(ctx, publish_id):
+    """A retried publishId. A row without executionArn was never started (the
+    Lambda died after writing it, or StartExecution failed): start it now."""
     item = sb.get(ctx.tenant_id, f"PUBLISH#{publish_id}")
-    return http.respond(202, {"publishId": publish_id, "status": item["status"]}) if item else None
+    if not item:
+        return None
+    retry = not item.get("executionArn") and (
+        item["status"] == "running" or (item["status"] == "failed" and (item.get("error") or {}).get("code")
+                                        == "start_failed"))
+    if not retry:
+        return http.respond(202, {"publishId": publish_id, "status": item["status"]})
+    _lock(ctx.tenant_id, publish_id)
+    sb.table().update_item(Key=sb.key(ctx.tenant_id, f"PUBLISH#{publish_id}"),
+                           UpdateExpression="SET #s = :r REMOVE #e", ExpressionAttributeNames={"#s": "status",
+                                                                                               "#e": "error"},
+                           ExpressionAttributeValues={":r": "running"})
+    _start(ctx, publish_id, item.get("kind") or "publish")
+    return http.respond(202, {"publishId": publish_id, "status": "running"})
 
 
 def _begin(ctx, publish_id, kind, extra):
@@ -218,9 +251,7 @@ def _begin(ctx, publish_id, kind, extra):
         if not sb.conditional_failed(exc):
             raise
         return
-    arn = _start_execution(publish_id, {"tenantId": ctx.tenant_id, "publishId": publish_id, "kind": kind})
-    sb.table().update_item(Key=sb.key(ctx.tenant_id, f"PUBLISH#{publish_id}"),
-                           UpdateExpression="SET executionArn = :a", ExpressionAttributeValues={":a": arn})
+    _start(ctx, publish_id, kind)
 
 
 def publish(event, ctx):

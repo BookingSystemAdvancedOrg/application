@@ -70,7 +70,7 @@ def call(e, method, template, *, tenant=TENANT_A, role="owner_user", body=None, 
 def doc(tenant_id=TENANT_A, **theme):
     d = sb.starter_doc({"name": "Bistro A"})
     d["theme"].update(theme)
-    d["pages"].append({"id": "om-oss", "slug": "om-oss", "title": "Om oss",
+    d["pages"].append({"id": "om-oss", "slug": "var-historia", "title": "Om oss",
                        "seo": {"title": "Om oss", "description": "Vilka vi är."},
                        "blocks": [{"id": "t1", "type": "text", "body": "Familjeägt sedan 1999."},
                                   {"id": "i1", "type": "image",
@@ -255,13 +255,30 @@ def test_b8_token_of_a_with_tenant_b_is_404_and_feature_off_is_404(env):
     assert env.app.handler(event(TENANT_A))["statusCode"] == 404
 
 
+@pytest.mark.parametrize("slug", sorted(sb.RESERVED_SLUGS))
+def test_reserved_slug_is_refused_on_save(env, slug):
+    d = doc()
+    d["pages"][1]["slug"] = slug
+    status, body = save(env, d)
+    assert status == 400 and body["error"] == "schema_invalid" and body["field"] == "/pages/1/slug"
+
+
+def test_reserved_slugs_cover_every_customer_app_route():
+    app_tsx = ROOT.parent / "customer-front-end" / "src" / "App.tsx"
+    if not app_tsx.exists():
+        pytest.skip("customer-front-end is not checked out beside application")
+    import re
+    routed = {m.split("/")[0] for m in re.findall(r'path="([^"*:]+)', app_tsx.read_text())}
+    assert routed <= sb.RESERVED_SLUGS
+
+
 # --- B4-B7 publish, status, versions, rollback ----------------------------------------
 
 def test_b4_publish_renders_promotes_swaps_pointer_and_mirrors_site_config(env):
     save(env)
     out = publish(env)
     assert out["versionNo"] == 1
-    assert root(env, TENANT_A) == {f"sites/{TENANT_A}/index.html", f"sites/{TENANT_A}/om-oss/index.html",
+    assert root(env, TENANT_A) == {f"sites/{TENANT_A}/index.html", f"sites/{TENANT_A}/var-historia/index.html",
                                    f"sites/{TENANT_A}/site.json"}
     head = env.s3.head_object(Bucket=BUCKET, Key=f"sites/{TENANT_A}/index.html")
     assert head["CacheControl"] == "no-cache"
@@ -280,6 +297,47 @@ def test_b4_same_publish_id_is_one_execution(env):
         status, body = call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})
         assert status == 202 and body == {"publishId": PUB1, "status": "running"}
     assert len(env.started) == 1
+
+
+def test_b4_start_execution_failure_unlocks_and_the_retry_publishes(env, monkeypatch):
+    from botocore.exceptions import ClientError
+    save(env)
+    ok = env.app._start_execution
+    calls = []
+
+    def flaky(name, payload):
+        calls.append(name)
+        if len(calls) == 1:
+            raise ClientError({"Error": {"Code": "ServiceUnavailable"}}, "StartExecution")
+        return ok(name, payload)
+
+    monkeypatch.setattr(env.app, "_start_execution", flaky)
+    status, _ = call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})
+    assert status == 503
+    row = sb.get(TENANT_A, f"PUBLISH#{PUB1}")
+    assert row["status"] == "failed" and sb.plain(row["error"]) == {"code": "start_failed"}
+    assert "running" not in sb.get(TENANT_A, "SITE")  # lock released: another publish is not blocked
+    status, body = call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})
+    assert (status, body) == (202, {"publishId": PUB1, "status": "running"})
+    assert sb.get(TENANT_A, f"PUBLISH#{PUB1}")["executionArn"] == f"arn:{PUB1}"
+    assert run(env, TENANT_A, PUB1)["versionNo"] == 1
+    assert call(env, "GET", "/tenant/site-builder/publish/{publishId}", params={"publishId": PUB1})[1] == {
+        "status": "done", "versionNo": 1}
+    assert call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})[1][
+        "status"] == "done"
+    assert len(env.started) == 1
+
+
+def test_b4_row_written_but_never_started_is_started_on_retry(env, monkeypatch):
+    save(env)
+    start = env.app._start
+    monkeypatch.setattr(env.app, "_start", lambda *a: (_ for _ in ()).throw(RuntimeError("lambda died")))
+    with pytest.raises(RuntimeError):
+        call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})
+    monkeypatch.setattr(env.app, "_start", start)
+    assert sb.get(TENANT_A, "SITE")["running"] == PUB1
+    assert call(env, "POST", "/tenant/site-builder/publish", body={"publishId": PUB1, "draftVersion": 1})[0] == 202
+    assert len(env.started) == 1 and sb.get(TENANT_A, f"PUBLISH#{PUB1}")["executionArn"] == f"arn:{PUB1}"
 
 
 def test_b4_one_publish_at_a_time_and_stale_draft(env):
@@ -361,7 +419,7 @@ def test_b7_rollback_is_a_pointer_swap_without_render(env):
     d2["nav"] = d2["nav"][:1]
     save(env, d2, version=1)
     publish(env, PUB2, draft_version=2)
-    assert f"sites/{TENANT_A}/om-oss/index.html" not in root(env, TENANT_A)  # removed page deleted at root
+    assert f"sites/{TENANT_A}/var-historia/index.html" not in root(env, TENANT_A)  # removed page deleted at root
     versions = call(env, "GET", "/tenant/site-builder/versions")[1]["versions"]
     assert [(v["versionNo"], v["live"]) for v in versions] == [(2, True), (1, False)]
     status, body = call(env, "POST", "/tenant/site-builder/rollback", body={"publishId": PUB3, "versionNo": 1})
@@ -369,7 +427,7 @@ def test_b7_rollback_is_a_pointer_swap_without_render(env):
     out = env.app.handler({"task": "Validate", "tenantId": TENANT_A, "publishId": PUB3})
     assert out["render"] is False
     env.app.handler({"task": "Promote", "tenantId": TENANT_A, "publishId": PUB3})
-    assert f"sites/{TENANT_A}/om-oss/index.html" in root(env, TENANT_A)
+    assert f"sites/{TENANT_A}/var-historia/index.html" in root(env, TENANT_A)
     assert sb.next_version_no(TENANT_A) == 3  # no new version written
     assert env.res.Table("test-tenant").get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"][
         "site"]["version"] == 1

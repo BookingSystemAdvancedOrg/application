@@ -652,8 +652,16 @@ components:
         createdAt: *id008
         error:
           type: object
+          description: Present only when status is failed; never carries a field.
           properties:
-            code: *id008
+            code:
+              type: string
+              description: A publish-workflow code (meta_unavailable unless the cause
+                names kill_switch, not_connected, assets_missing, unknown_image,
+                invalid_status, feature_not_in_plan or not_found), or start_failed when
+                the 15-minute sweep could not start a publish that sat in publishing
+                without an executionArn for 10 minutes (admin shows "Annonsen kom aldrig
+                i gång. Skapa den igen."; create a new campaign).
     MetaAdsInsights:
       type: object
       properties:

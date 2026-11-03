@@ -6,7 +6,10 @@ TRIGGER:
                  | "CreateCreative" | "CreateAd" | "MarkPaused" | "MarkFailed",
          "tenantId", "campaignId", "error"?}
     EventBridge Scheduler (04:00 Europe/Stockholm): {"job": "insights", "day"?}
-    meta-ads API (async, kill switch turned on) and Scheduler: {"job": "sweep"}
+    meta-ads API (async, kill switch turned on) and Scheduler (every 15 min):
+        {"job": "sweep"} - kill switch, plus publishes stuck in `publishing`
+        without an executionArn for 10 minutes are started (or marked
+        failed with `start_failed`)
 
 PURPOSE:
     The Meta side of ADR-A. Every publish task is idempotent and resumable:
@@ -24,7 +27,8 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, META_ADS_TABLE_NAME, TENANT_TABLE_NAME, USER_TABLE_NAME,
     USER_TENANT_INDEX_NAME, MARKETING_TABLE_NAME, MENU_IMAGES_BUCKET_NAME,
-    EVENT_BUS_NAME, NOTIFICATION_FUNCTION_NAME, META_CLIENT
+    EVENT_BUS_NAME, NOTIFICATION_FUNCTION_NAME, META_CLIENT,
+    PUBLISH_STATE_MACHINE_ARN
 """
 
 import json
@@ -339,13 +343,70 @@ def run_insights(job):
     return {"day": day.isoformat(), "spendSek": total_ore // 100, "failed": failed}
 
 
+STRANDED_AFTER = timedelta(minutes=10)
+
+
+def _start_execution(campaign_id, payload):
+    """Same execution name as A8 (the campaign id): a start the API already
+    made is a no-op (ExecutionAlreadyExists)."""
+    arn = os.environ["PUBLISH_STATE_MACHINE_ARN"]
+    try:
+        return boto3.client("stepfunctions").start_execution(
+            stateMachineArn=arn, name=campaign_id, input=json.dumps(payload))["executionArn"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ExecutionAlreadyExists":
+            raise
+        return arn.replace(":stateMachine:", ":execution:") + f":{campaign_id}"
+
+
+def restart_stranded(tenant_id) -> dict:
+    """A campaign still `publishing` without an executionArn 10 minutes after
+    it was created lost its StartExecution (the API died or Step Functions
+    refused) and the owner did not retry. Start it now; if that fails too,
+    mark it failed with `start_failed` so it never sits in `publishing`."""
+    started = failed = 0
+    cutoff = ads.iso(ads.now() - STRANDED_AFTER)
+    for item in ads.campaigns(tenant_id):
+        if item.get("status") != "publishing" or item.get("executionArn") or (item.get("createdAt") or "") > cutoff:
+            continue
+        key = ads.campaign_key(tenant_id, item["campaignId"])
+        try:
+            arn = _start_execution(item["campaignId"], {"tenantId": tenant_id, "campaignId": item["campaignId"]})
+        except ClientError as exc:
+            logger.error(json.dumps({"sweep": "start_failed", "tenantId": tenant_id,
+                                     "campaignId": item["campaignId"], "type": type(exc).__name__}))
+            try:
+                ads.table().update_item(Key=key, UpdateExpression="SET #s = :f, #e = :e, version = version + :one",
+                                        ConditionExpression="#s = :publishing AND attribute_not_exists(executionArn)",
+                                        ExpressionAttributeNames={"#s": "status", "#e": "error"},
+                                        ExpressionAttributeValues={":f": "failed", ":e": {"code": "start_failed"},
+                                                                   ":publishing": "publishing", ":one": 1})
+                failed += 1
+            except ClientError as cond:
+                if not ads.conditional_failed(cond):
+                    raise
+            continue
+        try:
+            ads.table().update_item(Key=key, UpdateExpression="SET executionArn = :a",
+                                    ConditionExpression="attribute_not_exists(executionArn)",
+                                    ExpressionAttributeValues={":a": arn})
+        except ClientError as cond:
+            if not ads.conditional_failed(cond):
+                raise
+        started += 1
+    return {"started": started, "failed": failed}
+
+
 def run_sweep(job):
-    """Kill switch: pause every active campaign of every blocked tenant."""
-    paused = 0
+    """Every 15 minutes: pause every active campaign of every blocked tenant
+    (kill switch) and restart publishes whose workflow never started."""
+    paused = started = failed = 0
     for tenant_id in connected_tenants():
         if ads.blocked_by(tenant_id):
             paused += ads.pause_all(tenant_id, "kill_switch")
-    return {"paused": paused}
+        stranded = restart_stranded(tenant_id)
+        started, failed = started + stranded["started"], failed + stranded["failed"]
+    return {"paused": paused, "started": started, "failed": failed}
 
 
 def handler(event, context=None):

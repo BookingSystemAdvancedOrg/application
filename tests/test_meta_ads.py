@@ -560,7 +560,7 @@ def test_kill_switch_sweep_pauses_every_active_campaign(env):
     assert env.api.handler({"hook": "platform", "op": "meta-ads.settings.put", "tenantId": None,
                             "body": {"killSwitch": True, "maxMonthlyCapSek": 20000}})["ok"]
     assert env.started[-1] == {"job": "sweep"}
-    assert env.jobs.handler({"job": "sweep"}) == {"paused": 1}
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 1, "started": 0, "failed": 0}
     assert ads.get_campaign(TENANT_A, CAMP)["status"] == "paused"
 
 
@@ -664,3 +664,72 @@ def test_landing_paths_are_routed_by_the_customer_app():
     routed = set(re.findall(r'path="([^"*:]+)"', app_tsx.read_text()))
     for goal, path in ads.LANDING.items():
         assert path == "/" or path.lstrip("/") in routed, goal
+
+
+
+# --- sweep: publishes whose workflow never started -------------------------------------
+
+def _stranded(env, monkeypatch, campaign_id=CAMP, minutes_ago=11):
+    """A8 whose StartExecution failed and that the owner never retried."""
+    from botocore.exceptions import ClientError
+
+    def down(name, payload):
+        raise ClientError({"Error": {"Code": "ServiceUnavailable"}}, "StartExecution")
+    real = env.api._start_execution
+    monkeypatch.setattr(env.api, "_start_execution", down)
+    assert new_campaign(env, campaign_id)[0] == 503
+    monkeypatch.setattr(env.api, "_start_execution", real)
+    created = ads.iso(ads.now() - timedelta(minutes=minutes_ago))
+    ads.table().update_item(Key=ads.campaign_key(TENANT_A, campaign_id), UpdateExpression="SET createdAt = :c",
+                            ExpressionAttributeValues={":c": created})
+
+
+def _state_machine():
+    sfn = boto3.client("stepfunctions", region_name=REGION)
+    return sfn, sfn.create_state_machine(
+        name="dev-meta-ads-publish", roleArn="arn:aws:iam::123456789012:role/sfn",
+        definition=json.dumps({"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}))["stateMachineArn"]
+
+
+def test_sweep_starts_a_stranded_publish_once_and_leaves_a_fresh_one(env, monkeypatch):
+    sfn, machine = _state_machine()
+    monkeypatch.setenv("PUBLISH_STATE_MACHINE_ARN", machine)
+    connect(env)
+    _stranded(env, monkeypatch)
+    fresh = "01FRESHAAAAAAAAAAAAAAAAAAA"
+    _stranded(env, monkeypatch, fresh, minutes_ago=2)
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 0, "started": 1, "failed": 0}
+    item = ads.get_campaign(TENANT_A, CAMP)
+    assert item["status"] == "publishing" and item["executionArn"].endswith(f":{CAMP}")
+    (execution,) = sfn.list_executions(stateMachineArn=machine)["executions"]
+    assert execution["name"] == CAMP and json.loads(sfn.describe_execution(
+        executionArn=execution["executionArn"])["input"]) == {"tenantId": TENANT_A, "campaignId": CAMP}
+    assert "executionArn" not in ads.get_campaign(TENANT_A, fresh)
+    # rerun: nothing left to start, still one execution
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 0, "started": 0, "failed": 0}
+    assert len(sfn.list_executions(stateMachineArn=machine)["executions"]) == 1
+
+
+def test_sweep_resumes_when_the_execution_started_but_the_arn_write_was_lost(env, monkeypatch):
+    sfn, machine = _state_machine()
+    monkeypatch.setenv("PUBLISH_STATE_MACHINE_ARN", machine)
+    connect(env)
+    _stranded(env, monkeypatch)
+    sfn.start_execution(stateMachineArn=machine, name=CAMP, input="{}")  # started, arn never stored
+    assert env.jobs.handler({"job": "sweep"})["started"] == 1
+    assert ads.get_campaign(TENANT_A, CAMP)["executionArn"].endswith(f":{CAMP}")
+    assert len(sfn.list_executions(stateMachineArn=machine)["executions"]) == 1
+
+
+def test_sweep_marks_a_publish_it_cannot_start_failed_with_start_failed(env, monkeypatch):
+    from botocore.exceptions import ClientError
+    connect(env)
+    _stranded(env, monkeypatch)
+
+    def down(campaign_id, payload):
+        raise ClientError({"Error": {"Code": "ServiceUnavailable"}}, "StartExecution")
+    monkeypatch.setattr(env.jobs, "_start_execution", down)
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 0, "started": 0, "failed": 1}
+    status, body = call(env, "GET", ONE, params={"locationId": LOC_A, "campaignId": CAMP})
+    assert status == 200 and body["status"] == "failed" and body["error"] == {"code": "start_failed"}
+    assert env.jobs.handler({"job": "sweep"}) == {"paused": 0, "started": 0, "failed": 0}

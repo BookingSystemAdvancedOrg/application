@@ -1,0 +1,170 @@
+[
+  {
+    "input": "#350001",
+    "mode": "light",
+    "accent": "#350001",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#350001",
+    "mode": "dark",
+    "accent": "#9a7f80",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#9a3b26",
+    "mode": "light",
+    "accent": "#9a3b26",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#9a3b26",
+    "mode": "dark",
+    "accent": "#a95847",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#777777",
+    "mode": "light",
+    "accent": "#737272",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#777777",
+    "mode": "dark",
+    "accent": "#858585",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#888888",
+    "mode": "light",
+    "accent": "#888888",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#888888",
+    "mode": "dark",
+    "accent": "#888888",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ff0000",
+    "mode": "light",
+    "accent": "#e80303",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#ff0000",
+    "mode": "dark",
+    "accent": "#ff2626",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ffff00",
+    "mode": "light",
+    "accent": "#ffff00",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ffff00",
+    "mode": "dark",
+    "accent": "#ffff00",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#3c8dbc",
+    "mode": "light",
+    "accent": "#3c8dbc",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#3c8dbc",
+    "mode": "dark",
+    "accent": "#3c8dbc",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ffffff",
+    "mode": "light",
+    "accent": "#ffffff",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ffffff",
+    "mode": "dark",
+    "accent": "#ffffff",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#000000",
+    "mode": "light",
+    "accent": "#000000",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#000000",
+    "mode": "dark",
+    "accent": "#737373",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#c9a227",
+    "mode": "light",
+    "accent": "#c9a227",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#c9a227",
+    "mode": "dark",
+    "accent": "#c9a227",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#2e7d32",
+    "mode": "light",
+    "accent": "#2e7d32",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#2e7d32",
+    "mode": "dark",
+    "accent": "#38843c",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#7b1fa2",
+    "mode": "light",
+    "accent": "#7b1fa2",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#7b1fa2",
+    "mode": "dark",
+    "accent": "#9c57b9",
+    "onAccent": "#ffffff"
+  },
+  {
+    "input": "#ff8800",
+    "mode": "light",
+    "accent": "#ff8800",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#ff8800",
+    "mode": "dark",
+    "accent": "#ff8800",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#00bcd4",
+    "mode": "light",
+    "accent": "#00bcd4",
+    "onAccent": "#1d1a1a"
+  },
+  {
+    "input": "#00bcd4",
+    "mode": "dark",
+    "accent": "#00bcd4",
+    "onAccent": "#1d1a1a"
+  }
+]

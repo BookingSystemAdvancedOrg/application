@@ -382,10 +382,11 @@ def create_campaign(event, ctx):
     connection = ads.get_connection(ctx.tenant_id)
     if not connection or connection.get("status") != "connected":
         raise ads.AdsError(409, "not_connected")
-    position = ((ctx.location or {}).get("cateringOrigin") or {}).get("position")
-    if not connection.get("adAccountId") or not connection.get("pageId") or not dish.get("imageKey") \
-            or not position:
+    if not connection.get("adAccountId") or not connection.get("pageId") or not dish.get("imageKey"):
         raise ads.AdsError(409, "assets_missing")
+    position = ((ctx.location or {}).get("cateringOrigin") or {}).get("position")
+    if not position:
+        raise ads.AdsError(409, "assets_missing", "position")  # the location has no stored geocode (CONTRACTS 6.A)
     if ads.blocked_by(ctx.tenant_id, connection):
         raise ads.AdsError(409, "kill_switch")
     ads.check_cap(ctx.tenant_id, connection, budget)

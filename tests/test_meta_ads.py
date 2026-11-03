@@ -346,7 +346,8 @@ def test_a8_location_without_position_is_assets_missing(env):
     connect(env)
     env.res.Table("test-menu").put_item(Item={"PK": f"LOCATION#{LOC_A2}", "SK": "MENU#dish1", "name": "P",
                                               "imageKey": "k"})
-    assert new_campaign(env, loc=LOC_A2)[1]["error"] == "assets_missing"
+    status, body = new_campaign(env, loc=LOC_A2)
+    assert (status, body["error"], body["field"]) == (409, "assets_missing", "position")
 
 
 def test_a8_role_foreign_off(env):

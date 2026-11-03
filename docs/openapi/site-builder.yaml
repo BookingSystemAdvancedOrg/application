@@ -40,8 +40,10 @@ paths:
                       publishedAt: &id010
                         type: string
         '400': &id004
-          description: 'Validation error: schema_invalid, doc_too_large, invalid_link, unknown_image, contrast_too_low
-            (field = JSON pointer).'
+          description: 'Validation error: schema_invalid (also a duplicate or reserved page slug,
+            field /pages/<i>/slug; RESERVED_SLUGS in shared/features/site_builder), doc_too_large,
+            invalid_link, unknown_image, contrast_too_low (safety net; theme pairs are nudged to
+            4.5:1 first) (field = JSON pointer).'
           content:
             application/json:
               schema: &id002
@@ -214,6 +216,10 @@ paths:
                   versionNo: *id001
                   error:
                     type: object
+                    description: Present when status is failed. code is a validation code of
+                      the draft or publish routes (with field, a JSON pointer) or start_failed
+                      (StartExecution failed, no field; a retry with the same publishId starts
+                      it again).
                     properties:
                       code: *id010
                       field: *id010

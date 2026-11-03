@@ -345,7 +345,9 @@ paths:
         '502': *id006
         '503': *id007
         '409':
-          description: not_connected, assets_missing, cap_exceeded, kill_switch.
+          description: not_connected, assets_missing (ad account, Page, dish image or the
+            location's stored position missing; field "position" when it is the position),
+            cap_exceeded, kill_switch.
           content:
             application/json:
               schema: *id001
@@ -401,7 +403,8 @@ paths:
       - owner_user
       responses:
         '200':
-          description: Campaigns.
+          description: Campaigns, newest first. One page; the response never carries a
+            cursor, and a cursor query parameter is 400.
           content:
             application/json:
               schema:
@@ -412,9 +415,6 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/MetaAdsCampaign'
-                  cursor:
-                    type: string
-                    nullable: true
         '400': *id002
         '401': *id003
         '403': *id004
@@ -423,11 +423,6 @@ paths:
         '503': *id007
       parameters:
       - *id010
-      - name: cursor
-        in: query
-        required: false
-        schema:
-          type: string
   /locations/{locationId}/meta-ads/campaigns/{campaignId}:
     get:
       tags:

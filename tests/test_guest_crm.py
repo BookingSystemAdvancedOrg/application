@@ -3,6 +3,7 @@ stream sync, hooks, erase and the two-tenant isolation suite."""
 
 import importlib.util
 import json
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -262,6 +263,21 @@ def test_c1_staff_sees_only_own_location(env):
     assert status == 200 and [g["name"] for g in body["guests"]] == ["Anna Andersson"]
     assert call(env, "GET", "/tenant/guests", role="staff_user", query={"locationId": LOC_A2})[0] == 404
     assert call(env, "GET", "/tenant/guests", query={"locationId": LOC_B})[0] == 404
+
+
+def test_c1_location_filter_fills_the_page_past_filtered_out_guests(env, monkeypatch):
+    monkeypatch.setattr(env.app, "PAGE", 2)
+    stream(env, RES_TABLE, booking("r1", email="a1@x.se", loc=LOC_A, when="2026-09-01T18:00:00Z", name="A1"))
+    stream(env, RES_TABLE, booking("r2", email="a2@x.se", loc=LOC_A, when="2026-09-02T18:00:00Z", name="A2"))
+    stream(env, RES_TABLE, booking("r3", email="a3@x.se", loc=LOC_A, when="2026-09-03T18:00:00Z", name="A3"))
+    for n in range(4):  # the newest guests are all at the other location
+        stream(env, RES_TABLE, booking(f"o{n}", email=f"o{n}@x.se", loc=LOC_A2, when=f"2026-10-0{n + 1}T18:00:00Z",
+                                       name=f"O{n}"))
+    status, body = call(env, "GET", "/tenant/guests", query={"locationId": LOC_A})
+    assert status == 200 and [g["name"] for g in body["guests"]] == ["A3", "A2"] and body["cursor"]
+    status, body = call(env, "GET", "/tenant/guests", query={"locationId": LOC_A, "cursor": body["cursor"]})
+    assert status == 200 and [g["name"] for g in body["guests"]] == ["A1"]
+    assert body["cursor"] is None
 
 
 def test_c1_off_is_403(env):
@@ -557,6 +573,42 @@ def test_c11_rebuild_is_idempotent_resumable_and_exclusive(env):
                                          ExpressionAttributeValues={":r": "running"})
     env.app.handler(env.invoked[-1], SimpleNamespace(get_remaining_time_in_millis=lambda: 60_000))
     assert all(profile_of(env, TENANT_A, f"g{n}@x.se")["visits"] == 1 for n in range(5))
+
+
+def test_c11_a_stuck_run_can_be_replaced_after_30_minutes(env):
+    assert call(env, "POST", "/tenant/guests/rebuild", body={"runId": RUN})[0] == 202
+    other = "01OTHERAAAAAAAAAAAAAAAAAAA"
+    assert call(env, "POST", "/tenant/guests/rebuild", body={"runId": other})[1]["error"] == "rebuild_running"
+    old = crm.iso(crm.now() - timedelta(minutes=31))
+    env.res.Table(CRM_TABLE).update_item(Key=crm.backfill_key(TENANT_A), UpdateExpression="SET updatedAt = :o",
+                                         ExpressionAttributeValues={":o": old})
+    assert call(env, "POST", "/tenant/guests/rebuild", body={"runId": other}) == (202, {"status": "running"})
+    assert env.app.handler(env.invoked[0], None) == {"status": "ignored"}  # the dead run stops if it wakes
+    assert env.app.handler(env.invoked[-1], None)["status"] == "done"
+
+
+def test_c11_a_row_without_updated_at_is_stale_by_started_at(env):
+    old = crm.iso(crm.now() - timedelta(minutes=31))
+    env.res.Table(CRM_TABLE).put_item(Item={**crm.backfill_key(TENANT_A), "tenantId": TENANT_A, "runId": RUN,
+                                            "status": "running", "startedAt": old})
+    assert call(env, "POST", "/tenant/guests/rebuild", body={"runId": "01OTHERAAAAAAAAAAAAAAAAAAA"})[0] == 202
+
+
+def test_c11_cursor_save_refreshes_updated_at(env):
+    call(env, "POST", "/tenant/guests/rebuild", body={"runId": RUN})
+    env.res.Table(CRM_TABLE).update_item(Key=crm.backfill_key(TENANT_A), UpdateExpression="SET updatedAt = :o",
+                                         ExpressionAttributeValues={":o": "2000-01-01T00:00:00.000Z"})
+    env.app.handler(env.invoked[0], None)
+    assert crm.table().get_item(Key=crm.backfill_key(TENANT_A))["Item"]["updatedAt"] > "2026"
+
+
+def test_self_invoke_targets_the_live_alias(monkeypatch):
+    calls = []
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "dev-guest-crm")
+    app = load("guest-crm")
+    monkeypatch.setattr(app.boto3, "client", lambda name: SimpleNamespace(invoke=lambda **kw: calls.append(kw)))
+    app._invoke_self({"guestCrmJob": {"tenantId": TENANT_A, "runId": RUN}})
+    assert calls[0]["FunctionName"] == "dev-guest-crm:live" and calls[0]["InvocationType"] == "Event"
 
 
 def test_c11_validation_role_off(env):

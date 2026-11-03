@@ -38,6 +38,7 @@ import binascii
 import json
 import logging
 import os
+from datetime import timedelta
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -57,6 +58,9 @@ MAX_NAME_RESULTS = 20
 SOURCE_PREFIX = {"reservation": ("booking", "RESERVATION#"), "order": ("order", "ORDER#"),
                  "catering": ("catering", "REQUEST#")}
 JOB_MARGIN_MS = 20_000
+STALE_RUN_MINUTES = 30  # a running BACKFILL not saved for this long is dead; a new run may take over
+MAX_LIST_QUERIES = 10  # C1 with a location filter: query pages read to fill one page of guests
+_CURSOR_KEYS = ("PK", "SK", "GSI1PK", "GSI1SK")
 
 
 def _err(status, code, field=None):
@@ -128,9 +132,23 @@ def list_guests(event, ctx):
         kwargs["ExclusiveStartKey"] = _decode_cursor(params["cursor"], ctx.tenant_id)
     if location_id:
         kwargs["FilterExpression"] = Attr("locations").contains(location_id)
-    page = crm.table().query(**kwargs)
-    nxt = page.get("LastEvaluatedKey")
-    return http.respond(200, {"guests": [crm.summary(p) for p in page.get("Items") or []],
+    # The location filter runs after Limit, so one query page can come back
+    # short or empty while more guests follow: read on until the page is full
+    # or the index is exhausted (bounded; the cursor resumes where it stopped).
+    items, nxt = [], None
+    for _ in range(MAX_LIST_QUERIES):
+        page = crm.table().query(**kwargs)
+        got, nxt = page.get("Items") or [], page.get("LastEvaluatedKey")
+        room = PAGE - len(items)
+        if len(got) > room:
+            items += got[:room]
+            nxt = {k: items[-1][k] for k in _CURSOR_KEYS}
+            break
+        items += got
+        if not nxt or len(items) == PAGE:
+            break
+        kwargs["ExclusiveStartKey"] = nxt
+    return http.respond(200, {"guests": [crm.summary(p) for p in items],
                               "cursor": _encode_cursor(nxt) if nxt else None})
 
 
@@ -343,8 +361,11 @@ def export_segment(event, ctx):
 # --- C11 and the backfill job ---------------------------------------------------------
 
 def _invoke_self(payload):
-    boto3.client("lambda").invoke(FunctionName=os.environ["AWS_LAMBDA_FUNCTION_NAME"], InvocationType="Event",
-                                  Payload=json.dumps(payload).encode())
+    """Async invoke of the `live` alias: that is where the no-retry event
+    invoke config sits (infrastructure guest-crm/main.tf), and the code the
+    API runs. The unqualified name would run $LATEST with the default retries."""
+    boto3.client("lambda").invoke(FunctionName=f"{os.environ['AWS_LAMBDA_FUNCTION_NAME']}:live",
+                                  InvocationType="Event", Payload=json.dumps(payload).encode())
 
 
 def rebuild(event, ctx):
@@ -357,12 +378,19 @@ def rebuild(event, ctx):
     current = tbl.get_item(Key=key, ConsistentRead=True).get("Item")
     if current and current.get("runId") == run_id:
         return http.respond(202, {"status": current.get("status")})
+    at = crm.now()
+    stale = crm.iso(at - timedelta(minutes=STALE_RUN_MINUTES))
     try:
+        # A run that has not saved its cursor for STALE_RUN_MINUTES died (lost
+        # async invoke, no retries): a new runId takes over; the old job, if it
+        # wakes, sees another runId and stops.
         tbl.put_item(Item={**key, "tenantId": ctx.tenant_id, "runId": run_id, "status": "running",
                            "cursor": {"location": 0, "source": 0}, "counts": {"rows": 0, "counted": 0},
-                           "startedBy": ctx.sub, "startedAt": crm.iso(crm.now())},
-                     ConditionExpression="attribute_not_exists(PK) OR #s <> :running",
-                     ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":running": "running"})
+                           "startedBy": ctx.sub, "startedAt": crm.iso(at), "updatedAt": crm.iso(at)},
+                     ConditionExpression="attribute_not_exists(PK) OR #s <> :running OR #u < :stale "
+                                         "OR (attribute_not_exists(#u) AND startedAt < :stale)",
+                     ExpressionAttributeNames={"#s": "status", "#u": "updatedAt"},
+                     ExpressionAttributeValues={":running": "running", ":stale": stale})
     except ClientError as exc:
         if not crm._conditional_failed(exc):
             raise
@@ -395,12 +423,13 @@ def run_backfill(job, context):
     loc_i, src_i, last = int(cursor.get("location", 0)), int(cursor.get("source", 0)), cursor.get("lastKey")
 
     def save(status):
-        tbl.update_item(Key=key, UpdateExpression="SET #c = :c, #n = :n, #s = :s",
+        tbl.update_item(Key=key, UpdateExpression="SET #c = :c, #n = :n, #s = :s, updatedAt = :at",
                         ConditionExpression="runId = :r",
                         ExpressionAttributeNames={"#s": "status", "#c": "cursor", "#n": "counts"},
                         ExpressionAttributeValues={":c": {"location": loc_i, "source": src_i,
                                                           **({"lastKey": last} if last else {})},
-                                                   ":n": counts, ":s": status, ":r": run_id})
+                                                   ":n": counts, ":s": status, ":r": run_id,
+                                                   ":at": crm.iso(crm.now())})
 
     while loc_i < len(locations):
         location_id = locations[loc_i]

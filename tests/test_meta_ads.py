@@ -232,7 +232,8 @@ def test_a7_copy_suggestions_and_quota(env, monkeypatch):
     real = env.text.complete
     monkeypatch.setattr(env.text, "complete", lambda system, prompt, **kw: prompts.append(prompt) or real(
         system, prompt, **kw))
-    status, body = call(env, "POST", COPY, params={"locationId": LOC_A}, body={"menuItemId": "dish1", "goal": "bookings"})
+    status, body = call(env, "POST", COPY, params={"locationId": LOC_A},
+                        body={"menuItemId": "dish1", "goal": "bookings"})
     assert status == 200 and len(body["suggestions"]) == 3
     assert all(len(s["headline"]) <= 40 and len(s["primaryText"]) <= 125 for s in body["suggestions"])
     assert "Pasta" in prompts[-1] and "@" not in prompts[-1] and "Hemlagad" in prompts[-1]

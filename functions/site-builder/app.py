@@ -338,7 +338,8 @@ def task_validate(tenant_id, publish_id):
                     raise
                 version_no += 1
         sb.table().update_item(Key=sb.key(tenant_id, f"PUBLISH#{publish_id}"),
-                               UpdateExpression="SET versionNo = :n", ConditionExpression="attribute_not_exists(versionNo)",
+                               UpdateExpression="SET versionNo = :n",
+                               ConditionExpression="attribute_not_exists(versionNo)",
                                ExpressionAttributeValues={":n": version_no})
     return {"tenantId": tenant_id, "publishId": publish_id, "versionNo": int(version_no), "render": True}
 
@@ -431,7 +432,8 @@ def task_promote(tenant_id, publish_id):
         ExpressionAttributeValues={":s": {"mode": mode, "version": version_no}})
     tenant.invalidate(tenant_id)
     sb.table().update_item(Key=sb.key(tenant_id, f"PUBLISH#{publish_id}"), UpdateExpression="SET #s = :d, doneAt = :at",
-                           ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":d": "done", ":at": at})
+                           ExpressionAttributeNames={"#s": "status"},
+                           ExpressionAttributeValues={":d": "done", ":at": at})
     _unlock(tenant_id, publish_id)
     return {"tenantId": tenant_id, "publishId": publish_id, "versionNo": version_no}
 

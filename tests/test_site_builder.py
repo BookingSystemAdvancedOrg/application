@@ -2,7 +2,6 @@
 publish workflow tasks, rollback, contrast vectors shared with site-kit,
 and the two-tenant isolation suite."""
 
-import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -83,7 +82,8 @@ def doc(tenant_id=TENANT_A, **theme):
 
 
 def save(e, d=None, version=0, tenant=TENANT_A):
-    return call(e, "PUT", "/tenant/site-builder/draft", tenant=tenant, body={"doc": d or doc(tenant), "version": version})
+    return call(e, "PUT", "/tenant/site-builder/draft", tenant=tenant,
+                body={"doc": d or doc(tenant), "version": version})
 
 
 def render(e, tenant_id, version_no, d):

@@ -15,8 +15,8 @@ from shared import consent, events
 from shared import marketing as mkt
 from shared import tenant as shared_tenant
 from shared.features import guest_crm as crm
-from tenant_support import (LOC_A, LOC_A2, LOC_B, REGION, TENANT_A, TENANT_B, features_on, location_row,
-                            seed_tenancy, tenant_row, with_tenant_claims)
+from tenant_support import (LOC_A, LOC_A2, LOC_B, REGION, TENANT_A, TENANT_B,
+                            features_on, seed_tenancy, tenant_row, with_tenant_claims)
 
 ROOT = Path(__file__).parents[1] / "functions"
 CRM_TABLE, RES_TABLE, ORD_TABLE, CAT_TABLE = "test-guest-crm", "test-reservation", "test-order", "test-catering"

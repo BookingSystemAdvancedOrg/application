@@ -66,7 +66,8 @@ def _store(tenant_id, campaign_id, field, value):
     """meta.<field> = value, only if not set yet (a retried task keeps the first)."""
     try:
         ads.table().update_item(Key=ads.campaign_key(tenant_id, campaign_id),
-                                UpdateExpression="SET meta.#f = :v", ConditionExpression="attribute_not_exists(meta.#f)",
+                                UpdateExpression="SET meta.#f = :v",
+                                ConditionExpression="attribute_not_exists(meta.#f)",
                                 ExpressionAttributeNames={"#f": field}, ExpressionAttributeValues={":v": value})
     except ClientError as exc:
         if not ads.conditional_failed(exc):

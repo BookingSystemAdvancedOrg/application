@@ -1,0 +1,661 @@
+paths:
+  /tenant/guests:
+    get:
+      tags:
+      - Guest CRM
+      summary: 'Guests, newest first (staff: own location)'
+      operationId: guestCrmList
+      security:
+      - bearerAuth: []
+      x-required-groups: &id002
+      - owner_user
+      - staff_user
+      responses:
+        '200':
+          description: A page of guests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestCrmGuestPage'
+        '400': &id003
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': &id004
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403': &id005
+          description: no_tenant, tenant_inactive, feature_not_in_plan (guestCrm off) or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404': &id006
+          description: Unknown or another tenant's guest, segment or location (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503': &id007
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+      parameters:
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: locationId
+        in: query
+        required: false
+        schema:
+          type: string
+  /tenant/guests/search:
+    post:
+      tags:
+      - Guest CRM
+      summary: Find guests by email, phone or name (exactly one)
+      operationId: guestCrmSearch
+      security:
+      - bearerAuth: []
+      x-required-groups: *id002
+      responses:
+        '200':
+          description: Matching guests.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  guests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GuestCrmGuestSummary'
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                email:
+                  type: string
+                phone:
+                  type: string
+                name:
+                  type: string
+                  minLength: 2
+                  maxLength: 120
+  /tenant/guests/{guestId}:
+    get:
+      tags:
+      - Guest CRM
+      summary: 'One guest: profile, history, live contact and consent (staff: own location, no amounts)'
+      operationId: guestCrmGet
+      security:
+      - bearerAuth: []
+      x-required-groups: *id002
+      responses:
+        '200':
+          description: The guest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestCrmProfileDetail'
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      parameters:
+      - name: guestId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      tags:
+      - Guest CRM
+      summary: Edit note, tags, birthday or the objection to segments
+      operationId: guestCrmPatch
+      security:
+      - bearerAuth: []
+      x-required-groups: &id008
+      - owner_user
+      responses:
+        '200':
+          description: The updated profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestCrmProfile'
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+        '409':
+          description: 'changed_retry: the profile changed since it was read.'
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note:
+                  type: string
+                  nullable: true
+                  maxLength: 300
+                tags:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
+                    maxLength: 24
+                birthday:
+                  type: string
+                  nullable: true
+                  pattern: ^\d{2}-\d{2}$
+                segmentsExcluded:
+                  type: boolean
+                version:
+                  type: integer
+              required:
+              - version
+      parameters:
+      - name: guestId
+        in: path
+        required: true
+        schema:
+          type: string
+  /locations/{locationId}/guests/lookup:
+    post:
+      tags:
+      - Guest CRM
+      summary: New or returning, for up to 100 contacts
+      operationId: guestCrmLookup
+      security:
+      - bearerAuth: []
+      x-required-groups: *id002
+      responses:
+        '200':
+          description: Per key.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  results:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      required:
+                      - status
+                      - visits
+                      properties:
+                        status:
+                          type: string
+                          enum:
+                          - new
+                          - returning
+                        visits:
+                          type: integer
+                        guestId:
+                          type: string
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                contacts:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      key:
+                        type: string
+                        maxLength: 64
+                      email:
+                        type: string
+                      phone:
+                        type: string
+                    required:
+                    - key
+              required:
+              - contacts
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+  /tenant/guest-segments:
+    get:
+      tags:
+      - Guest CRM
+      summary: Saved segments and starter templates
+      operationId: guestCrmSegments
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '200':
+          description: Segments.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  segments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GuestCrmSegment'
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        templateId:
+                          type: string
+                        name:
+                          type: string
+                        rules:
+                          $ref: '#/components/schemas/GuestCrmRules'
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+  /tenant/guest-segments/{segmentId}:
+    put:
+      tags:
+      - Guest CRM
+      summary: Create (client ULID) or update a segment
+      operationId: guestCrmSegmentPut
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '200':
+          description: The segment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuestCrmSegment'
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  maxLength: 60
+                rules:
+                  $ref: '#/components/schemas/GuestCrmRules'
+                version:
+                  type: integer
+              required:
+              - name
+              - rules
+      parameters:
+      - name: segmentId
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags:
+      - Guest CRM
+      summary: Delete a segment (missing = 204)
+      operationId: guestCrmSegmentDelete
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '204':
+          description: Deleted.
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      parameters:
+      - name: segmentId
+        in: path
+        required: true
+        schema:
+          type: string
+  /tenant/guest-segments/{segmentId}/preview:
+    get:
+      tags:
+      - Guest CRM
+      summary: Counts and a sample
+      operationId: guestCrmSegmentPreview
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '200':
+          description: Preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  total:
+                    type: integer
+                  reachable:
+                    type: integer
+                  sample:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        guestId:
+                          type: string
+                        name:
+                          type: string
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      parameters:
+      - name: segmentId
+        in: path
+        required: true
+        schema:
+          type: string
+  /tenant/guest-segments/{segmentId}/exports:
+    post:
+      tags:
+      - Guest CRM
+      summary: Immutable export of subscribed, consenting guests for a campaign (client ULID; never recomputed)
+      operationId: guestCrmSegmentExport
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '200':
+          description: The export.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  exportId:
+                    type: string
+                  count:
+                    type: integer
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                exportId:
+                  type: string
+              required:
+              - exportId
+      parameters:
+      - name: segmentId
+        in: path
+        required: true
+        schema:
+          type: string
+  /tenant/guests/rebuild:
+    post:
+      tags:
+      - Guest CRM
+      summary: Build the register from existing bookings, orders and catering
+      operationId: guestCrmRebuild
+      security:
+      - bearerAuth: []
+      x-required-groups: *id008
+      responses:
+        '202':
+          description: Started (or the same run's status).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '503': *id007
+        '409':
+          description: 'rebuild_running: another run is going.'
+          content:
+            application/json:
+              schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                runId:
+                  type: string
+              required:
+              - runId
+components:
+  schemas:
+    GuestCrmGuestSummary:
+      type: object
+      properties:
+        guestId: &id009
+          type: string
+        name: &id010
+          type: string
+        lastSeenAt: &id011
+          type: string
+          format: date-time
+        visits: &id012
+          type: integer
+        returning: &id013
+          type: boolean
+    GuestCrmGuestPage:
+      type: object
+      properties:
+        guests:
+          type: array
+          items:
+            $ref: '#/components/schemas/GuestCrmGuestSummary'
+        cursor:
+          type: string
+          nullable: true
+    GuestCrmProfile:
+      type: object
+      properties:
+        guestId: *id009
+        name: *id010
+        lastSeenAt: *id011
+        visits: *id012
+        returning: *id013
+        firstSeenAt:
+          type: string
+          format: date-time
+        noShows:
+          type: integer
+        orders:
+          type: integer
+        cateringRequests:
+          type: integer
+        locations:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+          nullable: true
+        birthday:
+          type: string
+          nullable: true
+        segmentsExcluded:
+          type: boolean
+        version:
+          type: integer
+        spendSek:
+          type: object
+          description: Owner only.
+          properties:
+            bookingFees:
+              type: integer
+            orders:
+              type: integer
+            catering:
+              type: integer
+    GuestCrmProfileDetail:
+      allOf:
+      - $ref: '#/components/schemas/GuestCrmProfile'
+      - type: object
+        properties:
+          history:
+            type: array
+            items:
+              type: object
+              properties:
+                kind:
+                  type: string
+                  enum:
+                  - booking
+                  - order
+                  - catering
+                sourceId:
+                  type: string
+                locationId:
+                  type: string
+                date:
+                  type: string
+                status:
+                  type: string
+                at:
+                  type: string
+                partySize:
+                  type: integer
+                amountOre:
+                  type: integer
+                  description: Owner only.
+          contact:
+            type: object
+            properties:
+              email:
+                type: string
+              phone:
+                type: string
+          consent:
+            type: object
+            properties:
+              email:
+                type: string
+                enum:
+                - granted
+                - withdrawn
+                - none
+              sms:
+                type: string
+                enum:
+                - granted
+                - withdrawn
+                - none
+    GuestCrmRules:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        lapsedDays:
+          type: integer
+          minimum: 7
+          maximum: 3650
+        birthdayWithinDays:
+          type: integer
+          minimum: 1
+          maximum: 60
+        minSpendSek:
+          type: integer
+          minimum: 1
+        minVisits:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        locationId:
+          type: string
+        optedIn:
+          type: boolean
+          enum:
+          - true
+    GuestCrmSegment:
+      type: object
+      properties:
+        segmentId:
+          type: string
+        name:
+          type: string
+        rules:
+          $ref: '#/components/schemas/GuestCrmRules'
+        version:
+          type: integer
+        updatedAt:
+          type: string

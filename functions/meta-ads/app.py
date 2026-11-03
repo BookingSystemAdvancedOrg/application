@@ -369,6 +369,8 @@ def create_campaign(event, ctx):
     if existing:
         if existing.get("locationId") != ctx.location_id:
             raise ads.AdsError(404, "not found")
+        if existing.get("status") == "publishing" and not existing.get("executionArn"):
+            _start(ctx, campaign_id)  # the first call died or StartExecution failed: start it now
         return http.respond(202, ads.campaign_view(existing))  # retry: same item, no second execution
     goal = _goal(body.get("goal"))
     budget = _int_in(body, "budgetSek", ads.MIN_BUDGET_SEK, ads.MAX_BUDGET_SEK, "invalid_budget")
@@ -404,10 +406,16 @@ def create_campaign(event, ctx):
         if not ads.conditional_failed(exc):
             raise
         return http.respond(202, ads.campaign_view(ads.get_campaign(ctx.tenant_id, campaign_id)))
+    _start(ctx, campaign_id)
+    return http.respond(202, ads.campaign_view(item))
+
+
+def _start(ctx, campaign_id):
+    """Idempotent by execution name. If StartExecution fails the item stays
+    `publishing` without executionArn and the client's retry starts it."""
     arn = _start_execution(campaign_id, {"tenantId": ctx.tenant_id, "campaignId": campaign_id})
     ads.table().update_item(Key=ads.campaign_key(ctx.tenant_id, campaign_id),
                             UpdateExpression="SET executionArn = :a", ExpressionAttributeValues={":a": arn})
-    return http.respond(202, ads.campaign_view(item))
 
 
 def _campaign(event, ctx):
@@ -427,7 +435,7 @@ def list_campaigns(event, ctx):
         raise ads.AdsError(400, "cursor is invalid", "cursor")
     items = [i for i in ads.campaigns(ctx.tenant_id) if i.get("locationId") == ctx.location_id]
     items.sort(key=lambda i: i.get("createdAt") or "", reverse=True)
-    return http.respond(200, {"campaigns": [ads.campaign_view(i) for i in items], "cursor": None})
+    return http.respond(200, {"campaigns": [ads.campaign_view(i) for i in items]})  # one page: no cursor
 
 
 def get_campaign(event, ctx):
@@ -480,6 +488,11 @@ def activate(event, ctx):
     except ClientError as exc:
         if not ads.conditional_failed(exc):
             raise
+        # Lost the race (a pause, a cap sweep or another activate). Meta is
+        # ACTIVE now; put it back unless the winner was an activate.
+        if (ads.get_campaign(ctx.tenant_id, item["campaignId"]) or {}).get("status") != "active":
+            for object_id in ads.meta_ids(item):  # campaign, ad set, ad
+                ads.graph().set_status(token, object_id, "PAUSED")
         raise ads.AdsError(409, "changed_retry")
     _publish("MetaCampaign.Activated", {"tenantId": ctx.tenant_id, "campaignId": item["campaignId"],
                                         "locationId": ctx.location_id})

@@ -301,6 +301,28 @@ def test_a8_retry_same_campaign_id_gives_one_item_and_one_execution(env):
     assert status == 202 and body["budgetSek"] == 500 and len(env.started) == 1
 
 
+def test_a8_start_execution_failure_is_started_by_the_retry(env, monkeypatch):
+    from botocore.exceptions import ClientError
+    connect(env)
+    ok, calls = env.api._start_execution, []
+
+    def flaky(name, payload):
+        calls.append(name)
+        if len(calls) == 1:
+            raise ClientError({"Error": {"Code": "ServiceUnavailable"}}, "StartExecution")
+        return ok(name, payload)
+
+    monkeypatch.setattr(env.api, "_start_execution", flaky)
+    assert new_campaign(env)[0] == 503
+    assert "executionArn" not in ads.get_campaign(TENANT_A, CAMP) and env.started == []
+    status, body = new_campaign(env)
+    assert status == 202 and body["status"] == "publishing" and len(env.started) == 1
+    assert ads.get_campaign(TENANT_A, CAMP)["executionArn"] == f"arn:{CAMP}"
+    assert new_campaign(env)[0] == 202 and len(env.started) == 1  # started once: no second execution
+    run_workflow(env)
+    assert ads.get_campaign(TENANT_A, CAMP)["status"] == "paused"
+
+
 @pytest.mark.parametrize("override, code", [({"radiusKm": 50}, "invalid_radius"), ({"days": 40}, "invalid_days"),
                                             ({"budgetSek": 50}, "invalid_budget"),
                                             ({"menuItemId": "wine"}, "alcohol_not_allowed"),
@@ -393,6 +415,7 @@ def test_a9_a10_list_and_get(env):
     published_campaign(env)
     status, body = call(env, "GET", CAMPAIGNS, params={"locationId": LOC_A})
     assert status == 200 and [c["campaignId"] for c in body["campaigns"]] == [CAMP]
+    assert "cursor" not in body  # one page: the optional cursor is omitted, not null
     assert call(env, "GET", CAMPAIGNS, params={"locationId": LOC_A2})[1]["campaigns"] == []
     assert call(env, "GET", CAMPAIGNS, params={"locationId": LOC_A}, query={"cursor": "zz"})[0] == 400
     status, body = call(env, "GET", ONE, params={"locationId": LOC_A, "campaignId": CAMP})
@@ -417,6 +440,26 @@ def test_a11_a12_activate_pause_with_retries(env):
     assert call(env, "POST", ONE + "/pause", params=p, body={"version": 1})[1]["status"] == "paused"
     assert call(env, "POST", ONE + "/activate", params=p, body={"version": 1})[1]["error"] == "changed_retry"
     assert ("MetaCampaign.Paused", {"tenantId": TENANT_A, "campaignId": CAMP, "by": "owner"}) in env.published
+
+
+def test_a11_lost_race_puts_meta_back_to_paused(env, monkeypatch):
+    connect(env)
+    item = published_campaign(env)
+    p = {"locationId": LOC_A, "campaignId": CAMP}
+    real = ads.graph().set_status
+
+    def racing(token, object_id, status):  # a pause lands between the Meta call and the write
+        real(token, object_id, status)
+        if status == "ACTIVE" and object_id == ads.meta_ids(item)[0]:
+            env.res.Table(ADS_TABLE).update_item(Key=ads.campaign_key(TENANT_A, CAMP),
+                                                 UpdateExpression="SET version = version + :one",
+                                                 ExpressionAttributeValues={":one": 1})
+
+    monkeypatch.setattr(ads.graph(), "set_status", racing)
+    status, body = call(env, "POST", ONE + "/activate", params=p, body={"version": int(item["version"])})
+    assert (status, body["error"]) == (409, "changed_retry")
+    assert all(env.graph.objects[i]["status"] == "PAUSED" for i in ads.meta_ids(item))
+    assert ads.get_campaign(TENANT_A, CAMP)["status"] == "paused"
 
 
 def test_a11_cap_and_kill_switch_and_invalid_status(env):

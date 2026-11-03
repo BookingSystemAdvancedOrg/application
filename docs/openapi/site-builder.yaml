@@ -1,0 +1,362 @@
+paths:
+  /tenant/site-builder:
+    get:
+      tags:
+      - Site builder
+      summary: Mode, draft and what is published
+      operationId: siteBuilderGet
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: State.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:
+                    type: string
+                    enum:
+                    - builder
+                    - custom
+                  draft: &id003
+                    type: object
+                    properties:
+                      doc: &id009
+                        type: object
+                        description: Site document v1 (application/shared/site_schema/v1.json).
+                      version: &id001
+                        type: integer
+                      basedOn:
+                        type: integer
+                        nullable: true
+                  published:
+                    type: object
+                    properties:
+                      versionNo: *id001
+                      publishedAt: &id010
+                        type: string
+        '400': &id004
+          description: 'Validation error: schema_invalid, doc_too_large, invalid_link, unknown_image, contrast_too_low
+            (field = JSON pointer).'
+          content:
+            application/json:
+              schema: &id002
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': &id005
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403': &id006
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404': &id007
+          description: Unknown or another tenant's publish or version.
+          content:
+            application/json:
+              schema: *id002
+        '503': &id008
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id002
+  /tenant/site-builder/draft:
+    put:
+      tags:
+      - Site builder
+      summary: Save the draft (optimistic version; 0 = first save)
+      operationId: siteBuilderDraftPut
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: The saved draft.
+          content:
+            application/json:
+              schema: *id003
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+        '409':
+          description: changed_retry or wrong_mode.
+          content:
+            application/json:
+              schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                doc: *id009
+                version: *id001
+              required:
+              - doc
+              - version
+  /tenant/site-builder/preview-links:
+    post:
+      tags:
+      - Site builder
+      summary: A private preview link (7 days; token in the fragment)
+      operationId: siteBuilderPreviewLink
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Link.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  url: *id010
+                  expiresAt: *id010
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+  /tenant/site-builder/publish:
+    post:
+      tags:
+      - Site builder
+      summary: Publish the draft (client ULID publishId = execution name)
+      operationId: siteBuilderPublish
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '202':
+          description: Started (or the same publish's status).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  publishId: *id010
+                  status: *id010
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+        '409':
+          description: publish_running, changed_retry or wrong_mode.
+          content:
+            application/json:
+              schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                publishId: *id010
+                draftVersion: *id001
+                source:
+                  type: string
+                  enum:
+                  - custom
+                commitSha: *id010
+              required:
+              - publishId
+  /tenant/site-builder/publish/{publishId}:
+    get:
+      tags:
+      - Site builder
+      summary: A publish's status
+      operationId: siteBuilderPublishStatus
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - running
+                    - done
+                    - failed
+                  versionNo: *id001
+                  error:
+                    type: object
+                    properties:
+                      code: *id010
+                      field: *id010
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+      parameters:
+      - name: publishId
+        in: path
+        required: true
+        schema: *id010
+  /tenant/site-builder/versions:
+    get:
+      tags:
+      - Site builder
+      summary: Published versions, newest first
+      operationId: siteBuilderVersions
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        versionNo: *id001
+                        source:
+                          type: string
+                          enum:
+                          - builder
+                          - custom
+                        publishedAt: *id010
+                        publishedBy: *id010
+                        live:
+                          type: boolean
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+  /tenant/site-builder/rollback:
+    post:
+      tags:
+      - Site builder
+      summary: Put an older version live again (pointer swap, no re-render)
+      operationId: siteBuilderRollback
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '202':
+          description: Started.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  publishId: *id010
+        '200':
+          description: Already live (no-op).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publishId: *id010
+                  status: *id010
+                  versionNo: *id001
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id007
+        '503': *id008
+        '409':
+          description: publish_running.
+          content:
+            application/json:
+              schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                publishId: *id010
+                versionNo: *id001
+              required:
+              - publishId
+              - versionNo
+  /public/site-builder/preview:
+    post:
+      tags:
+      - Site builder
+      summary: The draft behind a private preview link
+      operationId: siteBuilderPublicPreview
+      security: []
+      description: 'No login. Any problem (unknown tenant, feature off, bad or expired token) answers 404. Sends
+        X-Robots-Tag: noindex.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                tenantId: *id010
+                token: *id010
+              required:
+              - tenantId
+              - token
+      responses:
+        '200':
+          description: The draft.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  doc: *id009
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema: *id002
+        '429':
+          description: Too many requests from this address.
+          content:
+            application/json:
+              schema: *id002

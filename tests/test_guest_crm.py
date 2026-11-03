@@ -235,6 +235,94 @@ def test_a_failing_record_is_reported_and_others_still_apply(env, monkeypatch):
     assert profile_of(env, TENANT_A, "anna@example.se")["visits"] == 1
 
 
+
+def test_hist_row_and_count_are_one_write_so_a_crash_cannot_lose_a_count(env, monkeypatch):
+    """The HIST row and the profile counter commit together: a crash before
+    the commit leaves neither, a crash after it leaves both; a replay then
+    counts exactly once."""
+    from botocore.exceptions import ClientError
+    client = crm.table().meta.client
+    real_transact = client.transact_write_items
+    seen = []
+
+    def lost_transaction(**kwargs):
+        seen.append(kwargs)
+        raise ClientError({"Error": {"Code": "InternalServerError", "Message": "lost"}}, "TransactWriteItems")
+    monkeypatch.setattr(client, "transact_write_items", lost_transaction)
+    with pytest.raises(ClientError):
+        crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+    (call,), = [seen]
+    assert [next(iter(op)) for op in call["TransactItems"]] == ["Put", "Update"]
+    assert not [i for i in all_items(env, TENANT_A) if i["SK"].startswith("HIST#")]
+    monkeypatch.setattr(client, "transact_write_items", real_transact)
+
+    real_touch = crm._touch
+    crashes = []
+
+    def crash_after_commit(*a, **k):
+        if not crashes:
+            crashes.append(1)
+            raise RuntimeError("crash after the transaction")
+        return real_touch(*a, **k)
+    monkeypatch.setattr(crm, "_touch", crash_after_commit)
+    with pytest.raises(RuntimeError):
+        crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+    monkeypatch.setattr(crm, "_touch", real_touch)
+
+    # A crash where the old code wrote the row and then the counter as two
+    # separate calls: no counter goes through a plain update_item any more.
+    tbl = crm.table()
+    real_update = tbl.update_item
+
+    def crash_on_counter(**kwargs):
+        if "ADD" in kwargs.get("UpdateExpression", ""):
+            raise RuntimeError("crash between the row and its count")
+        return real_update(**kwargs)
+    monkeypatch.setattr(tbl, "update_item", crash_on_counter)
+    monkeypatch.setattr(crm, "table", lambda: tbl)
+    crm.record_source(TENANT_A, "booking", booking("r2", when="2026-10-03T18:00:00Z"), location_id=LOC_A,
+                      contact_ref={})
+    for _ in range(2):
+        result = crm.record_source(TENANT_A, "booking", booking("r1"), location_id=LOC_A, contact_ref={})
+        assert result["new"] is False
+    profile = profile_of(env, TENANT_A, "anna@example.se")
+    assert profile["visits"] == 2
+    assert len([i for i in all_items(env, TENANT_A) if i["SK"].startswith("HIST#")]) == 2
+
+
+def test_merge_moves_counted_rows_in_one_transaction_and_a_replay_does_not_double(env, monkeypatch):
+    stream(env, RES_TABLE, booking("r1", email="anna@example.se", when="2026-09-01T18:00:00Z"))
+    stream(env, RES_TABLE, booking("r2", email=None, phone="+46702222222", when="2026-09-05T18:00:00Z"))
+    keep = profile_of(env, TENANT_A, "anna@example.se")["guestId"]
+    other = crm.guest_for(TENANT_A, consent.SMS, consent.subject(TENANT_A, consent.SMS, "+46702222222"))
+    tbl = crm.table()
+    real_delete = tbl.delete_item
+    monkeypatch.setattr(crm, "table", lambda: tbl)
+    deletes = []
+
+    def crash_on_first_delete(**kwargs):
+        if not deletes:
+            deletes.append(1)
+            raise RuntimeError("crash after moving the row")
+        return real_delete(**kwargs)
+    real_update = tbl.update_item
+
+    def crash_on_counter(**kwargs):
+        if "ADD" in kwargs.get("UpdateExpression", ""):
+            raise RuntimeError("crash between the moved row and its count")
+        return real_update(**kwargs)
+    monkeypatch.setattr(tbl, "delete_item", crash_on_first_delete)
+    monkeypatch.setattr(tbl, "update_item", crash_on_counter)
+    with pytest.raises(RuntimeError):
+        crm.merge(TENANT_A, keep, other)
+    monkeypatch.setattr(tbl, "delete_item", real_delete)
+    monkeypatch.setattr(tbl, "update_item", real_update)
+    crm.merge(TENANT_A, keep, other)
+    crm.merge(TENANT_A, keep, other)
+    assert crm.get_profile(TENANT_A, keep)["visits"] == 2
+    assert crm.get_profile(TENANT_A, other) is None
+
+
 # --- C1 list --------------------------------------------------------------------------
 
 def test_c1_list_newest_first_with_cursor(env, monkeypatch):

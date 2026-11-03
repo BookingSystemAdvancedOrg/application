@@ -231,14 +231,15 @@ def merge(tenant_id, keep_id, other_id) -> None:
     for row in _hist_items(tenant_id, other_id):
         new_sk = "HIST#" + keep_id + row["SK"][len(f"HIST#{other_id}"):]
         moved = {**row, "SK": new_sk, "guestId": keep_id}
-        try:
-            tbl.put_item(Item=moved, ConditionExpression="attribute_not_exists(PK)")
-            counted = row.get("counted")
-            if counted:
-                _bump(tenant_id, keep_id, row, counted)
-        except ClientError as exc:
-            if not _conditional_failed(exc):
-                raise
+        counted = row.get("counted")
+        if counted:
+            _put_and_bump(tenant_id, keep_id, moved, counted)
+        else:
+            try:
+                tbl.put_item(Item=moved, ConditionExpression="attribute_not_exists(PK)")
+            except ClientError as exc:
+                if not _conditional_failed(exc):
+                    raise
         tbl.delete_item(Key={"PK": row["PK"], "SK": row["SK"]})
     for ident in (other or {}).get("identities") or []:
         tbl.put_item(Item={**ident_key(tenant_id, ident["channel"], ident["subject"]), "tenantId": tenant_id,
@@ -266,16 +267,27 @@ _COUNTER = {"booking": "visits", "noshow": "noShows", "order": "orders", "cateri
 _SPEND = {"booking": "bookingFees", "order": "orders", "catering": "catering"}
 
 
-def _bump(tenant_id, guest_id, row, counted):
-    """Adds one source row to the profile counters."""
-    values = {":one": 1, ":amt": _int(row.get("amountOre")), ":seen": row["at"], ":loc": [row["locationId"]],
-              ":locone": row["locationId"]}
-    names = {"#c": _COUNTER[counted], "#s": _SPEND.get(row["kind"], "orders")}
-    expr = "ADD #c :one SET spendOre.#s = spendOre.#s + :amt"
-    table().update_item(Key=profile_key(tenant_id, guest_id), UpdateExpression=expr,
-                        ExpressionAttributeNames=names,
-                        ExpressionAttributeValues={k: values[k] for k in (":one", ":amt")})
+def _put_and_bump(tenant_id, guest_id, row, counted) -> bool:
+    """Writes the HIST row and adds it to the profile counters in one
+    transaction, so a crash can never keep the row without its count (a
+    replay would then skip the count). Returns False when the row was
+    already there (nothing written)."""
+    tbl = table()
+    try:
+        tbl.meta.client.transact_write_items(TransactItems=[
+            {"Put": {"TableName": tbl.name, "Item": row, "ConditionExpression": "attribute_not_exists(PK)"}},
+            {"Update": {"TableName": tbl.name, "Key": profile_key(tenant_id, guest_id),
+                        "UpdateExpression": "ADD #c :one SET spendOre.#s = spendOre.#s + :amt",
+                        "ExpressionAttributeNames": {"#c": _COUNTER[counted],
+                                                     "#s": _SPEND.get(row["kind"], "orders")},
+                        "ExpressionAttributeValues": {":one": 1, ":amt": _int(row.get("amountOre"))}}},
+        ])
+    except ClientError as exc:
+        if not _conditional_failed(exc):
+            raise
+        return False
     _touch(tenant_id, guest_id, row["at"], row["locationId"])
+    return True
 
 
 def _touch(tenant_id, guest_id, at_iso, location_id, name=None, contact_ref=None, subscriber_id=None):
@@ -394,15 +406,7 @@ def record_source(tenant_id: str, kind: str, item: dict, *, location_id: str, co
         "counted": counted, "ttl": _epoch(now() + timedelta(days=hist_ttl_days(kind))),
         **({"partySize": fields["partySize"]} if "partySize" in fields else {}),
     }
-    try:
-        table().put_item(Item=row, ConditionExpression="attribute_not_exists(PK)")
-        new = True
-    except ClientError as exc:
-        if not _conditional_failed(exc):
-            raise
-        new = False
-    if new:
-        _bump(tenant_id, guest_id, row, counted)
+    new = _put_and_bump(tenant_id, guest_id, row, counted)
     after = get_profile(tenant_id, guest_id) or {}
     total = _int(after.get("visits")) + _int(after.get("orders")) + _int(after.get("cateringRequests"))
     returning = total - (1 if counted != "noshow" else 0) > 0

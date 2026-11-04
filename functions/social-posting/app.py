@@ -37,7 +37,7 @@ ENV_VARS:
 import json
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -310,7 +310,10 @@ def schedule(event, ctx):
     if at is None or (not publish_now and (at <= now or at > now + timedelta(days=sp.MAX_DAYS_AHEAD))):
         raise sp.PostError(400, "invalid_schedule", "scheduledAt")
     if post["status"] == "scheduled" and not publish_now and post.get("scheduledAt") == sp.iso(at):
-        return http.respond(200, sp.view(post))  # same time again: one schedule
+        # Same time again: one schedule. The first call may have saved the post and then died before the
+        # schedule was created, so make sure it exists (ConflictException = already there).
+        _create_schedule(post, at)
+        return http.respond(200, sp.view(post))
     if post["status"] not in sp.SCHEDULABLE:
         raise sp.PostError(409, "invalid_state")
     if version != int(post["version"]):
@@ -417,19 +420,37 @@ def _fail_open_channels(post, code):
             _publish_event("SocialPost.Failed", post, channel=channel, code=code)
 
 
+def _created_since(page_post, since):
+    """True only when the Page post's created_time is at or after the first
+    attempt (minus clock skew). No created_time proves nothing: not a match."""
+    raw = page_post.get("created_time")
+    if since is None or not isinstance(raw, str):
+        return False
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        return False
+    return created >= since - timedelta(seconds=sp.CLOCK_SKEW_SECONDS)
+
+
 def _publish_channel(post, channel, connection, token):
     state = dict(post["channels"][channel])
     before = state.get("state")
     lease = {**state, "state": "publishing", "attempts": int(state.get("attempts") or 0) + 1,
-             "leaseUntil": sp.iso(sp.now() + timedelta(minutes=sp.LEASE_MINUTES))}
+             "leaseUntil": sp.iso(sp.now() + timedelta(minutes=sp.LEASE_MINUTES)),
+             # needs_check only accepts a Page post created after this (never an older one with the same caption)
+             "firstAttemptAt": state.get("firstAttemptAt") or sp.iso(sp.now())}
     if not _set_channel(post, channel, lease, expect=("queued", "needs_check")):
         return
     graph = ads.graph()
     try:
         if channel == "facebook":
             if before == "needs_check":
+                since = sp.parse_iso(state.get("firstAttemptAt"))
                 found = next((p for p in graph.recent_page_posts(token, connection["pageId"], sp.RECENT_POSTS)
-                              if (p.get("message") or "") == post["caption"]), None)
+                              if (p.get("message") or "") == post["caption"] and _created_since(p, since)), None)
                 if found:
                     return _published(post, channel, lease, found["id"], found.get("permalink"))
             post_id = graph.publish_page_photo(token, connection["pageId"], _image_url(post), post["caption"])

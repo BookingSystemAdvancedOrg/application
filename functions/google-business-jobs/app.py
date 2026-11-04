@@ -253,6 +253,38 @@ def send_review(job_ref: dict) -> str:
     withdraw = consent.withdraw_link(os.environ.get("MARKETING_LINK_BASE", ""), tenant_id,
                                      **({"email": to} if channel == "email" else {"phone": to})) or ""
     subject, text, html_body, sms_text = _texts(restaurant, link["newReviewUri"], withdraw)
+    try:
+        _deliver(channel, to, tenant_id, location_id, tenant_row, restaurant, subject, text, html_body, sms_text,
+                 withdraw)
+    except Exception:
+        # Nothing went out: undo the claim and the cooldown row, then fail so the
+        # schedule's retry (and in the end its DLQ) sends it again.
+        _unclaim(key, tenant_id, job["guestKey"], gbp.iso(at))
+        raise
+    _publish("ReviewRequest.Sent", {"tenantId": tenant_id, "locationId": location_id, "kind": kind,
+                                    "sourceId": source_id, "channel": channel})
+    return "sent"
+
+
+def _unclaim(key, tenant_id, guest_key, sent_at):
+    # The cooldown row this attempt wrote was older than the cutoff (or absent), so deleting it is the same.
+    try:
+        gbp.table().update_item(Key=key, UpdateExpression="SET #s = :sch REMOVE channel, sentAt",
+                                ConditionExpression="#s = :sent", ExpressionAttributeNames={"#s": "status"},
+                                ExpressionAttributeValues={":sch": "scheduled", ":sent": "sent"})
+    except ClientError as exc:
+        if not gbp.conditional_failed(exc):
+            raise
+    try:
+        gbp.table().delete_item(Key=gbp.revsent_key(tenant_id, guest_key), ConditionExpression="lastSentAt = :at",
+                                ExpressionAttributeValues={":at": sent_at})
+    except ClientError as exc:
+        if not gbp.conditional_failed(exc):
+            raise
+
+
+def _deliver(channel, to, tenant_id, location_id, tenant_row, restaurant, subject, text, html_body, sms_text,
+             withdraw):
     if channel == "email":
         identity = marketing_mail.sender_identity(tenant_row)
         if identity:
@@ -265,11 +297,10 @@ def send_review(job_ref: dict) -> str:
         # SMS only through notification:live (CONTRACTS.md 9.4): tenant sender, prefixes, part counting.
         notice = {"version": 1, "kind": "google-business.review-request", "tenantId": tenant_id,
                   "locationId": location_id, "channel": "sms", "to": to, "text": sms_text, "replyTo": None}
-        _lambda().invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
-                         Payload=json.dumps({"notice": notice}).encode("utf-8"))
-    _publish("ReviewRequest.Sent", {"tenantId": tenant_id, "locationId": location_id, "kind": kind,
-                                    "sourceId": source_id, "channel": channel})
-    return "sent"
+        resp = _lambda().invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
+                                Payload=json.dumps({"notice": notice}).encode("utf-8"))
+        if (resp or {}).get("StatusCode") != 202:
+            raise RuntimeError(f"notification invoke returned {(resp or {}).get('StatusCode')}")
 
 
 # --- dispatch --------------------------------------------------------------------------

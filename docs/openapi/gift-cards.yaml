@@ -441,7 +441,7 @@ paths:
             application/json:
               schema: *id001
         '409':
-          description: refund_window_passed, card_void.
+          description: refund_window_passed, card_void, changed_retry (the balance moved).
           content:
             application/json:
               schema: *id001

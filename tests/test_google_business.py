@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from hooks_fake import entitle
@@ -448,6 +449,36 @@ def test_review_sms_goes_through_notification_not_sns(env, monkeypatch):
 
 
 real_client = boto3.client
+
+
+def test_review_sms_invoke_failure_releases_the_job_for_a_retry(env, monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_FUNCTION_NAME", "dev-notification:live")
+    invoked = []
+
+    def invoke(**kw):
+        invoked.append(kw)
+        if len(invoked) == 1:
+            raise ClientError({"Error": {"Code": "TooManyRequestsException", "Message": "x"}}, "Invoke")
+        return {"StatusCode": 202}
+
+    env.jobs._clients["lambda"] = SimpleNamespace(invoke=invoke)
+    enable(env, channels=["sms"])
+    phone = "+46701234567"
+    detail = visit(email="")
+    boto3.resource("dynamodb", region_name=REGION).Table(RES_TABLE).update_item(
+        Key={"PK": f"LOCATION#{LOC_A}", "SK": "RESERVATION#res-1"}, UpdateExpression="SET customerPhone = :p",
+        ExpressionAttributeValues={":p": phone})
+    consent.grant(boto3.resource("dynamodb", region_name=REGION).Table(CONSENT_TABLE), tenant_id=TENANT_A,
+                  restaurant="Bistro", version=consent.CURRENT, channels=["sms"], phone=phone, location_id=LOC_A,
+                  source="booking", ref="res-1")
+    env.jobs.schedule_review({**detail, "guestKey": consent.subject(TENANT_A, "sms", phone),
+                              "channels": ["sms"]})
+    with pytest.raises(ClientError):
+        fire(env)
+    assert not any(t == "ReviewRequest.Sent" for t, _ in env.published)
+    assert fire(env) == "sent"  # the retry is neither "done" nor "skipped:recent"
+    assert len(invoked) == 2
+    assert fire(env) == "done"
 
 
 def test_review_skipped_without_consent(env):

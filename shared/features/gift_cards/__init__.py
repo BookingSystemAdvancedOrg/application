@@ -389,13 +389,15 @@ def mark_verified(tenant_id, card_id, tx_id) -> bool:
 
 
 def change_balance(tenant_id, card_id, tx_id, delta, kind, channel, location_id, *, ref=None, by=None, reason=None,
-                   allow_expired=False, attempts=4, checks=None) -> tuple:
+                   allow_expired=False, attempts=4, checks=None, expect_version=None) -> tuple:
     """One balance change: CARD update (version, status, expiry and balance
     conditions) + the TX row (attribute_not_exists) + TXREF, in one
     transaction. Returns (card, tx, created). A retry with the same txId
     returns the stored TX; another amount is 409 changed_retry. `checks`:
     extra ConditionCheck items in the same transaction (a failed check ends
-    in 409 changed_retry after the retries)."""
+    in 409 changed_retry after the retries). `expect_version`: only from
+    that card version (no re-read loop), so the caller knows the balance the
+    change was based on."""
     tbl_name = os.environ["GIFT_CARDS_TABLE_NAME"]
     for _ in range(attempts):
         card = get_card(tenant_id, card_id)
@@ -406,6 +408,8 @@ def change_balance(tenant_id, card_id, tx_id, delta, kind, channel, location_id,
             if int(existing["amountOre"]) != delta:
                 raise GiftCardError(409, "changed_retry")
             return card, existing, False
+        if expect_version is not None and int(card["version"]) != int(expect_version):
+            raise GiftCardError(409, "changed_retry")
         at = now()
         status = shown_status(card, at)
         if status == "void":

@@ -287,16 +287,54 @@ def test_ig_crash_after_container_reuses_it(env):
 def test_fb_unknown_outcome_goes_to_needs_check_and_is_never_reposted(env):
     draft(env, channels=["facebook"])
     schedule(env, now=True)
-    # The post reached Meta but the answer was lost: simulate with a post already on the Page.
-    env.graph.posts.append({"id": "fb-already", "message": "Fredagspasta!", "permalink": "https://example.invalid/p"})
     env.graph._fail["publish_page_photo"] = 1
     assert run(env) == {"result": "failed"}
     assert call(env, "GET", ONE, post=P1)[1]["channels"]["facebook"]["state"] == "needs_check"
+    # The post reached Meta but the answer was lost: it is on the Page, created after the first attempt.
+    env.graph.posts.append({"id": "fb-already", "message": "Fredagspasta!", "permalink": "https://example.invalid/p",
+                            "created_time": "2026-11-04T12:00:05+0000"})
     schedule(env, now=True)
     assert run(env) == {"result": "published"}
     fb = call(env, "GET", ONE, post=P1)[1]["channels"]["facebook"]
     assert fb["metaPostId"] == "fb-already"
     assert len(meta_calls(env, "recent_page_posts")) == 1
+    assert len(meta_calls(env, "publish_page_photo")) == 1  # only the lost first attempt
+
+
+def test_fb_needs_check_never_matches_an_older_post_with_the_same_caption(env):
+    # Last week's post with the same caption, and one without created_time: neither proves this post went out.
+    env.graph.posts.append({"id": "fb-last-week", "message": "Fredagspasta!", "permalink": "https://example.invalid/o",
+                            "created_time": "2026-10-28T12:00:00+0000"})
+    env.graph.posts.append({"id": "fb-no-time", "message": "Fredagspasta!", "permalink": "https://example.invalid/n"})
+    draft(env, channels=["facebook"])
+    schedule(env, now=True)
+    env.graph._fail["publish_page_photo"] = 1
+    assert run(env) == {"result": "failed"}
+    schedule(env, now=True)
+    assert run(env) == {"result": "published"}
+    fb = call(env, "GET", ONE, post=P1)[1]["channels"]["facebook"]
+    assert fb["metaPostId"] not in ("fb-last-week", "fb-no-time")
+    assert len(meta_calls(env, "recent_page_posts")) == 1
+    assert len(meta_calls(env, "publish_page_photo")) == 2
+
+
+def test_schedule_retry_with_the_same_time_creates_the_lost_schedule(env, monkeypatch):
+    draft(env)
+    real = env.api._create_schedule
+
+    def dies(post, at):
+        raise RuntimeError("Lambda timed out before the schedule")
+
+    monkeypatch.setattr(env.api, "_create_schedule", dies)
+    with pytest.raises(RuntimeError):
+        schedule(env, scheduledAt="2026-11-05T09:00:00Z")
+    assert call(env, "GET", ONE, post=P1)[1]["status"] == "scheduled" and schedules() == []
+    monkeypatch.setattr(env.api, "_create_schedule", real)
+    status, body = schedule(env, version=1, scheduledAt="2026-11-05T09:00:00Z")
+    assert status == 200 and body["status"] == "scheduled"
+    assert schedules() == [f"post-{P1}"]
+    assert schedule(env, version=1, scheduledAt="2026-11-05T09:00:00Z")[0] == 200  # Conflict = already there
+    assert schedules() == [f"post-{P1}"]
 
 
 def test_entitlement_off_before_timer_fails_without_meta_call(env):

@@ -65,5 +65,16 @@ ADR: `infrastructure/docs/adr/ADR-E-gift-cards.md`. Contract: CONTRACTS.md 6.E, 
   legal check): E12 works, the Kassa step does not, and the admin button
   reverses the debit when Kassa refuses.
 - `charge.dispute.closed` lacks `metadata.kind` (Run 0 note), so disputes are
-  not routed to this feature yet; `charge.refunded` voids the card when routed.
+  not routed to this feature yet. `charge.refunded` voids the card only on a
+  full refund (`amount_refunded == amount`); a partial refund made in Stripe
+  is logged and flagged on the card (`partialRefundOre`, `partialRefundAt`)
+  for the owner to settle by hand.
+- E9 refund writes the card first (refund TX for the balance it read, with a
+  version condition: a redemption in between is 409 `changed_retry`), then
+  refunds exactly that amount in Stripe (key `giftcard-refund-<txId>`). A
+  Stripe failure is 502 with the card already void; the same `txId` again
+  finishes the Stripe refund (`stripeRefundId` on the TX marks it done).
+- The code email stamps `codeSentAt` on the card once notification has it.
+  A `payment_intent.succeeded` replay for an issued card without
+  `codeSentAt` (older than 2 minutes) rotates the code and sends it again.
 - Withdrawal right (14 days) and 24-month default validity: lawyer to confirm.

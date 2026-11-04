@@ -57,6 +57,7 @@ logger.setLevel(logging.INFO)
 
 CHECKOUT_IP_LIMIT = (10, 600)
 BALANCE_IP_LIMIT = (20, 600)
+CODE_SEND_GRACE_SECONDS = 120
 _clients = {}
 
 
@@ -109,8 +110,43 @@ def _send_code(card, code, location, *, kind, to):
     notice = {"version": 1, "kind": kind, "tenantId": card["tenantId"], "locationId": card.get("soldAtLocationId"),
               "channel": "email", "to": to, "subject": f"Presentkort till {name}", "text": text,
               "replyTo": "location"}
-    _client("lambda").invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
-                             Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    resp = _client("lambda").invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
+                                    Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    if (resp or {}).get("StatusCode") != 202:
+        raise RuntimeError(f"notification invoke returned {(resp or {}).get('StatusCode')}")
+    # Stamped only once notification has the email: a webhook replay resends when it is missing.
+    try:
+        gc.table().update_item(Key=gc.card_key(card["tenantId"], card["cardId"]),
+                               UpdateExpression="SET codeSentAt = :at", ConditionExpression="attribute_exists(PK)",
+                               ExpressionAttributeValues={":at": gc.iso(gc.now())})
+    except ClientError as exc:
+        if not gc.conditional_failed(exc):
+            raise
+
+
+def _rotate_code(tenant_id, card):
+    """The code is not stored: a new code replaces the old one (which stops
+    working at once). Returns (card, code)."""
+    code = gc.new_code()
+    new_hmac = gc.code_hmac(tenant_id, code)
+    name = os.environ["GIFT_CARDS_TABLE_NAME"]
+    try:
+        dynamo.client().transact_write_items(TransactItems=[
+            {"Put": {"TableName": name, "Item": gc._ser({**gc.code_key(tenant_id, new_hmac),
+                                                         "tenantId": tenant_id, "cardId": card["cardId"]}),
+                     "ConditionExpression": "attribute_not_exists(PK)"}},
+            {"Delete": {"TableName": name, "Key": gc._ser(gc.code_key(tenant_id, card["codeHmac"]))}},
+            {"Update": {"TableName": name, "Key": gc._ser(gc.card_key(tenant_id, card["cardId"])),
+                        "UpdateExpression": "SET codeHmac = :h, last4 = :l, version = version + :one",
+                        "ConditionExpression": "version = :v",
+                        "ExpressionAttributeValues": gc._ser({":h": new_hmac, ":l": code[-4:], ":one": 1,
+                                                             ":v": int(card["version"])})}},
+        ])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise
+        raise gc.GiftCardError(409, "changed_retry")
+    return gc.get_card(tenant_id, card["cardId"]), code
 
 
 # --- public E1-E3 ------------------------------------------------------------------------------
@@ -342,32 +378,50 @@ def adjust(event, ctx):
 
 
 def refund(event, ctx):
-    """Stripe first (the unused part, key giftcard-refund-<txId>), then the card once."""
+    """The card first (refund TX for the balance read, version condition, so a
+    redemption in between makes it 409 changed_retry), then Stripe for exactly
+    that amount (key giftcard-refund-<txId>). A Stripe failure leaves the TX
+    without stripeRefundId; a retry with the same txId finishes the refund."""
     _owner(ctx)
     body = http.body(event, allowed=("txId", "reason"))
     card = _card_or_404(ctx, event)
     tx_id, reason = _tx_id(body), _reason(body)
-    if gc.get_tx(ctx.tenant_id, card["cardId"], tx_id):
-        return http.respond(200, gc.card_detail(card))
+    done = gc.get_tx(ctx.tenant_id, card["cardId"], tx_id)
+    if done:
+        if done.get("kind") == "refund":
+            _stripe_refund(ctx.tenant_id, card, done)
+        return http.respond(200, gc.card_detail(gc.get_card(ctx.tenant_id, card["cardId"])))
     if card["status"] == "void":
         raise gc.GiftCardError(409, "card_void")
     purchased = gc.parse_iso(card.get("purchasedAt"))
     if not purchased or gc.now() > purchased + timedelta(days=gc.REFUND_DAYS):
         raise gc.GiftCardError(409, "refund_window_passed")
     amount = int(card["balanceOre"])
-    if amount > 0:
-        try:
-            stripe.request("POST", "/v1/refunds", {"payment_intent": card["paymentIntentId"], "amount": amount,
-                                                   "metadata": {"kind": "giftcard", "tenantId": ctx.tenant_id,
-                                                                "cardId": card["cardId"]}},
-                           account=card["stripeAccountId"], idempotency_key=f"giftcard-refund-{tx_id}")
-        except (stripe.StripeError, stripe.StripeUnavailable):
-            raise gc.GiftCardError(502, "stripe_unavailable")
-    card, _, created = gc.change_balance(ctx.tenant_id, card["cardId"], tx_id, -amount, "refund", "admin",
-                                         card["soldAtLocationId"], by=ctx.sub, reason=reason, allow_expired=True)
+    card, tx, created = gc.change_balance(ctx.tenant_id, card["cardId"], tx_id, -amount, "refund", "admin",
+                                          card["soldAtLocationId"], by=ctx.sub, reason=reason, allow_expired=True,
+                                          expect_version=int(card["version"]))
     if created:
         _publish("GiftCard.Refunded", {"tenantId": ctx.tenant_id, "cardId": card["cardId"], "amountOre": amount})
+    _stripe_refund(ctx.tenant_id, card, tx)
     return http.respond(200, gc.card_detail(card))
+
+
+def _stripe_refund(tenant_id, card, tx):
+    amount = -int(tx["amountOre"])
+    if amount <= 0 or tx.get("stripeRefundId"):
+        return
+    try:
+        result = stripe.request("POST", "/v1/refunds", {"payment_intent": card["paymentIntentId"], "amount": amount,
+                                                        "metadata": {"kind": "giftcard", "tenantId": tenant_id,
+                                                                     "cardId": card["cardId"]}},
+                                account=card["stripeAccountId"], idempotency_key=f"giftcard-refund-{tx['txId']}")
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        logger.warning(json.dumps({"event": "giftcard.refund", "stripe": "failed", "cardId": card["cardId"],
+                                   "txId": tx["txId"]}))
+        raise gc.GiftCardError(502, "stripe_unavailable")
+    gc.table().update_item(Key=gc.tx_key(tenant_id, card["cardId"], tx["txId"]),
+                           UpdateExpression="SET stripeRefundId = :r", ConditionExpression="attribute_exists(PK)",
+                           ExpressionAttributeValues={":r": (result or {}).get("id") or "unknown"})
 
 
 def resend(event, ctx):
@@ -384,26 +438,7 @@ def resend(event, ctx):
         raise gc.GiftCardError(400, "no email for that target", "to")
     if gc.shown_status(card) != "active":
         raise gc.GiftCardError(409, "card_expired" if gc.shown_status(card) == "expired" else "card_void")
-    code = gc.new_code()
-    new_hmac = gc.code_hmac(ctx.tenant_id, code)
-    name = os.environ["GIFT_CARDS_TABLE_NAME"]
-    try:
-        dynamo.client().transact_write_items(TransactItems=[
-            {"Put": {"TableName": name, "Item": gc._ser({**gc.code_key(ctx.tenant_id, new_hmac),
-                                                         "tenantId": ctx.tenant_id, "cardId": card["cardId"]}),
-                     "ConditionExpression": "attribute_not_exists(PK)"}},
-            {"Delete": {"TableName": name, "Key": gc._ser(gc.code_key(ctx.tenant_id, card["codeHmac"]))}},
-            {"Update": {"TableName": name, "Key": gc._ser(gc.card_key(ctx.tenant_id, card["cardId"])),
-                        "UpdateExpression": "SET codeHmac = :h, last4 = :l, version = version + :one",
-                        "ConditionExpression": "version = :v",
-                        "ExpressionAttributeValues": gc._ser({":h": new_hmac, ":l": code[-4:], ":one": 1,
-                                                             ":v": int(card["version"])})}},
-        ])
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
-            raise
-        raise gc.GiftCardError(409, "changed_retry")
-    card = gc.get_card(ctx.tenant_id, card["cardId"])
+    card, code = _rotate_code(ctx.tenant_id, card)
     location = tenant.get_location(ctx.tenant_id, card["soldAtLocationId"]) or {}
     _send_code(card, code, location, kind="gift-cards.code-resend", to=address)
     return http.respond(202, {"last4": card["last4"]})
@@ -494,10 +529,33 @@ def reverse_redemption(event, ctx):
 
 # --- Stripe: issue only from the purchase's own account -------------------------------------
 
+def _code_to(card):
+    return card.get("recipientEmail") or card.get("buyerEmail")
+
+
+def _resend_unsent(tenant_id, card):
+    """A webhook replay for an issued card whose code email never reached
+    notification (the first attempt failed after the write): send it now.
+    The code is not stored, so it is rotated; nobody has seen the old one."""
+    if card.get("codeSentAt") or gc.shown_status(card) != "active" or not _code_to(card):
+        return "already_issued"
+    purchased = gc.parse_iso(card.get("purchasedAt"))
+    if purchased and gc.now() < purchased + timedelta(seconds=CODE_SEND_GRACE_SECONDS):
+        return "already_issued"  # the first attempt may still be sending
+    try:
+        card, code = _rotate_code(tenant_id, card)
+    except gc.GiftCardError:
+        return "already_issued"  # a concurrent change; the next replay tries again
+    location = tenant.get_location(tenant_id, card["soldAtLocationId"]) or {}
+    _send_code(card, code, location, kind="gift-cards.code", to=_code_to(card))
+    return "code_resent"
+
+
 def _issue(tenant_id, purchase, intent):
     card_id = gc.card_id_for(purchase["purchaseId"])
-    if gc.get_card(tenant_id, card_id):
-        return "already_issued"
+    existing = gc.get_card(tenant_id, card_id)
+    if existing:
+        return _resend_unsent(tenant_id, existing)
     location = tenant.get_location(tenant_id, purchase["locationId"]) or {}
     at = gc.now()
     expires = gc.iso(gc.add_months(at, int(purchase.get("validityMonths") or gc.DEFAULT_VALIDITY)))
@@ -541,8 +599,7 @@ def _issue(tenant_id, purchase, intent):
             if gc.get_card(tenant_id, card_id):
                 return "already_issued"
             continue  # a code collision (80 bits): draw again
-        _send_code(card, code, location, kind="gift-cards.code", to=purchase.get("recipientEmail")
-                   or purchase["buyerEmail"])
+        _send_code(card, code, location, kind="gift-cards.code", to=_code_to(card))
         _publish("GiftCard.Sold", {"tenantId": tenant_id, "cardId": card_id, "locationId": purchase["locationId"],
                                    "amountOre": int(purchase["amountOre"]), "expiresAt": expires})
         return "issued"
@@ -582,6 +639,18 @@ def stripe_event(event):
         card = gc.get_card(tenant_id, gc.card_id_for(purchase_id))
         if not card or card["status"] == "void":
             return "already_void"
+        refunded, charged = int(obj.get("amount_refunded") or 0), int(obj.get("amount") or 0)
+        if kind == "charge.refunded" and refunded != charged:
+            # A partial refund made in Stripe: the guest still holds the card, so it is flagged on the card
+            # for the owner to settle by hand (E8 adjust or E9 refund), never voided (ADR-E 9).
+            logger.warning(json.dumps({"event": "giftcard.partial_refund", "tenantId": tenant_id,
+                                       "cardId": card["cardId"], "chargeId": obj.get("id"),
+                                       "amountRefundedOre": refunded, "amountOre": charged}))
+            gc.table().update_item(Key=gc.card_key(tenant_id, card["cardId"]),
+                                   UpdateExpression="SET partialRefundOre = :r, partialRefundAt = :at",
+                                   ConditionExpression="attribute_exists(PK)",
+                                   ExpressionAttributeValues={":r": refunded, ":at": gc.iso(gc.now())})
+            return "flagged:partial_refund"
         _, _, created = gc.change_balance(tenant_id, card["cardId"], f"void-{obj.get('id')}", -int(card["balanceOre"]),
                                           "void", "system", card["soldAtLocationId"], allow_expired=True)
         return "voided" if created else "already_void"

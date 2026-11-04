@@ -429,6 +429,99 @@ def test_refund_stripe_first_once_and_window(env):
                      body={**body, "txId": "01REFUNDBBBBBBBBBBBBBBBBBB"})[1]["code"] == "refund_window_passed"
 
 
+def test_refund_race_with_a_redemption_refunds_only_what_the_card_held(env, monkeypatch):
+    _, card_id = issue(env)
+    path = "/tenant/gift-cards/{cardId}/refund"
+    body = {"txId": "01REFUNDAAAAAAAAAAAAAAAAAA", "reason": "Ångerrätt"}
+    real_change = gc.change_balance
+
+    def redeem_in_between(*args, **kwargs):
+        if kwargs.get("expect_version") is not None and args[4] == "refund":
+            real_change(TENANT_A, card_id, "01REDEEMAAAAAAAAAAAAAAAAAA", -10000, "redeem", "kassa", LOC_A)
+        return real_change(*args, **kwargs)
+
+    monkeypatch.setattr(gc, "change_balance", redeem_in_between)
+    status, err = http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body=body)
+    assert status == 409 and err["code"] == "changed_retry"
+    assert [c for c in env.stripe.calls if c["path"] == "/v1/refunds"] == []  # Stripe only after the card
+    monkeypatch.setattr(gc, "change_balance", real_change)
+    body = {**body, "txId": "01REFUNDBBBBBBBBBBBBBBBBBB"}
+    status, card = http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body=body)
+    assert status == 200 and card["status"] == "void"
+    refunds = [c for c in env.stripe.calls if c["path"] == "/v1/refunds"]
+    assert len(refunds) == 1 and refunds[0]["params"]["amount"] == 40000
+
+
+def test_refund_stripe_down_finishes_on_retry_with_the_same_tx(env):
+    _, card_id = issue(env)
+    path = "/tenant/gift-cards/{cardId}/refund"
+    body = {"txId": "01REFUNDAAAAAAAAAAAAAAAAAA", "reason": "Ångerrätt"}
+    env.stripe.fail = True
+    assert http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body=body)[1]["code"] == \
+        "stripe_unavailable"
+    assert gc.get_card(TENANT_A, card_id)["status"] == "void"  # nothing left to redeem while Stripe is down
+    env.stripe.fail = False
+    status, card = http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body=body)
+    assert status == 200 and card["status"] == "void"
+    http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body=body)
+    refunds = [c for c in env.stripe.calls if c["path"] == "/v1/refunds"]
+    assert len(refunds) == 2 and {c["key"] for c in refunds} == {"giftcard-refund-01REFUNDAAAAAAAAAAAAAAAAAA"}
+    assert all(c["params"]["amount"] == 50000 for c in refunds)
+    tx = gc.get_tx(TENANT_A, card_id, body["txId"])
+    assert tx["stripeRefundId"].startswith("re_")
+    assert [t["kind"] for t in gc.transactions(TENANT_A, card_id)].count("refund") == 1
+
+
+def refunded(e, amount_refunded, amount=50000, purchase_id=P1, charge="ch_1"):
+    pid = f"pi_{('giftcard-' + purchase_id)[-10:]}"
+    return e.api.handler({"hook": "stripe.event", "hookVersion": 1, "tenantId": TENANT_A, "type": "charge.refunded",
+                          "account": ACCT_A, "object": {"id": charge, "payment_intent": pid, "amount": amount,
+                                                        "amount_refunded": amount_refunded,
+                                                        "metadata": {"kind": "giftcard", "tenantId": TENANT_A,
+                                                                     "purchaseId": purchase_id}}})
+
+
+def test_charge_refunded_voids_only_a_full_refund(env):
+    _, card_id = issue(env)
+    assert refunded(env, 20000)["result"] == "flagged:partial_refund"
+    card = gc.get_card(TENANT_A, card_id)
+    assert card["status"] == "active" and int(card["balanceOre"]) == 50000
+    assert int(card["partialRefundOre"]) == 20000
+    assert refunded(env, 50000)["result"] == "voided"
+    assert gc.get_card(TENANT_A, card_id)["status"] == "void"
+    assert refunded(env, 50000)["result"] == "already_void"
+
+
+def test_code_email_resent_on_replay_when_the_first_send_failed(env):
+    enable(env)
+    assert buy(env)[0] == 200
+
+    def broken(**kwargs):
+        raise RuntimeError("throttled")
+
+    env.api._clients["lambda"] = SimpleNamespace(invoke=broken)
+    with pytest.raises(RuntimeError):
+        succeed(env)
+    card_id = gc.card_id_for(P1)
+    assert "codeSentAt" not in gc.get_card(TENANT_A, card_id)
+    env.api._clients["lambda"] = env.mail
+    assert succeed(env)["result"] == "already_issued"  # within the grace: the first may still be sending
+    assert env.mail.calls == []
+    env.clock.value = NOW + timedelta(minutes=5)
+    assert succeed(env)["result"] == "code_resent"
+    code = issued_code(env)
+    assert env.mail.calls[-1]["notice"]["to"] == "sara@example.se"
+    assert gc.find_card_by_code(TENANT_A, code)["cardId"] == card_id
+    assert gc.get_card(TENANT_A, card_id)["codeSentAt"]
+    assert succeed(env)["result"] == "already_issued"
+    assert len(env.mail.calls) == 1
+
+
+def test_code_sent_at_stamped_after_the_invoke(env):
+    _, card_id = issue(env)
+    assert gc.get_card(TENANT_A, card_id)["codeSentAt"] == gc.iso(NOW)
+
+
 def test_resend_rotates_the_code(env):
     old, card_id = issue(env)
     path = "/tenant/gift-cards/{cardId}/resend"

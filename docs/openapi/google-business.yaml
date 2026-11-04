@@ -1,0 +1,669 @@
+paths:
+  /tenant/google-business/connection:
+    get:
+      tags:
+      - Google Business Profile
+      summary: Connection status
+      operationId: googleBusinessGetTenantGoogleBusinessConnection
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessConnection'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    delete:
+      tags:
+      - Google Business Profile
+      summary: Disconnect Google
+      operationId: googleBusinessDeleteTenantGoogleBusinessConnection
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '204':
+          description: Revoked; token, links and pending review schedules removed.
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/google-business/connection/start:
+    post:
+      tags:
+      - Google Business Profile
+      summary: Start Google OAuth
+      operationId: googleBusinessPostTenantGoogleBusinessConnectionStart
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleBusinessEmpty'
+      responses:
+        '200':
+          description: Google consent URL (top-level redirect).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessAuthorize'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/google-business/connection/callback:
+    post:
+      tags:
+      - Google Business Profile
+      summary: Finish Google OAuth
+      operationId: googleBusinessPostTenantGoogleBusinessConnectionCallback
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleBusinessCallback'
+      responses:
+        '200':
+          description: Connected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessConnection'
+        '400':
+          description: invalid_state (unknown, used, expired or another user's state).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: google_unavailable (retryAfter).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/google-business/locations:
+    get:
+      tags:
+      - Google Business Profile
+      summary: Google locations of the connected account
+      operationId: googleBusinessGetTenantGoogleBusinessLocations
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Google locations with the Booqy location they are linked to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessLocations'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: not_connected
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: google_unavailable (retryAfter).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/google-business:
+    get:
+      tags:
+      - Google Business Profile
+      summary: Link, preview, review settings and stats
+      operationId: googleBusinessGetLocationsLocationIdGoogleBusiness
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: What Google will show and the review request settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessLocationView'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/google-business/link:
+    put:
+      tags:
+      - Google Business Profile
+      summary: Link a Google location
+      operationId: googleBusinessPutLocationsLocationIdGoogleBusinessLink
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleBusinessLinkBody'
+      responses:
+        '200':
+          description: Link (first sync queued for the hourly job).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessLink'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's location, or unknown Google location.
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: already_linked, not_connected, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: google_unavailable (retryAfter).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    delete:
+      tags:
+      - Google Business Profile
+      summary: Unlink
+      operationId: googleBusinessDeleteLocationsLocationIdGoogleBusinessLink
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Unlinked (idempotent).
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/google-business/sync:
+    post:
+      tags:
+      - Google Business Profile
+      summary: Synka nu
+      operationId: googleBusinessPostLocationsLocationIdGoogleBusinessSync
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleBusinessEmpty'
+      responses:
+        '200':
+          description: Result; no Google call when the mapped hours are unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessSyncResult'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: not_linked, not_connected.
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: google_unavailable (retryAfter).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/google-business/review-settings:
+    put:
+      tags:
+      - Google Business Profile
+      summary: Review request settings
+      operationId: googleBusinessPutLocationsLocationIdGoogleBusinessReviewSettings
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleBusinessReviewSettingsBody'
+      responses:
+        '200':
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleBusinessReviewSettings'
+        '400':
+          description: invalid_delay, invalid_days, invalid_channel, invalid_sources, unsupported fields.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: changed_retry (stale version).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+components:
+  schemas:
+    GoogleBusinessEmpty:
+      type: object
+      additionalProperties: false
+    GoogleBusinessConnection:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - connected
+          - needs_reauth
+          - disconnected
+        googleAccount: &id002
+          type: string
+    GoogleBusinessAuthorize:
+      type: object
+      required:
+      - authorizeUrl
+      properties:
+        authorizeUrl: *id002
+    GoogleBusinessCallback:
+      type: object
+      required:
+      - code
+      - state
+      additionalProperties: false
+      properties:
+        code: *id002
+        state: *id002
+    GoogleBusinessLocations:
+      type: object
+      required:
+      - locations
+      properties:
+        locations:
+          type: array
+          items:
+            type: object
+            properties:
+              googleLocation: *id002
+              title: *id002
+              address: *id002
+              linkedTo: *id002
+    GoogleBusinessLink:
+      type: object
+      required:
+      - googleLocation
+      - title
+      - syncStatus
+      - version
+      properties:
+        googleLocation: *id002
+        title: *id002
+        syncStatus:
+          type: string
+          enum:
+          - pending
+          - ok
+          - error
+        lastSyncAt:
+          type: string
+          nullable: true
+        version: &id003
+          type: integer
+        lastError:
+          type: object
+          properties:
+            code: *id002
+            at: *id002
+    GoogleBusinessLinkBody:
+      type: object
+      required:
+      - googleLocation
+      additionalProperties: false
+      properties:
+        googleLocation:
+          type: string
+          pattern: ^locations/
+        version: *id003
+    GoogleBusinessSyncResult:
+      type: object
+      required:
+      - syncStatus
+      - changed
+      properties:
+        syncStatus: *id002
+        changed: &id004
+          type: boolean
+        lastSyncAt:
+          type: string
+          nullable: true
+    GoogleBusinessReviewSettings:
+      type: object
+      properties: &id005
+        enabled: *id004
+        sources:
+          type: array
+          items:
+            type: string
+            enum:
+            - booking
+            - order
+        channels:
+          type: array
+          items:
+            type: string
+            enum:
+            - email
+            - sms
+        delayMinutes:
+          type: integer
+          minimum: 30
+          maximum: 4320
+        minDaysBetween:
+          type: integer
+          minimum: 30
+          maximum: 365
+        version: *id003
+    GoogleBusinessReviewSettingsBody:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - sources
+      - channels
+      - delayMinutes
+      - minDaysBetween
+      - version
+      properties: *id005
+    GoogleBusinessLocationView:
+      type: object
+      required:
+      - preview
+      - reviewSettings
+      - stats
+      properties:
+        link:
+          $ref: '#/components/schemas/GoogleBusinessLink'
+        preview:
+          type: object
+          properties:
+            regularHours:
+              type: object
+            specialHours:
+              type: object
+        reviewSettings:
+          $ref: '#/components/schemas/GoogleBusinessReviewSettings'
+        stats:
+          type: object
+          properties:
+            sent30d: *id003
+            skipped30d: *id003
+            clicks30d: *id003

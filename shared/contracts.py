@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "8049da171e01"
+CONTRACTS_HASH = "daf7d40d380a"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -231,7 +231,8 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                         'billedMinutes': 'int',
                                                         'outcome': 'enum[booked,moved,cancelled,info,transferred,callback,abandoned,refused,error]'},
                                            'optional': {'reservationId': 'string',
-                                                        'callbackId': 'string'}},
+                                                        'callbackId': 'string',
+                                                        'counterOffer': 'enum[none,other_time,next_day,nearby_table]'}},
                        'PhoneCall.Refused': {'required': {'locationId': 'string',
                                                           'callId': 'string',
                                                           'reason': 'enum[cap,kill_switch,hours,paused,entitlement]'},
@@ -633,6 +634,7 @@ class PhoneCallEndedDetail(TypedDict):
     outcome: Literal["booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error"]
     reservationId: NotRequired[str]
     callbackId: NotRequired[str]
+    counterOffer: NotRequired[Literal["none", "other_time", "next_day", "nearby_table"]]
 
 
 class PhoneCallRefusedDetail(TypedDict):
@@ -871,6 +873,7 @@ CallOutcome = Literal["booked", "moved", "cancelled", "info", "transferred", "ca
 CallRefusedReason = Literal["cap", "kill_switch", "hours", "paused", "entitlement"]
 ClientMode = Literal["simulator", "real"]
 ConnectionStatus = Literal["connected", "needs_reauth", "disconnected"]
+CounterOffer = Literal["none", "other_time", "next_day", "nearby_table"]
 GuestChannel = Literal["email", "sms"]
 GuestSourceKind = Literal["booking", "order", "catering"]
 PhoneAgentMode = Literal["after_hours", "overflow", "always"]

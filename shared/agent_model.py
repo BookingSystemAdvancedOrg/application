@@ -83,7 +83,7 @@ _WEEKDAYS = {
 _WORDS = "|".join(sorted({*_NUMBERS[_SV], *_NUMBERS[_EN]}, key=len, reverse=True))
 _PARTY = (re.compile(rf"\b(\d{{1,2}}|{_WORDS}) ?(personer|pers|gäster|people|persons|guests)\b", _I),
           re.compile(rf"\b(?:för|for) (\d{{1,2}}|{_WORDS})\b(?! ?(?:[:.]\d))", _I))
-_TIME = (re.compile(r"\b(\d{1,2})[:.](\d{2})\b"),
+_TIME = (re.compile(r"\b(\d{1,2})[:.](\d{2})(?: ?(am|pm))?\b", _I),
          re.compile(r"\b(?:klockan|kl\.?|at) (\d{1,2})(?! ?(?:personer|people|guests|pers))(?: ?(am|pm))?\b", _I),
          re.compile(r"\b(\d{1,2}) ?(am|pm)\b", _I))
 _PHONE = re.compile(r"(\+46|0)(?:[\s-]?\d){7,10}")
@@ -107,6 +107,31 @@ SENTENCES = {
     "yes": ("Toppen. Vad kan jag hjälpa dig med?", "Great. What can I help you with?"),
     "cannot": ("Det kan jag tyvärr inte göra här. Vill du att någon ringer upp dig?",
                "I'm afraid I can't do that here. Would you like someone to call you back?"),
+    "ask_time": ("Vilken tid passar?", "Which time suits you?"),
+}
+# ADR-L "Counter-offers": what the agent says when the requested time is
+# taken. The nearby table (same time) is offered before other times; the
+# closest free times on both sides of the requested time come next; a full
+# day offers the next day once, then a callback. At most MAX_OFFERS times
+# are spoken per turn.
+MAX_OFFERS = 3
+COUNTER_OFFERS = {
+    "time_taken": ("Klockan {time} är tyvärr fullt. Jag kan erbjuda {times}. Vad passar?",
+                   "I'm afraid {time} is fully booked. I can offer {times}. What suits you?"),
+    "nearby_table": (("Klockan {time} finns inget vanligt bord ledigt, men jag kan ge er {table} klockan {time}. "
+                      "Vill du ha det?"),
+                     ("There is no regular table free at {time}, but I can give you {table} at {time}. "
+                      "Would you like that?")),
+    "near_time": ("Närmast klockan {time} har jag {times}. Vilken tid passar?",
+                  "Closest to {time} I have {times}. Which time suits you?"),
+    "next_day_full": ("Dagen efter är också fullbokad. Vill du att någon ringer upp dig om det blir ledigt?",
+                      ("The next day is fully booked too. Would you like someone to call you back if something "
+                       "opens up?")),
+}
+NEARBY_TABLE = {   # kind of nearby table (tool result) -> how it is said
+    "adjacent_pair": ("två bord bredvid varandra", "two tables next to each other"),
+    "larger": ("ett större bord", "a larger table"),
+    "phone_only": ("ett bord vi bara bokar per telefon", "a table we only book by phone"),
 }
 CONFIRMATIONS = {   # tool -> (sv, en) said after its tool_result
     "get_restaurant_info": ("Här är det du frågade om: {summary}", "Here is what you asked about: {summary}"),
@@ -161,6 +186,40 @@ def _result(block):
 
 def _tool_names(tools):
     return {(t.get("toolSpec") or t).get("name") for t in tools or ()}
+
+
+def _minute(clock):
+    hour, minute = clock.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def nearest_times(requested, before, after, limit=MAX_OFFERS):
+    """The ``limit`` free times closest to ``requested`` ("HH:MM") from the
+    same-day lists on both sides of it, spoken in clock order; a tie in
+    distance puts the earlier time first."""
+    wanted = _minute(requested)
+    ranked = sorted(set(before or ()) | set(after or ()), key=lambda t: (abs(_minute(t) - wanted), _minute(t)))
+    return sorted(ranked[:limit], key=_minute)
+
+
+def _joined(times, lang):
+    times = list(times)
+    if len(times) < 2:
+        return times[0] if times else ""
+    return ", ".join(times[:-1]) + (" eller " if lang == _SV else " or ") + times[-1]
+
+
+def _is_full_day(result):
+    if result.get("dayFull") is True or ("times" in result and not result["times"]):
+        return True
+    return result.get("held") is False and not (result.get("before") or result.get("after") or result.get("nearby"))
+
+
+def _full_days(messages):
+    """How many availability or hold answers so far said the whole day is
+    full (the second one ends the day hopping and offers a callback)."""
+    return sum(1 for m in messages for b in _blocks(m)
+               if b.get("type") == "tool_result" and _is_full_day(_result(b)))
 
 
 def match_intent(text):
@@ -281,9 +340,38 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         return Turn(item.get("text"), uses, item.get("stop_reason") or ("tool_use" if uses else "end_turn"))
 
     def _say(self, key, lang, **fields):
-        sv, en = SENTENCES.get(key) or CONFIRMATIONS[key]
+        return self._offer(SENTENCES.get(key) or CONFIRMATIONS[key], lang, **fields)
+
+    @staticmethod
+    def _offer(pair, lang, **fields):
+        sv, en = pair
         text = sv if lang == _SV else en
         return Turn(text=text.format(**fields) if fields else text)
+
+    def _counter_offer(self, result, slots, lang):
+        """The sentence after a hold that found the time taken (ADR-L
+        counter-offers): nearby table first, else the closest times on both
+        sides, else the day is full."""
+        time = result.get("time") or slots.get("time", "")
+        nearby = list(result.get("nearby") or [])
+        if nearby:
+            kind = nearby[0].get("kind", "adjacent_pair")
+            table = NEARBY_TABLE.get(kind, NEARBY_TABLE["adjacent_pair"])[0 if lang == _SV else 1]
+            return self._offer(COUNTER_OFFERS["nearby_table"], lang, time=time, table=table)
+        times = nearest_times(time or "00:00", result.get("before"), result.get("after"))
+        if times:
+            return self._offer(COUNTER_OFFERS["time_taken"], lang, time=time, times=_joined(times, lang))
+        return self._say("get_availability_full", lang)
+
+    def _next_day_or_callback(self, messages, slots, offered, lang):
+        """After a full day: the next day once, then a callback."""
+        if _full_days(messages) >= 2 or "date" not in slots:
+            return self._callback(slots, "bokning" if lang == _SV else "booking", offered, lang)
+        next_day = (date.fromisoformat(slots["date"]) + timedelta(days=1)).isoformat()
+        payload = {"date": next_day, "partySize": slots.get("partySize")}
+        if "time" in slots:
+            payload["time"] = slots["time"]
+        return self._use("get_availability", payload, offered, lang)
 
     def _use(self, name, payload, offered, lang):
         if name not in offered:
@@ -310,13 +398,19 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             slots.update(entities(text, self.today))
             if found == "callback" or (intent == "callback" and found is None):
                 slots.setdefault("topic", text)
-        last_use, last_result = None, None
+        last_use, last_result, offered_date, caller_date_after = None, None, None, False
         for m in messages:
+            if m.get("role") == "user" and _text(m) and "date" in entities(_text(m), self.today):
+                caller_date_after = True
             for b in _blocks(m):
                 if b.get("type") == "tool_use":
                     last_use, last_result = b, None
+                    if b.get("name") == "get_availability" and (b.get("input") or {}).get("date"):
+                        offered_date, caller_date_after = b["input"]["date"], False
                 elif b.get("type") == "tool_result" and last_use and b.get("tool_use_id") == last_use.get("id"):
                     last_result = _result(b)
+        if offered_date and not caller_date_after:
+            slots["date"] = offered_date      # the day the agent moved to (next day) is the day being booked
         return intent, slots, unknown_text, last_use, last_result
 
     def _booking_step(self, slots, offered, lang, *, hold):
@@ -328,7 +422,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             return self._use("hold_table", {k: slots[k] for k in ("date", "time", "partySize")}, offered, lang)
         payload = {k: slots[k] for k in ("date", "partySize")}
         if "time" in slots:
-            payload["timeFrom"] = slots["time"]
+            payload["time"] = slots["time"]
         return self._use("get_availability", payload, offered, lang)
 
     def _after_caller(self, messages, offered, lang):
@@ -336,9 +430,15 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         said, _ = match_intent(text)
         intent, slots, unknown_text, last_use, last_result = self._context(messages)
         if said == "no":
+            result = last_result or {}
+            if (last_use or {}).get("name") == "hold_table" and result.get("held") is False and result.get("nearby"):
+                times = nearest_times(slots.get("time", "00:00"), result.get("before"), result.get("after"))
+                if times:     # the nearby table was declined: fall back to the closest times
+                    return self._offer(COUNTER_OFFERS["time_taken"], lang, time=slots.get("time", ""),
+                                       times=_joined(times, lang))
             return self._say("no", lang)
         if said == "yes":
-            return self._confirm(intent, slots, unknown_text, last_use, last_result, offered, lang)
+            return self._confirm(messages, intent, slots, unknown_text, last_use, last_result, offered, lang)
         if intent is None:
             return self._say("unknown", lang)
         if (last_use or {}).get("name") == "hold_table" and (last_result or {}).get("holdId") and "name" in slots:
@@ -374,16 +474,23 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         payload.update({"phone": slots["phone"]} if "phone" in slots else {})
         return self._use("create_reservation", payload, offered, lang)
 
-    def _confirm(self, intent, slots, unknown_text, last_use, last_result, offered, lang):
+    def _confirm(self, messages, intent, slots, unknown_text, last_use, last_result, offered, lang):
         """A caller's "yes" continues what the agent last proposed."""
         name = (last_use or {}).get("name")
         result = last_result or {}
         if name == "hold_table" and result.get("holdId"):
             return self._create(slots, result, offered, lang)
-        if name == "get_availability" and not result.get("times") and "date" in slots:
-            next_day = (date.fromisoformat(slots["date"]) + timedelta(days=1)).isoformat()
-            return self._use("get_availability", {"date": next_day, "partySize": slots.get("partySize")},
-                             offered, lang)
+        if name == "hold_table" and result.get("held") is False:
+            nearby = list(result.get("nearby") or [])
+            if nearby:        # "yes" to the nearby table: hold exactly those tables at the same time
+                payload = {k: slots[k] for k in ("date", "time", "partySize") if k in slots}
+                payload["tableIds"] = list(nearby[0].get("tableIds") or [])
+                return self._use("hold_table", payload, offered, lang)
+            if nearest_times(slots.get("time", "00:00"), result.get("before"), result.get("after")):
+                return self._say("ask_time", lang)
+            return self._next_day_or_callback(messages, slots, offered, lang)
+        if name == "get_availability" and not result.get("times"):
+            return self._next_day_or_callback(messages, slots, offered, lang)
         if name == "find_reservations" and result.get("reservations"):
             found = result["reservations"][0]
             if intent != "move":
@@ -403,12 +510,18 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         if name is None or block.get("is_error") or result.get("ok") is False:
             return self._say("error", lang)
         if name == "get_availability":
-            times = list(result.get("times") or [])[:3]
+            times = list(result.get("times") or [])[:MAX_OFFERS]
             if not times:
+                if _full_days(messages) >= 2:
+                    return self._offer(COUNTER_OFFERS["next_day_full"], lang)
                 return self._say("get_availability_full", lang)
-            joined = (", ".join(times[:-1]) + (" eller " if lang == _SV else " or ") + times[-1]) if len(times) > 1 \
-                else times[0]
-            return self._say("get_availability", lang, times=joined)
+            requested = result.get("requestedTime") or (last_use or {}).get("input", {}).get("time")
+            if requested:    # rank the whole day by distance to the asked time (the time itself included)
+                near = nearest_times(requested, result.get("times"), ())
+                return self._offer(COUNTER_OFFERS["near_time"], lang, time=requested, times=_joined(near, lang))
+            return self._say("get_availability", lang, times=_joined(times, lang))
+        if name == "hold_table" and result.get("held") is False:
+            return self._counter_offer(result, slots, lang)
         if name == "create_reservation" and result.get("guaranteeRequired") and result.get("reservationId"):
             return self._use("send_guarantee_link", {"reservationId": result["reservationId"]}, offered, lang)
         if name == "transfer_to_staff" and result.get("answered") is False:

@@ -274,6 +274,9 @@ events:
         outcome: "enum[booked,moved,cancelled,info,transferred,callback,abandoned,refused,error]"
         reservationId?: string
         callbackId?: string
+        # ADR-L counter-offers (DECISIONS.md 2026-11-04): what the agent had to
+        # offer instead of the requested time before the call ended
+        counterOffer?: "enum[none,other_time,next_day,nearby_table]"
       PhoneCall.Refused:
         locationId: string
         callId: string
@@ -461,3 +464,4 @@ enums:
   PhoneAgentMode: [after_hours, overflow, always]
   CallOutcome: [booked, moved, cancelled, info, transferred, callback, abandoned, refused, error]
   CallRefusedReason: [cap, kill_switch, hours, paused, entitlement]
+  CounterOffer: [none, other_time, next_day, nearby_table]

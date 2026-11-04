@@ -65,7 +65,10 @@ def test_run0_addendum_entries():
     assert {"booqy.events-tickets", "booqy.phone-agent"} <= set(contracts.EVENT_SOURCES)
     assert len(contracts.EVENTS["booqy.events-tickets"]) == 6 and len(contracts.EVENTS["booqy.phone-agent"]) == 8
     assert contracts.EVENTS["booqy.phone-agent"]["PhoneCall.Ended"]["optional"] == {
-        "reservationId": "string", "callbackId": "string"}
+        "reservationId": "string", "callbackId": "string",
+        # ADR-L counter-offers (DECISIONS.md 2026-11-04)
+        "counterOffer": "enum[none,other_time,next_day,nearby_table]"}
+    assert contracts.CounterOffer.__args__ == ("none", "other_time", "next_day", "nearby_table")
     assert {k: contracts.CLIENTS[k]["env"] for k in ("voice", "telephony", "agent_model")} == {
         "voice": "VOICE_CLIENT", "telephony": "TELEPHONY_CLIENT", "agent_model": "AGENT_MODEL_CLIENT"}
     ops = gen.load(RAW)["consoleForwardOps"]

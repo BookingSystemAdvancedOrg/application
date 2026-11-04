@@ -509,6 +509,11 @@ paths:
           content:
             application/json:
               schema: *id001
+        '502':
+          description: notification_unavailable (the email did not go out; the code was rotated, so sending again is safe).
+          content:
+            application/json:
+              schema: *id001
         '503':
           description: AWS error.
           content:

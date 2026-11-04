@@ -1,0 +1,744 @@
+paths:
+  /locations/{locationId}/waitlist:
+    get:
+      tags:
+      - Waitlist
+      summary: Queue of the day with suggestions
+      operationId: waitlistGetLocationsLocationIdWaitlist
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: date
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Settings, entries in join order and table suggestions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistQueue'
+        '400':
+          description: bad date.
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    post:
+      tags:
+      - Waitlist
+      summary: Add a walk-in
+      operationId: waitlistPostLocationsLocationIdWaitlist
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistWalkInBody'
+      responses:
+        '201':
+          description: The entry (same entryId again returns it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistEntry'
+        '400':
+          description: invalid_party_size, invalid_phone, unsupported fields.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: queue_full, already_queued.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/waitlist/{entryId}/offer:
+    post:
+      tags:
+      - Waitlist
+      summary: Offer a table (a table hold)
+      operationId: waitlistPostLocationsLocationIdWaitlistEntryIdOffer
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: entryId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistOfferBody'
+      responses:
+        '200':
+          description: The entry with offer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistEntry'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: table_taken, invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/waitlist/{entryId}/seat:
+    post:
+      tags:
+      - Waitlist
+      summary: Seat now (booking, arrived)
+      operationId: waitlistPostLocationsLocationIdWaitlistEntryIdSeat
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: entryId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistSeatBody'
+      responses:
+        '200':
+          description: The entry and the reservation id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistSeatResult'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: hold_expired, table_taken, invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/waitlist/{entryId}/remove:
+    post:
+      tags:
+      - Waitlist
+      summary: Remove from the queue
+      operationId: waitlistPostLocationsLocationIdWaitlistEntryIdRemove
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: entryId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistRemoveBody'
+      responses:
+        '200':
+          description: The entry (releases any hold).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistEntry'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/waitlist/settings:
+    put:
+      tags:
+      - Waitlist
+      summary: Queue settings (owner)
+      operationId: waitlistPutLocationsLocationIdWaitlistSettings
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistSettingsBody'
+      responses:
+        '200':
+          description: Saved settings; publicJoin mirrored onto the location for /site-config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistSettings'
+        '400':
+          description: invalid_hold, invalid_max, unsupported fields.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/locations/{locationId}/waitlist:
+    post:
+      tags:
+      - Waitlist
+      summary: Join the queue from the site
+      operationId: waitlistPostPublicLocationsLocationIdWaitlist
+      security: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistJoinBody'
+      responses:
+        '201':
+          description: The queue token and position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistJoined'
+        '400':
+          description: Validation error, or turnstile_failed (field turnstileToken).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: queue_full, already_queued.
+          content:
+            application/json:
+              schema: *id001
+        '429':
+          description: Too many attempts.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/waitlist/{token}:
+    get:
+      tags:
+      - Waitlist
+      summary: Queue status for the guest
+      operationId: waitlistGetPublicWaitlistToken
+      security: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Status, position and the offer while it is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistPublicStatus'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/waitlist/{token}/accept:
+    post:
+      tags:
+      - Waitlist
+      summary: Take the offered table
+      operationId: waitlistPostPublicWaitlistTokenAccept
+      security: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistEmpty'
+      responses:
+        '200':
+          description: The booking and its manage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistAccepted'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: hold_expired, invalid_state.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/waitlist/{token}/leave:
+    post:
+      tags:
+      - Waitlist
+      summary: Leave the queue
+      operationId: waitlistPostPublicWaitlistTokenLeave
+      security: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WaitlistEmpty'
+      responses:
+        '204':
+          description: Left (idempotent).
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+components:
+  schemas:
+    WaitlistEmpty:
+      type: object
+      additionalProperties: false
+    WaitlistEntry:
+      type: object
+      required:
+      - entryId
+      - status
+      - partySize
+      - name
+      - version
+      properties:
+        entryId: &id002
+          type: string
+        date: *id002
+        name: *id002
+        partySize: &id003
+          type: integer
+        phone: *id002
+        email: *id002
+        note: *id002
+        source:
+          type: string
+          enum:
+          - site
+          - staff
+        status:
+          type: string
+          enum:
+          - waiting
+          - offered
+          - seated
+          - booked
+          - expired
+          - left
+          - removed
+        joinedAt: *id002
+        wantFrom: *id002
+        wantUntil: *id002
+        position:
+          type: integer
+          nullable: true
+        offer:
+          type: object
+          properties:
+            reservationId: *id002
+            tableIds:
+              type: array
+              items: *id002
+            startTime: *id002
+            endTime: *id002
+            expiresAt: *id002
+            offeredBy: *id002
+        reservationId: *id002
+        notice:
+          type: object
+          properties:
+            kind: *id002
+            at: *id002
+            sentAt: *id002
+        version: *id003
+    WaitlistSettings:
+      type: object
+      properties: &id005
+        enabled: &id004
+          type: boolean
+        holdMinutes:
+          type: integer
+          minimum: 5
+          maximum: 30
+        maxWaiting:
+          type: integer
+          minimum: 1
+          maximum: 200
+        publicJoin: *id004
+        version: *id003
+    WaitlistSettingsBody:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - holdMinutes
+      - maxWaiting
+      - publicJoin
+      - version
+      properties: *id005
+    WaitlistQueue:
+      type: object
+      required:
+      - settings
+      - entries
+      - suggestions
+      properties:
+        settings:
+          $ref: '#/components/schemas/WaitlistSettings'
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/WaitlistEntry'
+        suggestions:
+          type: array
+          items:
+            type: object
+            properties:
+              entryId: *id002
+              tableIds:
+                type: array
+                items: *id002
+              startTime: *id002
+    WaitlistWalkInBody:
+      type: object
+      additionalProperties: false
+      required:
+      - entryId
+      - name
+      - partySize
+      properties:
+        entryId: *id002
+        name: *id002
+        partySize:
+          type: integer
+          minimum: 1
+          maximum: 20
+        phone: *id002
+        note: *id002
+    WaitlistOfferBody:
+      type: object
+      additionalProperties: false
+      required:
+      - tableIds
+      - startTime
+      - version
+      properties:
+        tableIds:
+          type: array
+          items: *id002
+        startTime: *id002
+        version: *id003
+    WaitlistSeatBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        tableIds:
+          type: array
+          items: *id002
+        version: *id003
+    WaitlistSeatResult:
+      type: object
+      properties:
+        entry:
+          $ref: '#/components/schemas/WaitlistEntry'
+        reservationId: *id002
+    WaitlistRemoveBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        version: *id003
+        reason: *id002
+    WaitlistJoinBody:
+      type: object
+      additionalProperties: false
+      required:
+      - entryId
+      - name
+      - partySize
+      - phone
+      properties:
+        entryId: *id002
+        name: *id002
+        partySize: *id003
+        phone: *id002
+        email: *id002
+        wantFrom: *id002
+        wantUntil: *id002
+        turnstileToken: *id002
+    WaitlistJoined:
+      type: object
+      properties:
+        token: *id002
+        position:
+          type: integer
+          nullable: true
+    WaitlistPublicStatus:
+      type: object
+      properties:
+        status: *id002
+        position:
+          type: integer
+          nullable: true
+        locationName: *id002
+        offer:
+          type: object
+          properties:
+            startTime: *id002
+            expiresAt: *id002
+    WaitlistAccepted:
+      type: object
+      properties:
+        reservationId: *id002
+        manageToken: *id002

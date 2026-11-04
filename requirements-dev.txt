@@ -8,3 +8,4 @@ xmlschema
 icalendar
 PyJWT[crypto]==2.10.1
 PyYAML
+jsonschema==4.26.0

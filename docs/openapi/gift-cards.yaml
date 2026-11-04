@@ -1,0 +1,893 @@
+paths:
+  /public/locations/{locationId}/gift-cards/offer:
+    get:
+      tags:
+      - Gift cards
+      summary: Gift card offer
+      operationId: giftCardsGetPublicLocationsLocationIdGiftCardsOffer
+      security: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Amounts and validity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsOffer'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/locations/{locationId}/gift-cards/checkout:
+    post:
+      tags:
+      - Gift cards
+      summary: Buy a gift card
+      operationId: giftCardsPostPublicLocationsLocationIdGiftCardsCheckout
+      security: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsCheckoutBody'
+      responses:
+        '200':
+          description: Stripe client secret on the restaurant's connected account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsCheckout'
+        '400':
+          description: invalid_amount, invalid_email, message_too_long, turnstile_failed.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown location, inactive tenant, feature off or bad token/code.
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: changed_retry (same purchaseId, other amount), no_stripe_account.
+          content:
+            application/json:
+              schema: *id001
+        '429':
+          description: Too many attempts.
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: stripe_unavailable.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /public/locations/{locationId}/gift-cards/balance:
+    post:
+      tags:
+      - Gift cards
+      summary: Check a balance
+      operationId: giftCardsPostPublicLocationsLocationIdGiftCardsBalance
+      security: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsCodeBody'
+      responses:
+        '200':
+          description: Balance, expiry and status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsBalance'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Any miss (wrong code, other restaurant).
+          content:
+            application/json:
+              schema: *id001
+        '429':
+          description: Too many attempts.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards/settings:
+    get:
+      tags:
+      - Gift cards
+      summary: Gift card settings
+      operationId: giftCardsGetTenantGiftCardsSettings
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsSettings'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    put:
+      tags:
+      - Gift cards
+      summary: Save gift card settings
+      operationId: giftCardsPutTenantGiftCardsSettings
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsSettingsBody'
+      responses:
+        '200':
+          description: Settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsSettings'
+        '400':
+          description: invalid_validity, invalid_amount.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards:
+    get:
+      tags:
+      - Gift cards
+      summary: Gift cards and the liability
+      operationId: giftCardsGetTenantGiftCards
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Cards, newest first, and the outstanding liability.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsList'
+        '400':
+          description: bad status or cursor.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards/{cardId}:
+    get:
+      tags:
+      - Gift cards
+      summary: One gift card with its history
+      operationId: giftCardsGetTenantGiftCardsCardId
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: cardId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Card and transactions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsCardDetail'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards/{cardId}/adjust:
+    post:
+      tags:
+      - Gift cards
+      summary: Extend the validity
+      operationId: giftCardsPostTenantGiftCardsCardIdAdjust
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: cardId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsAdjustBody'
+      responses:
+        '200':
+          description: Card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsCard'
+        '400':
+          description: shorter expiry.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: card_expired, card_void, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards/{cardId}/refund:
+    post:
+      tags:
+      - Gift cards
+      summary: Refund the unused part
+      operationId: giftCardsPostTenantGiftCardsCardIdRefund
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: cardId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsRefundBody'
+      responses:
+        '200':
+          description: Card (void).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsCard'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: refund_window_passed, card_void.
+          content:
+            application/json:
+              schema: *id001
+        '502':
+          description: stripe_unavailable.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/gift-cards/{cardId}/resend:
+    post:
+      tags:
+      - Gift cards
+      summary: Send a new code by email
+      operationId: giftCardsPostTenantGiftCardsCardIdResend
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: cardId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsResendBody'
+      responses:
+        '202':
+          description: A new code was sent; the old one no longer works.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsResent'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: card_expired, card_void, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/gift-cards/lookup:
+    post:
+      tags:
+      - Gift cards
+      summary: Look up a code (Kassa)
+      operationId: giftCardsPostLocationsLocationIdGiftCardsLookup
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsCodeBody'
+      responses:
+        '200':
+          description: Card summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsLookup'
+        '400':
+          description: missing code.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/gift-cards/redemptions:
+    post:
+      tags:
+      - Gift cards
+      summary: Redeem in Kassa
+      operationId: giftCardsPostLocationsLocationIdGiftCardsRedemptions
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsRedeemBody'
+      responses:
+        '200':
+          description: Balance after the debit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsRedeemed'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan (giftCards or kassa off).
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: insufficient_balance, card_expired, card_void, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /locations/{locationId}/gift-cards/redemptions/{txId}/reverse:
+    post:
+      tags:
+      - Gift cards
+      summary: Reverse a Kassa redemption
+      operationId: giftCardsPostLocationsLocationIdGiftCardsRedemptionsTxIdReverse
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: txId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GiftCardsEmpty'
+      responses:
+        '200':
+          description: Balance after the reversal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftCardsReversed'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: 'receipt_issued (Kassa took the payment: undo it there).'
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+components:
+  schemas:
+    GiftCardsEmpty:
+      type: object
+      additionalProperties: false
+    GiftCardsOffer:
+      type: object
+      properties:
+        amountsSek:
+          type: array
+          items: &id002
+            type: integer
+        customMinSek: *id002
+        customMaxSek: *id002
+        validityMonths: *id002
+    GiftCardsCheckoutBody:
+      type: object
+      additionalProperties: false
+      required:
+      - purchaseId
+      - amountSek
+      - buyerEmail
+      properties:
+        purchaseId: &id003
+          type: string
+        amountSek: *id002
+        buyerEmail: *id003
+        recipientName: *id003
+        recipientEmail: *id003
+        message:
+          type: string
+          maxLength: 300
+        turnstileToken: *id003
+    GiftCardsCheckout:
+      type: object
+      properties:
+        clientSecret: *id003
+        amountSek: *id002
+        expiresAt: *id003
+        stripeAccount: *id003
+    GiftCardsCodeBody:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      properties:
+        code: *id003
+        turnstileToken: *id003
+    GiftCardsBalance:
+      type: object
+      properties:
+        balanceSek: *id002
+        balanceOre: *id002
+        expiresAt: *id003
+        status: *id003
+    GiftCardsSettings:
+      type: object
+      properties: &id004
+        enabled:
+          type: boolean
+        amountsSek:
+          type: array
+          items: *id002
+        customMinSek: *id002
+        customMaxSek: *id002
+        validityMonths:
+          type: integer
+          minimum: 12
+          maximum: 60
+        version: *id002
+    GiftCardsSettingsBody:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - amountsSek
+      - customMinSek
+      - customMaxSek
+      - validityMonths
+      - version
+      properties: *id004
+    GiftCardsCard:
+      type: object
+      properties:
+        cardId: *id003
+        last4: *id003
+        initialSek: *id002
+        balanceSek: *id002
+        balanceOre: *id002
+        status:
+          type: string
+          enum:
+          - active
+          - used
+          - expired
+          - void
+        expiresAt: *id003
+        soldAtLocationId: *id003
+        purchasedAt: *id003
+    GiftCardsList:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/GiftCardsCard'
+        liabilitySek: *id002
+        liabilityOre: *id002
+        cursor:
+          type: string
+          nullable: true
+    GiftCardsCardDetail:
+      allOf:
+      - $ref: '#/components/schemas/GiftCardsCard'
+      - type: object
+        properties:
+          transactions:
+            type: array
+            items:
+              type: object
+              properties:
+                txId: *id003
+                kind: *id003
+                amountOre: *id002
+                balanceAfterOre: *id002
+                channel: *id003
+                locationId: *id003
+                at: *id003
+    GiftCardsAdjustBody:
+      type: object
+      additionalProperties: false
+      required:
+      - txId
+      - expiresAt
+      - reason
+      properties:
+        txId: *id003
+        expiresAt: *id003
+        reason: *id003
+    GiftCardsRefundBody:
+      type: object
+      additionalProperties: false
+      required:
+      - txId
+      - reason
+      properties:
+        txId: *id003
+        reason: *id003
+    GiftCardsResendBody:
+      type: object
+      additionalProperties: false
+      required:
+      - to
+      properties:
+        to:
+          type: string
+          enum:
+          - buyer
+          - recipient
+    GiftCardsResent:
+      type: object
+      properties:
+        last4: *id003
+    GiftCardsLookup:
+      type: object
+      properties:
+        cardId: *id003
+        last4: *id003
+        balanceSek: *id002
+        balanceOre: *id002
+        expiresAt: *id003
+        status: *id003
+    GiftCardsRedeemBody:
+      type: object
+      additionalProperties: false
+      required:
+      - txId
+      - code
+      - amountOre
+      - billId
+      properties:
+        txId: *id003
+        code: *id003
+        amountOre: *id002
+        billId: *id003
+    GiftCardsRedeemed:
+      type: object
+      properties:
+        txId: *id003
+        balanceAfterSek: *id002
+        balanceAfterOre: *id002
+        cardLast4: *id003
+    GiftCardsReversed:
+      type: object
+      properties:
+        balanceAfterSek: *id002
+        balanceAfterOre: *id002

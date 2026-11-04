@@ -592,7 +592,10 @@ def public_join(event):
         body.get("wantUntil"), "wantUntil")
     _guard(event, "waitlist-ip", JOIN_IP_LIMIT)
     if turnstile.required():
-        turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
+        try:
+            turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
+        except ValueError:
+            raise wl.WaitlistError(400, "turnstile_failed", "turnstileToken")
     entry, _ = _join(ctx, location_id, entry_id=body.get("entryId"), name=name, party=party, phone=phone,
                      email=email or None, note=None, source="site", want_from=want_from, want_until=want_until)
     entries = wl.day_entries(location_id, entry["date"])

@@ -27,7 +27,7 @@ ENV_VARS:
     SCHEDULER_INVOKE_ROLE_ARN, SCHEDULER_DLQ_ARN (optional), JOBS_FUNCTION_ARN,
     NO_REPLY_EMAIL_ADDRESS, MARKETING_CONFIGURATION_SET, MARKETING_LINK_BASE,
     MARKETING_LINK_KEY_SECRET_ARN, MAIL_OUTBOX_BUCKET_NAME (dev only),
-    SMS_ALLOWED_PREFIXES (optional)
+    NOTIFICATION_FUNCTION_NAME (SMS via notification:live), SMS_ALLOWED_PREFIXES (optional)
 """
 
 import html
@@ -51,6 +51,13 @@ SOURCE_TABLES = {"reservation": "RESERVATION_TABLE_NAME", "order": "ORDER_TABLE_
 KIND_TABLE = {"booking": "reservation", "order": "order"}
 SMS_ALLOWED_PREFIXES = ("+46", "+45", "+47", "+358", "+354")
 MIN_LEAD_SECONDS = 60
+_clients = {}
+
+
+def _lambda():
+    if "lambda" not in _clients:
+        _clients["lambda"] = boto3.client("lambda")
+    return _clients["lambda"]
 
 
 def _publish(detail_type, detail):
@@ -255,8 +262,11 @@ def send_review(job_ref: dict) -> str:
                             sender=marketing_mail.from_address(restaurant), unsubscribe_url=withdraw or None,
                             kind="google-business.review-request")
     else:
-        boto3.client("sns").publish(PhoneNumber=to, Message=sms_text, MessageAttributes={
-            "AWS.SNS.SMS.SMSType": {"DataType": "String", "StringValue": "Promotional"}})
+        # SMS only through notification:live (CONTRACTS.md 9.4): tenant sender, prefixes, part counting.
+        notice = {"version": 1, "kind": "google-business.review-request", "tenantId": tenant_id,
+                  "locationId": location_id, "channel": "sms", "to": to, "text": sms_text, "replyTo": None}
+        _lambda().invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
+                         Payload=json.dumps({"notice": notice}).encode("utf-8"))
     _publish("ReviewRequest.Sent", {"tenantId": tenant_id, "locationId": location_id, "kind": kind,
                                     "sourceId": source_id, "channel": channel})
     return "sent"

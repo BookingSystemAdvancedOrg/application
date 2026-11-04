@@ -48,6 +48,9 @@ class FakeStripe:
         if path == "/v1/payment_intents":
             pid = f"pi_{idempotency_key[-10:]}"
             return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"]}
+        if method == "GET" and path.startswith("/v1/payment_intents/"):
+            pid = path.rsplit("/", 1)[-1]
+            return {"id": pid, "client_secret": f"{pid}_secret", "status": "requires_payment_method"}
         return {"id": f"re_{len(self.calls)}", "status": "succeeded"}
 
 
@@ -202,7 +205,11 @@ def test_checkout_validation_and_idempotent(env):
     assert first["expiresAt"].startswith("2028-11-04")
     again = buy(env)[1]
     assert again["clientSecret"] == first["clientSecret"]
-    assert {c["key"] for c in env.stripe.calls} == {f"giftcard-{P1}"}
+    # the retry reads the stored PaymentIntent (no second create, valid after Stripe's 24 h key window)
+    assert [(c["method"], c["path"]) for c in env.stripe.calls] == [
+        ("POST", "/v1/payment_intents"), ("GET", f"/v1/payment_intents/{first['clientSecret'][:-7]}")]
+    assert env.stripe.calls[1]["account"] == ACCT_A
+    assert {c["key"] for c in env.stripe.calls if c["method"] == "POST"} == {f"giftcard-{P1}"}
     assert env.stripe.calls[0]["account"] == ACCT_A
     assert env.stripe.calls[0]["params"]["metadata"]["kind"] == "giftcard"
     assert buy(env, amount=1000)[1]["code"] == "changed_retry"
@@ -232,6 +239,31 @@ def test_same_event_from_a_foreign_account_changes_nothing(env):
     assert succeed(env, account=ACCT_B)["result"] == "ignored:account_mismatch"
     assert succeed(env, tenant=TENANT_B, account=ACCT_B, meta_tenant=TENANT_B)["result"] == "ignored:unknown_purchase"
     assert gc.get_card(TENANT_A, gc.card_id_for(P1)) is None and env.mail.calls == []
+
+
+def failed(e, purchase_id=P1):
+    pid = f"pi_{('giftcard-' + purchase_id)[-10:]}"
+    return e.api.handler({"hook": "stripe.event", "hookVersion": 1, "tenantId": TENANT_A,
+                          "type": "payment_intent.payment_failed", "account": ACCT_A,
+                          "object": {"id": pid, "amount": 50000, "metadata": {
+                              "kind": "giftcard", "tenantId": TENANT_A, "purchaseId": purchase_id}}})
+
+
+def test_failed_then_succeeded_issues_once(env):
+    enable(env)
+    buy(env)
+    assert failed(env)["result"] == "failed"  # card declined; the guest retries on the same PaymentIntent
+    purchase = env.res.Table(TABLE).get_item(Key=gc.purchase_key(TENANT_A, P1))["Item"]
+    assert purchase["status"] == "failed"
+    assert succeed(env)["result"] == "issued"
+    assert succeed(env)["result"] == "already_issued"
+    assert failed(env)["result"] == "failed"  # a late failure event changes nothing
+    purchase = env.res.Table(TABLE).get_item(Key=gc.purchase_key(TENANT_A, P1))["Item"]
+    assert purchase["status"] == "issued" and "ttl" not in purchase
+    assert len(env.mail.calls) == 1
+    assert gc.get_card(TENANT_A, gc.card_id_for(P1))["status"] == "active"
+    issues = [t for t in gc.transactions(TENANT_A, gc.card_id_for(P1)) if t["kind"] == "issue"]
+    assert len(issues) == 1
 
 
 def test_webhook_amount_mismatch_ignored(env):
@@ -422,6 +454,83 @@ def test_nightly_expiry_idempotent_and_resumable(env):
     assert [t["kind"] for t in gc.transactions(TENANT_A, card_id)].count("expire") == 1
 
 
+def test_nightly_counts_failures_per_day_and_resumes_at_the_first_failed_day(env):
+    _, card_a = issue(env)
+    _, card_b = issue(env, P2)
+    # card A expires two days before card B
+    env.res.Table(TABLE).update_item(Key=gc.card_key(TENANT_A, card_a),
+                                     UpdateExpression="SET expiresAt = :e, GSI2PK = :p",
+                                     ExpressionAttributeValues={":e": "2026-11-10T10:00:00Z",
+                                                                ":p": "EXPIRY#2026-11-10"})
+    env.res.Table(TABLE).update_item(Key=gc.card_key(TENANT_A, card_b),
+                                     UpdateExpression="SET expiresAt = :e, GSI2PK = :p",
+                                     ExpressionAttributeValues={":e": "2026-11-12T10:00:00Z",
+                                                                ":p": "EXPIRY#2026-11-12"})
+    env.clock.value = datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc)
+    real = env.api._expire
+
+    def flaky(tenant_id, card_id):
+        if card_id == card_b:
+            raise gc.GiftCardError(409, "changed_retry")
+        return real(tenant_id, card_id)
+    env.api._expire = flaky
+    try:
+        counts = env.api.handler({"job": "nightly"})
+    finally:
+        env.api._expire = real
+    assert counts["expired"] == 1 and counts["failed"] == 1 and counts["failedDays"] == ["2026-11-12"]
+    state = env.res.Table(TABLE).get_item(Key={"PK": "JOB", "SK": "NIGHTLY"})["Item"]
+    assert state["lastDay"] == "2026-11-11"  # 2026-11-10 and -11 finished; -12 and -13 are retried
+    counts = env.api.handler({"job": "nightly"})
+    assert counts["expired"] == 1 and counts["failed"] == 0 and counts["failedDays"] == []
+    assert env.res.Table(TABLE).get_item(Key={"PK": "JOB", "SK": "NIGHTLY"})["Item"]["lastDay"] == "2026-11-13"
+    assert gc.get_card(TENANT_A, card_b)["status"] == "expired"
+
+
+def test_nightly_reverses_unverified_kassa_redemptions_after_30_minutes(env):
+    code, card_id = issue(env)
+    redeem(env, code)  # Kassa never verifies (it refuses gift cards with 501 until the voucher means is decided)
+    redeem(env, code, tx="01PAYMENTBBBBBBBBBBBBBBBBBB", amount=1000, bill="01BILLBBBBBBBBB")
+    hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="01BILLBBBBBBBBB",
+         paymentId="01PAYMENTBBBBBBBBBBBBBBBBBB")
+    env.clock.value = NOW + timedelta(minutes=10)
+    assert env.api.handler({"job": "nightly"})["reversed"] == 0  # too young: Kassa may still take it
+    env.clock.value = NOW + timedelta(minutes=31)
+    counts = env.api.handler({"job": "nightly"})
+    assert counts["reversed"] == 1 and counts["failed"] == 0
+    assert int(gc.get_card(TENANT_A, card_id)["balanceOre"]) == 50000 - 1000  # the verified one stays
+    assert env.api.handler({"job": "nightly"})["reversed"] == 0  # once
+    kinds = [t["kind"] for t in gc.transactions(TENANT_A, card_id)]
+    assert kinds.count("reverse") == 1
+    late = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="01BILLAAAAAAAAA",
+                paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
+    assert late["code"] == "redemption_reversed"  # Kassa can no longer take the reversed payment
+
+
+def test_direct_reverse_refused_when_kassa_verifies_in_between(env):
+    code, card_id = issue(env)
+    redeem(env, code)
+    real_get = gc.get_tx
+
+    def verify_first(tenant_id, cid, tx_id):  # Kassa verifies between E13's read and its write
+        row = real_get(tenant_id, cid, tx_id)
+        if tx_id == "01PAYMENTAAAAAAAAAAAAAAAAA" and not verify_first.done:
+            verify_first.done = True
+            assert gc.mark_verified(tenant_id, cid, tx_id)
+        return row
+    verify_first.done = False
+    env.api.gc.get_tx = verify_first
+    try:
+        status, body = http_call(env, "POST", REDEEM + "/{txId}/reverse",
+                                 params={"locationId": LOC_A, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"}, claims=STAFF_A,
+                                 body={})
+    finally:
+        env.api.gc.get_tx = real_get
+    assert status == 409 and body["code"] == "receipt_issued"
+    assert int(gc.get_card(TENANT_A, card_id)["balanceOre"]) == 50000 - 12000
+    assert "reverse" not in [t["kind"] for t in gc.transactions(TENANT_A, card_id)]
+
+
 def test_accounting_events_balanced_sale_online_breakage(env):
     code, card_id = issue(env)
     hook(env, "checkout.giftcard", tenantId=TENANT_A, op="reserve", locationId=LOC_A, orderId="ord9", code=code,
@@ -449,6 +558,8 @@ def test_privacy_export_and_erase_keep_the_card(env):
     assert erased["erased"] == {"giftCardContacts": 1}
     card = gc.get_card(TENANT_A, card_id)
     assert "buyerEmail" not in card and "recipientEmail" not in card and card["status"] == "active"
+    assert "buyerEmailHash" not in card and "recipientEmailHash" not in card  # the hashes identify a person too
+    assert hook(env, "privacy.export", tenantId=TENANT_A, email="sara@example.se")["items"] == []
     assert hook(env, "privacy.export", tenantId=TENANT_B, email="sara@example.se")["items"] == []
 
 

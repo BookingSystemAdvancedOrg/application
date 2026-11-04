@@ -7,7 +7,9 @@ Table `<prefix>gift-cards` (GIFT_CARDS_TABLE_NAME), partition `TENANT#<t>`:
     CARD#<cardId>                  balanceOre, status, expiresAt, contact fields (GSI2 = expiry or cleanup day)
     CODE#<codeHmac>                cardId (uniqueness and lookup)
     CARD#<cardId>#TX#<txId>        append-only balance changes (GSI1 = location + day, for Bokföring)
-    TXREF#<txId>                   cardId (Kassa verifies a redemption by its paymentId)
+    TXREF#<txId>                   cardId (Kassa verifies a redemption by its paymentId), verifiedAt;
+                                   a Kassa redeem not yet verified has GSI2 = UNVERIFIED#<day>
+    JOB / NIGHTLY                  (PK "JOB") lastDay: resume point of the nightly job
 
 The code is 16 Crockford base32 characters (80 bits), stored only as
 HMAC-SHA256 with the pepper secret plus `last4`; it is sent once by email
@@ -50,6 +52,7 @@ DEFAULT_AMOUNTS = [250, 500, 1000]
 CUSTOM_MIN, CUSTOM_MAX = 100, 5000
 DEFAULT_VALIDITY, MIN_VALIDITY, MAX_VALIDITY = 24, 12, 60
 MESSAGE_MAX = 300
+KASSA_VERIFY_MINUTES = 30  # a Kassa redemption not verified this long is reversed by the nightly job
 REFUND_DAYS = 14          # distansavtalslagen 2 kap.: withdrawal period of an online sale (lawyer to confirm)
 CONTACT_MONTHS = 24       # contact fields removed this long after used/expired/void (BR-NFR-008)
 PURCHASE_TTL_DAYS = 7
@@ -350,12 +353,49 @@ def tx_item(tenant_id, card, tx_id, kind, amount, balance_after, channel, locati
     return item
 
 
+def unverified_gsi(tenant_id, tx_id, at: datetime) -> dict:
+    return {"GSI2PK": f"UNVERIFIED#{local_day(at)}", "GSI2SK": f"{tenant_id}#{tx_id}"}
+
+
+def unverified_check(tenant_id, tx_id) -> dict:
+    """A transaction item: TXREF#<txId> exists and Kassa has not verified it."""
+    return {"ConditionCheck": {"TableName": os.environ["GIFT_CARDS_TABLE_NAME"],
+                               "Key": _ser(txref_key(tenant_id, tx_id)),
+                               "ConditionExpression": "attribute_exists(PK) AND attribute_not_exists(verifiedAt)"}}
+
+
+def clear_unverified(tenant_id, tx_id) -> None:
+    table().update_item(Key=txref_key(tenant_id, tx_id), UpdateExpression="REMOVE GSI2PK, GSI2SK")
+
+
+def mark_verified(tenant_id, card_id, tx_id) -> bool:
+    """Kassa took the payment: verifiedAt on TXREF, only while no reverse
+    exists (one transaction). False when the redemption was reversed."""
+    name = os.environ["GIFT_CARDS_TABLE_NAME"]
+    try:
+        dynamo.client().transact_write_items(TransactItems=[
+            {"ConditionCheck": {"TableName": name, "Key": _ser(tx_key(tenant_id, card_id, f"reverse-{tx_id}")),
+                                "ConditionExpression": "attribute_not_exists(PK)"}},
+            {"Update": {"TableName": name, "Key": _ser(txref_key(tenant_id, tx_id)),
+                        "UpdateExpression": "SET verifiedAt = if_not_exists(verifiedAt, :at) REMOVE GSI2PK, GSI2SK",
+                        "ConditionExpression": "attribute_exists(PK)",
+                        "ExpressionAttributeValues": _ser({":at": iso(now())})}},
+        ])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise
+        return False
+    return True
+
+
 def change_balance(tenant_id, card_id, tx_id, delta, kind, channel, location_id, *, ref=None, by=None, reason=None,
-                   allow_expired=False, attempts=4) -> tuple:
+                   allow_expired=False, attempts=4, checks=None) -> tuple:
     """One balance change: CARD update (version, status, expiry and balance
     conditions) + the TX row (attribute_not_exists) + TXREF, in one
     transaction. Returns (card, tx, created). A retry with the same txId
-    returns the stored TX; another amount is 409 changed_retry."""
+    returns the stored TX; another amount is 409 changed_retry. `checks`:
+    extra ConditionCheck items in the same transaction (a failed check ends
+    in 409 changed_retry after the retries)."""
     tbl_name = os.environ["GIFT_CARDS_TABLE_NAME"]
     for _ in range(attempts):
         card = get_card(tenant_id, card_id)
@@ -399,12 +439,15 @@ def change_balance(tenant_id, card_id, tx_id, delta, kind, channel, location_id,
                   "ExpressionAttributeValues": _ser(values)}
         tx = tx_item(tenant_id, card, tx_id, kind, delta, balance, channel, location_id, at, ref=ref, by=by,
                      reason=reason)
+        txref = {**txref_key(tenant_id, tx_id), "tenantId": tenant_id, "cardId": card_id}
+        if kind == "redeem" and channel == "kassa":
+            txref.update({"at": iso(at), **unverified_gsi(tenant_id, tx_id, at)})
         try:
             dynamo.client().transact_write_items(TransactItems=[
                 {"Update": update},
                 {"Put": {"TableName": tbl_name, "Item": _ser(tx), "ConditionExpression": "attribute_not_exists(PK)"}},
-                {"Put": {"TableName": tbl_name, "Item": _ser({**txref_key(tenant_id, tx_id), "tenantId": tenant_id,
-                                                              "cardId": card_id})}},
+                {"Put": {"TableName": tbl_name, "Item": _ser(txref)}},
+                *(checks or []),
             ])
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") not in ("TransactionCanceledException",):

@@ -28,15 +28,27 @@ ADR: `infrastructure/docs/adr/ADR-E-gift-cards.md`. Contract: CONTRACTS.md 6.E, 
   `version`/status/expiry conditions + append-only TX `attribute_not_exists`
   + `TXREF#<txId>`). Same `txId` -> stored result; another amount -> 409
   `changed_retry`. Concurrent writers retry on the version and never go negative.
+- **Checkout retry** (E2, same `purchaseId`): the stored PaymentIntent is
+  read back (`GET /v1/payment_intents/<id>` on the same connected account)
+  and its client secret returned; no second create. A declined attempt
+  (`payment_intent.payment_failed`, purchase `failed`) followed by
+  `succeeded` on the same intent still issues one card.
 - **Online**: `checkout.giftcard` reserve debits `min(balance, total)` with
   TX `order-<orderId>`; reverse / refund credit it back once per order.
 - **Kassa**: E12 debits with `txId = paymentId`; Kassa's `kassa.giftcard`
-  verify marks the TXREF verified; after that the direct reverse (E13) is
-  409 `receipt_issued` and the undo goes through Kassa.
+  verify marks the TXREF verified (refused once a reverse exists, one
+  transaction); after that the direct reverse (E13) is 409 `receipt_issued`
+  and the undo goes through Kassa. E13 checks
+  `attribute_not_exists(verifiedAt)` on the TXREF in the same transaction as
+  the credit, so a verify that lands in between wins. A Kassa redemption
+  Kassa has not verified 30 minutes later (TXREF `GSI2PK=UNVERIFIED#<day>`)
+  is reversed by the nightly job, under the same condition.
 - **Expiry**: nightly (02:30 Stockholm) over the sparse `byExpiry` index,
-  resumable (`JOB/NIGHTLY.lastDay`), TX `expire-<cardId>` once. The same
+  resumable (`JOB/NIGHTLY.lastDay`, moved only over a run of days without a
+  failure; failures are counted per day, `failedDays`), TX `expire-<cardId>` once. The same
   index carries `CLEANUP#<day>` 24 months after a card is used, expired or
-  void, when buyer/recipient contact and message are removed.
+  void, when buyer/recipient contact, message and the email hashes are
+  removed (privacy.erase removes the same fields, hashes included).
 - **Accounting** (`accounting.events`): sale debit Stripe / credit 2421; the
   card part of an online order moved from Stripe to 2421 (the order export
   books the whole order on Stripe); breakage debit 2421 / credit 3990; owner

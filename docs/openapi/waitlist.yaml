@@ -394,7 +394,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/WaitlistJoined'
         '400':
-          description: Validation error or Turnstile failed.
+          description: Validation error, or turnstile_failed (field turnstileToken).
           content:
             application/json:
               schema: *id001

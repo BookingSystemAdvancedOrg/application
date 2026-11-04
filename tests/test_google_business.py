@@ -421,6 +421,35 @@ def test_review_sent_once_with_consent_and_withdraw_link(env):
     assert view["stats"]["sent30d"] == 1
 
 
+def test_review_sms_goes_through_notification_not_sns(env, monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_FUNCTION_NAME", "dev-notification:live")
+    invoked = []
+    env.jobs._clients["lambda"] = SimpleNamespace(invoke=lambda **kw: invoked.append(kw) or {"StatusCode": 202})
+    monkeypatch.setattr(boto3, "client", lambda name, *a, **k: pytest.fail("direct SNS") if name == "sns"
+                        else real_client(name, *a, **k))
+    enable(env, channels=["sms"])
+    phone = "+46701234567"
+    detail = visit(email="")
+    boto3.resource("dynamodb", region_name=REGION).Table(RES_TABLE).update_item(
+        Key={"PK": f"LOCATION#{LOC_A}", "SK": "RESERVATION#res-1"}, UpdateExpression="SET customerPhone = :p",
+        ExpressionAttributeValues={":p": phone})
+    consent.grant(boto3.resource("dynamodb", region_name=REGION).Table(CONSENT_TABLE), tenant_id=TENANT_A,
+                  restaurant="Bistro", version=consent.CURRENT, channels=["sms"], phone=phone, location_id=LOC_A,
+                  source="booking", ref="res-1")
+    env.jobs.schedule_review({**detail, "guestKey": consent.subject(TENANT_A, "sms", phone), "channels": ["sms"]})
+    assert fire(env) == "sent"
+    assert len(invoked) == 1 and invoked[0]["FunctionName"] == "dev-notification:live"
+    assert invoked[0]["InvocationType"] == "Event"
+    notice = json.loads(invoked[0]["Payload"])["notice"]
+    assert notice["kind"] == "google-business.review-request" and notice["channel"] == "sms"
+    assert notice["to"] == phone and notice["tenantId"] == TENANT_A and notice["locationId"] == LOC_A
+    assert "https://example.invalid/review/sim-1" in notice["text"] and "/m/w/" in notice["text"]
+    assert outbox() == []
+
+
+real_client = boto3.client
+
+
 def test_review_skipped_without_consent(env):
     enable(env)
     env.jobs.schedule_review(visit())
@@ -562,7 +591,10 @@ def test_two_tenant_isolation(env):
     assert gbp.get_link(TENANT_A, LOC_B) is None
     secret_reads = []
     real = gbp.get_refresh_token
-    gbp_get = lambda t: secret_reads.append(t) or real(t)  # noqa: E731
+
+    def gbp_get(tenant_id):
+        secret_reads.append(tenant_id)
+        return real(tenant_id)
     gbp.get_refresh_token = gbp_get
     try:
         call(env, "POST", SYNC, params={"locationId": LOC_A}, body={})

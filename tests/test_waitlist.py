@@ -449,3 +449,16 @@ def test_two_tenant_isolation(env):
 def test_entitlement_switch_back_on(env):
     entitle(TENANT_A, "waitlist")
     assert walk_in(env)[0] == 201
+
+
+def test_public_join_turnstile_failure_is_turnstile_failed(env, monkeypatch):
+    from shared import turnstile
+    settings(env)
+    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
+
+    def refuse(token, remote_ip=None, action=None):
+        raise ValueError("turnstile verification failed")
+    monkeypatch.setattr(turnstile, "verify", refuse)
+    body = {"entryId": E1, "name": "Sara", "partySize": 2, "phone": "0701234567", "turnstileToken": "bad"}
+    status, answer = public(env, "POST", "/public/locations/{locationId}/waitlist", body=body)
+    assert status == 400 and answer["code"] == "turnstile_failed" and answer["field"] == "turnstileToken"

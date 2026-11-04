@@ -182,6 +182,37 @@ def test_settings_owner_only_validation_version_and_mirror(env):
     assert settings(env, location=LOC_B, version=0)[0] == 404
 
 
+def test_settings_put_back_when_the_mirror_is_denied(env, monkeypatch):
+    from botocore.exceptions import ClientError
+    real = shared_dynamo.table
+
+    class DeniedMirror:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def update_item(self, **kwargs):
+            assert "ReturnValues" not in kwargs  # the IAM condition allows only the default NONE
+            raise ClientError({"Error": {"Code": "AccessDeniedException"}}, "UpdateItem")
+
+    deny = {"on": True}
+    monkeypatch.setattr(shared_dynamo, "table",
+                        lambda name: DeniedMirror(real(name)) if deny["on"] and name == LOCATION_TABLE else real(name))
+    settings_row = {"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"}
+    assert settings(env)[0] == 503
+    assert "Item" not in env.res.Table(WAITLIST_TABLE).get_item(Key=settings_row)  # first save undone
+    deny["on"] = False
+    assert settings(env, maxWaiting=20)[1]["version"] == 1  # the owner saves again on the old version
+    deny["on"] = True
+    assert settings(env, maxWaiting=30, version=1)[0] == 503
+    row = env.res.Table(WAITLIST_TABLE).get_item(Key=settings_row)["Item"]
+    assert row["version"] == 1 and row["maxWaiting"] == 20  # the earlier row is back
+    loc = env.res.Table(LOCATION_TABLE).get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"})["Item"]
+    assert loc["waitlist"] == {"publicJoin": True}
+
+
 # --- F2 / F1 --------------------------------------------------------------------------------------
 
 def test_walk_in_validation_idempotency_and_list(env):

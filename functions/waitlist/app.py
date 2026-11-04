@@ -551,12 +551,31 @@ def put_settings(event, ctx):
         if not wl.conditional_failed(exc):
             raise
         raise wl.WaitlistError(409, "changed_retry")
-    # /site-config reads this mirror (CONTRACTS.md 4 and 7): one attribute only.
+    # /site-config reads this mirror (CONTRACTS.md 4 and 7): one attribute only, ReturnValues
+    # left at the default NONE (the IAM policy allows nothing else).
     from shared import dynamo
-    dynamo.table(os.environ["LOCATION_TABLE_NAME"]).update_item(
-        Key=ctx.location_key, UpdateExpression="SET waitlist = :w", ConditionExpression="attribute_exists(PK)",
-        ExpressionAttributeValues={":w": {"publicJoin": bool(clean["enabled"] and clean["publicJoin"])}})
+    try:
+        dynamo.table(os.environ["LOCATION_TABLE_NAME"]).update_item(
+            Key=ctx.location_key, UpdateExpression="SET waitlist = :w", ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeValues={":w": {"publicJoin": bool(clean["enabled"] and clean["publicJoin"])}})
+    except ClientError:
+        _undo_settings(current, item)
+        raise
     return http.respond(200, wl.settings_view(item))
+
+
+def _undo_settings(previous, saved):
+    """The mirror failed: put the settings row back so settings and mirror do not disagree. Only
+    while no later save has replaced ours; the owner then saves again on the old version."""
+    guard = {"ConditionExpression": "version = :v", "ExpressionAttributeValues": {":v": saved["version"]}}
+    try:
+        if int(previous.get("version") or 0) == 0:
+            wl.table().delete_item(Key=wl.settings_key(saved["locationId"]), **guard)
+        else:
+            wl.table().put_item(Item=previous, **guard)
+    except ClientError as exc:
+        if not wl.conditional_failed(exc):
+            raise
 
 
 # --- public routes -------------------------------------------------------------------------------

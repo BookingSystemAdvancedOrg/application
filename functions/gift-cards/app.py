@@ -99,6 +99,11 @@ def _date(iso_value) -> str:
 
 # --- the code email (notification:live, CONTRACTS.md 9.4) -------------------------------------
 
+class NotificationUnavailable(RuntimeError):
+    """notification:live did not take the code email. A RuntimeError, so the Stripe replay path
+    still fails the hook and Stripe retries; E10 answers 502 notification_unavailable."""
+
+
 def _send_code(card, code, location, *, kind, to):
     name = (location.get("name") or "restaurangen").strip()
     who = f"Hej {card['recipientName']}!" if card.get("recipientName") else "Hej!"
@@ -110,10 +115,13 @@ def _send_code(card, code, location, *, kind, to):
     notice = {"version": 1, "kind": kind, "tenantId": card["tenantId"], "locationId": card.get("soldAtLocationId"),
               "channel": "email", "to": to, "subject": f"Presentkort till {name}", "text": text,
               "replyTo": "location"}
-    resp = _client("lambda").invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="Event",
-                                    Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    try:
+        resp = _client("lambda").invoke(FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"],
+                                        InvocationType="Event", Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    except (BotoCoreError, ClientError) as exc:
+        raise NotificationUnavailable(f"notification invoke failed ({type(exc).__name__})") from exc
     if (resp or {}).get("StatusCode") != 202:
-        raise RuntimeError(f"notification invoke returned {(resp or {}).get('StatusCode')}")
+        raise NotificationUnavailable(f"notification invoke returned {(resp or {}).get('StatusCode')}")
     # Stamped only once notification has the email: a webhook replay resends when it is missing.
     try:
         gc.table().update_item(Key=gc.card_key(card["tenantId"], card["cardId"]),
@@ -440,7 +448,12 @@ def resend(event, ctx):
         raise gc.GiftCardError(409, "card_expired" if gc.shown_status(card) == "expired" else "card_void")
     card, code = _rotate_code(ctx.tenant_id, card)
     location = tenant.get_location(ctx.tenant_id, card["soldAtLocationId"]) or {}
-    _send_code(card, code, location, kind="gift-cards.code-resend", to=address)
+    try:
+        _send_code(card, code, location, kind="gift-cards.code-resend", to=address)
+    except NotificationUnavailable as exc:
+        # The new code is in place but unsent: sending again rotates once more, so a retry is safe.
+        logger.error(json.dumps({"route": "resend", "notification": str(exc)}))
+        raise gc.GiftCardError(502, "notification_unavailable")
     return http.respond(202, {"last4": card["last4"]})
 
 

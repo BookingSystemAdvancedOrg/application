@@ -533,6 +533,28 @@ def test_resend_rotates_the_code(env):
     assert gc.find_card_by_code(TENANT_A, new)["cardId"] == card_id
 
 
+def _invoke_not_accepted(**kwargs):
+    return {"StatusCode": 500}
+
+
+def _invoke_throttled(**kwargs):
+    from botocore.exceptions import ClientError
+    raise ClientError({"Error": {"Code": "TooManyRequestsException"}}, "Invoke")
+
+
+@pytest.mark.parametrize("broken", [_invoke_not_accepted, _invoke_throttled])
+def test_resend_answers_502_when_notification_is_down_and_a_retry_works(env, broken):
+    old, card_id = issue(env)
+    path = "/tenant/gift-cards/{cardId}/resend"
+    env.api._clients["lambda"] = SimpleNamespace(invoke=broken)
+    status, body = http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body={"to": "buyer"})
+    assert status == 502 and body == {"error": "notification_unavailable", "code": "notification_unavailable"}
+    assert gc.find_card_by_code(TENANT_A, old) is None  # rotated before the send, so the old code is dead
+    env.api._clients["lambda"] = env.mail
+    assert http_call(env, "POST", path, params={"cardId": card_id}, claims=OWNER_A, body={"to": "buyer"})[0] == 202
+    assert gc.find_card_by_code(TENANT_A, issued_code(env))["cardId"] == card_id
+
+
 # --- nightly expiry, accounting, privacy, purge ----------------------------------------------------
 
 def test_nightly_expiry_idempotent_and_resumable(env):

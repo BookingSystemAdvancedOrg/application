@@ -42,7 +42,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import events, http, request_guard, tenant
+from shared import events, http, request_guard, routing, tenant
 from shared.features import site_builder as sb
 
 logger = logging.getLogger()
@@ -550,6 +550,7 @@ def handler(event, context=None):
         if "task" in event:
             return run_task(event)
         raise ValueError("unknown event")
+    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     if route not in ROUTES:

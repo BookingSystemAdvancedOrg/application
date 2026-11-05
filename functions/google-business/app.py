@@ -37,7 +37,7 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import events, http, tenant
+from shared import events, http, routing, tenant
 from shared.features import google_business as gbp
 from shared.google_business import GoogleBusinessError
 
@@ -415,6 +415,7 @@ def handler(event, context=None):
         if "hook" in event:
             return _hook(event)
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)

@@ -1,10 +1,13 @@
 """phone-agent-call
 
 TRIGGER:
-    API Gateway -- Auth: NONE (provider signature, throttle `public`)
+    Lambda Function URL -- Auth: NONE (provider signature)
     POST /public/phone-agent/telephony/webhook   L13 SIP provider events (inbound, ended)
     POST /public/phone-agent/voice/webhook       L14 voice provider events (call_started, transcript,
                                                      language_detected, interrupted, transfer_result, call_ended)
+        (CONTRACTS.md lists L13/L14 as API Gateway routes; feature-routes.tf sends a feature's
+        routes to its API Lambda only, so until that hotspot allows a second integration the
+        providers call these paths on this function's URL; reported in STATUS.md.)
     Lambda Function URL -- POST /v1/chat/completions (OpenAI-compatible; header x-booqy-agent-key =
                                                      the `${prefix}phone-agent/llm-endpoint-key` secret)
                                                      the agent turn endpoint: one caller utterance -> reply
@@ -341,8 +344,10 @@ ROUTES = {
 def handler(event, context=None):
     method, path = http.route(event)
     try:
-        if event.get("routeKey") in (None, "$default") and event.get("rawPath") == "/v1/chat/completions":
-            return turn_endpoint(event) if method == "POST" else _not_found()
+        if event.get("routeKey") in (None, "$default"):  # the Function URL: route by path
+            path = event.get("rawPath") or ""
+            if path == "/v1/chat/completions":
+                return turn_endpoint(event) if method == "POST" else _not_found()
         fn = ROUTES.get(f"{method} {path}")
         if fn is None:
             return _not_found()

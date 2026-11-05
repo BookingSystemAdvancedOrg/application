@@ -328,6 +328,14 @@ def test_cap_reached_mid_month_refuses_and_warns(live):
     assert [c["notice"]["kind"] for c in live.lam.calls] == ["phone-agent.cap-warning"]   # warned once
 
 
+def test_webhooks_also_answer_on_the_function_url(live):
+    body = json.dumps({"events": [{"kind": "call_started", "call_ref": "fu-1", "from": CALLER, "to": NUMBER}]})
+    out = live.live.handler({"routeKey": "$default", "rawPath": "/public/phone-agent/voice/webhook",
+                             "headers": {"x-sim-signature": "ok"}, "requestContext": {"http": {"method": "POST"}},
+                             "body": body})
+    assert out["statusCode"] == 200 and json.loads(out["body"])["dynamicVariables"]["tenantId"] == TENANT_A
+
+
 def test_unknown_number_and_bad_signatures(live):
     assert webhook(live, "voice", [{"kind": "call_started", "call_ref": "x", "to": "+46999"}])[0] == 404
     assert webhook(live, "voice", [], auth=False)[0] == 404

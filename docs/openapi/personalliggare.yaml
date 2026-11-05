@@ -1,0 +1,786 @@
+paths:
+  /locations/{locationId}/personalliggare:
+    get:
+      tags:
+      - Personalliggare
+      summary: Who is present and the day's records (corrected view, no identity numbers)
+      operationId: personalliggareGetLocationsLocationidPersonalliggare
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: day
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The day.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareDay'
+        '400':
+          description: invalid_day.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/personalliggare/check-in:
+    post:
+      tags:
+      - Personalliggare
+      summary: Check in (staff themselves, the owner anyone)
+      operationId: personalliggarePostLocationsLocationidPersonalliggareCheckIn
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonalliggareCheckBody'
+      responses:
+        '201':
+          description: Ledger record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '200':
+          description: Retry of the same recordId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '400':
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: already_checked_in, no_person_for_user or changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/personalliggare/check-out:
+    post:
+      tags:
+      - Personalliggare
+      summary: Check out (staff themselves, the owner anyone)
+      operationId: personalliggarePostLocationsLocationidPersonalliggareCheckOut
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonalliggareCheckBody'
+      responses:
+        '201':
+          description: Ledger record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '200':
+          description: Retry of the same recordId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '400':
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: not_checked_in, no_person_for_user or changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/personalliggare/corrections:
+    post:
+      tags:
+      - Personalliggare
+      summary: Correction as a new record with a reason (owner)
+      operationId: personalliggarePostLocationsLocationidPersonalliggareCorrections
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonalliggareCorrectionBody'
+      responses:
+        '201':
+          description: Correction record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '200':
+          description: Retry of the same recordId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareRecord'
+        '400':
+          description: reason_required, invalid_event_time or validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: already_checked_in, not_checked_in (late registration) or changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/personalliggare/inspection:
+    get:
+      tags:
+      - Personalliggare
+      summary: Inspection view with identity numbers; appends an inspection_view note
+      operationId: personalliggareGetLocationsLocationidPersonalliggareInspection
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: day
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Full view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareInspection'
+        '400':
+          description: invalid_day.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/personalliggare/export:
+    get:
+      tags:
+      - Personalliggare
+      summary: Export CSV or JSON with the chain check (owner; allowed with the feature
+        off while records exist)
+      operationId: personalliggareGetLocationsLocationidPersonalliggareExport
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Export.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggareExport'
+        '400':
+          description: invalid_range or bad format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tenant/personalliggare/persons:
+    get:
+      tags:
+      - Personalliggare
+      summary: Persons with identity numbers (owner)
+      operationId: personalliggareGetTenantPersonalliggarePersons
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Persons.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggarePersons'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tenant/personalliggare/persons/{personId}:
+    put:
+      tags:
+      - Personalliggare
+      summary: Create or update a person (owner)
+      operationId: personalliggarePutTenantPersonalliggarePersonsPersonid
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: personId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonalliggarePersonBody'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggarePerson'
+        '200':
+          description: Updated, or the same body again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalliggarePerson'
+        '400':
+          description: invalid_personal_identity or validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: changed_retry (stale version) or user_already_linked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    PersonalliggareRecord:
+      type: object
+      required:
+      - seq
+      - kind
+      - eventTime
+      - recordedAt
+      properties:
+        seq:
+          type: integer
+        recordId:
+          type: string
+        kind:
+          type: string
+          enum:
+          - check_in
+          - check_out
+          - correction
+          - system_note
+        personId:
+          type: string
+          nullable: true
+        name:
+          type: string
+        personalIdentity:
+          type: string
+        eventTime:
+          type: string
+        localTime:
+          type: string
+        recordedAt:
+          type: string
+        recordedBy:
+          type: object
+          properties:
+            role:
+              type: string
+            sub:
+              type: string
+        correctsSeq:
+          type: integer
+        correctedBySeq:
+          type: integer
+        reason:
+          type: string
+        late:
+          type: boolean
+        note:
+          type: string
+        corrected:
+          type: object
+          properties:
+            kind:
+              type: string
+            eventTime:
+              type: string
+        original:
+          type: object
+          additionalProperties: true
+    PersonalliggarePresent:
+      type: object
+      properties:
+        personId:
+          type: string
+        name:
+          type: string
+        since:
+          type: string
+        checkInSeq:
+          type: integer
+        personalIdentity:
+          type: string
+    PersonalliggareDay:
+      type: object
+      required:
+      - day
+      - present
+      - records
+      properties:
+        day:
+          type: string
+        present:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalliggarePresent'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalliggareRecord'
+        me:
+          type: object
+          nullable: true
+          properties:
+            personId:
+              type: string
+            name:
+              type: string
+            present:
+              type: boolean
+            worksHere:
+              type: boolean
+    PersonalliggareInspection:
+      type: object
+      required:
+      - day
+      - present
+      - records
+      - noteSeq
+      properties:
+        day:
+          type: string
+        employer:
+          type: object
+          properties:
+            legalName:
+              type: string
+            orgNumber:
+              type: string
+        premises:
+          type: object
+          properties:
+            name:
+              type: string
+            address:
+              type: string
+        present:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalliggarePresent'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalliggareRecord'
+        noteSeq:
+          type: integer
+        generatedAt:
+          type: string
+    PersonalliggareCheckBody:
+      type: object
+      required:
+      - recordId
+      additionalProperties: false
+      properties:
+        recordId:
+          type: string
+          description: Client ULID
+        personId:
+          type: string
+    PersonalliggareCorrectionBody:
+      type: object
+      additionalProperties: false
+      required:
+      - recordId
+      - personId
+      - kind
+      - eventTime
+      - reason
+      properties:
+        recordId:
+          type: string
+        correctsSeq:
+          type: integer
+        personId:
+          type: string
+        kind:
+          type: string
+          enum:
+          - check_in
+          - check_out
+        eventTime:
+          type: string
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 300
+    PersonalliggareExport:
+      type: object
+      required:
+      - chainOk
+      - filename
+      - format
+      properties:
+        locationId:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        format:
+          type: string
+          enum:
+          - csv
+          - json
+        filename:
+          type: string
+        count:
+          type: integer
+        chainOk:
+          type: boolean
+        firstBadSeq:
+          type: integer
+        content:
+          type: string
+          description: CSV text (format=csv)
+        records:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    PersonalliggarePerson:
+      type: object
+      required:
+      - personId
+      - name
+      - active
+      - version
+      properties:
+        personId:
+          type: string
+        name:
+          type: string
+        personalIdentity:
+          type: string
+        userSub:
+          type: string
+          nullable: true
+        locationIds:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        version:
+          type: integer
+        createdAt:
+          type: string
+    PersonalliggarePersons:
+      type: object
+      required:
+      - persons
+      properties:
+        persons:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalliggarePerson'
+    PersonalliggarePersonBody:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      - personalIdentity
+      - active
+      properties:
+        name:
+          type: string
+        personalIdentity:
+          type: string
+          description: personnummer or samordningsnummer
+        userSub:
+          type: string
+          nullable: true
+        locationIds:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        version:
+          type: integer

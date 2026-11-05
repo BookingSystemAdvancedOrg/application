@@ -181,6 +181,32 @@ def test_disabled_or_foreign_staff_profile_gets_no_location(aws, monkeypatch):
     assert err(tenant.for_jwt, ev(role="staff_user"), location_id=LOC_A) == (404, "not found")
 
 
+def test_agent_system_user_is_staff_of_its_own_location_only(aws, monkeypatch):
+    """CONTRACTS.md 4: `USER#agent:<l>` with status "system" (the phone
+    agent's principal) acts as staff of exactly that location; the status is
+    accepted for the `agent:` prefix only, and never across tenants."""
+    monkeypatch.setenv("USER_TABLE_NAME", "test-user")
+    users = boto3.resource("dynamodb", region_name=REGION).Table("test-user")
+    agent = f"{tenant.SYSTEM_SUB_PREFIX}{LOC_A}"
+    users.put_item(Item={"PK": f"USER#{agent}", "SK": "PROFILE", "tenantId": TENANT_A, "role": "staff",
+                         "locationId": LOC_A, "name": "Telefonassistent", "status": "system"})
+    assert tenant.staff_location(agent, TENANT_A) == LOC_A
+    assert tenant.for_jwt(ev(role="staff_user", sub=agent), location_id=LOC_A).sub == agent
+    assert err(tenant.for_jwt, ev(role="staff_user", sub=agent), location_id=LOC_A2) == (404, "not found")
+    # B's token naming A's agent row: B's location is not the agent's
+    assert err(tenant.for_jwt, ev(TENANT_B, role="staff_user", sub=agent), location_id=LOC_B) == (404, "not found")
+    assert tenant.staff_location(agent, TENANT_B) == ""
+    # a human profile with status "system" is as unusable as a disabled one
+    row = users.get_item(Key={"PK": f"USER#{STAFF_A_SUB}", "SK": "PROFILE"})["Item"]
+    users.put_item(Item={**row, "status": "system"})
+    assert tenant.staff_location(STAFF_A_SUB, TENANT_A) == ""
+    assert err(tenant.for_jwt, ev(role="staff_user"), location_id=LOC_A) == (404, "not found")
+    # and an agent-prefixed sub still needs a usable status
+    users.put_item(Item={"PK": f"USER#{agent}", "SK": "PROFILE", "tenantId": TENANT_A, "role": "staff",
+                         "locationId": LOC_A, "name": "Telefonassistent", "status": "disabled"})
+    assert err(tenant.for_jwt, ev(role="staff_user", sub=agent), location_id=LOC_A) == (404, "not found")
+
+
 def test_unknown_tenant_is_not_cached(aws):
     new = "01cccccccccccccccccccccccc"
     assert err(tenant.for_jwt, ev(new)) == (403, "tenant_inactive")

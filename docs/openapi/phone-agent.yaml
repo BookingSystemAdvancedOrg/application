@@ -1,0 +1,1070 @@
+paths:
+  /tenant/phone-agent:
+    get:
+      tags:
+      - PhoneAgent
+      summary: Phone agent overview (owner)
+      operationId: phoneAgentGetTenantPhoneAgent
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: Config, locations and minutes this period.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentTenant'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tenant/phone-agent/config:
+    put:
+      tags:
+      - PhoneAgent
+      summary: Agent name, tone, languages, recording, cap (owner)
+      operationId: phoneAgentPutTenantPhoneAgentConfig
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentConfigBody'
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentConfig'
+        '400':
+          description: purpose_required, invalid_retention, invalid_cap, text_too_long.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent:
+    get:
+      tags:
+      - PhoneAgent
+      summary: Location settings and forwarding codes
+      operationId: phoneAgentGetLocationsLocationidPhoneAgent
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 'Location (staff: no transferTo).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentLocation'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+      - PhoneAgent
+      summary: Location settings; the first enable provisions the number (owner)
+      operationId: phoneAgentPutLocationsLocationidPhoneAgent
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentLocationBody'
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentLocation'
+        '400':
+          description: invalid_hours, invalid_phone, invalid_max_call, text_too_long,
+            invalid_counter_offers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: changed_retry or number_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: telephony_unavailable or voice_provider_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/kill-switch:
+    post:
+      tags:
+      - PhoneAgent
+      summary: Turn the assistant off or on now
+      operationId: phoneAgentPostLocationsLocationidPhoneAgentKillSwitch
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentKillSwitchBody'
+      responses:
+        '200':
+          description: Location.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentLocation'
+        '400':
+          description: missing on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/simulate:
+    post:
+      tags:
+      - PhoneAgent
+      summary: Text simulator (dry run, owner)
+      operationId: phoneAgentPostLocationsLocationidPhoneAgentSimulate
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentSimulateBody'
+      responses:
+        '200':
+          description: Reply.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentSimulateReply'
+        '400':
+          description: text_too_long.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: ai_unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/calls:
+    get:
+      tags:
+      - PhoneAgent
+      summary: Calls in a date range
+      operationId: phoneAgentGetLocationsLocationidPhoneAgentCalls
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 'Calls (staff: no caller number).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentCalls'
+        '400':
+          description: invalid_range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/calls/{callId}:
+    get:
+      tags:
+      - PhoneAgent
+      summary: A call with its transcript
+      operationId: phoneAgentGetLocationsLocationidPhoneAgentCallsCallid
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: callId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Call (recordingUrl for owners only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentCallDetail'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/calls/{callId}/recording:
+    delete:
+      tags:
+      - PhoneAgent
+      summary: Delete a call recording (owner)
+      operationId: phoneAgentDeleteLocationsLocationidPhoneAgentCallsCallidRecording
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: callId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Deleted (also when there was none).
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/callbacks:
+    get:
+      tags:
+      - PhoneAgent
+      summary: Callback tasks
+      operationId: phoneAgentGetLocationsLocationidPhoneAgentCallbacks
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Callbacks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentCallbacks'
+        '400':
+          description: bad status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/callbacks/{callbackId}/close:
+    post:
+      tags:
+      - PhoneAgent
+      summary: Close a callback
+      operationId: phoneAgentPostLocationsLocationidPhoneAgentCallbacksCallbackidClose
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: callbackId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentCloseBody'
+      responses:
+        '200':
+          description: Closed (a second close answers the same).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentCallback'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: invalid_state (stale version).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/reservations/{reservationId}/call:
+    get:
+      tags:
+      - PhoneAgent
+      summary: The call that booked a reservation
+      operationId: phoneAgentGetLocationsLocationidPhoneAgentReservationsReservationidCall
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: reservationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Call summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentReservationCall'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    PhoneAgentConfig:
+      type: object
+      properties:
+        agentName:
+          type: string
+        tone:
+          type: string
+          enum:
+          - formal
+          - friendly
+        languages:
+          type: array
+          items:
+            type: string
+        recording:
+          type: object
+          additionalProperties: true
+        minutesCapPerMonth:
+          type: integer
+        version:
+          type: integer
+    PhoneAgentConfigBody:
+      type: object
+      properties:
+        agentName:
+          type: string
+        tone:
+          type: string
+          enum:
+          - formal
+          - friendly
+        languages:
+          type: array
+          items:
+            type: string
+        recording:
+          type: object
+          additionalProperties: true
+        minutesCapPerMonth:
+          type: integer
+        version:
+          type: integer
+      required:
+      - agentName
+      - tone
+      - languages
+      - recording
+      - minutesCapPerMonth
+      - version
+      additionalProperties: false
+    PhoneAgentTenant:
+      type: object
+      properties:
+        config:
+          $ref: '#/components/schemas/PhoneAgentConfig'
+        locations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          properties:
+            minutes:
+              type: integer
+            cap:
+              type: integer
+            includedMinutes:
+              type: integer
+            periodEnd:
+              type: string
+    PhoneAgentLocation:
+      type: object
+      properties:
+        locationId:
+          type: string
+        enabled:
+          type: boolean
+        killSwitch:
+          type: boolean
+        mode:
+          type: string
+          enum:
+          - after_hours
+          - overflow
+          - always
+        agentHours:
+          type: object
+          additionalProperties: true
+        greetingExtraSv:
+          type: string
+        greetingExtraEn:
+          type: string
+        transferTo:
+          type: string
+          nullable: true
+        maxCallSeconds:
+          type: integer
+        counterOffers:
+          type: object
+          properties:
+            nearbyTables:
+              type: boolean
+            phoneOnlyTables:
+              type: boolean
+        number:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        forwarding:
+          type: object
+          properties:
+            number:
+              type: string
+              nullable: true
+            codes:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+    PhoneAgentLocationBody:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - mode
+      - version
+      properties:
+        enabled:
+          type: boolean
+        mode:
+          type: string
+          enum:
+          - after_hours
+          - overflow
+          - always
+        agentHours:
+          type: object
+          additionalProperties: true
+        greetingExtraSv:
+          type: string
+        greetingExtraEn:
+          type: string
+        transferTo:
+          type: string
+          nullable: true
+        maxCallSeconds:
+          type: integer
+        counterOffers:
+          type: object
+          properties:
+            nearbyTables:
+              type: boolean
+            phoneOnlyTables:
+              type: boolean
+        version:
+          type: integer
+    PhoneAgentKillSwitchBody:
+      type: object
+      additionalProperties: false
+      required:
+      - 'on'
+      properties:
+        'on':
+          type: boolean
+        version:
+          type: integer
+    PhoneAgentSimulateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - sessionId
+      - text
+      properties:
+        sessionId:
+          type: string
+        text:
+          type: string
+          maxLength: 500
+        language:
+          type: string
+          enum:
+          - sv
+          - en
+    PhoneAgentSimulateReply:
+      type: object
+      properties:
+        reply:
+          type: string
+        toolCalls:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        state:
+          type: object
+          additionalProperties: true
+        disclosure:
+          type: boolean
+    PhoneAgentCall:
+      type: object
+      properties:
+        callId:
+          type: string
+        startedAt:
+          type: string
+        durationSec:
+          type: integer
+        language:
+          type: string
+        outcome:
+          type: string
+          nullable: true
+          enum:
+          - booked
+          - moved
+          - cancelled
+          - info
+          - transferred
+          - callback
+          - abandoned
+          - refused
+          - error
+          - null
+        counterOffer:
+          type: string
+          enum:
+          - none
+          - other_time
+          - next_day
+          - nearby_table
+        reservationId:
+          type: string
+          nullable: true
+        callbackId:
+          type: string
+          nullable: true
+        summary:
+          type: string
+        refusedReason:
+          type: string
+          nullable: true
+        from:
+          type: string
+          nullable: true
+    PhoneAgentCalls:
+      type: object
+      properties:
+        calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/PhoneAgentCall'
+        cursor:
+          type: string
+          nullable: true
+    PhoneAgentCallDetail:
+      type: object
+      properties:
+        callId:
+          type: string
+        startedAt:
+          type: string
+        durationSec:
+          type: integer
+        language:
+          type: string
+        outcome:
+          type: string
+          nullable: true
+          enum:
+          - booked
+          - moved
+          - cancelled
+          - info
+          - transferred
+          - callback
+          - abandoned
+          - refused
+          - error
+          - null
+        counterOffer:
+          type: string
+          enum:
+          - none
+          - other_time
+          - next_day
+          - nearby_table
+        reservationId:
+          type: string
+          nullable: true
+        callbackId:
+          type: string
+          nullable: true
+        summary:
+          type: string
+        refusedReason:
+          type: string
+          nullable: true
+        from:
+          type: string
+          nullable: true
+        disclosure:
+          type: object
+          additionalProperties: true
+        turns:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        recordingUrl:
+          type: string
+    PhoneAgentCallback:
+      type: object
+      properties:
+        callbackId:
+          type: string
+        locationId:
+          type: string
+        callId:
+          type: string
+        name:
+          type: string
+        phone:
+          type: string
+        topic:
+          type: string
+        preferredTime:
+          type: string
+          nullable: true
+        status:
+          type: string
+        createdAt:
+          type: string
+        closedAt:
+          type: string
+          nullable: true
+        note:
+          type: string
+        version:
+          type: integer
+    PhoneAgentCallbacks:
+      type: object
+      properties:
+        callbacks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PhoneAgentCallback'
+    PhoneAgentCloseBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        version:
+          type: integer
+        note:
+          type: string
+    PhoneAgentReservationCall:
+      type: object
+      properties:
+        callId:
+          type: string
+        summary:
+          type: string
+        disclosure:
+          type: object
+          additionalProperties: true
+        startedAt:
+          type: string

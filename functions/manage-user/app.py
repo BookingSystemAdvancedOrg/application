@@ -474,8 +474,18 @@ def _require_tenant_location(location_id):
         raise ValueError("locationId is not a location of this restaurant")
 
 
+def _is_system_user(item):
+    """A feature's system principal (the phone agent's `USER#agent:<l>` row,
+    status "system", CONTRACTS.md 4): no Cognito user, never listed."""
+    pk = item.get("PK")
+    return (isinstance(pk, str) and pk.startswith(f"USER#{tenant.SYSTEM_SUB_PREFIX}")) or item.get(
+        "status"
+    ) == "system"
+
+
 def _list_users(caller_sub, caller_groups):
-    """The tenant's users via the byTenant index - never a Scan."""
+    """The tenant's users via the byTenant index - never a Scan; system
+    principals are skipped."""
     user_table = table(USER_TABLE_NAME)
     request = {
         "IndexName": USER_TENANT_INDEX_NAME,
@@ -500,6 +510,8 @@ def _list_users(caller_sub, caller_groups):
 
             if item.get("tenantId") != _TENANT_ID.get():
                 raise _UserServiceFailure
+            if _is_system_user(item):
+                continue
             public_user = _validated_stored_user(item)
             if (
                 is_super_user

@@ -251,18 +251,33 @@ def _groups(claims: dict) -> list:
     return [g for g in raw if isinstance(g, str)]
 
 
+# The phone agent's system principal (CONTRACTS.md 4, ADR-L "agent principal"):
+# `USER#agent:<l>/PROFILE` with `status: "system"`, a staff user of exactly
+# one location that never logs in. Only a sub with this prefix may carry that
+# status; a human profile with status "system" is as unusable as a disabled one.
+SYSTEM_SUB_PREFIX = "agent:"
+_SYSTEM_STATUS = "system"
+
+
+def _usable_status(sub: str, status) -> bool:
+    if status == "active":
+        return True
+    return status == _SYSTEM_STATUS and isinstance(sub, str) and sub.startswith(SYSTEM_SUB_PREFIX)
+
+
 def staff_location(sub: str, tenant_id: str) -> Optional[str]:
     """The location an active staff user of this tenant is assigned to
     (their USER# profile) when the function has the user table; None = not
     checked here; "" = no usable assignment (missing, disabled, other
-    tenant), which matches no location."""
+    tenant), which matches no location. The agent system user
+    (`agent:<l>`, status "system") counts as active for its own location."""
     table_name = os.environ.get("USER_TABLE_NAME")
     if not table_name:
         return None
     item = dynamo.table(table_name).get_item(
         Key={"PK": f"USER#{sub}", "SK": "PROFILE"}
     ).get("Item") or {}
-    if item.get("tenantId") != tenant_id or item.get("status") != "active":
+    if item.get("tenantId") != tenant_id or not _usable_status(sub, item.get("status")):
         return ""
     return item.get("locationId") or ""
 

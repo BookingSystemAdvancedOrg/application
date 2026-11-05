@@ -133,7 +133,7 @@ def env(monkeypatch):
 
 OWNER_A, OWNER_B, STAFF_A = (TENANT_A, "owner_user"), (TENANT_B, "owner_user"), (TENANT_A, "staff_user")
 L = "/locations/{locationId}/events"
-O = L + "/{eventId}/occurrences/{occurrenceId}"
+OCC = L + "/{eventId}/occurrences/{occurrenceId}"
 
 
 def call(e, method, template, *, params=None, body=None, query=None, claims=None):
@@ -229,7 +229,8 @@ def test_create_validation(env):
     assert create(env, ticketTypes=bad_vat)[1]["code"] == "invalid_vat_rate"
     too_long = {"freq": "weekly", "until": "2028-01-01"}
     assert create(env, series=too_long)[1]["code"] == "invalid_series"
-    window = [{"startAt": START, "endAt": "2026-12-04T22:00:00Z", "capacity": 4, "salesCloseAt": "2026-12-05T00:00:00Z"}]
+    window = [{"startAt": START, "endAt": "2026-12-04T22:00:00Z", "capacity": 4,
+               "salesCloseAt": "2026-12-05T00:00:00Z"}]
     assert create(env, occurrences=window)[1]["code"] == "invalid_window"
     assert create(env, imageKey="x.jpg")[1]["code"] == "unknown_image"
     assert create(env, settings={"tablePick": True})[1]["code"] == "table_pick_not_available"
@@ -336,14 +337,14 @@ def test_delete_type_with_sales_refused(env):
 def test_occurrence_capacity_never_below_sold(env):
     sold(env)
     p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
-    assert call(env, "PUT", O, params=p, body={"capacity": 1, "version": 1}, claims=OWNER_A)[1]["code"] == \
+    assert call(env, "PUT", OCC, params=p, body={"capacity": 1, "version": 1}, claims=OWNER_A)[1]["code"] == \
         "invalid_capacity"
-    status, occ = call(env, "PUT", O, params=p, body={"capacity": 10, "version": 1}, claims=OWNER_A)
+    status, occ = call(env, "PUT", OCC, params=p, body={"capacity": 10, "version": 1}, claims=OWNER_A)
     assert status == 200 and occ["capacity"] == 10 and occ["left"] == 8
-    assert call(env, "PUT", O, params=p, body={"capacity": 10, "version": 1}, claims=OWNER_A)[1]["code"] == \
+    assert call(env, "PUT", OCC, params=p, body={"capacity": 10, "version": 1}, claims=OWNER_A)[1]["code"] == \
         "changed_retry"
-    assert call(env, "PUT", O, params=p, body={"capacity": 9, "version": 2}, claims=STAFF_A)[0] == 403
-    assert call(env, "PUT", O, params={**p, "occurrenceId": f"{E1}-20261205T1800Z"},
+    assert call(env, "PUT", OCC, params=p, body={"capacity": 9, "version": 2}, claims=STAFF_A)[0] == 403
+    assert call(env, "PUT", OCC, params={**p, "occurrenceId": f"{E1}-20261205T1800Z"},
                 body={"version": 2}, claims=OWNER_A)[0] == 404
 
 
@@ -571,26 +572,26 @@ def test_transfer_cancel_and_closing(env):
 def test_guest_list_and_offline_check_ins(env):
     sold(env)
     p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
-    status, glist = call(env, "GET", O + "/guest-list", params=p, claims=STAFF_A)
+    status, glist = call(env, "GET", OCC + "/guest-list", params=p, claims=STAFF_A)
     assert status == 200 and glist["counters"] == {"sold": 2, "checkedIn": 0, "capacity": 4}
     key = glist["scanKey"]
     t1, t2 = [t["ticketId"] for t in glist["tickets"]]
     env.clock.value = datetime(2026, 12, 4, 18, 10, tzinfo=timezone.utc)  # the door, syncing after a dead zone
     batch = [{"ticketId": t1, "sig": qr.sig(key, t1), "at": "2026-12-04T17:55:00Z", "clientId": "c1"},
              {"ticketId": t2, "sig": "0" * 16, "at": "2026-12-04T17:56:00Z", "clientId": "c2"}]
-    status, out = call(env, "POST", O + "/check-ins", params=p, body={"checkIns": batch}, claims=STAFF_A)
+    status, out = call(env, "POST", OCC + "/check-ins", params=p, body={"checkIns": batch}, claims=STAFF_A)
     assert status == 200 and [r["status"] for r in out["results"]] == ["ok", "invalid"]
     assert out["results"][0]["by"] == "Staff"
     # a second device scanned the same ticket offline
-    status, out = call(env, "POST", O + "/check-ins", params=p, claims=OWNER_A,
+    status, out = call(env, "POST", OCC + "/check-ins", params=p, claims=OWNER_A,
                        body={"checkIns": [{"ticketId": t1, "sig": qr.sig(key, t1), "at": "2026-12-04T17:57:00Z",
                                            "clientId": "c9"}]})
     assert out["results"][0] == {"clientId": "c9", "status": "already", "at": "2026-12-04T17:55:00Z", "by": "Staff"}
     assert occ_row(env)["checkedIn"] == 1
     too_many = [{"ticketId": t1, "sig": "x", "at": START, "clientId": f"c{i}"} for i in range(201)]
-    assert call(env, "POST", O + "/check-ins", params=p, body={"checkIns": too_many}, claims=STAFF_A)[1]["code"] == \
+    assert call(env, "POST", OCC + "/check-ins", params=p, body={"checkIns": too_many}, claims=STAFF_A)[1]["code"] == \
         "too_many"
-    assert call(env, "GET", O + "/guest-list", params={**p, "locationId": LOC_A2}, claims=STAFF_A)[0] == 404
+    assert call(env, "GET", OCC + "/guest-list", params={**p, "locationId": LOC_A2}, claims=STAFF_A)[0] == 404
 
 
 def test_scan_key_is_tenant_and_occurrence_bound(env):
@@ -650,13 +651,13 @@ def test_cancel_occurrence_mass_refund_resumable(env):
     buy(env, order_id="01ORDERBBBBBBBBBBBBBBBBBBB", qty=1)
     pay(env, order_id="01ORDERBBBBBBBBBBBBBBBBBBB")
     p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
-    assert call(env, "POST", O + "/cancel", params=p, body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1},
+    assert call(env, "POST", OCC + "/cancel", params=p, body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1},
                 claims=STAFF_A)[0] == 403
     env.stripe.fail = True  # Stripe is down during the first run
-    status, out = call(env, "POST", O + "/cancel", params=p, claims=OWNER_A,
+    status, out = call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
                        body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1, "message": "Kocken är sjuk."})
     assert status == 202 and out == {"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "toRefund": 3}
-    assert call(env, "POST", O + "/cancel", params=p, claims=OWNER_A,
+    assert call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
                 body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1})[1]["toRefund"] == 3
     jp = {"locationId": LOC_A, "jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA"}
     assert call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)[1]["done"] is False
@@ -670,7 +671,7 @@ def test_cancel_occurrence_mass_refund_resumable(env):
     assert env.mail.kinds().count("events-tickets.cancelled") == 2
     env.api.handler({"job": "sweep"})
     assert env.mail.kinds().count("events-tickets.cancelled") == 2
-    assert call(env, "POST", O + "/cancel", params=p, claims=OWNER_A,
+    assert call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
                 body={"jobId": "01JOBBBBBBBBBBBBBBBBBBBBBB", "version": 2})[1]["code"] == "invalid_state"
     assert call(env, "GET", L + "/jobs/{jobId}", params={**jp, "locationId": LOC_B}, claims=OWNER_B)[0] == 404
 
@@ -754,3 +755,14 @@ def test_unknown_hook_and_route(env):
     assert env.api.handler({"hook": "nope", "tenantId": TENANT_A})["code"] == "unknown_hook"
     assert env.api.handler({"hook": "stripe.event"})["code"] == "tenant_required"
     assert call(env, "GET", "/nope")[0] == 404
+
+
+def test_payment_for_a_cancelled_occurrence_is_refunded(env):
+    published(env)
+    buy(env)
+    p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
+    assert call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
+                body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1})[0] == 202
+    assert pay(env)["result"] == "refunded:cancelled"
+    assert tickets(env) == [] and env.stripe.refunds()[-1]["key"] == "ticket-late-01ORDERAAAAAAAAAAAAAAAAAAA"
+    assert occ_row(env)["held"] == 0

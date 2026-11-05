@@ -742,7 +742,8 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe_too=True
                 "version = :v", {"#s": "status"}),
         _put(tx),
         _update(et.occ_key(tenant_id, ticket["eventId"], occ_start),
-                "SET sold = sold - :one, taken = taken - :one, seatsLeft = seatsLeft + :one, revenueOre = revenueOre - :p",
+                "SET sold = sold - :one, taken = taken - :one, seatsLeft = seatsLeft + :one, "
+                "revenueOre = revenueOre - :p",
                 {":one": 1, ":p": price}),
         _update(et.order_key(tenant_id, order["orderId"]),
                 "SET refundedCount = refundedCount + :one, refundedOre = refundedOre + :p, #s = :st",
@@ -1028,7 +1029,8 @@ def _hold_items(tenant_id, occ, types_by_id, lines, qty):
         t = types_by_id[line["typeId"]]
         capped = "seatsLeft" in t
         items.append(_update({"PK": t["PK"], "SK": t["SK"]},
-                             "SET held = held + :q, taken = taken + :q" + (", seatsLeft = seatsLeft - :q" if capped else ""),
+                             "SET held = held + :q, taken = taken + :q"
+                             + (", seatsLeft = seatsLeft - :q" if capped else ""),
                              {":q": line["qty"], ":v": int(t["version"])},
                              "version = :v" + (" AND seatsLeft >= :q" if capped else "")))
     return items
@@ -1039,13 +1041,15 @@ def _release_items(tenant_id, order, *, held=True):
     field = "held" if held else "sold"
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
     items = [_update(et.occ_key(tenant_id, order["eventId"], occ_start),
-                     f"SET {field} = {field} - :q, taken = taken - :q, seatsLeft = seatsLeft + :q", {":q": int(order["qty"])})]
+                     f"SET {field} = {field} - :q, taken = taken - :q, seatsLeft = seatsLeft + :q",
+                     {":q": int(order["qty"])})]
     for line in order["lines"]:
         t = et.get(et.type_key(tenant_id, order["eventId"], line["typeId"]))
         if t:
             items.append(_update({"PK": t["PK"], "SK": t["SK"]},
                                  f"SET {field} = {field} - :q, taken = taken - :q"
-                                 + (", seatsLeft = seatsLeft + :q" if "seatsLeft" in t else ""), {":q": int(line["qty"])}))
+                                 + (", seatsLeft = seatsLeft + :q" if "seatsLeft" in t else ""),
+                                 {":q": int(line["qty"])}))
     return items
 
 
@@ -1188,6 +1192,11 @@ def _issue(tenant_id, order, intent):
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
     ev = et.get(et.event_key(tenant_id, order["eventId"])) or {}
     occ = et.get(et.occ_key(tenant_id, order["eventId"], occ_start)) or {}
+    if occ.get("status") != "scheduled":
+        # Paid for an occurrence that was cancelled meanwhile: no tickets, the payment goes back.
+        if not late:
+            _expire_order(tenant_id, order)
+        return _refund_late(tenant_id, order, intent, "cancelled") if intent else "ignored:cancelled"
     tickets, n = [], 0
     codes = []
     for line in order["lines"]:
@@ -1219,15 +1228,16 @@ def _issue(tenant_id, order, intent):
     q = int(order["qty"])
     if late:
         counters = [_update({"PK": occ["PK"], "SK": occ["SK"]},
-                            "SET sold = sold + :q, taken = taken + :q, seatsLeft = seatsLeft - :q, revenueOre = revenueOre + :a",
+                            "SET sold = sold + :q, taken = taken + :q, seatsLeft = seatsLeft - :q, "
+                            "revenueOre = revenueOre + :a",
                             {":q": q, ":a": amount}, "seatsLeft >= :q")]
         for line in order["lines"]:
             t = et.get(et.type_key(tenant_id, order["eventId"], line["typeId"]))
             if t:
                 capped = "seatsLeft" in t
                 counters.append(_update({"PK": t["PK"], "SK": t["SK"]},
-                                        "SET sold = sold + :q, taken = taken + :q" + (", seatsLeft = seatsLeft - :q" if capped
-                                                                                       else ""),
+                                        "SET sold = sold + :q, taken = taken + :q"
+                                        + (", seatsLeft = seatsLeft - :q" if capped else ""),
                                         {":q": int(line["qty"])}, "seatsLeft >= :q" if capped else None))
     else:
         counters = [_update({"PK": occ["PK"], "SK": occ["SK"]},
@@ -1257,7 +1267,7 @@ def _issue(tenant_id, order, intent):
     return "issued"
 
 
-def _refund_late(tenant_id, order, intent):
+def _refund_late(tenant_id, order, intent, reason="sold_out"):
     """Paid after the hold expired and the seats are gone: the whole payment back."""
     try:
         stripe.request("POST", "/v1/refunds", {"payment_intent": intent["id"],
@@ -1268,7 +1278,7 @@ def _refund_late(tenant_id, order, intent):
         raise RuntimeError("late payment refund failed") from exc
     et.table().update_item(Key=et.order_key(tenant_id, order["orderId"]), UpdateExpression="SET lateRefundAt = :at",
                            ExpressionAttributeValues={":at": et.iso(et.now())})
-    return "refunded:sold_out"
+    return f"refunded:{reason}"
 
 
 def _resend_unsent(tenant_id, order):

@@ -46,7 +46,7 @@ from zoneinfo import ZoneInfo
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, events, guarantee, http, manage_link, request_guard, routing, site, tenant, turnstile
+from shared import availability, events, guarantee, http, manage_link, request_guard, site, tenant, turnstile
 from shared import reservations as r
 from shared.features import waitlist as wl
 
@@ -767,7 +767,6 @@ def handler(event, context=None):
         if isinstance(event.get("waitlistJob"), dict):
             return run_job(event["waitlistJob"])
         return {"ok": False, "status": 400, "code": "unknown_event"}
-    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)

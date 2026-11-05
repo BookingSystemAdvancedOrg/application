@@ -42,7 +42,7 @@ from datetime import datetime, timedelta
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, routing, tenant
+from shared import dynamo, events, http, tenant
 from shared.features import meta_ads as ads
 from shared.features import social_posting as sp
 from shared.meta_graph import MetaGraphError
@@ -576,7 +576,6 @@ def handler(event, context=None):
         if event.get("source") == "booqy.meta-ads" and event.get("detail-type") == "MetaConnection.Disconnected":
             return on_disconnected(event.get("detail") or {})
         return {"ok": False, "status": 400, "code": "unknown_event"}
-    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)

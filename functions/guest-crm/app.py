@@ -44,7 +44,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import consent, dynamo, events, http, routing, tenant
+from shared import consent, dynamo, events, http, tenant
 from shared.features import guest_crm as crm
 
 logger = logging.getLogger()
@@ -521,7 +521,6 @@ def handler(event, context=None):
         if "guestCrmJob" in event:
             return run_backfill(event["guestCrmJob"] or {}, context)
         return {"ok": False, "status": 400, "code": "unknown_event"}
-    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     fn = ROUTES.get(f"{method} {path}")
     if fn is None:

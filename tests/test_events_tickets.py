@@ -111,13 +111,17 @@ def _create_table():
 
 def no_batch_get(monkeypatch):
     """The Lambda role (infra) grants GetItem/PutItem/UpdateItem/DeleteItem/Query
-    only: any BatchGetItem in these tests fails like AccessDenied would."""
+    only: any BatchGetItem in these tests fails like AccessDenied would, and so
+    does a transaction with a ConditionCheck entry (dynamodb:ConditionCheckItem
+    is not in the policy either)."""
     import botocore.client
     real = botocore.client.BaseClient._make_api_call
 
     def guarded(self, operation_name, api_params):
         if operation_name == "BatchGetItem":
             raise AssertionError("BatchGetItem is not granted to the events-tickets Lambda")
+        if operation_name == "TransactWriteItems" and any("ConditionCheck" in i for i in api_params.get("TransactItems", [])):
+            raise AssertionError("ConditionCheckItem is not granted to the events-tickets Lambda")
         return real(self, operation_name, api_params)
     monkeypatch.setattr(botocore.client.BaseClient, "_make_api_call", guarded)
 

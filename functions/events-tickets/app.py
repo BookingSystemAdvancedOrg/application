@@ -21,13 +21,14 @@ TRIGGER:
     API Gateway -- Auth: NONE (feature off, unknown or foreign -> 404)
     GET    /public/locations/{locationId}/events                                K15
     GET    /public/locations/{locationId}/events/{eventId}                      K16
-    POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard
+    POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard;
+                                                                                `lines` or `resaleTransferIds`
     GET    /public/tickets/{token}                                              K18
     GET    /public/tickets/{token}/pass                                         K19 404 (Wallet not built yet)
-    POST   /public/tickets/{token}/transfers                                    K20 gift only (resale not built);
-                                                                                request guard per ticket and IP
+    POST   /public/tickets/{token}/transfers                                    K20 gift (request guard per
+                                                                                ticket and IP) or resale listing
     POST   /public/ticket-transfers/{transferToken}/accept                      K21
-    DELETE /public/tickets/{token}/transfers/{transferId}                       K22
+    DELETE /public/tickets/{token}/transfers/{transferId}                       K22 (gift or listing)
 
     Lambda invoke (no requestContext): {"hook": ...} stripe.event, accounting.events,
     insights.events, privacy.export, privacy.erase, tenant.purge;
@@ -43,10 +44,19 @@ PURPOSE:
     TX rows. VAT per ticket type from the accountant-approved list: NEEDS
     ACCOUNTANT REVIEW.
 
+    Resale at face value (ADR-K 8, event setting `resaleAllowed`): the holder
+    lists a ticket (K20 kind resale) at its own price; K16 shows the listings;
+    a buyer's K17 checkout with `resaleTransferIds` claims them (the
+    15-minute hold is the claim on the TRANSFER row, no capacity moves) and
+    pays face value on the restaurant's account; the webhook voids the old
+    ticket, issues the new one and books the seller's refund (same amount,
+    Stripe key `ticket-resale-<transferId>`) in one transaction. Net zero in
+    Bokföring; each ticket keeps its own price and VAT rate. The old QR is
+    refused at the door (status void).
+
     Not built in this run (refused, never silently accepted): table pick
-    (ADR-K 3), resale at face value (8), Wallet passes (6, K19 answers 404 as
-    when the secrets are missing), event images (`imageKey` -> 400
-    unknown_image).
+    (ADR-K 3), Wallet passes (6, K19 answers 404 as when the secrets are
+    missing), event images (`imageKey` -> 400 unknown_image).
 
 ENV_VARS:
     ENVIRONMENT, EVENTS_TICKETS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
@@ -78,6 +88,7 @@ TRANSFER_IP_LIMIT = (20, 3600)
 TICKETS_SEND_GRACE_SECONDS = 120
 JOB_BATCH = 200
 INLINE_REFUNDS = 10  # K9 refunds this many tickets before answering 202; the sweep does the rest
+RESALE_PER_ORDER = 4  # listed tickets one checkout may buy (4 transaction items each, 25 per transaction)
 JOB_MARGIN_MS = 15_000  # the sweep stops starting new refunds this close to the Lambda timeout
 _clients = {}
 _invocation = {"time_left": None}  # this invocation's remaining-time getter (set by the handler)
@@ -128,8 +139,9 @@ def _txn(items):
 
 
 def _update(key, expr, values, condition=None, names=None):
-    item = {"TableName": et.table_name(), "Key": et.ser(key), "UpdateExpression": expr,
-            "ExpressionAttributeValues": et.ser(values)}
+    item = {"TableName": et.table_name(), "Key": et.ser(key), "UpdateExpression": expr}
+    if values:
+        item["ExpressionAttributeValues"] = et.ser(values)
     if condition:
         item["ConditionExpression"] = condition
     if names:
@@ -357,7 +369,15 @@ def create_event(event, ctx):
 def get_event(event, ctx):
     ev = _event_or_404(ctx, event)
     occs, types = et.event_parts(ctx.tenant_id, ev["eventId"])
-    return http.respond(200, et.event_view(ev, occs, types, money=ctx.is_owner))
+    view = et.event_view(ev, occs, types, money=ctx.is_owner)
+    if (ev.get("settings") or {}).get("resaleAllowed"):
+        # tickets other guests have put up for sale (the admin "view of resales"): one query for the event,
+        # only occurrences that can still sell (a done or cancelled one has no live listing to count)
+        open_ = [occ for occ in view["occurrences"] if occ["status"] == "scheduled"]
+        listed = _listings(ctx.tenant_id, ev["eventId"], [occ["occurrenceId"] for occ in open_])
+        for occ in open_:
+            occ["resaleListed"] = len(listed[occ["occurrenceId"]])
+    return http.respond(200, view)
 
 
 def update_event(event, ctx):
@@ -743,12 +763,16 @@ def _notify_cancelled(tenant_id, job):
     occ_start = et.from_compact(job["occurrenceId"][len(job["eventId"]) + 1:])
     sent = 0
     for order in _unnotified(tenant_id, job):
+        # what this cancellation gave back: the order's tickets refunded by the job (a ticket the owner refunded
+        # or a resale paid back earlier is not counted again)
+        refunded_now = sum(int(t.get("priceOre") or 0) for t in et.tickets_of_order(tenant_id, order)
+                           if t.get("status") == "refunded" and (t.get("refundTxId") or "").startswith("cancel-"))
         text = (f"Hej {order.get('buyerName') or ''}!\n\n{ev.get('title', 'Evenemanget')} på "
                 f"{(location.get('name') or 'restaurangen').strip()} "
                 f"{_when(et.iso(occ_start), location) if occ_start else ''} är tyvärr inställt.\n\n"
                 + (f"{job['message']}\n\n" if job.get("message") else "")
-                + (f"Vi har återbetalat {_kr(order['amountOre'])} till kortet du betalade med. Det kan ta "
-                   "några bankdagar innan pengarna syns.\n" if int(order["amountOre"]) else ""))
+                + (f"Vi har återbetalat {_kr(refunded_now)} till kortet du betalade med. Det kan ta "
+                   "några bankdagar innan pengarna syns.\n" if refunded_now else ""))
         try:
             _notify(tenant_id, order["locationId"], "events-tickets.cancelled", order["buyerEmail"],
                     f"Inställt: {ev.get('title', 'evenemang')}", text)
@@ -818,7 +842,8 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", r
     type_row = et.get(et.type_key(tenant_id, ticket["eventId"], ticket["typeId"]))
     items = [
         _update(et.ticket_key(tenant_id, ticket["ticketId"]),
-                "SET #s = :r, refundedAt = :at, refundTxId = :tx, version = version + :one",
+                "SET #s = :r, refundedAt = :at, refundTxId = :tx, version = version + :one"
+                " REMOVE pendingTransferId, pendingTransferKind, resaleClaimOrderId",
                 {":r": "refunded", ":at": et.iso(at), ":tx": tx_id, ":one": 1, ":v": int(ticket["version"])},
                 "version = :v", {"#s": "status"}),
         _put(tx),
@@ -835,6 +860,20 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", r
                              "SET sold = sold - :one, taken = taken - :one"
                              + (", seatsLeft = seatsLeft + :one" if "seatsLeft" in type_row else ""), {":one": 1},
                              _cap_guard(type_row)))
+    if ticket.get("pendingTransferId") and stripe == "external":
+        # Stripe already gave the seller the money back (dashboard refund, lost dispute): the listing ends
+        # whatever its state, a buyer's `claimed` hold included. That buyer's payment then finds the ticket
+        # no longer valid (`_issue_resale` -> `_resale_failed`) and goes back in full.
+        items.append(_update(et.transfer_key(tenant_id, ticket["pendingTransferId"]),
+                             "SET #s = :c, cancelledAt = :at REMOVE GSI2PK, GSI2SK, claimOrderId, claimedAt",
+                             {":c": "cancelled", ":at": et.iso(at), ":p": "pending", ":cl": "claimed"},
+                             "#s IN (:p, :cl)", {"#s": "status"}))
+    elif ticket.get("pendingTransferId"):
+        # A gift on its way or a resale listing ends with the ticket. A listing a buyer is paying for
+        # (`claimed`) fails the condition: the refund waits until that hold is paid or expires.
+        items.append(_update(et.transfer_key(tenant_id, ticket["pendingTransferId"]),
+                             "SET #s = :c, cancelledAt = :at REMOVE GSI2PK, GSI2SK",
+                             {":c": "cancelled", ":at": et.iso(at), ":p": "pending"}, "#s = :p", {"#s": "status"}))
     try:
         _txn(items)
     except ClientError as exc:
@@ -843,6 +882,9 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", r
         fresh = et.get(et.ticket_key(tenant_id, ticket["ticketId"]))
         if retry and fresh:  # e.g. the owner changed the type's cap meanwhile: once more from a fresh read
             return _refund_ticket(tenant_id, fresh, tx_id, by=by, reason=reason, stripe=stripe, retry=False)
+        if fresh and fresh.get("pendingTransferId") and (
+                et.get(et.transfer_key(tenant_id, fresh["pendingTransferId"])) or {}).get("status") == "claimed":
+            raise et.EventsError(409, "invalid_state")  # a buyer is paying for the listed ticket right now
         raise et.EventsError(409, "changed_retry")
     _publish("Ticket.Refunded", {"tenantId": tenant_id, "locationId": order["locationId"],
                                  "occurrenceId": ticket["occurrenceId"], "ticketId": ticket["ticketId"],
@@ -881,8 +923,12 @@ def _stripe_refund(tenant_id, tx):
             result = stripe.request("POST", "/v1/refunds", {
                 "payment_intent": tx["paymentIntentId"], "amount": amount,
                 "metadata": {"kind": "ticket", "tenantId": tenant_id, "orderId": tx["orderId"],
-                             "ticketId": ticket_id}},
-                account=tx["stripeAccountId"], idempotency_key=f"ticket-refund-{ticket_id}")
+                             "ticketId": ticket_id,
+                             **({"transferId": tx["transferId"]} if tx.get("transferId") else {})}},
+                account=tx["stripeAccountId"],
+                # a resale refund is keyed by its listing (ADR-K 8): the same ticket may be refunded
+                # once by the owner and once by a resale, never twice for the same reason
+                idempotency_key=tx.get("stripeKey") or f"ticket-refund-{ticket_id}")
     except (stripe.StripeError, stripe.StripeUnavailable):
         logger.warning(json.dumps({"event": "ticket.refund", "stripe": "failed", "txId": tx["txId"]}))
         raise et.EventsError(502, "stripe_unavailable")
@@ -1018,6 +1064,7 @@ def list_orders(event, ctx):
     for o in page:
         view = {k: et.plain(o[k]) for k in ("orderId", "occurrenceId", "qty", "amountOre", "refundedOre", "status",
                                              "buyerName", "buyerEmail", "createdAt", "paidAt") if o.get(k) is not None}
+        view["resale"] = bool(o.get("resale"))
         view["tickets"] = [et.ticket_view(t) for t in et.tickets_of_order(ctx.tenant_id, o)]
         out.append(view)
     cursor = et.encode_cursor({"PK": page[-1]["PK"], "SK": page[-1]["SK"]}) \
@@ -1076,6 +1123,12 @@ def public_detail(event):
     at = et.iso(et.now())
     upcoming = [o for o in occs if o["status"] == "scheduled" and o["startAt"] > at]
     settings = ev.get("settings") or {}
+    resale = []
+    # tickets other guests have put up for sale at face value (ADR-K 8): one query for the event
+    offering = [o for o in upcoming if _resale_open(ev, o) and _sales_open(o, at)]
+    listed = _listings(ctx.tenant_id, ev["eventId"], [o["occurrenceId"] for o in offering])
+    for o in offering:
+        resale += [_listing_view(t) for t in listed[o["occurrenceId"]] if t["status"] == "pending"]
     return http.respond(200, {
         "eventId": ev["eventId"], "title": ev["title"], "description": ev.get("description") or "",
         "refundPolicy": settings.get("refundPolicy"), "perOrderMax": int(settings.get("perOrderMax") or 10),
@@ -1087,7 +1140,30 @@ def public_detail(event):
                          **({"left": max(0, int(t["seatsLeft"]))} if "seatsLeft" in t else {}),
                          **({"includes": t["includes"]} if t.get("includes") else {}),
                          "available": _type_available(t, at)} for t in types],
+        "resaleAllowed": bool(settings.get("resaleAllowed")), "resale": resale,
     })
+
+
+def _listings(tenant_id, event_id, occ_ids):
+    """The event's live resale listings (`pending` or `claimed`) whose ticket
+    is still valid and still points at the listing, per occurrence (only the
+    `occ_ids` asked for): a ticket the owner refunded or the door let in
+    meanwhile is never offered. One GSI query for the whole event, then a key
+    lookup per listing."""
+    out = {occ_id: [] for occ_id in occ_ids}
+    for transfer in et.resales_of_event(tenant_id, event_id) if out else []:
+        if transfer.get("occurrenceId") not in out or transfer.get("kind") != "resale" \
+                or transfer.get("status") not in ("pending", "claimed"):
+            continue
+        ticket = et.get(et.ticket_key(tenant_id, transfer["ticketId"])) or {}
+        if ticket.get("status") == "valid" and ticket.get("pendingTransferId") == transfer["transferId"]:
+            out[transfer["occurrenceId"]].append(transfer)
+    return out
+
+
+def _listing_view(t):
+    return {"transferId": t["transferId"], "occurrenceId": t["occurrenceId"], "typeId": t["typeId"],
+            "typeName": t.get("typeName") or "", "priceOre": int(t["priceOre"]), "priceSek": int(t["priceOre"]) / 100}
 
 
 def _guard(event):
@@ -1142,7 +1218,23 @@ def _hold_items(tenant_id, occ, types_by_id, lines, qty):
 
 
 def _release_items(tenant_id, order, *, held=True):
-    """Undo a hold (held) or a sale (held=False) of an order's lines."""
+    """Undo a hold (held) or a sale (held=False) of an order's lines. A resale
+    order holds no seats: its hold is the claim on each listing, given back
+    (`claimed` -> `pending`) only while it is this order's."""
+    if order.get("resale"):
+        items = []
+        for line in order["lines"]:
+            # A listing Stripe's refund of the seller already cancelled (or one the hold lost long ago) has
+            # nothing to give back; skipping it keeps the release of the rest from failing on its condition.
+            transfer = et.get(et.transfer_key(tenant_id, line["transferId"])) or {}
+            if transfer.get("status") == "claimed" and transfer.get("claimOrderId") == order["orderId"]:
+                items.append(_update(et.transfer_key(tenant_id, line["transferId"]),
+                                     "SET #s = :p REMOVE claimOrderId, claimedAt",
+                                     {":p": "pending", ":c": "claimed", ":o": order["orderId"]},
+                                     "#s = :c AND claimOrderId = :o", {"#s": "status"}))
+            # the ticket's claim marker goes too (unconditional: the ticket may have been refunded meanwhile)
+            items.append(_update(et.ticket_key(tenant_id, line["ticketId"]), "REMOVE resaleClaimOrderId", {}))
+        return items
     field = "held" if held else "sold"
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
     items = [_update(et.occ_key(tenant_id, order["eventId"], occ_start),
@@ -1161,8 +1253,8 @@ def _release_items(tenant_id, order, *, held=True):
 def checkout(event):
     location_id = http.path_id(event, "locationId")
     ctx = tenant.for_public(location_id, feature=et.FEATURE_KEY)
-    body = http.body(event, allowed=("orderId", "occurrenceId", "lines", "buyerName", "buyerEmail", "buyerPhone",
-                                     "tableIds", "turnstileToken"))
+    body = http.body(event, allowed=("orderId", "occurrenceId", "lines", "resaleTransferIds", "buyerName",
+                                     "buyerEmail", "buyerPhone", "tableIds", "turnstileToken"))
     order_id = body.get("orderId")
     if not et.valid_id(order_id):
         raise et.EventsError(400, "orderId is invalid", "orderId")
@@ -1189,10 +1281,18 @@ def checkout(event):
         raise et.EventsError(404, "not found")
     _, types = et.event_parts(ctx.tenant_id, event_id)
     at = et.now()
-    lines, qty = _checkout_lines(body, types, ev.get("settings") or {}, et.iso(at))
+    resale_ids = body.get("resaleTransferIds")
+    if resale_ids not in (None, []):
+        if body.get("lines"):
+            raise et.EventsError(400, "lines is invalid", "lines")  # a resale order holds no new seats
+        lines, qty, hold, claimed = _resale_lines(ctx, ev, occ, resale_ids, at, order_id,
+                                                  et.email_hash(ctx.tenant_id, body["buyerEmail"]))
+    else:
+        lines, qty = _checkout_lines(body, types, ev.get("settings") or {}, et.iso(at))
+        hold, claimed = None, None
     if not _sales_open(occ, et.iso(at)):
         raise et.EventsError(409, "sales_closed")
-    if et.left(occ) < qty:
+    if claimed is None and et.left(occ) < qty:
         raise et.EventsError(409, "sold_out")
     _guard(event)
     if turnstile.required():
@@ -1208,25 +1308,30 @@ def checkout(event):
     buyer = body["buyerEmail"].strip().lower()
     order = {**et.order_key(ctx.tenant_id, order_id), "tenantId": ctx.tenant_id, "orderId": order_id,
              "eventId": event_id, "occurrenceId": occ_id, "locationId": location_id,
-             "lines": [{k: ln[k] for k in ("typeId", "qty", "priceOre", "vatRate", "name")} for ln in lines],
+             "lines": [{k: ln[k] for k in ("typeId", "qty", "priceOre", "vatRate", "name", "transferId", "ticketId")
+                        if k in ln} for ln in lines],
              "qty": qty, "amountOre": amount, "refundedOre": 0, "refundedCount": 0, "buyerName": buyer_name,
              "buyerEmail": buyer, "buyerEmailHash": et.email_hash(ctx.tenant_id, buyer), "status": "pending",
              "createdAt": et.iso(at), "expiresAt": et.iso(expires),
              "ttl": int((expires + timedelta(days=1)).timestamp()),
              "GSI1PK": "HOLD", "GSI1SK": f"{et.iso(expires)}#{ctx.tenant_id}#{order_id}"}
+    if claimed is not None:
+        order.update({"resale": True, "resaleTransferIds": claimed})
     if account:
         order["stripeAccountId"] = account
     if phone:
         order["buyerPhone"] = phone.strip()
     types_by_id = {t["typeId"]: t for t in types}
     try:
-        _txn([*_hold_items(ctx.tenant_id, occ, types_by_id, lines, qty), _put(order)])
+        _txn([*(hold if hold is not None else _hold_items(ctx.tenant_id, occ, types_by_id, lines, qty)), _put(order)])
     except ClientError as exc:
         if not et.cancelled_txn(exc):
             raise
         again = et.get(et.order_key(ctx.tenant_id, order_id))
         if again:
             return _checkout_retry(ctx, again, body)
+        if claimed is not None:
+            raise et.EventsError(409, "resale_taken")  # another buyer claimed a listing, or it was withdrawn
         occ = et.get({"PK": occ["PK"], "SK": occ["SK"]}) or occ
         if et.left(occ) < qty:
             raise et.EventsError(409, "sold_out")
@@ -1257,11 +1362,61 @@ def checkout(event):
                               "expiresAt": order["expiresAt"], "stripeAccount": account})
 
 
+def _resale_lines(ctx, ev, occ, raw_ids, at, order_id, buyer_hash):
+    """A buyer's pick of listed tickets (ADR-K 8): one line per listing at the
+    listed ticket's own price and VAT rate (never the type's current price).
+    Returns (lines, qty, hold items, transferIds). The hold claims each
+    listing (`pending` -> `claimed` by this order) and checks that its ticket
+    is still valid and still listed, so two buyers can never pay for the same
+    ticket and a ticket the owner refunded meanwhile is never sold. At most
+    RESALE_PER_ORDER listings: the issue is one DynamoDB transaction (25
+    items) and each listing takes four of them."""
+    settings = ev.get("settings") or {}
+    per_order = min(int(settings.get("perOrderMax") or 10), RESALE_PER_ORDER)
+    if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= per_order or len(set(raw_ids)) != len(raw_ids) \
+            or not all(et.valid_id(i) for i in raw_ids):
+        raise et.EventsError(400, "too_many_tickets", "resaleTransferIds")
+    if not _resale_open(ev, occ):
+        raise et.EventsError(409, "sales_closed")  # resale off, or within two hours of the start
+    lines, hold = [], []
+    for transfer_id in raw_ids:
+        transfer = et.get(et.transfer_key(ctx.tenant_id, transfer_id))
+        if not transfer or transfer.get("kind") != "resale" or transfer.get("occurrenceId") != occ["occurrenceId"] \
+                or transfer.get("locationId") != ctx.location_id:
+            raise et.EventsError(404, "not found")
+        ticket = et.get(et.ticket_key(ctx.tenant_id, transfer["ticketId"])) or {}
+        if transfer["status"] != "pending" or ticket.get("status") != "valid" \
+                or ticket.get("pendingTransferId") != transfer_id:
+            raise et.EventsError(409, "resale_taken")
+        seller = et.get(et.order_key(ctx.tenant_id, ticket["orderId"])) or {}
+        # the seller is the order's buyer or, for a gifted-on ticket, its holder: withdraw it on the ticket page instead
+        if buyer_hash in (seller.get("buyerEmailHash"), ticket.get("holderEmailHash")):
+            raise et.EventsError(400, "own_listing", "resaleTransferIds")
+        lines.append({"typeId": transfer["typeId"], "qty": 1, "priceOre": int(ticket["priceOre"]),
+                      "vatRate": int(ticket["vatRate"]), "name": ticket.get("typeName") or transfer.get("typeName") or "",
+                      "transferId": transfer_id, "ticketId": transfer["ticketId"]})
+        hold.append(_update(et.transfer_key(ctx.tenant_id, transfer_id),
+                            "SET #s = :c, claimOrderId = :o, claimedAt = :at",
+                            {":c": "claimed", ":o": order_id, ":at": et.iso(at), ":p": "pending"}, "#s = :p",
+                            {"#s": "status"}))
+        # The ticket itself is claimed too (an Update, not a ConditionCheck: the role has no
+        # dynamodb:ConditionCheckItem), conditional on it still being valid and still listed.
+        hold.append(_update(et.ticket_key(ctx.tenant_id, transfer["ticketId"]), "SET resaleClaimOrderId = :o",
+                            {":o": order_id, ":valid": "valid", ":t": transfer_id},
+                            "#s = :valid AND pendingTransferId = :t", {"#s": "status"}))
+    return lines, len(lines), hold, list(raw_ids)
+
+
 def _checkout_retry(ctx, order, body):
-    same = (order.get("occurrenceId") == body.get("occurrenceId")
-            and sorted((ln["typeId"], int(ln["qty"])) for ln in order["lines"])
-            == sorted((ln.get("typeId"), ln.get("qty")) for ln in (body.get("lines") or []) if isinstance(ln, dict))
-            and order.get("locationId") == ctx.location_id)
+    if order.get("resale"):
+        same = (order.get("occurrenceId") == body.get("occurrenceId") and not body.get("lines")
+                and sorted(order["resaleTransferIds"]) == sorted(body.get("resaleTransferIds") or [])
+                and order.get("locationId") == ctx.location_id)
+    else:
+        same = (order.get("occurrenceId") == body.get("occurrenceId") and not body.get("resaleTransferIds")
+                and sorted((ln["typeId"], int(ln["qty"])) for ln in order["lines"])
+                == sorted((ln.get("typeId"), ln.get("qty")) for ln in (body.get("lines") or []) if isinstance(ln, dict))
+                and order.get("locationId") == ctx.location_id)
     if not same:
         raise et.EventsError(409, "changed_retry")
     if order["status"] == "expired":
@@ -1306,6 +1461,8 @@ def _issue(tenant_id, order, intent, retry=True):
     if order["status"] in ("paid", "partly_refunded", "refunded"):
         _resend_unsent(tenant_id, order)
         return "already_issued"
+    if order.get("lateRefundAt"):
+        return "ignored:late_refunded"  # the payment already went back in full: a replay issues nothing
     late = order["status"] == "expired"
     at = et.now()
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
@@ -1316,6 +1473,8 @@ def _issue(tenant_id, order, intent, retry=True):
         if not late:
             _expire_order(tenant_id, order)
         return _refund_late(tenant_id, order, intent, "cancelled") if intent else "ignored:cancelled"
+    if order.get("resale"):
+        return _issue_resale(tenant_id, order, intent, ev, occ, late, at, retry=retry)
     tickets, n = [], 0
     for line in order["lines"]:
         for _ in range(int(line["qty"])):
@@ -1385,6 +1544,142 @@ def _issue(tenant_id, order, intent, retry=True):
     return "issued"
 
 
+def _issue_resale(tenant_id, order, intent, ev, occ, late, at, retry=True):
+    """The buyer paid for listed tickets: in ONE transaction every listed
+    ticket is voided (its QR is refused at the door from now on), a new ticket
+    with the same type, price and VAT rate is issued to the buyer, each
+    listing is `sold`, the buyer's order is paid, a `resale_sale` TX books the
+    payment and one `resale_refund` TX per old ticket books the seller's
+    money back (Stripe refund on the seller's PaymentIntent, key
+    `ticket-resale-<transferId>`, sent after the transaction and retried by
+    the sweep until Stripe has it). Capacity and revenue do not move: one
+    ticket out, one in. If any listed ticket can no longer be sold (the
+    seller was let in, the owner refunded it, or after an expired hold
+    another buyer took it) the whole payment goes back; nothing is issued."""
+    transfers, old = [], []
+    for transfer_id in order["resaleTransferIds"]:
+        transfer = et.get(et.transfer_key(tenant_id, transfer_id)) or {}
+        ticket = et.get(et.ticket_key(tenant_id, transfer.get("ticketId") or "-")) or {}
+        wanted = "pending" if late else "claimed"
+        if transfer.get("status") != wanted or (not late and transfer.get("claimOrderId") != order["orderId"]) \
+                or ticket.get("status") != "valid" or ticket.get("pendingTransferId") != transfer_id:
+            return _resale_failed(tenant_id, order, intent, late)
+        transfers.append(transfer)
+        old.append(ticket)
+    new_tickets, items, refunds, per_seller = [], [], [], {}
+    sale_lines = []
+    for n, (transfer, ticket) in enumerate(zip(transfers, old)):
+        new_id = et.ticket_id_for(order["orderId"], n)
+        price, rate = int(ticket["priceOre"]), int(ticket["vatRate"])
+        new = {**et.ticket_key(tenant_id, new_id), "tenantId": tenant_id, "ticketId": new_id,
+               "orderId": order["orderId"], "eventId": ticket["eventId"], "occurrenceId": ticket["occurrenceId"],
+               "locationId": ticket["locationId"], "typeId": ticket["typeId"], "typeName": ticket.get("typeName") or "",
+               "priceOre": price, "vatRate": rate, "status": "valid", "holderName": order.get("buyerName"),
+               "holderEmailHash": order.get("buyerEmailHash"), "resaleOf": ticket["ticketId"],
+               "resaleTransferId": transfer["transferId"], "version": 1, "issuedAt": et.iso(at),
+               **et.occurrence_gsi(tenant_id, ticket["occurrenceId"], order.get("buyerName"), new_id)}
+        new_tickets.append(new)
+        sale_lines.append((price, rate))
+        items.append(_put(new))
+        items.append(_update(et.ticket_key(tenant_id, ticket["ticketId"]),
+                             "SET #s = :void, resoldTo = :n, resoldAt = :at, resaleTxId = :tx, version = version + :one"
+                             " REMOVE pendingTransferId, pendingTransferKind, resaleClaimOrderId",
+                             {":void": "void", ":n": new_id, ":at": et.iso(at), ":one": 1,
+                              ":tx": f"resale-refund-{transfer['transferId']}",
+                              ":v": int(ticket["version"]), ":valid": "valid", ":t": transfer["transferId"]},
+                             "version = :v AND #s = :valid AND pendingTransferId = :t", {"#s": "status"}))
+        condition = "#s = :p" if late else "#s = :c AND claimOrderId = :o"
+        items.append(_update(et.transfer_key(tenant_id, transfer["transferId"]),
+                             "SET #s = :sold, newTicketId = :n, buyerOrderId = :o, soldAt = :at"
+                             " REMOVE GSI2PK, GSI2SK, claimOrderId, claimedAt",
+                             {":sold": "sold", ":n": new_id, ":o": order["orderId"], ":at": et.iso(at),
+                              ":p": "pending", ":c": "claimed"}, condition, {"#s": "status"}))
+        seller = et.get(et.order_key(tenant_id, ticket["orderId"])) or {}
+        if not seller:
+            return _resale_failed(tenant_id, order, intent, late)
+        # the seller's money back: a refund TX on the seller's order, Stripe refund owed (REFUNDS row)
+        refund = _tx(tenant_id, f"resale-refund-{transfer['transferId']}", "resale_refund", seller,
+                     [ticket["ticketId"]], -price, [(-price, rate)], at, by="resale",
+                     transferId=transfer["transferId"], buyerOrderId=order["orderId"],
+                     paymentIntentId=seller.get("paymentIntentId"), stripeAccountId=seller.get("stripeAccountId"),
+                     stripeKey=f"ticket-resale-{transfer['transferId']}")
+        refund.update(et.refund_gsi(tenant_id, refund["txId"], et.iso(at)))
+        refunds.append(refund)
+        items.append(_put(refund))
+        group = per_seller.setdefault(seller["orderId"], {"order": seller, "count": 0, "ore": 0})
+        group["count"] += 1
+        group["ore"] += price
+    for group in per_seller.values():  # one update per seller order, however many of its tickets sold
+        seller = group["order"]
+        refunded = int(seller.get("refundedCount") or 0)
+        status = "refunded" if refunded + group["count"] >= int(seller["qty"]) else "partly_refunded"
+        items.append(_update(et.order_key(tenant_id, seller["orderId"]),
+                             "SET refundedCount = refundedCount + :n, refundedOre = refundedOre + :p, #s = :st",
+                             {":n": group["count"], ":p": group["ore"], ":st": status, ":rc": refunded},
+                             "refundedCount = :rc", {"#s": "status"}))
+    amount = int(order["amountOre"])
+    sale = _tx(tenant_id, f"sale-{order['orderId']}", "resale_sale", order, [t["ticketId"] for t in new_tickets],
+               amount, sale_lines, at, resaleOf=[t["ticketId"] for t in old],
+               **({"paymentIntentId": intent["id"]} if intent else {}))
+    cleanup_month = et.add_months(et.parse_iso(occ.get("startAt") or et.iso(at)), et.CONTACT_MONTHS).strftime("%Y-%m")
+    paid_gsi = et.paid_order_gsi(tenant_id, order["eventId"], et.iso(at), order["orderId"])
+    items.append(_update(
+        et.order_key(tenant_id, order["orderId"]),
+        "SET #s = :paid, paidAt = :at, GSI1PK = :g1, GSI1SK = :g1s, GSI2PK = :g2, GSI2SK = :g2s REMOVE #ttl",
+        {":paid": "paid", ":at": et.iso(at), ":g1": paid_gsi["GSI1PK"], ":g1s": paid_gsi["GSI1SK"],
+         ":g2": f"CLEANUP#{cleanup_month}", ":g2s": f"{tenant_id}#{order['orderId']}", ":st": order["status"]},
+        "#s = :st", {"#s": "status", "#ttl": "ttl"}))
+    items.append(_put(sale))
+    try:
+        _txn(items)
+    except ClientError as exc:
+        if not et.cancelled_txn(exc):
+            raise
+        again = et.get(et.order_key(tenant_id, order["orderId"])) or {}
+        if again.get("status") in ("paid", "partly_refunded", "refunded"):
+            return "already_issued"
+        if retry and again:  # a seller order or ticket version moved under us: once more from a fresh read
+            return _issue(tenant_id, again, intent, retry=False)
+        return _resale_failed(tenant_id, order, intent, late)
+    paid = et.get(et.order_key(tenant_id, order["orderId"]))
+    for ticket, new in zip(old, new_tickets):
+        _publish("Ticket.Transferred", {"tenantId": tenant_id, "locationId": ticket["locationId"],
+                                        "occurrenceId": ticket["occurrenceId"], "ticketId": ticket["ticketId"],
+                                        "newTicketId": new["ticketId"], "kind": "resale"})
+    location = tenant.get_location(tenant_id, order["locationId"]) or {}
+    _send_tickets(tenant_id, paid, ev, occ, location)
+    for group in per_seller.values():
+        _notify_seller(tenant_id, group["order"], group["count"], group["ore"], ev)
+    for refund in refunds:  # the seller's Stripe refund now; a failure is retried by the sweep (REFUNDS row)
+        try:
+            _stripe_refund(tenant_id, refund)
+        except et.EventsError:
+            pass
+    return "issued"
+
+
+def _resale_failed(tenant_id, order, intent, late):
+    """A listed ticket can no longer be sold: the claims go back (a pending
+    order expires), the buyer's payment is refunded in full."""
+    if not late:
+        _expire_order(tenant_id, order)
+    return _refund_late(tenant_id, order, intent, "resale_taken") if intent else "ignored:resale_taken"
+
+
+def _notify_seller(tenant_id, seller, count, ore, ev):
+    if not seller.get("buyerEmail"):
+        return
+    try:
+        _notify(tenant_id, seller["locationId"], "events-tickets.refunded", seller["buyerEmail"],
+                "Din biljett är såld",
+                f"Hej {seller.get('buyerName') or ''}!\n\n"
+                f"{'Din biljett' if count == 1 else f'{count} av dina biljetter'} till {ev.get('title', 'evenemanget')} "
+                f"är såld vidare. {_kr(ore)} återbetalas till kortet du betalade med; det kan ta några bankdagar "
+                "innan pengarna syns. Den sålda biljetten gäller inte längre.\n")
+    except NotificationUnavailable as exc:
+        logger.warning(json.dumps({"route": "resale", "notification": str(exc)}))
+
+
 def _refund_late(tenant_id, order, intent, reason="sold_out"):
     """Paid after the hold expired and the seats are gone: the whole payment back."""
     try:
@@ -1437,11 +1732,21 @@ def _token_scope(event, kinds=("o", "t")):
     return tenant_id, tickets, order, kind, item_id
 
 
-def _transfer_open(ev, occ):
+def _window_open(ev, occ, flag):
     settings = ev.get("settings") or {}
     start = et.parse_iso(occ.get("startAt"))
-    return bool(settings.get("transferAllowed")) and occ.get("status") == "scheduled" and bool(start) \
+    return bool(settings.get(flag)) and occ.get("status") == "scheduled" and bool(start) \
         and et.now() < start - timedelta(hours=et.TRANSFER_CLOSE_HOURS)
+
+
+def _transfer_open(ev, occ):
+    return _window_open(ev, occ, "transferAllowed")
+
+
+def _resale_open(ev, occ):
+    """Listing and buying listed tickets: the event allows resale and the
+    start is more than two hours away (ADR-K 8)."""
+    return _window_open(ev, occ, "resaleAllowed")
 
 
 def ticket_page(event):
@@ -1456,10 +1761,15 @@ def ticket_page(event):
     out = []
     for t in tickets:
         view = et.ticket_view(t)
+        view["priceOre"] = int(t.get("priceOre") or 0)
         if t["status"] == "valid":
             view["qr"] = qr.payload(tenant_id, t["occurrenceId"], t["ticketId"])
         if t.get("pendingTransferId"):
             view["pendingTransferId"] = t["pendingTransferId"]
+            transfer = et.get(et.transfer_key(tenant_id, t["pendingTransferId"])) or {}
+            view["pendingTransfer"] = {"transferId": t["pendingTransferId"], "kind": transfer.get("kind") or "gift",
+                                       "status": transfer.get("status") or "pending",
+                                       "priceOre": int(transfer.get("priceOre") or 0)}
         out.append(view)
     return http.respond(200, {
         "event": {"eventId": ev.get("eventId"), "title": ev.get("title"), "description": ev.get("description") or "",
@@ -1468,7 +1778,7 @@ def ticket_page(event):
                        "endAt": occ.get("endAt"), "doorsAt": occ.get("doorsAt"), "status": occ.get("status")},
         "location": {"locationId": first["locationId"], "name": location.get("name")},
         "tickets": out, "wallet": {"apple": False, "google": False},
-        "transferAllowed": _transfer_open(ev, occ), "resaleAllowed": False})
+        "transferAllowed": _transfer_open(ev, occ), "resaleAllowed": _resale_open(ev, occ)})
 
 
 def ticket_pass(event):
@@ -1491,34 +1801,49 @@ def create_transfer(event):
         if existing.get("ticketId") != ticket["ticketId"]:
             raise et.EventsError(409, "changed_retry")
         return http.respond(201, _transfer_view(existing))
-    if body.get("kind") != "gift":
-        if body.get("kind") == "resale":
-            raise et.EventsError(409, "transfer_closed")  # resale is not built in this run
-        raise et.EventsError(400, "kind must be gift", "kind")
-    if not et.valid_email(body.get("toEmail")):
-        raise et.EventsError(400, "invalid_email", "toEmail")
+    kind = body.get("kind")
+    if kind not in ("gift", "resale"):
+        raise et.EventsError(400, "kind must be gift or resale", "kind")
+    if kind == "gift" and not et.valid_email(body.get("toEmail")):
+        raise et.EventsError(400, "invalid_email", "toEmail")  # a listing (resale) has no recipient: toEmail ignored
     ev = et.get(et.event_key(tenant_id, ticket["eventId"])) or {}
     occ_start = et.split_occurrence(ticket["eventId"], ticket["occurrenceId"])
     occ = et.get(et.occ_key(tenant_id, ticket["eventId"], occ_start)) or {}
-    if not _transfer_open(ev, occ):
+    if not (_transfer_open(ev, occ) if kind == "gift" else _resale_open(ev, occ)):
         raise et.EventsError(409, "transfer_closed")
     if ticket["status"] != "valid" or ticket.get("pendingTransferId"):
         raise et.EventsError(409, "invalid_state")
-    to = body["toEmail"].strip().lower()
+    price = int(ticket.get("priceOre") or 0)
+    if kind == "resale" and price <= 0:
+        raise et.EventsError(400, "invalid_price", "ticketId")  # a free ticket is given away, not sold
+    if kind == "resale" and ticket.get("resaleOf"):
+        raise et.EventsError(409, "resale_limit")  # one resale per seat: a bought-on ticket can be given, not sold
     at = et.now()
-    # Each transfer emails a stranger: a ticket may cause a few a day, an IP a few more an hour.
-    counted = request_guard.check([("ticket-transfer", f"{tenant_id}|{ticket['ticketId']}",
-                                    et.TRANSFERS_PER_TICKET_DAY, 86400),
-                                   ("ticket-transfer-ip", http.source_ip(event), *TRANSFER_IP_LIMIT)], at)
+    if kind == "gift":
+        # Each gift emails a stranger: a ticket may cause a few a day, an IP a few more an hour.
+        counted = request_guard.check([("ticket-transfer", f"{tenant_id}|{ticket['ticketId']}",
+                                        et.TRANSFERS_PER_TICKET_DAY, 86400),
+                                       ("ticket-transfer-ip", http.source_ip(event), *TRANSFER_IP_LIMIT)], at)
+    else:  # a listing emails nobody; the IP limit alone keeps a script from churning listings
+        counted = request_guard.check([("ticket-transfer-ip", http.source_ip(event), *TRANSFER_IP_LIMIT)], at)
     transfer = {**et.transfer_key(tenant_id, transfer_id), "tenantId": tenant_id, "transferId": transfer_id,
-                "ticketId": ticket["ticketId"], "kind": "gift", "toEmail": to,
-                "toEmailHash": et.email_hash(tenant_id, to),
-                "priceOre": 0, "status": "pending", "createdAt": et.iso(at), "locationId": ticket["locationId"],
-                "occurrenceId": ticket["occurrenceId"], "ttl": int(et.parse_iso(occ["startAt"]).timestamp()) + 86400,
+                "ticketId": ticket["ticketId"], "kind": kind, "status": "pending", "createdAt": et.iso(at),
+                "locationId": ticket["locationId"], "occurrenceId": ticket["occurrenceId"],
+                "ttl": int(et.parse_iso(occ["startAt"]).timestamp()) + 86400,
                 **et.transfer_gsi(tenant_id, ticket["ticketId"], transfer_id)}
+    if kind == "gift":
+        to = body["toEmail"].strip().lower()
+        transfer.update({"toEmail": to, "toEmailHash": et.email_hash(tenant_id, to), "priceOre": 0})
+    else:
+        # Face value = what this ticket was sold for (its own priceOre), never above, never the type's new price.
+        transfer.update({"priceOre": price, "vatRate": int(ticket.get("vatRate") or 0), "typeId": ticket["typeId"],
+                         "typeName": ticket.get("typeName") or "", "sellerOrderId": ticket["orderId"],
+                         **et.resale_gsi(tenant_id, ticket["eventId"], ticket["occurrenceId"], et.iso(at),
+                                         transfer_id)})
     try:
-        _txn([_update(et.ticket_key(tenant_id, ticket["ticketId"]), "SET pendingTransferId = :t",
-                      {":t": transfer_id, ":valid": "valid", ":v": int(ticket["version"])},
+        _txn([_update(et.ticket_key(tenant_id, ticket["ticketId"]),
+                      "SET pendingTransferId = :t, pendingTransferKind = :k",
+                      {":t": transfer_id, ":k": kind, ":valid": "valid", ":v": int(ticket["version"])},
                       "#s = :valid AND version = :v AND attribute_not_exists(pendingTransferId)", {"#s": "status"}),
               _put(transfer)])
     except ClientError as exc:
@@ -1526,6 +1851,9 @@ def create_transfer(event):
         if not et.cancelled_txn(exc):
             raise
         raise et.EventsError(409, "invalid_state")
+    if kind == "resale":
+        return http.respond(201, _transfer_view(transfer))
+    to = transfer["toEmail"]
     link = _site_link(tenant_id, "/biljett/ta-emot", qr.token("x", tenant_id, transfer_id))
     location = tenant.get_location(tenant_id, ticket["locationId"]) or {}
     try:
@@ -1541,7 +1869,8 @@ def create_transfer(event):
 
 
 def _transfer_view(t):
-    return {"transferId": t["transferId"], "ticketId": t["ticketId"], "kind": t["kind"], "status": t["status"]}
+    return {"transferId": t["transferId"], "ticketId": t["ticketId"], "kind": t["kind"], "status": t["status"],
+            "priceOre": int(t.get("priceOre") or 0)}
 
 
 def accept_transfer(event):
@@ -1570,15 +1899,16 @@ def accept_transfer(event):
     if not old or old["status"] != "valid" or old.get("pendingTransferId") != transfer_id:
         raise et.EventsError(409, "invalid_state")
     at = et.now()
-    new = {k: v for k, v in old.items() if k not in ("pendingTransferId", "checkedInAt", "checkedInBy",
-                                                       "checkedInClientId", "holderEmail")}
+    new = {k: v for k, v in old.items() if k not in ("pendingTransferId", "pendingTransferKind", "checkedInAt",
+                                                       "checkedInBy", "checkedInClientId", "holderEmail")}
     new.update({**et.ticket_key(tenant_id, new_id), "ticketId": new_id, "holderName": name,
                 "holderEmailHash": transfer["toEmailHash"], "giftedFrom": old["ticketId"], "status": "valid",
                 "version": 1, "issuedAt": et.iso(at),
                 **et.occurrence_gsi(tenant_id, old["occurrenceId"], name, new_id)})
     try:
         _txn([_update(et.ticket_key(tenant_id, old["ticketId"]),
-                      "SET #s = :tr, transferredTo = :n, version = version + :one REMOVE pendingTransferId",
+                      "SET #s = :tr, transferredTo = :n, version = version + :one"
+                      " REMOVE pendingTransferId, pendingTransferKind",
                       {":tr": "transferred", ":n": new_id, ":one": 1, ":v": int(old["version"]), ":t": transfer_id},
                       "version = :v AND pendingTransferId = :t", {"#s": "status"}),
               _put(new),
@@ -1606,16 +1936,20 @@ def cancel_transfer(event):
         raise et.EventsError(404, "not found")
     if transfer["status"] == "pending":
         try:
-            _txn([_update(et.transfer_key(tenant_id, transfer_id), "SET #s = :c", {":c": "cancelled", ":p": "pending"},
-                          "#s = :p", {"#s": "status"}),
-                  _update(et.ticket_key(tenant_id, transfer["ticketId"]), "REMOVE pendingTransferId",
-                          {":t": transfer_id}, "pendingTransferId = :t")])
+            _txn([_update(et.transfer_key(tenant_id, transfer_id), "SET #s = :c REMOVE GSI2PK, GSI2SK",
+                          {":c": "cancelled", ":p": "pending"}, "#s = :p", {"#s": "status"}),
+                  _update(et.ticket_key(tenant_id, transfer["ticketId"]),
+                          "REMOVE pendingTransferId, pendingTransferKind", {":t": transfer_id},
+                          "pendingTransferId = :t")])
         except ClientError as exc:
             if not et.cancelled_txn(exc):
                 raise
-            if (et.get(et.transfer_key(tenant_id, transfer_id)) or {}).get("status") == "accepted":
+            if (et.get(et.transfer_key(tenant_id, transfer_id)) or {}).get("status") in ("accepted", "claimed",
+                                                                                           "sold"):
                 raise et.EventsError(409, "invalid_state")
-    elif transfer["status"] == "accepted":
+    elif transfer["status"] in ("accepted", "claimed", "sold"):
+        # accepted: the gift is already the recipient's; claimed: a buyer is paying for the listing right
+        # now (it comes back if the hold expires unpaid); sold: the money has moved.
         raise et.EventsError(409, "invalid_state")
     return {"statusCode": 204, "headers": {"Cache-Control": "no-store"}, "body": ""}
 
@@ -1653,22 +1987,35 @@ def stripe_event(event):
             return "flagged:partial_refund"
         voided = 0
         for t in et.tickets_of_order(tenant_id, order):
-            if t["status"] in ("valid", "checked_in"):
+            if t["status"] not in ("valid", "checked_in"):
+                continue
+            try:
                 _refund_ticket(tenant_id, t, f"stripe-{t['ticketId']}", by="owner", reason=kind, stripe="external")
-                voided += 1
+            except et.EventsError as exc:  # one ticket that moved meanwhile never leaves the others valid
+                logger.warning(json.dumps({"event": "ticket.external_refund", "ticketId": t["ticketId"],
+                                           "code": exc.code}))
+                continue
+            voided += 1
         return "voided" if voided else "already_refunded"
     return "ignored:type"
 
 
 T_SALE = "Biljetter"
 T_REFUND = "Återbetalda biljetter"
+# A resale is a sale to the buyer and a refund to the seller of the same amount the same day: the two
+# labels keep both legs visible in the entry, and they net to zero per VAT rate. NEEDS ACCOUNTANT REVIEW
+# (whether a face-value resale should be booked gross like this or left out of the entry).
+T_RESALE = "Vidaresålda biljetter"
+T_RESALE_REFUND = "Återbetalda vidaresålda biljetter"
+T_LABELS = {"sale": T_SALE, "refund": T_REFUND, "resale_sale": T_RESALE, "resale_refund": T_RESALE_REFUND}
 
 
 def accounting_hook(event):
     """Postings per day from the TX rows (byLocationDay): sale -> debit the
     Stripe settlement, credit sales and output VAT at the ticket type's rate;
-    refund -> the reverse. Uses the existing sales<rate>/vat<rate> roles until
-    the accountant approves `ticketSales*` (ADR-K 10, NEEDS ACCOUNTANT REVIEW)."""
+    refund -> the reverse; a resale is both (net zero). Uses the existing
+    sales<rate>/vat<rate> roles until the accountant approves `ticketSales*`
+    (ADR-K 10, NEEDS ACCOUNTANT REVIEW)."""
     tenant_id, location_id, first, last = event["tenantId"], event.get("locationId"), event.get("first"), \
         event.get("last")
     if not et.valid_day(first) or not et.valid_day(last) or first > last:
@@ -1679,7 +2026,7 @@ def accounting_hook(event):
             f"TENANT#{tenant_id}#LOC#{location_id}#{day}"))
         totals = {}
         for tx in rows:
-            label = T_SALE if int(tx["amountOre"]) >= 0 else T_REFUND
+            label = T_LABELS.get(tx.get("kind")) or (T_SALE if int(tx["amountOre"]) >= 0 else T_REFUND)
             for line in tx.get("vatLines") or []:
                 key = (label, int(line["rate"]))
                 net, vat = totals.get(key, (0, 0))

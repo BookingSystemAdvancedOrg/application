@@ -943,7 +943,8 @@ paths:
             application/json:
               schema: *id002
         '409':
-          description: sold_out, type_sold_out, sales_closed, no_stripe_account, changed_retry
+          description: sold_out, type_sold_out, sales_closed (also a resale window that has closed), no_stripe_account,
+            changed_retry, resale_taken (a listed ticket another buyer claimed or that was withdrawn)
           content:
             application/json:
               schema: *id002
@@ -1038,7 +1039,7 @@ paths:
     post:
       tags:
       - Events and tickets
-      summary: K20 Give a ticket away
+      summary: K20 Give a ticket away (kind gift) or list it for resale at the price paid (kind resale)
       operationId: eventsTicketsPostPublicTicketsTokenTransfers
       security: []
       x-required-groups: []
@@ -1061,7 +1062,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventsTicketsTransfer'
         '400':
-          description: Validation error (invalid_email).
+          description: Validation error (invalid_email for a gift; invalid_price for a resale of a free ticket).
           content:
             application/json:
               schema: *id002
@@ -1071,7 +1072,8 @@ paths:
             application/json:
               schema: *id002
         '409':
-          description: transfer_closed, invalid_state
+          description: transfer_closed (gift or resale not allowed by the event, or within two hours of the start),
+            invalid_state (not a valid ticket, or already given away or listed)
           content:
             application/json:
               schema: *id002
@@ -1135,7 +1137,7 @@ paths:
     delete:
       tags:
       - Events and tickets
-      summary: K22 Cancel a pending transfer
+      summary: K22 Cancel a pending gift or withdraw a resale listing (409 invalid_state while a buyer pays for it, or once sold)
       operationId: eventsTicketsDeletePublicTicketsTokenTransfersTransferId
       security: []
       x-required-groups: []
@@ -1463,7 +1465,29 @@ components:
                 - void
               checkedInAt: *id001
               qr: *id001
+              priceOre: *id005
               pendingTransferId: *id001
+              pendingTransfer:
+                type: object
+                description: The gift on its way or the resale listing of this ticket (K18 only).
+                properties:
+                  transferId: *id001
+                  kind:
+                    type: string
+                    enum:
+                    - gift
+                    - resale
+                  status:
+                    type: string
+                    description: pending, or claimed while a buyer pays for the listing.
+                  priceOre: *id005
+              resale:
+                type: string
+                description: 'listed: for sale (or being paid for); sold: voided by a resale; bought: issued by one.'
+                enum:
+                - listed
+                - sold
+                - bought
             required:
             - ticketId
             - status
@@ -1537,6 +1561,9 @@ components:
               buyerEmail: *id001
               createdAt: *id001
               paidAt: *id001
+              resale:
+                type: boolean
+                description: A resale order (listed tickets bought from other guests, no new seats).
               tickets:
                 type: array
                 items: *id013
@@ -1605,6 +1632,26 @@ components:
               left: *id005
               includes: *id001
               available: *id006
+        resaleAllowed: *id006
+        resale:
+          type: array
+          description: Tickets other guests have put up for sale at the price they paid (ADR-K 8); empty when
+            resale is off or closes (two hours before the start) and while a listing is being paid for.
+          items:
+            type: object
+            properties:
+              transferId: *id001
+              occurrenceId: *id001
+              typeId: *id001
+              typeName: *id001
+              priceSek:
+                type: number
+              priceOre: *id005
+            required:
+            - transferId
+            - occurrenceId
+            - typeId
+            - priceOre
       required:
       - eventId
       - title
@@ -1612,6 +1659,7 @@ components:
       - ticketTypes
     EventsTicketsCheckoutBody:
       type: object
+      description: Either `lines` (new seats) or `resaleTransferIds` (listed tickets, at most 4), never both.
       properties:
         orderId: *id001
         occurrenceId: *id001
@@ -1625,6 +1673,10 @@ components:
             required:
             - typeId
             - qty
+        resaleTransferIds:
+          type: array
+          items: *id001
+          maxItems: 4
         buyerName: *id001
         buyerEmail: *id001
         buyerPhone: *id001
@@ -1635,7 +1687,6 @@ components:
       required:
       - orderId
       - occurrenceId
-      - lines
       - buyerName
       - buyerEmail
     EventsTicketsCheckout:
@@ -1694,6 +1745,9 @@ components:
         ticketId: *id001
         kind: *id001
         status: *id001
+        priceOre:
+          type: integer
+          description: The listing price of a resale (the ticket's own price); 0 for a gift.
       required:
       - transferId
       - ticketId

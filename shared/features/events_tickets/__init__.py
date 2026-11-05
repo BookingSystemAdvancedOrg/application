@@ -9,9 +9,14 @@ Table `<prefix>events-tickets` (EVENTS_TICKETS_TABLE_NAME), partition `TENANT#<t
                                     | expired | refunded
     TICKET#<ticketId>               one ticket (GSI1 byOccurrence = the guest list). No code is stored: the
                                     QR is <ticketId>.<sig>, verified with the occurrence's scan key.
-    TRANSFER#<transferId>           gift transfer (pending until accepted or the start); GSI1 row per ticket
+    TRANSFER#<transferId>           gift transfer (pending until accepted or the start) or a face-value resale
+                                    listing (pending -> claimed by a buyer's pending order -> sold); GSI1 row
+                                    per ticket, and while listed a GSI2 row per occurrence (the public
+                                    "biljetter från andra gäster" list)
     TX#<txId>                       append-only money rows (GSI2 byLocationDay: Bokföring, Statistik); a
-                                    refund whose Stripe refund is still owed carries a sparse GSI1 REFUNDS row
+                                    refund whose Stripe refund is still owed carries a sparse GSI1 REFUNDS row.
+                                    Kinds: sale, refund, resale_sale (the buyer's payment), resale_refund
+                                    (the seller's money back, same amount, same day: net zero)
     JOB#<jobId>                     mass refund progress (GSI1 JOBS row while open), ttl 7 days
 
 `<start>` is the compact UTC start (`20261201T1900Z`); occurrenceId is
@@ -53,6 +58,8 @@ GSI1, GSI2 = "byOccurrence", "byLocationDay"
 EVENT_STATUSES = ("draft", "published", "cancelled")
 OCC_STATUSES = ("scheduled", "cancelled", "done")
 TICKET_STATUSES = ("valid", "checked_in", "transferred", "refunded", "void")
+TRANSFER_STATUSES = ("pending", "claimed", "accepted", "sold", "expired", "cancelled")
+TX_KINDS = ("sale", "refund", "resale_sale", "resale_refund")
 # Accountant-approved list (proposal, ADR-K): restaurant service 12 %, pure entrance 25 %, culture 6 %.
 VAT_RATES = (25, 12, 6)
 # A ticket type whose VAT rate was changed carries this flag and a `vatChanges` trail until the
@@ -376,6 +383,18 @@ def pending_refunds() -> list:
     return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq("REFUNDS"))
 
 
+def resales_of_occurrence(tenant_id, occ_id) -> list:
+    """Resale listings of an occurrence that are not sold or cancelled yet
+    (`pending` or `claimed`), oldest first: the GSI2 row is removed when the
+    listing ends."""
+    return query_all(IndexName=GSI2, KeyConditionExpression=Key("GSI2PK").eq(
+        f"TENANT#{tenant_id}#OCC#{occ_id}#RESALE"))
+
+
+def resale_gsi(tenant_id, occ_id, created_at: str, transfer_id) -> dict:
+    return {"GSI2PK": f"TENANT#{tenant_id}#OCC#{occ_id}#RESALE", "GSI2SK": f"{created_at}#{transfer_id}"}
+
+
 def occurrence_gsi(tenant_id, occ_id, holder_name, ticket_id) -> dict:
     return {"GSI1PK": f"TENANT#{tenant_id}#OCC#{occ_id}",
             "GSI1SK": f"{(holder_name or '').strip().lower()[:40]}#{ticket_id}"}
@@ -499,17 +518,16 @@ def validate_settings(raw) -> dict:
     for flag in ("transferAllowed", "resaleAllowed", "tablePick"):
         if not isinstance(out[flag], bool):
             raise EventsError(400, f"{flag} must be true or false", f"settings.{flag}")
-    # Not built in this run (ADR-K 3 table pick, 8 resale): refused rather than silently ignored.
+    # Not built in this run (ADR-K 3 table pick): refused rather than silently ignored.
     if out["tablePick"]:
         raise EventsError(400, "table_pick_not_available", "settings.tablePick")
-    if out["resaleAllowed"]:
-        raise EventsError(400, "resale_not_available", "settings.resaleAllowed")
     try:
         policy = text(out["refundPolicy"], POLICY_MAX)
     except ValueError:
         raise EventsError(400, "refundPolicy is at most 1000 characters", "settings.refundPolicy")
-    return {"perOrderMax": per_order, "transferAllowed": out["transferAllowed"], "resaleAllowed": False,
-            "tablePick": False, **({"refundPolicy": policy} if policy else {})}
+    # resaleAllowed (ADR-K 8): off by default; the owner turns face-value resale on per event.
+    return {"perOrderMax": per_order, "transferAllowed": out["transferAllowed"],
+            "resaleAllowed": out["resaleAllowed"], "tablePick": False, **({"refundPolicy": policy} if policy else {})}
 
 
 def validate_series(raw, first_start: datetime) -> Optional[dict]:
@@ -575,11 +593,26 @@ def event_view(ev, occs=None, types=None, *, money=True) -> dict:
     return out
 
 
+def resale_state(t) -> Optional[str]:
+    """`listed` (for sale, or a buyer is paying), `sold` (voided by a resale)
+    or `bought` (issued by one); None for an ordinary ticket."""
+    if t.get("resoldTo"):
+        return "sold"
+    if t.get("resaleOf"):
+        return "bought"
+    if t.get("pendingTransferId") and t.get("pendingTransferKind") == "resale":
+        return "listed"
+    return None
+
+
 def ticket_view(t) -> dict:
     out = {"ticketId": t["ticketId"], "typeId": t["typeId"], "typeName": t.get("typeName") or "",
            "holderName": t.get("holderName") or "", "status": t["status"]}
     if t.get("checkedInAt"):
         out["checkedInAt"] = t["checkedInAt"]
+    resale = resale_state(t)
+    if resale:
+        out["resale"] = resale
     return out
 
 

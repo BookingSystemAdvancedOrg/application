@@ -1,0 +1,1686 @@
+paths:
+  /locations/{locationId}/events:
+    get:
+      tags:
+      - Events and tickets
+      summary: K1 Events of a location
+      operationId: eventsTicketsGetLocationsLocationIdEvents
+      security:
+      - bearerAuth: []
+      x-required-groups: &id003
+      - owner_user
+      - staff_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: &id001
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema: *id001
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsEventList'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: &id002
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+    post:
+      tags:
+      - Events and tickets
+      summary: K2 Create an event (draft)
+      operationId: eventsTicketsPostLocationsLocationIdEvents
+      security:
+      - bearerAuth: []
+      x-required-groups: &id004
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsEventBody'
+      responses:
+        '201':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsEvent'
+        '400':
+          description: Validation error (invalid_capacity, invalid_price, invalid_vat_rate, invalid_window, invalid_series,
+            unknown_image).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: changed_retry
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}:
+    get:
+      tags:
+      - Events and tickets
+      summary: K3 Event with occurrences and ticket types
+      operationId: eventsTicketsGetLocationsLocationIdEventsEventId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id003
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsEvent'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+    put:
+      tags:
+      - Events and tickets
+      summary: K4 Update an event
+      operationId: eventsTicketsPutLocationsLocationIdEventsEventId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsEventUpdate'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsEvent'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: changed_retry, invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/publish:
+    post:
+      tags:
+      - Events and tickets
+      summary: K5 Publish (series generated)
+      operationId: eventsTicketsPostLocationsLocationIdEventsEventIdPublish
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsVersion'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsEvent'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: invalid_state, changed_retry
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/ticket-types/{typeId}:
+    put:
+      tags:
+      - Events and tickets
+      summary: K6 Create or update a ticket type
+      operationId: eventsTicketsPutLocationsLocationIdEventsEventIdTicketTypesTypeId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: typeId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsTicketTypeBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsTicketType'
+        '400':
+          description: Validation error (invalid_price, invalid_vat_rate).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: has_sales, changed_retry
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+    delete:
+      tags:
+      - Events and tickets
+      summary: K7 Delete an unsold ticket type
+      operationId: eventsTicketsDeleteLocationsLocationIdEventsEventIdTicketTypesTypeId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: typeId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '204':
+          description: Done (also on a retry).
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: has_sales
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}:
+    put:
+      tags:
+      - Events and tickets
+      summary: K8 Update an occurrence
+      operationId: eventsTicketsPutLocationsLocationIdEventsEventIdOccurrencesOccurrenceId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: occurrenceId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsOccurrenceBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsOccurrence'
+        '400':
+          description: Validation error (invalid_capacity (below sold), invalid_window).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: changed_retry, invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}/cancel:
+    post:
+      tags:
+      - Events and tickets
+      summary: K9 Cancel an occurrence (mass refund job; a few refunds now, the sweep finishes within minutes)
+      operationId: eventsTicketsPostLocationsLocationIdEventsEventIdOccurrencesOccurrenceIdCancel
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: occurrenceId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsCancelBody'
+      responses:
+        '202':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsJobStarted'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}/guest-list:
+    get:
+      tags:
+      - Events and tickets
+      summary: K10 Guest list and scan key
+      operationId: eventsTicketsGetLocationsLocationIdEventsEventIdOccurrencesOccurrenceIdGuestList
+      security:
+      - bearerAuth: []
+      x-required-groups: *id003
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: occurrenceId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsGuestList'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}/check-ins:
+    post:
+      tags:
+      - Events and tickets
+      summary: K11 Check-ins (batch, offline sync)
+      operationId: eventsTicketsPostLocationsLocationIdEventsEventIdOccurrencesOccurrenceIdCheckIns
+      security:
+      - bearerAuth: []
+      x-required-groups: *id003
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: occurrenceId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsCheckInBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsCheckInResults'
+        '400':
+          description: Validation error (too_many).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/{eventId}/orders:
+    get:
+      tags:
+      - Events and tickets
+      summary: K12 Orders of an event
+      description: Paid orders of the event, newest first. Lists only orders with status paid, partly_refunded
+        or refunded; pending and expired checkouts are never listed.
+      operationId: eventsTicketsGetLocationsLocationIdEventsEventIdOrders
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      - name: cursor
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsOrderList'
+        '400':
+          description: Validation error (bad cursor).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/tickets/{ticketId}/refund:
+    post:
+      tags:
+      - Events and tickets
+      summary: K13 Refund a ticket
+      operationId: eventsTicketsPostLocationsLocationIdEventsTicketsTicketIdRefund
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: ticketId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsRefundBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsTicket'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: invalid_state, changed_retry
+          content:
+            application/json:
+              schema: *id002
+        '502':
+          description: stripe_unavailable.
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /locations/{locationId}/events/jobs/{jobId}:
+    get:
+      tags:
+      - Events and tickets
+      summary: K14 Mass refund job progress
+      operationId: eventsTicketsGetLocationsLocationIdEventsJobsJobId
+      security:
+      - bearerAuth: []
+      x-required-groups: *id004
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: jobId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsJob'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id002
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/locations/{locationId}/events:
+    get:
+      tags:
+      - Events and tickets
+      summary: K15 Published events
+      operationId: eventsTicketsGetPublicLocationsLocationIdEvents
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsPublicList'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/locations/{locationId}/events/{eventId}:
+    get:
+      tags:
+      - Events and tickets
+      summary: K16 Published event
+      operationId: eventsTicketsGetPublicLocationsLocationIdEventsEventId
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      - name: eventId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsPublicEvent'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/locations/{locationId}/events/checkout:
+    post:
+      tags:
+      - Events and tickets
+      summary: K17 Buy tickets
+      operationId: eventsTicketsPostPublicLocationsLocationIdEventsCheckout
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsCheckoutBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsCheckout'
+        '400':
+          description: Validation error (too_many_tickets, invalid_email, turnstile_failed, table_pick_not_available).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: sold_out, type_sold_out, sales_closed, no_stripe_account, changed_retry
+          content:
+            application/json:
+              schema: *id002
+        '429':
+          description: Too many attempts from this address (request guard).
+          content:
+            application/json:
+              schema: *id002
+        '502':
+          description: stripe_unavailable.
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/tickets/{token}:
+    get:
+      tags:
+      - Events and tickets
+      summary: K18 Ticket page
+      operationId: eventsTicketsGetPublicTicketsToken
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsTicketPage'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/tickets/{token}/pass:
+    get:
+      tags:
+      - Events and tickets
+      summary: 'K19 Wallet pass (not built yet: always 404)'
+      operationId: eventsTicketsGetPublicTicketsTokenPass
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema: *id001
+      - name: ticketId
+        in: query
+        required: false
+        schema: *id001
+      - name: kind
+        in: query
+        required: false
+        schema: *id001
+      responses:
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/tickets/{token}/transfers:
+    post:
+      tags:
+      - Events and tickets
+      summary: K20 Give a ticket away
+      operationId: eventsTicketsPostPublicTicketsTokenTransfers
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsTransferBody'
+      responses:
+        '201':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsTransfer'
+        '400':
+          description: Validation error (invalid_email).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: transfer_closed, invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '429':
+          description: Too many transfers of this ticket today or from this address (request guard, Retry-After).
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/ticket-transfers/{transferToken}/accept:
+    post:
+      tags:
+      - Events and tickets
+      summary: K21 Accept a given ticket
+      operationId: eventsTicketsPostPublicTicketTransfersTransferTokenAccept
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: transferToken
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventsTicketsAcceptBody'
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsTicketsAccepted'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+  /public/tickets/{token}/transfers/{transferId}:
+    delete:
+      tags:
+      - Events and tickets
+      summary: K22 Cancel a pending transfer
+      operationId: eventsTicketsDeletePublicTicketsTokenTransfersTransferId
+      security: []
+      x-required-groups: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema: *id001
+      - name: transferId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '204':
+          description: Done (also on a retry).
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id002
+        '404':
+          description: Unknown location or token, inactive tenant, feature off, draft event (same answer).
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '503':
+          description: AWS or Turnstile error.
+          content:
+            application/json:
+              schema: *id002
+components:
+  schemas:
+    EventsTicketsEventList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              eventId: *id001
+              title: *id001
+              status: *id001
+              nextOccurrence:
+                type: string
+                nullable: true
+              sold: &id005
+                type: integer
+              capacity: *id005
+        cursor:
+          type: string
+          nullable: true
+      required:
+      - events
+    EventsTicketsEventBody:
+      type: object
+      properties:
+        eventId: *id001
+        title: *id001
+        description: *id001
+        imageKey: *id001
+        occurrences:
+          type: array
+          items:
+            type: object
+            properties:
+              startAt: *id001
+              endAt: *id001
+              capacity: *id005
+              salesOpenAt: *id001
+              salesCloseAt: *id001
+              doorsAt: *id001
+            required:
+            - startAt
+            - endAt
+            - capacity
+        series: &id007
+          type: object
+          properties:
+            freq:
+              type: string
+              enum:
+              - weekly
+              - monthly
+            until: *id001
+            exceptions:
+              type: array
+              items: *id001
+          required:
+          - freq
+          - until
+        ticketTypes:
+          type: array
+          items:
+            type: object
+            properties:
+              typeId: *id001
+              name: *id001
+              priceOre: *id005
+              vatRate: &id009
+                type: integer
+                enum:
+                - 25
+                - 12
+                - 6
+              capacity: *id005
+              tier: &id010
+                type: object
+                properties:
+                  availableFrom: *id001
+                  availableUntil: *id001
+                  untilSold: *id005
+              includes: *id001
+              perOrderMax: *id005
+              sortOrder: *id005
+            required:
+            - typeId
+            - name
+            - priceOre
+            - vatRate
+        settings: &id008
+          type: object
+          properties:
+            perOrderMax: *id005
+            transferAllowed: &id006
+              type: boolean
+            resaleAllowed: *id006
+            refundPolicy: *id001
+            tablePick: *id006
+      required:
+      - eventId
+      - title
+      - occurrences
+    EventsTicketsEventUpdate:
+      type: object
+      properties:
+        title: *id001
+        description: *id001
+        imageKey: *id001
+        series: *id007
+        settings: *id008
+        version: *id005
+      required:
+      - title
+      - version
+    EventsTicketsVersion:
+      type: object
+      properties:
+        version: *id005
+      required:
+      - version
+    EventsTicketsEvent:
+      type: object
+      properties:
+        eventId: *id001
+        locationId: *id001
+        title: *id001
+        description: *id001
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - cancelled
+        settings: *id008
+        series: *id007
+        version: *id005
+        occurrences:
+          type: array
+          items: &id012
+            type: object
+            properties:
+              occurrenceId: *id001
+              startAt: *id001
+              endAt: *id001
+              doorsAt: *id001
+              salesOpenAt: *id001
+              salesCloseAt: *id001
+              capacity: *id005
+              sold: *id005
+              held: *id005
+              checkedIn: *id005
+              left: *id005
+              revenueOre: *id005
+              status:
+                type: string
+                enum:
+                - scheduled
+                - cancelled
+                - done
+              version: *id005
+            required:
+            - occurrenceId
+            - startAt
+            - endAt
+            - capacity
+            - sold
+            - status
+            - version
+        ticketTypes:
+          type: array
+          items: &id011
+            type: object
+            properties:
+              typeId: *id001
+              name: *id001
+              priceOre: *id005
+              vatRate: *id009
+              capacity: *id005
+              tier: *id010
+              includes: *id001
+              perOrderMax: *id005
+              sortOrder: *id005
+              sold: *id005
+              version: *id005
+            required:
+            - typeId
+            - name
+            - priceOre
+            - vatRate
+            - version
+      required:
+      - eventId
+      - title
+      - status
+      - version
+    EventsTicketsTicketTypeBody:
+      type: object
+      properties:
+        name: *id001
+        priceOre: *id005
+        vatRate: *id009
+        capacity: *id005
+        tier: *id010
+        includes: *id001
+        perOrderMax: *id005
+        sortOrder: *id005
+        version: *id005
+      required:
+      - name
+      - priceOre
+      - vatRate
+    EventsTicketsTicketType: *id011
+    EventsTicketsOccurrenceBody:
+      type: object
+      properties:
+        capacity: *id005
+        salesOpenAt: *id001
+        salesCloseAt: *id001
+        doorsAt: *id001
+        version: *id005
+      required:
+      - version
+    EventsTicketsOccurrence: *id012
+    EventsTicketsCancelBody:
+      type: object
+      properties:
+        jobId: *id001
+        version: *id005
+        message: *id001
+      required:
+      - jobId
+      - version
+    EventsTicketsJobStarted:
+      type: object
+      properties:
+        jobId: *id001
+        toRefund: *id005
+      required:
+      - jobId
+      - toRefund
+    EventsTicketsJob:
+      type: object
+      properties:
+        jobId: *id001
+        kind: *id001
+        done: *id006
+        toRefund: *id005
+        counts: &id014
+          type: object
+      required:
+      - kind
+      - done
+      - counts
+    EventsTicketsGuestList:
+      type: object
+      properties:
+        scanKey: *id001
+        tickets:
+          type: array
+          items: &id013
+            type: object
+            properties:
+              ticketId: *id001
+              typeId: *id001
+              typeName: *id001
+              holderName: *id001
+              status:
+                type: string
+                enum:
+                - valid
+                - checked_in
+                - transferred
+                - refunded
+                - void
+              checkedInAt: *id001
+              qr: *id001
+              pendingTransferId: *id001
+            required:
+            - ticketId
+            - status
+        counters:
+          type: object
+          properties:
+            sold: *id005
+            checkedIn: *id005
+            capacity: *id005
+      required:
+      - scanKey
+      - tickets
+      - counters
+    EventsTicketsCheckInBody:
+      type: object
+      properties:
+        checkIns:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            properties:
+              ticketId: *id001
+              sig: *id001
+              at: *id001
+              clientId: *id001
+            required:
+            - ticketId
+            - sig
+            - clientId
+      required:
+      - checkIns
+    EventsTicketsCheckInResults:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              clientId: *id001
+              status:
+                type: string
+                enum:
+                - ok
+                - already
+                - invalid
+                - void
+              at: *id001
+              by: *id001
+            required:
+            - clientId
+            - status
+      required:
+      - results
+    EventsTicketsOrderList:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            type: object
+            properties:
+              orderId: *id001
+              occurrenceId: *id001
+              qty: *id005
+              amountOre: *id005
+              refundedOre: *id005
+              status: *id001
+              buyerName: *id001
+              buyerEmail: *id001
+              createdAt: *id001
+              paidAt: *id001
+              tickets:
+                type: array
+                items: *id013
+        cursor:
+          type: string
+          nullable: true
+      required:
+      - orders
+    EventsTicketsRefundBody:
+      type: object
+      properties:
+        txId: *id001
+        reason: *id001
+      required:
+      - txId
+      - reason
+    EventsTicketsTicket: *id013
+    EventsTicketsPublicList:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              eventId: *id001
+              title: *id001
+              nextOccurrence: *id001
+              fromPriceSek:
+                type: number
+              soldOut: *id006
+      required:
+      - events
+    EventsTicketsPublicEvent:
+      type: object
+      properties:
+        eventId: *id001
+        title: *id001
+        description: *id001
+        refundPolicy:
+          type: string
+          nullable: true
+        perOrderMax: *id005
+        occurrences:
+          type: array
+          items:
+            type: object
+            properties:
+              occurrenceId: *id001
+              startAt: *id001
+              endAt: *id001
+              left: *id005
+              soldOut: *id006
+              salesOpen: *id006
+        ticketTypes:
+          type: array
+          items:
+            type: object
+            properties:
+              typeId: *id001
+              name: *id001
+              priceSek:
+                type: number
+              priceOre: *id005
+              perOrderMax: *id005
+              left: *id005
+              includes: *id001
+              available: *id006
+      required:
+      - eventId
+      - title
+      - occurrences
+      - ticketTypes
+    EventsTicketsCheckoutBody:
+      type: object
+      properties:
+        orderId: *id001
+        occurrenceId: *id001
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              typeId: *id001
+              qty: *id005
+            required:
+            - typeId
+            - qty
+        buyerName: *id001
+        buyerEmail: *id001
+        buyerPhone: *id001
+        tableIds:
+          type: array
+          items: *id001
+        turnstileToken: *id001
+      required:
+      - orderId
+      - occurrenceId
+      - lines
+      - buyerName
+      - buyerEmail
+    EventsTicketsCheckout:
+      type: object
+      properties:
+        clientSecret: *id001
+        amountSek:
+          type: number
+        expiresAt: *id001
+        stripeAccount: *id001
+      required:
+      - amountSek
+      - expiresAt
+    EventsTicketsTicketPage:
+      type: object
+      properties:
+        event: *id014
+        occurrence: *id014
+        location: *id014
+        tickets:
+          type: array
+          items: *id013
+        wallet:
+          type: object
+          properties:
+            apple: *id006
+            google: *id006
+        transferAllowed: *id006
+        resaleAllowed: *id006
+      required:
+      - event
+      - occurrence
+      - tickets
+      - wallet
+      - transferAllowed
+      - resaleAllowed
+    EventsTicketsTransferBody:
+      type: object
+      properties:
+        transferId: *id001
+        ticketId: *id001
+        kind:
+          type: string
+          enum:
+          - gift
+          - resale
+        toEmail: *id001
+      required:
+      - transferId
+      - ticketId
+      - kind
+    EventsTicketsTransfer:
+      type: object
+      properties:
+        transferId: *id001
+        ticketId: *id001
+        kind: *id001
+        status: *id001
+      required:
+      - transferId
+      - ticketId
+      - status
+    EventsTicketsAcceptBody:
+      type: object
+      properties:
+        name: *id001
+      required:
+      - name
+    EventsTicketsAccepted:
+      type: object
+      properties:
+        ticketToken: *id001
+      required:
+      - ticketToken

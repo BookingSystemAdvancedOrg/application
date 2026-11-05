@@ -55,6 +55,9 @@ OCC_STATUSES = ("scheduled", "cancelled", "done")
 TICKET_STATUSES = ("valid", "checked_in", "transferred", "refunded", "void")
 # Accountant-approved list (proposal, ADR-K): restaurant service 12 %, pure entrance 25 %, culture 6 %.
 VAT_RATES = (25, 12, 6)
+# A ticket type whose VAT rate was changed carries this flag and a `vatChanges` trail until the
+# accountant has looked at it (sold tickets keep the rate they were sold at).
+VAT_REVIEW = "needs_accountant_review"
 MAX_PRICE_ORE = 10_000_000
 MAX_CAPACITY = 10_000
 MAX_OCCURRENCES = 52
@@ -549,9 +552,16 @@ def occurrence_view(occ, *, money: bool) -> dict:
 
 def type_view(t) -> dict:
     out = {k: plain(t[k]) for k in ("typeId", "name", "priceOre", "vatRate", "perOrderMax", "sortOrder", "capacity",
-                                     "tier", "includes") if t.get(k) is not None}
-    out.update({"sold": int(t.get("sold") or 0), "version": int(t.get("version") or 1)})
+                                     "tier", "includes", "vatReview", "vatChanges") if t.get(k) is not None}
+    out.update({"sold": int(t.get("sold") or 0), "held": int(t.get("held") or 0),
+                "version": int(t.get("version") or 1)})
     return out
+
+
+def ended(occs, at: datetime) -> bool:
+    """True when no occurrence can still sell: every one is cancelled, done or over."""
+    stamp = iso(at)
+    return not any(o["status"] == "scheduled" and o["endAt"] > stamp for o in occs)
 
 
 def event_view(ev, occs=None, types=None, *, money=True) -> dict:

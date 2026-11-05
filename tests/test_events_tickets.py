@@ -382,6 +382,277 @@ def test_occurrence_capacity_never_below_sold(env):
                 body={"version": 2}, claims=OWNER_A)[0] == 404
 
 
+# --- editing ticket types and occurrences after sales ----------------------------------------------
+
+TYPE = L + "/{eventId}/ticket-types/{typeId}"
+TP = {"locationId": LOC_A, "eventId": E1, "typeId": T1}
+DINNER = {"name": "Middag", "priceOre": 89500, "vatRate": 12, "perOrderMax": 4, "sortOrder": 1}
+
+
+def type_row(e, type_id=T1, tenant_id=TENANT_A):
+    return e.table.get_item(Key=et.type_key(tenant_id, E1, type_id))["Item"]
+
+
+def edit_type(e, version, claims=OWNER_A, params=TP, **over):
+    return call(e, "PUT", TYPE, params=params, body={**DINNER, **over, "version": version}, claims=claims)
+
+
+def consistent(row, cap=None):
+    """seatsLeft is always cap - taken and taken is always sold + held."""
+    assert int(row["taken"]) == int(row["sold"]) + int(row["held"])
+    if cap is None:
+        assert "seatsLeft" not in row
+    else:
+        assert int(row["seatsLeft"]) == cap - int(row["taken"])
+
+
+def test_price_and_vat_edit_apply_to_later_sales_only(env):
+    """Money: paid and held orders keep the price and VAT rate they were sold
+    at (lines, tickets, TX rows, refunds, Bokföring); later checkouts pay the
+    new price at the new rate, and the VAT change is flagged for the accountant."""
+    sold(env)  # 2 x 895 kr at 12 %, paid
+    assert buy(env, order_id="01ORDERHELDAAAAAAAAAAAAAAA", qty=1)[0] == 200  # held at 895 kr
+    status, t = edit_type(env, 1, priceOre=99500, vatRate=25, name="Festmiddag", includes="Fem rätter")
+    assert status == 200, t
+    assert (t["priceOre"], t["vatRate"], t["name"], t["includes"], t["sold"], t["held"], t["version"]) == \
+        (99500, 25, "Festmiddag", "Fem rätter", 2, 1, 2)
+    assert t["vatReview"] == et.VAT_REVIEW
+    assert t["vatChanges"] == [{"fromRate": 12, "toRate": 25, "at": "2026-11-05T12:00:00Z", "by": t["vatChanges"][0]["by"],
+                                "soldBefore": 2}]
+    # the held order pays and is issued at the price it was shown
+    assert pay(env, order_id="01ORDERHELDAAAAAAAAAAAAAAA")["result"] == "issued"
+    held = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERHELDAAAAAAAAAAAAAAA"))["Item"]
+    assert held["amountOre"] == 89500 and held["lines"][0]["priceOre"] == 89500 and held["lines"][0]["vatRate"] == 12
+    old = sorted(tickets(env), key=lambda x: x["ticketId"])
+    assert len(old) == 3 and {(int(x["priceOre"]), int(x["vatRate"])) for x in old} == {(89500, 12)}
+    # a new checkout pays the new price at the new rate
+    status, body = buy(env, order_id="01ORDERNEWAAAAAAAAAAAAAAAA", qty=1)
+    assert status == 200 and body["amountSek"] == 995.0
+    assert pay(env, order_id="01ORDERNEWAAAAAAAAAAAAAAAA")["result"] == "issued"
+    new = [x for x in tickets(env) if x["orderId"] == "01ORDERNEWAAAAAAAAAAAAAAAA"]
+    assert [(int(x["priceOre"]), int(x["vatRate"])) for x in new] == [(99500, 25)]
+    assert occ_row(env)["revenueOre"] == 3 * 89500 + 99500
+    # refunding an old ticket returns what was paid for it, at its own rate
+    status, _ = call(env, "POST", L + "/tickets/{ticketId}/refund",
+                     params={"locationId": LOC_A, "ticketId": old[0]["ticketId"]},
+                     body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"}, claims=OWNER_A)
+    assert status == 200 and env.stripe.refunds()[-1]["params"]["amount"] == 89500
+    refund_tx = env.table.get_item(Key=et.tx_key(TENANT_A, "01TXREFUNDAAAAAAAAAAAAAAAA"))["Item"]
+    assert refund_tx["vatLines"] == [{"rate": 12, "netOre": -79911, "vatOre": -9589}]
+    out = env.api.handler({"hook": "accounting.events", "tenantId": TENANT_A, "locationId": LOC_A,
+                           "first": "2026-11-05", "last": "2026-11-05"})
+    postings = out["events"][0]["postings"]
+    assert sum(p["amount"] for p in postings) == 0
+    by_role = {}
+    for p in postings:
+        by_role[p["role"]] = by_role.get(p["role"], 0) + p["amount"]
+    # 3 sold and 1 refunded at 12 % (2 x 895 kr net), 1 sold at 25 %
+    assert by_role == {"stripe": 2 * 89500 + 99500, "sales12": -(179000 - 19179), "vat12": -19179,
+                       "sales25": -79600, "vat25": -19900}
+    # a second VAT change appends to the trail; a price-only change does not
+    assert edit_type(env, 2, priceOre=99500, vatRate=12)[1]["vatChanges"][-1]["toRate"] == 12
+    status, t = edit_type(env, 3, priceOre=79500, vatRate=12)
+    assert status == 200 and len(t["vatChanges"]) == 2 and t["vatReview"] == et.VAT_REVIEW
+    consistent(type_row(env))
+
+
+def test_type_capacity_never_below_sold_and_held(env):
+    published(env, ticketTypes=[{**DINNER, "typeId": T1, "capacity": 3}])
+    assert buy(env, qty=2)[0] == 200  # held, not paid
+    status, body = edit_type(env, 1, capacity=1)
+    assert (status, body["code"], body["field"]) == (400, "invalid_capacity", "capacity")
+    status, body = edit_type(env, 1, capacity=3, tier={"untilSold": 1})
+    assert (status, body["code"], body["field"]) == (400, "invalid_capacity", "tier")
+    # down to exactly sold + held: sold out for guests
+    status, t = edit_type(env, 1, capacity=2)
+    assert status == 200 and t["capacity"] == 2
+    consistent(type_row(env), 2)
+    _, detail = call(env, "GET", "/public/locations/{locationId}/events/{eventId}", params={"locationId": LOC_A,
+                                                                                           "eventId": E1})
+    assert detail["ticketTypes"][0]["left"] == 0 and not detail["ticketTypes"][0]["available"]
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "type_sold_out"
+    # raised again: open for sale
+    assert edit_type(env, 2, capacity=4)[0] == 200
+    consistent(type_row(env), 4)
+    assert buy(env, order_id="01ORDER3AAAAAAAAAAAAAAAAAA", qty=1)[0] == 200
+    consistent(type_row(env), 4)
+    # the cap removed and added back
+    assert edit_type(env, 3)[0] == 200
+    consistent(type_row(env))
+    assert edit_type(env, 4, capacity=5)[0] == 200
+    consistent(type_row(env), 5)
+    # validation, role, foreign tenant and other location, stale version
+    assert edit_type(env, 5, priceOre=-1)[1]["code"] == "invalid_price"
+    assert edit_type(env, 5, vatRate=7)[1]["code"] == "invalid_vat_rate"
+    assert edit_type(env, 5, tier={"availableFrom": "2026-12-01T00:00:00Z",
+                                   "availableUntil": "2026-11-01T00:00:00Z"})[1]["code"] == "invalid_window"
+    assert edit_type(env, 5, claims=STAFF_A)[0] == 403
+    assert edit_type(env, 5, claims=OWNER_B, params={**TP, "locationId": LOC_B})[0] == 404
+    assert edit_type(env, 5, claims=OWNER_B)[0] == 404  # B's token on A's location
+    assert edit_type(env, 5, params={**TP, "locationId": LOC_A2})[0] == 404
+    assert edit_type(env, 4, capacity=6)[1]["code"] == "changed_retry"
+    assert type_row(env)["capacity"] == 5 and type_row(env)["version"] == 5
+
+
+def test_type_sale_window_edit(env):
+    published(env)
+    status, t = edit_type(env, 1, tier={"availableFrom": "2026-11-10T08:00:00Z", "availableUntil": "2026-12-01T00:00Z"})
+    assert status == 200 and t["tier"] == {"availableFrom": "2026-11-10T08:00:00Z",
+                                           "availableUntil": "2026-12-01T00:00:00Z"}
+    assert buy(env)[1]["code"] == "type_sold_out"  # not on sale yet
+    env.clock.value = datetime(2026, 11, 10, 9, 0, tzinfo=timezone.utc)
+    assert buy(env)[0] == 200
+    env.clock.value = datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "type_sold_out"  # tier ended
+    assert edit_type(env, 2)[0] == 200  # window removed: on sale until the occurrence's sales close
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[0] == 200
+
+
+def test_edits_refused_once_the_event_is_over_or_cancelled(env):
+    sold(env)
+    op = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
+    env.clock.value = datetime(2026, 12, 4, 22, 0, tzinfo=timezone.utc)  # the end
+    assert edit_type(env, 1, name="Ny")[1]["code"] == "invalid_state"
+    assert call(env, "PUT", OCC, params=op, body={"capacity": 10, "version": 1}, claims=OWNER_A)[1]["code"] == \
+        "invalid_state"
+    env.clock.value = NOW
+    assert edit_type(env, 1, name="Ny")[0] == 200  # a draft or a running event can still be edited
+    assert call(env, "POST", OCC + "/cancel", params=op, body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1},
+                claims=OWNER_A)[0] == 202
+    assert call(env, "PUT", OCC, params=op, body={"capacity": 10, "version": 2}, claims=OWNER_A)[1]["code"] == \
+        "invalid_state"
+    assert edit_type(env, 2, name="Nyare")[1]["code"] == "invalid_state"  # its only occurrence is cancelled
+
+
+def test_type_and_occurrence_edits_refused_with_the_feature_off(env):
+    published(env)
+    from shared import tenant as shared_tenant
+    boto3.resource("dynamodb", region_name=REGION).Table("test-tenant").put_item(
+        Item=tenant_row(TENANT_A, features=features_on(), stripe={"accountId": ACCT_A}))
+    shared_tenant.reset_caches()
+    assert edit_type(env, 1, priceOre=1)[0] == 403
+    assert call(env, "PUT", OCC, params={"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1},
+                body={"capacity": 10, "version": 1}, claims=OWNER_A)[0] == 403
+    assert type_row(env)["priceOre"] == 89500
+
+
+def _sale_during_read(env, monkeypatch, sk_suffix, qty, order_id="01ORDERRACEAAAAAAAAAAAAAAA"):
+    """Runs a guest's checkout right after the edit has read the row ending in
+    `sk_suffix` (once): the edit then writes against fresher counters."""
+    real = et.get
+    armed = {"on": True}
+
+    def get(key):
+        item = real(key)
+        if armed["on"] and key.get("SK", "").endswith(sk_suffix):
+            armed["on"] = False
+            assert buy(env, order_id=order_id, qty=qty)[0] == 200
+        return item
+    monkeypatch.setattr(et, "get", get)
+
+
+def test_sale_during_a_type_capacity_edit_is_never_oversold(env, monkeypatch):
+    published(env, ticketTypes=[{**DINNER, "typeId": T1, "capacity": 3}])
+    _sale_during_read(env, monkeypatch, f"#TYPE#{T1}", 2)
+    status, body = edit_type(env, 1, capacity=1)  # read taken 0, but 2 were held before the write
+    assert (status, body["code"]) == (400, "invalid_capacity")
+    row = type_row(env)
+    assert row["capacity"] == 3 and row["version"] == 1
+    consistent(row, 3)
+    _sale_during_read(env, monkeypatch, f"#TYPE#{T1}", 1, order_id="01ORDERRACEBBBBBBBBBBBBBBB")
+    status, t = edit_type(env, 1, capacity=3)  # the sale fits (3 taken of 3): the write goes through
+    assert status == 200 and t["held"] == 3
+    consistent(type_row(env), 3)
+
+
+def test_sale_during_an_occurrence_capacity_edit_is_never_oversold(env, monkeypatch):
+    published(env)  # capacity 4
+    op = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
+    _sale_during_read(env, monkeypatch, "#OCC#20261204T1800Z", 3)
+    status, body = call(env, "PUT", OCC, params=op, body={"capacity": 2, "version": 1}, claims=OWNER_A)
+    assert (status, body["code"]) == (400, "invalid_capacity")
+    row = occ_row(env)
+    assert row["capacity"] == 4 and row["taken"] == 3 and row["seatsLeft"] == 1 and row["version"] == 1
+    # down to exactly sold + held: sold out; up again: open
+    status, occ = call(env, "PUT", OCC, params=op, body={"capacity": 3, "version": 1}, claims=OWNER_A)
+    assert status == 200 and occ["left"] == 0 and occ["held"] == 3
+    _, detail = call(env, "GET", "/public/locations/{locationId}/events/{eventId}", params={"locationId": LOC_A,
+                                                                                           "eventId": E1})
+    assert detail["occurrences"][0]["soldOut"]
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "sold_out"
+    status, occ = call(env, "PUT", OCC, params=op, body={"capacity": 6, "version": 2}, claims=OWNER_A)
+    assert status == 200 and occ["left"] == 3 and occ_row(env)["seatsLeft"] == 3
+    assert buy(env, order_id="01ORDER3AAAAAAAAAAAAAAAAAA", qty=3)[0] == 200
+    row = occ_row(env)
+    assert row["seatsLeft"] == 0 and row["taken"] == 6 == row["sold"] + row["held"]
+    assert call(env, "PUT", OCC, params={**op, "locationId": LOC_A2}, body={"capacity": 9, "version": 3},
+                claims=OWNER_A)[0] == 404
+    assert call(env, "PUT", OCC, params=op, body={"capacity": 9, "version": 3}, claims=OWNER_B)[0] == 404
+
+
+def test_cap_added_during_a_checkout_is_not_oversold(env):
+    """The guest's page read an uncapped type; the owner caps it at 1 before
+    the hold is written: the hold fails (reload) instead of taking 2."""
+    published(env)
+    api = env.api
+    real = api._hold_items
+
+    def cap_then_hold(*args, **kwargs):
+        assert edit_type(env, 1, capacity=1)[0] == 200
+        return real(*args, **kwargs)
+    api._hold_items = cap_then_hold
+    try:
+        assert buy(env, qty=2)[1]["code"] == "changed_retry"
+    finally:
+        api._hold_items = real
+    consistent(type_row(env), 1)
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[0] == 200
+    consistent(type_row(env), 1)
+    assert buy(env, order_id="01ORDER3AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "type_sold_out"
+
+
+@pytest.mark.parametrize("change", ["add", "remove"])
+def test_cap_changed_during_a_refund_or_hold_expiry_keeps_counters(env, change):
+    """The owner adds or removes a type's cap between a refund's (or a hold
+    expiry's) read of the type and its write: the write's cap guard fails,
+    it is rebuilt from a fresh read, and seatsLeft stays cap - taken."""
+    capped = change == "remove"
+    published(env, ticketTypes=[{**DINNER, "typeId": T1, **({"capacity": 4} if capped else {})}])
+    assert buy(env)[0] == 200 and pay(env)["result"] == "issued"
+    assert buy(env, order_id="01ORDER2AAAAAAAAAAAAAAAAAA", qty=1)[0] == 200  # held, will expire
+    api = env.api
+    real = api._txn
+    pending = []
+    calls = {"n": 0}
+
+    def edit_then_txn(items):
+        calls["n"] += 1
+        if pending:
+            assert edit_type(env, int(type_row(env)["version"]), **pending.pop())[0] == 200
+        return real(items)
+    api._txn = edit_then_txn
+    try:
+        pending.append({} if capped else {"capacity": 6})
+        ticket_id = sorted(tickets(env), key=lambda x: x["ticketId"])[0]["ticketId"]
+        status, _ = call(env, "POST", L + "/tickets/{ticketId}/refund", params={"locationId": LOC_A,
+                                                                               "ticketId": ticket_id},
+                         body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"}, claims=OWNER_A)
+        assert status == 200 and calls["n"] == 2  # the first write failed its cap guard, the retry went through
+        row = type_row(env)
+        assert row["sold"] == 1 and row["held"] == 1
+        consistent(row, None if capped else 6)
+        pending.append({"capacity": 7} if capped else {})
+        env.clock.value = NOW + timedelta(minutes=20)
+        assert api.run_sweep()["expired"] == 1 and calls["n"] == 4
+    finally:
+        api._txn = real
+    row = type_row(env)
+    assert row["sold"] == 1 and row["held"] == 0
+    consistent(row, 7 if capped else None)
+    assert len(env.stripe.refunds()) == 1
+    assert occ_row(env)["seatsLeft"] == 3 and occ_row(env)["taken"] == 1
+
+
 # --- K15-K17 public and checkout --------------------------------------------------------------------
 
 def test_public_list_and_detail_only_published(env):
@@ -464,7 +735,7 @@ def test_owner_editing_a_type_does_not_fail_the_checkout(env):
             return real(*args, **kwargs)
         return hook
 
-    # the price changed under the guest (possible only while nothing is taken): not sold out, reload
+    # the price changed under the guest: not sold out, reload (the hold is conditional on the price shown)
     api._hold_items = edit_then_hold({"name": "Middag", "priceOre": 60000, "vatRate": 12, "capacity": 3, "version": 1})
     try:
         assert buy(env, order_id="01ORDER1AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "changed_retry"
@@ -574,6 +845,32 @@ def test_late_payment_with_free_seats_is_issued(env):
     assert pay(env)["result"] == "issued"
     assert occ_row(env)["sold"] == 2 and occ_row(env)["seatsLeft"] == 2
 
+
+
+def test_late_payment_while_the_owner_caps_the_type_is_issued_once(env):
+    """A payment arriving after its hold expired takes the seats again; the
+    owner capping the type between that read and the write fails the cap
+    guard once, the issue is rebuilt and the counters stay cap - taken."""
+    published(env)
+    buy(env)
+    env.clock.value = NOW + timedelta(minutes=16)
+    env.api.handler({"job": "sweep"})
+    api = env.api
+    real = api._txn
+    pending = [{"capacity": 3}]
+
+    def edit_then_txn(items):
+        if pending:
+            assert edit_type(env, 1, **pending.pop())[0] == 200
+        return real(items)
+    api._txn = edit_then_txn
+    try:
+        assert pay(env)["result"] == "issued"
+    finally:
+        api._txn = real
+    consistent(type_row(env), 3)
+    assert type_row(env)["sold"] == 2 and len(tickets(env)) == 2 and not env.stripe.refunds()
+    assert pay(env)["result"] == "already_issued"
 
 # --- K18-K22 ticket page and transfers --------------------------------------------------------------
 

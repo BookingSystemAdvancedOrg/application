@@ -484,6 +484,11 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         """A caller's "yes" continues what the agent last proposed."""
         name = (last_use or {}).get("name")
         result = last_result or {}
+        if result.get("ok") is False:     # "yes" to the callback the error sentence offered
+            return self._callback(slots, "bokning" if lang == _SV else "booking", offered, lang)
+        if name in ("hold_table", "create_reservation") and result.get("held") is False and not \
+                result.get("holdId"):
+            name = "hold_table"
         if name == "hold_table" and result.get("holdId"):
             return self._create(slots, result, offered, lang)
         if name == "hold_table" and result.get("held") is False:
@@ -526,8 +531,8 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
                 near = nearest_times(requested, result.get("times"), ())
                 return self._offer(COUNTER_OFFERS["near_time"], lang, time=requested, times=_joined(near, lang))
             return self._say("get_availability", lang, times=_joined(times, lang))
-        if name == "hold_table" and result.get("held") is False:
-            return self._counter_offer(result, slots, lang)
+        if name in ("hold_table", "create_reservation") and result.get("held") is False:
+            return self._counter_offer(result, slots, lang)   # a create refused because the table was taken
         if name == "create_reservation" and result.get("guaranteeRequired") and result.get("reservationId"):
             return self._use("send_guarantee_link", {"reservationId": result["reservationId"]}, offered, lang)
         if name == "transfer_to_staff" and result.get("answered") is False:

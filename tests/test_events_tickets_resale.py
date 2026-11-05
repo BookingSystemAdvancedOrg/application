@@ -65,6 +65,10 @@ def tx_rows(e, kind=None):
     return [r for r in rows if kind is None or r["kind"] == kind]
 
 
+def tickets_count(e):
+    return len(tickets(e))
+
+
 def check_in(e, ticket_id, client_id="c1", claims=STAFF_A):
     key = qr.scan_key(TENANT_A, OCC1)
     _, out = call(e, "POST", OCC + "/check-ins", params={"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1},
@@ -143,6 +147,44 @@ def test_free_tickets_are_given_away_not_sold(env):
     assert list_ticket(env, t1) == (400, {"error": "invalid_price", "code": "invalid_price", "field": "ticketId"})
 
 
+def test_a_seller_cannot_buy_their_own_listing_and_a_bought_ticket_is_not_listed_again(env):
+    t1, _ = sold_with_resale(env, capacity=6)
+    assert list_ticket(env, t1)[0] == 201
+    own = buy_listed(env, [LISTING], buyerEmail="SARA@example.se")  # the seller's own address, any case
+    assert own == (400, {"error": "own_listing", "code": "own_listing", "field": "resaleTransferIds"})
+    assert transfer_row(env)["status"] == "pending" and "resaleClaimOrderId" not in ticket_row(env, t1)
+    assert buy_listed(env, [LISTING])[0] == 200 and pay(env, order_id=BUYER)["result"] == "issued"
+    new_id = et.ticket_id_for(BUYER, 0)
+    # chain depth 1: the buyer may give the ticket away but not sell it on
+    buyer_token = qr.token("o", TENANT_A, BUYER)
+    assert list_ticket(env, new_id, LISTING2, token=buyer_token)[1]["code"] == "resale_limit"
+    assert call(env, "POST", "/public/tickets/{token}/transfers", params={"token": buyer_token},
+                body={"transferId": "01GIFTAAAAAAAAAAAAAAAAAAAA", "ticketId": new_id, "kind": "gift",
+                      "toEmail": "v@example.se"})[0] == 201
+    status, out = call(env, "POST", "/public/ticket-transfers/{transferToken}/accept",
+                       params={"transferToken": qr.token("x", TENANT_A, "01GIFTAAAAAAAAAAAAAAAAAAAA")},
+                       body={"name": "Vän"})
+    assert status == 200
+    gifted = et.gift_ticket_id("01GIFTAAAAAAAAAAAAAAAAAAAA")
+    assert list_ticket(env, gifted, "01RESALECCCCCCCCCCCCCCCCCC", token=out["ticketToken"])[1]["code"] == "resale_limit"
+    assert public_event(env)["resale"] == []
+
+
+def test_late_refunded_ordinary_order_is_never_issued_on_replay(env):
+    published(env, settings=RESALE_ON, occurrences=[{"startAt": "2026-12-04T18:00:00Z", "endAt": "2026-12-04T22:00:00Z",
+                                                     "capacity": 2}])
+    assert buy(env, order_id=SELLER, qty=2)[0] == 200
+    env.clock.value = env.clock.value + timedelta(minutes=16)
+    env.api.handler({"job": "sweep"}, FakeContext(120_000))  # the hold expires
+    assert buy(env, order_id=BUYER, qty=2, buyerEmail="kim@example.se")[0] == 200
+    assert pay(env, order_id=BUYER)["result"] == "issued"
+    assert pay(env, order_id=SELLER)["result"] == "refunded:sold_out"
+    refunds = len(env.stripe.refunds())
+    assert pay(env, order_id=SELLER)["result"] == "ignored:late_refunded"
+    assert pay(env, order_id=SELLER)["result"] == "ignored:late_refunded"
+    assert len(env.stripe.refunds()) == refunds and tickets_count(env) == 2 and occ_row(env)["sold"] == 2
+
+
 def test_listing_by_a_foreign_or_forged_token_is_404(env):
     t1 = sold_with_resale(env)[0]
     assert list_ticket(env, t1, token=qr.token("o", TENANT_B, SELLER))[0] == 404
@@ -170,11 +212,13 @@ def test_resale_end_to_end_void_issue_refund_atomically(env):
     assert intents[-1]["params"]["amount"] == 89500 and intents[-1]["params"]["metadata"]["kind"] == "ticket" \
         and intents[-1]["account"] == ACCT_A and intents[-1]["key"] == f"ticket-{BUYER}"
 
+    assert ticket_row(env, t1)["resaleClaimOrderId"] == BUYER  # the ticket row carries the claim (an Update)
     assert pay(env, order_id=BUYER)["result"] == "issued"
     old, buyer_order = ticket_row(env, t1), order_row(env, BUYER)
     new_id = et.ticket_id_for(BUYER, 0)
     new = ticket_row(env, new_id)
     assert old["status"] == "void" and old["resoldTo"] == new_id and "pendingTransferId" not in old
+    assert "resaleClaimOrderId" not in old
     assert new["status"] == "valid" and new["holderName"] == "Kim Köpare" and new["orderId"] == BUYER
     assert new["priceOre"] == 89500 and new["vatRate"] == 12 and new["typeId"] == T1 and new["resaleOf"] == t1
     assert buyer_order["status"] == "paid" and buyer_order["resale"] is True and buyer_order["qty"] == 1
@@ -243,6 +287,7 @@ def test_two_buyers_one_listing_and_an_expired_hold_that_pays_late(env):
     out = env.api.handler({"job": "sweep"}, FakeContext(120_000))
     assert out["expired"] == 1 and order_row(env, BUYER)["status"] == "expired"
     assert transfer_row(env)["status"] == "pending" and "claimOrderId" not in transfer_row(env)
+    assert "resaleClaimOrderId" not in ticket_row(env, t1)
     assert any(c["path"].endswith("/cancel") for c in env.stripe.calls)
     assert public_event(env)["resale"][0]["transferId"] == LISTING
     # now the second buyer gets it
@@ -251,6 +296,9 @@ def test_two_buyers_one_listing_and_an_expired_hold_that_pays_late(env):
     assert pay(env, order_id=BUYER)["result"] == "refunded:resale_taken"
     late = [r for r in env.stripe.refunds() if r["key"] == f"ticket-late-{BUYER}"]
     assert len(late) == 1 and "amount" not in late[0]["params"]
+    # a replay of the late payment issues nothing, refunds nothing and never touches the seller
+    assert pay(env, order_id=BUYER)["result"] == "ignored:late_refunded"
+    assert len(env.stripe.refunds()) == 1 and tickets_count(env) == 2 and transfer_row(env)["claimOrderId"] == BUYER2
     assert transfer_row(env)["status"] == "claimed" and transfer_row(env)["claimOrderId"] == BUYER2
     assert pay(env, order_id=BUYER2)["result"] == "issued"
     assert ticket_row(env, t1)["status"] == "void" and ticket_row(env, et.ticket_id_for(BUYER2, 0))["status"] == "valid"

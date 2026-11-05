@@ -139,8 +139,9 @@ def _txn(items):
 
 
 def _update(key, expr, values, condition=None, names=None):
-    item = {"TableName": et.table_name(), "Key": et.ser(key), "UpdateExpression": expr,
-            "ExpressionAttributeValues": et.ser(values)}
+    item = {"TableName": et.table_name(), "Key": et.ser(key), "UpdateExpression": expr}
+    if values:
+        item["ExpressionAttributeValues"] = et.ser(values)
     if condition:
         item["ConditionExpression"] = condition
     if names:
@@ -1200,11 +1201,15 @@ def _release_items(tenant_id, order, *, held=True):
     order holds no seats: its hold is the claim on each listing, given back
     (`claimed` -> `pending`) only while it is this order's."""
     if order.get("resale"):
-        return [_update(et.transfer_key(tenant_id, transfer_id),
-                        "SET #s = :p REMOVE claimOrderId, claimedAt",
-                        {":p": "pending", ":c": "claimed", ":o": order["orderId"]},
-                        "#s = :c AND claimOrderId = :o", {"#s": "status"})
-                for transfer_id in order["resaleTransferIds"]]
+        items = []
+        for line in order["lines"]:
+            items.append(_update(et.transfer_key(tenant_id, line["transferId"]),
+                                 "SET #s = :p REMOVE claimOrderId, claimedAt",
+                                 {":p": "pending", ":c": "claimed", ":o": order["orderId"]},
+                                 "#s = :c AND claimOrderId = :o", {"#s": "status"}))
+            # the ticket's claim marker goes too (unconditional: the ticket may have been refunded meanwhile)
+            items.append(_update(et.ticket_key(tenant_id, line["ticketId"]), "REMOVE resaleClaimOrderId", {}))
+        return items
     field = "held" if held else "sold"
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
     items = [_update(et.occ_key(tenant_id, order["eventId"], occ_start),
@@ -1255,7 +1260,8 @@ def checkout(event):
     if resale_ids not in (None, []):
         if body.get("lines"):
             raise et.EventsError(400, "lines is invalid", "lines")  # a resale order holds no new seats
-        lines, qty, hold, claimed = _resale_lines(ctx, ev, occ, resale_ids, at, order_id)
+        lines, qty, hold, claimed = _resale_lines(ctx, ev, occ, resale_ids, at, order_id,
+                                                  et.email_hash(ctx.tenant_id, body["buyerEmail"]))
     else:
         lines, qty = _checkout_lines(body, types, ev.get("settings") or {}, et.iso(at))
         hold, claimed = None, None
@@ -1331,7 +1337,7 @@ def checkout(event):
                               "expiresAt": order["expiresAt"], "stripeAccount": account})
 
 
-def _resale_lines(ctx, ev, occ, raw_ids, at, order_id):
+def _resale_lines(ctx, ev, occ, raw_ids, at, order_id, buyer_hash):
     """A buyer's pick of listed tickets (ADR-K 8): one line per listing at the
     listed ticket's own price and VAT rate (never the type's current price).
     Returns (lines, qty, hold items, transferIds). The hold claims each
@@ -1357,6 +1363,9 @@ def _resale_lines(ctx, ev, occ, raw_ids, at, order_id):
         if transfer["status"] != "pending" or ticket.get("status") != "valid" \
                 or ticket.get("pendingTransferId") != transfer_id:
             raise et.EventsError(409, "resale_taken")
+        seller = et.get(et.order_key(ctx.tenant_id, ticket["orderId"])) or {}
+        if seller.get("buyerEmailHash") == buyer_hash:
+            raise et.EventsError(400, "own_listing", "resaleTransferIds")  # withdraw it on the ticket page instead
         lines.append({"typeId": transfer["typeId"], "qty": 1, "priceOre": int(ticket["priceOre"]),
                       "vatRate": int(ticket["vatRate"]), "name": ticket.get("typeName") or transfer.get("typeName") or "",
                       "transferId": transfer_id, "ticketId": transfer["ticketId"]})
@@ -1364,11 +1373,11 @@ def _resale_lines(ctx, ev, occ, raw_ids, at, order_id):
                             "SET #s = :c, claimOrderId = :o, claimedAt = :at",
                             {":c": "claimed", ":o": order_id, ":at": et.iso(at), ":p": "pending"}, "#s = :p",
                             {"#s": "status"}))
-        hold.append({"ConditionCheck": {
-            "TableName": et.table_name(), "Key": et.ser(et.ticket_key(ctx.tenant_id, transfer["ticketId"])),
-            "ConditionExpression": "#s = :valid AND pendingTransferId = :t",
-            "ExpressionAttributeNames": {"#s": "status"},
-            "ExpressionAttributeValues": et.ser({":valid": "valid", ":t": transfer_id})}})
+        # The ticket itself is claimed too (an Update, not a ConditionCheck: the role has no
+        # dynamodb:ConditionCheckItem), conditional on it still being valid and still listed.
+        hold.append(_update(et.ticket_key(ctx.tenant_id, transfer["ticketId"]), "SET resaleClaimOrderId = :o",
+                            {":o": order_id, ":valid": "valid", ":t": transfer_id},
+                            "#s = :valid AND pendingTransferId = :t", {"#s": "status"}))
     return lines, len(lines), hold, list(raw_ids)
 
 
@@ -1426,6 +1435,8 @@ def _issue(tenant_id, order, intent, retry=True):
     if order["status"] in ("paid", "partly_refunded", "refunded"):
         _resend_unsent(tenant_id, order)
         return "already_issued"
+    if order.get("lateRefundAt"):
+        return "ignored:late_refunded"  # the payment already went back in full: a replay issues nothing
     late = order["status"] == "expired"
     at = et.now()
     occ_start = et.split_occurrence(order["eventId"], order["occurrenceId"])
@@ -1437,7 +1448,7 @@ def _issue(tenant_id, order, intent, retry=True):
             _expire_order(tenant_id, order)
         return _refund_late(tenant_id, order, intent, "cancelled") if intent else "ignored:cancelled"
     if order.get("resale"):
-        return _issue_resale(tenant_id, order, intent, ev, occ, late, at)
+        return _issue_resale(tenant_id, order, intent, ev, occ, late, at, retry=retry)
     tickets, n = [], 0
     for line in order["lines"]:
         for _ in range(int(line["qty"])):
@@ -1507,7 +1518,7 @@ def _issue(tenant_id, order, intent, retry=True):
     return "issued"
 
 
-def _issue_resale(tenant_id, order, intent, ev, occ, late, at):
+def _issue_resale(tenant_id, order, intent, ev, occ, late, at, retry=True):
     """The buyer paid for listed tickets: in ONE transaction every listed
     ticket is voided (its QR is refused at the door from now on), a new ticket
     with the same type, price and VAT rate is issued to the buyer, each
@@ -1546,7 +1557,7 @@ def _issue_resale(tenant_id, order, intent, ev, occ, late, at):
         items.append(_put(new))
         items.append(_update(et.ticket_key(tenant_id, ticket["ticketId"]),
                              "SET #s = :void, resoldTo = :n, resoldAt = :at, resaleTxId = :tx, version = version + :one"
-                             " REMOVE pendingTransferId, pendingTransferKind",
+                             " REMOVE pendingTransferId, pendingTransferKind, resaleClaimOrderId",
                              {":void": "void", ":n": new_id, ":at": et.iso(at), ":one": 1,
                               ":tx": f"resale-refund-{transfer['transferId']}",
                               ":v": int(ticket["version"]), ":valid": "valid", ":t": transfer["transferId"]},
@@ -1601,6 +1612,8 @@ def _issue_resale(tenant_id, order, intent, ev, occ, late, at):
         again = et.get(et.order_key(tenant_id, order["orderId"])) or {}
         if again.get("status") in ("paid", "partly_refunded", "refunded"):
             return "already_issued"
+        if retry and again:  # a seller order or ticket version moved under us: once more from a fresh read
+            return _issue(tenant_id, again, intent, retry=False)
         return _resale_failed(tenant_id, order, intent, late)
     paid = et.get(et.order_key(tenant_id, order["orderId"]))
     for ticket, new in zip(old, new_tickets):
@@ -1777,6 +1790,8 @@ def create_transfer(event):
     price = int(ticket.get("priceOre") or 0)
     if kind == "resale" and price <= 0:
         raise et.EventsError(400, "invalid_price", "ticketId")  # a free ticket is given away, not sold
+    if kind == "resale" and ticket.get("resaleOf"):
+        raise et.EventsError(409, "resale_limit")  # one resale per seat: a bought-on ticket can be given, not sold
     at = et.now()
     if kind == "gift":
         # Each gift emails a stranger: a ticket may cause a few a day, an IP a few more an hour.

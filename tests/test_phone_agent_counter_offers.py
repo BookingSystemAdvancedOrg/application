@@ -22,11 +22,8 @@ OPENINGS = [
     ("Hi, I'd like to book a table for four tomorrow at 7 pm", "Yes", "My name is Anna", EN),
 ]
 
-
-def _said(turn, key, **fields):
-    """The turn is exactly the counter-offer sentence `key` in both forms' language."""
-    assert not turn.tool_uses
-    return turn.text
+OPENING_YES = [(opening, yes, lang) for opening, yes, _, lang in OPENINGS]
+OPENING = [(opening, lang) for opening, _, _, lang in OPENINGS]
 
 
 # 1. The requested time is free: booked, no counter-offer ----------------------------------
@@ -62,8 +59,8 @@ def test_time_taken_offers_closest_times_on_both_sides(opening, yes, name, lang)
                                                            "language": "sv" if lang == SV else "en"})
 
 
-@pytest.mark.parametrize("opening, yes, name, lang", OPENINGS)
-def test_time_taken_with_free_times_on_one_side_only(opening, yes, name, lang):
+@pytest.mark.parametrize("opening, yes, lang", OPENING_YES)
+def test_time_taken_with_free_times_on_one_side_only(opening, yes, lang):
     call = Call()
     call.say(opening)
     offer = call.tool({"held": False, "reason": "time_taken", "time": "19:00",
@@ -89,8 +86,8 @@ def test_availability_question_with_a_time_offers_the_closest_times(ask, lang):
 
 # 3. The whole day is full: the next day, once, then a callback ----------------------------
 
-@pytest.mark.parametrize("opening, yes, name, lang", OPENINGS)
-def test_full_day_offers_the_next_day_keeping_the_time(opening, yes, name, lang):
+@pytest.mark.parametrize("opening, yes, lang", OPENING_YES)
+def test_full_day_offers_the_next_day_keeping_the_time(opening, yes, lang):
     call = Call()
     call.say(opening)
     full = call.tool({"held": False, "reason": "day_full", "time": "19:00", "before": [], "after": [], "nearby": [],
@@ -105,8 +102,8 @@ def test_full_day_offers_the_next_day_keeping_the_time(opening, yes, name, lang)
                                                                             "partySize": 4}
 
 
-@pytest.mark.parametrize("opening, yes, name, lang", OPENINGS)
-def test_next_day_also_full_offers_a_callback_not_a_third_day(opening, yes, name, lang):
+@pytest.mark.parametrize("opening, yes, lang", OPENING_YES)
+def test_next_day_also_full_offers_a_callback_not_a_third_day(opening, yes, lang):
     call = Call()
     call.say(opening)
     call.tool({"held": False, "reason": "day_full", "before": [], "after": [], "nearby": [], "dayFull": True})
@@ -115,6 +112,34 @@ def test_next_day_also_full_offers_a_callback_not_a_third_day(opening, yes, name
     assert second.text == COUNTER_OFFERS["next_day_full"][lang]
     name_, payload = _use(call.say(yes))
     assert name_ == "request_callback" and payload["topic"] == ("bokning" if lang == SV else "booking")
+
+
+@pytest.mark.parametrize("opening, yes, other_day, lang", [
+    ("Hej, jag vill boka ett bord för fyra på måndag klockan 19", "Ja", "Fredag klockan 19 istället", SV),
+    ("Hi, I'd like to book a table for four on Monday at 7 pm", "Yes", "Friday at 7 pm instead", EN),
+])
+def test_a_new_date_from_the_caller_gets_its_own_next_day(opening, yes, other_day, lang):
+    """The next day is offered once per day the caller asks for: Monday is
+    full, Tuesday is offered, the caller asks for Friday instead, Friday is
+    full -> the agent offers Saturday, not a callback."""
+    call = Call()
+    assert _use(call.say(opening)) == ("hold_table", {"date": "2026-11-09", "time": "19:00", "partySize": 4})
+    full = call.tool({"held": False, "reason": "day_full", "time": "19:00", "before": [], "after": [], "nearby": [],
+                      "dayFull": True})
+    assert full.text == agent_model.CONFIRMATIONS["get_availability_full"][lang]
+    assert _use(call.say(yes)) == ("get_availability", {"date": "2026-11-10", "partySize": 4, "time": "19:00"})
+    offer = call.tool({"times": ["18:00", "20:00"], "requestedTime": "19:00", "before": ["18:00"],
+                       "after": ["20:00"], "dayFull": False})
+    assert offer.text == COUNTER_OFFERS["near_time"][lang].format(
+        time="19:00", times="18:00" + (" eller " if lang == SV else " or ") + "20:00")
+    assert _use(call.say(other_day)) == ("hold_table", {"date": "2026-11-06", "time": "19:00", "partySize": 4})
+    friday = call.tool({"held": False, "reason": "day_full", "time": "19:00", "before": [], "after": [],
+                        "nearby": [], "dayFull": True})
+    assert friday.text == agent_model.CONFIRMATIONS["get_availability_full"][lang]   # not next_day_full
+    assert _use(call.say(yes)) == ("get_availability", {"date": "2026-11-07", "partySize": 4, "time": "19:00"})
+    saturday_full = call.tool({"times": [], "dayFull": True})
+    assert saturday_full.text == COUNTER_OFFERS["next_day_full"][lang]               # then a callback, no third day
+    assert _use(call.say(yes))[0] == "request_callback"
 
 
 # 4. A nearby table at the requested time (location with a floor plan) --------------------
@@ -150,8 +175,8 @@ def test_nearby_table_declined_falls_back_to_the_closest_times(opening, no, lang
     assert _use(call.say("18.30" if lang == SV else "6:30 pm"))[1]["time"] == "18:30"
 
 
-@pytest.mark.parametrize("opening, yes, name, lang", OPENINGS)
-def test_without_a_floor_plan_only_times_are_offered(opening, yes, name, lang):
+@pytest.mark.parametrize("opening, lang", OPENING)
+def test_without_a_floor_plan_only_times_are_offered(opening, lang):
     """A location without a published floor plan: the tool returns no
     `nearby` entries and the agent offers times only."""
     call = Call()

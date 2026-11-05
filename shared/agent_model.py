@@ -215,11 +215,17 @@ def _is_full_day(result):
     return result.get("held") is False and not (result.get("before") or result.get("after") or result.get("nearby"))
 
 
-def _full_days(messages):
-    """How many availability or hold answers so far said the whole day is
-    full (the second one ends the day hopping and offers a callback)."""
-    return sum(1 for m in messages for b in _blocks(m)
-               if b.get("type") == "tool_result" and _is_full_day(_result(b)))
+def _full_days(messages, today):
+    """How many availability or hold answers said the whole day is full
+    since the caller last named a date (the second one ends the day hopping
+    and offers a callback). A new date from the caller starts the count
+    again, so the next day is offered once per requested day."""
+    count = 0
+    for m in messages:
+        if m.get("role") == "user" and _text(m) and "date" in entities(_text(m), today):
+            count = 0
+        count += sum(1 for b in _blocks(m) if b.get("type") == "tool_result" and _is_full_day(_result(b)))
+    return count
 
 
 def match_intent(text):
@@ -365,7 +371,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
 
     def _next_day_or_callback(self, messages, slots, offered, lang):
         """After a full day: the next day once, then a callback."""
-        if _full_days(messages) >= 2 or "date" not in slots:
+        if _full_days(messages, self.today) >= 2 or "date" not in slots:
             return self._callback(slots, "bokning" if lang == _SV else "booking", offered, lang)
         next_day = (date.fromisoformat(slots["date"]) + timedelta(days=1)).isoformat()
         payload = {"date": next_day, "partySize": slots.get("partySize")}
@@ -512,7 +518,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         if name == "get_availability":
             times = list(result.get("times") or [])[:MAX_OFFERS]
             if not times:
-                if _full_days(messages) >= 2:
+                if _full_days(messages, self.today) >= 2:
                     return self._offer(COUNTER_OFFERS["next_day_full"], lang)
                 return self._say("get_availability_full", lang)
             requested = result.get("requestedTime") or (last_use or {}).get("input", {}).get("time")

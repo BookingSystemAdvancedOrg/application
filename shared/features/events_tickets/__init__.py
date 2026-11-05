@@ -11,8 +11,8 @@ Table `<prefix>events-tickets` (EVENTS_TICKETS_TABLE_NAME), partition `TENANT#<t
                                     QR is <ticketId>.<sig>, verified with the occurrence's scan key.
     TRANSFER#<transferId>           gift transfer (pending until accepted or the start) or a face-value resale
                                     listing (pending -> claimed by a buyer's pending order -> sold); GSI1 row
-                                    per ticket, and while listed a GSI2 row per occurrence (the public
-                                    "biljetter från andra gäster" list)
+                                    per ticket, and while listed a GSI2 row per event, sorted by occurrence
+                                    (the public "biljetter från andra gäster" list, the admin counts)
     TX#<txId>                       append-only money rows (GSI2 byLocationDay: Bokföring, Statistik); a
                                     refund whose Stripe refund is still owed carries a sparse GSI1 REFUNDS row.
                                     Kinds: sale, refund, resale_sale (the buyer's payment), resale_refund
@@ -383,16 +383,17 @@ def pending_refunds() -> list:
     return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq("REFUNDS"))
 
 
-def resales_of_occurrence(tenant_id, occ_id) -> list:
-    """Resale listings of an occurrence that are not sold or cancelled yet
-    (`pending` or `claimed`), oldest first: the GSI2 row is removed when the
+def resales_of_event(tenant_id, event_id) -> list:
+    """Resale listings of an event that are not sold or cancelled yet
+    (`pending` or `claimed`), by occurrence then oldest first: one query for
+    every occurrence of the event (K3, K16), the GSI2 row is removed when the
     listing ends."""
     return query_all(IndexName=GSI2, KeyConditionExpression=Key("GSI2PK").eq(
-        f"TENANT#{tenant_id}#OCC#{occ_id}#RESALE"))
+        f"TENANT#{tenant_id}#EVENT#{event_id}#RESALE"))
 
 
-def resale_gsi(tenant_id, occ_id, created_at: str, transfer_id) -> dict:
-    return {"GSI2PK": f"TENANT#{tenant_id}#OCC#{occ_id}#RESALE", "GSI2SK": f"{created_at}#{transfer_id}"}
+def resale_gsi(tenant_id, event_id, occ_id, created_at: str, transfer_id) -> dict:
+    return {"GSI2PK": f"TENANT#{tenant_id}#EVENT#{event_id}#RESALE", "GSI2SK": f"{occ_id}#{created_at}#{transfer_id}"}
 
 
 def occurrence_gsi(tenant_id, occ_id, holder_name, ticket_id) -> dict:

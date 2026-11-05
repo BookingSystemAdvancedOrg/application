@@ -118,7 +118,8 @@ def test_listing_needs_the_setting_the_window_and_a_paid_valid_ticket(env):
     assert env.mail.kinds().count("events-tickets.transfer") == 1  # a listing emails nobody
     row = transfer_row(env)
     assert row["priceOre"] == 89500 and row["vatRate"] == 12 and row["typeId"] == T1 and "toEmail" not in row
-    assert row["GSI2PK"] == f"TENANT#{TENANT_A}#OCC#{OCC1}#RESALE"
+    # one GSI2 partition per event (K3 and K16 read every occurrence in one query), sorted by occurrence
+    assert row["GSI2PK"] == f"TENANT#{TENANT_A}#EVENT#{E1}#RESALE" and row["GSI2SK"].startswith(f"{OCC1}#")
     page = call(env, "GET", "/public/tickets/{token}", params={"token": token_of(env)})[1]
     first = next(t for t in page["tickets"] if t["ticketId"] == t1)
     assert page["resaleAllowed"] is True and first["resale"] == "listed" and first["priceOre"] == 89500
@@ -168,6 +169,25 @@ def test_a_seller_cannot_buy_their_own_listing_and_a_bought_ticket_is_not_listed
     gifted = et.gift_ticket_id("01GIFTAAAAAAAAAAAAAAAAAAAA")
     assert list_ticket(env, gifted, "01RESALECCCCCCCCCCCCCCCCCC", token=out["ticketToken"])[1]["code"] == "resale_limit"
     assert public_event(env)["resale"] == []
+
+
+def test_the_holder_of_a_gifted_ticket_cannot_buy_their_own_listing(env):
+    """Sara gives her second ticket to Vän, who lists it: neither Vän (its holder) nor Sara (the order's
+    buyer, whose card the money would go back to) can buy that listing."""
+    _, t2 = sold_with_resale(env, capacity=6)
+    assert call(env, "POST", "/public/tickets/{token}/transfers", params={"token": token_of(env)},
+                body={"transferId": "01GIFTAAAAAAAAAAAAAAAAAAAA", "ticketId": t2, "kind": "gift",
+                      "toEmail": "v@example.se"})[0] == 201
+    status, out = call(env, "POST", "/public/ticket-transfers/{transferToken}/accept",
+                       params={"transferToken": qr.token("x", TENANT_A, "01GIFTAAAAAAAAAAAAAAAAAAAA")},
+                       body={"name": "Vän"})
+    assert status == 200
+    gifted = et.gift_ticket_id("01GIFTAAAAAAAAAAAAAAAAAAAA")
+    assert "pendingTransferKind" not in ticket_row(env, t2) and "pendingTransferKind" not in ticket_row(env, gifted)
+    assert list_ticket(env, gifted, LISTING, token=out["ticketToken"])[0] == 201
+    assert buy_listed(env, [LISTING], buyerEmail="V@example.se")[1]["code"] == "own_listing"
+    assert buy_listed(env, [LISTING], buyerEmail="sara@example.se")[1]["code"] == "own_listing"
+    assert buy_listed(env, [LISTING])[0] == 200 and pay(env, order_id=BUYER)["result"] == "issued"
 
 
 def test_late_refunded_ordinary_order_is_never_issued_on_replay(env):
@@ -571,3 +591,52 @@ def test_privacy_erase_and_nightly_cover_resale_rows(env):
     env.clock.value = datetime(2028, 12, 10, 3, 0, tzinfo=timezone.utc)
     assert env.api.handler({"job": "nightly"})["cleaned"] == 2
     assert all("holderName" not in t for t in tickets(env))
+
+
+# --- the seller refunded outside our books while a buyer holds the listing ------------------------------
+
+def test_stripe_dashboard_refund_of_the_seller_ends_a_claimed_listing_and_pays_the_buyer_back(env):
+    """The restaurant refunds the seller's whole order in the Stripe dashboard while a buyer is paying for
+    one listed ticket: both seller tickets are refunded in our books (Stripe already moved the money, so no
+    second seller refund), the listing is cancelled whatever its state, and the buyer's payment goes back
+    in full when it lands. One ticket that cannot be refunded never leaves the others valid."""
+    t1, t2 = sold_with_resale(env)
+    assert list_ticket(env, t1)[0] == 201 and buy_listed(env, [LISTING])[0] == 200
+    assert transfer_row(env)["status"] == "claimed" and ticket_row(env, t1)["resaleClaimOrderId"] == BUYER
+    hook = {"hook": "stripe.event", "tenantId": TENANT_A, "type": "charge.refunded", "account": ACCT_A,
+            "object": {"id": "ch_1", "amount": 179000, "amount_refunded": 179000,
+                       "metadata": {"kind": "ticket", "tenantId": TENANT_A, "orderId": SELLER}}}
+    assert env.api.handler(hook) == {"ok": True, "result": "voided"}
+    assert ticket_row(env, t1)["status"] == "refunded" and ticket_row(env, t2)["status"] == "refunded"
+    assert "resaleClaimOrderId" not in ticket_row(env, t1) and "pendingTransferId" not in ticket_row(env, t1)
+    listing = transfer_row(env)
+    assert listing["status"] == "cancelled" and "claimOrderId" not in listing and "GSI2PK" not in listing
+    seller = order_row(env, SELLER)
+    assert seller["status"] == "refunded" and seller["refundedOre"] == 179000 and seller["refundedCount"] == 2
+    assert env.stripe.refunds() == [] and et.pending_refunds() == []  # nothing is sent to Stripe twice
+    assert public_event(env)["resale"] == []
+    # the buyer's payment lands: nothing is issued, the whole payment goes back
+    assert pay(env, order_id=BUYER)["result"] == "refunded:resale_taken"
+    assert [r["key"] for r in env.stripe.refunds()] == [f"ticket-late-{BUYER}"]
+    assert order_row(env, BUYER)["status"] == "expired" and tickets_count(env) == 2
+    assert env.table.get_item(Key=et.ticket_key(TENANT_A, et.ticket_id_for(BUYER, 0))).get("Item") is None
+    # replays change nothing
+    assert env.api.handler(hook)["result"] == "already_refunded"
+    assert pay(env, order_id=BUYER)["result"] == "ignored:late_refunded"
+    assert len(env.stripe.refunds()) == 1
+    assert env.api.handler({"job": "sweep"}, FakeContext(120_000))["failed"] == 0
+
+
+def test_cancellation_email_states_what_this_refund_gave_back(env):
+    """One of Sara's two tickets was refunded by the owner before the occurrence was cancelled: the
+    cancellation email says the ticket's price, not the order's full amount."""
+    t1, _ = sold_with_resale(env)
+    assert call(env, "POST", L + "/tickets/{ticketId}/refund", params={"locationId": LOC_A, "ticketId": t1},
+                claims=OWNER_A, body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"})[0] == 200
+    p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
+    assert call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
+                body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1})[1]["toRefund"] == 1
+    assert env.mail.kinds().count("events-tickets.cancelled") == 1
+    text = [c for c in env.mail.calls if c["notice"]["kind"] == "events-tickets.cancelled"][0]["notice"]["text"]
+    assert env.api._kr(89500) in text and env.api._kr(179000) not in text
+    assert order_row(env, SELLER)["refundedOre"] == 179000

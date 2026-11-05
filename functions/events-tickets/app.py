@@ -371,8 +371,12 @@ def get_event(event, ctx):
     occs, types = et.event_parts(ctx.tenant_id, ev["eventId"])
     view = et.event_view(ev, occs, types, money=ctx.is_owner)
     if (ev.get("settings") or {}).get("resaleAllowed"):
-        for occ in view["occurrences"]:  # tickets other guests have put up for sale (the admin "view of resales")
-            occ["resaleListed"] = len(_listings(ctx.tenant_id, occ["occurrenceId"]))
+        # tickets other guests have put up for sale (the admin "view of resales"): one query for the event,
+        # only occurrences that can still sell (a done or cancelled one has no live listing to count)
+        open_ = [occ for occ in view["occurrences"] if occ["status"] == "scheduled"]
+        listed = _listings(ctx.tenant_id, ev["eventId"], [occ["occurrenceId"] for occ in open_])
+        for occ in open_:
+            occ["resaleListed"] = len(listed[occ["occurrenceId"]])
     return http.respond(200, view)
 
 
@@ -759,12 +763,16 @@ def _notify_cancelled(tenant_id, job):
     occ_start = et.from_compact(job["occurrenceId"][len(job["eventId"]) + 1:])
     sent = 0
     for order in _unnotified(tenant_id, job):
+        # what this cancellation gave back: the order's tickets refunded by the job (a ticket the owner refunded
+        # or a resale paid back earlier is not counted again)
+        refunded_now = sum(int(t.get("priceOre") or 0) for t in et.tickets_of_order(tenant_id, order)
+                           if t.get("status") == "refunded" and (t.get("refundTxId") or "").startswith("cancel-"))
         text = (f"Hej {order.get('buyerName') or ''}!\n\n{ev.get('title', 'Evenemanget')} på "
                 f"{(location.get('name') or 'restaurangen').strip()} "
                 f"{_when(et.iso(occ_start), location) if occ_start else ''} är tyvärr inställt.\n\n"
                 + (f"{job['message']}\n\n" if job.get("message") else "")
-                + (f"Vi har återbetalat {_kr(order['amountOre'])} till kortet du betalade med. Det kan ta "
-                   "några bankdagar innan pengarna syns.\n" if int(order["amountOre"]) else ""))
+                + (f"Vi har återbetalat {_kr(refunded_now)} till kortet du betalade med. Det kan ta "
+                   "några bankdagar innan pengarna syns.\n" if refunded_now else ""))
         try:
             _notify(tenant_id, order["locationId"], "events-tickets.cancelled", order["buyerEmail"],
                     f"Inställt: {ev.get('title', 'evenemang')}", text)
@@ -835,7 +843,7 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", r
     items = [
         _update(et.ticket_key(tenant_id, ticket["ticketId"]),
                 "SET #s = :r, refundedAt = :at, refundTxId = :tx, version = version + :one"
-                " REMOVE pendingTransferId, pendingTransferKind",
+                " REMOVE pendingTransferId, pendingTransferKind, resaleClaimOrderId",
                 {":r": "refunded", ":at": et.iso(at), ":tx": tx_id, ":one": 1, ":v": int(ticket["version"])},
                 "version = :v", {"#s": "status"}),
         _put(tx),
@@ -852,7 +860,15 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", r
                              "SET sold = sold - :one, taken = taken - :one"
                              + (", seatsLeft = seatsLeft + :one" if "seatsLeft" in type_row else ""), {":one": 1},
                              _cap_guard(type_row)))
-    if ticket.get("pendingTransferId"):
+    if ticket.get("pendingTransferId") and stripe == "external":
+        # Stripe already gave the seller the money back (dashboard refund, lost dispute): the listing ends
+        # whatever its state, a buyer's `claimed` hold included. That buyer's payment then finds the ticket
+        # no longer valid (`_issue_resale` -> `_resale_failed`) and goes back in full.
+        items.append(_update(et.transfer_key(tenant_id, ticket["pendingTransferId"]),
+                             "SET #s = :c, cancelledAt = :at REMOVE GSI2PK, GSI2SK, claimOrderId, claimedAt",
+                             {":c": "cancelled", ":at": et.iso(at), ":p": "pending", ":cl": "claimed"},
+                             "#s IN (:p, :cl)", {"#s": "status"}))
+    elif ticket.get("pendingTransferId"):
         # A gift on its way or a resale listing ends with the ticket. A listing a buyer is paying for
         # (`claimed`) fails the condition: the refund waits until that hold is paid or expires.
         items.append(_update(et.transfer_key(tenant_id, ticket["pendingTransferId"]),
@@ -1108,9 +1124,11 @@ def public_detail(event):
     upcoming = [o for o in occs if o["status"] == "scheduled" and o["startAt"] > at]
     settings = ev.get("settings") or {}
     resale = []
-    for o in upcoming:  # tickets other guests have put up for sale at face value (ADR-K 8)
-        if _resale_open(ev, o) and _sales_open(o, at):
-            resale += [_listing_view(t) for t in _listings(ctx.tenant_id, o["occurrenceId"]) if t["status"] == "pending"]
+    # tickets other guests have put up for sale at face value (ADR-K 8): one query for the event
+    offering = [o for o in upcoming if _resale_open(ev, o) and _sales_open(o, at)]
+    listed = _listings(ctx.tenant_id, ev["eventId"], [o["occurrenceId"] for o in offering])
+    for o in offering:
+        resale += [_listing_view(t) for t in listed[o["occurrenceId"]] if t["status"] == "pending"]
     return http.respond(200, {
         "eventId": ev["eventId"], "title": ev["title"], "description": ev.get("description") or "",
         "refundPolicy": settings.get("refundPolicy"), "perOrderMax": int(settings.get("perOrderMax") or 10),
@@ -1126,17 +1144,20 @@ def public_detail(event):
     })
 
 
-def _listings(tenant_id, occ_id):
-    """The occurrence's live resale listings (`pending` or `claimed`) whose
-    ticket is still valid and still points at the listing: a ticket the owner
-    refunded or the door let in meanwhile is never offered."""
-    out = []
-    for transfer in et.resales_of_occurrence(tenant_id, occ_id):
-        if transfer.get("kind") != "resale" or transfer.get("status") not in ("pending", "claimed"):
+def _listings(tenant_id, event_id, occ_ids):
+    """The event's live resale listings (`pending` or `claimed`) whose ticket
+    is still valid and still points at the listing, per occurrence (only the
+    `occ_ids` asked for): a ticket the owner refunded or the door let in
+    meanwhile is never offered. One GSI query for the whole event, then a key
+    lookup per listing."""
+    out = {occ_id: [] for occ_id in occ_ids}
+    for transfer in et.resales_of_event(tenant_id, event_id) if out else []:
+        if transfer.get("occurrenceId") not in out or transfer.get("kind") != "resale" \
+                or transfer.get("status") not in ("pending", "claimed"):
             continue
         ticket = et.get(et.ticket_key(tenant_id, transfer["ticketId"])) or {}
         if ticket.get("status") == "valid" and ticket.get("pendingTransferId") == transfer["transferId"]:
-            out.append(transfer)
+            out[transfer["occurrenceId"]].append(transfer)
     return out
 
 
@@ -1203,10 +1224,14 @@ def _release_items(tenant_id, order, *, held=True):
     if order.get("resale"):
         items = []
         for line in order["lines"]:
-            items.append(_update(et.transfer_key(tenant_id, line["transferId"]),
-                                 "SET #s = :p REMOVE claimOrderId, claimedAt",
-                                 {":p": "pending", ":c": "claimed", ":o": order["orderId"]},
-                                 "#s = :c AND claimOrderId = :o", {"#s": "status"}))
+            # A listing Stripe's refund of the seller already cancelled (or one the hold lost long ago) has
+            # nothing to give back; skipping it keeps the release of the rest from failing on its condition.
+            transfer = et.get(et.transfer_key(tenant_id, line["transferId"])) or {}
+            if transfer.get("status") == "claimed" and transfer.get("claimOrderId") == order["orderId"]:
+                items.append(_update(et.transfer_key(tenant_id, line["transferId"]),
+                                     "SET #s = :p REMOVE claimOrderId, claimedAt",
+                                     {":p": "pending", ":c": "claimed", ":o": order["orderId"]},
+                                     "#s = :c AND claimOrderId = :o", {"#s": "status"}))
             # the ticket's claim marker goes too (unconditional: the ticket may have been refunded meanwhile)
             items.append(_update(et.ticket_key(tenant_id, line["ticketId"]), "REMOVE resaleClaimOrderId", {}))
         return items
@@ -1364,8 +1389,9 @@ def _resale_lines(ctx, ev, occ, raw_ids, at, order_id, buyer_hash):
                 or ticket.get("pendingTransferId") != transfer_id:
             raise et.EventsError(409, "resale_taken")
         seller = et.get(et.order_key(ctx.tenant_id, ticket["orderId"])) or {}
-        if seller.get("buyerEmailHash") == buyer_hash:
-            raise et.EventsError(400, "own_listing", "resaleTransferIds")  # withdraw it on the ticket page instead
+        # the seller is the order's buyer or, for a gifted-on ticket, its holder: withdraw it on the ticket page instead
+        if buyer_hash in (seller.get("buyerEmailHash"), ticket.get("holderEmailHash")):
+            raise et.EventsError(400, "own_listing", "resaleTransferIds")
         lines.append({"typeId": transfer["typeId"], "qty": 1, "priceOre": int(ticket["priceOre"]),
                       "vatRate": int(ticket["vatRate"]), "name": ticket.get("typeName") or transfer.get("typeName") or "",
                       "transferId": transfer_id, "ticketId": transfer["ticketId"]})
@@ -1812,7 +1838,8 @@ def create_transfer(event):
         # Face value = what this ticket was sold for (its own priceOre), never above, never the type's new price.
         transfer.update({"priceOre": price, "vatRate": int(ticket.get("vatRate") or 0), "typeId": ticket["typeId"],
                          "typeName": ticket.get("typeName") or "", "sellerOrderId": ticket["orderId"],
-                         **et.resale_gsi(tenant_id, ticket["occurrenceId"], et.iso(at), transfer_id)})
+                         **et.resale_gsi(tenant_id, ticket["eventId"], ticket["occurrenceId"], et.iso(at),
+                                         transfer_id)})
     try:
         _txn([_update(et.ticket_key(tenant_id, ticket["ticketId"]),
                       "SET pendingTransferId = :t, pendingTransferKind = :k",
@@ -1872,15 +1899,16 @@ def accept_transfer(event):
     if not old or old["status"] != "valid" or old.get("pendingTransferId") != transfer_id:
         raise et.EventsError(409, "invalid_state")
     at = et.now()
-    new = {k: v for k, v in old.items() if k not in ("pendingTransferId", "checkedInAt", "checkedInBy",
-                                                       "checkedInClientId", "holderEmail")}
+    new = {k: v for k, v in old.items() if k not in ("pendingTransferId", "pendingTransferKind", "checkedInAt",
+                                                       "checkedInBy", "checkedInClientId", "holderEmail")}
     new.update({**et.ticket_key(tenant_id, new_id), "ticketId": new_id, "holderName": name,
                 "holderEmailHash": transfer["toEmailHash"], "giftedFrom": old["ticketId"], "status": "valid",
                 "version": 1, "issuedAt": et.iso(at),
                 **et.occurrence_gsi(tenant_id, old["occurrenceId"], name, new_id)})
     try:
         _txn([_update(et.ticket_key(tenant_id, old["ticketId"]),
-                      "SET #s = :tr, transferredTo = :n, version = version + :one REMOVE pendingTransferId",
+                      "SET #s = :tr, transferredTo = :n, version = version + :one"
+                      " REMOVE pendingTransferId, pendingTransferKind",
                       {":tr": "transferred", ":n": new_id, ":one": 1, ":v": int(old["version"]), ":t": transfer_id},
                       "version = :v AND pendingTransferId = :t", {"#s": "status"}),
               _put(new),
@@ -1959,9 +1987,15 @@ def stripe_event(event):
             return "flagged:partial_refund"
         voided = 0
         for t in et.tickets_of_order(tenant_id, order):
-            if t["status"] in ("valid", "checked_in"):
+            if t["status"] not in ("valid", "checked_in"):
+                continue
+            try:
                 _refund_ticket(tenant_id, t, f"stripe-{t['ticketId']}", by="owner", reason=kind, stripe="external")
-                voided += 1
+            except et.EventsError as exc:  # one ticket that moved meanwhile never leaves the others valid
+                logger.warning(json.dumps({"event": "ticket.external_refund", "ticketId": t["ticketId"],
+                                           "code": exc.code}))
+                continue
+            voided += 1
         return "voided" if voided else "already_refunded"
     return "ignored:type"
 

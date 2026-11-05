@@ -10,6 +10,7 @@ import pytest
 
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import offers as of
+from shared.features.phone_agent.calls import normalized_text as calls_normalized
 from test_phone_agent_support import (CALLER, L, LAYOUT, LOC_A, TENANT_A, call, enable, env, set_feature,
                                       webhook)
 
@@ -356,6 +357,34 @@ def test_disclosure_repeated_when_interrupted_and_in_a_new_language(live):
     assert said[2] == "I am an AI assistant for Location loc-a-1." and len(said) == 3
     texts = [t["text"] for t in phone.turns()]
     assert "AI-assistent" in texts[0] and texts[1:] == said[1:]
+
+
+def test_disclosure_evidence_is_the_providers_first_final_agent_transcript(live):
+    phone = Phone(live)
+    greeting = phone.row()["disclosure"]["text"]
+    phone.event("transcript", role="user", final=True, text="Hallå?")                 # the caller: no evidence
+    phone.event("transcript", role="agent", final=False, text=greeting[:12])         # partial: not yet
+    row = phone.row()
+    assert row["status"] == "answered" and row["disclosure"]["playedAt"] is None
+    spoken = "  " + greeting.upper().replace(",", "").replace(".", " .") + " "        # the provider's rendering
+    phone.event("transcript", role="agent", final=True, text=spoken)
+    row = phone.row()
+    assert row["status"] == "disclosed" and row["disclosure"]["playedAt"] == pa.iso(pa.now())
+    assert row["disclosure"]["spoken"] == spoken and row["disclosure"]["verbatim"] is True
+    phone.event("transcript", role="agent", final=True, text="Vilken dag vill ni komma?")   # later turns
+    assert phone.row()["disclosure"]["spoken"] == spoken
+    _, detail = call(live, "GET", L + "/calls/{callId}", callId=phone.call_id)
+    assert detail["disclosure"]["spoken"] == spoken and detail["disclosure"]["verbatim"] is True
+
+
+def test_disclosure_evidence_keeps_a_diverging_provider_text(live):
+    phone = Phone(live)
+    phone.event("transcript", role="agent", final=True, text="Hej, du pratar med Sara.")
+    row = phone.row()
+    assert row["status"] == "disclosed" and row["disclosure"]["playedAt"]
+    assert row["disclosure"]["spoken"] == "Hej, du pratar med Sara." and row["disclosure"]["verbatim"] is False
+    assert "AI-assistent" in row["disclosure"]["text"]                              # what Booqy sent is kept
+    assert calls_normalized("Hej, du pratar med Sara!") == calls_normalized("  hej  du PRATAR med sara ")
 
 
 def test_two_end_webhooks_meter_once(live):

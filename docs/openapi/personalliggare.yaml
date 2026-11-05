@@ -238,7 +238,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PersonalliggareRecord'
         '400':
-          description: reason_required, invalid_event_time or validation error.
+          description: reason_required, invalid_event_time, wrong_person (correctsSeq names another person's record) or validation error.
           content:
             application/json:
               schema:

@@ -522,6 +522,40 @@ def test_owner_list_contains_staff_and_self_but_not_other_privileged_users(
     assert cognito.mock_calls == []
 
 
+def test_owner_list_skips_system_principals(app_state):
+    """The phone agent's `USER#agent:<l>` row (status "system", no Cognito
+    user, CONTRACTS.md 4) must not turn the tenant's user list into a 409."""
+    app, user_table, cognito = app_state
+    caller = user_item(sub=CALLER_SUB, role="owner_user", location_id="", name="Owner Caller")
+    staff = user_item(sub="staff-target", name="Staff Member")
+    for stored in (caller, staff):
+        put_user(user_table, stored)
+    user_table.put_item(
+        Item={
+            "PK": "USER#agent:location-id",
+            "SK": "PROFILE",
+            "tenantId": TENANT_A,
+            "role": "staff",
+            "locationId": "location-id",
+            "name": "Telefonassistent",
+            "status": "system",
+        }
+    )
+    # a system-status row under another key shape is skipped as well
+    user_table.put_item(
+        Item={**user_item(sub="robot-target", name="Robot"), "status": "system"}
+    )
+
+    response = app.handler(make_event(method="GET", proxy=""), None)
+
+    assert_response(
+        response,
+        200,
+        {"items": [public_user(caller), public_user(staff)]},
+    )
+    assert cognito.mock_calls == []
+
+
 def test_owner_list_returns_an_empty_array_when_no_visible_users_exist(
     app_state,
 ):

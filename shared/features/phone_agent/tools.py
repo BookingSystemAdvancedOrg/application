@@ -64,8 +64,11 @@ TOOLS = [
 ]
 TOOL_NAMES = tuple(t["name"] for t in TOOLS)
 FIND_DAYS = 14
+# The existing Lambdas the tools invoke (`<env>-<name>:live`). A cancel goes
+# through the staff status route on mark-arrived, never cancel-reservation
+# (a guest route that needs the manage-link token).
 FUNCTIONS = ("tenant-site-config", "get-availability", "create-pending-reservation", "get-reservation",
-             "mark-arrived", "cancel-reservation", "get-menu", "list-layout-version")
+             "mark-arrived", "get-menu", "list-layout-version")
 
 
 def function_name(name) -> str:

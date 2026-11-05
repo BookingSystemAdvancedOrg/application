@@ -374,6 +374,14 @@ def test_correction_of_a_time_shows_original_beside_it(env):
         "kind": "check_in"})
 
 
+def test_correction_must_name_the_person_of_the_record_it_corrects(env):
+    _, original = check(env, "check-in", person=P_HELPER)
+    status, body = correction(env, correctsSeq=original["seq"], personId=P_STAFF)
+    assert (status, body["code"], body["field"]) == (400, "wrong_person", "correctsSeq")
+    assert len(ledger(env)) == 1 and len(env.published) == 1  # nothing appended
+    assert correction(env, correctsSeq=original["seq"], personId=P_HELPER)[0] == 201
+
+
 def test_late_registration_moves_presence(env):
     status, rec = correction(env)
     assert status == 201 and "correctsSeq" not in rec
@@ -518,11 +526,33 @@ def test_platform_export_and_purge_leaves_the_ledger(env):
     result = env.api.handler({"hook": "tenant.purge", "hookVersion": 1, "tenantId": TENANT_A,
                               "locationIds": [LOC_A, LOC_A2], "round": 1})
     assert result["ok"] and result["done"] and result["counts"]["stateItems"] > 0
-    assert pl.list_persons(TENANT_A) == [] and pl.get_head(LOC_A) == {}
+    assert pl.list_persons(TENANT_A) == []
+    assert pl.query_all(pl.state_table(), pl.tenant_pk(TENANT_A), "") == []
+    assert [r["SK"] for r in pl.query_all(pl.state_table(), pl.location_pk(LOC_A), "")] == ["HEAD"]
+    assert int(pl.get_head(LOC_A)["seq"]) == 1  # the head stays with the ledger it points at (no PII)
     assert len(ledger(env)) == 1  # never purged
     assert [p["personId"] for p in pl.list_persons(TENANT_B)] == [P_B]  # B untouched
     # offboarded (state gone): the operator export still works from the ledger alone
     assert platform(env, TENANT_A, {"locationId": LOC_A, "from": DAY, "to": DAY})["status"] == 200
+
+
+def test_purge_then_re_onboard_then_check_in_continues_the_chain(env):
+    _, first = check(env, "check-in", person=P_HELPER)
+    env.clock.value = NOW + timedelta(hours=8)
+    assert check(env, "check-out", person=P_HELPER)[0] == 201
+    assert env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A, LOC_A2]})["done"]
+    assert check(env, "check-in", person=P_HELPER)[0] == 404  # the person is gone with the state
+    # the tenant comes back: persons are created again, the ledger carries on
+    assert put_person(env, P_HELPER)[0] == 201
+    env.clock.value = NOW + timedelta(days=1)
+    status, rec = check(env, "check-in", person=P_HELPER)
+    assert (status, rec["seq"]) == (201, 3)
+    records = ledger(env)
+    assert [int(r["seq"]) for r in records] == [1, 2, 3]
+    assert records[2]["prevHash"] == records[1]["hash"] and int(records[0]["seq"]) == first["seq"]
+    assert pl.verify(records, pl.get_head(LOC_A)) is None
+    _, day = call(env, "GET", BASE, query={"day": "2026-11-06"})
+    assert [p["personId"] for p in day["present"]] == [P_HELPER]
 
 
 def test_unknown_hook_and_route(env):

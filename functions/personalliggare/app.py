@@ -204,6 +204,9 @@ def correct(event, ctx):
         target = pl.get_record(ctx.location_id, corrects) if corrects > 0 else None
         if not target or target.get("tenantId") != ctx.tenant_id or target.get("kind") not in pl.CORRECTABLE:
             raise pl.LedgerError(404, "not found")
+        # A correction stands beside the record it corrects: same person.
+        if target.get("personId") != person.get("personId"):
+            raise pl.LedgerError(400, "wrong_person", "correctsSeq")
     else:
         # A late registration (the app was down, someone forgot): it moves the
         # presence like the registration it stands in for would have.
@@ -383,15 +386,18 @@ def _platform(event):
 
 
 def purge(tenant_id, location_ids):
-    """Offboarding: the STATE table only (persons, user pointers, head,
-    presence, idempotency markers). The ledger is deliberately untouched: the
-    duty to keep it outlives the subscription (ADR-H 7), its rows carry their
-    own name and identity snapshot and expire by TTL."""
+    """Offboarding: the STATE table only (persons, user pointers, presence,
+    idempotency markers). The ledger is deliberately untouched: the duty to
+    keep it outlives the subscription (ADR-H 7), its rows carry their own
+    name and identity snapshot and expire by TTL. The location's HEAD
+    (seq + last hash, no personal data) stays with the ledger it points at:
+    without it a re-onboarded tenant could never append again (seq 1 exists)
+    and the chain would restart with an empty prevHash."""
     tbl, deleted = pl.state_table(), 0
     rows = pl.query_all(tbl, pl.tenant_pk(tenant_id), "", ConsistentRead=True)
     for location_id in [x for x in location_ids if isinstance(x, str) and x and "#" not in x]:
         rows += [r for r in pl.query_all(tbl, pl.location_pk(location_id), "", ConsistentRead=True)
-                 if r.get("tenantId") == tenant_id]
+                 if r.get("tenantId") == tenant_id and r.get("SK") != pl.head_key(location_id)["SK"]]
     with tbl.batch_writer() as batch:
         for row in rows:
             batch.delete_item(Key={"PK": row["PK"], "SK": row["SK"]})

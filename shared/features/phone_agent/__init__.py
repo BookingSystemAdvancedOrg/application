@@ -60,11 +60,10 @@ CALLBACK_TTL_DAYS = 90
 SIM_TTL_SECONDS = 3600
 NUMBER_GRACE_DAYS = 30
 TRANSFER_TIMEOUT_S = 25
-AGENT_USER_PREFIX = "agent:"
-# CONTRACTS.md 4 writes the agent's system user with status "system". NOTE
-# (reported, STATUS.md): shared/tenant.staff_location() only accepts
-# status "active", so the existing staff routes would answer 404 to the
-# agent principal until that is settled in the hotspot window.
+# CONTRACTS.md 4: the agent's system user is `USER#agent:<l>` with status
+# "system"; shared/tenant.staff_location() accepts that status for this
+# prefix only, and manage-user keeps such rows out of the tenant's user list.
+AGENT_USER_PREFIX = shared_tenant.SYSTEM_SUB_PREFIX
 AGENT_USER_STATUS = "system"
 PLATFORM_KEY = {"PK": "PLATFORM#PHONE_AGENT", "SK": "SETTINGS"}
 

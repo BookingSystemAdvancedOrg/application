@@ -230,3 +230,20 @@ def test_billing_usage_privacy_and_purge(env):
     assert env.tel.numbers == {} and env.voice.agents == {}
     assert pa.query_all(pa.tenant_pk(TENANT_A), "") == []
     assert env.api.handler({"hook": "nope", "tenantId": TENANT_A})["code"] == "unknown_hook"
+
+
+def test_privacy_hooks_count_a_callback_once(env):
+    """CALL# and CALLBACK# share the "CALL" prefix: one query, no double
+    listing of the guest's callbacks."""
+    enable(env)
+    call_id = _a_call(env)
+    env.live.add_callback_for(env.live.calls.get_call(TENANT_A, call_id))(name="Anna", phone=CALLER,
+                                                                         topic="Allergier")
+    exported = env.api.handler({"hook": "privacy.export", "tenantId": TENANT_A, "phone": CALLER})
+    assert [i["kind"] for i in exported["items"]] == ["phone_call", "phone_callback"]
+    assert exported["items"][1]["topic"] == "Allergier"
+    erased = env.api.handler({"hook": "privacy.erase", "tenantId": TENANT_A, "phone": CALLER})
+    assert (erased["erased"]["calls"], erased["erased"]["callbacks"]) == (1, 1)
+    (cb,) = pa.query_all(pa.tenant_pk(TENANT_A), "CALLBACK#")
+    assert not {"name", "phone", "phoneHash", "topic"} & set(cb)
+    assert env.api.handler({"hook": "privacy.export", "tenantId": TENANT_A, "phone": CALLER})["items"] == []

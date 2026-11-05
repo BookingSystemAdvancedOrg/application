@@ -482,8 +482,9 @@ def _phone(event):
 
 def _guest_rows(tenant_id, phone):
     wanted = pa.phone_hash(tenant_id, phone)
+    # One query: the "CALL" prefix already covers CALL#... and CALLBACK#...
+    # (a second CALLBACK# query would list every callback twice).
     rows = pa.query_all(pa.tenant_pk(tenant_id), "CALL", ConsistentRead=True)
-    rows += pa.query_all(pa.tenant_pk(tenant_id), "CALLBACK#", ConsistentRead=True)
     found_calls = [r for r in rows if r["SK"].startswith("CALL#") and "#T#" not in r["SK"]
                    and r.get("fromHash") == wanted]
     found_callbacks = [r for r in rows if r["SK"].startswith("CALLBACK#") and r.get("phoneHash") == wanted]

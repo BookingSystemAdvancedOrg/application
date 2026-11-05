@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 from datetime import datetime, timedelta
 
 from boto3.dynamodb.types import TypeSerializer
@@ -131,9 +132,22 @@ def answer(call, *, greeting, lang, at, restaurant=""):
     return get_call(call["tenantId"], call["callId"]), True
 
 
-def disclosed(call, at):
-    """The provider's transcript event for the greeting arrived: evidence."""
-    return _update(call, "SET #st = :d, disclosure.playedAt = :at", {":d": "disclosed", ":at": pa.iso(at)},
+def normalized_text(text) -> str:
+    """Case, punctuation and whitespace folded, for comparing what the
+    provider says it played with what Booqy sent."""
+    return " ".join(re.sub(r"[^\w\s]", " ", str(text or "")).casefold().split())
+
+
+def disclosed(call, at, spoken=None):
+    """The provider's first final agent transcript of the call arrived: the
+    art. 50 evidence. `spoken` (the provider's own text) is stored as it
+    came, with `verbatim` saying whether it equals the greeting Booqy sent
+    once case, punctuation and whitespace are folded. Only ever the first
+    (status answered -> disclosed)."""
+    spoken = str(spoken or "")[:2000]
+    verbatim = normalized_text(spoken) == normalized_text((call.get("disclosure") or {}).get("text"))
+    return _update(call, "SET #st = :d, disclosure.playedAt = :at, disclosure.spoken = :sp, disclosure.verbatim = :vb",
+                   {":d": "disclosed", ":at": pa.iso(at), ":sp": spoken, ":vb": verbatim},
                    statuses=["answered"]) or call
 
 

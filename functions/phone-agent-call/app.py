@@ -246,10 +246,14 @@ def voice_webhook(event):
             continue
         voice = client("voice")
         if item.kind == "transcript":
-            text = (call.get("disclosure") or {}).get("text") or ""
-            if item.data.get("role") == "agent" and item.data.get("final") and text and \
-                    item.data.get("text", "").strip() == text.strip():
-                calls.disclosed(call, at)
+            # Art. 50 evidence: the first final agent transcript of the call is
+            # the greeting Booqy played before the model's first turn. The
+            # provider's own text is stored as it came (calls.disclosed marks
+            # whether it matches the greeting once normalised); it is never
+            # required to match exactly, since a transcript of played speech
+            # rarely does.
+            if item.data.get("role") == "agent" and item.data.get("final") and call.get("status") == "answered":
+                calls.disclosed(call, at, spoken=item.data.get("text"))
         elif item.kind == "interrupted" and call.get("status") == "answered":
             call, said = calls.repeat_disclosure(call, call.get("language") or "sv", at)
             if said:

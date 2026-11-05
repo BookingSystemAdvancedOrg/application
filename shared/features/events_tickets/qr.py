@@ -7,8 +7,10 @@
 The door scanner downloads the occurrence's scanKey with the guest list, so
 a scan verifies offline; the server verifies again on sync. A scanKey is
 bound to the tenant and the occurrence, so another restaurant's (or another
-evening's) ticket never verifies. Codes are stored only as
-HMAC(pepper, QR) (`CODE#` rows).
+evening's) ticket never verifies. Nothing of the code is stored: it is
+recomputed from the pepper on the ticket page and verified by HMAC at the
+door, so a table dump holds no usable QR (stricter than ADR-K 5's
+"HMAC only").
 
 Link tokens (the ticket page and the transfer accept link) are in the URL
 fragment on the guest site and in the path of the public routes:
@@ -48,10 +50,6 @@ def verify(tenant_id, occ_id, ticket_id, given_sig) -> bool:
     if not isinstance(given_sig, str) or len(given_sig) != 16 or not et.valid_id(ticket_id):
         return False
     return hmac.compare_digest(sig(scan_key(tenant_id, occ_id), ticket_id), given_sig.lower())
-
-
-def code_hmac(tenant_id, qr: str) -> str:
-    return et.mac(f"code|v1|{tenant_id}|{qr}").hex()
 
 
 def _b64(raw: bytes) -> str:

@@ -41,12 +41,15 @@ class FakeStripe:
     def __init__(self):
         self.calls = []
         self.fail = False
+        self.known_refunds = []  # what GET /v1/refunds answers (the 24 h lookup)
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params, "account": account,
                            "key": idempotency_key})
         if self.fail:
             raise stripe.StripeUnavailable("down")
+        if method == "GET" and path == "/v1/refunds":
+            return {"data": [r for r in self.known_refunds if r.get("payment_intent") == params["payment_intent"]]}
         if path == "/v1/payment_intents":
             pid = f"pi_{idempotency_key[-12:]}"
             return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"]}
@@ -58,7 +61,24 @@ class FakeStripe:
         return {"id": f"re_{len(self.calls)}", "status": "succeeded"}
 
     def refunds(self):
-        return [c for c in self.calls if c["path"] == "/v1/refunds"]
+        return [c for c in self.calls if c["path"] == "/v1/refunds" and c["method"] == "POST"]
+
+
+class FakeContext:
+    """A Lambda context whose clock the test moves (ms left)."""
+
+    def __init__(self, remaining_ms):
+        self.remaining_ms = remaining_ms
+
+    def get_remaining_time_in_millis(self):
+        return self.remaining_ms
+
+
+def guard_table(monkeypatch):
+    boto3.client("dynamodb", region_name=REGION).create_table(
+        TableName="test-guard", KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}], BillingMode="PAY_PER_REQUEST")
+    monkeypatch.setenv("REQUEST_GUARD_TABLE_NAME", "test-guard")
 
 
 class FakeLambda:
@@ -415,6 +435,43 @@ def test_last_seats_never_oversold(env):
     assert row["held"] == 4 and row["seatsLeft"] == 0 and row["taken"] == 4
 
 
+def test_owner_editing_a_type_does_not_fail_the_checkout(env):
+    """The hold is conditional on seatsLeft (and the price shown), not on the
+    type's version: a rename between the page load and the checkout is fine."""
+    published(env, ticketTypes=[{"typeId": T1, "name": "Middag", "priceOre": 50000, "vatRate": 12, "capacity": 3}])
+    api = env.api
+    real = api._hold_items
+    p = {"locationId": LOC_A, "eventId": E1, "typeId": T1}
+
+    def edit_then_hold(body):
+        def hook(*args, **kwargs):
+            status, _ = call(env, "PUT", L + "/{eventId}/ticket-types/{typeId}", params=p, claims=OWNER_A, body=body)
+            assert status == 200
+            return real(*args, **kwargs)
+        return hook
+
+    # the price changed under the guest (possible only while nothing is taken): not sold out, reload
+    api._hold_items = edit_then_hold({"name": "Middag", "priceOre": 60000, "vatRate": 12, "capacity": 3, "version": 1})
+    try:
+        assert buy(env, order_id="01ORDER1AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "changed_retry"
+    finally:
+        api._hold_items = real
+    assert env.table.get_item(Key=et.type_key(TENANT_A, E1, T1))["Item"]["held"] == 0
+    # a rename (version bump) between the page load and the checkout: the hold goes through
+    api._hold_items = edit_then_hold({"name": "Festmiddag", "priceOre": 60000, "vatRate": 12, "capacity": 3,
+                                      "version": 2})
+    try:
+        assert buy(env, qty=2)[0] == 200
+    finally:
+        api._hold_items = real
+    row = env.table.get_item(Key=et.type_key(TENANT_A, E1, T1))["Item"]
+    assert row["name"] == "Festmiddag" and row["version"] == 3 and row["held"] == 2 and row["seatsLeft"] == 1
+    order = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERAAAAAAAAAAAAAAAAAAA"))["Item"]
+    assert order["amountOre"] == 120000
+    assert buy(env, order_id="01ORDER3AAAAAAAAAAAAAAAAAA", qty=1)[0] == 200
+    assert buy(env, order_id="01ORDER4AAAAAAAAAAAAAAAAAA", qty=1)[1]["code"] == "type_sold_out"
+
+
 def test_type_capacity_and_early_bird(env):
     published(env, ticketTypes=[{"typeId": T1, "name": "Middag", "priceOre": 50000, "vatRate": 12, "capacity": 1},
                                 {"typeId": T2, "name": "Early", "priceOre": 40000, "vatRate": 12,
@@ -437,7 +494,8 @@ def test_stripe_down_releases_the_hold(env):
 def test_webhook_issues_once_and_emails(env):
     all_tickets = sold(env)
     assert len(all_tickets) == 2 and {t["status"] for t in all_tickets} == {"valid"}
-    assert all("code" not in t and len(t["codeHmac"]) == 64 for t in all_tickets)
+    assert all(not any(k.lower().startswith("code") for k in t) for t in all_tickets)  # no QR in the table
+    assert [r["SK"][:5] for r in env.table.scan()["Items"] if r["SK"].startswith("CODE#")] == []
     row = occ_row(env)
     assert row["sold"] == 2 and row["held"] == 0 and row["revenueOre"] == 179000
     assert pay(env)["result"] == "already_issued" and len(tickets(env)) == 2
@@ -549,6 +607,32 @@ def test_gift_transfer_accept_and_cancel(env):
     assert ("Ticket.Transferred" in [p[0] for p in env.published])
 
 
+def test_gift_transfers_per_ticket_are_capped(env, monkeypatch):
+    """One ticket can only cause so many gift emails a day (request guard)."""
+    guard_table(monkeypatch)
+    sold(env)
+    tok = token_of(env)
+    ticket_id = sorted(t["ticketId"] for t in tickets(env))[0]
+    for i in range(et.TRANSFERS_PER_TICKET_DAY):
+        transfer_id = f"01TRANSFER{i}AAAAAAAAAAAAAAA"
+        status, _ = call(env, "POST", "/public/tickets/{token}/transfers", params={"token": tok},
+                         body={"transferId": transfer_id, "ticketId": ticket_id, "kind": "gift",
+                               "toEmail": f"v{i}@example.se"})
+        assert status == 201
+        assert call(env, "DELETE", "/public/tickets/{token}/transfers/{transferId}",
+                    params={"token": tok, "transferId": transfer_id})[0] == 204
+    event = {"routeKey": "POST /public/tickets/{token}/transfers", "pathParameters": {"token": tok}, "headers": {},
+             "requestContext": {"http": {"method": "POST", "sourceIp": "203.0.113.5"}},
+             "body": json.dumps({"transferId": "01TRANSFERXAAAAAAAAAAAAAAA", "ticketId": ticket_id, "kind": "gift",
+                                 "toEmail": "x@example.se"})}
+    response = env.api.handler(event, None)
+    assert response["statusCode"] == 429 and int(response["headers"]["Retry-After"]) > 0
+    assert json.loads(response["body"])["code"] == "too_many_requests"
+    assert env.mail.kinds().count("events-tickets.transfer") == et.TRANSFERS_PER_TICKET_DAY
+    assert env.table.get_item(Key=et.transfer_key(TENANT_A, "01TRANSFERXAAAAAAAAAAAAAAA")).get("Item") is None
+    assert len(et.transfers_of_ticket(TENANT_A, ticket_id)) == et.TRANSFERS_PER_TICKET_DAY
+
+
 def test_transfer_cancel_and_closing(env):
     sold(env)
     tok = token_of(env)
@@ -646,6 +730,95 @@ def test_refund_stripe_down_then_retry_finishes(env):
     assert len([r for r in env.stripe.refunds() if r["key"] == f"ticket-refund-{ticket_id}"]) == 2  # same key
 
 
+def test_refund_retry_with_another_tx_id_then_sweep_refunds_once(env):
+    """Stripe down on the owner's refund, the admin retries with a fresh txId
+    (the old client did that): still one refund TX, and the sweep sends the
+    one Stripe refund the row still owes (REFUNDS index, removed on success)."""
+    ticket_id = sold(env)[0]["ticketId"]
+    rp = {"locationId": LOC_A, "ticketId": ticket_id}
+    env.stripe.fail = True
+    assert call(env, "POST", L + "/tickets/{ticketId}/refund", params=rp, claims=OWNER_A,
+                body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"})[1]["code"] == "stripe_unavailable"
+    retry = call(env, "POST", L + "/tickets/{ticketId}/refund", params=rp, claims=OWNER_A,
+                 body={"txId": "01TXREFUNDBBBBBBBBBBBBBBBB", "reason": "Sjuk"})
+    assert retry[0] == 409 and retry[1]["code"] == "invalid_state"  # already refunded in our books, not twice
+    env.stripe.fail = False
+    assert et.pending_refunds() and et.pending_refunds()[0]["txId"] == "01TXREFUNDAAAAAAAAAAAAAAAA"
+    before = len(env.stripe.refunds())
+    assert env.api.handler({"job": "sweep"})["refunds"] == 1
+    assert len(env.stripe.refunds()) == before + 1 and len({r["key"] for r in env.stripe.refunds()}) == 1
+    rows = env.table.query(KeyConditionExpression="PK = :p AND begins_with(SK, :s)",
+                           ExpressionAttributeValues={":p": f"TENANT#{TENANT_A}", ":s": "TX#"})["Items"]
+    refund_rows = [r for r in rows if r["kind"] == "refund"]
+    assert len(refund_rows) == 1 and refund_rows[0]["stripeRefundId"].startswith("re_")
+    assert "GSI1PK" not in refund_rows[0] and et.pending_refunds() == []
+    assert env.api.handler({"job": "sweep"})["refunds"] == 0
+    ticket = env.table.get_item(Key=et.ticket_key(TENANT_A, ticket_id))["Item"]
+    assert ticket["refundTxId"] == "01TXREFUNDAAAAAAAAAAAAAAAA"
+
+
+def test_refund_older_than_a_day_is_looked_up_in_stripe_first(env):
+    ticket_id = sold(env)[0]["ticketId"]
+    rp = {"locationId": LOC_A, "ticketId": ticket_id}
+    env.stripe.fail = True
+    call(env, "POST", L + "/tickets/{ticketId}/refund", params=rp, claims=OWNER_A,
+         body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"})
+    env.stripe.fail = False
+    order = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERAAAAAAAAAAAAAAAAAAA"))["Item"]
+    # Stripe did take the refund (the response never reached us); the key may be forgotten after 24 h.
+    env.stripe.known_refunds = [{"id": "re_found", "payment_intent": order["paymentIntentId"], "amount": 89500,
+                                 "status": "succeeded",
+                                 "metadata": {"kind": "ticket", "tenantId": TENANT_A, "ticketId": ticket_id}}]
+    env.clock.value = NOW + timedelta(hours=25)
+    posted = len(env.stripe.refunds())
+    assert env.api.handler({"job": "sweep"})["refunds"] == 1
+    assert len(env.stripe.refunds()) == posted  # no second refund
+    tx = env.table.get_item(Key=et.tx_key(TENANT_A, "01TXREFUNDAAAAAAAAAAAAAAAA"))["Item"]
+    assert tx["stripeRefundId"] == "re_found"
+    lookups = [c for c in env.stripe.calls if c["method"] == "GET" and c["path"] == "/v1/refunds"]
+    assert lookups and lookups[-1]["account"] == ACCT_A and lookups[-1]["params"]["payment_intent"] == \
+        order["paymentIntentId"]
+
+
+def test_refund_older_than_a_day_unknown_to_stripe_is_sent(env):
+    ticket_id = sold(env)[0]["ticketId"]
+    env.stripe.fail = True
+    call(env, "POST", L + "/tickets/{ticketId}/refund", params={"locationId": LOC_A, "ticketId": ticket_id},
+         claims=OWNER_A, body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"})
+    env.stripe.fail = False
+    env.clock.value = NOW + timedelta(hours=25)
+    posted = len(env.stripe.refunds())
+    assert env.api.handler({"job": "sweep"})["refunds"] == 1
+    assert len(env.stripe.refunds()) == posted + 1
+    assert any(c["method"] == "GET" and c["path"] == "/v1/refunds" for c in env.stripe.calls)
+
+
+def test_cancel_refunds_a_few_inline_and_the_sweep_the_rest(env):
+    """K9 answers 202 after INLINE_REFUNDS tickets; counts are written per
+    ticket; the sweep stops when the Lambda's time is short and continues."""
+    published(env, occurrences=[{"startAt": START, "endAt": "2026-12-04T22:00:00Z", "capacity": 20}])
+    for i in range(3):
+        order_id = f"01ORDER{i}AAAAAAAAAAAAAAAAAA"
+        assert buy(env, order_id=order_id, qty=4)[0] == 200 and pay(env, order_id=order_id)["result"] == "issued"
+    p = {"locationId": LOC_A, "eventId": E1, "occurrenceId": OCC1}
+    status, out = call(env, "POST", OCC + "/cancel", params=p, claims=OWNER_A,
+                       body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1})
+    assert (status, out["toRefund"]) == (202, 12)
+    jp = {"locationId": LOC_A, "jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA"}
+    _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)
+    assert job["done"] is False and job["counts"]["refunded"] == env.api.INLINE_REFUNDS == 10
+    assert len(env.stripe.refunds()) == 10 and env.mail.kinds().count("events-tickets.cancelled") == 0
+    # the sweep with (almost) no time left does nothing and says so
+    out = env.api.handler({"job": "sweep"}, FakeContext(env.api.JOB_MARGIN_MS - 1))
+    assert out["stopped"] is True and out["jobs"] == 0
+    assert call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)[1]["counts"]["refunded"] == 10
+    out = env.api.handler({"job": "sweep"}, FakeContext(120_000))
+    assert out["stopped"] is False and out["jobs"] == 1
+    _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)
+    assert job["done"] is True and job["counts"] == {"refunded": 12, "failed": 0, "notified": 3}
+    assert len({r["key"] for r in env.stripe.refunds()}) == 12 and {t["status"] for t in tickets(env)} == {"refunded"}
+
+
 def test_cancel_occurrence_mass_refund_resumable(env):
     sold(env)
     buy(env, order_id="01ORDERBBBBBBBBBBBBBBBBBBB", qty=1)
@@ -661,12 +834,16 @@ def test_cancel_occurrence_mass_refund_resumable(env):
                 body={"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1})[1]["toRefund"] == 3
     jp = {"locationId": LOC_A, "jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA"}
     assert call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)[1]["done"] is False
+    _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)
+    assert job["counts"] == {"refunded": 3, "failed": 3, "notified": 0}  # in our books; Stripe still owes 3
     env.stripe.fail = False
     env.api.handler({"job": "sweep"})
     _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)
-    assert job["done"] is True
+    assert job["done"] is True and job["counts"] == {"refunded": 3, "failed": 0, "notified": 2}
     keys = [r["key"] for r in env.stripe.refunds()]
     assert len(set(keys)) == 3  # every ticket refunded once (retries reuse the same key)
+    assert len([k for k in keys if k]) == 6  # 3 failed calls, 3 that went through
+    assert et.pending_refunds() == []
     assert {t["status"] for t in tickets(env)} == {"refunded"}
     assert env.mail.kinds().count("events-tickets.cancelled") == 2
     env.api.handler({"job": "sweep"})
@@ -743,11 +920,25 @@ def test_purge_keeps_tx_rows(env):
 
 
 def test_nightly_cleans_contacts_after_24_months(env):
+    """Order, its tickets, the ticket a guest was given and the transfer: all
+    found by key (deterministic ids and the transfer's per-ticket index row)."""
     sold(env)
+    tok = token_of(env)
+    ticket_id = sorted(t["ticketId"] for t in tickets(env))[0]
+    call(env, "POST", "/public/tickets/{token}/transfers", params={"token": tok},
+         body={"transferId": "01TRANSFERAAAAAAAAAAAAAAAA", "ticketId": ticket_id, "kind": "gift",
+               "toEmail": "vän@example.se"})
+    call(env, "POST", "/public/ticket-transfers/{transferToken}/accept",
+         params={"transferToken": qr.token("x", TENANT_A, "01TRANSFERAAAAAAAAAAAAAAAA")}, body={"name": "Vän"})
+    env.table.update_item(Key=et.transfer_key(TENANT_A, "01TRANSFERAAAAAAAAAAAAAAAA"), UpdateExpression="REMOVE #t",
+                          ExpressionAttributeNames={"#t": "ttl"})  # moto never expires rows; keep it explicit
     env.clock.value = datetime(2028, 12, 10, 3, 0, tzinfo=timezone.utc)
     assert env.api.handler({"job": "nightly"})["cleaned"] == 1
     order = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERAAAAAAAAAAAAAAAAAAA"))["Item"]
     assert "buyerEmail" not in order and "GSI2PK" not in order
+    assert len(tickets(env)) == 3 and all("holderName" not in t and "holderEmailHash" not in t for t in tickets(env))
+    transfer = env.table.get_item(Key=et.transfer_key(TENANT_A, "01TRANSFERAAAAAAAAAAAAAAAA"))["Item"]
+    assert "toEmail" not in transfer and "toEmailHash" not in transfer
     assert env.api.handler({"job": "nightly"})["cleaned"] == 0
 
 

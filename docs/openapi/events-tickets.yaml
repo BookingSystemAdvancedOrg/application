@@ -474,7 +474,7 @@ paths:
     post:
       tags:
       - Events and tickets
-      summary: K9 Cancel an occurrence (mass refund job)
+      summary: K9 Cancel an occurrence (mass refund job; a few refunds now, the sweep finishes within minutes)
       operationId: eventsTicketsPostLocationsLocationIdEventsEventIdOccurrencesOccurrenceIdCancel
       security:
       - bearerAuth: []
@@ -1059,6 +1059,11 @@ paths:
               schema: *id002
         '409':
           description: transfer_closed, invalid_state
+          content:
+            application/json:
+              schema: *id002
+        '429':
+          description: Too many transfers of this ticket today or from this address (request guard, Retry-After).
           content:
             application/json:
               schema: *id002

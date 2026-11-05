@@ -9,8 +9,9 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
 - `functions/events-tickets/app.py`: routes K1-K22, hooks `stripe.event`,
   `accounting.events`, `insights.events`, `privacy.export`, `privacy.erase`,
   `tenant.purge`; scheduled `{"job": "sweep"}` (every 5 minutes: expired
-  holds, mass refund jobs) and `{"job": "nightly"}` (24-month contact
-  clean-up).
+  holds, Stripe refunds still owed, mass refund jobs; stops 15 s before the
+  Lambda's deadline via `context.get_remaining_time_in_millis()` and
+  continues next time) and `{"job": "nightly"}` (24-month contact clean-up).
 - `shared/features/events_tickets/`: keys, validation and views
   (`__init__.py`), QR, scan keys and link tokens (`qr.py`), recurring series
   (`series.py`).
@@ -32,13 +33,35 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   (key `ticket-late-<orderId>`).
 - QR: `<ticketId>.<sig>`, `sig` from a per-occurrence scan key (tenant and
   occurrence bound) that the door scanner downloads with the guest list, so
-  scans verify offline; the server verifies again on sync. Codes are
-  stored as HMAC only.
+  scans verify offline; the server verifies again on sync. Nothing of the
+  code is stored (no `CODE#` rows, no `codeHmac`): it is recomputed from the
+  pepper, so a table dump holds no usable QR (stricter than ADR-K 5).
 - Links: `/biljett#<token>` (order or single ticket) and
   `/biljett/ta-emot#<token>` (gift transfer), HMAC tokens, never stored.
+- Lookups: ticket ids are deterministic (`ticket_id_for(orderId, n)`,
+  `gift_ticket_id(transferId)`), so an order's tickets (K18, K20, K22, the
+  nightly, privacy erase, `charge.refunded`) are key lookups following
+  `transferredTo`; a ticket's transfers are a GSI1 row per transfer
+  (`TENANT#t#TICKET#id#TRANSFERS`); a paid order sits on GSI1
+  `TENANT#t#EVT#e#ORDERS` (K12, cancel emails). No `TICKET#`/`TRANSFER#`
+  partition scans remain; `privacy.export` by email still reads the
+  tenant's `ORDER#`/`TICKET#`/`TRANSFER#` rows (no email index; rare).
 - Refunds: per ticket (K13, key `ticket-refund-<ticketId>`) and cancel an
   occurrence = a resumable mass refund job (K9/K14), each ticket refunded
-  once, each buyer emailed once.
+  once, each buyer emailed once. A refund TX row carries a sparse GSI1
+  `REFUNDS` row until Stripe has the refund; the sweep retries every such
+  row whatever the client sends next (the admin derives one `txId` per
+  ticket, `rf_<ticketId>`), and a row older than 24 h is first looked up in
+  Stripe (`GET /v1/refunds?payment_intent=`, metadata `ticketId`) since
+  Stripe may have forgotten the idempotency key by then. K9 refunds at
+  most 10 tickets inline (API Gateway's 30 s), writes `counts.refunded` per
+  ticket, and the sweep finishes the rest; `counts.failed` is how many
+  Stripe refunds are still owed. The admin polls K14 when K9 times out.
+- Checkout: the hold is conditional on `seatsLeft` and the price the guest
+  saw, never on the type's `version`, so an owner's rename during a
+  checkout is harmless (a price change gives 409 `changed_retry`).
+- K20: at most 5 gift transfers per ticket and day and 20 per IP and hour
+  (request guard, 429 with `Retry-After`).
 - Bokföring: TX rows by location and day; sale debits `stripe` and credits
   `sales<rate>` + `vat<rate>`; refunds reverse. **NEEDS ACCOUNTANT REVIEW**
   (VAT rate list 25/12/6 and the BAS accounts; the dedicated `ticketSales*`

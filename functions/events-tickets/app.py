@@ -23,14 +23,16 @@ TRIGGER:
     POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard
     GET    /public/tickets/{token}                                              K18
     GET    /public/tickets/{token}/pass                                         K19 404 (Wallet not built yet)
-    POST   /public/tickets/{token}/transfers                                    K20 gift only (resale not built)
+    POST   /public/tickets/{token}/transfers                                    K20 gift only (resale not built);
+                                                                                request guard per ticket and IP
     POST   /public/ticket-transfers/{transferToken}/accept                      K21
     DELETE /public/tickets/{token}/transfers/{transferId}                       K22
 
     Lambda invoke (no requestContext): {"hook": ...} stripe.event, accounting.events,
     insights.events, privacy.export, privacy.erase, tenant.purge;
-    EventBridge Scheduler {"job": "sweep"} every 5 minutes (hold expiry, mass
-    refund jobs) and {"job": "nightly"} (24-month contact clean-up).
+    EventBridge Scheduler {"job": "sweep"} every 5 minutes (hold expiry, owed
+    Stripe refunds, mass refund jobs; stops before the Lambda's time runs out
+    and continues next time) and {"job": "nightly"} (24-month contact clean-up).
 
 PURPOSE:
     Evenemang och biljetter (ADR-K). Capacity is a conditional counter
@@ -71,9 +73,23 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 CHECKOUT_IP_LIMIT = (10, 600)
+TRANSFER_IP_LIMIT = (20, 3600)
 TICKETS_SEND_GRACE_SECONDS = 120
 JOB_BATCH = 200
+INLINE_REFUNDS = 10  # K9 refunds this many tickets before answering 202; the sweep does the rest
+JOB_MARGIN_MS = 15_000  # the sweep stops starting new refunds this close to the Lambda timeout
 _clients = {}
+_invocation = {"time_left": None}  # this invocation's remaining-time getter (set by the handler)
+
+
+def _time_left(context):
+    """Milliseconds left for this invocation (a plain number outside Lambda)."""
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    return (lambda: int(getter())) if callable(getter) else (lambda: 10 ** 9)
+
+
+def _in_time(time_left) -> bool:
+    return time_left is None or time_left() > JOB_MARGIN_MS
 
 
 def _client(name):
@@ -596,8 +612,8 @@ def cancel_occurrence(event, ctx):
     _publish("EventOccurrence.Cancelled", {"tenantId": ctx.tenant_id, "locationId": ev["locationId"],
                                            "eventId": ev["eventId"], "occurrenceId": occ["occurrenceId"],
                                            "ticketsToRefund": to_refund})
-    try:
-        _run_job(ctx.tenant_id, job_id)  # the sweep finishes whatever this run does not
+    try:  # a few refunds now (API Gateway allows 30 s); the sweep finishes the rest within minutes
+        _run_job(ctx.tenant_id, job_id, limit=INLINE_REFUNDS, time_left=_invocation["time_left"])
     except Exception as exc:  # never fail the 202: the job is stored and resumable
         logger.warning(json.dumps({"job": job_id, "firstRun": "failed", "type": type(exc).__name__}))
     return http.respond(202, {"jobId": job_id, "toRefund": to_refund})
@@ -612,48 +628,62 @@ def get_job(event, ctx):
                               "counts": et.plain(job["counts"]), "toRefund": int(job["toRefund"])})
 
 
-def _run_job(tenant_id, job_id):
+def _owed_refunds(tenant_id, occ_id):
+    return [t for t in et.pending_refunds() if t.get("tenantId") == tenant_id and t.get("occurrenceId") == occ_id]
+
+
+def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
+    """One step of a mass refund: tickets are refunded in our books one by
+    one (`counts.refunded` written per ticket, so K14 shows live progress),
+    then the owed Stripe refunds are sent; `counts.failed` is how many
+    Stripe still owes. Stops at `limit` tickets or when `time_left` (ms)
+    gets short, and the next sweep continues. Done when every ticket is
+    refunded, Stripe has every refund and every buyer is emailed."""
     job = et.get(et.job_key(tenant_id, job_id))
     if not job or job.get("done"):
         return job
-    counts = {"refunded": 0, "failed": 0, "notified": 0}
+    key = et.job_key(tenant_id, job_id)
     tickets = _paid_tickets(tenant_id, job["occurrenceId"])
-    for ticket in tickets[:JOB_BATCH]:
+    stopped = False
+    for ticket in tickets[:limit]:
+        if not _in_time(time_left):
+            stopped = True
+            break
         try:
             _refund_ticket(tenant_id, ticket, f"cancel-{ticket['ticketId']}", by="cancellation",
-                           reason="Evenemanget är inställt")
-            counts["refunded"] += 1
+                           reason="Evenemanget är inställt", stripe="later")
         except (et.EventsError, ClientError, BotoCoreError) as exc:
-            counts["failed"] += 1
             logger.warning(json.dumps({"job": job_id, "ticket": "refund_failed", "type": type(exc).__name__}))
-    # Refund TX rows whose Stripe refund failed earlier: finished on this run.
-    for tx in [t for t in et.partition(tenant_id, "TX#cancel-")
-               if t.get("occurrenceId") == job["occurrenceId"] and not t.get("stripeRefundId")
-               and int(t["amountOre"]) < 0]:
+            continue
+        et.table().update_item(Key=key, UpdateExpression="SET counts.refunded = counts.refunded + :one",
+                               ExpressionAttributeValues={":one": 1})
+    for tx in _owed_refunds(tenant_id, job["occurrenceId"]):
+        if not _in_time(time_left):
+            stopped = True
+            break
         try:
             _stripe_refund(tenant_id, tx)
         except et.EventsError:
-            counts["failed"] += 1
+            continue  # still owed: counted below and retried by the sweep
     remaining = len(_paid_tickets(tenant_id, job["occurrenceId"]))
-    unfinished = [t for t in et.partition(tenant_id, "TX#cancel-")
-                  if t.get("occurrenceId") == job["occurrenceId"] and not t.get("stripeRefundId")
-                  and int(t["amountOre"]) < 0]
-    if not remaining and not unfinished:
-        counts["notified"] += _notify_cancelled(tenant_id, job)
-    done = not remaining and not unfinished and not _unnotified(tenant_id, job)
-    expr = ("SET counts.refunded = counts.refunded + :r, counts.failed = :f, counts.notified = counts.notified + :n, "
-            "done = :d")
-    values = {":r": counts["refunded"], ":f": counts["failed"], ":n": counts["notified"], ":d": done}
+    unfinished = len(_owed_refunds(tenant_id, job["occurrenceId"]))
+    notified = 0
+    if not remaining and not unfinished and not stopped:
+        notified = _notify_cancelled(tenant_id, job)
+    done = not remaining and not unfinished and not stopped and not _unnotified(tenant_id, job)
+    expr = "SET counts.failed = :f, counts.notified = counts.notified + :n, done = :d"
+    values = {":f": unfinished, ":n": notified, ":d": done}  # failed = Stripe refunds still owed after this run
     if done:
         expr += ", #ttl = :ttl REMOVE GSI1PK, GSI1SK"
         values[":ttl"] = int((et.now() + timedelta(days=et.JOB_TTL_DAYS)).timestamp())
-    et.table().update_item(Key=et.job_key(tenant_id, job_id), UpdateExpression=expr, ExpressionAttributeValues=values,
+    et.table().update_item(Key=key, UpdateExpression=expr, ExpressionAttributeValues=values,
                            **({"ExpressionAttributeNames": {"#ttl": "ttl"}} if done else {}))
-    return et.get(et.job_key(tenant_id, job_id))
+    return et.get(key)
 
 
 def _orders_of_occurrence(tenant_id, occ_id):
-    return [o for o in et.partition(tenant_id, "ORDER#") if o.get("occurrenceId") == occ_id
+    event_id = occ_id.rsplit("-", 1)[0]
+    return [o for o in et.orders_of_event(tenant_id, event_id) if o.get("occurrenceId") == occ_id
             and o.get("status") in ("paid", "partly_refunded", "refunded")]
 
 
@@ -708,16 +738,19 @@ def _tx(tenant_id, tx_id, kind, order, ticket_ids, amount, rates, at, **extra):
             **extra}
 
 
-def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe_too=True):
+def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now"):
     """The ticket first (one transaction: ticket refunded, TX row, counters),
     then Stripe for exactly the ticket's price (key ticket-refund-<ticketId>).
-    A Stripe failure leaves the TX without stripeRefundId; a retry with the
-    same txId (or the job) finishes it. Returns (ticket, created)."""
+    `stripe`: "now" calls Stripe here, "later" leaves it to the caller or the
+    sweep, "external" means Stripe already refunded it. Until Stripe has the
+    refund the TX carries a sparse REFUNDS index row, so a failed call is
+    retried by the sweep whatever txId the client sends next. Returns
+    (ticket, created)."""
     done = et.get(et.tx_key(tenant_id, tx_id))
     if done:
         if done.get("ticketIds") != [ticket["ticketId"]]:
             raise et.EventsError(409, "changed_retry")
-        if stripe_too:
+        if stripe == "now":
             _stripe_refund(tenant_id, done)
         return et.get(et.ticket_key(tenant_id, ticket["ticketId"])), False
     if ticket["status"] not in ("valid", "checked_in"):
@@ -733,12 +766,15 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe_too=True
     tx = _tx(tenant_id, tx_id, "refund", order, [ticket["ticketId"]], -price, [(-price, rate)], at, by=by,
              paymentIntentId=order.get("paymentIntentId"), stripeAccountId=order.get("stripeAccountId"),
              **({"reason": reason} if reason else {}))
-    if price == 0 or not stripe_too:
+    if price == 0 or stripe == "external":
         tx["stripeRefundId"] = "none" if price == 0 else "external"
+    else:
+        tx.update(et.refund_gsi(tenant_id, tx_id, et.iso(at)))
     type_row = et.get(et.type_key(tenant_id, ticket["eventId"], ticket["typeId"]))
     items = [
-        _update(et.ticket_key(tenant_id, ticket["ticketId"]), "SET #s = :r, refundedAt = :at, version = version + :one",
-                {":r": "refunded", ":at": et.iso(at), ":one": 1, ":v": int(ticket["version"])},
+        _update(et.ticket_key(tenant_id, ticket["ticketId"]),
+                "SET #s = :r, refundedAt = :at, refundTxId = :tx, version = version + :one",
+                {":r": "refunded", ":at": et.iso(at), ":tx": tx_id, ":one": 1, ":v": int(ticket["version"])},
                 "version = :v", {"#s": "status"}),
         _put(tx),
         _update(et.occ_key(tenant_id, ticket["eventId"], occ_start),
@@ -762,9 +798,24 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe_too=True
     _publish("Ticket.Refunded", {"tenantId": tenant_id, "locationId": order["locationId"],
                                  "occurrenceId": ticket["occurrenceId"], "ticketId": ticket["ticketId"],
                                  "amountOre": price, "by": by})
-    if price and stripe_too:
+    if price and stripe == "now":
         _stripe_refund(tenant_id, tx)
     return et.get(et.ticket_key(tenant_id, ticket["ticketId"])), True
+
+
+def _existing_stripe_refund(tenant_id, tx, ticket_id, amount):
+    """A refund Stripe already holds for this ticket (metadata), or None.
+    Used before retrying a TX older than REFUND_RETRY_HOURS: Stripe may
+    have forgotten the idempotency key by then, so a blind retry could
+    refund twice."""
+    listing = stripe.request("GET", "/v1/refunds", {"payment_intent": tx["paymentIntentId"], "limit": 100},
+                             account=tx["stripeAccountId"])
+    for refund in (listing or {}).get("data") or []:
+        meta = refund.get("metadata") or {}
+        if meta.get("ticketId") == ticket_id and meta.get("tenantId") == tenant_id \
+                and int(refund.get("amount") or 0) == amount and refund.get("status") != "failed":
+            return refund
+    return None
 
 
 def _stripe_refund(tenant_id, tx):
@@ -772,15 +823,22 @@ def _stripe_refund(tenant_id, tx):
     if amount <= 0 or tx.get("stripeRefundId"):
         return
     ticket_id = tx["ticketIds"][0]
+    created = et.parse_iso(tx.get("at"))
     try:
-        result = stripe.request("POST", "/v1/refunds", {
-            "payment_intent": tx["paymentIntentId"], "amount": amount,
-            "metadata": {"kind": "ticket", "tenantId": tenant_id, "orderId": tx["orderId"], "ticketId": ticket_id}},
-            account=tx["stripeAccountId"], idempotency_key=f"ticket-refund-{ticket_id}")
+        result = None
+        if created and et.now() - created > timedelta(hours=et.REFUND_RETRY_HOURS):
+            result = _existing_stripe_refund(tenant_id, tx, ticket_id, amount)
+        if result is None:
+            result = stripe.request("POST", "/v1/refunds", {
+                "payment_intent": tx["paymentIntentId"], "amount": amount,
+                "metadata": {"kind": "ticket", "tenantId": tenant_id, "orderId": tx["orderId"],
+                             "ticketId": ticket_id}},
+                account=tx["stripeAccountId"], idempotency_key=f"ticket-refund-{ticket_id}")
     except (stripe.StripeError, stripe.StripeUnavailable):
         logger.warning(json.dumps({"event": "ticket.refund", "stripe": "failed", "txId": tx["txId"]}))
         raise et.EventsError(502, "stripe_unavailable")
-    et.table().update_item(Key=et.tx_key(tenant_id, tx["txId"]), UpdateExpression="SET stripeRefundId = :r",
+    et.table().update_item(Key=et.tx_key(tenant_id, tx["txId"]),
+                           UpdateExpression="SET stripeRefundId = :r REMOVE GSI1PK, GSI1SK",
                            ExpressionAttributeValues={":r": (result or {}).get("id") or "unknown"})
 
 
@@ -901,22 +959,18 @@ def list_orders(event, ctx):
     if set(params) - {"cursor"}:
         raise et.EventsError(400, "unsupported query parameters")
     ev = _event_or_404(ctx, event)
-    rows = sorted((o for o in et.partition(ctx.tenant_id, "ORDER#") if o.get("eventId") == ev["eventId"]
-                   and o.get("status") != "pending"), key=lambda o: o.get("createdAt") or "", reverse=True)
+    rows = et.orders_of_event(ctx.tenant_id, ev["eventId"])  # paid orders, newest first (GSI1)
     start = 0
     if params.get("cursor"):
         key = et.decode_cursor(params["cursor"], ctx.tenant_id)
         start = next((i + 1 for i, o in enumerate(rows) if o["SK"] == key["SK"]), len(rows))
     page = rows[start:start + et.PAGE]
-    out = [{k: et.plain(o[k]) for k in ("orderId", "occurrenceId", "qty", "amountOre", "refundedOre", "status",
-                                         "buyerName", "buyerEmail", "createdAt", "paidAt") if o.get(k) is not None}
-           for o in page]
-    by_order = {}
-    for t in et.partition(ctx.tenant_id, "TICKET#"):
-        if t.get("eventId") == ev["eventId"]:
-            by_order.setdefault(t["orderId"], []).append(et.ticket_view(t))
-    for o in out:
-        o["tickets"] = sorted(by_order.get(o["orderId"], []), key=lambda t: t["ticketId"])
+    out = []
+    for o in page:
+        view = {k: et.plain(o[k]) for k in ("orderId", "occurrenceId", "qty", "amountOre", "refundedOre", "status",
+                                             "buyerName", "buyerEmail", "createdAt", "paidAt") if o.get(k) is not None}
+        view["tickets"] = [et.ticket_view(t) for t in et.tickets_of_order(ctx.tenant_id, o)]
+        out.append(view)
     cursor = et.encode_cursor({"PK": page[-1]["PK"], "SK": page[-1]["SK"]}) \
         if page and start + et.PAGE < len(rows) else None
     return http.respond(200, {"orders": out, "cursor": cursor})
@@ -988,10 +1042,8 @@ def public_detail(event):
 
 
 def _guard(event):
-    try:
-        request_guard.check([("ticket-ip", http.source_ip(event), *CHECKOUT_IP_LIMIT)], et.now())
-    except request_guard.Limited:
-        raise et.EventsError(429, "too_many_requests")
+    """Checkout attempts per IP; request_guard.Limited becomes a 429 with Retry-After in the handler."""
+    return request_guard.check([("ticket-ip", http.source_ip(event), *CHECKOUT_IP_LIMIT)], et.now())
 
 
 def _checkout_lines(body, types, settings, at_iso):
@@ -1022,6 +1074,9 @@ def _checkout_lines(body, types, settings, at_iso):
 
 
 def _hold_items(tenant_id, occ, types_by_id, lines, qty):
+    """The hold is conditional on the seats (and the price the guest saw),
+    not on the type's version: the owner renaming a type must not turn a
+    checkout into type_sold_out."""
     items = [_update({"PK": occ["PK"], "SK": occ["SK"]},
                      "SET held = held + :q, taken = taken + :q, seatsLeft = seatsLeft - :q",
                      {":q": qty, ":sched": "scheduled"}, "seatsLeft >= :q AND #s = :sched", {"#s": "status"})]
@@ -1031,8 +1086,9 @@ def _hold_items(tenant_id, occ, types_by_id, lines, qty):
         items.append(_update({"PK": t["PK"], "SK": t["SK"]},
                              "SET held = held + :q, taken = taken + :q"
                              + (", seatsLeft = seatsLeft - :q" if capped else ""),
-                             {":q": line["qty"], ":v": int(t["version"])},
-                             "version = :v" + (" AND seatsLeft >= :q" if capped else "")))
+                             {":q": line["qty"], ":p": line["priceOre"], ":r": line["vatRate"]},
+                             "attribute_exists(PK) AND priceOre = :p AND vatRate = :r"
+                             + (" AND seatsLeft >= :q" if capped else "")))
     return items
 
 
@@ -1125,6 +1181,12 @@ def checkout(event):
         occ = et.get({"PK": occ["PK"], "SK": occ["SK"]}) or occ
         if et.left(occ) < qty:
             raise et.EventsError(409, "sold_out")
+        _, fresh = et.event_parts(ctx.tenant_id, event_id)
+        fresh_by_id = {t["typeId"]: t for t in fresh}
+        for ln in lines:
+            t = fresh_by_id.get(ln["typeId"])
+            if not t or int(t["priceOre"]) != ln["priceOre"] or int(t["vatRate"]) != ln["vatRate"]:
+                raise et.EventsError(409, "changed_retry")  # the price changed under the guest: reload
         raise et.EventsError(409, "type_sold_out")
     if not amount:
         _issue(ctx.tenant_id, order, None)
@@ -1198,32 +1260,29 @@ def _issue(tenant_id, order, intent):
             _expire_order(tenant_id, order)
         return _refund_late(tenant_id, order, intent, "cancelled") if intent else "ignored:cancelled"
     tickets, n = [], 0
-    codes = []
     for line in order["lines"]:
         for _ in range(int(line["qty"])):
             ticket_id = et.ticket_id_for(order["orderId"], n)
             n += 1
-            payload = qr.payload(tenant_id, order["occurrenceId"], ticket_id)
-            code = qr.code_hmac(tenant_id, payload)
             tickets.append({**et.ticket_key(tenant_id, ticket_id), "tenantId": tenant_id, "ticketId": ticket_id,
                             "orderId": order["orderId"], "eventId": order["eventId"],
                             "occurrenceId": order["occurrenceId"], "locationId": order["locationId"],
                             "typeId": line["typeId"], "typeName": line["name"], "priceOre": int(line["priceOre"]),
-                            "vatRate": int(line["vatRate"]), "codeHmac": code, "status": "valid",
+                            "vatRate": int(line["vatRate"]), "status": "valid",
                             "holderName": order.get("buyerName"), "holderEmailHash": order.get("buyerEmailHash"),
                             "version": 1, "issuedAt": et.iso(at),
                             **et.occurrence_gsi(tenant_id, order["occurrenceId"], order.get("buyerName"), ticket_id)})
-            codes.append({**et.code_key(tenant_id, code), "tenantId": tenant_id, "ticketId": ticket_id})
     amount = int(order["amountOre"])
     tx = _tx(tenant_id, f"sale-{order['orderId']}", "sale", order, [t["ticketId"] for t in tickets], amount,
              [(int(ln["qty"]) * int(ln["priceOre"]), int(ln["vatRate"])) for ln in order["lines"]], at,
              **({"paymentIntentId": intent["id"]} if intent else {}))
     cleanup_month = et.add_months(et.parse_iso(occ.get("startAt") or et.iso(at)), et.CONTACT_MONTHS).strftime("%Y-%m")
+    paid_gsi = et.paid_order_gsi(tenant_id, order["eventId"], et.iso(at), order["orderId"])
     order_update = _update(
         et.order_key(tenant_id, order["orderId"]),
-        "SET #s = :paid, paidAt = :at, GSI2PK = :g2, GSI2SK = :g2s REMOVE GSI1PK, GSI1SK, #ttl",
-        {":paid": "paid", ":at": et.iso(at), ":g2": f"CLEANUP#{cleanup_month}",
-         ":g2s": f"{tenant_id}#{order['orderId']}", ":st": order["status"]},
+        "SET #s = :paid, paidAt = :at, GSI1PK = :g1, GSI1SK = :g1s, GSI2PK = :g2, GSI2SK = :g2s REMOVE #ttl",
+        {":paid": "paid", ":at": et.iso(at), ":g1": paid_gsi["GSI1PK"], ":g1s": paid_gsi["GSI1SK"],
+         ":g2": f"CLEANUP#{cleanup_month}", ":g2s": f"{tenant_id}#{order['orderId']}", ":st": order["status"]},
         "#s = :st", {"#s": "status", "#ttl": "ttl"})
     q = int(order["qty"])
     if late:
@@ -1249,7 +1308,7 @@ def _issue(tenant_id, order, intent):
                 counters.append(_update({"PK": t["PK"], "SK": t["SK"]}, "SET held = held - :q, sold = sold + :q",
                                         {":q": int(line["qty"])}))
     try:
-        _txn([order_update, *counters, _put(tx), *[_put(t) for t in tickets], *[_put(c) for c in codes]])
+        _txn([order_update, *counters, _put(tx), *[_put(t) for t in tickets]])
     except ClientError as exc:
         if not et.cancelled_txn(exc):
             raise
@@ -1309,8 +1368,7 @@ def _token_scope(event, kinds=("o", "t")):
         order = et.get(et.order_key(tenant_id, item_id))
         if not order or order["status"] not in ("paid", "partly_refunded", "refunded"):
             raise et.EventsError(404, "not found")
-        tickets = sorted((t for t in et.partition(tenant_id, "TICKET#") if t.get("orderId") == item_id
-                          and not t.get("giftedFrom")), key=lambda t: t["ticketId"])
+        tickets = et.tickets_of_order(tenant_id, order, gifted=False)  # key lookups by deterministic id
     else:
         ticket = et.get(et.ticket_key(tenant_id, item_id))
         if not ticket:
@@ -1389,17 +1447,23 @@ def create_transfer(event):
         raise et.EventsError(409, "invalid_state")
     to = body["toEmail"].strip().lower()
     at = et.now()
+    # Each transfer emails a stranger: a ticket may cause a few a day, an IP a few more an hour.
+    counted = request_guard.check([("ticket-transfer", f"{tenant_id}|{ticket['ticketId']}",
+                                    et.TRANSFERS_PER_TICKET_DAY, 86400),
+                                   ("ticket-transfer-ip", http.source_ip(event), *TRANSFER_IP_LIMIT)], at)
     transfer = {**et.transfer_key(tenant_id, transfer_id), "tenantId": tenant_id, "transferId": transfer_id,
                 "ticketId": ticket["ticketId"], "kind": "gift", "toEmail": to,
                 "toEmailHash": et.email_hash(tenant_id, to),
                 "priceOre": 0, "status": "pending", "createdAt": et.iso(at), "locationId": ticket["locationId"],
-                "occurrenceId": ticket["occurrenceId"], "ttl": int(et.parse_iso(occ["startAt"]).timestamp()) + 86400}
+                "occurrenceId": ticket["occurrenceId"], "ttl": int(et.parse_iso(occ["startAt"]).timestamp()) + 86400,
+                **et.transfer_gsi(tenant_id, ticket["ticketId"], transfer_id)}
     try:
         _txn([_update(et.ticket_key(tenant_id, ticket["ticketId"]), "SET pendingTransferId = :t",
                       {":t": transfer_id, ":valid": "valid", ":v": int(ticket["version"])},
                       "#s = :valid AND version = :v AND attribute_not_exists(pendingTransferId)", {"#s": "status"}),
               _put(transfer)])
     except ClientError as exc:
+        request_guard.refund(counted)
         if not et.cancelled_txn(exc):
             raise
         raise et.EventsError(409, "invalid_state")
@@ -1447,11 +1511,9 @@ def accept_transfer(event):
     if not old or old["status"] != "valid" or old.get("pendingTransferId") != transfer_id:
         raise et.EventsError(409, "invalid_state")
     at = et.now()
-    payload = qr.payload(tenant_id, old["occurrenceId"], new_id)
-    code = qr.code_hmac(tenant_id, payload)
     new = {k: v for k, v in old.items() if k not in ("pendingTransferId", "checkedInAt", "checkedInBy",
                                                        "checkedInClientId", "holderEmail")}
-    new.update({**et.ticket_key(tenant_id, new_id), "ticketId": new_id, "codeHmac": code, "holderName": name,
+    new.update({**et.ticket_key(tenant_id, new_id), "ticketId": new_id, "holderName": name,
                 "holderEmailHash": transfer["toEmailHash"], "giftedFrom": old["ticketId"], "status": "valid",
                 "version": 1, "issuedAt": et.iso(at),
                 **et.occurrence_gsi(tenant_id, old["occurrenceId"], name, new_id)})
@@ -1460,7 +1522,7 @@ def accept_transfer(event):
                       "SET #s = :tr, transferredTo = :n, version = version + :one REMOVE pendingTransferId",
                       {":tr": "transferred", ":n": new_id, ":one": 1, ":v": int(old["version"]), ":t": transfer_id},
                       "version = :v AND pendingTransferId = :t", {"#s": "status"}),
-              _put(new), _put({**et.code_key(tenant_id, code), "tenantId": tenant_id, "ticketId": new_id}),
+              _put(new),
               _update(et.transfer_key(tenant_id, transfer_id), "SET #s = :a, newTicketId = :n, acceptedAt = :at",
                       {":a": "accepted", ":n": new_id, ":at": et.iso(at), ":p": "pending"}, "#s = :p",
                       {"#s": "status"})])
@@ -1524,17 +1586,16 @@ def stripe_event(event):
         if kind == "charge.dispute.closed" and obj.get("status") != "lost":
             return "ignored:dispute_won"
         refunded, charged = int(obj.get("amount_refunded") or 0), int(obj.get("amount") or 0)
-        ours = -sum(int(t["amountOre"]) for t in et.partition(tenant_id, "TX#")
-                    if t.get("orderId") == order_id and t["kind"] == "refund")
+        ours = int(order.get("refundedOre") or 0)  # the order's refund TX rows add up to this
         if kind == "charge.refunded" and refunded != charged:
             if refunded <= ours:
                 return "ignored:own_refund"
             logger.warning(json.dumps({"event": "ticket.partial_refund", "tenantId": tenant_id, "orderId": order_id}))
             return "flagged:partial_refund"
         voided = 0
-        for t in et.partition(tenant_id, "TICKET#"):
-            if t.get("orderId") == order_id and t["status"] in ("valid", "checked_in"):
-                _refund_ticket(tenant_id, t, f"stripe-{t['ticketId']}", by="owner", reason=kind, stripe_too=False)
+        for t in et.tickets_of_order(tenant_id, order):
+            if t["status"] in ("valid", "checked_in"):
+                _refund_ticket(tenant_id, t, f"stripe-{t['ticketId']}", by="owner", reason=kind, stripe="external")
                 voided += 1
         return "voided" if voided else "already_refunded"
     return "ignored:type"
@@ -1648,9 +1709,8 @@ def privacy_hook(event, erase):
             *[{"kind": "ticket_transfer", "transferId": t["transferId"], "status": t["status"]} for t in transfers]]}
     for o in orders_:
         _strip(tenant_id, o, ORDER_CONTACT)
-        for t in et.partition(tenant_id, "TICKET#"):
-            if t.get("orderId") == o["orderId"] and not t.get("giftedFrom"):
-                _strip_ticket(tenant_id, t)
+        for t in et.tickets_of_order(tenant_id, o, gifted=False):
+            _strip_ticket(tenant_id, t)
     for t in tickets:
         _strip_ticket(tenant_id, t)
     for t in transfers:
@@ -1702,15 +1762,22 @@ def _hook(event):
 
 # --- scheduled jobs ------------------------------------------------------------------------------
 
-def run_sweep():
+def run_sweep(context=None):
     """Every 5 minutes: expired holds are released (the PaymentIntent is
     cancelled first so it can no longer be paid; a payment that still
-    arrives is issued if seats are free, else refunded), open mass refund
-    jobs continue. Idempotent and resumable: each row is conditional."""
+    arrives is issued if seats are free, else refunded), every refund TX
+    row Stripe still owes is retried (whatever route created it), open
+    mass refund jobs continue. Idempotent and resumable: each row is
+    conditional, and the work stops JOB_MARGIN_MS before the Lambda's
+    deadline (`context.get_remaining_time_in_millis`) for the next run."""
     at = et.iso(et.now())
-    counts = {"expired": 0, "jobs": 0, "failed": 0}
+    time_left = _time_left(context)
+    counts = {"expired": 0, "refunds": 0, "jobs": 0, "failed": 0, "stopped": False}
     for row in et.query_all(IndexName=et.GSI1, KeyConditionExpression=Key("GSI1PK").eq("HOLD")
                             & Key("GSI1SK").lt(at)):
+        if not _in_time(time_left):
+            counts["stopped"] = True
+            break
         tenant_id, order_id = row.get("tenantId"), row.get("orderId")
         try:
             order = et.get(et.order_key(tenant_id, order_id))
@@ -1727,9 +1794,22 @@ def run_sweep():
         except (ClientError, BotoCoreError, stripe.StripeUnavailable) as exc:
             counts["failed"] += 1
             logger.warning(json.dumps({"sweep": "hold_failed", "type": type(exc).__name__}))
-    for row in et.query_all(IndexName=et.GSI1, KeyConditionExpression=Key("GSI1PK").eq("JOBS")):
+    for tx in et.pending_refunds():
+        if not _in_time(time_left):
+            counts["stopped"] = True
+            break
         try:
-            _run_job(row["tenantId"], row["jobId"])
+            _stripe_refund(tx["tenantId"], tx)
+            counts["refunds"] += 1
+        except (et.EventsError, ClientError, BotoCoreError) as exc:
+            counts["failed"] += 1
+            logger.warning(json.dumps({"sweep": "refund_failed", "txId": tx.get("txId"), "type": type(exc).__name__}))
+    for row in et.query_all(IndexName=et.GSI1, KeyConditionExpression=Key("GSI1PK").eq("JOBS")):
+        if not _in_time(time_left):
+            counts["stopped"] = True
+            break
+        try:
+            _run_job(row["tenantId"], row["jobId"], time_left=time_left)
             counts["jobs"] += 1
         except Exception as exc:
             counts["failed"] += 1
@@ -1753,14 +1833,12 @@ def run_nightly():
                 order = et.get(et.order_key(tenant_id, order_id))
                 if not order:
                     continue
-                ticket_ids = set()
-                for t in et.partition(tenant_id, "TICKET#"):
-                    if t.get("orderId") == order_id:
-                        ticket_ids.add(t["ticketId"])
-                        _strip_ticket(tenant_id, t)
-                for t in et.partition(tenant_id, "TRANSFER#"):
-                    if t.get("ticketId") in ticket_ids:
-                        _strip(tenant_id, t, TRANSFER_CONTACT)
+                # The order's tickets by deterministic id (and the ones they were gifted on to), each
+                # ticket's transfers by its GSI1 row: key lookups, no partition scan.
+                for t in et.tickets_of_order(tenant_id, order):
+                    _strip_ticket(tenant_id, t)
+                    for transfer in et.transfers_of_ticket(tenant_id, t["ticketId"]):
+                        _strip(tenant_id, transfer, TRANSFER_CONTACT)
                 _strip(tenant_id, order, ORDER_CONTACT + ("GSI2PK", "GSI2SK"))
                 counts["cleaned"] += 1
             except (ClientError, BotoCoreError) as exc:
@@ -1803,7 +1881,7 @@ def handler(event, context=None):
         if "hook" in event:
             return _hook(event)
         if event.get("job") == "sweep":
-            return run_sweep()
+            return run_sweep(context)
         if event.get("job") == "nightly":
             return run_nightly()
         return {"ok": False, "status": 400, "code": "unknown_event"}
@@ -1819,9 +1897,13 @@ def handler(event, context=None):
         except ValueError:
             return _err(404, "not found")
         ctx = tenant.for_jwt(event, location_id=location_id, feature=et.FEATURE_KEY)
+        _invocation["time_left"] = _time_left(context)
         return ROUTES[route](event, ctx)
     except tenant.TenantError as exc:
         return exc.response()
+    except request_guard.Limited as exc:
+        return http.respond(429, {"error": "too_many_requests", "code": "too_many_requests"},
+                            {"Retry-After": str(exc.retry_after)})
     except et.EventsError as exc:
         if " " in exc.code:
             return http.respond(exc.status, {"error": exc.code, **({"field": exc.field} if exc.field else {})})

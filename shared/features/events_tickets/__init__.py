@@ -5,17 +5,22 @@ Table `<prefix>events-tickets` (EVENTS_TICKETS_TABLE_NAME), partition `TENANT#<t
     EVENT#<e>                       title, description, status, settings, series?, version
     EVENT#<e>#OCC#<start>           one dated occurrence: capacity, sold, held, checkedIn, revenueOre, sales window
     EVENT#<e>#TYPE#<typeId>         ticket type: priceOre (incl. VAT), vatRate, capacity?, sold, held, tier?
-    ORDER#<orderId>                 checkout; pending (ttl 15 min, GSI1 HOLD row) -> paid | expired | refunded
-    TICKET#<ticketId>               one ticket (GSI1 byOccurrence = the guest list)
-    CODE#<codeHmac>                 ticketId (the QR payload, stored as HMAC only)
-    TRANSFER#<transferId>           gift transfer (pending until accepted or the start)
-    TX#<txId>                       append-only money rows (GSI2 byLocationDay: Bokföring, Statistik)
+    ORDER#<orderId>                 checkout; pending (ttl 15 min, GSI1 HOLD row) -> paid (GSI1 row per event)
+                                    | expired | refunded
+    TICKET#<ticketId>               one ticket (GSI1 byOccurrence = the guest list). No code is stored: the
+                                    QR is <ticketId>.<sig>, verified with the occurrence's scan key.
+    TRANSFER#<transferId>           gift transfer (pending until accepted or the start); GSI1 row per ticket
+    TX#<txId>                       append-only money rows (GSI2 byLocationDay: Bokföring, Statistik); a
+                                    refund whose Stripe refund is still owed carries a sparse GSI1 REFUNDS row
     JOB#<jobId>                     mass refund progress (GSI1 JOBS row while open), ttl 7 days
 
 `<start>` is the compact UTC start (`20261201T1900Z`); occurrenceId is
 `<eventId>-<start>`, so the same (eventId, startAt) is always the same row:
-series generation is idempotent by key. The sweep finds open holds and
-open jobs through sparse GSI1 rows (`GSI1PK = HOLD` / `JOBS`).
+series generation is idempotent by key. Ticket ids are deterministic too
+(`ticket_id_for(orderId, n)`, `gift_ticket_id(transferId)`), so an order's
+tickets are key lookups, never a partition scan. The sweep finds open
+holds, owed Stripe refunds and open jobs through sparse GSI1 rows
+(`GSI1PK = HOLD` / `REFUNDS` / `JOBS`).
 
 Prices are öre incl. VAT. VAT rates come from a list the accountant must
 approve (ADR-K "Swedish legal notes"): NEEDS ACCOUNTANT REVIEW.
@@ -58,6 +63,8 @@ MAX_PER_ORDER = 20
 TITLE_MAX, DESCRIPTION_MAX, NAME_MAX, INCLUDES_MAX, POLICY_MAX, MESSAGE_MAX = 120, 4000, 80, 300, 1000, 500
 HOLD_MINUTES = 15
 TRANSFER_CLOSE_HOURS = 2
+TRANSFERS_PER_TICKET_DAY = 5  # gift emails one ticket can cause per day (K20 request guard)
+REFUND_RETRY_HOURS = 24  # Stripe forgets idempotency keys after a day: older refunds are looked up first
 SERIES_MAX_DAYS = 366
 CONTACT_MONTHS = 24
 BOOKKEEPING_YEARS = 7
@@ -212,6 +219,12 @@ def ser(item) -> dict:
     return {k: s.serialize(v) for k, v in item.items() if v is not None}
 
 
+def deser(raw) -> dict:
+    from boto3.dynamodb.types import TypeDeserializer
+    d = TypeDeserializer()
+    return {k: d.deserialize(v) for k, v in raw.items()}
+
+
 def vat_of(gross: int, rate: int) -> int:
     from shared.accounting import vat_of as _vat_of  # read-only reuse of the Bokföring rounding
     return _vat_of(gross, rate)
@@ -241,10 +254,6 @@ def order_key(tenant_id, order_id) -> dict:
 
 def ticket_key(tenant_id, ticket_id) -> dict:
     return {"PK": pk(tenant_id), "SK": f"TICKET#{ticket_id}"}
-
-
-def code_key(tenant_id, code) -> dict:
-    return {"PK": pk(tenant_id), "SK": f"CODE#{code}"}
 
 
 def transfer_key(tenant_id, transfer_id) -> dict:
@@ -323,13 +332,75 @@ def events_of(tenant_id) -> list:
     return [r for r in partition(tenant_id, "EVENT#") if r["SK"].count("#") == 1]
 
 
+def batch_get(keys) -> list:
+    """The rows of `keys` that exist (consistent), in no particular order."""
+    found = []
+    pending = [ser(k) for k in keys]
+    while pending:
+        chunk, pending = pending[:100], pending[100:]
+        request = {table_name(): {"Keys": chunk, "ConsistentRead": True}}
+        for _ in range(5):
+            response = dynamo.client().batch_get_item(RequestItems=request)
+            found += [deser(raw) for raw in (response.get("Responses") or {}).get(table_name(), [])]
+            request = response.get("UnprocessedKeys") or {}
+            if not request:
+                break
+        else:
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException",
+                                         "Message": "ticket read incomplete"}}, "BatchGetItem")
+    return found
+
+
 def tickets_of_occurrence(tenant_id, occ_id) -> list:
     return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq(f"TENANT#{tenant_id}#OCC#{occ_id}"))
+
+
+def tickets_of_order(tenant_id, order, *, gifted=True) -> list:
+    """The order's tickets by their deterministic ids (`ticket_id_for`), and
+    with `gifted` the tickets they were given on to (`transferredTo` chain),
+    sorted by ticketId. Key lookups only."""
+    rows = batch_get([ticket_key(tenant_id, ticket_id_for(order["orderId"], n)) for n in range(int(order["qty"]))])
+    seen = {t["ticketId"] for t in rows}
+    while gifted:
+        wanted = [t["transferredTo"] for t in rows if t.get("transferredTo") and t["transferredTo"] not in seen]
+        if not wanted:
+            break
+        seen.update(wanted)
+        rows += batch_get([ticket_key(tenant_id, ticket_id) for ticket_id in wanted])
+    return sorted(rows, key=lambda t: t["ticketId"])
+
+
+def transfers_of_ticket(tenant_id, ticket_id) -> list:
+    return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq(
+        f"TENANT#{tenant_id}#TICKET#{ticket_id}#TRANSFERS"))
+
+
+def orders_of_event(tenant_id, event_id) -> list:
+    """Paid (or later refunded) orders of an event, newest first."""
+    return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq(
+        f"TENANT#{tenant_id}#EVT#{event_id}#ORDERS"), ScanIndexForward=False)
+
+
+def pending_refunds() -> list:
+    """Refund TX rows whose Stripe refund is still owed (every tenant), oldest first."""
+    return query_all(IndexName=GSI1, KeyConditionExpression=Key("GSI1PK").eq("REFUNDS"))
 
 
 def occurrence_gsi(tenant_id, occ_id, holder_name, ticket_id) -> dict:
     return {"GSI1PK": f"TENANT#{tenant_id}#OCC#{occ_id}",
             "GSI1SK": f"{(holder_name or '').strip().lower()[:40]}#{ticket_id}"}
+
+
+def transfer_gsi(tenant_id, ticket_id, transfer_id) -> dict:
+    return {"GSI1PK": f"TENANT#{tenant_id}#TICKET#{ticket_id}#TRANSFERS", "GSI1SK": transfer_id}
+
+
+def paid_order_gsi(tenant_id, event_id, paid_at: str, order_id) -> dict:
+    return {"GSI1PK": f"TENANT#{tenant_id}#EVT#{event_id}#ORDERS", "GSI1SK": f"{paid_at}#{order_id}"}
+
+
+def refund_gsi(tenant_id, tx_id, at: str) -> dict:
+    return {"GSI1PK": "REFUNDS", "GSI1SK": f"{at}#{tenant_id}#{tx_id}"}
 
 
 # --- validation ----------------------------------------------------------------------------

@@ -24,7 +24,8 @@ TRIGGER:
     POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard;
                                                                                 `lines` or `resaleTransferIds`
     GET    /public/tickets/{token}                                              K18
-    GET    /public/tickets/{token}/pass                                         K19 404 (Wallet not built yet)
+    GET    /public/tickets/{token}/pass                                         K19 Wallet pass (EVENTS_WALLET_MODE,
+                                                                                off by default -> 404)
     POST   /public/tickets/{token}/transfers                                    K20 gift (request guard per
                                                                                 ticket and IP) or resale listing
     POST   /public/ticket-transfers/{transferToken}/accept                      K21
@@ -55,15 +56,22 @@ PURPOSE:
     refused at the door (status void).
 
     Not built in this run (refused, never silently accepted): table pick
-    (ADR-K 3), Wallet passes (6, K19 answers 404 as when the secrets are
-    missing), event images (`imageKey` -> 400 unknown_image).
+    (ADR-K 3).
+
+    Event images (ADR-K 1, media.py): the menu image upload's key for this
+    tenant and location plus required alt text; no S3 access here. Wallet
+    passes (ADR-K 6, passes.py): off unless EVENTS_WALLET_MODE says
+    `simulator` (never in prod) or `live` (secrets by ARN, a missing one hides
+    that kind).
 
 ENV_VARS:
     ENVIRONMENT, EVENTS_TICKETS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, EVENTS_TICKETS_PEPPER_SECRET_ARN,
     STRIPE_SECRET_ARN, STRIPE_API_VERSION, TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN,
     REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME, EVENT_BUS_NAME,
-    CLOUDFRONT_EDGE_SECRET, SITE_DOMAIN, CUSTOMER_SITE_URL
+    CLOUDFRONT_EDGE_SECRET, SITE_DOMAIN, CUSTOMER_SITE_URL;
+    optional EVENTS_WALLET_MODE (off | simulator | live), EVENTS_TICKETS_APPLE_PASS_SECRET_ARN,
+    EVENTS_TICKETS_GOOGLE_WALLET_SECRET_ARN
 """
 
 import json
@@ -78,7 +86,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import dynamo, events, http, orders, request_guard, site, tenant, turnstile
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
-from shared.features.events_tickets import qr, series
+from shared.features.events_tickets import media, passes, qr, series
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -281,8 +289,6 @@ def _event_fields(body, *, at, first_start=None):
         description = et.text(body.get("description"), et.DESCRIPTION_MAX) or ""
     except ValueError:
         raise et.EventsError(400, "description is at most 4000 characters", "description")
-    if body.get("imageKey") not in (None, ""):
-        raise et.EventsError(400, "unknown_image", "imageKey")  # images are not built in this run
     out = {"title": title, "description": description, "settings": et.validate_settings(body.get("settings"))}
     if first_start is not None:
         out["series"] = et.validate_series(body.get("series"), first_start)
@@ -321,8 +327,8 @@ def _new_occ(tenant_id, event_id, location_id, occ, at):
 
 def create_event(event, ctx):
     _owner(ctx)
-    body = http.body(event, allowed=("eventId", "title", "description", "imageKey", "occurrences", "series",
-                                     "ticketTypes", "settings"))
+    body = http.body(event, allowed=("eventId", "title", "description", "imageKey", "imageAlt", "occurrences",
+                                     "series", "ticketTypes", "settings"))
     event_id = body.get("eventId")
     if not et.valid_id(event_id):
         raise et.EventsError(400, "eventId is invalid", "eventId")
@@ -340,6 +346,7 @@ def create_event(event, ctx):
     if len({o["startAt"] for o in occs}) != len(occs):
         raise et.EventsError(400, "invalid_window", "occurrences")
     fields = _event_fields(body, at=at, first_start=et.parse_iso(min(o["startAt"] for o in occs)))
+    fields.update(media.clean_image(body, ctx.tenant_id, ctx.location_id) or {})
     if fields["series"] and len(occs) != 1:
         raise et.EventsError(400, "invalid_series", "series")
     raw_types = body.get("ticketTypes") or []
@@ -382,7 +389,7 @@ def get_event(event, ctx):
 
 def update_event(event, ctx):
     _owner(ctx)
-    body = http.body(event, allowed=("title", "description", "imageKey", "series", "settings", "version"))
+    body = http.body(event, allowed=("title", "description", "imageKey", "imageAlt", "series", "settings", "version"))
     ev = _event_or_404(ctx, event)
     version = _version(body)
     if ev["status"] == "cancelled":
@@ -390,6 +397,7 @@ def update_event(event, ctx):
     occs, types = et.event_parts(ctx.tenant_id, ev["eventId"])
     first = et.parse_iso(occs[0]["startAt"]) if occs else et.now()
     fields = _event_fields(body, at=et.now(), first_start=first)
+    image = media.clean_image(body, ctx.tenant_id, ctx.location_id)  # PUT: no imageKey removes the image
     if ev["status"] != "draft" and fields["series"] != ev.get("series"):
         raise et.EventsError(400, "invalid_series", "series")  # a published series is edited per occurrence
     if fields["series"] and len(occs) != 1:
@@ -398,12 +406,18 @@ def update_event(event, ctx):
             "updatedBy = :by"]
     values = {":t": fields["title"], ":d": fields["description"], ":s": fields["settings"], ":one": 1,
               ":at": et.iso(et.now()), ":by": ctx.sub, ":v": version}
-    expr = "SET " + ", ".join(sets)
+    removes = []
     if fields["series"]:
-        expr = expr.replace("SET ", "SET series = :series, ", 1)
+        sets.insert(0, "series = :series")
         values[":series"] = fields["series"]
     else:
-        expr += " REMOVE series"
+        removes.append("series")
+    if image:
+        sets += ["imageKey = :ik", "imageAlt = :ia"]
+        values.update({":ik": image["imageKey"], ":ia": image["imageAlt"]})
+    else:
+        removes += ["imageKey", "imageAlt"]
+    expr = "SET " + ", ".join(sets) + " REMOVE " + ", ".join(removes)
     try:
         et.table().update_item(Key=et.event_key(ctx.tenant_id, ev["eventId"]), UpdateExpression=expr,
                                ConditionExpression="version = :v", ExpressionAttributeValues=values)
@@ -1109,7 +1123,8 @@ def public_list(event):
         upcoming = [o for o in occs if o["status"] == "scheduled" and o["startAt"] > at]
         if not upcoming or not types:
             continue
-        out.append({"eventId": ev["eventId"], "title": ev["title"], "nextOccurrence": upcoming[0]["startAt"],
+        out.append({"eventId": ev["eventId"], "title": ev["title"], **media.image_view(ev),
+                    "nextOccurrence": upcoming[0]["startAt"],
                     "fromPriceSek": min(int(t["priceOre"]) for t in types) / 100,
                     "soldOut": all(et.left(o) == 0 for o in upcoming)})
     out.sort(key=lambda e: e["nextOccurrence"])
@@ -1131,6 +1146,7 @@ def public_detail(event):
         resale += [_listing_view(t) for t in listed[o["occurrenceId"]] if t["status"] == "pending"]
     return http.respond(200, {
         "eventId": ev["eventId"], "title": ev["title"], "description": ev.get("description") or "",
+        **media.image_view(ev),
         "refundPolicy": settings.get("refundPolicy"), "perOrderMax": int(settings.get("perOrderMax") or 10),
         "occurrences": [{"occurrenceId": o["occurrenceId"], "startAt": o["startAt"], "endAt": o["endAt"],
                          "left": et.left(o), "soldOut": et.left(o) == 0, "salesOpen": _sales_open(o, at)}
@@ -1777,14 +1793,35 @@ def ticket_page(event):
         "occurrence": {"occurrenceId": occ.get("occurrenceId"), "startAt": occ.get("startAt"),
                        "endAt": occ.get("endAt"), "doorsAt": occ.get("doorsAt"), "status": occ.get("status")},
         "location": {"locationId": first["locationId"], "name": location.get("name")},
-        "tickets": out, "wallet": {"apple": False, "google": False},
+        "tickets": out, "wallet": passes.provider().available(),
         "transferAllowed": _transfer_open(ev, occ), "resaleAllowed": _resale_open(ev, occ)})
 
 
 def ticket_pass(event):
-    _token_scope(event)
-    # Wallet passes are not built in this run: the same answer as a missing Wallet secret (CONTRACTS.md K19).
-    raise et.EventsError(404, "not found")
+    """K19: one valid ticket of this link as an Apple or Google Wallet pass (shared/features/
+    events_tickets/passes.py). Wallet off, the kind's secret missing, or a ticket that is not this
+    link's or no longer valid: 404."""
+    tenant_id, tickets, _, _, _ = _token_scope(event)
+    params = http.query(event)
+    if set(params) - {"ticketId", "kind"}:
+        raise et.EventsError(400, "unsupported query parameters")
+    kind = params.get("kind")
+    wallet = passes.provider()
+    if kind not in passes.KINDS or not wallet.available().get(kind):
+        raise et.EventsError(404, "not found")
+    ticket = next((t for t in tickets if t["ticketId"] == params.get("ticketId") and t["status"] == "valid"), None)
+    if not ticket:
+        raise et.EventsError(404, "not found")
+    ev = et.get(et.event_key(tenant_id, ticket["eventId"])) or {}
+    occ = et.get(et.occ_key(tenant_id, ticket["eventId"],
+                            et.split_occurrence(ticket["eventId"], ticket["occurrenceId"]))) or {}
+    location = tenant.get_location(tenant_id, ticket["locationId"]) or {}
+    data = passes.PassData(
+        tenant_id=tenant_id, event_id=ticket["eventId"], ticket_id=ticket["ticketId"], title=ev.get("title") or "",
+        start_at=occ.get("startAt") or "", end_at=occ.get("endAt") or "", location_name=location.get("name") or "",
+        type_name=ticket.get("typeName") or "", holder_name=ticket.get("holderName") or "",
+        qr=qr.payload(tenant_id, ticket["occurrenceId"], ticket["ticketId"]))
+    return passes.response(wallet.issue(kind, data))
 
 
 def create_transfer(event):

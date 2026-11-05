@@ -1,2 +1,4 @@
 # boto3 is already present in the public.ecr.aws/lambda/python base image.
 tzdata
+# Wallet passes (passes.py): RS256 save-link JWT and the PKCS #7 .pkpass signature (cryptography).
+PyJWT[crypto]==2.10.1

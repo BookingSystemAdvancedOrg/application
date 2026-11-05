@@ -333,22 +333,9 @@ def events_of(tenant_id) -> list:
 
 
 def batch_get(keys) -> list:
-    """The rows of `keys` that exist (consistent), in no particular order."""
-    found = []
-    pending = [ser(k) for k in keys]
-    while pending:
-        chunk, pending = pending[:100], pending[100:]
-        request = {table_name(): {"Keys": chunk, "ConsistentRead": True}}
-        for _ in range(5):
-            response = dynamo.client().batch_get_item(RequestItems=request)
-            found += [deser(raw) for raw in (response.get("Responses") or {}).get(table_name(), [])]
-            request = response.get("UnprocessedKeys") or {}
-            if not request:
-                break
-        else:
-            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException",
-                                         "Message": "ticket read incomplete"}}, "BatchGetItem")
-    return found
+    """The rows of `keys` that exist (consistent), in key order. One GetItem
+    per key: the Lambda role grants GetItem, not BatchGetItem."""
+    return [item for item in (get(key) for key in keys) if item]
 
 
 def tickets_of_occurrence(tenant_id, occ_id) -> list:

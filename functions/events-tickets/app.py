@@ -807,13 +807,13 @@ def _existing_stripe_refund(tenant_id, tx, ticket_id, amount):
     """A refund Stripe already holds for this ticket (metadata), or None.
     Used before retrying a TX older than REFUND_RETRY_HOURS: Stripe may
     have forgotten the idempotency key by then, so a blind retry could
-    refund twice."""
+    refund twice. Failed and canceled refunds moved no money and do not count."""
     listing = stripe.request("GET", "/v1/refunds", {"payment_intent": tx["paymentIntentId"], "limit": 100},
                              account=tx["stripeAccountId"])
     for refund in (listing or {}).get("data") or []:
         meta = refund.get("metadata") or {}
         if meta.get("ticketId") == ticket_id and meta.get("tenantId") == tenant_id \
-                and int(refund.get("amount") or 0) == amount and refund.get("status") != "failed":
+                and int(refund.get("amount") or 0) == amount and refund.get("status") not in ("failed", "canceled"):
             return refund
     return None
 
@@ -1074,7 +1074,7 @@ def _checkout_lines(body, types, settings, at_iso):
 
 
 def _hold_items(tenant_id, occ, types_by_id, lines, qty):
-    """The hold is conditional on the seats (and the price the guest saw),
+    """The hold is conditional on the seats (and the price at checkout),
     not on the type's version: the owner renaming a type must not turn a
     checkout into type_sold_out."""
     items = [_update({"PK": occ["PK"], "SK": occ["SK"]},

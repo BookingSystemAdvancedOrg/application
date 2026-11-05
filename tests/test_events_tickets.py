@@ -109,6 +109,19 @@ def _create_table():
                            {"AttributeName": "GSI2SK", "KeyType": "RANGE"}]}])
 
 
+def no_batch_get(monkeypatch):
+    """The Lambda role (infra) grants GetItem/PutItem/UpdateItem/DeleteItem/Query
+    only: any BatchGetItem in these tests fails like AccessDenied would."""
+    import botocore.client
+    real = botocore.client.BaseClient._make_api_call
+
+    def guarded(self, operation_name, api_params):
+        if operation_name == "BatchGetItem":
+            raise AssertionError("BatchGetItem is not granted to the events-tickets Lambda")
+        return real(self, operation_name, api_params)
+    monkeypatch.setattr(botocore.client.BaseClient, "_make_api_call", guarded)
+
+
 @pytest.fixture
 def env(monkeypatch):
     with mock_aws():
@@ -130,6 +143,7 @@ def env(monkeypatch):
                                   location_row(TENANT_A, LOC_A2)],
                      locations_b=[location_row(TENANT_B, LOC_B)])
         _create_table()
+        no_batch_get(monkeypatch)
         from shared import dynamo
         dynamo._resource = None
         dynamo._client = None
@@ -778,6 +792,49 @@ def test_refund_older_than_a_day_is_looked_up_in_stripe_first(env):
     lookups = [c for c in env.stripe.calls if c["method"] == "GET" and c["path"] == "/v1/refunds"]
     assert lookups and lookups[-1]["account"] == ACCT_A and lookups[-1]["params"]["payment_intent"] == \
         order["paymentIntentId"]
+
+
+@pytest.mark.parametrize("stale", ["failed", "canceled"])
+def test_refund_older_than_a_day_ignores_failed_or_canceled_stripe_refunds(env, stale):
+    ticket_id = sold(env)[0]["ticketId"]
+    env.stripe.fail = True
+    call(env, "POST", L + "/tickets/{ticketId}/refund", params={"locationId": LOC_A, "ticketId": ticket_id},
+         claims=OWNER_A, body={"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Sjuk"})
+    env.stripe.fail = False
+    order = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERAAAAAAAAAAAAAAAAAAA"))["Item"]
+    env.stripe.known_refunds = [{"id": "re_stale", "payment_intent": order["paymentIntentId"], "amount": 89500,
+                                 "status": stale,
+                                 "metadata": {"kind": "ticket", "tenantId": TENANT_A, "ticketId": ticket_id}}]
+    env.clock.value = NOW + timedelta(hours=25)
+    posted = len(env.stripe.refunds())
+    assert env.api.handler({"job": "sweep"})["refunds"] == 1
+    assert len(env.stripe.refunds()) == posted + 1  # a new refund is sent; the stale one moved no money
+    tx = env.table.get_item(Key=et.tx_key(TENANT_A, "01TXREFUNDAAAAAAAAAAAAAAAA"))["Item"]
+    assert tx["stripeRefundId"] not in ("re_stale", "unknown")
+
+
+def test_tickets_of_order_uses_get_item_only(env, monkeypatch):
+    """Key lookups (with the gift chain) never use BatchGetItem (not in the IAM policy)."""
+    sold(env)
+    tok = token_of(env)
+    ticket_id = sorted(t["ticketId"] for t in tickets(env))[0]
+    body = {"transferId": "01TRANSFERAAAAAAAAAAAAAAAA", "ticketId": ticket_id, "kind": "gift",
+            "toEmail": "vän@example.se"}
+    assert call(env, "POST", "/public/tickets/{token}/transfers", params={"token": tok}, body=body)[0] == 201
+    accept = qr.token("x", TENANT_A, "01TRANSFERAAAAAAAAAAAAAAAA")
+    assert call(env, "POST", "/public/ticket-transfers/{transferToken}/accept", params={"transferToken": accept},
+                body={"name": "Vän Vänsson"})[0] == 200
+    from shared import dynamo
+    batch_calls = []
+    monkeypatch.setattr(dynamo.client(), "batch_get_item", lambda **kw: batch_calls.append(kw) or {},
+                        raising=False)
+    order = env.table.get_item(Key=et.order_key(TENANT_A, "01ORDERAAAAAAAAAAAAAAAAAAA"))["Item"]
+    rows = et.tickets_of_order(TENANT_A, order)
+    assert len(rows) == int(order["qty"]) + 1  # both tickets plus the gifted one
+    assert any(r.get("transferredTo") for r in rows)
+    assert len(et.tickets_of_order(TENANT_A, order, gifted=False)) == int(order["qty"])
+    assert et.batch_get([et.ticket_key(TENANT_A, "01NOSUCHTICKETAAAAAAAAAAAA")]) == []
+    assert batch_calls == []
 
 
 def test_refund_older_than_a_day_unknown_to_stripe_is_sent(env):

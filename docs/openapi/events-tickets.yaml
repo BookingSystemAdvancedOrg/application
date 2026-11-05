@@ -654,6 +654,8 @@ paths:
       tags:
       - Events and tickets
       summary: K12 Orders of an event
+      description: Paid orders of the event, newest first. Lists only orders with status paid, partly_refunded
+        or refunded; pending and expired checkouts are never listed.
       operationId: eventsTicketsGetLocationsLocationIdEventsEventIdOrders
       security:
       - bearerAuth: []

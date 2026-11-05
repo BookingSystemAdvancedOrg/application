@@ -43,7 +43,9 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   nightly, privacy erase, `charge.refunded`) are key lookups following
   `transferredTo`; a ticket's transfers are a GSI1 row per transfer
   (`TENANT#t#TICKET#id#TRANSFERS`); a paid order sits on GSI1
-  `TENANT#t#EVT#e#ORDERS` (K12, cancel emails). No `TICKET#`/`TRANSFER#`
+  `TENANT#t#EVT#e#ORDERS` (K12, cancel emails). An order joins that index
+  only when paid, so K12 lists only `paid`, `partly_refunded` and
+  `refunded` orders (never `pending` or `expired`). No `TICKET#`/`TRANSFER#`
   partition scans remain; `privacy.export` by email still reads the
   tenant's `ORDER#`/`TICKET#`/`TRANSFER#` rows (no email index; rare).
 - Refunds: per ticket (K13, key `ticket-refund-<ticketId>`) and cancel an
@@ -57,8 +59,8 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   most 10 tickets inline (API Gateway's 30 s), writes `counts.refunded` per
   ticket, and the sweep finishes the rest; `counts.failed` is how many
   Stripe refunds are still owed. The admin polls K14 when K9 times out.
-- Checkout: the hold is conditional on `seatsLeft` and the price the guest
-  saw, never on the type's `version`, so an owner's rename during a
+- Checkout: the hold is conditional on `seatsLeft` and the price at
+  checkout, never on the type's `version`, so an owner's rename during a
   checkout is harmless (a price change gives 409 `changed_retry`).
 - K20: at most 5 gift transfers per ticket and day and 20 per IP and hour
   (request guard, 429 with `Retry-After`).

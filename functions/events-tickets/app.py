@@ -7,9 +7,10 @@ TRIGGER:
     GET    /locations/{locationId}/events/{eventId}                             K3 owner, staff (staff: no revenue)
     PUT    /locations/{locationId}/events/{eventId}                             K4 owner
     POST   /locations/{locationId}/events/{eventId}/publish                     K5 owner (series generated)
-    PUT    /locations/{locationId}/events/{eventId}/ticket-types/{typeId}       K6 owner
+    PUT    /locations/{locationId}/events/{eventId}/ticket-types/{typeId}       K6 owner (edit: new price/VAT for
+                                                                                later sales only; cap >= sold + held)
     DELETE /locations/{locationId}/events/{eventId}/ticket-types/{typeId}       K7 owner (only unsold)
-    PUT    /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}  K8 owner
+    PUT    /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}  K8 owner (capacity >= sold + held)
     POST   .../occurrences/{occurrenceId}/cancel                                K9 owner: 202 mass refund job
     GET    .../occurrences/{occurrenceId}/guest-list                            K10 owner, staff (scanKey, offline)
     POST   .../occurrences/{occurrenceId}/check-ins                             K11 owner, staff (batch, clientId)
@@ -290,6 +291,14 @@ def _type_cap(t):
     return min(caps) if caps else None
 
 
+def _cap_guard(t) -> str:
+    """The owner can add or remove a type's cap (K6) between our read of the
+    type and a counter write: every write that moves `taken` is conditional
+    on the type still being capped (or not) as read, so `seatsLeft` always
+    equals cap - taken. A failed guard is retried with a fresh read."""
+    return "attribute_exists(seatsLeft)" if "seatsLeft" in t else "attribute_not_exists(seatsLeft)"
+
+
 def _new_occ(tenant_id, event_id, location_id, occ, at):
     start = et.compact(et.parse_iso(occ["startAt"]))
     return {**et.occ_key(tenant_id, event_id, start), "tenantId": tenant_id, "eventId": event_id,
@@ -476,17 +485,38 @@ def put_type(event, ctx):
         return http.respond(200, et.type_view(item))
     if body.get("version") is None:  # a retry of the create
         return http.respond(200, et.type_view(existing))
-    version = _version(body)
+    return _edit_type(ctx, ev, existing, clean, _version(body), at)
+
+
+def _edit_type(ctx, ev, existing, clean, version, at):
+    """Edit a ticket type after creation. Sold and held tickets are never
+    touched: an order keeps the price and VAT rate on its lines and tickets,
+    so a new price or rate applies to later checkouts only (a checkout that
+    read the old price fails its hold with changed_retry). The cap may not go
+    below `taken` (sold + held), checked in the same conditional write that
+    sets `seatsLeft = cap - taken`, so a sale during the edit can never be
+    oversold. A VAT change is allowed but flagged for the accountant
+    (`vatReview`, append-only `vatChanges`). Once no occurrence can sell any
+    more (all over or cancelled) a published event's types are frozen."""
+    key = {"PK": existing["PK"], "SK": existing["SK"]}
+    occs, _ = et.event_parts(ctx.tenant_id, ev["eventId"])
+    if ev["status"] != "draft" and et.ended(occs, at):
+        raise et.EventsError(409, "invalid_state")
     taken = int(existing.get("taken") or 0)
-    if taken and (clean["priceOre"] != int(existing["priceOre"]) or clean["vatRate"] != int(existing["vatRate"])):
-        raise et.EventsError(409, "has_sales")
     cap = _type_cap(clean)
+    cap_field = "capacity" if clean.get("capacity") is not None and cap == clean["capacity"] else "tier"
     if cap is not None and cap < taken:
-        raise et.EventsError(400, "invalid_capacity", "capacity")
+        raise et.EventsError(400, "invalid_capacity", cap_field)
     sets = ["#n = :name", "priceOre = :p", "vatRate = :r", "perOrderMax = :pom", "sortOrder = :so",
-            "version = version + :one", "updatedAt = :at"]
+            "version = version + :one", "updatedAt = :at", "updatedBy = :by"]
     values = {":name": clean["name"], ":p": clean["priceOre"], ":r": clean["vatRate"], ":pom": clean["perOrderMax"],
-              ":so": clean["sortOrder"], ":one": 1, ":at": et.iso(at), ":v": version}
+              ":so": clean["sortOrder"], ":one": 1, ":at": et.iso(at), ":v": version, ":by": ctx.sub or "owner"}
+    old_rate = int(existing["vatRate"])
+    if clean["vatRate"] != old_rate:
+        sets += ["vatReview = :review", "vatChanges = list_append(if_not_exists(vatChanges, :none), :change)"]
+        values.update({":review": et.VAT_REVIEW, ":none": [],
+                       ":change": [{"fromRate": old_rate, "toRate": clean["vatRate"], "at": et.iso(at),
+                                    "by": ctx.sub or "owner", "soldBefore": int(existing.get("sold") or 0)}]})
     removes = []
     for field in ("capacity", "tier", "includes"):
         name = "#cap" if field == "capacity" else field  # capacity is a DynamoDB reserved word
@@ -510,7 +540,14 @@ def put_type(event, ctx):
     except ClientError as exc:
         if not et.conditional_failed(exc):
             raise
+        again = et.get(key) or {}
+        if int(again.get("version") or 0) == version and cap is not None and int(again.get("taken") or 0) > cap:
+            raise et.EventsError(400, "invalid_capacity", cap_field)  # seats were sold during the edit
         raise et.EventsError(409, "changed_retry")
+    if clean["vatRate"] != old_rate:
+        logger.warning(json.dumps({"event": "ticket_type.vat_changed", "review": et.VAT_REVIEW,
+                                   "tenantId": ctx.tenant_id, "eventId": ev["eventId"], "typeId": existing["typeId"],
+                                   "fromRate": old_rate, "toRate": clean["vatRate"]}))
     return http.respond(200, et.type_view(et.get(key)))
 
 
@@ -534,8 +571,9 @@ def put_occurrence(event, ctx):
     ev = _event_or_404(ctx, event)
     occ = _occ_or_404(ctx, ev, event)
     version = _version(body)
-    if occ["status"] != "scheduled":
-        raise et.EventsError(409, "invalid_state")
+    at = et.now()
+    if ev["status"] == "cancelled" or occ["status"] != "scheduled" or occ["endAt"] <= et.iso(at):
+        raise et.EventsError(409, "invalid_state")  # cancelled, done or already over
     capacity = int(occ["capacity"])
     if body.get("capacity") is not None:
         capacity = et.whole(body["capacity"], 1, et.MAX_CAPACITY)
@@ -562,6 +600,13 @@ def put_occurrence(event, ctx):
     except ClientError as exc:
         if not et.conditional_failed(exc):
             raise
+        # The write is conditional on taken (sold + held) itself, so a sale between the read and the write
+        # is never oversold: tell which condition failed.
+        again = et.get({"PK": occ["PK"], "SK": occ["SK"]}) or {}
+        if again.get("status") != "scheduled":
+            raise et.EventsError(409, "invalid_state")
+        if int(again.get("version") or 0) == version and int(again.get("taken") or 0) > capacity:
+            raise et.EventsError(400, "invalid_capacity", "capacity")
         raise et.EventsError(409, "changed_retry")
     return http.respond(200, et.occurrence_view(et.get({"PK": occ["PK"], "SK": occ["SK"]}), money=True))
 
@@ -738,7 +783,7 @@ def _tx(tenant_id, tx_id, kind, order, ticket_ids, amount, rates, at, **extra):
             **extra}
 
 
-def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now"):
+def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now", retry=True):
     """The ticket first (one transaction: ticket refunded, TX row, counters),
     then Stripe for exactly the ticket's price (key ticket-refund-<ticketId>).
     `stripe`: "now" calls Stripe here, "later" leaves it to the caller or the
@@ -788,12 +833,16 @@ def _refund_ticket(tenant_id, ticket, tx_id, *, by, reason=None, stripe="now"):
     if type_row:
         items.append(_update({"PK": type_row["PK"], "SK": type_row["SK"]},
                              "SET sold = sold - :one, taken = taken - :one"
-                             + (", seatsLeft = seatsLeft + :one" if "seatsLeft" in type_row else ""), {":one": 1}))
+                             + (", seatsLeft = seatsLeft + :one" if "seatsLeft" in type_row else ""), {":one": 1},
+                             _cap_guard(type_row)))
     try:
         _txn(items)
     except ClientError as exc:
         if not et.cancelled_txn(exc):
             raise
+        fresh = et.get(et.ticket_key(tenant_id, ticket["ticketId"]))
+        if retry and fresh:  # e.g. the owner changed the type's cap meanwhile: once more from a fresh read
+            return _refund_ticket(tenant_id, fresh, tx_id, by=by, reason=reason, stripe=stripe, retry=False)
         raise et.EventsError(409, "changed_retry")
     _publish("Ticket.Refunded", {"tenantId": tenant_id, "locationId": order["locationId"],
                                  "occurrenceId": ticket["occurrenceId"], "ticketId": ticket["ticketId"],
@@ -1087,8 +1136,8 @@ def _hold_items(tenant_id, occ, types_by_id, lines, qty):
                              "SET held = held + :q, taken = taken + :q"
                              + (", seatsLeft = seatsLeft - :q" if capped else ""),
                              {":q": line["qty"], ":p": line["priceOre"], ":r": line["vatRate"]},
-                             "attribute_exists(PK) AND priceOre = :p AND vatRate = :r"
-                             + (" AND seatsLeft >= :q" if capped else "")))
+                             "attribute_exists(PK) AND priceOre = :p AND vatRate = :r AND "
+                             + ("seatsLeft >= :q" if capped else _cap_guard(t))))
     return items
 
 
@@ -1105,7 +1154,7 @@ def _release_items(tenant_id, order, *, held=True):
             items.append(_update({"PK": t["PK"], "SK": t["SK"]},
                                  f"SET {field} = {field} - :q, taken = taken - :q"
                                  + (", seatsLeft = seatsLeft + :q" if "seatsLeft" in t else ""),
-                                 {":q": int(line["qty"])}))
+                                 {":q": int(line["qty"])}, _cap_guard(t)))
     return items
 
 
@@ -1185,8 +1234,9 @@ def checkout(event):
         fresh_by_id = {t["typeId"]: t for t in fresh}
         for ln in lines:
             t = fresh_by_id.get(ln["typeId"])
-            if not t or int(t["priceOre"]) != ln["priceOre"] or int(t["vatRate"]) != ln["vatRate"]:
-                raise et.EventsError(409, "changed_retry")  # the price changed under the guest: reload
+            if not t or int(t["priceOre"]) != ln["priceOre"] or int(t["vatRate"]) != ln["vatRate"] \
+                    or ("seatsLeft" in t) != ("seatsLeft" in types_by_id[ln["typeId"]]):
+                raise et.EventsError(409, "changed_retry")  # the price or the cap changed under the guest: reload
         raise et.EventsError(409, "type_sold_out")
     if not amount:
         _issue(ctx.tenant_id, order, None)
@@ -1227,22 +1277,29 @@ def _checkout_retry(ctx, order, body):
     return http.respond(200, out)
 
 
-def _expire_order(tenant_id, order):
-    """Releases a pending order's hold once (condition status = pending)."""
-    try:
-        _txn([_update(et.order_key(tenant_id, order["orderId"]), "SET #s = :e REMOVE GSI1PK, GSI1SK",
-                      {":e": "expired", ":p": "pending"}, "#s = :p", {"#s": "status"}),
-              *_release_items(tenant_id, order)])
-    except ClientError as exc:
-        if not et.cancelled_txn(exc):
-            raise
-        return False
-    return True
+def _expire_order(tenant_id, order, attempts=3):
+    """Releases a pending order's hold once (condition status = pending). A
+    type whose cap the owner added or removed meanwhile fails the cap guard:
+    the release is rebuilt from a fresh read (the sweep retries what is left)."""
+    for _ in range(attempts):
+        try:
+            _txn([_update(et.order_key(tenant_id, order["orderId"]), "SET #s = :e REMOVE GSI1PK, GSI1SK",
+                          {":e": "expired", ":p": "pending"}, "#s = :p", {"#s": "status"}),
+                  *_release_items(tenant_id, order)])
+        except ClientError as exc:
+            if not et.cancelled_txn(exc):
+                raise
+            again = et.get(et.order_key(tenant_id, order["orderId"]))
+            if not again or again["status"] != "pending":
+                return False
+            continue
+        return True
+    return False
 
 
 # --- issue (webhook or free order) ----------------------------------------------------------------
 
-def _issue(tenant_id, order, intent):
+def _issue(tenant_id, order, intent, retry=True):
     """Tickets, codes, TX and counters in one transaction; a pending order
     moves its hold to sold, an order whose hold already expired takes the
     seats again only if they are still free (else the payment is refunded)."""
@@ -1297,7 +1354,7 @@ def _issue(tenant_id, order, intent):
                 counters.append(_update({"PK": t["PK"], "SK": t["SK"]},
                                         "SET sold = sold + :q, taken = taken + :q"
                                         + (", seatsLeft = seatsLeft - :q" if capped else ""),
-                                        {":q": int(line["qty"])}, "seatsLeft >= :q" if capped else None))
+                                        {":q": int(line["qty"])}, "seatsLeft >= :q" if capped else _cap_guard(t)))
     else:
         counters = [_update({"PK": occ["PK"], "SK": occ["SK"]},
                             "SET held = held - :q, sold = sold + :q, revenueOre = revenueOre + :a",
@@ -1315,6 +1372,8 @@ def _issue(tenant_id, order, intent):
         again = et.get(et.order_key(tenant_id, order["orderId"])) or {}
         if again.get("status") in ("paid", "partly_refunded", "refunded"):
             return "already_issued"
+        if late and retry:
+            return _issue(tenant_id, again or order, intent, retry=False)  # a cap changed under us: read again
         if late and intent:
             return _refund_late(tenant_id, order, intent)
         raise

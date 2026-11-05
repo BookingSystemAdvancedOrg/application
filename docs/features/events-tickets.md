@@ -62,6 +62,29 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
 - Checkout: the hold is conditional on `seatsLeft` and the price at
   checkout, never on the type's `version`, so an owner's rename during a
   checkout is harmless (a price change gives 409 `changed_retry`).
+- Editing after sales (K6 with `version`, K8): name, `includes` (the
+  description shown to guests), price, VAT rate, cap and sale window
+  (`tier.availableFrom`/`availableUntil`) of a type, and an occurrence's
+  capacity and sales window. Orders, tickets and TX rows carry their own
+  `priceOre` and `vatRate`, so a new price or rate applies to later
+  checkouts only; a hold made before the edit is paid and issued at the
+  price it showed, and refunds return what was paid at the rate it was
+  booked at. A cap or capacity may not go below `taken` (sold + held):
+  the edit's write is `SET seatsLeft = :cap - taken` conditional on
+  `taken <= :cap`, so a sale between the edit's read and write gives 400
+  `invalid_capacity` instead of an oversold type. A VAT change is allowed
+  and flagged `vatReview = needs_accountant_review` with an append-only
+  `vatChanges[{fromRate, toRate, at, by, soldBefore}]` (and a WARNING log
+  line `ticket_type.vat_changed`). A published event whose occurrences are
+  all over or cancelled, a cancelled event and an ended, done or cancelled
+  occurrence answer 409 `invalid_state`. Lowering a cap to exactly sold +
+  held makes the type (or occurrence) sold out; raising it reopens sales.
+- Cap guard: an owner can add or remove a type's cap between another
+  writer's read and write, so every counter write that moves a type's
+  `taken` (hold, release, late issue, refund) is conditional on
+  `attribute_exists(seatsLeft)` or `attribute_not_exists(seatsLeft)` as
+  read; a failed guard is rebuilt from a fresh read (checkout answers 409
+  `changed_retry`), so `seatsLeft` always equals cap - taken.
 - K20: at most 5 gift transfers per ticket and day and 20 per IP and hour
   (request guard, 429 with `Retry-After`).
 - Bokföring: TX rows by location and day; sale debits `stripe` and credits

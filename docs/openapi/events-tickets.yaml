@@ -291,6 +291,12 @@ paths:
       tags:
       - Events and tickets
       summary: K6 Create or update a ticket type
+      description: 'Without `version`: create (a retry returns the type). With `version`: edit. Sold and held
+        tickets keep the price and VAT rate they were sold at; a new price or rate applies to later checkouts
+        only. The cap (`capacity`, `tier.untilSold`) may not go below sold + held (`invalid_capacity`, checked
+        in the same conditional write, so a sale during the edit is never oversold). A VAT change is allowed
+        and flagged `vatReview: needs_accountant_review` with an append-only `vatChanges` trail. Once a
+        published event has no occurrence that can still sell (all over or cancelled): 409 `invalid_state`.'
       operationId: eventsTicketsPutLocationsLocationIdEventsEventIdTicketTypesTypeId
       security:
       - bearerAuth: []
@@ -322,7 +328,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventsTicketsTicketType'
         '400':
-          description: Validation error (invalid_price, invalid_vat_rate).
+          description: Validation error (invalid_price, invalid_vat_rate, invalid_window, invalid_capacity
+            (below sold + held; field capacity or tier)).
           content:
             application/json:
               schema: *id002
@@ -342,7 +349,7 @@ paths:
             application/json:
               schema: *id002
         '409':
-          description: has_sales, changed_retry
+          description: changed_retry (stale version), invalid_state (event cancelled or over)
           content:
             application/json:
               schema: *id002
@@ -410,6 +417,10 @@ paths:
       tags:
       - Events and tickets
       summary: K8 Update an occurrence
+      description: '`capacity` may not go below sold + held; the write is conditional on the stored counters, so
+        a sale during the edit gives 400 `invalid_capacity`, never an oversold occurrence, and `seatsLeft`
+        stays capacity - sold - held. A cancelled, done or already ended occurrence (or a cancelled event):
+        409 `invalid_state`.'
       operationId: eventsTicketsPutLocationsLocationIdEventsEventIdOccurrencesOccurrenceId
       security:
       - bearerAuth: []
@@ -441,7 +452,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventsTicketsOccurrence'
         '400':
-          description: Validation error (invalid_capacity (below sold), invalid_window).
+          description: Validation error (invalid_capacity (below sold + held), invalid_window).
           content:
             application/json:
               schema: *id002
@@ -1344,6 +1355,21 @@ components:
               perOrderMax: *id005
               sortOrder: *id005
               sold: *id005
+              held: *id005
+              vatReview:
+                type: string
+                enum:
+                - needs_accountant_review
+              vatChanges:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    fromRate: *id009
+                    toRate: *id009
+                    at: *id001
+                    by: *id001
+                    soldBefore: *id005
               version: *id005
             required:
             - typeId

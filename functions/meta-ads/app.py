@@ -44,7 +44,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, tenant
+from shared import dynamo, events, http, routing, tenant
 from shared.bedrock import TextModelError
 from shared.features import meta_ads as ads
 from shared.meta_graph import MetaGraphError
@@ -643,6 +643,7 @@ def handler(event, context=None):
         if "hook" in event:
             return _hook(event)
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)

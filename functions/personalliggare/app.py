@@ -36,7 +36,7 @@ from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, tenant
+from shared import dynamo, events, http, routing, tenant
 from shared.features import personalliggare as pl
 
 logger = logging.getLogger()
@@ -442,6 +442,7 @@ def handler(event, context=None):
                 logger.error(json.dumps({"hook": event.get("hook"), "aws": type(exc).__name__}))
                 raise
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)

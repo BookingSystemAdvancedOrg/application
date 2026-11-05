@@ -48,7 +48,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, orders, request_guard, tenant, turnstile
+from shared import dynamo, events, http, orders, request_guard, routing, tenant, turnstile
 from shared import stripe_client as stripe
 from shared.features import gift_cards as gc
 
@@ -1011,6 +1011,7 @@ def handler(event, context=None):
         if event.get("job") == "nightly":
             return run_nightly()
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    routing.resolve(event, ROUTES)
     method, path = http.route(event)
     route = f"{method} {path}"
     if route not in ROUTES:

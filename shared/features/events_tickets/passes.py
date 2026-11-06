@@ -9,8 +9,9 @@ someone turns it on):
                pass (`pass.json`-like for Apple, a stub save link for Google).
                Nothing is signed and nothing leaves the Lambda.
     live       real passes. Each kind is available only when its secret is set
-               and complete, read by the ARN in the named env var (a missing,
-               empty or broken secret hides that kind, as ADR-K 6 says):
+               and complete, read by the ARN in the named env var (a secret that is
+               missing, empty, unparseable or lacks a field hides that kind, as ADR-K 6 says; a
+               complete secret with bad key material still shows the kind and answers 404 on click):
                EVENTS_TICKETS_APPLE_PASS_SECRET_ARN    JSON {passTypeIdentifier,
                    teamIdentifier, certificatePem, privateKeyPem,
                    privateKeyPassword?, wwdrCertificatePem}
@@ -19,9 +20,11 @@ someone turns it on):
                    file plus the issuer id). The EventTicketClass
                    `<issuerId>.<classId or booqy-event-ticket>` must exist in
                    Google Wallet (created once by hand); the save JWT carries only
-                   the ticket object with its long strings capped (title and venue 40, holder 30,
-                   ticket type 20 characters, ellipsis when cut), which keeps it under the 1800
-                   character limit.
+                   the ticket object with its long strings capped (title, venue and holder 30,
+                   ticket type 20 characters and 3 bytes per character, ellipsis when cut). The
+                   JWT length follows UTF-8 bytes, so the finished link is measured: over 1700
+                   characters, the strings are shortened step by step and finally the text
+                   modules dropped; a link that still does not fit is a pass that cannot be built.
 
 Passes are built on request from the ticket page and never stored. They carry
 the event, time, place, ticket type, holder name and the ticket's QR payload
@@ -133,14 +136,24 @@ def google_class_id(issuer_id: str, class_name: str = "") -> str:
     return _object_id(issuer_id, class_name or GOOGLE_CLASS_NAME)
 
 
-TITLE_CAP, LOCATION_CAP, HOLDER_CAP, TYPE_CAP = 40, 40, 30, 20
+TITLE_CAP, LOCATION_CAP, HOLDER_CAP, TYPE_CAP = 30, 30, 30, 20
+# The save link is a JWT: its length follows UTF-8 bytes (an emoji is 4, a euro sign 3), then base64
+# (x4/3). So the caps count characters and bytes (3 per character), and the finished link is measured.
+MAX_SAVE_URL = 1700  # Google's limit is 1800; this keeps a margin
+_SHRINK = (1.0, 0.75, 0.5, 0.33, 0.2)
 
 
-def _cap(value: str, limit: int) -> str:
-    """At most `limit` characters, ending in an ellipsis when cut. Google's save link must stay under
-    1800 characters and the app allows far longer names, so what goes into the JWT is shortened."""
+def _cap(value: str, limit: int, max_bytes: Optional[int] = None) -> str:
+    """At most `limit` characters and `max_bytes` UTF-8 bytes (default 3 per character), ending in an
+    ellipsis when cut. Google's save link must stay short and the app allows far longer names."""
+    max_bytes = limit * 3 if max_bytes is None else max_bytes
     value = (value or "").strip()
-    return value if len(value) <= limit else value[:limit - 1].rstrip() + "\u2026"
+    if len(value) <= limit and len(value.encode("utf-8")) <= max_bytes:
+        return value
+    value = value[:max(limit - 1, 0)]
+    while value and len((value + "\u2026").encode("utf-8")) > max_bytes:
+        value = value[:-1]
+    return value.rstrip() + "\u2026"
 
 
 class _CompactJSONEncoder(json.JSONEncoder):
@@ -151,19 +164,23 @@ class _CompactJSONEncoder(json.JSONEncoder):
         super().__init__(**kwargs)
 
 
-def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str, class_name: str = "") -> dict:
+def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str, class_name: str = "",
+                   scale: float = 1.0, text_modules: bool = True) -> dict:
     """Object only, by reference to the class (see google_class_id). Event facts ride on the object's
-    text modules because event name, venue and dates are class fields."""
+    text modules (the start and end are in validTimeInterval and not repeated). `scale` shortens the
+    capped strings, `text_modules=False` drops them (last resort for the 1700 character guard)."""
+    def cap(value, limit):
+        return _cap(value, max(int(limit * scale), 4))
+    modules = [{"id": "event", "header": cap(data.title, TITLE_CAP)},
+               {"id": "place", "header": "Plats", "body": cap(data.location_name, LOCATION_CAP) or "Booqy"}]
     return {
         "iss": client_email, "aud": "google", "typ": "savetowallet", "origins": [origin] if origin else [],
         "payload": {
             "eventTicketObjects": [{
                 "id": _object_id(issuer_id, data.ticket_id), "classId": google_class_id(issuer_id, class_name),
-                "state": "ACTIVE", "ticketHolderName": _cap(data.holder_name, HOLDER_CAP),
-                "ticketType": {"defaultValue": {"language": "sv", "value": _cap(data.type_name, TYPE_CAP)}},
-                "textModulesData": [{"id": "event", "header": _cap(data.title, TITLE_CAP), "body": data.start_at},
-                                    {"id": "place", "header": "Plats",
-                                     "body": _cap(data.location_name, LOCATION_CAP) or "Booqy"}],
+                "state": "ACTIVE", "ticketHolderName": cap(data.holder_name, HOLDER_CAP),
+                "ticketType": {"defaultValue": {"language": "sv", "value": cap(data.type_name, TYPE_CAP)}},
+                **({"textModulesData": modules} if text_modules else {}),
                 "barcode": {"type": "QR_CODE", "value": data.qr, "alternateText": data.ticket_id[-8:]},
                 "validTimeInterval": {"start": {"date": data.start_at}, "end": {"date": data.end_at}},
             }],
@@ -264,13 +281,23 @@ def build_pkpass(data: PassData, secret: dict) -> bytes:
 
 
 def google_save_url(data: PassData, secret: dict) -> str:
+    """The save link, at most MAX_SAVE_URL characters: title, place, holder and type are shortened
+    step by step until the signed link fits, then the optional text modules are dropped. Raises
+    ValueError when even that is too long (an absurd classId, origin or service account address)."""
     import jwt
 
-    claims = _google_claims(data, issuer_id=secret["issuerId"], client_email=secret["client_email"],
-                            origin=_origin(), class_name=secret.get("classId") or "")
-    claims["iat"] = int(time.time())
-    return GOOGLE_SAVE_URL + jwt.encode(claims, secret["private_key"], algorithm="RS256",
-                                         json_encoder=_CompactJSONEncoder)
+    iat = int(time.time())
+    url = ""
+    for text_modules, scale in [(True, s) for s in _SHRINK] + [(False, s) for s in _SHRINK]:
+        claims = _google_claims(data, issuer_id=secret["issuerId"], client_email=secret["client_email"],
+                                origin=_origin(), class_name=secret.get("classId") or "",
+                                scale=scale, text_modules=text_modules)
+        claims["iat"] = iat
+        url = GOOGLE_SAVE_URL + jwt.encode(claims, secret["private_key"], algorithm="RS256",
+                                            json_encoder=_CompactJSONEncoder)
+        if len(url) <= MAX_SAVE_URL:
+            return url
+    raise ValueError(f"save link {len(url)} characters")
 
 
 class LiveWallet:

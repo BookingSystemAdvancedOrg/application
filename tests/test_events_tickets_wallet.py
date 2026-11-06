@@ -308,6 +308,60 @@ def test_worst_case_google_link_stays_under_1800_characters(env, monkeypatch, ke
     assert data.end_at not in json.dumps(obj["textModulesData"])  # no end time under a location header
 
 
+EMAIL_85 = "booqy-wallet-issuer@" + "p" * 34 + "-123456.iam.gserviceaccount.com"
+assert len(EMAIL_85) == 85
+
+
+@pytest.mark.parametrize("name", ["\U0001F600" * 80, "\u20ac" * 80, "\u00e5\u00e4\u00f6" * 27, "Z" * 80,
+                                  "\U0001F600\u20ac\u00e5a" * 20], ids=["emoji", "euro", "aao", "ascii", "mixed"])
+@pytest.mark.parametrize("origin,class_id", [("https://kund.example-restaurang.se", ""),
+                                             ("https://" + "o" * 60 + ".example-restaurang.se", "c" * 60)],
+                         ids=["short", "long-origin-and-classid"])
+def test_google_link_is_short_for_any_script_email_origin_and_class(env, monkeypatch, keys, name, origin, class_id):
+    """Emoji cost 4 UTF-8 bytes, the euro sign 3, a-ring/a-umlaut/o-umlaut 2: the finished link is bounded
+    whatever the characters, the service account address, the origin or the classId."""
+    data = passes.PassData(
+        tenant_id=TENANT_A, event_id="01" + "E" * 24, ticket_id="01" + "T" * 24, title=name + name[:40],
+        start_at="2026-12-31T23:59:59+01:00", end_at="2027-01-01T01:30:00+01:00", location_name=name,
+        type_name=name, holder_name=name, qr=qr.payload(TENANT_A, OCC1, "01" + "T" * 24))
+    secret = {"issuerId": "3388000000012345678", "client_email": EMAIL_85, "private_key": _pem(keys["google_key"])}
+    if class_id:
+        secret["classId"] = class_id
+    monkeypatch.setenv("CUSTOMER_SITE_URL", origin)
+    url = passes.google_save_url(data, secret)
+    assert len(url) < 1800 and len(url) <= passes.MAX_SAVE_URL, len(url)
+    claims = jwt.decode(url.removeprefix(passes.GOOGLE_SAVE_URL), keys["google_key"].public_key(),
+                        algorithms=["RS256"], audience="google")
+    obj = claims["payload"]["eventTicketObjects"][0]
+    assert obj["classId"].endswith(class_id or "booqy-event-ticket")
+    assert data.start_at not in json.dumps(obj.get("textModulesData", []))  # start only in validTimeInterval
+    assert obj["validTimeInterval"]["start"]["date"] == data.start_at
+
+
+def test_google_link_drops_text_modules_then_refuses_when_nothing_helps(env, monkeypatch, keys):
+    data = passes.PassData(
+        tenant_id=TENANT_A, event_id="01" + "E" * 24, ticket_id="01" + "T" * 24, title="\U0001F600" * 80,
+        start_at="2026-12-31T23:59:59+01:00", end_at="2027-01-01T01:30:00+01:00", location_name="\U0001F600" * 80,
+        type_name="\U0001F600" * 80, holder_name="\U0001F600" * 80, qr=qr.payload(TENANT_A, OCC1, "01" + "T" * 24))
+    secret = {"issuerId": "3388000000012345678", "client_email": EMAIL_85, "private_key": _pem(keys["google_key"]),
+              "classId": "c" * 1200}
+    monkeypatch.setenv("CUSTOMER_SITE_URL", "https://kund.example-restaurang.se")
+    with pytest.raises(ValueError):
+        passes.google_save_url(data, secret)  # a 1200 character classId alone is over the limit
+    secret["classId"] = "c" * 280
+    url = passes.google_save_url(data, secret)
+    obj = jwt.decode(url.removeprefix(passes.GOOGLE_SAVE_URL), keys["google_key"].public_key(),
+                     algorithms=["RS256"], audience="google")["payload"]["eventTicketObjects"][0]
+    assert len(url) <= passes.MAX_SAVE_URL
+    assert "textModulesData" not in obj  # optional text modules were dropped to fit
+
+
+def test_cap_counts_bytes_not_only_characters():
+    assert len(passes._cap("\U0001F600" * 40, 40).encode()) <= 120
+    assert passes._cap("\u20ac" * 40, 40, 20).endswith("\u2026") and len(passes._cap("\u20ac" * 40, 40, 20).encode()) <= 20
+    assert passes._cap("kort", 40) == "kort"
+
+
 def test_broken_google_key_is_a_404_without_detail(env, monkeypatch, keys):
     sold(env)
     wallet_on(monkeypatch, "live")

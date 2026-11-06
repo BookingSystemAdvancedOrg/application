@@ -19,7 +19,9 @@ someone turns it on):
                    file plus the issuer id). The EventTicketClass
                    `<issuerId>.<classId or booqy-event-ticket>` must exist in
                    Google Wallet (created once by hand); the save JWT carries only
-                   the ticket object, which keeps it under the 1800 character limit.
+                   the ticket object with its long strings capped (title and venue 40, holder 30,
+                   ticket type 20 characters, ellipsis when cut), which keeps it under the 1800
+                   character limit.
 
 Passes are built on request from the ticket page and never stored. They carry
 the event, time, place, ticket type, holder name and the ticket's QR payload
@@ -131,6 +133,24 @@ def google_class_id(issuer_id: str, class_name: str = "") -> str:
     return _object_id(issuer_id, class_name or GOOGLE_CLASS_NAME)
 
 
+TITLE_CAP, LOCATION_CAP, HOLDER_CAP, TYPE_CAP = 40, 40, 30, 20
+
+
+def _cap(value: str, limit: int) -> str:
+    """At most `limit` characters, ending in an ellipsis when cut. Google's save link must stay under
+    1800 characters and the app allows far longer names, so what goes into the JWT is shortened."""
+    value = (value or "").strip()
+    return value if len(value) <= limit else value[:limit - 1].rstrip() + "\u2026"
+
+
+class _CompactJSONEncoder(json.JSONEncoder):
+    """UTF-8 as is: PyJWT would escape å, ä and ö to six characters each (\\u00e5)."""
+
+    def __init__(self, **kwargs):
+        kwargs["ensure_ascii"] = False
+        super().__init__(**kwargs)
+
+
 def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str, class_name: str = "") -> dict:
     """Object only, by reference to the class (see google_class_id). Event facts ride on the object's
     text modules because event name, venue and dates are class fields."""
@@ -139,10 +159,11 @@ def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin:
         "payload": {
             "eventTicketObjects": [{
                 "id": _object_id(issuer_id, data.ticket_id), "classId": google_class_id(issuer_id, class_name),
-                "state": "ACTIVE", "ticketHolderName": data.holder_name,
-                "ticketType": {"defaultValue": {"language": "sv", "value": data.type_name}},
-                "textModulesData": [{"id": "event", "header": data.title, "body": data.start_at},
-                                    {"id": "place", "header": data.location_name or "Booqy", "body": data.end_at}],
+                "state": "ACTIVE", "ticketHolderName": _cap(data.holder_name, HOLDER_CAP),
+                "ticketType": {"defaultValue": {"language": "sv", "value": _cap(data.type_name, TYPE_CAP)}},
+                "textModulesData": [{"id": "event", "header": _cap(data.title, TITLE_CAP), "body": data.start_at},
+                                    {"id": "place", "header": "Plats",
+                                     "body": _cap(data.location_name, LOCATION_CAP) or "Booqy"}],
                 "barcode": {"type": "QR_CODE", "value": data.qr, "alternateText": data.ticket_id[-8:]},
                 "validTimeInterval": {"start": {"date": data.start_at}, "end": {"date": data.end_at}},
             }],
@@ -248,7 +269,8 @@ def google_save_url(data: PassData, secret: dict) -> str:
     claims = _google_claims(data, issuer_id=secret["issuerId"], client_email=secret["client_email"],
                             origin=_origin(), class_name=secret.get("classId") or "")
     claims["iat"] = int(time.time())
-    return GOOGLE_SAVE_URL + jwt.encode(claims, secret["private_key"], algorithm="RS256")
+    return GOOGLE_SAVE_URL + jwt.encode(claims, secret["private_key"], algorithm="RS256",
+                                         json_encoder=_CompactJSONEncoder)
 
 
 class LiveWallet:
@@ -258,9 +280,15 @@ class LiveWallet:
 
     def issue(self, kind, data):
         if kind == "apple":
-            return PassResult(content_type=PKPASS, body=build_pkpass(data, _secret(APPLE_SECRET_ENV, APPLE_FIELDS)),
+            secret = _secret(APPLE_SECRET_ENV, APPLE_FIELDS)
+            if secret is None:  # gone from the cache and unreadable now
+                raise LookupError(kind)
+            return PassResult(content_type=PKPASS, body=build_pkpass(data, secret),
                               filename=f"biljett-{data.ticket_id}.pkpass")
-        return PassResult(redirect=google_save_url(data, _secret(GOOGLE_SECRET_ENV, GOOGLE_FIELDS)))
+        secret = _secret(GOOGLE_SECRET_ENV, GOOGLE_FIELDS)
+        if secret is None:
+            raise LookupError(kind)
+        return PassResult(redirect=google_save_url(data, secret))
 
 
 def mode() -> str:

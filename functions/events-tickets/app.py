@@ -1806,6 +1806,10 @@ def ticket_pass(event):
     if set(params) - {"ticketId", "kind"}:
         raise et.EventsError(400, "unsupported query parameters")
     kind = params.get("kind")
+    if not params.get("ticketId"):
+        raise et.EventsError(400, "ticketId is required", "ticketId")
+    if not kind:
+        raise et.EventsError(400, "kind is required", "kind")
     wallet = passes.provider()
     if kind not in passes.KINDS or not wallet.available().get(kind):
         raise et.EventsError(404, "not found")
@@ -1821,7 +1825,11 @@ def ticket_pass(event):
         start_at=occ.get("startAt") or "", end_at=occ.get("endAt") or "", location_name=location.get("name") or "",
         type_name=ticket.get("typeName") or "", holder_name=ticket.get("holderName") or "",
         qr=qr.payload(tenant_id, ticket["occurrenceId"], ticket["ticketId"]))
-    return passes.response(wallet.issue(kind, data))
+    try:
+        return passes.response(wallet.issue(kind, data))
+    except Exception as exc:  # bad key material, a secret that expired from the cache: no detail leaves the Lambda
+        logger.error(json.dumps({"wallet": kind, "issue_failed": type(exc).__name__}))
+        raise et.EventsError(404, "not found")
 
 
 def create_transfer(event):

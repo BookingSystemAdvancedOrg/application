@@ -141,6 +141,16 @@ def test_pass_refused_for_tickets_outside_the_link(env, monkeypatch):
     assert get_pass(env, ids[0], "apple", extra="1")["statusCode"] == 400
 
 
+def test_pass_requires_ticket_id_and_kind(env, monkeypatch):
+    sold(env)
+    wallet_on(monkeypatch)
+    token = token_of(env)
+    for query in ({}, {"kind": "apple"}, {"ticketId": first_ticket(env)}, {"ticketId": "", "kind": "apple"}):
+        event = {"routeKey": f"GET {PASS}", "pathParameters": {"token": token}, "queryStringParameters": query or None,
+                 "headers": {}, "requestContext": {"http": {"method": "GET", "sourceIp": "203.0.113.5"}}, "body": None}
+        assert env.api.handler(event, None)["statusCode"] == 400, query
+
+
 def test_pass_refused_for_a_refunded_ticket(env, monkeypatch):
     sold(env)
     wallet_on(monkeypatch)
@@ -274,6 +284,56 @@ def test_live_google_redirects_to_a_signed_save_link(env, monkeypatch, keys):
     assert len(token) < 1800  # the class lives in Google Wallet, not in the JWT
     assert obj["barcode"]["value"] == qr.payload(TENANT_A, OCC1, ticket_id)
     assert get_pass(env, ticket_id, "apple")["statusCode"] == 404  # no Apple secret
+
+
+def test_worst_case_google_link_stays_under_1800_characters(env, monkeypatch, keys):
+    """The app's longest names (title 120, other names 80) with å/ä/ö, an issuer id and service account
+    address as long as Google issues them, signed with a 2048-bit key."""
+    long = "Åäö" * 40
+    data = passes.PassData(
+        tenant_id=TENANT_A, event_id="01" + "E" * 24, ticket_id="01" + "T" * 24, title=("Å" * 119 + "ö"),
+        start_at="2026-12-31T23:59:59+01:00", end_at="2027-01-01T01:30:00+01:00", location_name=long[:80],
+        type_name=long[:80], holder_name=long[:80], qr=qr.payload(TENANT_A, OCC1, "01" + "T" * 24))
+    secret = {"issuerId": "3388000000012345678", "client_email": "booqy-wallet-issuer@some-long-project-name-123456.iam.gserviceaccount.com",
+              "private_key": _pem(keys["google_key"])}
+    monkeypatch.setenv("CUSTOMER_SITE_URL", "https://kund.example-restaurang.se")
+    url = passes.google_save_url(data, secret)
+    token = url.removeprefix(passes.GOOGLE_SAVE_URL)
+    assert len(url) < 1800, len(url)
+    obj = jwt.decode(token, keys["google_key"].public_key(), algorithms=["RS256"], audience="google")["payload"]["eventTicketObjects"][0]
+    assert obj["ticketHolderName"].endswith("\u2026") and len(obj["ticketHolderName"]) == passes.HOLDER_CAP
+    assert len(obj["ticketType"]["defaultValue"]["value"]) == passes.TYPE_CAP
+    assert obj["textModulesData"][0]["header"].startswith("Å") and len(obj["textModulesData"][0]["header"]) == passes.TITLE_CAP
+    assert "\\u00" not in token and "end" not in {m["id"] for m in obj["textModulesData"]}
+    assert data.end_at not in json.dumps(obj["textModulesData"])  # no end time under a location header
+
+
+def test_broken_google_key_is_a_404_without_detail(env, monkeypatch, keys):
+    sold(env)
+    wallet_on(monkeypatch, "live")
+    bad = {**google_secret(keys), "private_key": "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----\n"}
+    monkeypatch.setenv(passes.GOOGLE_SECRET_ENV, _secret("google-bad", bad))
+    response = get_pass(env, first_ticket(env), "google")
+    assert response["statusCode"] == 404
+    assert "PEM" not in response["body"] and "key" not in response["body"].lower()
+
+
+def test_broken_apple_pem_is_a_404(env, monkeypatch, keys):
+    sold(env)
+    wallet_on(monkeypatch, "live")
+    monkeypatch.setenv(passes.APPLE_SECRET_ENV, _secret("apple-bad", {**apple_secret(keys), "certificatePem": "garbage"}))
+    assert get_pass(env, first_ticket(env), "apple")["statusCode"] == 404
+
+
+def test_secret_gone_after_cache_expiry_is_a_404(env, monkeypatch, keys):
+    sold(env)
+    wallet_on(monkeypatch, "live")
+    arn = _secret("google-gone", google_secret(keys))
+    monkeypatch.setenv(passes.GOOGLE_SECRET_ENV, arn)
+    assert get_pass(env, first_ticket(env), "google")["statusCode"] == 302
+    boto3.client("secretsmanager", region_name=REGION).delete_secret(SecretId=arn, ForceDeleteWithoutRecovery=True)
+    passes._secret_cache.clear()  # the 5 minute cache ran out
+    assert get_pass(env, first_ticket(env), "google")["statusCode"] == 404
 
 
 def test_secret_reads_are_cached(env, monkeypatch, keys):

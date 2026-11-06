@@ -15,8 +15,11 @@ someone turns it on):
                    teamIdentifier, certificatePem, privateKeyPem,
                    privateKeyPassword?, wwdrCertificatePem}
                EVENTS_TICKETS_GOOGLE_WALLET_SECRET_ARN JSON {issuerId,
-                   client_email, private_key} (the service account key file
-                   plus the issuer id)
+                   client_email, private_key, classId?} (the service account key
+                   file plus the issuer id). The EventTicketClass
+                   `<issuerId>.<classId or booqy-event-ticket>` must exist in
+                   Google Wallet (created once by hand); the save JWT carries only
+                   the ticket object, which keeps it under the 1800 character limit.
 
 Passes are built on request from the ticket page and never stored. They carry
 the event, time, place, ticket type, holder name and the ticket's QR payload
@@ -118,21 +121,28 @@ def _object_id(issuer_id: str, *parts: str) -> str:
     return f"{issuer_id}." + "-".join(re.sub(r"[^A-Za-z0-9._-]", "_", p) for p in parts)
 
 
-def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str) -> dict:
-    class_id = _object_id(issuer_id, data.tenant_id, data.event_id)
+GOOGLE_CLASS_NAME = "booqy-event-ticket"
+
+
+def google_class_id(issuer_id: str, class_name: str = "") -> str:
+    """The one EventTicketClass every ticket points at. It is created once by hand in the Google
+    Wallet console / API (issuer setup) and never sent inside the save JWT: an inline class pushed
+    the live JWT over the 1800 character limit of the save link."""
+    return _object_id(issuer_id, class_name or GOOGLE_CLASS_NAME)
+
+
+def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str, class_name: str = "") -> dict:
+    """Object only, by reference to the class (see google_class_id). Event facts ride on the object's
+    text modules because event name, venue and dates are class fields."""
     return {
         "iss": client_email, "aud": "google", "typ": "savetowallet", "origins": [origin] if origin else [],
         "payload": {
-            "eventTicketClasses": [{
-                "id": class_id, "issuerName": data.location_name or "Booqy", "reviewStatus": "UNDER_REVIEW",
-                "eventName": {"defaultValue": {"language": "sv", "value": data.title}},
-                "venue": {"name": {"defaultValue": {"language": "sv", "value": data.location_name}}},
-                "dateTime": {"start": data.start_at, "end": data.end_at},
-            }],
             "eventTicketObjects": [{
-                "id": _object_id(issuer_id, data.ticket_id), "classId": class_id, "state": "ACTIVE",
-                "ticketHolderName": data.holder_name,
+                "id": _object_id(issuer_id, data.ticket_id), "classId": google_class_id(issuer_id, class_name),
+                "state": "ACTIVE", "ticketHolderName": data.holder_name,
                 "ticketType": {"defaultValue": {"language": "sv", "value": data.type_name}},
+                "textModulesData": [{"id": "event", "header": data.title, "body": data.start_at},
+                                    {"id": "place", "header": data.location_name or "Booqy", "body": data.end_at}],
                 "barcode": {"type": "QR_CODE", "value": data.qr, "alternateText": data.ticket_id[-8:]},
                 "validTimeInterval": {"start": {"date": data.start_at}, "end": {"date": data.end_at}},
             }],
@@ -236,7 +246,7 @@ def google_save_url(data: PassData, secret: dict) -> str:
     import jwt
 
     claims = _google_claims(data, issuer_id=secret["issuerId"], client_email=secret["client_email"],
-                            origin=_origin())
+                            origin=_origin(), class_name=secret.get("classId") or "")
     claims["iat"] = int(time.time())
     return GOOGLE_SAVE_URL + jwt.encode(claims, secret["private_key"], algorithm="RS256")
 

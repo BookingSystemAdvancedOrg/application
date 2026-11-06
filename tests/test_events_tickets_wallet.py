@@ -269,7 +269,9 @@ def test_live_google_redirects_to_a_signed_save_link(env, monkeypatch, keys):
     assert claims["iss"] == "wallet@booqy-test.iam.gserviceaccount.com" and claims["typ"] == "savetowallet"
     obj = claims["payload"]["eventTicketObjects"][0]
     assert obj["id"] == f"3388000000012345678.{ticket_id}"
-    assert obj["classId"] == f"3388000000012345678.{TENANT_A}-{base.E1}"
+    assert obj["classId"] == "3388000000012345678.booqy-event-ticket"
+    assert "eventTicketClasses" not in claims["payload"]
+    assert len(token) < 1800  # the class lives in Google Wallet, not in the JWT
     assert obj["barcode"]["value"] == qr.payload(TENANT_A, OCC1, ticket_id)
     assert get_pass(env, ticket_id, "apple")["statusCode"] == 404  # no Apple secret
 

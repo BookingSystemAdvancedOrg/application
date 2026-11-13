@@ -36,6 +36,7 @@ import logging
 import os
 from datetime import date, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -299,7 +300,8 @@ def _cursor(value):
 
 def list_calls(event, ctx):
     query = http.query(event)
-    today = date.today()
+    # Stockholm's day from the feature clock (UTC on a Lambda, frozen in tests).
+    today = pa.now().astimezone(ZoneInfo("Europe/Stockholm")).date()
     try:
         first = date.fromisoformat(query.get("from") or (today - timedelta(days=6)).isoformat())
         last = date.fromisoformat(query.get("to") or today.isoformat())

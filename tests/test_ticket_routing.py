@@ -240,20 +240,6 @@ def test_kitchen_display_status_reprint_and_cancel(env):
     assert len(slips) == 1 and "MAKULERAD #12" in slips[0]
 
 
-def test_kassa_send_routes_per_station(env, monkeypatch):
-    (k1, k1s), _, (bar, bars) = setup_stations(env)
-    bill = {"billId": "b" * 32, "kind": "table", "tableLabel": "3"}
-    lines = [{"name": "Pasta", "quantity": 1, "category": "mains", "note": "glutenfri"},
-             {"name": "Vatten", "quantity": 1, "category": "drinks", "station": "none"}]
-    tickets, jobs = p.dispatch("t", LOC_A, "k" + "c" * 32, {"billId": bill["billId"], "mode": "table",
-                                                             "tableLabel": "3"}, lines, None, p.now_utc(), auto_print=True)
-    assert [x["stationId"] for x in tickets] == ["kok"] and tickets[0]["allergy"] is True
-    assert sorted(j["kind"] for j in jobs) == ["allergy", "allergy", "station", "station"]
-    docs = drain(star_print, env, k1, k1s)
-    assert any("BORD 3" in d and "Nota bbbbbbbb" in d for d in docs)
-    assert drain(epson_print, env, bar, bars) == []
-
-
 def test_removed_printer_leaves_its_station(env):
     (k1, _), (k2, _), _ = setup_stations(env)
     api(env, "DELETE", f"devices/{k2}")

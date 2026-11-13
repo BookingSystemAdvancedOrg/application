@@ -10,8 +10,8 @@ Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK JOB#kassa#<id>         Kassa: a receipt or report, carried
                                                in the job (ticket)
     PK LOCATION#<l>  SK ROUTING                stations and routing (shared/routing.py)
-    PK LOCATION#<l>  SK TICKET#<src>#<station> one station's ticket of an order (src =
-                                               orderId) or a Kassa send (src = k<id>)
+    PK LOCATION#<l>  SK TICKET#<src>#<station> one station's ticket of an online or QR
+                                               table order (src = orderId)
     PK LOCATION#<l>  SK JOB#<src>#st-<station>-<device>       the ticket on one of
                                                the station's printers
     PK LOCATION#<l>  SK JOB#<src>#al-<station>-<device>       its allergy ticket
@@ -431,7 +431,7 @@ def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False):
 
 
 def dispatch(tenant_id, location_id, source_id, header, lines, notes, now, *, auto_print=None):
-    """Station tickets for an order or a Kassa send, then their print jobs
+    """Station tickets for an order, then their print jobs
     (when auto print is on, or always with auto_print=True). A retry makes
     nothing twice. Returns (tickets, jobs)."""
     settings = get_settings(location_id)

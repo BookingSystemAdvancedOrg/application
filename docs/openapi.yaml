@@ -7367,14 +7367,13 @@ components:
     StationTicket:
       type: object
       properties:
-        sourceId: {type: string, description: 'orderId, or k<id> for a Kassa send'}
+        sourceId: {type: string, description: orderId of the online or QR table order}
         stationId: {type: string}
         stationName: {type: string}
         status: {type: string, enum: [sent, preparing, ready, cancelled]}
         allergy: {type: boolean}
         notes: {type: string}
         orderId: {type: string}
-        billId: {type: string}
         number: {type: integer}
         mode: {type: string, enum: [pickup, table]}
         tableLabel: {type: string}

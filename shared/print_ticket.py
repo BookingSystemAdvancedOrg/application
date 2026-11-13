@@ -244,7 +244,7 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
     items, grouped by course, notes and allergies in bold. `allergy`: the
     separate allergy ticket, only the items with an allergy (all of them
     when the order's note names one). `order`: the online order for the
-    guest's name (and phone on pickup), or None for a Kassa send."""
+    guest's name (and phone on pickup)."""
     from shared import routing
     tz = _tz(location)
     order = order or {}
@@ -302,6 +302,5 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
     phone = clean(order.get("customerPhone"))
     if phone and ticket.get("mode") != "table":
         t.line(f"Tel: {phone}")
-    ref = ticket.get("orderId") or ticket.get("billId") or ""
-    t.line(f"{'Order' if ticket.get('orderId') else 'Nota'} {str(ref)[:8]}")
+    t.line(f"Order {str(ticket.get('orderId') or '')[:8]}")
     return t.done()

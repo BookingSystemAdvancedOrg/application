@@ -1,5 +1,5 @@
 """Kitchen ticket routing: stations, which station gets each item, and the
-tickets ("bongar") one order or Kassa send makes.
+tickets ("bongar") one online or QR table order makes.
 
 Config (print table, PK LOCATION#<l> SK ROUTING, edited by the owner):
     stations      [{stationId, name, printerIds}]   1-12; a printer may serve
@@ -196,7 +196,7 @@ def by_course(entries):
 
 
 def tickets(source_id, header, lines, notes, config, now):
-    """The ticket items for one order or Kassa send (not yet stored)."""
+    """The ticket items for one order (not yet stored)."""
     from shared import printing
     names = {s["stationId"]: s["name"] for s in config["stations"]}
     order_allergy = mentions_allergy(notes)
@@ -274,7 +274,7 @@ def cancel(location_id, source_id, now):
 
 def view(item):
     return {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
-                                     "orderId", "billId", "number", "mode", "tableLabel", "placedAt", "createdAt",
+                                     "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
                                      "updatedAt") if item.get(k) is not None}
 
 

@@ -3,36 +3,36 @@
     "input": "#350001",
     "mode": "light",
     "accent": "#350001",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#350001",
     "mode": "dark",
-    "accent": "#9a7f80",
+    "accent": "#997d7b",
     "onAccent": "#1d1a1a"
   },
   {
     "input": "#9a3b26",
     "mode": "light",
     "accent": "#9a3b26",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#9a3b26",
     "mode": "dark",
-    "accent": "#a95847",
-    "onAccent": "#ffffff"
+    "accent": "#b87464",
+    "onAccent": "#1d1a1a"
   },
   {
     "input": "#777777",
     "mode": "light",
     "accent": "#737272",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#777777",
     "mode": "dark",
-    "accent": "#858585",
+    "accent": "#848484",
     "onAccent": "#1d1a1a"
   },
   {
@@ -51,12 +51,12 @@
     "input": "#ff0000",
     "mode": "light",
     "accent": "#e80303",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#ff0000",
     "mode": "dark",
-    "accent": "#ff2626",
+    "accent": "#ff2625",
     "onAccent": "#1d1a1a"
   },
   {
@@ -99,13 +99,13 @@
     "input": "#000000",
     "mode": "light",
     "accent": "#000000",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#000000",
     "mode": "dark",
-    "accent": "#737373",
-    "onAccent": "#ffffff"
+    "accent": "#72706f",
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#c9a227",
@@ -123,25 +123,25 @@
     "input": "#2e7d32",
     "mode": "light",
     "accent": "#2e7d32",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#2e7d32",
     "mode": "dark",
-    "accent": "#38843c",
-    "onAccent": "#ffffff"
+    "accent": "#579659",
+    "onAccent": "#1d1a1a"
   },
   {
     "input": "#7b1fa2",
     "mode": "light",
     "accent": "#7b1fa2",
-    "onAccent": "#ffffff"
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#7b1fa2",
     "mode": "dark",
-    "accent": "#9c57b9",
-    "onAccent": "#ffffff"
+    "accent": "#9c56b7",
+    "onAccent": "#fdfaf6"
   },
   {
     "input": "#ff8800",

@@ -289,7 +289,7 @@ def email(document, tenant_row, location):
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:480px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.45">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:24px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:24px;border-top:4px solid {color}">'
         f'<table role="presentation" style="border-collapse:collapse;width:100%">{"".join(rows)}</table></div>'
         f'<p style="margin:16px 4px 0;color:#8a8a8a;font-size:12px">Du får det här mejlet för att du bad om '
         f'kvittot hos {e(name)}.</p></div></body></html>')

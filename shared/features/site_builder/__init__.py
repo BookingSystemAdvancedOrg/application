@@ -221,7 +221,7 @@ def validate_doc(doc, tenant_id: str, location_ids) -> None:
 
 # --- contrast (same algorithm and constants as site-kit accentPair) --------------------
 
-WHITE, NEAR_BLACK, TICKET_DARK = (255, 255, 255), (29, 26, 26), (42, 37, 35)
+OFF_WHITE, NEAR_BLACK, TICKET_DARK = (253, 250, 246), (29, 26, 26), (42, 37, 35)
 
 
 def parse_hex(value: str):
@@ -255,14 +255,14 @@ def mix(rgb, to, t):
 
 
 def text_contrast(rgb) -> float:
-    return max(contrast(rgb, WHITE), contrast(rgb, NEAR_BLACK))
+    return max(contrast(rgb, OFF_WHITE), contrast(rgb, NEAR_BLACK))
 
 
 def text_on(value: str) -> str:
     rgb = parse_hex(value)
     if not rgb:
-        return "#ffffff"
-    return "#ffffff" if contrast(rgb, WHITE) >= contrast(rgb, NEAR_BLACK) else "#1d1a1a"
+        return "#fdfaf6"
+    return "#fdfaf6" if contrast(rgb, OFF_WHITE) >= contrast(rgb, NEAR_BLACK) else "#1d1a1a"
 
 
 def _steps(start):
@@ -276,12 +276,12 @@ def _steps(start):
 def accent_pair(value: str, mode: str) -> dict:
     rgb = parse_hex(value)
     if not rgb:
-        return {"accent": value, "onAccent": "#ffffff"}
+        return {"accent": value, "onAccent": "#fdfaf6"}
     best = rgb
     if mode == "light":
         if text_contrast(rgb) < 4.5:
             for t in _steps(0.05):
-                darker, lighter = mix(rgb, NEAR_BLACK, t), mix(rgb, WHITE, t)
+                darker, lighter = mix(rgb, NEAR_BLACK, t), mix(rgb, OFF_WHITE, t)
                 if text_contrast(darker) >= 4.5:
                     best = darker
                     break
@@ -289,9 +289,9 @@ def accent_pair(value: str, mode: str) -> dict:
                     best = lighter
                     break
     else:
-        best = WHITE
+        best = OFF_WHITE
         for t in _steps(0):
-            mixed = mix(rgb, WHITE, t)
+            mixed = mix(rgb, OFF_WHITE, t)
             if contrast(mixed, TICKET_DARK) >= 3 and text_contrast(mixed) >= 4.5:
                 best = mixed
                 break

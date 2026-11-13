@@ -215,14 +215,14 @@ def _render(subject, hello, lead, link, button, tenant_row, location, *, footer)
     e = html.escape
     color = _brand_color(tenant_row)
     button_html = (
-        f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};color:#ffffff;'
+        f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};color:#fdfaf6;'
         f'text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;font-weight:600">'
         f'{e(button)}</a></p>' if link and button else "")
     html_body = (
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:28px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:28px;border-top:4px solid {color}">'
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">{e(hello)}</p><p style="margin:0 0 8px">{e(lead)}</p>{button_html}'
         + (f'<p style="margin:24px 0 0;color:#6b6b6b">Frågor? Kontakta {e(name)}: {e(contact)}</p>' if contact else "")

@@ -279,13 +279,13 @@ def email(kind, item, tenant_row, location, link):
         )
     button = (
         f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};'
-        f'color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
+        f'color:#fdfaf6;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
         f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind != "order_cancelled" else "")
     html_body = (
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:28px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:28px;border-top:4px solid {color}">'
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">{e(hello)}</p><p style="margin:0 0 8px">{e(lead)}</p>'
         f'{receipt_html}{button}'

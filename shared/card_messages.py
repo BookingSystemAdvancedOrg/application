@@ -126,7 +126,7 @@ def email(item, tenant_row, location):
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:28px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:28px;border-top:4px solid {color}">'
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">Tack för ditt besök!</p>'
         f'<h2 style="margin:24px 0 4px;font-size:16px">{e(r["title"])} &middot; {e(heading)}</h2>'

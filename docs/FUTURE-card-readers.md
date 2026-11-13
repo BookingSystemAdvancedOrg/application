@@ -66,7 +66,7 @@ infrastructure, application, frontends):
 
 | Repo | Commits |
 |---|---|
-| infrastructure | e39f467 (step 1), plus the step 2 commit that drops `terminal_payments_ecr` |
+| infrastructure | e39f467 (step 1), 443bbd6 (step 2, ECR repository) |
 | application | ab9de48; OpenAPI paths went out in 758ab43 (glass commit) |
 | admin-front-end | cfaaee0 |
 | booqy-console | 90288a7, 4bd905e, 7870a00 |

@@ -1,6 +1,5 @@
 """The real text model client: Amazon Bedrock Converse on BEDROCK_MODEL_ID
-(a foundation model or EU inference profile id). One request, no streaming,
-temperature 0. With `json_schema` the model is told to answer with one JSON
+(a foundation model or EU inference profile id). One request, no streaming. With `json_schema` the model is told to answer with one JSON
 object; the reply is returned with any code fence removed and checked to
 parse, so callers can json.loads it.
 
@@ -44,12 +43,17 @@ class RealTextModel(TextModel):
             system = (f"{system}\n\nSvara med exakt ett JSON-objekt som följer detta JSON-schema, "
                       f"utan någon annan text:\n{json.dumps(json_schema, ensure_ascii=False)}")
         from botocore.exceptions import BotoCoreError, ClientError
+        # Short, grounded answers: no extended thinking (Claude thinks by
+        # default otherwise and can spend the whole budget on it).
+        extra = {"additionalModelRequestFields": {"thinking": {"type": "disabled"}}} if "anthropic" in model_id else {}
         try:
             response = _bedrock().converse(
                 modelId=model_id,
                 system=[{"text": system}],
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
-                inferenceConfig={"maxTokens": int(max_tokens), "temperature": 0},
+                # No temperature: current Claude models on Bedrock refuse it (deprecated).
+                inferenceConfig={"maxTokens": int(max_tokens)},
+                **extra,
             )
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
@@ -68,5 +72,11 @@ class RealTextModel(TextModel):
         try:
             json.loads(text)
         except ValueError:
-            raise TextModelError("bad_output") from None
+            # A sentence around the object: keep the outermost {...}.
+            start, end = text.find("{"), text.rfind("}")
+            try:
+                text = text[start:end + 1] if 0 <= start < end else ""
+                json.loads(text)
+            except ValueError:
+                raise TextModelError("bad_output") from None
         return text

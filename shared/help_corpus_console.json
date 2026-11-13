@@ -1,0 +1,4113 @@
+{
+ "version": 2,
+ "app": "console",
+ "routes": [
+  "/",
+  "/tenants/new",
+  "/tenants/:tenantId",
+  "/readers",
+  "/operators",
+  "/mail",
+  "/finance",
+  "/website",
+  "/settings",
+  "/download",
+  "/outbox"
+ ],
+ "docs": [
+  {
+   "id": "new-customer",
+   "route": "/tenants/new",
+   "title": "Create a new customer",
+   "audience": "all",
+   "keywords": [
+    "new customer",
+    "add a customer",
+    "add customer",
+    "onboard",
+    "onboarding a restaurant",
+    "new restaurant",
+    "sign up a restaurant",
+    "new tenant",
+    "create customer"
+   ],
+   "answer": "New customer creates the restaurant in Booqy: it invites the owner, opens their Stripe account and sets up their website, with no deploy needed.",
+   "steps": [
+    "Open New customer in the menu (or press + New customer on Customers).",
+    "Fill in 1 Restaurant company: name, slug, legal name, org. number and address.",
+    "Fill in 2 Owner login: the owner gets an email with a temporary password for the restaurant admin app.",
+    "Fill in 3 Contact & communication, then pick the plan under 4 Plan and the terms under 4b Invoicing.",
+    "Add the locations, then press Create customer. The page follows the setup until it is done."
+   ],
+   "actions": [
+    {
+     "id": "new-customer-open",
+     "label": "Open New customer",
+     "to": "/tenants/new",
+     "highlight": [
+      "help:nav:/tenants/new"
+     ]
+    }
+   ],
+   "suggestion": "How do I add a new customer?",
+   "kind": "guide"
+  },
+  {
+   "id": "find-customer",
+   "route": "/",
+   "title": "Find a customer",
+   "audience": "all",
+   "keywords": [
+    "find a customer",
+    "search customers",
+    "customer list",
+    "customers list",
+    "look up a restaurant",
+    "filter customers",
+    "offboarded customers"
+   ],
+   "answer": "Customers lists every restaurant on the platform. Search by name, slug, owner email or domain, and use the status chips (Active is chosen first) to see offboarded or suspended customers.",
+   "steps": [
+    "Open Customers in the menu.",
+    "Type in the search field, or press a status chip such as All, Suspended or Offboarded.",
+    "Click a row to open the customer's page."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "plan-change",
+   "route": "/tenants/:tenantId",
+   "title": "Change a customer's plan, price or features",
+   "audience": "all",
+   "keywords": [
+    "plan",
+    "change plan",
+    "upgrade",
+    "downgrade",
+    "features",
+    "feature",
+    "turn on a feature",
+    "limits",
+    "monthly price",
+    "price",
+    "plan & limits",
+    "edit plan",
+    "entitlements"
+   ],
+   "answer": "A customer's plan, monthly price, limits and features are on the Plan tab of their page. Limits take effect at once; a changed plan or price is invoiced from the next month.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Plan tab.",
+    "Pick the plan, and change Locations allowed, Monthly price, SEK ex VAT, the limits or the Features checkboxes if needed.",
+    "Press Save plan."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "highlight": [
+    "help:tenant-tab:plan",
+    "help:card:plan-limits"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "location-add",
+   "route": "/tenants/:tenantId",
+   "title": "Add a location",
+   "audience": "all",
+   "keywords": [
+    "location",
+    "locations",
+    "add location",
+    "second restaurant",
+    "new location",
+    "another restaurant",
+    "locations allowed",
+    "raise limit"
+   ],
+   "answer": "Locations are on the Locations tab of the customer's page. When the plan's limit is reached, adding one offers to raise the limit by one, or you change the plan on the Plan tab.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Locations tab, then + Add location.",
+    "Fill in Name, Address, Phone and Email and save.",
+    "At the limit: press Raise limit and add, or raise Locations allowed on the Plan tab."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "owner-invite",
+   "route": "/tenants/:tenantId",
+   "title": "Invite another owner",
+   "audience": "all",
+   "keywords": [
+    "owner",
+    "owners",
+    "invite owner",
+    "another owner",
+    "new owner",
+    "users",
+    "sign-in accounts",
+    "staff",
+    "login for the restaurant"
+   ],
+   "answer": "Owners are invited on the Users tab of the customer's page. The new owner gets a temporary password by email. Owners invite their own staff from the restaurant admin app.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Users tab.",
+    "Under Invite another owner, fill in Name and Business email.",
+    "Press Send invite."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "stripe-onboarding",
+   "route": "/tenants/:tenantId",
+   "title": "Stripe onboarding link for a restaurant",
+   "audience": "all",
+   "keywords": [
+    "stripe",
+    "stripe connect",
+    "onboarding link",
+    "connected account",
+    "stripe account",
+    "take payments",
+    "payouts",
+    "card payments",
+    "stripe link",
+    "payments tab"
+   ],
+   "answer": "Each restaurant has its own Stripe account connected to the platform. On the Payments tab you see whether it can take payments, create an onboarding link for the owner and check the status with Stripe. No keys are exchanged.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Payments tab.",
+    "Press Create onboarding link, then Copy or Open it (it expires within minutes).",
+    "When the owner is done, press Check status with Stripe: Can take payments turns to Yes."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "live-waiting-stripe",
+   "route": "/",
+   "title": "Customers waiting for Stripe",
+   "audience": "all",
+   "keywords": [
+    "waiting for stripe",
+    "stripe not ready",
+    "not ready",
+    "can't take payments",
+    "cannot take payments",
+    "stripe setup",
+    "payments not ready"
+   ],
+   "answer": "The Payments column on Customers shows Ready or Not ready for each customer.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-waiting-stripe-open",
+     "label": "Show on Customers",
+     "to": "/",
+     "highlight": [
+      "help:customers:payments"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "waitingForStripe",
+    "text": "{value} active customers can't take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-customers",
+   "route": "/",
+   "title": "Number of customers",
+   "audience": "all",
+   "keywords": [
+    "how many customers",
+    "number of customers",
+    "customers do we have",
+    "total customers",
+    "customer count",
+    "restaurants on the platform",
+    "how many restaurants"
+   ],
+   "answer": "The number of customers stands under the heading on Customers.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-customers-open",
+     "label": "Show on Customers",
+     "to": "/",
+     "highlight": [
+      "help:customers:count"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "customers",
+    "text": "There are {value} customers on the platform, counting every status."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-active-customers",
+   "route": "/",
+   "title": "Active customers",
+   "audience": "all",
+   "keywords": [
+    "active customers",
+    "how many active",
+    "active restaurants",
+    "customers are active"
+   ],
+   "answer": "The Active chip on Customers counts the active customers.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-active-customers-open",
+     "label": "Show on Customers",
+     "to": "/",
+     "highlight": [
+      "help:customers:filter:active"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "activeCustomers",
+    "text": "{value} customers are active right now."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-setup-failed",
+   "route": "/",
+   "title": "Customers whose setup failed",
+   "audience": "all",
+   "keywords": [
+    "setup failed",
+    "failed setup",
+    "provisioning failed",
+    "setup errors"
+   ],
+   "answer": "The Setup failed chip on Customers lists them. On the customer's page, Retry setup (or Fix) runs it again.",
+   "steps": [
+    "Open Customers and press the Setup failed chip.",
+    "Click the customer and press Retry setup, or Fix to correct the field that stopped it."
+   ],
+   "actions": [
+    {
+     "id": "live-setup-failed-open",
+     "label": "Show on Customers",
+     "to": "/",
+     "highlight": [
+      "help:customers:filter:provisioning_failed"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "setupFailed",
+    "text": "{value} customers have a failed setup."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "domain-add",
+   "route": "/tenants/:tenantId",
+   "title": "Add a domain for a restaurant",
+   "audience": "all",
+   "keywords": [
+    "domain",
+    "domains",
+    "own domain",
+    "add domain",
+    "buy domain",
+    "connect domain",
+    "cname",
+    "dns",
+    "name servers",
+    "route 53",
+    "transfer domain"
+   ],
+   "answer": "Domains are added on the Domains tab of the customer's page: buy a new domain in the restaurant's name, connect one they already have (they switch the name servers) or add just a CNAME for www. Until then the site answers on its booqy.se address.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Domains tab, then Add domain.",
+    "Choose Buy a new domain, Connect a domain they already have or Just a CNAME, and follow the steps."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "website-repo",
+   "route": "/tenants/:tenantId",
+   "title": "A restaurant's website",
+   "audience": "all",
+   "keywords": [
+    "website",
+    "site",
+    "website repo",
+    "github",
+    "give access",
+    "redeploy",
+    "site address",
+    "where the site answers",
+    "booqy.se address",
+    "archive website"
+   ],
+   "answer": "Each restaurant's website has its own repo. The Website tab of the customer's page shows the repo and deploys, where the site answers, how to run it locally, gives a GitHub user access and archives the repo.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Website tab.",
+    "Under Give access, type the GitHub username and press Invite."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "website-stats",
+   "route": "/website",
+   "title": "Website visitors (booqy.se)",
+   "audience": "all",
+   "keywords": [
+    "visitors",
+    "traffic",
+    "website statistics",
+    "analytics",
+    "booqy.se visitors",
+    "page views",
+    "website numbers"
+   ],
+   "answer": "Website under Numbers shows the visitors to booqy.se, counted without cookies: countries, devices, sources and more for the period you pick.",
+   "steps": [
+    "Open Website in the menu.",
+    "Pick a period, or set your own dates."
+   ],
+   "actions": [
+    {
+     "id": "website-stats-open",
+     "label": "Open Website",
+     "to": "/website",
+     "highlight": [
+      "help:nav:/website"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "card-reader-pair",
+   "route": "/tenants/:tenantId",
+   "title": "Pair a card reader",
+   "audience": "all",
+   "keywords": [
+    "card reader",
+    "pair reader",
+    "register reader",
+    "pairing code",
+    "card terminal",
+    "terminal",
+    "enable card terminals",
+    "new reader"
+   ],
+   "answer": "Card readers are paired per location: on the customer's Locations tab, Manage under Card terminals opens the terminal settings. Readers take payments into the restaurant's own Stripe account.",
+   "steps": [
+    "Open Customers, click the customer and press the Locations tab.",
+    "Press Manage on the location.",
+    "The first time: check the address and press Enable card terminals.",
+    "On the reader: Settings, then Generate pairing code.",
+    "Type the Pairing code and a Name (e.g. Counter 1) and press Register reader."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    },
+    {
+     "id": "card-reader-pair-readers",
+     "label": "Open Card readers",
+     "to": "/readers",
+     "highlight": [
+      "help:nav:/readers"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "card-readers",
+   "route": "/readers",
+   "title": "All card readers",
+   "audience": "all",
+   "keywords": [
+    "card readers",
+    "readers",
+    "reader status",
+    "offline readers",
+    "online readers",
+    "serial number",
+    "no reader paired"
+   ],
+   "answer": "Card readers lists every reader across all customers, online or offline, with the customer, location and when it was last seen. Below it: locations with card terminals on but no reader paired yet.",
+   "steps": [
+    "Open Card readers in the menu.",
+    "Search, or use the chips to filter."
+   ],
+   "actions": [
+    {
+     "id": "card-readers-open",
+     "label": "Open Card readers",
+     "to": "/readers",
+     "highlight": [
+      "help:nav:/readers"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "live-readers",
+   "route": "/readers",
+   "title": "Number of card readers",
+   "audience": "all",
+   "keywords": [
+    "how many readers",
+    "how many card readers",
+    "number of readers",
+    "readers do we have",
+    "reader count"
+   ],
+   "answer": "The count stands under the heading on Card readers.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-readers-open",
+     "label": "Show on Card readers",
+     "to": "/readers",
+     "highlight": [
+      "help:readers:count"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "readers",
+    "text": "There are {value} card readers paired across all customers."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "operator-add",
+   "route": "/operators",
+   "title": "Add an operator",
+   "audience": "all",
+   "keywords": [
+    "operator",
+    "operators",
+    "add operator",
+    "add another operator",
+    "another operator",
+    "invite operator",
+    "new operator",
+    "colleague",
+    "console access",
+    "admin access"
+   ],
+   "answer": "Operators are the people who can sign in to Booqy Console; everyone has the same rights. A new operator gets an email with a temporary password (valid for 3 days), chooses their own password on first sign-in and sets up an authenticator app.",
+   "steps": [
+    "Open Operators in the menu.",
+    "Press + Add operator.",
+    "Fill in Name and Email and press Send invite."
+   ],
+   "actions": [
+    {
+     "id": "operator-add-open",
+     "label": "Open Operators",
+     "to": "/operators",
+     "highlight": [
+      "help:nav:/operators"
+     ]
+    }
+   ],
+   "suggestion": "How do I add another operator?",
+   "kind": "guide"
+  },
+  {
+   "id": "operator-mfa",
+   "route": "/operators",
+   "title": "Two-step sign-in with an authenticator app",
+   "audience": "all",
+   "keywords": [
+    "mfa",
+    "two-step",
+    "two factor",
+    "2fa",
+    "authenticator",
+    "authenticator app",
+    "6-digit code",
+    "totp",
+    "qr code",
+    "sign in code"
+   ],
+   "answer": "Every operator signs in with an email, a password and a 6-digit code from an authenticator app (Google Authenticator, 1Password, Microsoft Authenticator). The app is set up on the first sign-in by scanning a QR code.",
+   "steps": [
+    "Sign in with your email and password.",
+    "The first time: choose your password, scan the QR code with the authenticator app and enter the 6-digit code it shows.",
+    "After that: enter the 6-digit code for Booqy Console at each sign-in."
+   ],
+   "actions": [
+    {
+     "id": "operator-mfa-open",
+     "label": "Open Operators",
+     "to": "/operators",
+     "highlight": [
+      "help:nav:/operators"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "operator-manage",
+   "route": "/operators",
+   "title": "Disable, delete or re-invite an operator",
+   "audience": "all",
+   "keywords": [
+    "disable operator",
+    "enable operator",
+    "delete operator",
+    "remove operator",
+    "resend invite",
+    "invite expired",
+    "edit operator"
+   ],
+   "answer": "Each operator's row on Operators has Edit, Resend invite, Disable or Enable, and Delete. You can't disable or delete yourself or the last active operator.",
+   "steps": [
+    "Open Operators in the menu.",
+    "Use the buttons on the operator's row."
+   ],
+   "actions": [
+    {
+     "id": "operator-manage-open",
+     "label": "Open Operators",
+     "to": "/operators",
+     "highlight": [
+      "help:nav:/operators"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "newsletter-send",
+   "route": "/mail",
+   "title": "Send news to the restaurant owners",
+   "audience": "all",
+   "keywords": [
+    "newsletter",
+    "news",
+    "email the owners",
+    "mail to owners",
+    "send mail",
+    "announcement",
+    "mail every owner",
+    "compose"
+   ],
+   "answer": "Mail sends news to every active customer's owner, from Booqy with replies to support. Send yourself a test first; a send can't be recalled.",
+   "steps": [
+    "Open Mail in the menu (Compose is open).",
+    "Write the Subject and the Message.",
+    "Press Send me a test and check it.",
+    "Press Send to N owners and confirm."
+   ],
+   "actions": [
+    {
+     "id": "newsletter-send-open",
+     "label": "Open Mail",
+     "to": "/mail",
+     "highlight": [
+      "help:mail-tab:compose"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "mail-template",
+   "route": "/mail",
+   "title": "The mail brand template",
+   "audience": "all",
+   "keywords": [
+    "brand template",
+    "template",
+    "logo",
+    "signature",
+    "footer",
+    "sender name",
+    "reply-to",
+    "accent colour",
+    "email design"
+   ],
+   "answer": "The Brand template tab on Mail sets how the news looks: sender name, reply-to address, accent colour, logo, signature and footer line.",
+   "steps": [
+    "Open Mail and press Brand template.",
+    "Change what you need and press Save template."
+   ],
+   "actions": [
+    {
+     "id": "mail-template-open",
+     "label": "Open Mail",
+     "to": "/mail",
+     "highlight": [
+      "help:mail-tab:brand-template"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "mail-sent",
+   "route": "/mail",
+   "title": "Sent news",
+   "audience": "all",
+   "keywords": [
+    "sent",
+    "sent mail",
+    "sent newsletters",
+    "who got",
+    "delivery",
+    "history"
+   ],
+   "answer": "The Sent tab on Mail lists every send, who it went to and what happened.",
+   "steps": [
+    "Open Mail and press Sent.",
+    "Click a send to see its recipients."
+   ],
+   "actions": [
+    {
+     "id": "mail-sent-open",
+     "label": "Open Mail",
+     "to": "/mail",
+     "highlight": [
+      "help:mail-tab:sent"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "outbox",
+   "route": "/outbox",
+   "title": "The mail outbox (dev)",
+   "audience": "all",
+   "keywords": [
+    "outbox",
+    "mail outbox",
+    "emails in dev",
+    "sms copy",
+    "magic link",
+    "test emails",
+    "saved emails"
+   ],
+   "answer": "In dev the Outbox keeps what the platform would have emailed, plus a copy of every SMS, instead of sending it, for 30 days. Click a message to read it as HTML or text, with its links.",
+   "steps": [
+    "Open Outbox from Cmd K, or Mail and then Outbox.",
+    "Click a message; Load older shows more."
+   ],
+   "actions": [
+    {
+     "id": "outbox-open",
+     "label": "Open Outbox",
+     "to": "/outbox",
+     "highlight": [
+      "help:outbox:list"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "live-outbox",
+   "route": "/outbox",
+   "title": "Emails in the outbox",
+   "audience": "all",
+   "keywords": [
+    "how many emails",
+    "emails in the outbox",
+    "messages in the outbox",
+    "outbox count",
+    "number of emails"
+   ],
+   "answer": "The Outbox lists the messages of the last 30 days, newest first.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-outbox-open",
+     "label": "Show the Outbox",
+     "to": "/outbox",
+     "highlight": [
+      "help:outbox:list"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "outboxMessages",
+    "text": "The outbox has {value} messages from the last 30 days."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "finance-overview",
+   "route": "/finance",
+   "title": "Finance overview",
+   "audience": "all",
+   "keywords": [
+    "finance",
+    "revenue",
+    "margin",
+    "gross margin",
+    "aws cost",
+    "arpu",
+    "cost per booking",
+    "billing period",
+    "numbers",
+    "profit",
+    "export csv"
+   ],
+   "answer": "Finance shows MRR, paying customers, collected and outstanding money, gross margin, revenue, AWS cost and unit economics per billing period (25th to 24th), in SEK ex VAT. Pick a customer to see just them, and export the rows as CSV.",
+   "steps": [
+    "Open Finance in the menu.",
+    "Pick the Billing period and how many periods.",
+    "Use Export customers (CSV) or Export daily (CSV) for the rows."
+   ],
+   "actions": [
+    {
+     "id": "finance-overview-open",
+     "label": "Open Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:nav:/finance"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "live-mrr",
+   "route": "/finance",
+   "title": "MRR",
+   "audience": "all",
+   "keywords": [
+    "mrr",
+    "monthly recurring revenue",
+    "recurring revenue",
+    "what is our mrr",
+    "our mrr"
+   ],
+   "answer": "MRR is the first figure on Finance.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-mrr-open",
+     "label": "Show on Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:kpi:mrr"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "mrr",
+    "text": "MRR is {value} right now (SEK ex VAT, this billing period)."
+   },
+   "suggestion": "What is our MRR?",
+   "kind": "guide"
+  },
+  {
+   "id": "live-paying",
+   "route": "/finance",
+   "title": "Paying customers",
+   "audience": "all",
+   "keywords": [
+    "paying customers",
+    "how many paying",
+    "customers pay",
+    "subscribers"
+   ],
+   "answer": "Paying customers stands next to MRR on Finance.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-paying-open",
+     "label": "Show on Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:kpi:paying-customers"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "payingCustomers",
+    "text": "{value} customers are paying this billing period."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-outstanding",
+   "route": "/finance",
+   "title": "Outstanding money",
+   "audience": "all",
+   "keywords": [
+    "outstanding",
+    "unpaid",
+    "not paid",
+    "open invoices",
+    "owed",
+    "money owed",
+    "how much is outstanding"
+   ],
+   "answer": "Outstanding is on Finance, next to Collected.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-outstanding-open",
+     "label": "Show on Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:kpi:outstanding"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "outstanding",
+    "text": "{value} is invoiced but not paid yet this billing period."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "invoicing-run",
+   "route": "/finance",
+   "title": "Run invoicing",
+   "audience": "all",
+   "keywords": [
+    "run invoicing",
+    "invoicing",
+    "create invoices",
+    "invoice run",
+    "missed invoices",
+    "invoices on the 25th"
+   ],
+   "answer": "Invoices are created on the 25th for the period from the 25th to the 24th (monthly price plus SMS parts). After a missed 25th you run it by hand on Finance, Payments, with a preview first.",
+   "steps": [
+    "Open Finance and press Payments.",
+    "Press Run invoicing and check the preview.",
+    "Press Create these invoices."
+   ],
+   "actions": [
+    {
+     "id": "invoicing-run-open",
+     "label": "Open Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:finance-tab:payments"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "dunning",
+   "route": "/finance",
+   "title": "Overdue invoices and reminders",
+   "audience": "all",
+   "keywords": [
+    "overdue",
+    "reminder",
+    "reminders",
+    "send reminder",
+    "dunning",
+    "late payment",
+    "late fee",
+    "past due",
+    "collect payment",
+    "who has paid"
+   ],
+   "answer": "Finance, Payments shows who has paid for a month, with reminders and fees. Unpaid invoices get weekly reminders by themselves, the statutory late fee after the grace period and interest when paid; past due too long means suspension until paid. Send reminder sends one at once.",
+   "steps": [
+    "Open Finance and press Payments.",
+    "Pick the month and press the Overdue chip.",
+    "Press Send reminder on the invoice's row."
+   ],
+   "actions": [
+    {
+     "id": "dunning-open",
+     "label": "Open Finance",
+     "to": "/finance",
+     "highlight": [
+      "help:finance-tab:payments"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "agreement",
+   "route": "/tenants/:tenantId",
+   "title": "Start or end a customer's agreement",
+   "audience": "all",
+   "keywords": [
+    "agreement",
+    "subscription",
+    "start agreement",
+    "try-out",
+    "trial",
+    "card link",
+    "charge the card",
+    "cancel agreement",
+    "convert to subscription",
+    "billing",
+    "invoices for a customer"
+   ],
+   "answer": "A customer's agreement and invoices are on the Billing tab of their page: start it, send a card link (Stripe Checkout, valid 24 hours), charge a saved card, convert a try-out to a subscription or cancel it.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Billing tab.",
+    "Press Start agreement and choose Try-out period or Subscription, or use Create card link, Charge the card or Cancel agreement."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "suspend",
+   "route": "/tenants/:tenantId",
+   "title": "Suspend or resume a customer",
+   "audience": "all",
+   "keywords": [
+    "suspend",
+    "suspend a customer",
+    "suspend customer",
+    "hasn't paid",
+    "suspension",
+    "resume",
+    "block",
+    "unpaid",
+    "abuse",
+    "pause customer"
+   ],
+   "answer": "Suspending signs out and blocks every user and shows the website as unavailable; nothing is deleted, and Resume undoes it at any time.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Suspend or offboard tab.",
+    "Write a Reason (kept in the activity log) and press Suspend customer. Resume customer brings them back."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "offboard",
+   "route": "/tenants/:tenantId",
+   "title": "Offboard, restore or delete a customer",
+   "audience": "all",
+   "keywords": [
+    "offboard",
+    "offboard a customer",
+    "offboard customer",
+    "offboarding",
+    "danger zone",
+    "cancel customer",
+    "customer leaves",
+    "delete customer",
+    "restore customer",
+    "remove customer",
+    "purge",
+    "delete data"
+   ],
+   "answer": "Offboarding signs out and blocks every user, takes the website and its domains offline, archives the website repo and ends the subscription. Restore brings everything back until the retention period is over (90 days in production); after that, or at once with Delete customer, the data and the website repo are deleted for good.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Suspend or offboard tab.",
+    "Type the customer's slug to confirm and press Offboard customer.",
+    "To undo: Restore customer on the same tab, while it is still restorable."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "activity",
+   "route": "/tenants/:tenantId",
+   "title": "A customer's activity log",
+   "audience": "all",
+   "keywords": [
+    "activity",
+    "activity log",
+    "history",
+    "audit",
+    "who changed"
+   ],
+   "answer": "The Activity tab on the customer's page lists the latest 25 events.",
+   "steps": [
+    "Open Customers, click the customer and press Activity."
+   ],
+   "actions": [
+    {
+     "id": "customers-open",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "theme",
+   "route": "/settings",
+   "title": "Light or dark mode",
+   "audience": "all",
+   "keywords": [
+    "dark mode",
+    "light mode",
+    "dark",
+    "light",
+    "theme",
+    "night mode",
+    "appearance",
+    "colours"
+   ],
+   "answer": "Light or dark is under Settings, Appearance and sound. Press to switch; light is the default. It is kept in this browser.",
+   "steps": [
+    "Open Settings.",
+    "Under Appearance and sound, press Light or dark."
+   ],
+   "actions": [
+    {
+     "id": "theme-open",
+     "label": "Open Settings",
+     "to": "/settings",
+     "highlight": [
+      "help:settings:theme"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "background",
+   "route": "/settings",
+   "title": "Background behind the glass",
+   "audience": "all",
+   "keywords": [
+    "background",
+    "backdrop",
+    "wallpaper",
+    "see-through",
+    "transparent",
+    "colour",
+    "swatch",
+    "your image",
+    "own picture",
+    "background colour",
+    "picture behind the glass"
+   ],
+   "answer": "Background under Settings sets what sits behind the glass: Colour (the Booqy backdrop, the swatches Wine, Walnut, Sand, Sage, Slate and Plum, or your own colour with +) or Your image, a picture you upload. In the desktop app there is also See-through, the default, with your desktop showing through.",
+   "steps": [
+    "Open Settings.",
+    "Under Background, press Colour, Your image (or See-through in the desktop app).",
+    "Pick a swatch or + for your own colour, or press Choose picture and pick a JPG, PNG, WebP or HEIC image."
+   ],
+   "actions": [
+    {
+     "id": "background-open",
+     "label": "Open Settings",
+     "to": "/settings",
+     "highlight": [
+      "help:settings:background"
+     ]
+    }
+   ],
+   "suggestion": "How do I change the background?",
+   "kind": "guide"
+  },
+  {
+   "id": "sound",
+   "route": "/settings",
+   "title": "Click sound and volume",
+   "audience": "all",
+   "keywords": [
+    "sound",
+    "click sound",
+    "mute",
+    "volume",
+    "silent",
+    "noise",
+    "turn off sound"
+   ],
+   "answer": "Click sound and Volume are under Settings, Appearance and sound. The click is on by default; 40 % is the standard volume and 0 % is silent.",
+   "steps": [
+    "Open Settings.",
+    "Press Click sound to turn it off or on, or move Volume."
+   ],
+   "actions": [
+    {
+     "id": "sound-open",
+     "label": "Open Settings",
+     "to": "/settings",
+     "highlight": [
+      "help:settings:sound",
+      "help:settings:volume"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "desktop-app",
+   "route": "/settings",
+   "title": "Download the desktop app",
+   "audience": "all",
+   "keywords": [
+    "desktop app",
+    "download app",
+    "download",
+    "install",
+    "mac app",
+    "windows app",
+    "linux",
+    "dmg",
+    "exe",
+    "appimage",
+    "app"
+   ],
+   "answer": "Booqy Console is also an app in its own window, with the same sign-in and features. Settings, Desktop app (Download app in the menu) suggests the file for your computer and lists the rest for Mac, Windows and Linux. It isn't signed yet, so the computer warns once: Opening it the first time explains what to press.",
+   "steps": [
+    "Press Download app in the menu, or open Settings and go to Desktop app.",
+    "Press the recommended download, or pick the file for your computer from the list.",
+    "Open it; on a Mac, use Open Anyway in System Settings, Privacy & Security the first time."
+   ],
+   "actions": [
+    {
+     "id": "desktop-app-open",
+     "label": "Open Desktop app",
+     "to": "/settings",
+     "hash": "desktop-app",
+     "highlight": [
+      "help:settings:desktop-app"
+     ]
+    },
+    {
+     "id": "desktop-app-settings",
+     "label": "Open Settings",
+     "to": "/settings",
+     "highlight": [
+      "help:settings:desktop-app"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "palette",
+   "route": "/",
+   "title": "Search and commands",
+   "audience": "all",
+   "keywords": [
+    "search",
+    "command palette",
+    "shortcut",
+    "cmd k",
+    "ctrl k",
+    "keyboard",
+    "jump to page",
+    "go to page"
+   ],
+   "answer": "Cmd K (Ctrl K on Windows and Linux) or the Search field opens the command palette: actions, every page and your recent pages. Arrows choose, Enter opens, Esc closes.",
+   "steps": [],
+   "kind": "guide"
+  },
+  {
+   "id": "nav:customers",
+   "kind": "page",
+   "route": "/",
+   "title": "Customers",
+   "where": "the menu",
+   "text": "Customers is in the menu.",
+   "highlight": [
+    "help:nav:/"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:tenants:new",
+   "kind": "page",
+   "route": "/tenants/new",
+   "title": "New customer",
+   "where": "the menu",
+   "text": "New customer is in the menu.",
+   "highlight": [
+    "help:nav:/tenants/new"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:readers",
+   "kind": "page",
+   "route": "/readers",
+   "title": "Card readers",
+   "where": "the menu",
+   "text": "Card readers is in the menu.",
+   "highlight": [
+    "help:nav:/readers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:operators",
+   "kind": "page",
+   "route": "/operators",
+   "title": "Operators",
+   "where": "the menu",
+   "text": "Operators is in the menu.",
+   "highlight": [
+    "help:nav:/operators"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:mail",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Mail",
+   "where": "the menu",
+   "text": "Mail is in the menu.",
+   "highlight": [
+    "help:nav:/mail"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:finance",
+   "kind": "page",
+   "route": "/finance",
+   "title": "Finance",
+   "where": "the menu",
+   "text": "Finance is in the menu.",
+   "highlight": [
+    "help:nav:/finance"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:website",
+   "kind": "page",
+   "route": "/website",
+   "title": "Website",
+   "where": "the menu",
+   "text": "Website is in the menu.",
+   "highlight": [
+    "help:nav:/website"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:settings",
+   "kind": "page",
+   "route": "/settings",
+   "title": "Settings",
+   "where": "the menu",
+   "text": "Settings is in the menu.",
+   "highlight": [
+    "help:nav:/settings"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:settings:desktop-app",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Download app",
+   "where": "the menu",
+   "text": "Download app is in the menu.",
+   "highlight": [
+    "help:nav:/settings#desktop-app"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:overview",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Overview",
+   "where": "a customer's page",
+   "text": "Overview is a tab on a customer's page: open Customers, click the customer and press Overview.",
+   "highlight": [
+    "help:tenant-tab:overview"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:locations",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Locations",
+   "where": "a customer's page",
+   "text": "Locations is a tab on a customer's page: open Customers, click the customer and press Locations.",
+   "highlight": [
+    "help:tenant-tab:locations"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:users",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Users",
+   "where": "a customer's page",
+   "text": "Users is a tab on a customer's page: open Customers, click the customer and press Users.",
+   "highlight": [
+    "help:tenant-tab:users"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:plan",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Plan",
+   "where": "a customer's page",
+   "text": "Plan is a tab on a customer's page: open Customers, click the customer and press Plan.",
+   "highlight": [
+    "help:tenant-tab:plan"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:billing",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Billing",
+   "where": "a customer's page",
+   "text": "Billing is a tab on a customer's page: open Customers, click the customer and press Billing.",
+   "highlight": [
+    "help:tenant-tab:billing"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:payments",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Payments",
+   "where": "a customer's page",
+   "text": "Payments is a tab on a customer's page: open Customers, click the customer and press Payments.",
+   "highlight": [
+    "help:tenant-tab:payments"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:domains",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Domains",
+   "where": "a customer's page",
+   "text": "Domains is a tab on a customer's page: open Customers, click the customer and press Domains.",
+   "highlight": [
+    "help:tenant-tab:domains"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:website",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Website",
+   "where": "a customer's page",
+   "text": "Website is a tab on a customer's page: open Customers, click the customer and press Website.",
+   "highlight": [
+    "help:tenant-tab:website"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:integrations",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Integrations",
+   "where": "a customer's page",
+   "text": "Integrations is a tab on a customer's page: open Customers, click the customer and press Integrations.",
+   "highlight": [
+    "help:tenant-tab:integrations"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:activity",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Activity",
+   "where": "a customer's page",
+   "text": "Activity is a tab on a customer's page: open Customers, click the customer and press Activity.",
+   "highlight": [
+    "help:tenant-tab:activity"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "tenant-tab:suspend-or-offboard",
+   "kind": "page",
+   "route": "/tenants/:tenantId",
+   "title": "Suspend or offboard",
+   "where": "a customer's page",
+   "text": "Suspend or offboard is a tab on a customer's page: open Customers, click the customer and press Suspend or offboard.",
+   "highlight": [
+    "help:tenant-tab:suspend-or-offboard"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "mail-tab:compose",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Compose",
+   "where": "Mail",
+   "text": "Compose is a tab on the Mail page.",
+   "highlight": [
+    "help:mail-tab:compose"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "mail-tab:sent",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Sent",
+   "where": "Mail",
+   "text": "Sent is a tab on the Mail page.",
+   "highlight": [
+    "help:mail-tab:sent"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "mail-tab:brand-template",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Brand template",
+   "where": "Mail",
+   "text": "Brand template is a tab on the Mail page.",
+   "highlight": [
+    "help:mail-tab:brand-template"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "mail-tab:outbox",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Outbox",
+   "where": "Mail",
+   "text": "Outbox is a tab on the Mail page.",
+   "highlight": [
+    "help:mail-tab:outbox"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "finance-tab:overview",
+   "kind": "page",
+   "route": "/finance",
+   "title": "Overview",
+   "where": "Finance",
+   "text": "Overview is a tab on the Finance page.",
+   "highlight": [
+    "help:finance-tab:overview"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "finance-tab:payments",
+   "kind": "page",
+   "route": "/finance",
+   "title": "Payments",
+   "where": "Finance",
+   "text": "Payments is a tab on the Finance page.",
+   "highlight": [
+    "help:finance-tab:payments"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BackdropSetting:see-through:button",
+   "kind": "element",
+   "route": "/settings",
+   "title": "See-through",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "text:See-through"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:agreement:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Agreement",
+   "where": "a customer's page, Billing tab",
+   "text": "",
+   "highlight": [
+    "help:card:agreement"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:save:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Save",
+   "where": "a customer's page, Billing tab",
+   "text": "",
+   "highlight": [
+    "text:Save"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:open:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Open",
+   "where": "a customer's page, Billing tab",
+   "text": "",
+   "highlight": [
+    "text:Open"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:create-card-link:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Create card link",
+   "where": "a customer's page, Billing tab",
+   "text": "An agreement can be started for an active customer.",
+   "highlight": [
+    "text:Create card link"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:cancel-the-agreement:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Cancel the agreement?",
+   "where": "a customer's page, Billing tab",
+   "text": "",
+   "highlight": [
+    "text:Cancel the agreement?"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:start-the-agreement:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Start the agreement",
+   "where": "a customer's page, Billing tab",
+   "text": "",
+   "highlight": [
+    "text:Start the agreement"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:cancel:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Cancel",
+   "where": "a customer's page, Billing tab",
+   "text": "No invoices yet. The first one is created on the 25th after the first period (and after \"Import from Stripe\" on the Finance page for older ones).",
+   "highlight": [
+    "text:Cancel"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-BillingTab:billing:invoices:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Invoices",
+   "where": "a customer's page, Billing tab",
+   "text": "No invoices yet. The first one is created on the 25th after the first period (and after \"Import from Stripe\" on the Finance page for older ones).",
+   "highlight": [
+    "help:card:invoices"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:desktop-app:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Desktop app",
+   "where": "Settings, Desktop app",
+   "text": "Booqy Console in its own window: same sign-in and features as here, always the latest console. The app asks when the app itself has a new version.",
+   "highlight": [
+    "help:settings:desktop-app"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:opening-it-the-first-time:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Opening it the first time",
+   "where": "Settings, Desktop app",
+   "text": "The app is not signed with Apple or Microsoft yet, so the computer warns once.",
+   "highlight": [
+    "text:Opening it the first time"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:mac:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Mac:",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Mac:"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:windows:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Windows:",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Windows:"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:linux:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Linux:",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Linux:"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:add-domain:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Add domain",
+   "where": "a customer's page, Domains tab",
+   "text": "Search .se / .com / .eu, see the price, register it in the restaurant's name. .se needs the registreringsbevis.",
+   "highlight": [
+    "text:Add domain"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:other-ways:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "← Other ways",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:← Other ways"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Name",
+   "where": "a customer's page, Domains tab",
+   "text": "e.g. arya or arya.se",
+   "highlight": [
+    "text:Name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:search-again:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "← Search again",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:← Search again"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:company-legal-name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Company (legal name)",
+   "where": "a customer's page, Domains tab",
+   "text": "NNNNNN-NNNN",
+   "highlight": [
+    "text:Company (legal name)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:org-number:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Org. number",
+   "where": "a customer's page, Domains tab",
+   "text": "NNNNNN-NNNN",
+   "highlight": [
+    "text:Org. number"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:contact-first-name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Contact first name",
+   "where": "a customer's page, Domains tab",
+   "text": "Registry notices go here",
+   "highlight": [
+    "text:Contact first name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:contact-last-name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Contact last name",
+   "where": "a customer's page, Domains tab",
+   "text": "Registry notices go here",
+   "highlight": [
+    "text:Contact last name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:email:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Email",
+   "where": "a customer's page, Domains tab",
+   "text": "Registry notices go here",
+   "highlight": [
+    "text:Email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:phone:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Phone",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:street:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Street",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Street"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:postal-code:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Postal code",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Postal code"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:city:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "City",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:City"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:pdf:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "PDF",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:PDF"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:authorization-code:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Authorization code",
+   "where": "a customer's page, Domains tab",
+   "text": "From the current registrar (one.com: Domain → Transfer / EPP code). Ask them to unlock the domain too.",
+   "highlight": [
+    "text:Authorization code"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:their-domain:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Their domain",
+   "where": "a customer's page, Domains tab",
+   "text": "The domain itself, e.g. restaurang.se",
+   "highlight": [
+    "text:Their domain"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:hostname:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Hostname",
+   "where": "a customer's page, Domains tab",
+   "text": "e.g. www.restaurang.se - the bare domain can't be a CNAME",
+   "highlight": [
+    "text:Hostname"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DomainWizard:domains:add:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Add",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Add"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-PaymentsView:payments:outstanding:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Outstanding",
+   "where": "Finance, Payments tab",
+   "text": "",
+   "highlight": [
+    "help:kpi:outstanding"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-PaymentsView:payments:overdue:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Overdue",
+   "where": "Finance, Payments tab",
+   "text": "",
+   "highlight": [
+    "help:kpi:overdue"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-PaymentsView:payments:fees-and-interest:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Fees and interest",
+   "where": "Finance, Payments tab",
+   "text": "",
+   "highlight": [
+    "help:kpi:fees-and-interest"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-PaymentsView:payments:create-these-invoices:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Create these invoices",
+   "where": "Finance, Payments tab",
+   "text": "",
+   "highlight": [
+    "text:Create these invoices"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-PaymentsView:payments:send-reminder:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Send reminder",
+   "where": "Finance, Payments tab",
+   "text": "",
+   "highlight": [
+    "text:Send reminder"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:website-repo:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Website repo",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "help:card:website-repo"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:open-repo:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Open repo",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "text:Open repo"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:where-the-site-answers:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Where the site answers",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "help:card:where-the-site-answers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:get-started-locally:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Get started locally",
+   "where": "a customer's page, Website tab",
+   "text": "Once per machine:",
+   "highlight": [
+    "help:card:get-started-locally"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:give-access:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Give access",
+   "where": "a customer's page, Website tab",
+   "text": "A developer gets write access to",
+   "highlight": [
+    "help:card:give-access"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:github-username:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "GitHub username",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "text:GitHub username"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:invite:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Invite",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "text:Invite"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-WebsiteTab:website:archive-website-repo:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Archive website repo",
+   "where": "a customer's page, Website tab",
+   "text": "",
+   "highlight": [
+    "help:card:archive-website-repo"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-google-business-GoogleBusinessTenantSection:integrations:google-business-profile:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Google Business Profile",
+   "where": "a customer's page, Integrations tab",
+   "text": "Google Business Profile is not set up in this environment yet.",
+   "highlight": [
+    "help:card:google-business-profile"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meta-ads-MetaAdsSettingsCard:meta-ads:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Meta ads",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "help:card:meta-ads"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meta-ads-MetaAdsSettingsCard:max-monthly-cap-per-restaurant-sek:field",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Max monthly cap per restaurant (SEK)",
+   "where": "Settings",
+   "text": "Owners can set their own cap up to this ceiling.",
+   "highlight": [
+    "text:Max monthly cap per restaurant (SEK)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meta-ads-MetaAdsTenantSection:integrations:meta-ads:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Meta ads",
+   "where": "a customer's page, Integrations tab",
+   "text": "",
+   "highlight": [
+    "help:card:meta-ads"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personalliggare-ExportLedgerSection:suspend-or-offboard:export-staff-ledger:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Export staff ledger",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "The staff ledger (personalliggare) is kept after offboarding. Download one location's records as CSV, with the result of the tamper check. Each export is written to the audit log.",
+   "highlight": [
+    "help:card:export-staff-ledger"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personalliggare-ExportLedgerSection:suspend-or-offboard:location:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Location",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Location"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personalliggare-ExportLedgerSection:suspend-or-offboard:from:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "From",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:From"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personalliggare-ExportLedgerSection:suspend-or-offboard:to:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "To",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:To"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personalliggare-ExportLedgerSection:suspend-or-offboard:download-csv:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Download CSV",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Download CSV"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-phone-agent-PhoneAgentSettingsCard:phone-agent:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Phone agent",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "help:card:phone-agent"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-phone-agent-PhoneAgentSettingsCard:max-minutes-per-restaurant-per-month:field",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Max minutes per restaurant per month",
+   "where": "Settings",
+   "text": "Owners can set their own cap up to this ceiling (0-100000).",
+   "highlight": [
+    "text:Max minutes per restaurant per month"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-phone-agent-PhoneAgentTenantSection:integrations:phone-agent:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Phone agent",
+   "where": "a customer's page, Integrations tab",
+   "text": "The phone agent is not set up in this environment, or it has never been on for this tenant.",
+   "highlight": [
+    "help:card:phone-agent"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-phone-agent-PhoneAgentTenantSection:integrations:minutes-per-billing-period:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Minutes per billing period",
+   "where": "a customer's page, Integrations tab",
+   "text": "",
+   "highlight": [
+    "text:Minutes per billing period"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:finance:page",
+   "kind": "page",
+   "route": "/finance",
+   "title": "Finance",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Finance"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:import-from-stripe:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Import from Stripe",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Import from Stripe"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:rebuild:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Rebuild",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Rebuild"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:nothing-to-add-up-yet:heading",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Nothing to add up yet",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:card:nothing-to-add-up-yet"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:mrr:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "MRR",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:mrr"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:paying-customers:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Paying customers",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:paying-customers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:collected:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Collected",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:collected"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:outstanding:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Outstanding",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:outstanding"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:revenue:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Revenue",
+   "where": "Finance",
+   "text": "invoiced in the period",
+   "highlight": [
+    "help:kpi:revenue"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:arpu:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "ARPU",
+   "where": "Finance",
+   "text": "MRR per paying customer",
+   "highlight": [
+    "help:kpi:arpu"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:cost-per-booking:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Cost per booking",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:cost-per-booking"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:cost-per-order:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Cost per order",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:cost-per-order"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:sms:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "SMS",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:sms"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:best-margin:heading",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Best margin",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:card:best-margin"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:weakest-margin:heading",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Weakest margin",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:card:weakest-margin"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:rebuild-figures:heading",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Rebuild figures",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Rebuild figures"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:start-rebuild:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Start rebuild",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Start rebuild"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:close:button",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Close",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "text:Close"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:mail:page",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Mail",
+   "where": "Mail",
+   "text": "News, what's coming and important notices to every restaurant owner - sent from Booqy, replies go to support.",
+   "highlight": [
+    "text:Mail"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:compose:new-message:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "New message",
+   "where": "Mail, Compose tab",
+   "text": "",
+   "highlight": [
+    "help:card:new-message"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:compose:subject:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Subject",
+   "where": "Mail, Compose tab",
+   "text": "",
+   "highlight": [
+    "text:Subject"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:compose:message:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Message",
+   "where": "Mail, Compose tab",
+   "text": "",
+   "highlight": [
+    "text:Message"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:compose:send-me-a-test:button",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Send me a test",
+   "where": "Mail, Compose tab",
+   "text": "Sent as plain text and HTML, with the brand template.",
+   "highlight": [
+    "text:Send me a test"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:compose:send-to-every-owner:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Send to every owner?",
+   "where": "Mail, Compose tab",
+   "text": "",
+   "highlight": [
+    "text:Send to every owner?"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:sent:sent:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Sent",
+   "where": "Mail, Sent tab",
+   "text": "",
+   "highlight": [
+    "text:Sent"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:brand-template:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Brand template",
+   "where": "Mail, Brand template tab",
+   "text": "",
+   "highlight": [
+    "help:card:brand-template"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:sender-name:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Sender name",
+   "where": "Mail, Brand template tab",
+   "text": "Where an owner's reply or question lands",
+   "highlight": [
+    "text:Sender name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:reply-to-address:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Reply-to address",
+   "where": "Mail, Brand template tab",
+   "text": "Where an owner's reply or question lands",
+   "highlight": [
+    "text:Reply-to address"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:accent-colour:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Accent colour",
+   "where": "Mail, Brand template tab",
+   "text": "The short rule under the subject and the links",
+   "highlight": [
+    "text:Accent colour"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:logo:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Logo",
+   "where": "Mail, Brand template tab",
+   "text": "",
+   "highlight": [
+    "text:Logo"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:signature:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Signature",
+   "where": "Mail, Brand template tab",
+   "text": "Closes every message, above the footer",
+   "highlight": [
+    "text:Signature"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:footer-line:field",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Footer line",
+   "where": "Mail, Brand template tab",
+   "text": "",
+   "highlight": [
+    "text:Footer line"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-MailPage:brand-template:save-template:button",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Save template",
+   "where": "Mail, Brand template tab",
+   "text": "",
+   "highlight": [
+    "text:Save template"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:setting-up-the-customer:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Setting up the customer",
+   "where": "New customer",
+   "text": "You can leave this page: the customer is saved and setup carries on. If something needs fixing, you'll be taken to it here.",
+   "highlight": [
+    "help:card:setting-up-the-customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:new-customer:page",
+   "kind": "page",
+   "route": "/tenants/new",
+   "title": "New customer",
+   "where": "New customer",
+   "text": "Creates the tenant, invites the owner, opens their Stripe account and sets up their site - no deploy needed.",
+   "highlight": [
+    "text:New customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:1-restaurant-company:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "1 · Restaurant company",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "help:card:1-restaurant-company"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:restaurant-brand-name:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Restaurant / brand name",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Restaurant / brand name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:slug:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Slug",
+   "where": "New customer",
+   "text": "10 digits, the dash is added for you",
+   "highlight": [
+    "text:Slug"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:legal-name:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Legal name",
+   "where": "New customer",
+   "text": "10 digits, the dash is added for you",
+   "highlight": [
+    "text:Legal name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:org-number:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Org. number",
+   "where": "New customer",
+   "text": "10 digits, the dash is added for you",
+   "highlight": [
+    "text:Org. number"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:vat-number:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "VAT number",
+   "where": "New customer",
+   "text": "SE + org. number + 01, filled in from the org. number",
+   "highlight": [
+    "text:VAT number"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:street-address:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Street address",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Street address"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:postal-code:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Postal code",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Postal code"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:city:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "City",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:City"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:2-owner-login:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "2 · Owner login",
+   "where": "New customer",
+   "text": "Used to sign in",
+   "highlight": [
+    "help:card:2-owner-login"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:owner-full-name:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Owner full name",
+   "where": "New customer",
+   "text": "Used to sign in",
+   "highlight": [
+    "text:Owner full name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:owner-business-email:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Owner business email",
+   "where": "New customer",
+   "text": "Used to sign in",
+   "highlight": [
+    "text:Owner business email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:owner-phone:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Owner phone",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Owner phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:3-contact-communication:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "3 · Contact & communication",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "help:card:3-contact-communication"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:contact-email:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Contact email",
+   "where": "New customer",
+   "text": "Where your invoices to them go",
+   "highlight": [
+    "text:Contact email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:contact-phone:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Contact phone",
+   "where": "New customer",
+   "text": "Where your invoices to them go",
+   "highlight": [
+    "text:Contact phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:billing-email:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Billing email",
+   "where": "New customer",
+   "text": "Where your invoices to them go",
+   "highlight": [
+    "text:Billing email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:sender-name:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Sender name",
+   "where": "New customer",
+   "text": "Email From name and SMS sender, max 11 chars",
+   "highlight": [
+    "text:Sender name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:reply-to-email:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Reply-to email",
+   "where": "New customer",
+   "text": "Where guests' replies go",
+   "highlight": [
+    "text:Reply-to email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:4-plan:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "4 · Plan",
+   "where": "New customer",
+   "text": ")}</span> </label> ))} </div> {fields.planId && <p className=",
+   "highlight": [
+    "help:card:4-plan"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:locations-allowed-override:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Locations allowed (override)",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Locations allowed (override)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:monthly-price-sek-ex-vat:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Monthly price, SEK ex VAT",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Monthly price, SEK ex VAT"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:4b-invoicing:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "4b · Invoicing",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "help:card:4b-invoicing"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:agreement-starts-optional:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Agreement starts (optional)",
+   "where": "New customer",
+   "text": "You can start it later from the customer's Billing tab.",
+   "highlight": [
+    "text:Agreement starts (optional)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:location-name:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Location name",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Location name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:address:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Address",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Address"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:phone:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Phone",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:email:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Email",
+   "where": "New customer",
+   "text": "No locations yet - the owner (or you) can add them later.",
+   "highlight": [
+    "text:Email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:6-internal-notes:heading",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "6 · Internal notes",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "help:card:6-internal-notes"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-NewTenantPage:notes-only-visible-here:field",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Notes (only visible here)",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Notes (only visible here)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:operators:page",
+   "kind": "page",
+   "route": "/operators",
+   "title": "Operators",
+   "where": "Operators",
+   "text": "People who can sign in to Booqy Console. Everyone here has the same rights.",
+   "highlight": [
+    "text:Operators"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:add-operator:heading",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Add operator",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Add operator"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:name:field",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Name",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:email:field",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Email",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:send-invite:button",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Send invite",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Send invite"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:cancel:button",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Cancel",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Cancel"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:edit-operator:heading",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Edit operator",
+   "where": "Operators",
+   "text": "The email is the sign-in name and can't be changed. Add a new operator instead.",
+   "highlight": [
+    "text:Edit operator"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:save:button",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Save",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Save"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OperatorsPage:delete-operator:heading",
+   "kind": "element",
+   "route": "/operators",
+   "title": "Delete operator",
+   "where": "Operators",
+   "text": "",
+   "highlight": [
+    "text:Delete operator"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OutboxPage:outbox:links:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Links",
+   "where": "Mail, Outbox tab",
+   "text": "",
+   "highlight": [
+    "text:Links"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OutboxPage:outbox:mail-outbox:heading",
+   "kind": "element",
+   "route": "/mail",
+   "title": "Mail outbox",
+   "where": "Mail, Outbox tab",
+   "text": "Emails the platform would have sent (news from the Mail page included), plus a copy of every SMS - saved instead of sent until the sending domain is verified. Kept 30 days.",
+   "highlight": [
+    "text:Mail outbox"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-OutboxPage:outbox:mail-outbox:page",
+   "kind": "page",
+   "route": "/mail",
+   "title": "Mail outbox",
+   "where": "Mail, Outbox tab",
+   "text": "Emails the platform would have sent (news from the Mail page included), plus a copy of every SMS - saved instead of sent until the sending domain is verified. Kept 30 days.",
+   "highlight": [
+    "text:Mail outbox"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-ReadersPage:card-readers:page",
+   "kind": "page",
+   "route": "/readers",
+   "title": "Card readers",
+   "where": "Card readers",
+   "text": "",
+   "highlight": [
+    "text:Card readers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:settings:page",
+   "kind": "page",
+   "route": "/settings",
+   "title": "Settings",
+   "where": "Settings",
+   "text": "Press to switch: dark surfaces are easier on the eyes at night. Light is the default.",
+   "highlight": [
+    "text:Settings"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:appearance-and-sound:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Appearance and sound",
+   "where": "Settings",
+   "text": "Press to switch: dark surfaces are easier on the eyes at night. Light is the default.",
+   "highlight": [
+    "text:Appearance and sound"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:light-or-dark:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Light or dark",
+   "where": "Settings",
+   "text": "Press to switch: dark surfaces are easier on the eyes at night. Light is the default.",
+   "highlight": [
+    "help:settings:theme"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:background:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Background",
+   "where": "Settings",
+   "text": "See-through shows whatever is behind the window. Colour puts the glass over a colour you pick.",
+   "highlight": [
+    "help:settings:background"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:click-sound:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Click sound",
+   "where": "Settings",
+   "text": "A soft click when you press buttons and links. On by default.",
+   "highlight": [
+    "help:settings:sound"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:volume:field",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Volume",
+   "where": "Settings",
+   "text": "How loud the click is. 40 % is the standard, 0 % is silent.",
+   "highlight": [
+    "help:settings:volume"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:retry-setup:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Retry setup",
+   "where": "a customer's page",
+   "text": "",
+   "highlight": [
+    "text:Retry setup"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:company:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Company",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "help:card:company"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:street:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Street",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "text:Street"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:postal-code:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Postal code",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "text:Postal code"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:city:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "City",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "text:City"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:internal-notes:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Internal notes",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "text:Internal notes"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:overview:at-a-glance:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "At a glance",
+   "where": "a customer's page, Overview tab",
+   "text": "",
+   "highlight": [
+    "help:card:at-a-glance"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:plan:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Plan",
+   "where": "a customer's page, Locations tab",
+   "text": "tenant's",
+   "highlight": [
+    "text:Plan"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:raise-limit-and-add:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Raise limit and add",
+   "where": "a customer's page, Locations tab",
+   "text": "",
+   "highlight": [
+    "text:Raise limit and add"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Name",
+   "where": "a customer's page, Locations tab",
+   "text": "",
+   "highlight": [
+    "text:Name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:address:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Address",
+   "where": "a customer's page, Locations tab",
+   "text": "",
+   "highlight": [
+    "text:Address"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:phone:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Phone",
+   "where": "a customer's page, Locations tab",
+   "text": "Only if this location is a different company (own org. number). Empty = the customer's account.",
+   "highlight": [
+    "text:Phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:email:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Email",
+   "where": "a customer's page, Locations tab",
+   "text": "Only if this location is a different company (own org. number). Empty = the customer's account.",
+   "highlight": [
+    "text:Email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:separate-stripe-account:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Separate Stripe account",
+   "where": "a customer's page, Locations tab",
+   "text": "Only if this location is a different company (own org. number). Empty = the customer's account.",
+   "highlight": [
+    "text:Separate Stripe account"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:cancel:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Cancel",
+   "where": "a customer's page, Locations tab",
+   "text": "",
+   "highlight": [
+    "text:Cancel"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:locations:delete-location:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Delete location",
+   "where": "a customer's page, Locations tab",
+   "text": "",
+   "highlight": [
+    "text:Delete location"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:users:sign-in-accounts:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Sign-in accounts",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "help:card:sign-in-accounts"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:users:invite-another-owner:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Invite another owner",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "help:card:invite-another-owner"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:users:name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Name",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:users:business-email:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Business email",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Business email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:users:send-invite:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Send invite",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Send invite"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:plan-limits:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Plan & limits",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "help:card:plan-limits"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:locations-allowed:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Locations allowed",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "text:Locations allowed"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:monthly-price-sek-ex-vat:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Monthly price, SEK ex VAT",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "text:Monthly price, SEK ex VAT"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:apply-anyway:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Apply anyway",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "text:Apply anyway"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:save-plan:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Save plan",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "text:Save plan"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:payments:stripe-connect:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Stripe (Connect)",
+   "where": "a customer's page, Payments tab",
+   "text": "The restaurant gets its own Stripe account connected to your platform account - they're the merchant, money goes to them, and they see everything in their own Stripe dashboard. No keys are exchanged. What's left after setup is Stripe's identity and bank details form, which the owner fills in from their admin app (Settings → Payments) or via a link from here.",
+   "highlight": [
+    "help:card:stripe-connect"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:payments:open:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Open",
+   "where": "a customer's page, Payments tab",
+   "text": "",
+   "highlight": [
+    "text:Open"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:payments:create-onboarding-link:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Create onboarding link",
+   "where": "a customer's page, Payments tab",
+   "text": "",
+   "highlight": [
+    "text:Create onboarding link"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:payments:check-status-with-stripe:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Check status with Stripe",
+   "where": "a customer's page, Payments tab",
+   "text": "",
+   "highlight": [
+    "text:Check status with Stripe"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:domains-we-run-dns-for:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Domains we run DNS for",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "help:card:domains-we-run-dns-for"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:website-hostnames:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Website hostnames",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "help:card:website-hostnames"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:activity:activity-latest-25:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Activity (latest 25)",
+   "where": "a customer's page, Activity tab",
+   "text": "Nothing yet.",
+   "highlight": [
+    "help:card:activity-latest-25"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:resume-customer:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Resume customer",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Resume customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:re-apply-suspension:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Re-apply suspension",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Re-apply suspension"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:reason-kept-in-the-activity-log:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Reason (kept in the activity log)",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Reason (kept in the activity log)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:suspend-customer:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Suspend customer",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "text:Suspend customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:offboard-customer:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Offboard customer",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "help:card:offboard-customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:restore-customer:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Restore customer",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "help:card:restore-customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:customer-deleted:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Customer deleted",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "help:card:customer-deleted"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:suspend-or-offboard:delete-customer:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Delete customer",
+   "where": "a customer's page, Suspend or offboard tab",
+   "text": "",
+   "highlight": [
+    "help:card:delete-customer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantsPage:customers:page",
+   "kind": "page",
+   "route": "/",
+   "title": "Customers",
+   "where": "Customers",
+   "text": "",
+   "highlight": [
+    "text:Customers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantsPage:new-customer:button",
+   "kind": "element",
+   "route": "/",
+   "title": "New customer",
+   "where": "Customers",
+   "text": "",
+   "highlight": [
+    "help:customers:count"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:no-visits-counted-yet:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "No visits counted yet",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:no-visits-counted-yet"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:visitors:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Visitors",
+   "where": "Website",
+   "text": "unique per day, summed",
+   "highlight": [
+    "help:kpi:visitors"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:visits:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Visits",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:kpi:visits"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:page-views:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Page views",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:kpi:page-views"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:demo-bookings:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Demo bookings",
+   "where": "Website",
+   "text": "one page, under 10 s, no booking",
+   "highlight": [
+    "help:kpi:demo-bookings"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:conversion-rate:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Conversion rate",
+   "where": "Website",
+   "text": "one page, under 10 s, no booking",
+   "highlight": [
+    "help:kpi:conversion-rate"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:bounce-rate:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Bounce rate",
+   "where": "Website",
+   "text": "one page, under 10 s, no booking",
+   "highlight": [
+    "help:kpi:bounce-rate"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:engaged-time:kpi",
+   "kind": "element",
+   "route": "/website",
+   "title": "Engaged time",
+   "where": "Website",
+   "text": "average per visit, tab in view",
+   "highlight": [
+    "help:kpi:engaged-time"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:visits-per-day:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Visits per day",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:visits-per-day"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:traffic-sources:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Traffic sources",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:traffic-sources"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:campaigns-utm:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Campaigns (UTM)",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:campaigns-utm"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:landing-pages:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Landing pages",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:landing-pages"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:top-pages:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Top pages",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:top-pages"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:where-visitors-are:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Where visitors are",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:where-visitors-are"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:devices-and-browsers:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Devices and browsers",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:devices-and-browsers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:scroll-depth:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Scroll depth",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:scroll-depth"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:clicks:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Clicks",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:clicks"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:referring-sites:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Referring sites",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:referring-sites"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:time-of-day:heading",
+   "kind": "element",
+   "route": "/website",
+   "title": "Time of day",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "help:card:time-of-day"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:website:page",
+   "kind": "page",
+   "route": "/website",
+   "title": "Website",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "text:Website"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-WebsitePage:export-daily-csv:button",
+   "kind": "element",
+   "route": "/website",
+   "title": "Export daily (CSV)",
+   "where": "Website",
+   "text": "",
+   "highlight": [
+    "text:Export daily (CSV)"
+   ],
+   "audience": "all"
+  }
+ ]
+}

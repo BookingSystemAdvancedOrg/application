@@ -160,13 +160,14 @@ class _FakeConverse:
 
 def test_real_bedrock_converse(monkeypatch):
     from shared import bedrock_real
-    monkeypatch.setenv("BEDROCK_MODEL_ID", "eu.example-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "eu.anthropic.example-model")
     fake = _FakeConverse('```json\n{"ok": true}\n```')
     monkeypatch.setattr(bedrock_real, "_client", fake)
     out = bedrock_real.RealTextModel().complete("sys", "fråga", max_tokens=50, json_schema={"type": "object"})
     assert json.loads(out) == {"ok": True}
     call = fake.calls[0]
-    assert call["modelId"] == "eu.example-model" and call["inferenceConfig"] == {"maxTokens": 50, "temperature": 0}
+    assert call["modelId"] == "eu.anthropic.example-model" and call["inferenceConfig"] == {"maxTokens": 50}
+    assert call["additionalModelRequestFields"] == {"thinking": {"type": "disabled"}}
     assert call["messages"] == [{"role": "user", "content": [{"text": "fråga"}]}]
     assert "JSON-schema" in call["system"][0]["text"]
 
@@ -189,6 +190,8 @@ def test_real_bedrock_refuses_empty_model_and_bad_json(monkeypatch):
     with pytest.raises(bedrock.TextModelError, match="no_model"):
         bedrock_real.RealTextModel().complete("s", "p", max_tokens=5)
     monkeypatch.setenv("BEDROCK_MODEL_ID", "m")
+    monkeypatch.setattr(bedrock_real, "_client", _FakeConverse('Här är svaret: {"ok": true} hoppas det hjälper'))
+    assert json.loads(bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"})) == {"ok": True}
     monkeypatch.setattr(bedrock_real, "_client", _FakeConverse("inte json"))
     with pytest.raises(bedrock.TextModelError, match="bad_output"):
         bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"})

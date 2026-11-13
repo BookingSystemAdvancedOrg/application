@@ -1,0 +1,7495 @@
+{
+ "version": 2,
+ "app": "admin",
+ "routes": [
+  "/",
+  "/statistik",
+  "/bokningar",
+  "/bestallningar",
+  "/ta-betalt",
+  "/kassa",
+  "/kassa/bruksanvisning",
+  "/kassa/utskrift/:kind",
+  "/meny",
+  "/cateringkalkyl",
+  "/catering",
+  "/catering/:locationId/:requestId",
+  "/personal",
+  "/personalliggare",
+  "/telefon",
+  "/telefon/samtal/:callId",
+  "/layout",
+  "/gaster",
+  "/presentkort",
+  "/webbplats",
+  "/evenemang",
+  "/evenemang/:eventId",
+  "/evenemang/:eventId/inslapp/:occurrenceId",
+  "/marknadsforing",
+  "/installningar",
+  "/hjalp",
+  "/ladda-ner",
+  "/avtal",
+  "/settings/payments"
+ ],
+ "docs": [
+  {
+   "id": "oversikt",
+   "route": "/",
+   "title": "Översikten",
+   "audience": "all",
+   "keywords": [
+    "översikt",
+    "startsida",
+    "start",
+    "idag",
+    "dagens läge",
+    "att göra",
+    "genvägar"
+   ],
+   "answer": "Översikten visar dagens läge: öppettider, dagens bokningar, beställningar och det som väntar på dig.",
+   "steps": [
+    "Öppna Översikt högst upp i vänstermenyn.",
+    "Under Dagens bokningar trycker du Visa alla för hela listan.",
+    "Det som väntar på dig (till exempel en obekräftad bokning eller en cateringförfrågan) har en länk direkt dit."
+   ],
+   "actions": [
+    {
+     "id": "oversikt-open",
+     "label": "Öppna Översikt",
+     "to": "/"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang",
+   "route": "/",
+   "title": "Kom igång med Booqy",
+   "audience": "owner",
+   "keywords": [
+    "kom igång",
+    "komma igång",
+    "börja",
+    "checklista",
+    "första",
+    "starta",
+    "nystartad",
+    "uppstart"
+   ],
+   "answer": "Checklistan Kom igång på Översikten tar dig igenom det som behövs innan gästerna kan boka och beställa.",
+   "steps": [
+    "Godkänn personuppgiftsbiträdesavtalet under Avtal.",
+    "Lägg in öppettider under Inställningar, Restaurang.",
+    "Lägg upp menyn under Meny.",
+    "Rita, publicera och aktivera en bordslayout under Layout.",
+    "Slutför Stripe under Inställningar, Betalningar, så att ni kan ta betalt med kort.",
+    "Bjud in personalen under Personal."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-open",
+     "label": "Öppna checklistan",
+     "to": "/"
+    }
+   ],
+   "suggestion": "Vad behöver jag göra för att komma igång?",
+   "kind": "guide"
+  },
+  {
+   "id": "statistik",
+   "route": "/statistik",
+   "title": "Statistik över tid",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "statistik",
+    "siffror",
+    "rapport",
+    "omsättning",
+    "försäljning",
+    "beläggning",
+    "jämföra",
+    "period",
+    "csv",
+    "exportera statistik"
+   ],
+   "answer": "Under Statistik ser du restaurangens siffror för en period jämfört med en tidigare period.",
+   "steps": [
+    "Öppna Statistik i vänstermenyn.",
+    "Välj period med knapparna överst, till exempel Denna månad eller 30 dagar.",
+    "Välj plats, sittning, kanal och vad du vill jämföra med.",
+    "Fäll ut avsnitten, till exempel Omsättning eller Beläggning.",
+    "Tryck Exportera CSV om du vill ha siffrorna i ett kalkylark."
+   ],
+   "actions": [
+    {
+     "id": "statistik-month",
+     "label": "Visa månadens statistik",
+     "to": "/statistik",
+     "query": {
+      "period": "month"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "statistik-personal",
+   "route": "/installningar",
+   "title": "Låta personalen se statistik",
+   "audience": "owner",
+   "keywords": [
+    "personalen ser statistik",
+    "statistik för personal",
+    "dölja statistik",
+    "personal statistik"
+   ],
+   "answer": "Du bestämmer om personalen ser driftsiffrorna på Statistik. Belopp och omsättning ser personalen aldrig.",
+   "steps": [
+    "Öppna Inställningar och välj Statistik under Data och integritet.",
+    "Välj om personalen ser statistik.",
+    "Tryck Spara."
+   ],
+   "actions": [
+    {
+     "id": "inst-statistik-open",
+     "label": "Öppna inställningen",
+     "to": "/installningar",
+     "hash": "statistik"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-ny",
+   "route": "/bokningar",
+   "title": "Lägga in en ny bokning",
+   "audience": "all",
+   "keywords": [
+    "bokning",
+    "boka",
+    "boka bord",
+    "ny bokning",
+    "lägga in bokning",
+    "telefonbokning",
+    "drop-in",
+    "walk-in",
+    "reservation",
+    "ringer",
+    "ringde",
+    "ringa"
+   ],
+   "answer": "En bokning som kommer per telefon eller en gäst som kliver in lägger du in under Bokningar. Bordet blir då upptaget online också.",
+   "steps": [
+    "Öppna Bokningar.",
+    "Tryck Ny bokning och välj Telefon eller Drop-in.",
+    "Fyll i Antal personer, Datum, Tid och välj Bord.",
+    "Fyll i Namn och, om du vill, telefon, e-post och en anteckning.",
+    "Tryck Boka."
+   ],
+   "actions": [
+    {
+     "id": "bokning-ny-open",
+     "label": "Öppna Ny bokning",
+     "to": "/bokningar",
+     "pageAction": "new-booking"
+    }
+   ],
+   "suggestion": "Hur lägger jag in en bokning?",
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-andra",
+   "route": "/bokningar",
+   "title": "Ändra eller förlänga en bokning",
+   "audience": "all",
+   "keywords": [
+    "ändra bokning",
+    "redigera bokning",
+    "flytta bokning",
+    "förlänga",
+    "förläng",
+    "sluttid",
+    "korta bokningen",
+    "antal personer"
+   ],
+   "answer": "Du ändrar en bokning genom att öppna den i listan under Bokningar.",
+   "steps": [
+    "Öppna Bokningar och välj rätt dag med pilarna eller Välj datum.",
+    "Tryck på bokningen i listan.",
+    "Tryck Ändra för namn, kontaktuppgifter, antal personer eller anteckning och sedan Spara.",
+    "Vill du ändra hur länge bordet är bokat: tryck Förläng, välj Ny sluttid och tryck Förläng eller Korta bokningen."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-avboka",
+   "route": "/bokningar",
+   "title": "Avboka en bokning",
+   "audience": "all",
+   "keywords": [
+    "avboka",
+    "avbokning",
+    "ställa in bokning",
+    "ta bort bokning",
+    "avbokade",
+    "avbokar",
+    "avboka en gäst",
+    "avboka gästen",
+    "avboka bokningen"
+   ],
+   "answer": "Du avbokar en gäst genom att öppna bokningen under Bokningar. Gästen debiteras inte när ni avbokar.",
+   "steps": [
+    "Öppna Bokningar och leta upp bokningen.",
+    "Tryck på bokningen.",
+    "Tryck Avboka.",
+    "Välj om gästen ska meddelas och tryck Avboka igen.",
+    "Avbokade bokningar ser du med Visa avbokade."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-anlant",
+   "route": "/bokningar",
+   "title": "Markera att gästen har kommit",
+   "audience": "all",
+   "keywords": [
+    "anlänt",
+    "kommit",
+    "gästen kom",
+    "checka in gäst",
+    "ankomst"
+   ],
+   "answer": "När gästen kommer markerar du bokningen som anlänt.",
+   "steps": [
+    "Öppna Bokningar.",
+    "Tryck på bokningen.",
+    "Tryck Anlänt. Blev det fel trycker du Ångra anlänt."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-uteblev",
+   "route": "/bokningar",
+   "title": "Gäst som uteblev (no-show)",
+   "audience": "all",
+   "keywords": [
+    "uteblev",
+    "no-show",
+    "noshow",
+    "kom inte",
+    "avgift",
+    "debitera"
+   ],
+   "answer": "Kommer gästen inte markerar du bokningen som Uteblev. Har gästen lämnat kortgaranti kan du ta ut no-show-avgiften samtidigt.",
+   "steps": [
+    "Öppna Bokningar och tryck på bokningen.",
+    "Tryck Uteblev.",
+    "Kryssa i om no-show-avgiften ska dras från gästens kort.",
+    "Skriv gärna en intern anteckning (den syns inte för gästen).",
+    "Tryck Uteblev för att spara."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-aterbetala",
+   "route": "/bokningar",
+   "title": "Återbetala en no-show-avgift",
+   "audience": "owner",
+   "keywords": [
+    "återbetala avgift",
+    "återbetala no-show",
+    "pengarna tillbaka",
+    "återbetalning bokning"
+   ],
+   "answer": "En avgift som har dragits från en gäst kan ägaren betala tillbaka från bokningen.",
+   "steps": [
+    "Öppna Bokningar och tryck på bokningen.",
+    "Tryck Återbetala och bekräfta."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bokning-ko",
+   "route": "/bokningar",
+   "title": "Kö och väntelista",
+   "audience": "all",
+   "feature": "waitlist",
+   "keywords": [
+    "kö",
+    "väntelista",
+    "ställ i kö",
+    "erbjud bord",
+    "placera",
+    "walk-in kö"
+   ],
+   "answer": "Kön finns i panelen på Bokningar. Där ställer du gäster i kö och erbjuder dem ett bord när det blir ledigt.",
+   "steps": [
+    "Öppna Bokningar.",
+    "Tryck Ställ i kö i köpanelen.",
+    "Fyll i Namn, Antal gäster och Mobilnummer och tryck Ställ i kö.",
+    "När ett bord blir ledigt trycker du Erbjud bord eller Placera nu. Ta bort tar bort gästen ur kön."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "ko-installningar",
+   "route": "/installningar",
+   "title": "Ställa in kön",
+   "audience": "owner",
+   "feature": "waitlist",
+   "keywords": [
+    "kö inställningar",
+    "kö från hemsidan",
+    "hålltid",
+    "max antal i kö"
+   ],
+   "answer": "Om gästerna kan ställa sig i kö från hemsidan, hur länge ett erbjudet bord hålls och hur lång kön får bli ställer du in under Inställningar, Bord.",
+   "steps": [
+    "Öppna Inställningar och välj Bord.",
+    "Under Kö slår du på kön och väljer om gäster kan ställa sig i kö från hemsidan.",
+    "Ställ in Hålltid (minuter) och Max antal i kö.",
+    "Tryck Spara bordsregler."
+   ],
+   "actions": [
+    {
+     "id": "inst-bord-open",
+     "label": "Öppna Bord",
+     "to": "/installningar",
+     "hash": "bord"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bestallning-flode",
+   "route": "/bestallningar",
+   "title": "Hantera matbeställningar",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "beställning",
+    "beställningar",
+    "order",
+    "köket",
+    "tillagas",
+    "klar",
+    "hämtad",
+    "serverad",
+    "avhämtning"
+   ],
+   "answer": "Matbeställningarna ligger på en tavla i tre kolumner: Nya, Tillagas och Klara. Gästen får sms när du flyttar beställningen vidare.",
+   "steps": [
+    "Öppna Beställningar.",
+    "Tryck Påbörja på en ny beställning när köket börjar.",
+    "Tryck Klar när maten är färdig (eller Klar att servera för bordsbeställningar).",
+    "Tryck Hämtad eller Serverad när gästen har fått maten."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-open",
+     "label": "Öppna Beställningar",
+     "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bestallning-pausa",
+   "route": "/bestallningar",
+   "title": "Pausa nya beställningar",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "pausa",
+    "paus",
+    "stoppa beställningar",
+    "hinner inte",
+    "ta emot igen"
+   ],
+   "answer": "Hinner köket inte med kan du pausa nya beställningar en stund. Beställningar som redan har kommit in påverkas inte.",
+   "steps": [
+    "Öppna Beställningar.",
+    "Tryck Pausa beställningar och välj hur länge (15, 30, 60 eller 120 minuter).",
+    "Tryck Ta emot beställningar igen när ni är redo."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-open",
+     "label": "Öppna Beställningar",
+     "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bestallning-avbryt",
+   "route": "/bestallningar",
+   "title": "Avbryta en beställning",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "avbryta beställning",
+    "avbryt",
+    "återbetala beställning",
+    "skriv ut igen"
+   ],
+   "answer": "En beställning som inte kan lagas avbryter du på tavlan. Gästen får pengarna tillbaka.",
+   "steps": [
+    "Öppna Beställningar och hitta beställningen.",
+    "Tryck Avbryt.",
+    "Bekräfta med Bekräfta: avbryt och återbetala, eller tryck Behåll.",
+    "Behöver du en ny kvittolapp i köket trycker du Skriv ut igen."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-open",
+     "label": "Öppna Beställningar",
+     "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bestallning-installningar",
+   "route": "/installningar",
+   "title": "Slå på beställning och QR-koder",
+   "audience": "owner",
+   "feature": "ordering",
+   "keywords": [
+    "beställning vid bordet",
+    "qr-kod",
+    "qr",
+    "ta emot beställningar",
+    "tillagningstid",
+    "sista beställning",
+    "avhämtning inställning",
+    "beställa vid bordet",
+    "bordsbeställning",
+    "gästerna kan beställa",
+    "kan beställa vid bordet"
+   ],
+   "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Beställning.",
+   "steps": [
+    "Öppna Inställningar och välj Beställning.",
+    "Slå på Ta emot beställningar och välj Avhämtning och Beställning vid bordet (QR-kod).",
+    "Ställ in tillagningstid som gästen ser och sista beställning före stängning.",
+    "Tryck Spara beställning.",
+    "Under QR-koder för borden trycker du Skriv ut eller Ladda ner."
+   ],
+   "actions": [
+    {
+     "id": "inst-bestallning-open",
+     "label": "Öppna Beställning",
+     "to": "/installningar",
+     "hash": "bestallning"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "skrivare",
+   "route": "/installningar",
+   "title": "Koppla en kökskrivare",
+   "audience": "owner",
+   "feature": "ordering",
+   "keywords": [
+    "skrivare",
+    "kvittoskrivare",
+    "kökskrivare",
+    "utskrift",
+    "cloudprnt",
+    "testutskrift",
+    "pappersbredd"
+   ],
+   "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Skrivare.",
+   "steps": [
+    "Öppna Inställningar och välj Skrivare.",
+    "Tryck Lägg till skrivare och följ stegen. Uppgifterna som visas skriver du in i skrivaren direkt, de visas bara en gång.",
+    "Tryck Testutskrift för att se att den fungerar.",
+    "Slå på Skriv ut beställningar automatiskt, välj skrivare och pappersbredd och tryck Spara skrivare."
+   ],
+   "actions": [
+    {
+     "id": "inst-skrivare-open",
+     "label": "Öppna Skrivare",
+     "to": "/installningar",
+     "hash": "skrivare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "tabetalt",
+   "route": "/ta-betalt",
+   "title": "Ta betalt med kortläsaren",
+   "audience": "all",
+   "feature": "terminal",
+   "keywords": [
+    "ta betalt",
+    "kortläsare",
+    "kortbetalning",
+    "kort",
+    "betalterminal",
+    "terminal",
+    "blippa",
+    "kvitto"
+   ],
+   "answer": "Under Ta betalt tar du kortbetalningar på restaurangens kortläsare.",
+   "steps": [
+    "Öppna Ta betalt.",
+    "Välj Belopp (skriv belopp, moms och gärna en notering) eller Obetald beställning.",
+    "Välj kortläsare och tryck Ta betalt.",
+    "Gästen blippar kortet. Du ser direkt om det blev Betalt eller Nekat.",
+    "Vill gästen ha kvitto: tryck Skicka kvitto till e-post."
+   ],
+   "actions": [
+    {
+     "id": "tabetalt-open",
+     "label": "Öppna Ta betalt",
+     "to": "/ta-betalt"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "tabetalt-aterbetala",
+   "route": "/ta-betalt",
+   "title": "Återbetala ett kortköp",
+   "audience": "owner",
+   "feature": "terminal",
+   "keywords": [
+    "återbetala kortköp",
+    "återbetala kort",
+    "återbetalning kort",
+    "kortköp idag"
+   ],
+   "answer": "Ägaren kan återbetala dagens kortköp som inte hör till en beställning.",
+   "steps": [
+    "Öppna Ta betalt.",
+    "Under Kortköp idag trycker du Återbetala på köpet.",
+    "Bekräfta med Bekräfta: återbetala."
+   ],
+   "actions": [
+    {
+     "id": "tabetalt-open",
+     "label": "Öppna Ta betalt",
+     "to": "/ta-betalt"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-salja",
+   "route": "/kassa",
+   "title": "Sälja i kassan",
+   "audience": "all",
+   "feature": "kassa",
+   "keywords": [
+    "kassa",
+    "kassan",
+    "nota",
+    "sälja",
+    "kassaregister",
+    "öppna dagen",
+    "växelkassa",
+    "till köket",
+    "rabatt"
+   ],
+   "answer": "I Kassa öppnar du dagen, lägger rätter på en nota och tar betalt.",
+   "steps": [
+    "Öppna Kassa och tryck Öppna dagen. Fyll i växelkassan och tryck Öppna dagen.",
+    "Tryck Bord (välj bord och Öppna nota) eller Avhämtning.",
+    "Tryck på rätterna och ändra antal med plus och minus.",
+    "Tryck Till köket när beställningen ska lagas. Rabatt lägger du till på notan.",
+    "Tryck Ta betalt och välj hur kvittot ska lämnas."
+   ],
+   "actions": [
+    {
+     "id": "kassa-open",
+     "label": "Öppna Kassa",
+     "to": "/kassa"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-presentkort",
+   "route": "/kassa",
+   "title": "Lösa in presentkort i kassan",
+   "audience": "all",
+   "feature": "kassa",
+   "keywords": [
+    "lösa in presentkort",
+    "presentkort i kassan",
+    "saldo presentkort",
+    "betala med presentkort"
+   ],
+   "answer": "Ett presentkort löser du in när du tar betalt i kassan.",
+   "steps": [
+    "Öppna Kassa och notan.",
+    "Tryck Ta betalt och välj Presentkort.",
+    "Skriv in koden och tryck Kolla saldo.",
+    "Tryck Ta betalt."
+   ],
+   "actions": [
+    {
+     "id": "kassa-open",
+     "label": "Öppna Kassa",
+     "to": "/kassa"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-rapporter",
+   "route": "/kassa",
+   "title": "Kvitton, X-rapport och Z-rapport",
+   "audience": "all",
+   "feature": "kassa",
+   "keywords": [
+    "z-rapport",
+    "x-rapport",
+    "dagsavslut",
+    "stänga dagen",
+    "kvitton",
+    "rapporter",
+    "journal"
+   ],
+   "answer": "Kassans kvitton och rapporter finns i menyn Rapporter. Z-rapporten stänger dagen.",
+   "steps": [
+    "Öppna Kassa.",
+    "Tryck Rapporter.",
+    "Välj Kvitton, X-rapport (läget just nu) eller Z-rapport (stänger dagen)."
+   ],
+   "actions": [
+    {
+     "id": "kassa-open",
+     "label": "Öppna Kassa",
+     "to": "/kassa"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-ny",
+   "route": "/kassa",
+   "title": "Skapa en kassa och exportera",
+   "audience": "owner",
+   "feature": "kassa",
+   "keywords": [
+    "ny kassa",
+    "skapa kassa",
+    "exportera kassa",
+    "kassa 1",
+    "övningsläge"
+   ],
+   "answer": "Ägaren skapar kassor (högst fem) och exporterar kassans data. Övningsläge finns i menyn Kassan.",
+   "steps": [
+    "Öppna Kassa.",
+    "Första gången: tryck Skapa Kassa 1.",
+    "Fler kassor: menyn Kassan, Ny kassa.",
+    "Export: menyn Rapporter, Exportera."
+   ],
+   "actions": [
+    {
+     "id": "kassa-open",
+     "label": "Öppna Kassa",
+     "to": "/kassa"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-bruksanvisning",
+   "route": "/kassa/bruksanvisning",
+   "title": "Kassans bruksanvisning",
+   "audience": "all",
+   "feature": "kassa",
+   "keywords": [
+    "bruksanvisning",
+    "manual",
+    "instruktioner kassa",
+    "hur fungerar kassan"
+   ],
+   "answer": "Kassans bruksanvisning finns i menyn Kassan.",
+   "steps": [
+    "Öppna Kassa.",
+    "Tryck Kassan och välj Bruksanvisning.",
+    "Tryck Till kassan för att gå tillbaka."
+   ],
+   "actions": [
+    {
+     "id": "kassa-manual-open",
+     "label": "Öppna bruksanvisningen",
+     "to": "/kassa/bruksanvisning"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kassa-utskrift",
+   "route": "/kassa/utskrift/:kind",
+   "title": "Manuell försäljningslista vid avbrott",
+   "audience": "all",
+   "feature": "kassa",
+   "keywords": [
+    "manuell försäljningslista",
+    "avbrott",
+    "kassan fungerar inte",
+    "skriva ut lista",
+    "kassans uppgifter"
+   ],
+   "answer": "Fungerar inte kassan skriver du försäljningen på en manuell försäljningslista och för in den efteråt.",
+   "steps": [
+    "Öppna Kassa.",
+    "Tryck Rapporter och välj Manuell försäljningslista.",
+    "Tryck Skriv ut."
+   ],
+   "actions": [
+    {
+     "id": "kassa-open",
+     "label": "Öppna Kassa",
+     "to": "/kassa"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "meny-ny-ratt",
+   "route": "/meny",
+   "title": "Lägga till en ny rätt i menyn",
+   "audience": "all",
+   "keywords": [
+    "rätt",
+    "rätter",
+    "maträtt",
+    "meny",
+    "ny rätt",
+    "lägga till rätt",
+    "lägg till rätt",
+    "skapa rätt",
+    "dryck"
+   ],
+   "answer": "Nya rätter lägger du till under Meny. Rätten syns på webbplatsen så fort den är aktiv.",
+   "steps": [
+    "Öppna Meny (under Restaurang i vänstermenyn).",
+    "Tryck Lägg till rätt.",
+    "Fyll i Namn, Kategori och Pris (kr). Beskrivning är frivillig.",
+    "Välj en bild (krävs).",
+    "Låt Aktiv vara påslagen. Vill du bara visa rätten en tid slår du på Bara under en viss tid.",
+    "Tryck Lägg till rätt."
+   ],
+   "actions": [
+    {
+     "id": "meny-ny-ratt-open",
+     "label": "Öppna Meny med ny rätt",
+     "to": "/meny",
+     "pageAction": "new-dish"
+    }
+   ],
+   "suggestion": "Hur lägger jag till en ny rätt i menyn?",
+   "kind": "guide"
+  },
+  {
+   "id": "meny-andra",
+   "route": "/meny",
+   "title": "Ändra eller ta bort en rätt",
+   "audience": "all",
+   "keywords": [
+    "ändra rätt",
+    "redigera rätt",
+    "ändra pris",
+    "pris",
+    "byta bild",
+    "radera rätt",
+    "ta bort rätt",
+    "redigera"
+   ],
+   "answer": "En rätt ändrar eller tar du bort från listan under Meny.",
+   "steps": [
+    "Öppna Meny och sök fram rätten.",
+    "Tryck Redigera, ändra pris, text eller bild och tryck Spara ändringar.",
+    "Ska rätten bort helt: tryck Radera och bekräfta. Det går inte att ångra."
+   ],
+   "actions": [
+    {
+     "id": "meny-open",
+     "label": "Öppna Meny",
+     "to": "/meny"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "meny-dolj",
+   "route": "/meny",
+   "title": "Dölja en rätt som är slut",
+   "audience": "all",
+   "keywords": [
+    "slut",
+    "slutsåld",
+    "dölja rätt",
+    "dölj",
+    "inaktiv",
+    "aktiv",
+    "tillfälligt"
+   ],
+   "answer": "Är en rätt slut för dagen slår du av den, så döljs den för gästerna utan att tas bort.",
+   "steps": [
+    "Öppna Meny.",
+    "Slå av reglaget på rättens rad.",
+    "Slå på det igen när rätten finns."
+   ],
+   "actions": [
+    {
+     "id": "meny-open",
+     "label": "Öppna Meny",
+     "to": "/meny"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "meny-dela",
+   "route": "/meny",
+   "title": "Dela en rätt i sociala medier",
+   "audience": "owner",
+   "feature": "socialPosting",
+   "keywords": [
+    "dela rätt",
+    "dela",
+    "inlägg",
+    "instagram",
+    "facebook"
+   ],
+   "answer": "En rätt kan delas som inlägg. Booqy gör ett utkast som du granskar under Marknadsföring, Inlägg.",
+   "steps": [
+    "Öppna Meny.",
+    "Tryck Dela på rätten.",
+    "Granska texten i utkastet och tryck Schemalägg eller Publicera nu."
+   ],
+   "actions": [
+    {
+     "id": "meny-open",
+     "label": "Öppna Meny",
+     "to": "/meny"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "catering-forfragningar",
+   "route": "/catering",
+   "title": "Cateringförfrågningar",
+   "audience": "all",
+   "feature": "catering",
+   "keywords": [
+    "catering",
+    "cateringförfrågan",
+    "förfrågan",
+    "förfrågningar",
+    "cateringorder"
+   ],
+   "answer": "Förfrågningar som gästerna skickar från er webbplats hamnar under Catering.",
+   "steps": [
+    "Öppna Catering.",
+    "Välj Pågående eller Alla.",
+    "Tryck på en förfrågan för att se kunden, kalkylen och offerten."
+   ],
+   "actions": [
+    {
+     "id": "catering-open",
+     "label": "Öppna Catering",
+     "to": "/catering"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "catering-offert",
+   "route": "/catering/:locationId/:requestId",
+   "title": "Skicka en cateringoffert",
+   "audience": "owner",
+   "feature": "catering",
+   "keywords": [
+    "offert",
+    "skicka offert",
+    "signera",
+    "bankid",
+    "neka förfrågan",
+    "avboka catering",
+    "faktura betald"
+   ],
+   "answer": "Ägaren svarar på en förfrågan med en offert och signerar den med BankID innan den skickas till kunden.",
+   "steps": [
+    "Öppna Catering och tryck på förfrågan.",
+    "Justera raderna, rabatt, leverans och moms. Lägg till från cateringmenyn vid behov.",
+    "Välj Giltig till och med och skriv ett meddelande till kunden.",
+    "Tryck Skicka offert (eller Spara utkast) och signera med BankID.",
+    "Vill du säga nej: tryck Neka förfrågan."
+   ],
+   "actions": [
+    {
+     "id": "catering-open",
+     "label": "Öppna Catering",
+     "to": "/catering"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "catering-levererad",
+   "route": "/catering/:locationId/:requestId",
+   "title": "Markera catering som levererad",
+   "audience": "all",
+   "feature": "catering",
+   "keywords": [
+    "levererad",
+    "leverera",
+    "markera levererad",
+    "leverans catering"
+   ],
+   "answer": "När cateringen är levererad markerar du det på förfrågan.",
+   "steps": [
+    "Öppna Catering och tryck på ordern.",
+    "Tryck Markera levererad."
+   ],
+   "actions": [
+    {
+     "id": "catering-open",
+     "label": "Öppna Catering",
+     "to": "/catering"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "catering-installningar",
+   "route": "/cateringkalkyl",
+   "title": "Inställningar för catering",
+   "audience": "owner",
+   "feature": "catering",
+   "keywords": [
+    "cateringinställningar",
+    "cateringkalkyl",
+    "kalkyl",
+    "leveranspris",
+    "minsta antal",
+    "cateringmeny",
+    "paket",
+    "allergener"
+   ],
+   "answer": "Om gästerna ser cateringkalkylen, beställningsregler, leveranspriser och cateringmenyn ställer ägaren in under Catering, Inställningar och rabatter.",
+   "steps": [
+    "Öppna Catering och tryck Inställningar och rabatter.",
+    "Slå på Visa kalkylen för kunder på webbplatsen.",
+    "Gå igenom korten (beställningsregler, leveranspris, moms och servering med flera) och tryck Spara inställningar.",
+    "Lägg till rätter och paket under cateringmenyn med Ny rätt och Nytt paket."
+   ],
+   "actions": [
+    {
+     "id": "catering-kalkyl-open",
+     "label": "Öppna cateringinställningar",
+     "to": "/cateringkalkyl"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "catering-rabatt",
+   "route": "/cateringkalkyl",
+   "title": "Rabattnivåer för catering",
+   "audience": "owner",
+   "feature": "catering",
+   "keywords": [
+    "rabattnivå",
+    "cateringrabatt",
+    "mängdrabatt",
+    "rabatt catering"
+   ],
+   "answer": "Rabatt efter antal gäster lägger ägaren upp som rabattnivåer.",
+   "steps": [
+    "Öppna Catering och tryck Inställningar och rabatter.",
+    "Tryck Ny rabattnivå.",
+    "Fyll i namn, från och till antal gäster och Rabatt (%).",
+    "Tryck Spara nivå."
+   ],
+   "actions": [
+    {
+     "id": "catering-kalkyl-open",
+     "label": "Öppna cateringinställningar",
+     "to": "/cateringkalkyl"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "personal-bjud-in",
+   "route": "/personal",
+   "title": "Bjuda in personal",
+   "audience": "owner",
+   "keywords": [
+    "personal",
+    "personalen",
+    "bjud in",
+    "bjuda in",
+    "anställd",
+    "medarbetare",
+    "inloggning",
+    "konto",
+    "användare",
+    "ny användare"
+   ],
+   "answer": "Ägaren bjuder in personalen under Personal. Den som bjuds in får ett mejl och loggar sedan in med egen inloggning.",
+   "steps": [
+    "Öppna Personal (under Restaurang i vänstermenyn).",
+    "Tryck Bjud in personal.",
+    "Fyll i Namn, E-post, Telefon, Roll och Plats.",
+    "Tryck Skicka inbjudan."
+   ],
+   "actions": [
+    {
+     "id": "personal-invite-open",
+     "label": "Öppna Bjud in personal",
+     "to": "/personal",
+     "pageAction": "invite-staff"
+    }
+   ],
+   "suggestion": "Hur bjuder jag in personal?",
+   "kind": "guide"
+  },
+  {
+   "id": "personal-hantera",
+   "route": "/personal",
+   "title": "Spärra eller ta bort personal",
+   "audience": "owner",
+   "keywords": [
+    "inaktivera",
+    "spärra",
+    "slutat",
+    "ta bort personal",
+    "aktivera personal",
+    "redigera personal"
+   ],
+   "answer": "Personal som slutar spärrar eller tar ägaren bort under Personal.",
+   "steps": [
+    "Öppna Personal.",
+    "Tryck Inaktivera för att spärra inloggningen (Aktivera öppnar den igen).",
+    "Tryck Ta bort och bekräfta för att ta bort personen helt.",
+    "Redigera ändrar uppgifterna."
+   ],
+   "actions": [
+    {
+     "id": "personal-open",
+     "label": "Öppna Personal",
+     "to": "/personal"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "fler-agare",
+   "route": null,
+   "title": "Fler ägare och byta plan",
+   "audience": "owner",
+   "keywords": [
+    "fler ägare",
+    "ny ägare",
+    "byta plan",
+    "uppgradera",
+    "plan",
+    "abonnemang",
+    "ingår",
+    "funktioner",
+    "egen domän",
+    "domän",
+    "kortläsare beställa",
+    "faktura booqy"
+   ],
+   "answer": "Fler ägare, byte av plan, nya funktioner, egen domän och kortläsare ordnar Booqy åt er. Kontakta Booqy så hjälper vi till.",
+   "steps": [],
+   "kind": "guide"
+  },
+  {
+   "id": "personalliggare-checka",
+   "route": "/personalliggare",
+   "title": "Checka in och ut i personalliggaren",
+   "audience": "all",
+   "feature": "personalliggare",
+   "keywords": [
+    "personalliggare",
+    "personalliggaren",
+    "checka in",
+    "checka ut",
+    "stämpla",
+    "instämpling",
+    "liggare"
+   ],
+   "answer": "I Personalliggare checkar alla som jobbar in och ut.",
+   "steps": [
+    "Öppna Personalliggare.",
+    "Tryck Checka in när du börjar och Checka ut när du slutar.",
+    "Ägaren kan registrera för någon annan med Registrera för någon annan."
+   ],
+   "actions": [
+    {
+     "id": "personalliggare-open",
+     "label": "Öppna Personalliggare",
+     "to": "/personalliggare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "personalliggare-skatteverket",
+   "route": "/personalliggare",
+   "title": "Visa liggaren för Skatteverket",
+   "audience": "all",
+   "feature": "personalliggare",
+   "keywords": [
+    "skatteverket",
+    "kontrollbesök",
+    "inspektion",
+    "visa liggaren"
+   ],
+   "answer": "Kommer Skatteverket på kontrollbesök visar du liggaren direkt i appen.",
+   "steps": [
+    "Öppna Personalliggare.",
+    "Tryck Visa för Skatteverket."
+   ],
+   "actions": [
+    {
+     "id": "personalliggare-open",
+     "label": "Öppna Personalliggare",
+     "to": "/personalliggare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "personalliggare-personer",
+   "route": "/personalliggare",
+   "title": "Personer, rättelser och export i personalliggaren",
+   "audience": "owner",
+   "feature": "personalliggare",
+   "keywords": [
+    "lägg till person",
+    "personnummer",
+    "rättelse",
+    "rätta",
+    "exportera liggare",
+    "ladda ner csv"
+   ],
+   "answer": "Ägaren lägger till personer, rättar fel och exporterar liggaren.",
+   "steps": [
+    "Öppna Personalliggare.",
+    "Under Personer: Lägg till person, fyll i namn och personnummer eller samordningsnummer och tryck Spara.",
+    "Under Rättelser: tryck Rätta på raden, ange rätt tid och orsak och tryck Spara rättelse.",
+    "Under Exportera: välj Från och Till och tryck Ladda ner CSV."
+   ],
+   "actions": [
+    {
+     "id": "personalliggare-open",
+     "label": "Öppna Personalliggare",
+     "to": "/personalliggare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "telefon-av-pa",
+   "route": "/telefon",
+   "title": "Stänga av eller slå på telefonassistenten",
+   "audience": "all",
+   "feature": "phoneAgent",
+   "keywords": [
+    "telefon",
+    "telefonassistent",
+    "stäng av assistenten",
+    "slå på assistenten",
+    "samtal",
+    "ai telefon"
+   ],
+   "answer": "Telefonassistenten svarar när ni inte hinner. Den kan stängas av direkt under Telefon.",
+   "steps": [
+    "Öppna Telefon.",
+    "Tryck Stäng av assistenten nu, eller Slå på assistenten för att starta den igen."
+   ],
+   "actions": [
+    {
+     "id": "telefon-open",
+     "label": "Öppna Telefon",
+     "to": "/telefon"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "telefon-samtal",
+   "route": "/telefon/samtal/:callId",
+   "title": "Se samtal och återuppringningar",
+   "audience": "all",
+   "feature": "phoneAgent",
+   "keywords": [
+    "samtalen",
+    "återuppringning",
+    "ringa upp",
+    "vill bli uppringd",
+    "uppringda",
+    "missade samtal"
+   ],
+   "answer": "Under Telefon ser du samtalen assistenten har tagit och vilka som vill bli uppringda.",
+   "steps": [
+    "Öppna Telefon.",
+    "Under Samtal trycker du på ett samtal för att se detaljerna.",
+    "Under Återuppringningar ringer du upp gästen och trycker Klar."
+   ],
+   "actions": [
+    {
+     "id": "telefon-open",
+     "label": "Öppna Telefon",
+     "to": "/telefon"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "telefon-installningar",
+   "route": "/telefon",
+   "title": "Ställa in telefonassistenten",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "keywords": [
+    "assistentens namn",
+    "ton",
+    "hälsning",
+    "vidarekoppling",
+    "inspelning",
+    "minuttak",
+    "nummer",
+    "prova assistenten"
+   ],
+   "answer": "Ägaren ställer in assistenten steg för steg under Telefon, Inställningar.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar.",
+    "Gå igenom stegen: namn och ton, tider och läge, vidarekoppling, inspelning och nummer. Varje steg sparas för sig.",
+    "Prova assistenten i sista steget innan du slår på den."
+   ],
+   "actions": [
+    {
+     "id": "telefon-open",
+     "label": "Öppna Telefon",
+     "to": "/telefon"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "layout-rita",
+   "route": "/layout",
+   "title": "Rita matsalen",
+   "audience": "all",
+   "keywords": [
+    "layout",
+    "planritning",
+    "matsal",
+    "bordskarta",
+    "rita",
+    "bord",
+    "vägg",
+    "fönster",
+    "entré",
+    "våning"
+   ],
+   "answer": "Under Layout ritar du matsalen. Gästerna väljer bord på planritningen när de bokar online.",
+   "steps": [
+    "Öppna Layout.",
+    "Välj verktyg: Mark (väggar kommer automatiskt), Fönster, Entré, Kök, Kassa och borden Fyrkant och Runt.",
+    "Dra för att flytta. Ångra med Cmd eller Ctrl + Z. Tryck ? för alla kortkommandon.",
+    "Tryck Spara utkast."
+   ],
+   "actions": [
+    {
+     "id": "layout-open",
+     "label": "Öppna Layout",
+     "to": "/layout"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "layout-publicera",
+   "route": "/layout",
+   "title": "Publicera bordslayouten",
+   "audience": "owner",
+   "keywords": [
+    "publicera layout",
+    "aktivera layout",
+    "versioner",
+    "utkast layout"
+   ],
+   "answer": "Ändringar sparas som utkast. Ägaren publicerar dem och väljer vilken version som gäller.",
+   "steps": [
+    "Öppna Layout och tryck Spara utkast.",
+    "Tryck Publicera layout.",
+    "Under Versioner trycker du Aktivera på den version gästerna ska se."
+   ],
+   "actions": [
+    {
+     "id": "layout-open",
+     "label": "Öppna Layout",
+     "to": "/layout"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gaster-sok",
+   "route": "/gaster",
+   "title": "Hitta en gäst",
+   "audience": "all",
+   "feature": "guestCrm",
+   "keywords": [
+    "gästregister",
+    "gästregistret",
+    "stamgäst",
+    "stamgäster",
+    "sök gäst",
+    "hitta gäst",
+    "gästhistorik",
+    "historik"
+   ],
+   "answer": "Under Gäster ser du vilka som kommer tillbaka och vad de har bokat och beställt.",
+   "steps": [
+    "Öppna Gäster.",
+    "Välj vad du söker på (namn, e-post eller telefon) och tryck Sök.",
+    "Tryck på gästen för att se historiken."
+   ],
+   "actions": [
+    {
+     "id": "gaster-open",
+     "label": "Öppna Gäster",
+     "to": "/gaster"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gaster-anteckning",
+   "route": "/gaster",
+   "title": "Anteckningar och taggar på gäster",
+   "audience": "owner",
+   "feature": "guestCrm",
+   "keywords": [
+    "anteckning gäst",
+    "taggar",
+    "tagg",
+    "födelsedag",
+    "allergi gäst"
+   ],
+   "answer": "Ägaren kan skriva anteckningar, taggar och födelsedag på en gäst.",
+   "steps": [
+    "Öppna Gäster och tryck på gästen.",
+    "Fyll i Anteckning, Taggar eller Födelsedag.",
+    "Tryck Spara."
+   ],
+   "actions": [
+    {
+     "id": "gaster-open",
+     "label": "Öppna Gäster",
+     "to": "/gaster"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "presentkort-salja",
+   "route": "/presentkort",
+   "title": "Sälja presentkort på hemsidan",
+   "audience": "owner",
+   "feature": "giftCards",
+   "keywords": [
+    "presentkort",
+    "sälja presentkort",
+    "gåvokort",
+    "värdebevis",
+    "giltighet"
+   ],
+   "answer": "Ägaren slår på försäljning av presentkort och väljer belopp och giltighet under Presentkort.",
+   "steps": [
+    "Öppna Presentkort.",
+    "Slå på Sälj presentkort på hemsidan.",
+    "Välj färdiga belopp, eget belopp (lägst och högst) och giltighet i månader (minst 12).",
+    "Tryck Spara."
+   ],
+   "actions": [
+    {
+     "id": "presentkort-open",
+     "label": "Öppna Presentkort",
+     "to": "/presentkort"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "presentkort-hitta",
+   "route": "/presentkort",
+   "title": "Hitta, förlänga eller återbetala ett presentkort",
+   "audience": "owner",
+   "feature": "giftCards",
+   "keywords": [
+    "förlänga presentkort",
+    "ny kod",
+    "tappat presentkort",
+    "återbetala presentkort",
+    "sök presentkort"
+   ],
+   "answer": "Ett sålt presentkort hittar ägaren med de fyra sista tecknen i koden.",
+   "steps": [
+    "Öppna Presentkort.",
+    "Sök på de fyra sista tecknen och tryck på kortet.",
+    "Tryck Förläng, Skicka ny kod eller Återbetala."
+   ],
+   "actions": [
+    {
+     "id": "presentkort-open",
+     "label": "Öppna Presentkort",
+     "to": "/presentkort"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "webbplats-redigera",
+   "route": "/webbplats",
+   "title": "Ändra hemsidan",
+   "audience": "owner",
+   "feature": "siteBuilder",
+   "keywords": [
+    "webbplats",
+    "hemsida",
+    "hemsidan",
+    "sida",
+    "block",
+    "färger",
+    "typsnitt",
+    "utseende hemsida"
+   ],
+   "answer": "Ägaren ändrar hemsidan under Webbplats: sidor, block och utseende.",
+   "steps": [
+    "Öppna Webbplats.",
+    "Välj sida, eller tryck Ny sida.",
+    "Tryck Lägg till block för text, bild, meny, öppettider, boka bord med mera.",
+    "Under Utseende väljer du färger och typsnitt.",
+    "Tryck Spara utkast."
+   ],
+   "actions": [
+    {
+     "id": "webbplats-open",
+     "label": "Öppna Webbplats",
+     "to": "/webbplats"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "webbplats-publicera",
+   "route": "/webbplats",
+   "title": "Publicera hemsidan",
+   "audience": "owner",
+   "feature": "siteBuilder",
+   "keywords": [
+    "publicera hemsida",
+    "publicera",
+    "förhandsgranska",
+    "förhandsvisning",
+    "versioner hemsida",
+    "återställ"
+   ],
+   "answer": "Ändringar på hemsidan syns för gästerna först när du publicerar. Personuppgiftsbiträdesavtalet måste vara godkänt.",
+   "steps": [
+    "Öppna Webbplats och tryck Spara utkast.",
+    "Tryck Förhandsgranska för att se resultatet.",
+    "Tryck Publicera.",
+    "Vill du gå tillbaka: Versioner, Återställ."
+   ],
+   "actions": [
+    {
+     "id": "webbplats-open",
+     "label": "Öppna Webbplats",
+     "to": "/webbplats"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "evenemang-skapa",
+   "route": "/evenemang",
+   "title": "Skapa ett evenemang med biljetter",
+   "audience": "owner",
+   "feature": "events",
+   "keywords": [
+    "evenemang",
+    "biljetter",
+    "biljett",
+    "event",
+    "konsert",
+    "middag",
+    "nytt evenemang",
+    "affisch"
+   ],
+   "answer": "Ägaren skapar evenemang med biljetttyper under Evenemang och publicerar dem.",
+   "steps": [
+    "Öppna Evenemang och tryck Nytt evenemang.",
+    "Fyll i namn, beskrivning, datum, tider och antal platser.",
+    "Lägg till biljetttyper med pris och moms.",
+    "Tryck Spara och sedan Publicera.",
+    "Tryck Skriv ut affisch om du vill sätta upp en affisch."
+   ],
+   "actions": [
+    {
+     "id": "evenemang-open",
+     "label": "Öppna Evenemang",
+     "to": "/evenemang"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "evenemang-detalj",
+   "route": "/evenemang/:eventId",
+   "title": "Ställa in ett evenemang eller återbetala biljett",
+   "audience": "owner",
+   "feature": "events",
+   "keywords": [
+    "ställa in evenemang",
+    "ställ in",
+    "återbetala biljett",
+    "inställt"
+   ],
+   "answer": "Ägaren ställer in ett tillfälle eller återbetalar enskilda biljetter från evenemanget.",
+   "steps": [
+    "Öppna Evenemang och tryck på evenemanget.",
+    "Tryck Ställ in på tillfället, skriv gärna ett meddelande och tryck Ställ in och återbetala.",
+    "En enskild biljett: under Köp, tryck Återbetala och ange anledning."
+   ],
+   "actions": [
+    {
+     "id": "evenemang-open",
+     "label": "Öppna Evenemang",
+     "to": "/evenemang"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "evenemang-inslapp",
+   "route": "/evenemang/:eventId/inslapp/:occurrenceId",
+   "title": "Släppa in gäster med biljett",
+   "audience": "all",
+   "feature": "events",
+   "keywords": [
+    "insläpp",
+    "släpp in",
+    "scanna biljett",
+    "skanna",
+    "gästlista",
+    "biljettkod"
+   ],
+   "answer": "Vid dörren scannar du biljetterna under Evenemang, Insläpp.",
+   "steps": [
+    "Öppna Evenemang och tryck på evenemanget.",
+    "Tryck Insläpp.",
+    "Tryck Skanna med kameran, eller skriv biljettkoden och tryck Släpp in.",
+    "Gästlistan visar alla biljetter."
+   ],
+   "actions": [
+    {
+     "id": "evenemang-open",
+     "label": "Öppna Evenemang",
+     "to": "/evenemang"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-oversikt",
+   "route": "/marknadsforing",
+   "title": "Besök på hemsidan",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "besök",
+    "besökare",
+    "trafik",
+    "marknadsföring",
+    "marknad"
+   ],
+   "answer": "Under Marknadsföring, Översikt ser ägaren hur många som besöker hemsidan och var de kommer ifrån.",
+   "steps": [
+    "Öppna Marknadsföring.",
+    "Fliken Översikt visar besöken."
+   ],
+   "actions": [
+    {
+     "id": "marknad-oversikt-open",
+     "label": "Öppna Marknadsföring",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "oversikt"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-kampanj",
+   "route": "/marknadsforing",
+   "title": "Skicka ett mejlutskick",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "utskick",
+    "nyhetsbrev",
+    "mejlutskick",
+    "kampanj",
+    "e-postkampanj",
+    "skicka mejl till gäster"
+   ],
+   "answer": "Mejlutskick till gästerna gör ägaren under Marknadsföring, Kampanjer.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Kampanjer.",
+    "Tryck Ny kampanj.",
+    "Fyll i namn, välj mall, ämnesrad, mottagare och plats och tryck Spara utkast.",
+    "Tryck Testa för att skicka ett prov till dig själv.",
+    "Tryck Skicka och välj Skicka nu eller Schemalägg."
+   ],
+   "actions": [
+    {
+     "id": "marknad-kampanj-open",
+     "label": "Öppna Kampanjer",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "kampanjer"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-mallar",
+   "route": "/marknadsforing",
+   "title": "Mallar för utskick",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "mall",
+    "mallar",
+    "mejlmall"
+   ],
+   "answer": "Mallarna för mejlutskick finns under Marknadsföring, Mallar.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Mallar.",
+    "Tryck Ny tom mall eller börja från en färdig mall.",
+    "Fyll i namn, ämnesrad och block och tryck Spara mallen."
+   ],
+   "actions": [
+    {
+     "id": "marknad-mallar-open",
+     "label": "Öppna Mallar",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "mallar"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-erbjudande",
+   "route": "/marknadsforing",
+   "title": "Välkomsterbjudande",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "välkomsterbjudande",
+    "erbjudande",
+    "rabattkod",
+    "nya gäster",
+    "popup"
+   ],
+   "answer": "Ett välkomsterbjudande ger nya gäster en rabattkod när de anmäler sig med e-post på hemsidan.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Välkomsterbjudande.",
+    "Fyll i rabatt, minsta beställning, hur länge koden gäller och texterna.",
+    "Tryck Spara."
+   ],
+   "actions": [
+    {
+     "id": "marknad-erbjudande-open",
+     "label": "Öppna Välkomsterbjudande",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "erbjudande"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-mottagare",
+   "route": "/marknadsforing",
+   "title": "Mottagare och målgrupper",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "mottagare",
+    "målgrupp",
+    "segment",
+    "prenumeranter",
+    "avregistrera"
+   ],
+   "answer": "Vilka som får utskicken ser ägaren under Marknadsföring, Mottagare.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Mottagare.",
+    "Filtrera listan eller ladda ned den som CSV.",
+    "Tryck Avregistrera eller Radera på en mottagare vid behov."
+   ],
+   "actions": [
+    {
+     "id": "marknad-mottagare-open",
+     "label": "Öppna Mottagare",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "mottagare"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-lankar",
+   "route": "/marknadsforing",
+   "title": "Länkar och QR-koder för kampanjer",
+   "audience": "owner",
+   "feature": "marketing",
+   "keywords": [
+    "länk",
+    "länkar",
+    "spårningslänk",
+    "kampanjlänk",
+    "qr-kod kampanj"
+   ],
+   "answer": "Länkar och QR-koder som visar var besökarna kommer ifrån skapar ägaren under Marknadsföring, Länkar och QR.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Länkar och QR.",
+    "Välj sida, var länken delas och ett kampanjnamn.",
+    "Tryck Kopiera länken eller Ladda ned QR-kod."
+   ],
+   "actions": [
+    {
+     "id": "marknad-lankar-open",
+     "label": "Öppna Länkar och QR",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "lankar"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-annonser",
+   "route": "/marknadsforing",
+   "title": "Annonsera på Facebook och Instagram",
+   "audience": "owner",
+   "feature": "metaAds",
+   "keywords": [
+    "annons",
+    "annonser",
+    "annonsera",
+    "meta",
+    "månadstak",
+    "budget"
+   ],
+   "answer": "Annonser för en rätt skapar ägaren under Marknadsföring, Annonser, efter att Meta är kopplat.",
+   "steps": [
+    "Öppna Marknadsföring och fliken Annonser.",
+    "Första gången: tryck Koppla Meta, välj konton och ett månadstak och tryck Spara.",
+    "Tryck Ny annons, välj rätt, text, total budget, antal dagar och område.",
+    "Tryck Skapa annonsen."
+   ],
+   "actions": [
+    {
+     "id": "marknad-annonser-open",
+     "label": "Öppna Annonser",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "annonser"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-omdomen",
+   "route": "/marknadsforing",
+   "title": "Be om omdömen på Google",
+   "audience": "owner",
+   "feature": "googleBusiness",
+   "keywords": [
+    "omdöme",
+    "omdömen",
+    "recension",
+    "google-omdöme",
+    "betyg"
+   ],
+   "answer": "Ägaren ställer in när gästerna ombeds lämna omdöme under Marknadsföring, Omdömen.",
+   "steps": [
+    "Koppla Google under Inställningar, Restaurang om det inte är gjort.",
+    "Öppna Marknadsföring och fliken Omdömen.",
+    "Välj fördröjning och hur ofta en gäst får frågan och tryck Spara."
+   ],
+   "actions": [
+    {
+     "id": "marknad-omdomen-open",
+     "label": "Öppna Omdömen",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "omdomen"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "marknad-inlagg",
+   "route": "/marknadsforing",
+   "title": "Inlägg i sociala medier",
+   "audience": "owner",
+   "feature": "socialPosting",
+   "keywords": [
+    "inlägg",
+    "sociala medier",
+    "schemalägg inlägg",
+    "publicera inlägg"
+   ],
+   "answer": "Inlägg skapas från Meny med Dela och granskas under Marknadsföring, Inlägg.",
+   "steps": [
+    "Öppna Meny och tryck Dela på en rätt.",
+    "Under Marknadsföring, Inlägg: ändra texten och tryck Schemalägg eller Publicera nu."
+   ],
+   "actions": [
+    {
+     "id": "marknad-inlagg-open",
+     "label": "Öppna Inlägg",
+     "to": "/marknadsforing",
+     "query": {
+      "flik": "inlagg"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "installningar",
+   "route": "/installningar",
+   "title": "Inställningar",
+   "audience": "all",
+   "keywords": [
+    "inställningar",
+    "inställning",
+    "ändra inställningar"
+   ],
+   "answer": "Under Inställningar ställer du in restaurangen i grupper: verksamheten, gäster, ekonomi, data och integritet samt den här enheten. Personalen kan se men bara ägaren kan ändra, utom Utseende och ljud.",
+   "steps": [
+    "Öppna Inställningar längst ned i vänstermenyn.",
+    "Välj den del du vill ändra.",
+    "Tryck Spara på det kortet. Alla inställningar tar dig tillbaka."
+   ],
+   "actions": [
+    {
+     "id": "installningar-open",
+     "label": "Öppna Inställningar",
+     "to": "/installningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-oppettider",
+   "route": "/installningar",
+   "title": "Öppettider och restaurangens uppgifter",
+   "audience": "owner",
+   "keywords": [
+    "öppettider",
+    "öppet",
+    "adress",
+    "telefonnummer",
+    "restaurangens namn",
+    "e-post restaurang",
+    "grace period"
+   ],
+   "answer": "Öppettider, adress och kontaktuppgifter ändrar ägaren under Inställningar, Restaurang.",
+   "steps": [
+    "Öppna Inställningar och välj Restaurang.",
+    "Ändra namn, telefon, adress, e-post eller öppettider.",
+    "Tryck Spara ändringar."
+   ],
+   "actions": [
+    {
+     "id": "inst-profil-open",
+     "label": "Öppna Restaurang",
+     "to": "/installningar",
+     "hash": "profil"
+    }
+   ],
+   "suggestion": "Hur ändrar jag öppettiderna?",
+   "kind": "guide"
+  },
+  {
+   "id": "inst-bokningstid",
+   "route": "/installningar",
+   "title": "Hur länge en bokning varar",
+   "audience": "owner",
+   "keywords": [
+    "bokningstid",
+    "standardlängd",
+    "sittningstid",
+    "sista sittning",
+    "specialtid",
+    "hur länge bokning"
+   ],
+   "answer": "Hur länge ett bord är bokat och sista sittning före stängning ställer ägaren in under Inställningar, Restaurang, Bokningstid.",
+   "steps": [
+    "Öppna Inställningar och välj Restaurang.",
+    "Under Bokningstid väljer du standardlängd och sista sittning före stängning.",
+    "Lägg till specialtider vid behov.",
+    "Tryck Spara bokningstid."
+   ],
+   "actions": [
+    {
+     "id": "inst-profil-open",
+     "label": "Öppna Restaurang",
+     "to": "/installningar",
+     "hash": "profil"
+    }
+   ],
+   "highlight": [
+    "help:settings:profil:BookingTimeCard"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-dagar",
+   "route": "/installningar",
+   "title": "Avvikande dagar och helger",
+   "audience": "owner",
+   "keywords": [
+    "avvikande dagar",
+    "helgdag",
+    "helgdagar",
+    "julafton",
+    "midsommar",
+    "stängt idag",
+    "privat fest",
+    "semester",
+    "stäng onlinebokning",
+    "stänga onlinebokning",
+    "stänger onlinebokningen",
+    "stänga onlinebokningen",
+    "stäng onlinebokningen"
+   ],
+   "answer": "Helgdagar, stängda dagar och andra öppettider lägger ägaren in under Inställningar, Avvikande dagar.",
+   "steps": [
+    "Öppna Inställningar och välj Avvikande dagar.",
+    "Tryck Lägg till dag, välj datum och typ (Stängt, Andra öppettider eller Ingen onlinebokning).",
+    "Skriv gärna en anteckning till gästerna och tryck Lägg till.",
+    "Tryck Spara dagar.",
+    "Behöver ni stänga direkt: Stäng onlinebokning idag."
+   ],
+   "actions": [
+    {
+     "id": "inst-dagar-open",
+     "label": "Öppna Avvikande dagar",
+     "to": "/installningar",
+     "hash": "dagar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-bord",
+   "route": "/installningar",
+   "title": "Bord som kan bokas online",
+   "audience": "owner",
+   "keywords": [
+    "antal personer per bord",
+    "bordsregler",
+    "kombination",
+    "slå ihop bord",
+    "onlinebokning bord",
+    "kombinera bord"
+   ],
+   "answer": "Vilka bord som kan bokas online, för hur många och vilka bord som kan slås ihop ställer ägaren in under Inställningar, Bord.",
+   "steps": [
+    "Öppna Inställningar och välj Bord.",
+    "Välj för varje bord om det kan bokas online och för hur många personer.",
+    "Lägg till kombinationer under Ny kombination.",
+    "Tryck Spara bordsregler."
+   ],
+   "actions": [
+    {
+     "id": "inst-bord-open",
+     "label": "Öppna Bord",
+     "to": "/installningar",
+     "hash": "bord"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-notiser",
+   "route": "/installningar",
+   "title": "Sms, påminnelser och mejl om bokningar",
+   "audience": "owner",
+   "keywords": [
+    "sms",
+    "påminnelse",
+    "notiser",
+    "notis",
+    "bekräftelse",
+    "mejl vid bokning",
+    "avsändarnamn"
+   ],
+   "answer": "Om gästerna får sms, när påminnelsen skickas och om ni får mejl vid nya bokningar ställer ägaren in under Inställningar, Notiser.",
+   "steps": [
+    "Öppna Inställningar och välj Notiser.",
+    "Slå på eller av SMS till gästen (kostar per sms) och välj avsändarnamn.",
+    "Välj påminnelse före besöket.",
+    "Välj om restaurangen får e-post vid nya bokningar.",
+    "Tryck Spara notiser."
+   ],
+   "actions": [
+    {
+     "id": "inst-notiser-open",
+     "label": "Öppna Notiser",
+     "to": "/installningar",
+     "hash": "notiser"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-avbokning",
+   "route": "/installningar",
+   "title": "Kortgaranti och avgifter vid avbokning",
+   "audience": "owner",
+   "keywords": [
+    "kortgaranti",
+    "avbokningsregler",
+    "no-show-avgift",
+    "sen avbokning",
+    "avgift",
+    "garanti",
+    "policy"
+   ],
+   "answer": "Kortgaranti och avgifter för sen avbokning och no-show ställer ägaren in under Inställningar, Avbokning. Stripe måste vara klart först.",
+   "steps": [
+    "Öppna Inställningar och välj Avbokning.",
+    "Slå på Kortgaranti vid onlinebokning och välj från hur många personer.",
+    "Ange när en avbokning räknas som sen och avgifterna per person.",
+    "Tryck Spara policy."
+   ],
+   "actions": [
+    {
+     "id": "inst-avbokning-open",
+     "label": "Öppna Avbokning",
+     "to": "/installningar",
+     "hash": "avbokning"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-betalningar",
+   "route": "/installningar",
+   "title": "Stripe och kortbetalningar",
+   "audience": "owner",
+   "keywords": [
+    "stripe",
+    "betalningar",
+    "utbetalning",
+    "bankkonto",
+    "kortbetalningar",
+    "ta emot betalning",
+    "betalkonto"
+   ],
+   "answer": "Kortbetalningar går via Stripe. Ägaren slutför kontot under Inställningar, Betalningar.",
+   "steps": [
+    "Öppna Inställningar och välj Betalningar.",
+    "Tryck Slutför Stripe-konfigurationen (eller Komplettera uppgifter hos Stripe).",
+    "Fyll i uppgifterna hos Stripe och kom tillbaka hit.",
+    "När det står Redo att ta emot betalningar är allt klart."
+   ],
+   "actions": [
+    {
+     "id": "inst-betalningar-open",
+     "label": "Öppna Betalningar",
+     "to": "/installningar",
+     "hash": "betalningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-bokforing",
+   "route": "/installningar",
+   "title": "Bokföring och SIE-fil",
+   "audience": "owner",
+   "keywords": [
+    "bokföring",
+    "sie",
+    "sie-fil",
+    "revisor",
+    "konton",
+    "verifikation",
+    "fortnox",
+    "visma",
+    "redovisning"
+   ],
+   "answer": "Försäljningen för en period laddar ägaren ner som SIE- eller CSV-fil under Inställningar, Bokföring.",
+   "steps": [
+    "Öppna Inställningar och välj Bokföring.",
+    "Välj period och filformat.",
+    "Tryck Ladda ner SIE-fil eller Ladda ner CSV-fil.",
+    "Konton och verifikationsserie kan ändras på samma sida."
+   ],
+   "actions": [
+    {
+     "id": "inst-bokforing-open",
+     "label": "Öppna Bokföring",
+     "to": "/installningar",
+     "hash": "bokforing"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-integritet",
+   "route": "/installningar",
+   "title": "Gästernas personuppgifter (GDPR)",
+   "audience": "owner",
+   "keywords": [
+    "gdpr",
+    "integritet",
+    "personuppgifter",
+    "radera gäst",
+    "samtycke",
+    "integritetstext",
+    "dataskydd"
+   ],
+   "answer": "Integritetstexten och förfrågningar från gäster om att radera sina uppgifter hanterar ägaren under Inställningar, Integritet.",
+   "steps": [
+    "Öppna Inställningar och välj Integritet.",
+    "Ändra texten och tryck Spara text.",
+    "Sök fram gästen med e-post eller telefon.",
+    "Tryck Återkalla samtycke eller Radera gästens uppgifter."
+   ],
+   "actions": [
+    {
+     "id": "inst-integritet-open",
+     "label": "Öppna Integritet",
+     "to": "/installningar",
+     "hash": "integritet"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-utseende",
+   "route": "/installningar",
+   "title": "Mörkt eller ljust läge och klickljud",
+   "audience": "all",
+   "keywords": [
+    "mörkt läge",
+    "ljust läge",
+    "tema",
+    "utseende",
+    "ljud",
+    "klickljud",
+    "volym",
+    "dark mode"
+   ],
+   "answer": "Ljust eller mörkt läge och klickljudet väljer du själv under Inställningar, Utseende och ljud. Valet gäller den här webbläsaren.",
+   "steps": [
+    "Öppna Inställningar och välj Utseende och ljud.",
+    "Välj ljust eller mörkt läge.",
+    "Slå på eller av ljudet och välj volym."
+   ],
+   "actions": [
+    {
+     "id": "inst-utseende-open",
+     "label": "Öppna Utseende och ljud",
+     "to": "/installningar",
+     "hash": "utseende"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "inst-google",
+   "route": "/installningar",
+   "title": "Koppla Google-företagsprofilen",
+   "audience": "owner",
+   "feature": "googleBusiness",
+   "keywords": [
+    "google",
+    "google-profil",
+    "företagsprofil",
+    "google maps",
+    "koppla google"
+   ],
+   "answer": "Restaurangens Google-profil kopplar ägaren under Inställningar, Restaurang.",
+   "steps": [
+    "Öppna Inställningar och välj Restaurang.",
+    "Tryck Koppla Google och logga in hos Google.",
+    "Välj rätt plats."
+   ],
+   "actions": [
+    {
+     "id": "inst-profil-open",
+     "label": "Öppna Restaurang",
+     "to": "/installningar",
+     "hash": "profil"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "hjalp-guiden",
+   "route": "/hjalp",
+   "title": "Guiden och hjälpsidan",
+   "audience": "all",
+   "keywords": [
+    "guiden",
+    "guide",
+    "rundtur",
+    "introduktion",
+    "hjälp",
+    "hjälpsidan"
+   ],
+   "answer": "Under Hjälp startar du guiden igen och läser vad varje del av appen gör.",
+   "steps": [
+    "Öppna Hjälp längst ned i vänstermenyn.",
+    "Tryck Starta guiden för en rundtur sida för sida."
+   ],
+   "actions": [
+    {
+     "id": "hjalp-open",
+     "label": "Öppna Hjälp",
+     "to": "/hjalp"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "ladda-ner-appen",
+   "route": "/installningar",
+   "title": "Skrivbordsappen",
+   "audience": "all",
+   "keywords": [
+    "app",
+    "appen",
+    "skrivbordsapp",
+    "skrivbordsappen",
+    "ladda ner appen",
+    "installera",
+    "mac",
+    "windows",
+    "linux"
+   ],
+   "answer": "Booqy Admin finns som app för Mac, Windows och Linux, med samma inloggning som här. Ladda ner appen längst ned i vänstermenyn öppnar kortet Skrivbordsappen under Inställningar, Den här enheten. Där markeras filen för din dator när den går att avgöra säkert.",
+   "steps": [
+    "Öppna Ladda ner appen längst ned i vänstermenyn.",
+    "Ladda ner filen som rekommenderas för din dator, eller välj i listan.",
+    "Första gången: på Mac öppnar du appen via Systeminställningar, Integritet och säkerhet, Öppna ändå. På Windows klickar du Mer information och Kör ändå."
+   ],
+   "actions": [
+    {
+     "id": "ladda-ner-open",
+     "label": "Ladda ner appen",
+     "to": "/installningar",
+     "hash": "skrivbordsappen"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "avtal",
+   "route": "/avtal",
+   "title": "Personuppgiftsbiträdesavtalet",
+   "audience": "owner",
+   "keywords": [
+    "avtal",
+    "personuppgiftsbiträdesavtal",
+    "biträdesavtal",
+    "pub-avtal",
+    "dpa",
+    "godkänna avtalet"
+   ],
+   "answer": "Ägaren läser och godkänner personuppgiftsbiträdesavtalet under Avtal. Hemsidan kan publiceras först när det är godkänt.",
+   "steps": [
+    "Öppna avtalet från rutan överst eller från Kom igång på Översikten.",
+    "Läs avtalet.",
+    "Kryssa i att du har läst och har rätt att godkänna det.",
+    "Tryck Godkänn avtalet."
+   ],
+   "actions": [
+    {
+     "id": "avtal-open",
+     "label": "Öppna avtalet",
+     "to": "/avtal"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "plats-byta",
+   "route": null,
+   "title": "Byta restaurang eller plats",
+   "audience": "all",
+   "keywords": [
+    "byta plats",
+    "byta restaurang",
+    "flera restauranger",
+    "välja plats",
+    "annan restaurang"
+   ],
+   "answer": "Har ni flera restauranger väljer du plats i vänstermenyn, under restaurangens namn. Allt du ser gäller den valda platsen.",
+   "steps": [
+    "Öppna vänstermenyn.",
+    "Välj plats i listan under restaurangens namn."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "sok-palett",
+   "route": null,
+   "title": "Snabbsök och kortkommandon",
+   "audience": "all",
+   "keywords": [
+    "snabbsök",
+    "sök",
+    "kortkommando",
+    "kommandopalett",
+    "cmd k",
+    "ctrl k"
+   ],
+   "answer": "Med snabbsöket hoppar du till en sida eller en åtgärd utan att leta i menyn.",
+   "steps": [
+    "Tryck Cmd + K på Mac eller Ctrl + K på Windows, eller tryck Sök i sidhuvudet.",
+    "Skriv vad du letar efter, till exempel Meny eller Ny bokning.",
+    "Välj med pilarna och tryck Enter."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "logga-ut",
+   "route": null,
+   "title": "Logga ut",
+   "audience": "all",
+   "keywords": [
+    "logga ut",
+    "utloggning"
+   ],
+   "answer": "Du loggar ut med knappen Logga ut längst ned i vänstermenyn.",
+   "steps": [
+    "Öppna vänstermenyn.",
+    "Tryck Logga ut längst ned och bekräfta."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-boka",
+   "route": null,
+   "title": "Så bokar gästerna online",
+   "audience": "all",
+   "keywords": [
+    "gästerna bokar",
+    "onlinebokning",
+    "boka online",
+    "bokningssida",
+    "boka bord online"
+   ],
+   "answer": "Gästerna bokar på restaurangens hemsida under Boka bord. De väljer bord på er planritning och får en bekräftelse med en länk till bokningen.",
+   "steps": [
+    "Se till att öppettider, bord och en publicerad layout finns.",
+    "Gästen öppnar Boka bord på hemsidan, väljer datum, tid och bord.",
+    "Krävs kortgaranti lämnar gästen kort i samma steg.",
+    "Gästen får en bekräftelse. Bokningen syns direkt under Bokningar."
+   ],
+   "actions": [
+    {
+     "id": "layout-open",
+     "label": "Öppna Layout",
+     "to": "/layout"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-avboka",
+   "route": null,
+   "title": "Så avbokar gästerna själva",
+   "audience": "all",
+   "keywords": [
+    "gästen avbokar",
+    "själv",
+    "länk i bekräftelsen",
+    "ändra sin bokning"
+   ],
+   "answer": "Gästen avbokar själv via länken i bekräftelsen, i mejlet eller sms:et. Avbokningen syns direkt under Bokningar.",
+   "steps": [
+    "Gästen öppnar länken i bekräftelsen.",
+    "Gästen trycker Avboka."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-bestalla",
+   "route": null,
+   "title": "Så beställer gästerna mat",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "gästerna beställer",
+    "beställ mat",
+    "beställa online",
+    "beställa via qr"
+   ],
+   "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. De betalar i förväg.",
+   "steps": [
+    "Gästen öppnar Beställ på hemsidan eller scannar QR-koden på bordet.",
+    "Gästen väljer rätter och betalar.",
+    "Beställningen dyker upp under Beställningar."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-open",
+     "label": "Öppna Beställningar",
+     "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-catering",
+   "route": null,
+   "title": "Så skickar gästerna en cateringförfrågan",
+   "audience": "all",
+   "feature": "catering",
+   "keywords": [
+    "gästen catering",
+    "cateringförfrågan hemsida",
+    "beställa catering"
+   ],
+   "answer": "Gästen räknar fram en catering i kalkylen på hemsidan och skickar en förfrågan. Den hamnar under Catering.",
+   "steps": [
+    "Gästen öppnar Catering på hemsidan och fyller i kalkylen.",
+    "Gästen trycker Skicka förfrågan.",
+    "Ni svarar med en offert under Catering."
+   ],
+   "actions": [
+    {
+     "id": "catering-open",
+     "label": "Öppna Catering",
+     "to": "/catering"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-presentkort",
+   "route": null,
+   "title": "Så köper gästerna presentkort",
+   "audience": "all",
+   "feature": "giftCards",
+   "keywords": [
+    "köpa presentkort",
+    "gästen köper presentkort",
+    "saldo"
+   ],
+   "answer": "Gästerna köper presentkort under Presentkort på hemsidan och kan kolla saldot där. Presentkortet löses in i kassan.",
+   "steps": [
+    "Gästen öppnar Presentkort på hemsidan och väljer belopp.",
+    "Gästen betalar och får koden.",
+    "Saldot kollas under Presentkort, saldo."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "gast-ko",
+   "route": null,
+   "title": "Så ställer sig gästerna i kö",
+   "audience": "all",
+   "feature": "waitlist",
+   "keywords": [
+    "gästen kö",
+    "kö hemsidan",
+    "ställa sig i kö"
+   ],
+   "answer": "Är det påslaget kan gästerna ställa sig i kö från hemsidan. De hamnar i köpanelen under Bokningar.",
+   "steps": [
+    "Gästen öppnar Kö på hemsidan och fyller i namn, antal och mobilnummer.",
+    "Ni ser gästen i köpanelen under Bokningar och erbjuder bord."
+   ],
+   "actions": [
+    {
+     "id": "bokningar-open",
+     "label": "Öppna Bokningar",
+     "to": "/bokningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "live-gaster-idag",
+   "route": "/statistik",
+   "title": "Gäster idag",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "antal gäster",
+    "gäster idag",
+    "gäster har vi",
+    "gäster haft",
+    "gästerna idag",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Gäster idag står överst på Statistik, under Idag.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-gaster-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "highlight": [
+      "help:kpi:gaster-idag"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "guestsToday",
+    "text": "Idag har ni {value} gäster i bokningarna. Avbokade räknas inte."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-bokningar-idag",
+   "route": "/statistik",
+   "title": "Bokningar idag",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "antal bokningar",
+    "bokningar idag",
+    "bokningar har vi",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Bokningar idag står överst på Statistik, under Idag.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-bokningar-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "highlight": [
+      "help:kpi:bokningar-idag"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "bookingsToday",
+    "text": "Idag har ni {value} bokningar. Avbokade räknas inte."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-har-kommit",
+   "route": "/statistik",
+   "title": "Har kommit idag",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "hur många har kommit",
+    "har kommit",
+    "kommit idag",
+    "anlänt idag",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Har kommit står överst på Statistik, under Idag.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-har-kommit-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "highlight": [
+      "help:kpi:har-kommit"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "arrivedToday",
+    "text": "{value} bokningar är markerade som Kommit idag."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-belaggning-idag",
+   "route": "/statistik",
+   "title": "Beläggning idag",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "beläggning",
+    "beläggningen",
+    "hur fullt",
+    "fullbokat",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Beläggning idag står överst på Statistik, under Idag.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-belaggning-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "highlight": [
+      "help:kpi:belaggning-idag"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "occupancyToday",
+    "text": "Beläggningen idag är {value} av bordstiden under öppettiderna."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-uteblev-idag",
+   "route": "/statistik",
+   "title": "Uteblivna idag",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "uteblev idag",
+    "hur många uteblev",
+    "no-shows idag",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Uteblivna finns på Statistik.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-uteblev-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "highlight": [
+      "help:kpi:bokningar-idag"
+     ]
+    }
+   ],
+   "live": {
+    "metric": "noShowsToday",
+    "text": "{value} bokningar uteblev idag."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-bestallningar-idag",
+   "route": "/statistik",
+   "title": "Beställningar idag",
+   "audience": "all",
+   "feature": "ordering",
+   "insights": true,
+   "keywords": [
+    "hur många beställningar",
+    "beställningar idag",
+    "antal beställningar",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Beställningarna finns på Statistik och under Beställningar.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-bestallningar-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik"
+    }
+   ],
+   "live": {
+    "metric": "ordersToday",
+    "text": "Idag har ni fått {value} beställningar."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-omsattning-idag",
+   "route": "/statistik",
+   "title": "Omsättning idag",
+   "audience": "owner",
+   "keywords": [
+    "omsättning idag",
+    "sålt idag",
+    "hur mycket har vi sålt",
+    "intäkter idag",
+    "försäljning idag",
+    "idag",
+    "dag",
+    "dagens"
+   ],
+   "answer": "Omsättningen finns på Statistik under Omsättning.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-omsattning-idag-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik"
+    }
+   ],
+   "live": {
+    "metric": "revenueToday",
+    "text": "Omsättningen idag är {value}."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-gaster-vecka",
+   "route": "/statistik",
+   "title": "Gäster denna vecka",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "gäster denna vecka",
+    "gäster i veckan",
+    "gäster veckan",
+    "antal gäster vecka",
+    "vecka",
+    "veckan",
+    "veckans"
+   ],
+   "answer": "Gäster per vecka finns på Statistik.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-gaster-vecka-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "query": {
+      "period": "week"
+     }
+    }
+   ],
+   "live": {
+    "metric": "guestsWeek",
+    "text": "Den här veckan har ni {value} gäster i bokningarna hittills."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-gaster-manad",
+   "route": "/statistik",
+   "title": "Gäster denna månad",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "gäster denna månad",
+    "gäster i månaden",
+    "gäster månaden",
+    "antal gäster månad",
+    "månad",
+    "månaden",
+    "månadens"
+   ],
+   "answer": "Månadens siffror finns på Statistik.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-gaster-manad-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "query": {
+      "period": "month"
+     }
+    }
+   ],
+   "live": {
+    "metric": "guestsMonth",
+    "text": "Den här månaden har ni {value} gäster i bokningarna hittills."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-bokningar-manad",
+   "route": "/statistik",
+   "title": "Bokningar denna månad",
+   "audience": "all",
+   "insights": true,
+   "keywords": [
+    "bokningar denna månad",
+    "bokningar i månaden",
+    "bokningar månaden",
+    "månad",
+    "månaden",
+    "månadens"
+   ],
+   "answer": "Månadens siffror finns på Statistik.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-bokningar-manad-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "query": {
+      "period": "month"
+     }
+    }
+   ],
+   "live": {
+    "metric": "bookingsMonth",
+    "text": "Den här månaden har ni {value} bokningar hittills."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "live-omsattning-manad",
+   "route": "/statistik",
+   "title": "Omsättning denna månad",
+   "audience": "owner",
+   "keywords": [
+    "omsättning denna månad",
+    "omsättning månaden",
+    "sålt denna månad",
+    "intäkter månaden",
+    "månad",
+    "månaden",
+    "månadens"
+   ],
+   "answer": "Omsättningen finns på Statistik under Omsättning.",
+   "steps": [],
+   "actions": [
+    {
+     "id": "live-omsattning-manad-open",
+     "label": "Visa på Statistik",
+     "to": "/statistik",
+     "query": {
+      "period": "month"
+     }
+    }
+   ],
+   "live": {
+    "metric": "revenueMonth",
+    "text": "Omsättningen den här månaden är {value} hittills."
+   },
+   "kind": "guide"
+  },
+  {
+   "id": "losenord",
+   "route": null,
+   "title": "Byta eller glömt lösenord",
+   "audience": "all",
+   "keywords": [
+    "lösenord",
+    "lösenordet",
+    "glömt lösenord",
+    "byta lösenord",
+    "nytt lösenord",
+    "logga in"
+   ],
+   "answer": "Lösenordet byter du på inloggningssidan. Jag kan aldrig se eller visa lösenord.",
+   "steps": [
+    "Logga ut med Logga ut längst ned i vänstermenyn.",
+    "Tryck Glömt lösenord på inloggningssidan.",
+    "Skriv din e-post och följ länken i mejlet."
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "nav:oversikt",
+   "kind": "page",
+   "route": "/",
+   "title": "Översikt",
+   "where": "vänstermenyn",
+   "text": "Översikt finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:statistik",
+   "kind": "page",
+   "route": "/statistik",
+   "title": "Statistik",
+   "where": "vänstermenyn",
+   "text": "Statistik finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/statistik"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "nav:bokningar",
+   "kind": "page",
+   "route": "/bokningar",
+   "title": "Bokningar",
+   "where": "vänstermenyn",
+   "text": "Bokningar finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/bokningar"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:bestallningar",
+   "kind": "page",
+   "route": "/bestallningar",
+   "title": "Beställningar",
+   "where": "vänstermenyn",
+   "text": "Beställningar finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/bestallningar"
+   ],
+   "audience": "all",
+   "feature": "ordering"
+  },
+  {
+   "id": "nav:ta-betalt",
+   "kind": "page",
+   "route": "/ta-betalt",
+   "title": "Ta betalt",
+   "where": "vänstermenyn",
+   "text": "Ta betalt finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/ta-betalt"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "nav:kassa",
+   "kind": "page",
+   "route": "/kassa",
+   "title": "Kassa",
+   "where": "vänstermenyn",
+   "text": "Kassa finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/kassa"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "nav:catering",
+   "kind": "page",
+   "route": "/catering",
+   "title": "Catering",
+   "where": "vänstermenyn",
+   "text": "Catering finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/catering"
+   ],
+   "audience": "all",
+   "feature": "catering"
+  },
+  {
+   "id": "nav:personalliggare",
+   "kind": "page",
+   "route": "/personalliggare",
+   "title": "Personalliggare",
+   "where": "vänstermenyn",
+   "text": "Personalliggare finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/personalliggare"
+   ],
+   "audience": "all",
+   "feature": "personalliggare"
+  },
+  {
+   "id": "nav:telefon",
+   "kind": "page",
+   "route": "/telefon",
+   "title": "Telefon",
+   "where": "vänstermenyn",
+   "text": "Telefon finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/telefon"
+   ],
+   "audience": "all",
+   "feature": "phoneAgent"
+  },
+  {
+   "id": "nav:meny",
+   "kind": "page",
+   "route": "/meny",
+   "title": "Meny",
+   "where": "vänstermenyn",
+   "text": "Meny finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/meny"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:layout",
+   "kind": "page",
+   "route": "/layout",
+   "title": "Layout",
+   "where": "vänstermenyn",
+   "text": "Layout finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/layout"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:personal",
+   "kind": "page",
+   "route": "/personal",
+   "title": "Personal",
+   "where": "vänstermenyn",
+   "text": "Personal finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/personal"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "nav:gaster",
+   "kind": "page",
+   "route": "/gaster",
+   "title": "Gäster",
+   "where": "vänstermenyn",
+   "text": "Gäster finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/gaster"
+   ],
+   "audience": "all",
+   "feature": "guestCrm"
+  },
+  {
+   "id": "nav:presentkort",
+   "kind": "page",
+   "route": "/presentkort",
+   "title": "Presentkort",
+   "where": "vänstermenyn",
+   "text": "Presentkort finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/presentkort"
+   ],
+   "audience": "owner",
+   "feature": "giftCards"
+  },
+  {
+   "id": "nav:webbplats",
+   "kind": "page",
+   "route": "/webbplats",
+   "title": "Webbplats",
+   "where": "vänstermenyn",
+   "text": "Webbplats finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/webbplats"
+   ],
+   "audience": "owner",
+   "feature": "siteBuilder"
+  },
+  {
+   "id": "nav:evenemang",
+   "kind": "page",
+   "route": "/evenemang",
+   "title": "Evenemang",
+   "where": "vänstermenyn",
+   "text": "Evenemang finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/evenemang"
+   ],
+   "audience": "all",
+   "feature": "events"
+  },
+  {
+   "id": "nav:installningar",
+   "kind": "page",
+   "route": "/installningar",
+   "title": "Inställningar",
+   "where": "vänstermenyn",
+   "text": "Inställningar finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/installningar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "nav:hjalp",
+   "kind": "page",
+   "route": "/hjalp",
+   "title": "Hjälp",
+   "where": "vänstermenyn",
+   "text": "Hjälp finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/hjalp"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:installningar:skrivbordsappen",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "skrivbordsappen",
+   "title": "Ladda ner appen",
+   "where": "vänstermenyn",
+   "text": "Ladda ner appen finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/installningar#skrivbordsappen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings:profil",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Restaurang",
+   "where": "Inställningar, Restaurang",
+   "text": "Restaurang finns under Inställningar. Namn, adress, telefon, e-post och öppettider.",
+   "highlight": [
+    "help:settings-tab:profil"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:betalningar",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "betalningar",
+   "title": "Betalningar",
+   "where": "Inställningar, Betalningar",
+   "text": "Betalningar finns under Inställningar. Koppla Stripe så att gästerna kan betala online.",
+   "highlight": [
+    "help:settings-tab:betalningar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:notiser",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "notiser",
+   "title": "Notiser",
+   "where": "Inställningar, Notiser",
+   "text": "Notiser finns under Inställningar. Sms och mejl till gästerna, och mejl till er.",
+   "highlight": [
+    "help:settings-tab:notiser"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:avbokning",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "Avbokning",
+   "where": "Inställningar, Avbokning",
+   "text": "Avbokning finns under Inställningar. Kortgaranti och avgift om gästen inte kommer.",
+   "highlight": [
+    "help:settings-tab:avbokning"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:bestallning",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "bestallning",
+   "title": "Beställning",
+   "where": "Inställningar, Beställning",
+   "text": "Beställning finns under Inställningar. Avhämtning, beställning vid bordet och QR-koder.",
+   "highlight": [
+    "help:settings-tab:bestallning"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "settings:skrivare",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Skrivare",
+   "where": "Inställningar, Skrivare",
+   "text": "Skrivare finns under Inställningar. Skrivaren i köket som skriver ut beställningarna.",
+   "highlight": [
+    "help:settings-tab:skrivare"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "settings:dagar",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Avvikande dagar",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "Avvikande dagar finns under Inställningar. Helgdagar, stängt eller andra tider en viss dag.",
+   "highlight": [
+    "help:settings-tab:dagar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:bord",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Bord",
+   "where": "Inställningar, Bord",
+   "text": "Bord finns under Inställningar. Hur många gäster varje bord tar och vilka bord som kan ställas ihop.",
+   "highlight": [
+    "help:settings-tab:bord"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:statistik",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "statistik",
+   "title": "Statistik",
+   "where": "Inställningar, Statistik",
+   "text": "Statistik finns under Inställningar. Vad personalen får se och när lunchen slutar.",
+   "highlight": [
+    "help:settings-tab:statistik"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:bokforing",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Bokföring",
+   "where": "Inställningar, Bokföring",
+   "text": "Bokföring finns under Inställningar. Exportera försäljningen till bokföringsprogrammet.",
+   "highlight": [
+    "help:settings-tab:bokforing"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:integritet",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Integritet",
+   "where": "Inställningar, Integritet",
+   "text": "Integritet finns under Inställningar. Integritetspolicyn och gästernas uppgifter.",
+   "highlight": [
+    "help:settings-tab:integritet"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "settings:utseende",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Utseende och ljud",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Utseende och ljud finns under Inställningar. Ljust eller mörkt läge och klickljud, bara på den här skärmen.",
+   "highlight": [
+    "help:settings-tab:utseende"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bestallningar-BestallningarPage:pausa-bestallningar:field",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Pausa beställningar",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Pausa beställningar"
+   ],
+   "audience": "all",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-bestallningar-BestallningarPage:visa:field",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Visa",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Visa"
+   ],
+   "audience": "all",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-bokningar-BokningarPage:ny-bokning:button",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Ny bokning",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:+ Ny bokning"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:antal-personer:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Antal personer",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Antal personer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:namn:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Namn",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:telefon-valfritt:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Telefon (valfritt)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Telefon (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:e-post-valfritt:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "E-post (valfritt)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:E-post (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:anteckning-valfritt:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Anteckning (valfritt)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Anteckning (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-NewReservationModal:avbryt:button",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Avbryt",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:markera-som-utebliven:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Markera som utebliven",
+   "where": "Bokningar",
+   "text": "Borden släpps direkt.",
+   "highlight": [
+    "text:Markera som utebliven"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:avboka-bokningen:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Avboka bokningen",
+   "where": "Bokningar",
+   "text": "Borden släpps. Gästen debiteras inte.",
+   "highlight": [
+    "text:Avboka bokningen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:aterbetala-avgiften:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Återbetala avgiften",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Återbetala avgiften"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:stang:button",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Stäng",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Stäng"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:andra-sluttid:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Ändra sluttid",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Ändra sluttid"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:ny-sluttid:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Ny sluttid",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Ny sluttid"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:tillbaka:button",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Tillbaka",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Tillbaka"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:intern-anteckning-valfritt-visas-inte-for-gasten:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Intern anteckning (valfritt, visas inte för gästen)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Intern anteckning (valfritt, visas inte för gästen)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:meddelande-anteckning:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Meddelande / anteckning",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Meddelande / anteckning"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-SlotTablePicker:datum:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Datum",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Datum"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-SlotTablePicker:tid:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Tid",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Tid"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-bokningar-SlotTablePicker:bord:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Bord",
+   "where": "Bokningar",
+   "text": "Inga lediga bord den tiden.",
+   "highlight": [
+    "text:Bord"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-catering-CateringPage:forfragningar-och-bestallningar:heading",
+   "kind": "element",
+   "route": "/catering",
+   "title": "Förfrågningar och beställningar",
+   "where": "Catering",
+   "text": "",
+   "highlight": [
+    "text:Förfrågningar och beställningar"
+   ],
+   "audience": "all",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:cateringmeny:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Cateringmeny",
+   "where": "Cateringinställningar",
+   "text": "Rätter och paket som gästen kan välja i kalkylen. Skild från den vanliga menyn.",
+   "highlight": [
+    "text:Cateringmeny"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:ratter:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Rätter",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Rätter"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:paket:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Paket",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Paket"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:namn:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Namn",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:beskrivning-valfri:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Beskrivning (valfri)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Beskrivning (valfri)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:pris-per-portion-kr-inkl-moms:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Pris per portion (kr inkl. moms)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Pris per portion (kr inkl. moms)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:avbryt:button",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Avbryt",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:pris-per-gast-kr-inkl-moms:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Pris per gäst (kr inkl. moms)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Pris per gäst (kr inkl. moms)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringMenuCard:minsta-antal-gaster-valfritt:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Minsta antal gäster (valfritt)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Minsta antal gäster (valfritt)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:cateringkalkyl:page",
+   "kind": "page",
+   "route": "/cateringkalkyl",
+   "title": "Cateringkalkyl",
+   "where": "Cateringinställningar",
+   "text": "Regler, rabattnivåer och leveranspriser för catering",
+   "highlight": [
+    "text:Cateringkalkyl"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:catering-pa-webbplatsen:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Catering på webbplatsen",
+   "where": "Cateringinställningar",
+   "text": "På - gästerna ser kalkylen och kan skicka förfrågningar. Spara efter ändringar.",
+   "highlight": [
+    "text:Catering på webbplatsen"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:bestallningsregler:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Beställningsregler",
+   "where": "Cateringinställningar",
+   "text": "Minsta och högsta tillåtna beställning",
+   "highlight": [
+    "text:Beställningsregler"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:hogsta-antal-portioner-totalt:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Högsta antal portioner (totalt)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Högsta antal portioner (totalt)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:minsta-antal-gaster:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Minsta antal gäster",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Minsta antal gäster"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:framforhallning:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Framförhållning",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Framförhållning"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:rabatten-galler:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Rabatten gäller",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Rabatten gäller"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:leveranspris-per-avstand:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Leveranspris per avstånd",
+   "where": "Cateringinställningar",
+   "text": "Avstånd från restaurangen till leveransadressen, längs vägen",
+   "highlight": [
+    "text:Leveranspris per avstånd"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:leveranser-utgar-fran:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Leveranser utgår från",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Leveranser utgår från"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:leveransomrade-visas-for-gasten:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Leveransområde (visas för gästen)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Leveransområde (visas för gästen)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:forberedelsetid-per-antal-gaster:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Förberedelsetid per antal gäster",
+   "where": "Cateringinställningar",
+   "text": "Hur många dagar i förväg en beställning måste komma in, beroende på storleken",
+   "highlight": [
+    "text:Förberedelsetid per antal gäster"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:moms-och-servering:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Moms och servering",
+   "where": "Cateringinställningar",
+   "text": "Vad en ny offert utgår från. Du kan ändra det per offert.",
+   "highlight": [
+    "text:Moms och servering"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:paminnelser:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Påminnelser",
+   "where": "Cateringinställningar",
+   "text": "Automatiska påminnelser per e-post. 0 = ingen påminnelse.",
+   "highlight": [
+    "text:Påminnelser"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:obesvarad-forfragan-paminn-mig-efter-timmar:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Obesvarad förfrågan, påminn mig efter (timmar)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Obesvarad förfrågan, påminn mig efter (timmar)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:osignerad-offert-paminn-kunden-dagar-innan-den-gar-ut:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Osignerad offert, påminn kunden (dagar innan den går ut)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Osignerad offert, påminn kunden (dagar innan den går ut)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:retur-av-utrustning:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Retur av utrustning",
+   "where": "Cateringinställningar",
+   "text": "Gästen väljer om fat och utrustning lämnas tillbaka rengjorda (ingen extra kostnad) eller ej rengjorda",
+   "highlight": [
+    "text:Retur av utrustning"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:rengoringsavgift-ej-rengjord-utrustning-inkl-moms:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Rengöringsavgift, ej rengjord utrustning (inkl. moms)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Rengöringsavgift, ej rengjord utrustning (inkl. moms)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:offert-betalning-och-notiser:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Offert, betalning och notiser",
+   "where": "Cateringinställningar",
+   "text": "Hur förfrågningar blir offerter, hur länge de gäller och vart du får besked om nya förfrågningar",
+   "highlight": [
+    "text:Offert, betalning och notiser"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:offert-galler-dagar:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Offert gäller (dagar)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Offert gäller (dagar)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:betalningsvillkor-foretag-dagar:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Betalningsvillkor företag (dagar)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Betalningsvillkor företag (dagar)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:obesvarad-forfragan-gar-ut-efter-timmar:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Obesvarad förfrågan går ut efter (timmar)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Obesvarad förfrågan går ut efter (timmar)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:nya-forfragningar-till-e-post:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Nya förfrågningar till e-post",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Nya förfrågningar till e-post"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:nya-forfragningar-till-mobil-sms:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Nya förfrågningar till mobil (sms)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Nya förfrågningar till mobil (sms)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:villkor-visas-i-offerten-och-signeras-av-kunden:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Villkor (visas i offerten och signeras av kunden)",
+   "where": "Cateringinställningar",
+   "text": "Räknas på antal gäster. När nivån nås rabatteras alla rätter.",
+   "highlight": [
+    "text:Villkor (visas i offerten och signeras av kunden)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-CateringkalkylPage:rabattnivaer:heading",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Rabattnivåer",
+   "where": "Cateringinställningar",
+   "text": "Räknas på antal gäster. När nivån nås rabatteras alla rätter.",
+   "highlight": [
+    "text:Rabattnivåer"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:namn-pa-niva:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Namn på nivå",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Namn på nivå"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:fran-antal-gaster:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Från antal gäster",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Från antal gäster"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:till-antal-gaster:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Till antal gäster",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Till antal gäster"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:rabatt:field",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Rabatt (%)",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Rabatt (%)"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:radera-niva:button",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Radera nivå",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Radera nivå"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-cateringkalkyl-DiscountTierModal:spara-niva:button",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Spara nivå",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Spara nivå"
+   ],
+   "audience": "owner",
+   "feature": "catering"
+  },
+  {
+   "id": "features-dpa-AvtalPage:avtal:page",
+   "kind": "page",
+   "route": "/avtal",
+   "title": "Avtal",
+   "where": "Avtal",
+   "text": "",
+   "highlight": [
+    "text:Avtal"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-dpa-AvtalPage:avtalet-ar-godkant:heading",
+   "kind": "element",
+   "route": "/avtal",
+   "title": "Avtalet är godkänt",
+   "where": "Avtal",
+   "text": "Er webbplats publiceras när restaurangens ägare har godkänt avtalet.",
+   "highlight": [
+    "text:Avtalet är godkänt"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-events-tickets-EvenemangPage:ingar-inte-i-er-plan:heading",
+   "kind": "element",
+   "route": "/evenemang",
+   "title": "Ingår inte i er plan",
+   "where": "Evenemang",
+   "text": "Evenemang och biljetter ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "highlight": [
+    "text:Ingår inte i er plan"
+   ],
+   "audience": "all",
+   "feature": "events"
+  },
+  {
+   "id": "features-events-tickets-EvenemangPage:biljettyper:heading",
+   "kind": "element",
+   "route": "/evenemang",
+   "title": "Biljettyper",
+   "where": "Evenemang",
+   "text": "",
+   "highlight": [
+    "text:Biljettyper"
+   ],
+   "audience": "all",
+   "feature": "events"
+  },
+  {
+   "id": "features-gift-cards-PresentkortPage:presentkortsskuld:kpi",
+   "kind": "element",
+   "route": "/presentkort",
+   "title": "Presentkortsskuld",
+   "where": "Presentkort",
+   "text": "",
+   "highlight": [
+    "help:kpi:presentkortsskuld"
+   ],
+   "audience": "owner",
+   "feature": "giftCards"
+  },
+  {
+   "id": "features-gift-cards-PresentkortPage:aktiva-kort:kpi",
+   "kind": "element",
+   "route": "/presentkort",
+   "title": "Aktiva kort",
+   "where": "Presentkort",
+   "text": "",
+   "highlight": [
+    "help:kpi:aktiva-kort"
+   ],
+   "audience": "owner",
+   "feature": "giftCards"
+  },
+  {
+   "id": "features-gift-cards-PresentkortPage:historik:heading",
+   "kind": "element",
+   "route": "/presentkort",
+   "title": "Historik",
+   "where": "Presentkort",
+   "text": "",
+   "highlight": [
+    "text:Historik"
+   ],
+   "audience": "owner",
+   "feature": "giftCards"
+  },
+  {
+   "id": "features-guest-crm-GasterPage:ingar-inte-i-er-plan:heading",
+   "kind": "element",
+   "route": "/gaster",
+   "title": "Ingår inte i er plan",
+   "where": "Gäster",
+   "text": "Gästregistret ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "highlight": [
+    "text:Ingår inte i er plan"
+   ],
+   "audience": "all",
+   "feature": "guestCrm"
+  },
+  {
+   "id": "features-guest-crm-GasterPage:historik:heading",
+   "kind": "element",
+   "route": "/gaster",
+   "title": "Historik",
+   "where": "Gäster",
+   "text": "Ingen historik.",
+   "highlight": [
+    "text:Historik"
+   ],
+   "audience": "all",
+   "feature": "guestCrm"
+  },
+  {
+   "id": "features-guide-Guide:hoppa-over:button",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Hoppa över",
+   "where": "Hjälp",
+   "text": "",
+   "highlight": [
+    "text:Hoppa över"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-guide-Guide:tillbaka:button",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Tillbaka",
+   "where": "Hjälp",
+   "text": "",
+   "highlight": [
+    "text:Tillbaka"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-guide-HjalpPage:guiden:heading",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Guiden",
+   "where": "Hjälp",
+   "text": "En rundtur genom appen, sida för sida. Tar ett par minuter.",
+   "highlight": [
+    "text:Guiden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-guide-HjalpPage:starta-guiden:button",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Starta guiden",
+   "where": "Hjälp",
+   "text": "",
+   "highlight": [
+    "text:Starta guiden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-guide-HjalpPage:sa-fungerar-appen:heading",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Så fungerar appen",
+   "where": "Hjälp",
+   "text": "",
+   "highlight": [
+    "text:Så fungerar appen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-guide-HjalpPage:cookies-och-lagring:heading",
+   "kind": "element",
+   "route": "/hjalp",
+   "title": "Cookies och lagring",
+   "where": "Hjälp",
+   "text": "",
+   "highlight": [
+    "text:Cookies och lagring"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:utseende-och-ljud:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Utseende och ljud",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Gäller den här webbläsaren. Ljust läge och klickljud är på från början.",
+   "highlight": [
+    "text:Utseende och ljud"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:ljust-eller-morkt:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Ljust eller mörkt",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Tryck för att byta. Mörka ytor passar till exempel en mörk lokal på kvällen.",
+   "highlight": [
+    "help:utseende:tema"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:bakgrund:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Bakgrund",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Genomskinligt visar det som ligger bakom fönstret. Färg lägger glaset över en färg du väljer, Egen bild över en bild du laddar upp.",
+   "highlight": [
+    "help:utseende:bakgrund"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:klickljud:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Klickljud",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Ett mjukt klick när du trycker på knappar och länkar.",
+   "highlight": [
+    "help:utseende:klickljud"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:volym:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Volym",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Hur högt klicket låter. 40 % är standard, 0 % är tyst.",
+   "highlight": [
+    "help:utseende:volym"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-BokforingCard:bokforing:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Bokföring",
+   "where": "Inställningar, Bokföring",
+   "text": "Välj en plats först.",
+   "highlight": [
+    "text:Bokföring"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:exportera-till-bokforingen:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Exportera till bokföringen",
+   "where": "Inställningar, Bokföring",
+   "text": "En verifikation per dag med försäljning per momssats, betalningar, återbetalningar, Stripes avgifter och utbetalningar till banken. Läs in SIE-filen i Fortnox, Visma eller ett annat bokföringsprogram.",
+   "highlight": [
+    "text:Exportera till bokföringen"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:period:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Period",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Period"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:filformat:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Filformat",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Filformat"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:fran-och-med:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Från och med",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Från och med"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:till-och-med:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Till och med",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Till och med"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:konton:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Konton",
+   "where": "Inställningar, Bokföring",
+   "text": "Standardkonton enligt BAS-kontoplanen. Stäm av dem med er redovisningskonsult och ändra det som ska bokas på andra konton.",
+   "highlight": [
+    "text:Konton"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:verifikationsserie:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Verifikationsserie",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Verifikationsserie"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:rakenskapsaret-borjar:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Räkenskapsåret börjar",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Räkenskapsåret börjar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BokforingCard:kostnadsstalle:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bokforing",
+   "title": "Kostnadsställe",
+   "where": "Inställningar, Bokföring",
+   "text": "",
+   "highlight": [
+    "text:Kostnadsställe"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:hogst:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Högst",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Högst"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:bokningstid:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Bokningstid",
+   "where": "Inställningar, Restaurang",
+   "text": "Hur länge ett bord är bokat. Specialtider (t.ex. lunchbuffé) gäller bokningar som börjar inom dem. Varje bokning behåller tiden den fick, även om du ändrar här.",
+   "highlight": [
+    "text:Bokningstid"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:standardlangd:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Standardlängd",
+   "where": "Inställningar, Restaurang",
+   "text": "Ingen bokning börjar senare än så här före stängning. Är bokningen längre gäller längden (hela bokningen ska rymmas före stängning).",
+   "highlight": [
+    "text:Standardlängd"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:sista-sittning-fore-stangning:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Sista sittning före stängning",
+   "where": "Inställningar, Restaurang",
+   "text": "Ingen bokning börjar senare än så här före stängning. Är bokningen längre gäller längden (hela bokningen ska rymmas före stängning).",
+   "highlight": [
+    "text:Sista sittning före stängning"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:specialtider:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Specialtider",
+   "where": "Inställningar, Restaurang",
+   "text": "Inga specialtider. Alla bokningar får standardlängden.",
+   "highlight": [
+    "text:Specialtider"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:namn-visas-for-gasten:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Namn (visas för gästen)",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Namn (visas för gästen)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:langd:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Längd",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Längd"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:veckodagar:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Veckodagar",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Veckodagar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:starttider-fran:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Starttider från",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Starttider från"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:till-inte-med:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "till (inte med)",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:till (inte med)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:fran-datum-valfritt:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Från datum (valfritt)",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Från datum (valfritt)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:till-datum-valfritt:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Till datum (valfritt)",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Till datum (valfritt)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:prioritet:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Prioritet",
+   "where": "Inställningar, Restaurang",
+   "text": "Om två specialtider överlappar gäller den med datum först, sedan den med högst prioritet.",
+   "highlight": [
+    "text:Prioritet"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-BookingTimeCard:lagg-till-specialtid:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Lägg till specialtid",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:+ Lägg till specialtid"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-CancellationPolicyCard:avbokningspolicy:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "Avbokningspolicy",
+   "where": "Inställningar, Avbokning",
+   "text": "Med kortgaranti sparar gästen sitt kort när hen bokar online - inget dras då. Uteblir gästen eller avbokar för sent kan avgiften debiteras. Beloppen låses på bokningen.",
+   "highlight": [
+    "text:Avbokningspolicy"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-CancellationPolicyCard:kort-kravs-fran-antal-personer:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "Kort krävs från (antal personer)",
+   "where": "Inställningar, Avbokning",
+   "text": "",
+   "highlight": [
+    "text:Kort krävs från (antal personer)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-CancellationPolicyCard:sen-avbokning-senare-an-timmar-fore:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "Sen avbokning: senare än (timmar före)",
+   "where": "Inställningar, Avbokning",
+   "text": "",
+   "highlight": [
+    "text:Sen avbokning: senare än (timmar före)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-CancellationPolicyCard:no-show-avgift-kr-per-person:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "No-show-avgift (kr per person)",
+   "where": "Inställningar, Avbokning",
+   "text": "",
+   "highlight": [
+    "text:No-show-avgift (kr per person)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-CancellationPolicyCard:avgift-sen-avbokning-kr-per-person:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "avbokning",
+   "title": "Avgift sen avbokning (kr per person)",
+   "where": "Inställningar, Avbokning",
+   "text": "Nu: kortgaranti är avstängd - gästerna bokar utan kort. Slå på reglaget ovan och spara.",
+   "highlight": [
+    "text:Avgift sen avbokning (kr per person)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-DesktopAppCard:skrivbordsappen:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Skrivbordsappen",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Booqy Admin som app på datorn, i ett eget fönster. Samma inloggning och samma funktioner som här. Appen visar alltid den senaste versionen av Booqy och frågar när själva appen kan uppdateras.",
+   "highlight": [
+    "text:Skrivbordsappen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-InsightsSettingsCard:statistik:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "statistik",
+   "title": "Statistik",
+   "where": "Inställningar, Statistik",
+   "text": "Du ser alltid alla siffror. Här väljer du vad personalen ser och hur dagen delas i lunch och middag.",
+   "highlight": [
+    "text:Statistik"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InsightsSettingsCard:lunchen-slutar:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "statistik",
+   "title": "Lunchen slutar",
+   "where": "Inställningar, Statistik",
+   "text": "",
+   "highlight": [
+    "text:Lunchen slutar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:restaurangprofil:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Restaurangprofil",
+   "where": "Inställningar, Restaurang",
+   "text": "Letar efter restaurangens plats…",
+   "highlight": [
+    "help:settings:profil:InstallningarPage"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:namn:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Namn",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:telefon:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Telefon",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Telefon"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:adress:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Adress",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Adress"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:e-post:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "E-post",
+   "where": "Inställningar, Restaurang",
+   "text": "Hur länge bordet hålls om gästen är sen. Därefter blir bordet ledigt igen.",
+   "highlight": [
+    "text:E-post"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:grace-period-minuter:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Grace period (minuter)",
+   "where": "Inställningar, Restaurang",
+   "text": "Hur länge bordet hålls om gästen är sen. Därefter blir bordet ledigt igen.",
+   "highlight": [
+    "text:Grace period (minuter)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-InstallningarPage:oppettider:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Öppettider",
+   "where": "Inställningar, Restaurang",
+   "text": "",
+   "highlight": [
+    "text:Öppettider"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-NotificationsCard:notiser:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "notiser",
+   "title": "Notiser",
+   "where": "Inställningar, Notiser",
+   "text": "Gäster får alltid bokningsbekräftelse per e-post med en länk för att se eller avboka, och besked om ni ändrar eller avbokar.",
+   "highlight": [
+    "text:Notiser"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-NotificationsCard:avsandarnamn-i-sms:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "notiser",
+   "title": "Avsändarnamn i SMS",
+   "where": "Inställningar, Notiser",
+   "text": "",
+   "highlight": [
+    "text:Avsändarnamn i SMS"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-NotificationsCard:paminnelse-fore-besoket:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "notiser",
+   "title": "Påminnelse före besöket",
+   "where": "Inställningar, Notiser",
+   "text": "Vid ny onlinebokning och när en gäst avbokar.",
+   "highlight": [
+    "text:Påminnelse före besöket"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-OrderingCard:bestallning:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bestallning",
+   "title": "Beställning",
+   "where": "Inställningar, Beställning",
+   "text": "Gästerna beställer och betalar online. Avhämtning: sms när maten är klar. Vid bordet: QR-koden på bordet, maten serveras där. Bara under öppettiderna.",
+   "highlight": [
+    "text:Beställning"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-OrderingCard:tillagningstid-som-gasten-ser-min:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bestallning",
+   "title": "Tillagningstid som gästen ser (min)",
+   "where": "Inställningar, Beställning",
+   "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
+   "highlight": [
+    "text:Tillagningstid som gästen ser (min)"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-OrderingCard:sista-bestallning-min-fore-stangning:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bestallning",
+   "title": "Sista beställning (min före stängning)",
+   "where": "Inställningar, Beställning",
+   "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
+   "highlight": [
+    "text:Sista beställning (min före stängning)"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-OrderingCard:qr-koder-for-borden:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bestallning",
+   "title": "QR-koder för borden",
+   "where": "Inställningar, Beställning",
+   "text": "Publicera en planritning med bord först (Layout).",
+   "highlight": [
+    "text:QR-koder för borden"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PaymentsCard:betalningar:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "betalningar",
+   "title": "Betalningar",
+   "where": "Inställningar, Betalningar",
+   "text": "Tillbaka från Stripe. Hämtar den nya statusen…",
+   "highlight": [
+    "text:Betalningar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrinterCard:koksskrivare:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Köksskrivare",
+   "where": "Inställningar, Skrivare",
+   "text": "Välj en plats först.",
+   "highlight": [
+    "text:Köksskrivare"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:skriv-in-detta-i-skrivaren-nu:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Skriv in detta i skrivaren nu",
+   "where": "Inställningar, Skrivare",
+   "text": "Lösenordet visas bara den här gången. Tappar du bort det: välj Ny nyckel och skriv in det nya.",
+   "highlight": [
+    "text:Skriv in detta i skrivaren nu"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:lagg-till-skrivare:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Lägg till skrivare",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Lägg till skrivare"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:lagg-till:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Lägg till",
+   "where": "Inställningar, Skrivare",
+   "text": "När en gäst har betalat kommer köksnotan ut direkt.",
+   "highlight": [
+    "text:Lägg till"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:skrivare-for-bestallningar:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Skrivare för beställningar",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Skrivare för beställningar"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:pappersbredd:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Pappersbredd",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Pappersbredd"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:sa-kopplar-du-skrivaren:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Så kopplar du skrivaren",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Så kopplar du skrivaren"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:om-nagot-inte-fungerar:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Om något inte fungerar",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Om något inte fungerar"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:avbryt:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Avbryt",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:integritetspolicy-for-gaster:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Integritetspolicy för gäster",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Integritetspolicy för gäster"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:text:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Text",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Text"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:aterstall-mallen:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Återställ mallen",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Återställ mallen"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:gastens-uppgifter-och-samtycken:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Gästens uppgifter och samtycken",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Gästens uppgifter och samtycken"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:e-post:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "E-post",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:E-post"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PrivacyCard:telefon:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "integritet",
+   "title": "Telefon",
+   "where": "Inställningar, Integritet",
+   "text": "",
+   "highlight": [
+    "text:Telefon"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:avvikande-oppettider:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Avvikande öppettider",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "Välj en plats först.",
+   "highlight": [
+    "text:Avvikande öppettider"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:stang-onlinebokning-idag:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Stäng onlinebokning idag",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "Inga avvikande dagar.",
+   "highlight": [
+    "text:Stäng onlinebokning idag"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:lagg-till-dag:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Lägg till dag",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "",
+   "highlight": [
+    "text:Lägg till dag"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:datum:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Datum",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "",
+   "highlight": [
+    "text:Datum"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:typ:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Typ",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "",
+   "highlight": [
+    "text:Typ"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:anteckning-till-gasterna-valfritt:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Anteckning till gästerna (valfritt)",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "",
+   "highlight": [
+    "text:Anteckning till gästerna (valfritt)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-SpecialDaysCard:lagg-till:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "dagar",
+   "title": "Lägg till",
+   "where": "Inställningar, Avvikande dagar",
+   "text": "",
+   "highlight": [
+    "text:Lägg till"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:namn:field",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Namn",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:e-post:field",
+   "kind": "element",
+   "route": "/personal",
+   "title": "E-post",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:E-post"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:telefon:field",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Telefon",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:Telefon"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:roll:field",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Roll",
+   "where": "Personal",
+   "text": "Du kan inte ändra din egen roll.",
+   "highlight": [
+    "text:Roll"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:plats:field",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Plats",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:Plats"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-StaffModal:avbryt:button",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Avbryt",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:bord-vid-onlinebokning:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Bord vid onlinebokning",
+   "where": "Inställningar, Bord",
+   "text": "Gästerna väljer bord på planritningen, men bara bord som passar sällskapet. Personalen kan alltid boka och kombinera alla bord.",
+   "highlight": [
+    "text:Bord vid onlinebokning"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:kombinationer:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Kombinationer",
+   "where": "Inställningar, Bord",
+   "text": "Bord som gästerna får boka tillsammans, t.ex. två fyrabord för 5-8 personer. Utan kombinationer bokar gästerna ett bord per bokning.",
+   "highlight": [
+    "text:Kombinationer"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:ny-kombination:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Ny kombination",
+   "where": "Inställningar, Bord",
+   "text": "",
+   "highlight": [
+    "text:Ny kombination"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:fran-pers:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Från (pers)",
+   "where": "Inställningar, Bord",
+   "text": "",
+   "highlight": [
+    "text:Från (pers)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:till-pers:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Till (pers)",
+   "where": "Inställningar, Bord",
+   "text": "",
+   "highlight": [
+    "text:Till (pers)"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-TableRulesCard:lagg-till-kombination:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "bord",
+   "title": "Lägg till kombination",
+   "where": "Inställningar, Bord",
+   "text": "",
+   "highlight": [
+    "text:Lägg till kombination"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:klar:button",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Klar",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Klar"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:gastens-e-post:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Gästens e-post",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Gästens e-post"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:dag:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Dag",
+   "where": "Kassa",
+   "text": "Inga kvitton eller rapporter den dagen.",
+   "highlight": [
+    "text:Dag"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:orsak:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Orsak",
+   "where": "Kassa",
+   "text": "Välj minst en rad och skriv en orsak.",
+   "highlight": [
+    "text:Orsak"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:fran:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Från",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Från"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:till:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Till",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Till"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:ladda-ner:button",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Ladda ner",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Ladda ner"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:benamning:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Benämning",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Benämning"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaDialogs:lagg-pa-rabatt:button",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Lägg på rabatt",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Lägg på rabatt"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:bruksanvisning:page",
+   "kind": "page",
+   "route": "/kassa/bruksanvisning",
+   "title": "Bruksanvisning",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Bruksanvisning"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:manuell-forsaljningslista:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Manuell försäljningslista",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Manuell försäljningslista"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:kassans-uppgifter:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Kassans uppgifter",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Kassans uppgifter"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:kassaregister-registreringsenhet:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Kassaregister (registreringsenhet)",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Kassaregister (registreringsenhet)"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:kontrollsystem:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Kontrollsystem",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Kontrollsystem"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:ovriga-delar:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Övriga delar",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Övriga delar"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:1-kontrollenheten:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "1. Kontrollenheten",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:1. Kontrollenheten"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:2-kassaregistret:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "2. Kassaregistret",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:2. Kassaregistret"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:installningar:heading",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Inställningar",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Inställningar"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:forsok-igen:button",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Försök igen",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Försök igen"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaGuide:stang:button",
+   "kind": "element",
+   "route": "/kassa/bruksanvisning",
+   "title": "Stäng",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Stäng"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaPage:ingen-kassa-an:heading",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Ingen kassa än",
+   "where": "Kassa",
+   "text": "Skapa platsens första kassa. Namnet står på varje kvitto och rapport och kan inte ändras.",
+   "highlight": [
+    "text:Ingen kassa än"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaPage:belopp-pa-det-har-kortet:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Belopp på det här kortet",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Belopp på det här kortet"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-kassa-KassaPage:kortlasare:field",
+   "kind": "element",
+   "route": "/kassa",
+   "title": "Kortläsare",
+   "where": "Kassa",
+   "text": "",
+   "highlight": [
+    "text:Kortläsare"
+   ],
+   "audience": "all",
+   "feature": "kassa"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:ingen-bordskarta-an:heading",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Ingen bordskarta än",
+   "where": "Layout",
+   "text": "Rita borden under Layout på en dator och publicera layouten. Sedan går det att boka härifrån.",
+   "highlight": [
+    "text:Ingen bordskarta än"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:datum:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Datum",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Datum"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:antal-personer:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Antal personer",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Antal personer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:lediga-tider:heading",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Lediga tider",
+   "where": "Layout",
+   "text": "Hämtar tider…",
+   "highlight": [
+    "text:Lediga tider"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:namn:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Namn",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:telefon-valfritt:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Telefon (valfritt)",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Telefon (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:e-post-valfritt:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "E-post (valfritt)",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:E-post (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:anteckning-valfritt:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Anteckning (valfritt)",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Anteckning (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutEditorPage:tillbaka-till-utkastet:button",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Tillbaka till utkastet",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Tillbaka till utkastet"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutEditorPage:vrid-borden-90-shift-r:button",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Vrid borden 90° (Shift+R)",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Vrid borden 90° (Shift+R)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutEditorPage:vrid-90-shift-r:button",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Vrid 90° (Shift+R)",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Vrid 90° (Shift+R)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutEditorPage:lagg-till-vaning:button",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Lägg till våning",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:+ Lägg till våning"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutVersionsModal:publicerade-versioner:heading",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Publicerade versioner",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Publicerade versioner"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-layout-editor-LayoutVersionsModal:stang:button",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Stäng",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Stäng"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:namn-syns-i-statistiken-och-lankarna:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Namn (syns i statistiken och länkarna)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Namn (syns i statistiken och länkarna)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:mall:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Mall",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Mall"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:malgrupp:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Målgrupp",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Målgrupp"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:vilka-far-utskicket:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Vilka får utskicket",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Vilka får utskicket"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:plats:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Plats",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Plats"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:avbryt:button",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Avbryt",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:datum-och-tid:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Datum och tid",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Datum och tid"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-CampaignsTab:kampanjer:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Kampanjer",
+   "where": "/marknadsforing",
+   "text": "Inga kampanjer än. Skapa en, skicka ett test till dig själv och sedan till gästerna.",
+   "highlight": [
+    "text:Kampanjer"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:skapa-en-sparbar-lank:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Skapa en spårbar länk",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Skapa en spårbar länk"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:webbplatsens-adress:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Webbplatsens adress",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Webbplatsens adress"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:sida:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Sida",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Sida"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:var-lanken-delas:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Var länken delas",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Var länken delas"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:kampanjnamn:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Kampanjnamn",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Kampanjnamn"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-LinksTab:lanken:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Länken",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Länken"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-MarknadsforingPage:marknadsforing:page",
+   "kind": "page",
+   "route": "/marknadsforing",
+   "title": "Marknadsföring",
+   "where": "/marknadsforing",
+   "text": "Marknadsföringen hanteras av restaurangens ägare.",
+   "highlight": [
+    "text:Marknadsföring"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:valkomsterbjudande:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Välkomsterbjudande",
+   "where": "/marknadsforing",
+   "text": "En rabattkupong i hörnet. Gäster lämnar e-post och får en kod som gäller en gång.",
+   "highlight": [
+    "text:Välkomsterbjudande"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:rabatten:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Rabatten",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Rabatten"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:rabatt:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Rabatt",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Rabatt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:minsta-bestallning-kr:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Minsta beställning (kr)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Minsta beställning (kr)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:koden-galler:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Koden gäller",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Koden gäller"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:texten:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Texten",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Texten"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:rubrik:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Rubrik",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Rubrik"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:text:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Text",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Text"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:knapptext:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Knapptext",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Knapptext"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:bild-fran-menyn:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Bild från menyn",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Bild från menyn"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:nar-och-hur-ofta:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "När och hur ofta",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:När och hur ofta"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:visa-efter:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Visa efter",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Visa efter"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:eller-nar-besokaren-scrollat:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Eller när besökaren scrollat",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Eller när besökaren scrollat"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:fran-valfritt:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Från (valfritt)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Från (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:till-valfritt:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Till (valfritt)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Till (valfritt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OfferTab:sa-ser-det-ut:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Så ser det ut",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Så ser det ut"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OverviewTab:besok-per-dag:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Besök per dag",
+   "where": "/marknadsforing",
+   "text": "Inga besök registrerade under perioden. Besök räknas automatiskt på er webbplats, utan cookies.",
+   "highlight": [
+    "text:Besök per dag"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OverviewTab:varifran-besokarna-kom:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Varifrån besökarna kom",
+   "where": "/marknadsforing",
+   "text": "Inget att visa än.",
+   "highlight": [
+    "text:Varifrån besökarna kom"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-OverviewTab:kampanjer-och-lankar:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Kampanjer och länkar",
+   "where": "/marknadsforing",
+   "text": "Inga kampanjbesök än. Skicka ett utskick eller dela en spårbar länk, så syns resultatet här.",
+   "highlight": [
+    "text:Kampanjer och länkar"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-SubscribersTab:mottagare:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Mottagare",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Mottagare"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-SubscribersTab:sok-pa-e-post:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Sök på e-post",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Sök på e-post"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-SubscribersTab:sok:button",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Sök",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Sök"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:bildadress-https:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Bildadress (https://)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Bildadress (https://)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:beskrivning-av-bilden:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Beskrivning av bilden",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Beskrivning av bilden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:leder-till:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Leder till",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Leder till"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:lank-https:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Länk (https://)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Länk (https://)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:ratt:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Rätt",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Rätt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:storlek:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Storlek",
+   "where": "/marknadsforing",
+   "text": "En tunn linje mellan delarna.",
+   "highlight": [
+    "text:Storlek"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:mallens-namn-syns-bara-for-er:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Mallens namn (syns bara för er)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Mallens namn (syns bara för er)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:amnesrad:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Ämnesrad",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Ämnesrad"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:forhandstext-visas-efter-amnet-i-inkorgen:field",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Förhandstext (visas efter ämnet i inkorgen)",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Förhandstext (visas efter ämnet i inkorgen)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:innehall:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Innehåll",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Innehåll"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:forhandsvisning:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Förhandsvisning",
+   "where": "/marknadsforing",
+   "text": "Fyll i det som saknas, så visas mejlet här.",
+   "highlight": [
+    "text:Förhandsvisning"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplateEditor:farger:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Färger",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Färger"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplatesTab:era-mallar:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Era mallar",
+   "where": "/marknadsforing",
+   "text": "Inga mallar än. Börja från en färdig mall nedan eller skapa en tom.",
+   "highlight": [
+    "text:Era mallar"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-marknadsforing-TemplatesTab:borja-fran-en-fardig-mall:heading",
+   "kind": "element",
+   "route": "/marknadsforing",
+   "title": "Börja från en färdig mall",
+   "where": "/marknadsforing",
+   "text": "",
+   "highlight": [
+    "text:Börja från en färdig mall"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:namn:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Namn",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:beskrivning-frivilligt:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Beskrivning (frivilligt)",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Beskrivning (frivilligt)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:kategori:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Kategori",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Kategori"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:pris-kr:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Pris (kr)",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Pris (kr)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:visas-fran:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Visas från",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Visas från"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:visas-till:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Visas till",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Visas till"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:avbryt:button",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Avbryt",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-MenyPage:lagg-till-ratt:button",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Lägg till rätt",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:+ Lägg till rätt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-MenyPage:menyratter:heading",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Menyrätter",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Menyrätter"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-MenyPage:sok:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Sök",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Sök"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-MenyPage:status:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Status",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Status"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-MenyPage:rensa-filter:button",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Rensa filter",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Rensa filter"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-oversikt-MonthCard:den-har-manaden:heading",
+   "kind": "element",
+   "route": "/",
+   "title": "Den här månaden",
+   "where": "Översikt",
+   "text": "",
+   "highlight": [
+    "text:Den här månaden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-oversikt-OversiktPage:kom-igang:heading",
+   "kind": "element",
+   "route": "/",
+   "title": "Kom igång",
+   "where": "Översikt",
+   "text": "Kunde inte kontrollera allt",
+   "highlight": [
+    "text:Kom igång"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-oversikt-OversiktPage:dagens-bokningar:heading",
+   "kind": "element",
+   "route": "/",
+   "title": "Dagens bokningar",
+   "where": "Översikt",
+   "text": "",
+   "highlight": [
+    "text:Dagens bokningar"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-personal-PersonalPage:bjud-in-personal:button",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Bjud in personal",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:+ Bjud in personal"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-personal-PersonalPage:medarbetare:heading",
+   "kind": "element",
+   "route": "/personal",
+   "title": "Medarbetare",
+   "where": "Personal",
+   "text": "",
+   "highlight": [
+    "text:Medarbetare"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-personalliggare-PersonalliggarePage:personalliggare-under-granskning:page",
+   "kind": "page",
+   "route": "/personalliggare",
+   "title": "Personalliggare (under granskning)",
+   "where": "Personalliggare",
+   "text": "Personalliggare ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "highlight": [
+    "text:Personalliggare (under granskning)"
+   ],
+   "audience": "all",
+   "feature": "personalliggare"
+  },
+  {
+   "id": "features-personalliggare-PersonalliggarePage:ingar-inte-i-er-plan:heading",
+   "kind": "element",
+   "route": "/personalliggare",
+   "title": "Ingår inte i er plan",
+   "where": "Personalliggare",
+   "text": "Personalliggare ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "highlight": [
+    "text:Ingår inte i er plan"
+   ],
+   "audience": "all",
+   "feature": "personalliggare"
+  },
+  {
+   "id": "features-personalliggare-PersonalliggarePage:pa-plats-nu:heading",
+   "kind": "element",
+   "route": "/personalliggare",
+   "title": "På plats nu",
+   "where": "Personalliggare",
+   "text": "",
+   "highlight": [
+    "text:På plats nu"
+   ],
+   "audience": "all",
+   "feature": "personalliggare"
+  },
+  {
+   "id": "features-personalliggare-PersonalliggarePage:hela-dagen:heading",
+   "kind": "element",
+   "route": "/personalliggare",
+   "title": "Hela dagen",
+   "where": "Personalliggare",
+   "text": "Alla som arbetar ska finnas här, även du som ägare och de som hjälper till utan inloggning.",
+   "highlight": [
+    "text:Hela dagen"
+   ],
+   "audience": "all",
+   "feature": "personalliggare"
+  },
+  {
+   "id": "features-phone-agent-CallDetail:utskrift:heading",
+   "kind": "element",
+   "route": "/telefon",
+   "title": "Utskrift",
+   "where": "Telefon",
+   "text": "",
+   "highlight": [
+    "text:Utskrift"
+   ],
+   "audience": "all",
+   "feature": "phoneAgent"
+  },
+  {
+   "id": "features-phone-agent-TelefonPage:ingar-inte-i-er-plan:heading",
+   "kind": "element",
+   "route": "/telefon",
+   "title": "Ingår inte i er plan",
+   "where": "Telefon",
+   "text": "Telefonassistenten ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "highlight": [
+    "text:Ingår inte i er plan"
+   ],
+   "audience": "all",
+   "feature": "phoneAgent"
+  },
+  {
+   "id": "features-site-builder-WebbplatsPage:block-pa-sidan:heading",
+   "kind": "element",
+   "route": "/webbplats",
+   "title": "Block på sidan",
+   "where": "Webbplats",
+   "text": "Sidan har inga block än. Lägg till ett nedan.",
+   "highlight": [
+    "text:Block på sidan"
+   ],
+   "audience": "owner",
+   "feature": "siteBuilder"
+  },
+  {
+   "id": "features-statistik-Overview:bokningar-idag:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Bokningar idag",
+   "where": "Statistik",
+   "text": "Dagens bokningar som inte är avbokade: de som väntas, de som har kommit och de som uteblev. Online, telefon och drop-in räknas lika.",
+   "highlight": [
+    "help:kpi:bokningar-idag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:gaster-idag:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Gäster idag",
+   "where": "Statistik",
+   "text": "Antal personer i dagens bokningar (sällskapens storlek), avbokade räknas inte.",
+   "highlight": [
+    "help:kpi:gaster-idag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:har-kommit:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Har kommit",
+   "where": "Statistik",
+   "text": "Bokningar som personalen har markerat som Kommit idag. Den som inte markeras räknas inte här.",
+   "highlight": [
+    "help:kpi:har-kommit"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:belaggning-idag:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beläggning idag",
+   "where": "Statistik",
+   "text": "Hur stor del av alla bords tid under dagens öppettider som är bokad. 100 % betyder att varje bord är bokat hela dagen.",
+   "highlight": [
+    "help:kpi:belaggning-idag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:kommande-bokningar:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Kommande bokningar",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "help:card:kommande-bokningar"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:gaster-per-vecka:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Gäster per vecka",
+   "where": "Statistik",
+   "text": "Gäster i bokningar som inte är avbokade, per vecka från måndag till söndag. Denna vecka räknar dagarna som varit och det som redan är bokat resten av veckan. Uteblivna räknas med.",
+   "highlight": [
+    "help:card:gaster-per-vecka"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-Overview:uteblivna:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Uteblivna",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "help:card:uteblivna"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:inte-oppen-for-personalen:heading",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Inte öppen för personalen",
+   "where": "Statistik",
+   "text": "Restaurangens ägare har valt att bara ägaren ser statistiken.",
+   "highlight": [
+    "text:Inte öppen för personalen"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:ingen-plats-an:heading",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Ingen plats än",
+   "where": "Statistik",
+   "text": "Lägg in restaurangens uppgifter under Inställningar, så finns det något att räkna på.",
+   "highlight": [
+    "text:Ingen plats än"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:omsattning:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Omsättning",
+   "where": "Statistik",
+   "text": "Betalda beställningar, levererad catering och kortköp i kassan i perioden, inklusive moms. Bara ägaren ser beloppen.",
+   "highlight": [
+    "help:kpi:omsattning"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bokningar:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Bokningar",
+   "where": "Statistik",
+   "text": "Bokningar för dagar i perioden som inte är avbokade (räknas på besöksdagen). Uteblivna räknas med, påbörjade bokningar som aldrig blev klara inte.",
+   "highlight": [
+    "help:kpi:bokningar"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:gaster:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Gäster",
+   "where": "Statistik",
+   "text": "Antal personer i bokningarna ovan (sällskapens storlek) på besöksdagen. Avbokade räknas inte.",
+   "highlight": [
+    "help:kpi:gaster"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:snittorder:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Snittorder",
+   "where": "Statistik",
+   "text": "Betalt belopp per onlinebeställning (avhämtning och vid bordet) i perioden.",
+   "highlight": [
+    "help:kpi:snittorder"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:belaggning:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beläggning",
+   "where": "Statistik",
+   "text": "Bokad bordstid delat med all bordstid under öppettiderna i perioden. 100 % betyder att alla bord var bokade hela tiden.",
+   "highlight": [
+    "help:kpi:belaggning"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bestallningar:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beställningar",
+   "where": "Statistik",
+   "text": "Betalda onlinebeställningar i perioden, avhämtning och vid bordet.",
+   "highlight": [
+    "help:kpi:bestallningar"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:tillagningstid:kpi",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Tillagningstid",
+   "where": "Statistik",
+   "text": "Minuter från att köket bekräftade beställningen till att den markerades som klar, i snitt.",
+   "highlight": [
+    "help:kpi:tillagningstid"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:fordjupning:heading",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Fördjupning",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "text:Fördjupning"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:inget-att-rakna-pa-i-perioden:heading",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Inget att räkna på i perioden",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "text:Inget att räkna på i perioden"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:att-gora:heading",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Att göra",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "text:Att göra"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:omsattning-per-dag:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Omsättning per dag",
+   "where": "Statistik",
+   "text": "Betalda beställningar på dagen de betalades, catering på leveransdagen och kortköp i kassan, inklusive moms.",
+   "highlight": [
+    "help:card:omsattning-per-dag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:gaster-per-dag:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Gäster per dag",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "help:card:gaster-per-dag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bokningar-per-timme:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Bokningar per timme",
+   "where": "Statistik",
+   "text": "Bokningar som inte avbokats, efter klockslaget de börjar.",
+   "highlight": [
+    "help:card:bokningar-per-timme"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:gaster-per-veckodag:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Gäster per veckodag",
+   "where": "Statistik",
+   "text": "Gäster i snitt per veckodag i perioden: alla gäster den veckodagen delat med hur många sådana dagar perioden har. Veckodagar som inte finns i perioden visas inte.",
+   "highlight": [
+    "help:card:gaster-per-veckodag"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bokningskanal:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Bokningskanal",
+   "where": "Statistik",
+   "text": "Bokningar i perioden som inte avbokats, efter hur de kom in: Online = gästen bokade själv på hemsidan, Telefon = personalen bokade ett samtal, På plats = drop-in som personalen lade in.",
+   "highlight": [
+    "help:card:bokningskanal"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:utfall:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Utfall",
+   "where": "Statistik",
+   "text": "Alla bokningar i perioden: Kom och Uteblev är det personalen har markerat, Ej markerade är kommande eller aldrig markerade, Avbokade är avbokade av gästen eller restaurangen.",
+   "highlight": [
+    "help:card:utfall"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:framforhallning:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Framförhållning",
+   "where": "Statistik",
+   "text": "Hur många dagar före besöket bokningen gjordes, för online- och telefonbokningar som inte avbokats. Drop-in räknas inte: de bokade aldrig i förväg.",
+   "highlight": [
+    "help:card:framforhallning"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:sallskapens-storlek:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Sällskapens storlek",
+   "where": "Statistik",
+   "text": "Hur många bokningar som gällde 1, 2, 3 och så vidare personer, avbokade räknas inte.",
+   "highlight": [
+    "help:card:sallskapens-storlek"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:belaggning-per-veckodag-och-timme:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beläggning per veckodag och timme",
+   "where": "Statistik",
+   "text": "För varje veckodag och timme: hur stor del av alla bords tid som var bokad, för alla sådana dagar i perioden. Bara öppna timmar visas. 50 betyder att hälften av bordstiden var bokad.",
+   "highlight": [
+    "help:card:belaggning-per-veckodag-och-timme"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:belaggning-per-bordsstorlek:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beläggning per bordsstorlek",
+   "where": "Statistik",
+   "text": "Bord grupperade efter antal stolar (2-bord = 1-2 stolar, 4-bord = 3-4, 6-bord = 5-6). Visar hur stor del av öppettiden bord av varje storlek var bokade i hela perioden, inte bara idag.",
+   "highlight": [
+    "help:card:belaggning-per-bordsstorlek"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bestallningarna:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beställningarna",
+   "where": "Statistik",
+   "text": "Betalda onlinebeställningar i perioden, räknat på dagen de betalades.",
+   "highlight": [
+    "help:card:bestallningarna"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:mest-salda-ratter:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Mest sålda rätter",
+   "where": "Statistik",
+   "text": "Rätter i betalda beställningar i perioden, efter antal sålda.",
+   "highlight": [
+    "help:card:mest-salda-ratter"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:minst-salda-ratter:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Minst sålda rätter",
+   "where": "Statistik",
+   "text": "De rätter som sålt minst i perioden bland dem som sålts minst en gång.",
+   "highlight": [
+    "help:card:minst-salda-ratter"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:bestalls-ofta-tillsammans:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Beställs ofta tillsammans",
+   "where": "Statistik",
+   "text": "Par av rätter som funnits i samma betalda beställning, och hur många beställningar det gällde.",
+   "highlight": [
+    "help:card:bestalls-ofta-tillsammans"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:catering:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Catering",
+   "where": "Statistik",
+   "text": "Förfrågningar räknas dagen de kom in, offerter dagen de skickades, accepterade dagen de signerades och värdet på leveransdagen.",
+   "highlight": [
+    "help:card:catering"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-statistik-StatistikPage:hemsidan:card",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "Hemsidan",
+   "where": "Statistik",
+   "text": "Besök på restaurangens hemsida (räknas utan cookies) och bokningar och beställningar som gjordes direkt efter ett besök, räknat på dagen de gjordes. Bokningar längre upp räknas på besöksdagen, så siffrorna kan skilja.",
+   "highlight": [
+    "help:card:hemsidan"
+   ],
+   "audience": "all",
+   "insights": true
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:belopp:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Belopp",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Belopp"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:moms:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Moms",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Moms"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:notering-valfritt:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Notering (valfritt)",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Notering (valfritt)"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:bestallning:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Beställning",
+   "where": "Ta betalt",
+   "text": "Inga obetalda beställningar just nu. Beställningar som gästen inte betalat online visas här.",
+   "highlight": [
+    "text:Beställning"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:kortlasare:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Kortläsare",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Kortläsare"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:kortkop-idag:heading",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Kortköp idag",
+   "where": "Ta betalt",
+   "text": "Inga kortköp ännu idag.",
+   "highlight": [
+    "text:Kortköp idag"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:avbryt:button",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Avbryt",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:pa-lasare:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "På läsare",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:På läsare"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:avbryt-kopet:button",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Avbryt köpet",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Avbryt köpet"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:ny-betalning:button",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Ny betalning",
+   "where": "Ta betalt",
+   "text": "Testläge, simulerad läsare:",
+   "highlight": [
+    "text:Ny betalning"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:kvitto:button",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Kvitto",
+   "where": "Ta betalt",
+   "text": "Testläge, simulerad läsare:",
+   "highlight": [
+    "text:Kvitto"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:stang:button",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Stäng",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Stäng"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-tabetalt-TaBetaltPage:skicka-kvitto-till-e-post:field",
+   "kind": "element",
+   "route": "/ta-betalt",
+   "title": "Skicka kvitto till e-post",
+   "where": "Ta betalt",
+   "text": "",
+   "highlight": [
+    "text:Skicka kvitto till e-post"
+   ],
+   "audience": "all",
+   "feature": "terminal"
+  },
+  {
+   "id": "features-table-qr-TableQr:qr-koder-for-borden:heading",
+   "kind": "element",
+   "route": "/layout",
+   "title": "QR-koder för borden",
+   "where": "Layout",
+   "text": "Publicera en layout med bord först, så får varje bord en QR-kod.",
+   "highlight": [
+    "text:QR-koder för borden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "shared-InfoTooltip:placera-den-som-syskon-aldrig-inuti:field",
+   "kind": "element",
+   "route": "/statistik",
+   "title": "- placera den * som syskon, aldrig inuti",
+   "where": "Statistik",
+   "text": "",
+   "highlight": [
+    "text:- placera den * som syskon, aldrig inuti"
+   ],
+   "audience": "all",
+   "insights": true
+  }
+ ]
+}

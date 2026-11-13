@@ -166,6 +166,8 @@ def public_item(item):
     } | {"alcohol": item.get("alcohol") is True} | {
         "availableFrom": item.get("availableFrom"),
         "availableUntil": item.get("availableUntil"),
+        "station": item.get("station"),
+        "components": item.get("components") or [],
     }
 
 
@@ -1766,3 +1768,15 @@ def test_image_focus_rejects_values_outside_0_to_100(app_and_table, focus):
     assert_error(response, 400)
     assert table_items(menu_table) == []
 
+
+def test_routing_fields_are_validated_and_stored(app_and_table):
+    app, menu_table = app_and_table
+    combo = {**valid_body(), "station": "kok", "components": [{"name": " Burgare "}, {"name": "Läsk", "station": "bar"}]}
+    response = app.handler(make_event(method="POST", body=combo), None)
+    assert response["statusCode"] == 201
+    body = response_body(response)
+    assert body["station"] == "kok" and body["components"] == [{"name": "Burgare"}, {"name": "Läsk", "station": "bar"}]
+    for bad in ({"station": "Kök!"}, {"components": [{"name": ""}]}, {"components": [{"name": "x", "price": 1}]},
+                {"components": [{"name": "x"}] * 9}):
+        assert app.handler(make_event(method="POST", body={**valid_body(), **bad}), None)["statusCode"] == 400
+    assert get_item(menu_table)["components"][1] == {"name": "Läsk", "station": "bar"}

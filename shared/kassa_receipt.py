@@ -235,23 +235,6 @@ def document(entry, location=None):
             "total": total, "rows": rows, "jseq": int(entry.get("jseq") or 0)}
 
 
-def kitchen_document(bill, lines, now, location):
-    """A kitchen ticket for lines of a bill: no prices, never a receipt."""
-    when = k.local(now, location).strftime("%H:%M")
-    rows = [{"text": "Köksnota, ej kvitto", "center": True}]
-    if bill.get("training"):
-        rows.append({"text": "ÖVNING", "bold": True, "big": True, "center": True})
-    where = f"BORD {bill.get('tableLabel')}" if bill.get("kind") == k.TABLE else "AVHÄMTNING"
-    rows += [{"text": where, "bold": True, "big": True, "center": True}, {"text": f"Kassa {when}", "center": True},
-             {"rule": True}]
-    for line in lines:
-        rows.append({"text": f"{int(line.get('quantity') or 0)} x {line.get('name')}", "bold": True})
-        if line.get("note"):
-            rows.append({"text": f"  {line['note']}", "bold": True})
-    rows.append({"text": f"Nota {str(bill.get('billId') or '')[:8]}"})
-    return {"kind": "kitchen", "title": "Köksnota", "rows": rows}
-
-
 def text(document):
     out = []
     for row in document.get("rows") or []:

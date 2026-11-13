@@ -303,7 +303,19 @@ def test_order_lines_are_checked(items, error):
 
 def test_repeated_dish_lines_are_summed():
     assert o.validate_lines([{"menuItemId": "a", "quantity": 2}, {"menuItemId": "b", "quantity": 1},
-                             {"menuItemId": "a", "quantity": 18}]) == [("a", 20), ("b", 1)]
+                             {"menuItemId": "a", "quantity": 18}]) == [("a", 20, {}), ("b", 1, {})]
+
+
+def test_lines_with_notes_stay_apart_and_share_the_dish_cap():
+    lines = o.validate_lines([{"menuItemId": "a", "quantity": 1, "note": " ingen\nlök "},
+                              {"menuItemId": "a", "quantity": 2},
+                              {"menuItemId": "a", "quantity": 1, "note": "ingen lök", "allergy": "jordnötter"}])
+    assert lines == [("a", 1, {"note": "ingen lök"}), ("a", 2, {}),
+                     ("a", 1, {"note": "ingen lök", "allergy": "jordnötter"})]
+    with pytest.raises(ValueError, match="at most 20 per dish"):
+        o.validate_lines([{"menuItemId": "a", "quantity": 15, "note": "x"}, {"menuItemId": "a", "quantity": 6}])
+    with pytest.raises(ValueError, match="note must be at most 140"):
+        o.validate_lines([{"menuItemId": "a", "quantity": 1, "note": "x" * 141}])
 
 
 def test_policy_validation():

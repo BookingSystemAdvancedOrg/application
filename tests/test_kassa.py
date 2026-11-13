@@ -187,6 +187,11 @@ def print_jobs(env):
     return [i for i in items if i["SK"].startswith("JOB#kassa#")]
 
 
+def station_jobs(env):
+    items = env["res"].Table("test-print").scan()["Items"]
+    return [i for i in items if i["SK"].startswith("JOB#k") and not i["SK"].startswith("JOB#kassa#")]
+
+
 def receipts_of(env, register_id, kind=kassa.SALE):
     return [e for e in journal(env, register_id) if e["type"] == kind]
 
@@ -221,8 +226,8 @@ def test_full_sale_end_to_end(env):
     assert row["receiptSeq"] == 1 and row["gtSales"] == 38750 and "lockId" not in row
     assert call(env, "GET", f"bills/{b['billId']}")[1]["status"] == "closed"
     # kitchen ticket (send) + the receipt; finalize sends nothing new to the kitchen
-    kinds = sorted(j["ticket"]["kind"] for j in print_jobs(env))
-    assert kinds == ["kassakvitto", "kitchen"]
+    assert sorted(j["ticket"]["kind"] for j in print_jobs(env)) == ["kassakvitto"]
+    assert [j["kind"] for j in station_jobs(env)] == ["station"]
     ticket = print_ticket.document_ticket(next(j["ticket"] for j in print_jobs(env)
                                                 if j["ticket"]["kind"] == "kassakvitto"))
     assert "Testläge".encode("cp1252") in ticket and b"BOOQYSIMULATOR001" in ticket

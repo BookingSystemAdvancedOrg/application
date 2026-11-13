@@ -268,6 +268,7 @@ def _management_item(item, location_id, expected_item_id=None):
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
         **image_focus.view(item),
+        **menu.routing_view(item),
     }
 
 

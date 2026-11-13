@@ -60,6 +60,9 @@ _EDITABLE_FIELDS = {
     "availableUntil",
     # Optional photo focal point (shared/image_focus.py); null = centre.
     "imageFocus",
+    # Optional kitchen ticket routing (shared/menu.py): station, combo parts.
+    "station",
+    "components",
 }
 _PUBLIC_FIELDS = (
     "menuItemId",
@@ -244,6 +247,7 @@ def _menu_fields(event, *, partial):
         fields["alcohol"] = body["alcohol"]
     fields.update(menu.validate_schedule(body))
     fields.update(image_focus.validate(body))
+    fields.update(menu.validate_routing(body))
     return fields
 
 
@@ -312,6 +316,7 @@ def _public_item(item):
         if "alcohol" in item and not isinstance(item["alcohol"], bool):
             raise ValueError
         menu.validate_schedule(item)
+        menu.validate_routing({f: item[f] for f in menu.ROUTING_FIELDS if f in item})
     except (OverflowError, TypeError, ValueError):
         raise _MenuConflict("menu item record is inconsistent") from None
 
@@ -320,6 +325,7 @@ def _public_item(item):
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
         **image_focus.view(item),
+        **menu.routing_view(item),
     }
 
 

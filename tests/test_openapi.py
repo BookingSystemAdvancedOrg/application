@@ -150,6 +150,11 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/print/devices/{deviceId}/test": frozenset({"post"}),
     "/locations/{locationId}/print/jobs": frozenset({"post"}),
     "/print/cloudprnt/{deviceId}": frozenset({"post", "get", "delete"}),
+    "/print/epson/{deviceId}": frozenset({"post"}),
+    "/locations/{locationId}/print/routing": frozenset({"get", "put"}),
+    "/locations/{locationId}/print/tickets": frozenset({"get"}),
+    "/locations/{locationId}/print/tickets/{sourceId}/{stationId}": frozenset({"put"}),
+    "/locations/{locationId}/print/tickets/{sourceId}/{stationId}/print": frozenset({"post"}),
     "/locations/{locationId}/catering/settings": frozenset({'get', 'put'}),
     "/locations/{locationId}/catering/discount-tiers": frozenset({'get', 'post'}),
     "/locations/{locationId}/catering/discount-tiers/{tierId}": frozenset({'delete', 'put'}),
@@ -179,7 +184,7 @@ EXPECTED_OPERATIONS = {
 # Kitchen printers: no JWT, HTTP Basic with the device secret (print-device).
 PRINTER_OPERATIONS = frozenset(
     ("/print/cloudprnt/{deviceId}", m) for m in ("post", "get", "delete")
-)
+) | {("/print/epson/{deviceId}", "post")}
 PUBLIC_OPERATIONS = frozenset(
     {
         ("/auth/login", "post"),
@@ -306,6 +311,10 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/print/status", "get"),
         ("/locations/{locationId}/print/devices/{deviceId}/test", "post"),
         ("/locations/{locationId}/print/jobs", "post"),
+        ("/locations/{locationId}/print/routing", "get"),
+        ("/locations/{locationId}/print/tickets", "get"),
+        ("/locations/{locationId}/print/tickets/{sourceId}/{stationId}", "put"),
+        ("/locations/{locationId}/print/tickets/{sourceId}/{stationId}/print", "post"),
         ("/locations/{locationId}/catering/requests", "get"),
         ("/locations/{locationId}/catering/requests/{requestId}", "get"),
         ("/locations/{locationId}/catering/requests/{requestId}/delivered", "post"),

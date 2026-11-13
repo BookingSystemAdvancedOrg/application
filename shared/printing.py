@@ -7,8 +7,23 @@ Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK JOB#<orderId>#cancel   "MAKULERAD" slip
     PK LOCATION#<l>  SK JOB#<orderId>#m<ms>    "Skriv ut igen"
     PK LOCATION#<l>  SK JOB#test#<ms>          test print for one device
-    PK LOCATION#<l>  SK JOB#kassa#<id>         Kassa: a receipt, report or kitchen
-                                               ticket, carried in the job (ticket)
+    PK LOCATION#<l>  SK JOB#kassa#<id>         Kassa: a receipt or report, carried
+                                               in the job (ticket)
+    PK LOCATION#<l>  SK ROUTING                stations and routing (shared/routing.py)
+    PK LOCATION#<l>  SK TICKET#<src>#<station> one station's ticket of an order (src =
+                                               orderId) or a Kassa send (src = k<id>)
+    PK LOCATION#<l>  SK JOB#<src>#st-<station>-<device>       the ticket on one of
+                                               the station's printers
+    PK LOCATION#<l>  SK JOB#<src>#al-<station>-<device>       its allergy ticket
+    PK LOCATION#<l>  SK JOB#<src>#rp-<station>-<device>-<ms>  "Skriv ut igen"
+    PK LOCATION#<l>  SK JOB#<src>#mk-<device>  "MAKULERAD" slip on a printer that
+                                               may have printed the order
+
+Station tickets are made for every paid order (the kitchen display shows
+them); their printers print them when auto print is on. Jobs with a
+deviceId go to that printer only; older jobs without one (auto, cancel,
+reprint, kassa) go to the order printer (settings.printerId), which also
+prints Kassa receipts.
 
 A job holds no personal data: the ticket is rendered from the order when
 the printer fetches it. Kassa jobs carry their document (shared/kassa_receipt.py),
@@ -27,8 +42,9 @@ A ticket printed on attempt 2 or later says "KAN VARA DUBBLETT": the
 printer may have printed the earlier attempt without confirming it.
 
 Printers log in with HTTP Basic: user = device id, password = a random
-secret shown once in admin; only its SHA-256 is stored. The printer's MAC
-address is bound on its first poll.
+secret shown once in admin; only its SHA-256 is stored. A Star printer's
+MAC address is bound on its first poll. ``protocol`` is "star" (CloudPRNT)
+or "epson" (Server Direct Print).
 """
 
 import hashlib
@@ -45,12 +61,14 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from shared import dynamo
+from shared import dynamo, routing
 from shared import orders as o
 
 PENDING, PRINTING, PRINTED, FAILED, CANCELLED = "PENDING", "PRINTING", "PRINTED", "FAILED", "CANCELLED"
 OPEN = (PENDING, PRINTING, FAILED)
 AUTO, CANCEL, REPRINT, TEST, KASSA = "auto", "cancel", "reprint", "test", "kassa"
+STATION, ALLERGY = "station", "allergy"
+PROTOCOLS = ("star", "epson")
 
 LEASE_SECONDS = 60
 BACKOFF_SECONDS = (15, 30, 60, 120)
@@ -63,11 +81,11 @@ TEST_SECONDS = 600           # an unprinted test print is dropped after this
 FAILED_SECONDS = 24 * 3600   # a FAILED job leaves the banner after this
 FAILED_DUE = "9999-12-31T00:00:00Z"
 PAPER_WIDTHS = (80, 58)
-MAX_DEVICES = 5
+MAX_DEVICES = 12
 NAME_MAX = 40
 
 _ID = re.compile(r"[0-9a-f]{32}")
-_TOKEN = re.compile(r"(?:[0-9a-f]{32}\.(?:auto|cancel|m\d{13})|test\.\d{13}|kassa\.[0-9a-f]{32})")
+_TOKEN = re.compile(r"[0-9a-z]{1,40}\.[0-9a-z]{1,40}(?:-[0-9a-z]{1,40}){0,3}")
 
 
 class NotFound(Exception):
@@ -264,15 +282,18 @@ def clean_name(value):
     return value.strip()
 
 
-def add_device(tenant_id, location_id, name, actor, now):
+def add_device(tenant_id, location_id, name, actor, now, protocol="star"):
     """-> (device, secret). The secret is returned once and never stored."""
     name = clean_name(name)
+    if protocol not in PROTOCOLS:
+        raise ValueError("protocol must be star or epson")
     if len(list_devices(location_id)) >= MAX_DEVICES:
         raise Conflict("too_many_printers")
     device_id = uuid.uuid4().hex
     secret = secrets.token_urlsafe(32)
     item = {**_key(location_id, f"DEVICE#{device_id}"), "deviceId": device_id, "deviceKey": device_id,
-            "tenantId": tenant_id, "locationId": location_id, "name": name, "secretHash": hash_secret(secret),
+            "tenantId": tenant_id, "locationId": location_id, "name": name, "protocol": protocol,
+            "secretHash": hash_secret(secret),
             "createdAt": iso(now), "createdBy": actor}
     _table().put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
     _set_printer_if_unset(tenant_id, location_id, device_id, now)
@@ -310,6 +331,7 @@ def remove_device(location_id, device_id, now):
     except ClientError as exc:
         if not _conditional(exc):
             raise
+    routing.drop_printer(location_id, device_id, now)
     tidy(location_id, queue(location_id), get_settings(location_id), list_devices(location_id), now)
 
 
@@ -346,15 +368,18 @@ def online(device, now):
 
 def device_view(device, now, server_url=None):
     view = {k: device.get(k) for k in ("deviceId", "name", "mac", "lastSeenAt", "statusCode", "createdAt")}
+    view["protocol"] = device.get("protocol") or "star"
     view["online"] = online(device, now)
     if server_url:
+        if view["protocol"] == "epson":
+            server_url = server_url.replace("/print/cloudprnt", "/print/epson")
         view["serverUrl"] = f"{server_url}/{device['deviceId']}"
     return {k: v for k, v in view.items() if v is not None}
 
 
 # --- jobs ------------------------------------------------------------------------
 
-def _new_job(tenant_id, location_id, sk, kind, now, *, order_id=None, device_id=None):
+def _new_job(tenant_id, location_id, sk, kind, now, *, order_id=None, device_id=None, ticket_sk=None, copy=False):
     item = {**_key(location_id, sk), "kind": kind, "status": PENDING, "attempts": 0, "tenantId": tenant_id,
             "locationId": location_id, "createdAt": iso(now), "queue": pk(location_id), "dueAt": iso(now),
             "ttl": int((now + timedelta(days=JOB_TTL_DAYS)).timestamp())}
@@ -362,6 +387,10 @@ def _new_job(tenant_id, location_id, sk, kind, now, *, order_id=None, device_id=
         item["orderId"] = order_id
     if device_id:
         item["deviceId"] = device_id
+    if ticket_sk:
+        item["ticketSk"] = ticket_sk
+    if copy:
+        item["copy"] = True
     return item
 
 
@@ -375,14 +404,54 @@ def _put_once(item):
         raise
 
 
+def order_header(order):
+    return {"orderId": order["orderId"], "number": order.get("number"), "mode": order.get("mode"),
+            "tableLabel": order.get("tableLabel"), "placedAt": order.get("confirmedAt") or order.get("createdAt"),
+            "readyEstimate": order.get("readyEstimate")}
+
+
+def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False):
+    """The ticket on each printer of its station, plus the allergy ticket
+    when it has an allergy and the location wants one. Idempotent (a
+    reprint is a new job per press). Returns the jobs created."""
+    station = next((s for s in config["stations"] if s["stationId"] == ticket["stationId"]), None)
+    source, sid = ticket["sourceId"], ticket["stationId"]
+    suffix = f"-{_ms(now)}" if copy else ""
+    jobs = []
+    for device_id in (station or {}).get("printerIds") or []:
+        kinds = [("rp" if copy else "st", STATION)]
+        if ticket.get("allergy") and config.get("allergyTicket"):
+            kinds.append(("ra" if copy else "al", ALLERGY))
+        for prefix, kind in kinds:
+            item = _new_job(tenant_id, location_id, f"JOB#{source}#{prefix}-{sid}-{device_id}{suffix}", kind, now,
+                            order_id=ticket.get("orderId"), device_id=device_id, ticket_sk=ticket["SK"], copy=copy)
+            if _put_once(item):
+                jobs.append(item)
+    return jobs
+
+
+def dispatch(tenant_id, location_id, source_id, header, lines, notes, now, *, auto_print=None):
+    """Station tickets for an order or a Kassa send, then their print jobs
+    (when auto print is on, or always with auto_print=True). A retry makes
+    nothing twice. Returns (tickets, jobs)."""
+    settings = get_settings(location_id)
+    config = routing.get_config(location_id, settings["printerId"])
+    tickets = routing.tickets(source_id, header, lines, notes, config, now)
+    routing.store(tenant_id, location_id, tickets)
+    jobs = []
+    if auto_print if auto_print is not None else settings["autoPrint"]:
+        for ticket in tickets:
+            jobs += ticket_jobs(tenant_id, location_id, ticket, config, now)
+    return tickets, jobs
+
+
 def on_order_paid(order, now):
-    """Stream: the order was paid. One auto job per order, whatever the
-    retries (conditional put). Returns True when a job was created."""
-    settings = get_settings(order["locationId"])
-    if not settings["autoPrint"] or not settings["printerId"]:
-        return False
-    return _put_once(_new_job(order.get("tenantId"), order["locationId"], f"JOB#{order['orderId']}#auto", AUTO, now,
-                              order_id=order["orderId"]))
+    """Stream: the order was paid. One ticket per station (kitchen display)
+    and their print jobs, whatever the retries (conditional puts). Returns
+    True when a job was created."""
+    _, jobs = dispatch(order.get("tenantId"), order["locationId"], order["orderId"], order_header(order),
+                       order.get("lines"), order.get("notes"), now)
+    return bool(jobs)
 
 
 def order_jobs(location_id, order_id):
@@ -413,9 +482,11 @@ def _maybe_printed(job):
 
 
 def on_order_cancelled(order, now):
-    """Stream: the order was cancelled. Open jobs for it are cancelled; if a
-    ticket may already be in the kitchen, a "MAKULERAD" slip prints."""
+    """Stream: the order was cancelled. Its tickets and open jobs are
+    cancelled; each printer that may already have printed a ticket gets a
+    "MAKULERAD" slip."""
     location_id, order_id = order["locationId"], order["orderId"]
+    routing.cancel(location_id, order_id, now)
     jobs = [j for j in order_jobs(location_id, order_id) if j.get("kind") != CANCEL]
     for i, job in enumerate(jobs):
         if job.get("status") in OPEN and not close_job(job, CANCELLED, now, expected=job["status"]):
@@ -424,22 +495,38 @@ def on_order_cancelled(order, now):
             jobs[i] = {**fresh, "attempts": max(int(fresh.get("attempts") or 0), 1)}
             if fresh.get("status") in OPEN:
                 close_job(fresh, CANCELLED, now, expected=fresh["status"])
-    if not any(_maybe_printed(j) for j in jobs) or not get_settings(location_id)["printerId"]:
-        return False
-    return _put_once(_new_job(order.get("tenantId"), location_id, f"JOB#{order_id}#cancel", CANCEL, now,
-                              order_id=order_id))
+    printer_id = get_settings(location_id)["printerId"]
+    targets = list(dict.fromkeys(j.get("deviceId") or printer_id for j in jobs if _maybe_printed(j)))
+    made = False
+    for device_id in filter(None, targets):
+        made |= _put_once(_new_job(order.get("tenantId"), location_id, f"JOB#{order_id}#mk-{device_id}", CANCEL,
+                                   now, order_id=order_id, device_id=device_id))
+    return made
 
 
-def reprint(tenant_id, location_id, order_id, now):
-    """"Skriv ut igen": a new job; failed jobs of the order are superseded."""
-    if not get_settings(location_id)["printerId"]:
-        raise Conflict("no_printer")
+def reprint(tenant_id, location_id, order_id, now, station_id=None):
+    """"Skriv ut igen": the order's tickets (or one station's) again on
+    their printers; failed jobs of the order are superseded. An order from
+    before stations gets its tickets now."""
     for job in order_jobs(location_id, order_id):
         if job.get("status") == FAILED:
             close_job(job, CANCELLED, now, expected=FAILED)
-    item = _new_job(tenant_id, location_id, f"JOB#{order_id}#m{_ms(now)}", REPRINT, now, order_id=order_id)
-    _put_once(item)
-    return item
+    settings = get_settings(location_id)
+    config = routing.get_config(location_id, settings["printerId"])
+    tickets = routing.source_tickets(location_id, order_id)
+    if not tickets:
+        order = o.load(location_id, order_id)
+        tickets = routing.tickets(order_id, order_header(order), order.get("lines"), order.get("notes"), config, now)
+        routing.store(tenant_id, location_id, tickets)
+    tickets = [t for t in tickets if not station_id or t["stationId"] == station_id]
+    if station_id and not tickets:
+        raise NotFound
+    jobs = []
+    for ticket in tickets:
+        jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, copy=True)
+    if not jobs:
+        raise Conflict("no_printer")
+    return jobs
 
 
 def test_job(tenant_id, location_id, device_id, now):
@@ -478,9 +565,10 @@ def get_job(location_id, sk):
 
 
 def for_device(job, device_id, printer_id):
-    """Test prints go to their own device; everything else to the order printer."""
-    if job.get("kind") == TEST:
-        return job.get("deviceId") == device_id
+    """A job with a device (test prints, station tickets, slips) goes to that
+    printer; older jobs and Kassa receipts to the order printer."""
+    if job.get("deviceId"):
+        return job["deviceId"] == device_id
     return device_id == printer_id
 
 
@@ -573,7 +661,7 @@ def _stale(job, settings, device_ids, now):
     age = (now - parse_iso(job["createdAt"])).total_seconds()
     if job.get("kind") == TEST:
         return age > TEST_SECONDS or job.get("deviceId") not in device_ids
-    if settings.get("printerId") not in device_ids:
+    if (job.get("deviceId") or settings.get("printerId")) not in device_ids:
         return True
     if job.get("status") == FAILED:
         if job.get("kind") == KASSA:
@@ -611,7 +699,20 @@ def summary(location_id, settings, devices, now):
         "unprinted": sum(1 for j in jobs if j["status"] in (PENDING, PRINTING)),
         "failed": sum(1 for j in jobs if j["status"] == FAILED),
         "orders": orders,
+        "offline": [d.get("name") for d in devices if not online(d, now)],
+        "tickets": order_tickets(location_id, now),
     }
+
+
+def order_tickets(location_id, now):
+    """{orderId: [{stationId, stationName, status, allergy}]} of the last day:
+    each station's state on the orders board."""
+    out = {}
+    for ticket in routing.list_tickets(location_id, now):
+        if ticket.get("orderId"):
+            out.setdefault(ticket["orderId"], []).append(
+                {k: ticket.get(k) for k in ("stationId", "stationName", "status", "allergy")})
+    return out
 
 
 def sweep(now):

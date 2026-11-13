@@ -6865,7 +6865,9 @@ paths:
       operationId: epsonServerDirectPrint
       description: HTTP Basic (device id, secret). Form field ConnectionType=GetRequest answers the next job as
         PrintRequestInfo with ePOS-Print XML (empty body when none); SetResponse with ResponseFile confirms jobs.
-      security: []
+      security:
+        - printerBasic: []
+      x-required-groups: []
       requestBody:
         required: true
         content:

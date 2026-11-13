@@ -873,6 +873,8 @@ def update_bill(ctx, bill_id, *, expected_version, lines, discount, user, now):
                 raise Conflict("alcohol_not_for_takeaway")
             line.update({"lineId": secrets.token_hex(4), "name": str(item.get("name") or "").strip()[:72],
                          "category": item.get("category") if item.get("category") in CATEGORY_NAMES else None,
+                         # Kitchen ticket routing as the dish was when added (shared/routing.py).
+                         "station": item.get("station") or None, "components": item.get("components") or None,
                          "unitPrice": unit, "vatRate": o.vat_rate(alcohol, mode, today), "sent": False,
                          "addedAt": o.iso(now)})
             if not line["name"]:
@@ -960,8 +962,6 @@ def send_to_kitchen(ctx, bill_id, *, now):
     unsent = [line for line in bill.get("lines") or [] if not line.get("sent")]
     if not unsent:
         raise Conflict("nothing_to_send")
-    if not printing.get_settings(ctx.location_id).get("printerId"):
-        raise Conflict("no_printer")
     lines = [{**line, "sent": True} if not line.get("sent") else line for line in bill.get("lines") or []]
     try:
         _table().update_item(
@@ -980,9 +980,13 @@ def send_to_kitchen(ctx, bill_id, *, now):
 
 
 def _kitchen_job(ctx, bill, lines, now):
-    from shared import kassa_receipt
-    printing.kassa_job(ctx.tenant_id, ctx.location_id, kassa_receipt.kitchen_document(bill, lines, now, ctx.location),
-                       now)
+    """One ticket per station (kitchen display) and on the stations'
+    printers; drinks and the like go to their own station, not the kitchen."""
+    header = {"billId": bill.get("billId"), "mode": o.TABLE if bill.get("kind") == TABLE else o.PICKUP,
+              "tableLabel": bill.get("tableLabel"), "placedAt": o.iso(now),
+              **({"training": True} if bill.get("training") else {})}
+    printing.dispatch(ctx.tenant_id, ctx.location_id, "k" + uuid.uuid4().hex, header, lines, None, now,
+                      auto_print=True)
 
 
 # --- payments ---------------------------------------------------------------------------
@@ -1281,7 +1285,7 @@ def deliver(ctx, entry, delivery, email, now, tenant_row, *, kitchen=None):
     e-mailed. A failure here doesn't undo the sale; the till offers a copy."""
     from shared import kassa_receipt
     problems = []
-    if kitchen and kitchen[1] and printing.get_settings(ctx.location_id).get("printerId"):
+    if kitchen and kitchen[1]:
         try:
             _kitchen_job(ctx, kitchen[0], kitchen[1], now)
         except Exception:  # noqa: BLE001

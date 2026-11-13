@@ -7,6 +7,7 @@ the start is inclusive, the end exclusive ("until 14:00" is gone at 14:00).
 Toggle off always wins. Read time decides visibility, no jobs flip flags.
 """
 
+import re
 from datetime import datetime, timezone
 
 SCHEDULE_FIELDS = ("availableFrom", "availableUntil")
@@ -65,3 +66,52 @@ def is_available(item, now):
     if end is not None and now >= parse_utc(end):
         return False
     return True
+
+
+# --- kitchen ticket routing (shared/routing.py) ----------------------------------
+# ``station``: a station id of the location, "none" (no ticket) or missing
+# (follow the category's station). ``components``: a combo's parts, each
+# {name, station?}; a part without a station follows the dish.
+
+ROUTING_FIELDS = ("station", "components")
+STATION_NONE = "none"
+COMPONENTS_MAX = 8
+COMPONENT_NAME_MAX = 60
+_STATION_ID = re.compile(r"[a-z0-9]{2,16}")
+
+
+def valid_station(value):
+    return isinstance(value, str) and _STATION_ID.fullmatch(value) is not None
+
+
+def _component(raw):
+    if not isinstance(raw, dict) or set(raw) - {"name", "station"}:
+        raise ValueError("each component needs a name and an optional station")
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > COMPONENT_NAME_MAX:
+        raise ValueError(f"component name must be 1-{COMPONENT_NAME_MAX} characters")
+    station = raw.get("station")
+    if station is not None and not valid_station(station):
+        raise ValueError("component station must be a station id, \"none\" or null")
+    return {"name": name.strip(), **({"station": station} if station else {})}
+
+
+def validate_routing(body):
+    """The routing fields present in ``body``; None (or no components)
+    clears the field."""
+    fields = {}
+    if "station" in body:
+        station = body["station"]
+        if station is not None and not valid_station(station):
+            raise ValueError("station must be a station id, \"none\" or null")
+        fields["station"] = station
+    if "components" in body:
+        raw = body["components"]
+        if raw is not None and (not isinstance(raw, list) or len(raw) > COMPONENTS_MAX):
+            raise ValueError(f"components must be a list of at most {COMPONENTS_MAX}")
+        fields["components"] = [_component(c) for c in raw] if raw else None
+    return fields
+
+
+def routing_view(item):
+    return {"station": item.get("station"), "components": item.get("components") or []}

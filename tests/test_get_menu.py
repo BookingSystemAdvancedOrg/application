@@ -83,6 +83,8 @@ def management_item(item):
     return {field: item[field] for field in MANAGEMENT_FIELDS} | {"alcohol": item.get("alcohol") is True} | {
         "availableFrom": item.get("availableFrom"),
         "availableUntil": item.get("availableUntil"),
+        "station": item.get("station"),
+        "components": item.get("components") or [],
     }
 
 

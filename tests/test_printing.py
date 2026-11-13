@@ -138,8 +138,17 @@ def job(env, sk):
 
 
 MAC = "00:11:62:aa:bb:cc"
-AUTO_SK = f"JOB#{ORDER_ID}#auto"
-CANCEL_SK = f"JOB#{ORDER_ID}#cancel"
+
+
+def auto_sk():
+    """The order's one station ticket job (Kök, on the order printer)."""
+    jobs = [j for j in p.order_jobs(LOC_A, ORDER_ID) if j["kind"] == "station"]
+    assert len(jobs) == 1
+    return jobs[0]["SK"]
+
+
+def cancel_sk(device_id):
+    return f"JOB#{ORDER_ID}#mk-{device_id}"
 
 
 def print_once(env, device_id, secret, code="200 OK"):
@@ -199,7 +208,7 @@ def test_paid_order_creates_exactly_one_auto_job(env):
     assert stream(env, *paid) == {"batchItemFailures": []}
     stream(env, *paid)  # redelivered record
     jobs = p.order_jobs(LOC_A, ORDER_ID)
-    assert [j["SK"] for j in jobs] == [AUTO_SK]
+    assert [j["kind"] for j in jobs] == ["station"]
     assert jobs[0]["status"] == "PENDING" and "customerName" not in jobs[0] and jobs[0]["ttl"] > 0
 
 
@@ -210,24 +219,24 @@ def test_no_job_when_auto_print_is_off(env):
 
 
 def test_cancel_before_printing_drops_the_job_without_slip(env):
-    add_printer(env, autoPrint=True)
+    device_id, _ = add_printer(env, autoPrint=True)
     stream(env, order(status="pending_payment"), order())
     stream(env, order(), order(status="cancelled"))
-    assert job(env, AUTO_SK)["status"] == "CANCELLED" and "queue" not in job(env, AUTO_SK)
-    assert job(env, CANCEL_SK) is None
+    assert job(env, auto_sk())["status"] == "CANCELLED" and "queue" not in job(env, auto_sk())
+    assert job(env, cancel_sk(device_id)) is None
 
 
 def test_cancel_after_printing_prints_makulerad(env):
     device_id, secret = add_printer(env, autoPrint=True)
     stream(env, order(status="pending_payment"), order())
     print_once(env, device_id, secret)
-    assert job(env, AUTO_SK)["status"] == "PRINTED"
+    assert job(env, auto_sk())["status"] == "PRINTED"
     env["res"].Table("test-order").update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"ORDER#2026-07-08#{ORDER_ID}"},
                                                UpdateExpression="SET #s = :c", ExpressionAttributeNames={"#s": "status"},
                                                ExpressionAttributeValues={":c": "cancelled"})
     stream(env, order(), order(status="cancelled"))
     assert "MAKULERAD #12" in print_once(env, device_id, secret).decode("cp1252")
-    assert job(env, CANCEL_SK)["status"] == "PRINTED"
+    assert job(env, cancel_sk(device_id))["status"] == "PRINTED"
 
 
 # --- device flow ---------------------------------------------------------------------------------
@@ -237,7 +246,7 @@ def test_device_prints_and_confirms(env):
     stream(env, order(status="pending_payment"), order())
     data = print_once(env, device_id, secret).decode("cp1252")
     assert "#12" in data and "KAN VARA DUBBLETT" not in data
-    done = job(env, AUTO_SK)
+    done = job(env, auto_sk())
     assert done["status"] == "PRINTED" and done["attempts"] == 1 and "queue" not in done
     device = p.get_device(LOC_A, device_id)
     assert device["mac"] == "00:11:62:aa:bb:cc" and device["lastSeenAt"] == p.iso(NOW)
@@ -266,14 +275,14 @@ def test_error_backs_off_then_fails_after_five_attempts(env):
     stream(env, order(status="pending_payment"), order())
     clock = env["clock"]
     print_once(env, device_id, secret, code="520 Error")
-    first = job(env, AUTO_SK)
+    first = job(env, auto_sk())
     assert first["status"] == "PENDING" and first["dueAt"] == p.iso(NOW + timedelta(seconds=15))
     assert json.loads(device_call(env, "POST", device_id, secret, body={"printerMAC": MAC})["body"])["jobReady"] is False
     for wait in (15, 30, 60, 120):
         clock["now"] += timedelta(seconds=wait)
         data = print_once(env, device_id, secret, code="520 Error")
         assert "KAN VARA DUBBLETT" in data.decode("cp1252")
-    failed = job(env, AUTO_SK)
+    failed = job(env, auto_sk())
     assert failed["status"] == "FAILED" and failed["attempts"] == 5 and failed["dueAt"] == p.FAILED_DUE
     assert ("PrintJobFailed", 1) in env["metrics"]
     status, body = api(env, "GET", "status", role="staff_user", tenant_id=TENANT_A)
@@ -295,7 +304,7 @@ def test_auto_job_of_completed_order_is_dropped(env):
     stream(env, order(status="pending_payment"), order())
     env["res"].Table("test-order").put_item(Item=order(status="completed"))
     assert json.loads(device_call(env, "POST", device_id, secret, body={})["body"]) == {"jobReady": False}
-    assert job(env, AUTO_SK)["status"] == "CANCELLED"
+    assert job(env, auto_sk())["status"] == "CANCELLED"
 
 
 # --- admin API -------------------------------------------------------------------------------------
@@ -365,25 +374,25 @@ def test_sweep_closes_old_test_jobs_and_jobs_without_printer(env):
     assert env["jobs"].handler({"source": "sweep"}, None) == {"open": 1, "stuck": 1, "failed": 0}
     assert all(j.get("kind") != "test" for j in p.queue(LOC_A))
     api(env, "DELETE", f"devices/{device_id}")  # closes the order printer's open jobs too
-    assert p.queue(LOC_A) == [] and job(env, AUTO_SK)["status"] == "CANCELLED"
+    assert p.queue(LOC_A) == [] and job(env, auto_sk())["status"] == "CANCELLED"
     assert env["jobs"].handler({"source": "sweep"}, None) == {"open": 0, "stuck": 0, "failed": 0}
 
 
 def test_failed_jobs_leave_the_banner_when_order_closed_or_old(env):
     add_printer(env, autoPrint=True)
     stream(env, order(status="pending_payment"), order())
-    item = job(env, AUTO_SK)
+    item = job(env, auto_sk())
     p.fail(item, NOW, expected="PENDING")
     assert api(env, "GET", "status")[1]["failed"] == 1
     env["clock"]["now"] += timedelta(hours=25)
     assert api(env, "GET", "status")[1]["failed"] == 0
-    assert job(env, AUTO_SK)["status"] == "CANCELLED"
+    assert job(env, auto_sk())["status"] == "CANCELLED"
 
 
 def test_failed_job_of_completed_order_is_closed(env):
     add_printer(env, autoPrint=True)
     stream(env, order(status="pending_payment"), order())
-    p.fail(job(env, AUTO_SK), NOW, expected="PENDING")
+    p.fail(job(env, auto_sk()), NOW, expected="PENDING")
     env["res"].Table("test-order").put_item(Item=order(status="completed"))
     assert env["jobs"].handler({"source": "sweep"}, None)["failed"] == 0
 
@@ -394,15 +403,15 @@ def test_cancel_racing_the_printer_still_prints_makulerad(env, monkeypatch):
     real_close = p.close_job
 
     def lease_first(j, status, now, *, expected):
-        if j["SK"] == AUTO_SK and expected == "PENDING":  # the printer takes it between read and close
-            p.lease(job(env, AUTO_SK), device_id, now)
+        if j.get("kind") == "station" and expected == "PENDING":  # the printer takes it between read and close
+            p.lease(job(env, auto_sk()), device_id, now)
             monkeypatch.setattr(p, "close_job", real_close)
         return real_close(j, status, now, expected=expected)
 
     monkeypatch.setattr(p, "close_job", lease_first)
     stream(env, order(), order(status="cancelled"))
-    assert job(env, AUTO_SK)["status"] == "CANCELLED"
-    assert job(env, CANCEL_SK)["status"] == "PENDING"
+    assert job(env, auto_sk())["status"] == "CANCELLED"
+    assert job(env, cancel_sk(device_id))["status"] == "PENDING"
 
 
 def test_reprint_refuses_cancelled_orders(env):
@@ -414,7 +423,7 @@ def test_reprint_refuses_cancelled_orders(env):
 def test_confirm_returns_actual_status_when_it_loses_the_race(env):
     device_id, secret = add_printer(env, autoPrint=True)
     stream(env, order(status="pending_payment"), order())
-    leased = p.lease(job(env, AUTO_SK), device_id, NOW)
+    leased = p.lease(job(env, auto_sk()), device_id, NOW)
     p.close_job(leased, "CANCELLED", NOW, expected="PRINTING")  # order cancelled meanwhile
     stale = {**leased}
     env["res"].Table("test-print").update_item(Key={"PK": stale["PK"], "SK": stale["SK"]},

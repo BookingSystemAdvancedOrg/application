@@ -281,6 +281,67 @@ def test_concurrent_bookings_cannot_both_win(env, monkeypatch):
     assert second["statusCode"] == 409 and body_of(second) == err("table_taken")
 
 
+@pytest.mark.parametrize("first_is_staff", [False, True])
+@pytest.mark.parametrize("phone_start", ["18:00", "18:30"])
+def test_two_simultaneous_bookings_of_the_last_table(env, monkeypatch, first_is_staff, phone_start):
+    """The last free table, booked online and by phone at the same moment:
+    both requests pass the availability check against the same state (the
+    second runs entirely between the first one's check and its commit), so
+    only the transaction can stop the double booking - the slot row for the
+    same start, the table's lock for an overlapping one (18:30 writes other
+    slot rows). One wins, the other gets 409 table_taken, and the table is
+    booked exactly once."""
+    assert staff_booking(env, tableIds=["table-a"], partySize=2)["statusCode"] == 201
+    assert staff_booking(env, tableIds=["table-c"], partySize=2)["statusCode"] == 201
+    assert free_tables_at(env, "18:00") == ["table-b"]
+
+    def online():
+        return guest_booking(env, tables=("table-b",), party=2)
+
+    def phone():
+        return staff_booking(env, tableIds=["table-b"], partySize=2, startTime=phone_start)
+
+    first, second = (phone, online) if first_is_staff else (online, phone)
+    real = shared_r.transact
+    results = {}
+
+    def interleaved(items):
+        if not results:
+            results["second"] = None  # the second request commits normally
+            results["second"] = second()
+        return real(items)
+
+    monkeypatch.setattr(shared_r, "transact", interleaved)
+    results["first"] = first()
+    monkeypatch.setattr(shared_r, "transact", real)
+
+    codes = sorted([results["first"]["statusCode"], results["second"]["statusCode"]])
+    assert codes == [201, 409], results
+    loser = results["first"] if results["first"]["statusCode"] == 409 else results["second"]
+    assert body_of(loser) == err("table_taken")
+    assert free_tables_at(env, "18:00") == [] and free_tables_at(env, "18:30") == []
+    booked = [b for b in body_of(staff_list(env))["items"] if "table-b" in b["tableIds"]]
+    assert len(booked) == 1
+
+
+def test_a_party_of_two_may_take_every_free_table_one_by_one(env):
+    """The tester's case: the same party size booked again and again gets a
+    different free table each time (no covers-per-slot limit exists), and
+    once every table is taken the next booking is refused - never a table
+    twice."""
+    assert guest_booking(env, tables=("table-a",), party=2)["statusCode"] == 201
+    assert guest_booking(env, tables=("table-b",), party=2)["statusCode"] == 201
+    # table-c (6 seats) is for 3-6 guests online; staff may still seat two there.
+    assert staff_booking(env, tableIds=["table-c"], partySize=2)["statusCode"] == 201
+    assert free_tables_at(env, "18:00") == []
+    for table in ("table-a", "table-b"):
+        again = guest_booking(env, tables=(table,), party=2)
+        assert again["statusCode"] == 409 and body_of(again) == err("table_taken")
+    assert staff_booking(env, tableIds=["table-c"], partySize=2)["statusCode"] == 409
+    # An overlapping later start is refused too (bookings last two hours).
+    assert staff_booking(env, tableIds=["table-a"], partySize=2, startTime="19:00")["statusCode"] == 409
+
+
 @pytest.mark.parametrize("change, message", [
     ({"startTime": "18:15"}, "startTime is not a bookable time"),
     ({"tableIds": ["table-x"]}, "isn't bookable"),

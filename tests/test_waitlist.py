@@ -87,6 +87,10 @@ def env(monkeypatch):
         on = features_on("waitlist")
         resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, features=on, slug="bistro-a"))
         resource.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B, features=on, slug="bistro-b"))
+        # The slug site onboarding sets up (DOMAIN# kind platform): links go there.
+        resource.Table(TENANT_TABLE).put_item(Item={
+            "PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#bistro-a.dev.booqy.se",
+            "domain": "bistro-a.dev.booqy.se", "kind": "platform", "status": "active"})
         for tenant_id, loc in ((TENANT_A, LOC_A), (TENANT_A, LOC_A2), (TENANT_B, LOC_B)):
             resource.Table(LOCATION_TABLE).put_item(Item=location_item(tenant_id, loc))
             publish_layout(resource, loc)

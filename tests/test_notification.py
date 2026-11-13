@@ -4,8 +4,10 @@ are moto, so tenant/location/domain lookups and the manage link are real."""
 
 import email
 import importlib.util
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import boto3
 import pytest
@@ -195,12 +197,54 @@ def test_prod_without_a_domain_links_to_the_slug_address(env, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv("SITE_DOMAIN", "booqy.se")
     tenants = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
-    tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
-                        UpdateExpression="SET slug = :s", ExpressionAttributeValues={":s": "roma"})
+    # The row onboarding writes with the slug's distribution tenant.
+    tenants.put_item(Item={"PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#roma.booqy.se",
+                           "domain": "roma.booqy.se", "kind": "platform", "status": "active"})
     shared_tenant.reset_caches()
     run(module, record(booking(), event_name="INSERT"))
     text = ses.calls[0]["Message"]["Body"]["Text"]["Data"]
     assert f"https://roma.booqy.se/bokning/{LOC_A}/" in text and "restaurang=" not in text
+
+
+# The guest site's route for the manage link (customer-front-end src/App.tsx:
+# <Route path="bokning/:locationId/:reservationId">), the token in the fragment.
+_GUEST_ROUTE = re.compile(r"/bokning/(?P<location>[^/?#]+)/(?P<reservation>[^/?#]+)")
+
+
+def _sms_link(text):
+    return next(word for word in text.split() if word.startswith("https://"))
+
+
+def test_sms_link_without_a_slug_site_goes_to_the_shared_dev_site(env, monkeypatch):
+    """A tenant onboarded before <slug>.dev.booqy.se sites (no kind-platform
+    row, so no distribution tenant: the host fails TLS) - as the tester's
+    test-restaurang-2. The SMS link must open the guest site's manage page,
+    not the dead slug host."""
+    module, _, sns = env
+    monkeypatch.setenv("SITE_DOMAIN", "dev.booqy.se")
+    item = booking()
+    run(module, record(item, event_name="INSERT"))
+    link = urlsplit(_sms_link(sns.calls[0]["Message"]))
+    assert link.scheme == "https" and link.netloc == "dev123.cloudfront.net"
+    route = _GUEST_ROUTE.fullmatch(link.path)
+    assert route and route["location"] == LOC_A and route["reservation"] == "a" * 32
+    assert parse_qs(link.query) == {"restaurang": ["roma"]}
+    assert manage_link.matches(item, link.fragment)
+
+
+def test_sms_link_with_a_slug_site_resolves_to_the_guest_route(env, monkeypatch):
+    module, _, sns = env
+    monkeypatch.setenv("SITE_DOMAIN", "dev.booqy.se")
+    boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).put_item(Item={
+        "PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#roma.dev.booqy.se",
+        "domain": "roma.dev.booqy.se", "kind": "platform", "status": "active"})
+    item = booking()
+    run(module, record(item, event_name="INSERT"))
+    link = urlsplit(_sms_link(sns.calls[0]["Message"]))
+    assert link.netloc == "roma.dev.booqy.se" and link.query == ""
+    route = _GUEST_ROUTE.fullmatch(link.path)
+    assert route and route["location"] == LOC_A and route["reservation"] == "a" * 32
+    assert manage_link.matches(item, link.fragment)
 
 
 def test_same_notice_id_is_never_sent_twice(env):

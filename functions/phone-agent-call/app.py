@@ -8,6 +8,9 @@ TRIGGER:
         (CONTRACTS.md lists L13/L14 as API Gateway routes; feature-routes.tf sends a feature's
         routes to its API Lambda only, so until that hotspot allows a second integration the
         providers call these paths on this function's URL; reported in STATUS.md.)
+    Direct invoke {"lexV2": <Lex V2 code hook event>} from the relay Lambda next to
+                                                     the Amazon Connect test line (Frankfurt): one caller
+                                                     utterance -> the Lex response with the reply
     Lambda Function URL -- POST /v1/chat/completions (OpenAI-compatible; header x-booqy-agent-key =
                                                      the `${prefix}phone-agent/llm-endpoint-key` secret)
                                                      the agent turn endpoint: one caller utterance -> reply
@@ -470,6 +473,62 @@ def updated_or(call):
     return calls.get_call(call["tenantId"], call["callId"]) or call
 
 
+# --- Amazon Connect + Lex V2 (the AWS-only test line, owner 2026-11-13) -----------------------
+
+LEX_CALL_PREFIX = "connect-"
+
+
+def _lex_answer(event, text, *, close=False, attributes=None):
+    """A Lex V2 code hook response: say `text`, then listen again (ElicitIntent)
+    or end the conversation (Close; the Connect flow hangs up)."""
+    state = {"sessionAttributes": {**((event.get("sessionState") or {}).get("sessionAttributes") or {}),
+                                   **(attributes or {})}}
+    if close:
+        intent = dict((event.get("sessionState") or {}).get("intent") or {"name": "FallbackIntent"})
+        intent["state"] = "Fulfilled"
+        state.update({"dialogAction": {"type": "Close"}, "intent": intent})
+    else:
+        state["dialogAction"] = {"type": "ElicitIntent"}
+    return {"sessionState": state, "messages": [{"contentType": "PlainText", "content": text or "..."}]}
+
+
+def lex_turn(event):
+    """One caller utterance from the Lex V2 bot on the Connect test number.
+
+    Amazon Connect plays the greeting with the art. 50 disclosure (the flow's
+    first prompt) and starts the Lex bot with the called and calling numbers
+    as session attributes; Lex (sv_SE) transcribes, this answers with the
+    agent's reply, which Connect speaks with Polly (Elin). The first utterance
+    starts the call row like a provider's call_started; the greeting the flow
+    played is the disclosure evidence."""
+    attrs = (event.get("sessionState") or {}).get("sessionAttributes") or {}
+    session_id = event.get("sessionId") or ""
+    text = " ".join(str(event.get("inputTranscript") or "").split())
+    at = pa.now()
+    call_ref = LEX_CALL_PREFIX + session_id
+    call = None
+    if attrs.get("tenantId") and attrs.get("callId"):
+        call = calls.get_call(attrs["tenantId"], attrs["callId"])
+    if call is None:
+        call = start_call(call_ref=call_ref, caller=attrs.get("callerNumber"), to=attrs.get("dialedNumber"), at=at)
+        if call is None:
+            return _lex_answer(event, copy.REFUSED["sv"], close=True)
+        if call.get("status") == "answered":
+            calls.disclosed(call, at, spoken=(call.get("disclosure") or {}).get("text"))
+            call = calls.get_call(call["tenantId"], call["callId"]) or call
+    ids = {"tenantId": call["tenantId"], "callId": call["callId"]}
+    if call.get("status") not in ("answered", "disclosed", "talking", "transferring"):
+        return _lex_answer(event, copy.REFUSED["sv"] if call.get("outcome") == "refused" else "", close=True,
+                           attributes=ids)
+    if not text:
+        return _lex_answer(event, "Hallå? Jag hörde inte riktigt, kan du säga det igen?", attributes=ids)
+    reply, actions = run_call_turn(call, text, at)
+    names = {a["name"] for a in actions}
+    current = calls.get_call(call["tenantId"], call["callId"]) or call
+    done = "end_call" in names or current.get("status") in ("ended", "processed")
+    return _lex_answer(event, reply, close=done, attributes=ids)
+
+
 # --- dispatch ----------------------------------------------------------------------------
 
 ROUTES = {
@@ -479,6 +538,12 @@ ROUTES = {
 
 
 def handler(event, context=None):
+    if isinstance(event, dict) and isinstance(event.get("lexV2"), dict):  # the relay in Connect's region
+        try:
+            return lex_turn(event["lexV2"])
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(json.dumps({"route": "lex", "aws": type(exc).__name__}))
+            return _lex_answer(event["lexV2"], "Förlåt, något gick fel. Ring gärna igen om en stund.", close=True)
     method, path = http.route(event)
     try:
         if event.get("routeKey") in (None, "$default"):  # the Function URL: route by path

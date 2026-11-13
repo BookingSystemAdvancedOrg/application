@@ -465,3 +465,51 @@ def test_turn_endpoint_answers_on_the_paths_elevenlabs_may_use(live):
                                      {"role": "user", "content": "Har ni något vegetariskt på menyn?"}]})})
         assert out["statusCode"] == 200 and out["headers"]["Content-Type"] == "text/event-stream", path
 
+
+
+# --- the Amazon Connect + Lex V2 test line ---------------------------------------------------------
+
+def lex(e, session, text, attrs=None):
+    event = {"sessionId": session, "inputTranscript": text, "invocationSource": "DialogCodeHook",
+             "bot": {"localeId": "sv_SE"}, "sessionState": {
+                 "intent": {"name": "FallbackIntent", "state": "InProgress"},
+                 "sessionAttributes": attrs or {"callerNumber": CALLER, "dialedNumber": NUMBER}}}
+    out = e.live.handler({"lexV2": event})
+    return out, out["sessionState"]["sessionAttributes"]
+
+
+def test_connect_lex_call_books_a_table_in_swedish(live):
+    live.invoke.layout = None
+    live.availability.set(TOMORROW, ["17:30", "18:00", "20:30", "21:00"])
+    out, attrs = lex(live, "contact-1", "Hej, jag vill boka ett bord för fyra imorgon klockan 19")
+    assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
+    assert "17:30, 18:00 eller 20:30" in out["messages"][0]["content"]
+    call_row = live.live.calls.get_call(attrs["tenantId"], attrs["callId"])
+    assert call_row["callRef"] == "connect-contact-1" and call_row["disclosure"]["playedAt"]
+    for text in ("Klockan 18", "Ja", "Jag heter Anna"):
+        out, attrs = lex(live, "contact-1", text, attrs)
+    assert "Klart, du är bokad" in out["messages"][0]["content"]
+    assert len(live.invoke.reservations) == 1
+    turns = pa.query_all(pa.tenant_pk(TENANT_A), call_row["SK"] + "#T#")
+    assert "AI-assistent" in turns[0]["text"]                       # the greeting the flow played comes first
+
+
+def test_connect_lex_call_ends_when_the_agent_ends_it(live):
+    out, attrs = lex(live, "contact-2", "Hej")
+    live.model.responses = [
+        {"tool_uses": [{"id": "u1", "name": "end_call", "input": {"outcome": "info", "summary": "Hälsade"}}]},
+        Turn(text="Tack för samtalet, hej då."),
+    ]
+    out, _ = lex(live, "contact-2", "Tack, det var allt", attrs)
+    assert out["sessionState"]["dialogAction"] == {"type": "Close"}
+    assert out["sessionState"]["intent"]["state"] == "Fulfilled"
+
+
+def test_connect_lex_unknown_number_or_refused_call_is_closed(live):
+    out, _ = lex(live, "contact-3", "Hej", {"callerNumber": CALLER, "dialedNumber": "+4699999999"})
+    assert out["sessionState"]["dialogAction"]["type"] == "Close"
+    status, loc = call(live, "GET", L)
+    call(live, "POST", L + "/kill-switch", body={"on": True, "version": loc["version"]})
+    out, _ = lex(live, "contact-4", "Hej")
+    assert out["sessionState"]["dialogAction"]["type"] == "Close"
+    assert out["messages"][0]["content"].startswith("Tyvärr kan vi inte")

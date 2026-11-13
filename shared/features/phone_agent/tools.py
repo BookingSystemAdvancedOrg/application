@@ -453,9 +453,9 @@ class Executor:
         if outcome in pa.OUTCOMES and outcome not in ("refused",):
             self.state.setdefault("outcome", outcome)
         self.state["summary"] = " ".join(str(args.get("summary") or "").split())[:200]
-        if getattr(self.voice, "deferred_tools", False):
-            self.state.setdefault("providerActions", []).append(
-                {"name": "end_call", "arguments": {"reason": str(args.get("outcome") or "done")}})
+        # The channel hangs up after this reply (ElevenLabs: its end_call tool; Connect: Lex Close).
+        self.state.setdefault("providerActions", []).append(
+            {"name": "end_call", "arguments": {"reason": str(args.get("outcome") or "done")}})
         return {"ok": True}
 
     def counter_offer(self) -> str:

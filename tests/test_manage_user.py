@@ -2279,3 +2279,69 @@ def test_staff_still_cannot_use_the_owner_routes(app_state):
     app, _, _ = app_state
     response = app.handler(make_event(method="GET", proxy=TARGET_SUB, groups='["staff_user"]'), None)
     assert response["statusCode"] == 403
+
+
+BACKDROPS_BUCKET = "test-user-backdrops"
+
+
+def _backdrops_bucket(monkeypatch):
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    s3 = boto3.client("s3", region_name="eu-north-1")
+    s3.create_bucket(
+        Bucket=BACKDROPS_BUCKET,
+        CreateBucketConfiguration={"LocationConstraint": "eu-north-1"},
+    )
+    return s3
+
+
+def test_delete_also_deletes_the_users_backdrop_image(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    s3 = _backdrops_bucket(monkeypatch)
+    put_user(user_table)
+    own = f"admin/{TENANT_A}/{TARGET_SUB}/backdrop"
+    other = f"admin/{TENANT_A}/{CALLER_SUB}/backdrop"
+    for key in (own, other):
+        s3.put_object(Bucket=BACKDROPS_BUCKET, Key=key, Body=b"img")
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BACKDROPS_BUCKET).get("Contents", [])]
+    assert keys == [other]
+    cognito.admin_delete_user.assert_called_once()
+
+
+def test_delete_without_a_backdrop_image_still_succeeds(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    _backdrops_bucket(monkeypatch)
+    put_user(user_table)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert get_user(user_table) is None
+
+
+def test_backdrop_delete_failure_keeps_the_user_for_a_retry(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    s3 = Mock()
+    s3.delete_object.side_effect = client_error("AccessDenied", "DeleteObject")
+    monkeypatch.setattr(app, "_s3_client", s3)
+    original = user_item()
+    put_user(user_table, original)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 503, err("user service unavailable"))
+    assert get_user(user_table) == original
+    cognito.admin_delete_user.assert_not_called()

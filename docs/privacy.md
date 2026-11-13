@@ -64,6 +64,8 @@ in section 5.
 | Backups | DynamoDB point-in-time recovery | Disaster recovery | Legitimate interest | 35 days rolling (deleted rows disappear from backups after that) | Booqy operators |
 | Restaurant (tenant) profile: company, org.nr, VAT nr, contacts, privacy notice text | tenant table `PROFILE` | Run the service | Contract with the restaurant | While a customer; 90 days after offboarding a tombstone without personal data (`tenant-purge`) | Owners; Booqy Console operators |
 | Staff users: name, e-mail, phone, role | Cognito + user table | Log-in and access control | Contract with the restaurant | While active; deleted 90 days after offboarding | Owners; Booqy Console operators |
+| Own background image of a staff user or owner (a photo they upload, may show people) | S3 `user-backdrops`, `admin/<tenantId>/<sub>/backdrop` (one per user, private, encrypted) | Personalise the user's own admin screens | Contract with the restaurant (the user's own choice) | Until the user deletes or replaces it; deleted with the user (`manage-user`) and with the restaurant (`tenant-purge`) | Only the user, through a one-hour presigned link |
+| Own background image of a Booqy Console operator | S3 `user-backdrops`, `console/<sub>/backdrop` | Personalise the operator's own console | Legitimate interest (Booqy's own staff) | Until the operator deletes or replaces it; deleted when the operator account is deleted | Only the operator, through a one-hour presigned link |
 | Booqy's invoices to restaurants, usage counts | finance table, Stripe | Billing in arrears | Contract; legal obligation | 7 years. Never touched by the guest retention job | Booqy Console operators |
 
 ## 3. Consent log

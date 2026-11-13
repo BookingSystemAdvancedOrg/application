@@ -63,6 +63,8 @@ EXPECTED_OPERATIONS = {
         {"put", "delete"}
     ),
     "/menu-images/presigned-url": frozenset({"get"}),
+    "/me/backdrop": frozenset({"get", "delete"}),
+    "/me/backdrop/upload": frozenset({"post"}),
     "/list-users": frozenset({"get"}),
     "/users/invite": frozenset({"post"}),
     "/users/{cognitoSub}": frozenset({"get", "put", "delete"}),
@@ -239,6 +241,9 @@ STAFF_OPERATIONS = frozenset(
     {
         ("/users/me/guide", "get"),
         ("/users/me/guide", "put"),
+        ("/me/backdrop", "get"),
+        ("/me/backdrop", "delete"),
+        ("/me/backdrop/upload", "post"),
         ("/locations/{locationId}", "get"),
         ("/locations/{locationId}/tables/{tableId}/block", "post"),
         ("/locations/{locationId}/menu/items", "get"),

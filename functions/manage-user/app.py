@@ -40,13 +40,17 @@ ENV_VARS:
     TENANT_TABLE_NAME / LOCATION_TABLE_NAME / LOCATION_ID_INDEX_NAME --
         tenant context (shared/tenant.py)
     COGNITO_USER_POOL_ID -- Target user pool for the Cognito admin calls
+    USER_BACKDROPS_BUCKET_NAME -- user-backdrops bucket: deleting a user
+        also deletes their own background image
+        (admin/<tenantId>/<sub>/backdrop, user-backdrop); empty = skipped
 
 AWS RESOURCE ACCESS:
     Full dynamodb:* on the User table. Cognito AdminCreateUser,
     AdminDeleteUser, AdminDisableUser, AdminEnableUser,
     AdminUpdateUserAttributes, AdminAddUserToGroup,
     AdminRemoveUserFromGroup, AdminGetUser, and AdminListGroupsForUser on the
-    configured user pool.
+    configured user pool. s3:DeleteObject under admin/ in the user-backdrops
+    bucket.
 
 NOTES:
     User listing uses the DynamoDB directory mirror so it does not make one
@@ -163,6 +167,7 @@ _COGNITO_ERROR_MAPPING = {
 }
 
 _cognito_client = None
+_s3_client = None
 _logger = logging.getLogger(__name__)
 
 
@@ -189,6 +194,31 @@ def _get_cognito_client():
         _cognito_client = boto3.client("cognito-idp")
 
     return _cognito_client
+
+
+def _get_s3_client():
+    global _s3_client
+
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+
+    return _s3_client
+
+
+def _delete_backdrop(target_sub):
+    """The user's own background image (user-backdrop). Before Cognito and
+    the profile: a failure here leaves the user intact for a retry, and S3
+    deletes are idempotent."""
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    if not bucket:
+        return
+    tenant_id = _TENANT_ID.get()
+    if "/" in tenant_id or "/" in target_sub:
+        raise _UserServiceFailure
+    _get_s3_client().delete_object(
+        Bucket=bucket,
+        Key=f"admin/{tenant_id}/{target_sub}/backdrop",
+    )
 
 
 def _user_response(status_code, body, *, headers=None):
@@ -1077,6 +1107,8 @@ def _delete_user(caller_sub, caller_groups, target_sub):
         target,
         action="delete",
     )
+
+    _delete_backdrop(target_sub)
 
     try:
         _get_cognito_client().admin_delete_user(

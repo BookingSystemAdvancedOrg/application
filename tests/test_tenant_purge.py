@@ -408,3 +408,26 @@ def test_no_query_filters_on_a_key_attribute(env):
         assert env["app"].handler({}, Context())["purged"] == [GONE]
     finally:
         events.unregister("before-call.dynamodb.Query", check)
+
+
+def test_users_backdrop_images_are_deleted_with_the_restaurant(env, monkeypatch):
+    bucket = "test-user-backdrops"
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", bucket)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for sub in ("owner-sub", "staff-sub"):
+            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrop", Body=b"img")
+    s3.put_object(Bucket=bucket, Key="console/operator-sub/backdrop", Body=b"img")
+
+    result = env["app"].handler({}, Context())
+
+    assert result["purged"] == [GONE]
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == ["admin/" + KEEP + "/owner-sub/backdrop", "admin/" + KEEP + "/staff-sub/backdrop",
+                    "console/operator-sub/backdrop"]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["backdrops"] == 2

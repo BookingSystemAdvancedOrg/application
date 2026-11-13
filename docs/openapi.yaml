@@ -2785,6 +2785,110 @@ paths:
         '503':
           $ref: '#/components/responses/ImageUploadServiceUnavailable'
 
+  /me/backdrop:
+    get:
+      tags:
+        - Media
+      summary: The caller's own background image
+      operationId: getUserBackdrop
+      description: |
+        The signed-in user's own background image (shown blurred behind the
+        admin app's glass UI, on every device). `url` is a one-hour presigned
+        S3 GET of `admin/{tenantId}/{sub}/backdrop`, a new one on every call;
+        both fields are null when the user has no image.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The image link, or nulls.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBackdrop'
+              example:
+                url: https://user-backdrops.s3.eu-north-1.amazonaws.com/admin/01aaaaaaaaaaaaaaaaaaaaaaaa/sub/backdrop?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=3600
+                updatedAt: '2026-11-13T20:00:00Z'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+    delete:
+      tags:
+        - Media
+      summary: Delete the caller's own background image
+      operationId: deleteUserBackdrop
+      description: Deletes the image. Idempotent (204 also when there is none).
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '204':
+          description: Deleted (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrop/upload:
+    post:
+      tags:
+        - Media
+      summary: Create an upload for the caller's own background image
+      operationId: createUserBackdropUpload
+      description: |
+        An S3 presigned POST (valid 300 s) for the caller's fixed key: the
+        policy binds the key, `Content-Type` to the requested type and the
+        size to 1 B to 10 MB. POST multipart form data to `url` with every
+        entry of `fields` and then the file (field name `file`), then call
+        GET /me/backdrop. A new upload replaces the old image.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserBackdropUploadRequest'
+            example:
+              contentType: image/webp
+              size: 482113
+      responses:
+        '200':
+          description: The presigned POST.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBackdropUpload'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
   /tenant:
     get:
       tags:
@@ -11516,6 +11620,62 @@ components:
         - image/png
         - image/webp
 
+    UserBackdrop:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - updatedAt
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: One-hour presigned S3 GET, or null when there is no image.
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the image was last uploaded (UTC), or null.
+
+    UserBackdropUploadRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - contentType
+        - size
+      properties:
+        contentType:
+          type: string
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+        size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+          description: File size in bytes.
+
+    UserBackdropUpload:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - fields
+      properties:
+        url:
+          type: string
+          format: uri
+          description: The bucket's regional endpoint to POST to.
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Form fields to send first, unchanged (key, Content-Type, policy,
+            signature fields).
+
     MenuImageUpload:
       type: object
       additionalProperties: false
@@ -12249,6 +12409,18 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout version service unavailable
+    BackdropServiceUnavailable:
+      description: S3 did not answer; try again.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: service_unavailable
+
     ImageUploadServiceUnavailable:
       description: A temporary S3 upload capability could not be generated.
       headers:

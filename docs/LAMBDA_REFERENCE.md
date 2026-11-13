@@ -890,6 +890,7 @@ The function has no Location-table access, so it validates the shape of an assig
 | `ENVIRONMENT` | `dev` or `prod` |
 | `USER_TABLE_NAME` | App-side user record (role, assigned location, etc.) |
 | `COGNITO_USER_POOL_ID` | Target user pool for the Cognito admin calls below |
+| `USER_BACKDROPS_BUCKET_NAME` | User-backdrops bucket: `DELETE /users/<cognitoSub>` first deletes the user's own background image `admin/<tenantId>/<cognitoSub>/backdrop` (a failure there answers `503` and leaves the user for a retry); empty = skipped |
 
 **AWS resource access:**
 - Full `dynamodb:*` on the User table.
@@ -1021,6 +1022,21 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 
 **AWS resource access:** URL generation locally signs the permitted S3 `PutObject` operation; it does not call S3 to inspect or write an object and it does not call any other AWS service. The existing `cloudfront:CreateInvalidation` grant is unused. Correct post-upload invalidation would require both a CloudFront distribution ID and an S3 upload-completion trigger/callback, neither of which is present in this function's trigger or allowed environment-variable contract. If same-key replacement is introduced later, infra and this specification must add those inputs rather than accepting a client-supplied distribution ID or invalidating before the upload succeeds.
 
+### 21a. `user-backdrop`
+**Trigger:** API Gateway - `GET /me/backdrop`, `POST /me/backdrop/upload`, `DELETE /me/backdrop` - Auth: `JWT` (owners and staff)
+**Purpose:** The signed-in user's own background image in Booqy Admin, shown blurred behind the glass UI on every device. One object per user at `admin/<tenantId>/<sub>/backdrop` (tenant and sub from the token only), so there is no pointer row: HeadObject says whether there is one, LastModified is `updatedAt`, a new upload overwrites the old one.
+
+| Route | Request | Success |
+|---|---|---|
+| `GET /me/backdrop` | none | `200` `{"url": string\|null, "updatedAt": string\|null}`: a one-hour presigned GET, or nulls when there is no image |
+| `POST /me/backdrop/upload` | `{"contentType": "image/jpeg"\|"image/png"\|"image/webp", "size": <bytes>}` | `200` `{"url", "fields"}`: an S3 presigned POST bound to the exact key, `Content-Type` equal to the given type and `content-length-range` 1 to 10485760, valid 300 s. The browser posts multipart form data (the fields, then the file) to `url`, then calls `GET` |
+| `DELETE /me/backdrop` | none | `204`, idempotent |
+
+Other content types, a size outside 1 B to 10 MB, unknown fields or bad JSON answer `400`; no tenant claim `403`; an inactive tenant `403 tenant_inactive`; S3 failures a sanitised `503 service_unavailable`. Every response has `Cache-Control: no-store`. Logs carry the route, status and role only.
+
+**Environment variables:** `ENVIRONMENT`, `TENANT_TABLE_NAME`, `LOCATION_TABLE_NAME`, `LOCATION_ID_INDEX_NAME`, `USER_BACKDROPS_BUCKET_NAME`.
+**AWS resource access:** `s3:PutObject` (signs the presigned POST), `s3:GetObject` (HeadObject, presigned GET) and `s3:DeleteObject` on `<bucket>/admin/*`; no `s3:ListBucket`, so HeadObject of a missing image answers 403, read as "no image". The tenant-context read of the tenant table. Deleted with the user (`manage-user`) and the restaurant (`tenant-purge`).
+
 ---
 
 ## Food orders
@@ -1080,7 +1096,7 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 
 ### 30. `tenant-purge`
 **Trigger:** EventBridge Scheduler (`tenant_purge_schedule`: nightly in production, hourly in dev); continues itself asynchronously near its timeout
-**Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
+**Purpose:** Deletes an offboarded restaurant's data once `purgeAt` (offboarded + `tenant_data_retention_days`) has passed: every `LOCATION#` partition, catering history, marketing, users (DynamoDB and Cognito), menu images, every user's own background image (`admin/<tenantId>/` in the user-backdrops bucket, `USER_BACKDROPS_BUCKET_NAME`), audit rows and domain orders; auto-renew off for domains registered through us; unused hosted zones deleted. Leaves a tombstone PROFILE (`status = purged`, no personal data), the slug and Stripe claims, and catering documents. Idempotent; one summary email per run that did something.
 
 ### 30b. `site-repo`
 **Trigger:** direct invoke only: tenant-onboarding `{"action": "provision"}` after the tenant is active, tenant-offboarding `{"action": "archive"}`, platform-tenants for the Website tab (`status`, `provision` = Retry, `invite`, `redeploy`, `archive`)
@@ -1169,6 +1185,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Streams (Reservation and Order tables, filtered on a notice) | n/a |
 | 21 | `pre-signed-url` | API GW `GET /menu-images/presigned-url` | JWT |
+| 21a | `user-backdrop` | API GW `GET /me/backdrop`, `POST /me/backdrop/upload`, `DELETE /me/backdrop` | JWT (owners and staff) |
 | 22 | `payment-intent` | API GW `POST /order` | NONE |
 | 23 | `webhook-payment-intent` | Function URL (Stripe order payments) | Stripe signature |
 | 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |

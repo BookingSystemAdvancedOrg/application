@@ -53,7 +53,8 @@ TOOLS = [
     {"name": "cancel_reservation", "description": "Cancel a booking found by find_reservations.",
      "input_schema": {"type": "object", "required": ["reservationId"], "properties": {
          "reservationId": {"type": "string"}, "reason": {"type": "string"}}}},
-    {"name": "get_menu", "description": "Dishes on the menu matching a question.",
+    {"name": "get_menu", "description": "Dishes on today's menu matching a question, with prices. A dish that is "
+                                        "not listed is not available today.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}},
     {"name": "transfer_to_staff", "description": "Transfer the caller to the restaurant.",
      "input_schema": {"type": "object", "required": ["reason"], "properties": {"reason": {"type": "string"}}}},

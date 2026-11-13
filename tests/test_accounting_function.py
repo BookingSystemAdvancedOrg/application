@@ -19,7 +19,7 @@ from shared import dynamo as shared_dynamo
 from shared import stripe_client
 from tenant_support import (LOC_A, LOC_B, OWNER_A_SUB, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE,
                             create_tables, tenant_claims, tenant_row)
-from test_card_payments import load_fn, location_item
+from tenant_support import load_fn, location_item
 from test_accounting import parse_sie
 
 ACCOUNT = "acct_roma"
@@ -49,7 +49,6 @@ class FakeBalance:
             {"id": "txn_1", "type": "charge", "amount": 34900, "fee": 610, "currency": "sek", "created": start},
             {"id": "txn_2", "type": "charge", "amount": 40000, "fee": 700, "currency": "sek", "created": start + 9},
             {"id": "txn_3", "type": "payout", "amount": -50000, "fee": 0, "currency": "sek", "created": start + 99},
-            {"id": "txn_4", "type": "charge", "amount": 5300, "fee": 0, "currency": "sek", "created": start + 86400},
         ]
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):

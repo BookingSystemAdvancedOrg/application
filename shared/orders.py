@@ -636,7 +636,6 @@ def staff_view(item):
         "cancelledAt": item.get("cancelledAt"),
         "refund": item.get("refund"),
         "paymentMethod": item.get("paymentMethod"),
-        "cardPaymentId": item.get("cardPaymentId"),
         "history": item.get("history") or [],
     })
     return {k: v for k, v in view.items() if v is not None}

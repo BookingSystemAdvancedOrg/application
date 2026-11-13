@@ -23,7 +23,7 @@ from shared import control_system as cs
 from shared import control_system_fiskaly as fk
 from shared import dynamo as shared_dynamo
 from shared import kassa_receipt, print_ticket
-from test_card_payments import location_item
+from tenant_support import location_item
 from test_kassa import LOC_A, TENANT_A, TENANT_TABLE, bill, call, env, journal, pay, register, sale  # noqa: F401
 
 CREDS = {"key": TEST_KEY, "secret": TEST_SECRET, "env": "TEST"}
@@ -732,7 +732,7 @@ def with_fiskaly(env, monkeypatch):
         Name="booqy/dev/fiskaly-sign-se",
         SecretString=json.dumps({"api_key": TEST_KEY, "api_secret": TEST_SECRET, "env": "TEST"}))
     env["res"].Table("test-location").put_item(Item=location_item(
-        TENANT_A, LOC_A, {"accountId": "acct_roma", "locationId": "tml_a1"}, address="Götgatan 1, 116 21 Stockholm"))
+        TENANT_A, LOC_A, address="Götgatan 1, 116 21 Stockholm"))
     from shared import tenant as shared_tenant
     shared_tenant.reset_caches()
     return {**env, "fiskaly": fake}
@@ -789,9 +789,9 @@ def test_kassa_blocks_the_card_payment_when_fiskaly_cannot_be_reached(with_fiska
     b = bill(env, rid)
     env["fiskaly"].fail = [("/systems", 503)] * 20
     status, body = call(env, "POST", f"bills/{b['billId']}/payments",
-                        body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": b["total"]})
+                        body={"checkoutId": "a" * 32, "amount": b["total"]})
     assert status == 503 and body["error"] == "control_system_unreachable"
-    assert env["stripe"].count("/v1/payment_intents") == 0
+    assert call(env, "GET", f"bills/{b['billId']}")[1]["payments"] == []
     env["fiskaly"].fail = []
     state = call(env, "GET")[1]
     assert state["registers"][0]["controlSystem"]["ok"] is True       # the outage ends on the next good answer

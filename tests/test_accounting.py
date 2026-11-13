@@ -57,7 +57,7 @@ def order(oid, rows_, total=None, *, paid="2026-10-20T10:00:00Z", method=None, r
 def test_a_day_of_orders_balances_with_vat_per_rate():
     events = acc.order_events([
         order("o1", rows((12, 22400), (25, 12500))),
-        order("o2", rows((6, 10600)), method="card_present"),
+        order("o2", rows((6, 10600))),
     ], DAY, DAY, TZ)
     entry = acc.build_entry(DAY, events, settings())
     assert entry.balanced
@@ -65,8 +65,7 @@ def test_a_day_of_orders_balances_with_vat_per_rate():
     assert got["3002"] == -20000 and got["2621"] == -2400
     assert got["3001"] == -10000 and got["2611"] == -2500
     assert got["3003"] == -10000 and got["2631"] == -600
-    assert lines(entry)[("1580", acc.T_ONLINE)] == 34900
-    assert lines(entry)[("1580", acc.T_TERMINAL)] == 10600
+    assert lines(entry)[("1580", acc.T_ONLINE)] == 45500
     assert "3740" not in got
 
 
@@ -140,31 +139,15 @@ def test_kassa_receipts_and_returns():
     got = by_account(entry)
     assert got["3001"] == 0 if "3001" in got else True
     assert got["3002"] == -20000 and got["1580"] == 22400
-    assert lines(entry)[("1580", "Återbetalt, kort i restaurangen (Stripe Terminal)")] == -12500
+    assert lines(entry)[("1580", acc.T_CARD_TERMINAL)] == 34900
+    assert lines(entry)[("1580", "Återbetalt, kort i kassan (egen kortterminal)")] == -12500
 
 
-def test_free_amounts_on_the_card_reader_use_the_chosen_vat_rate():
-    payments = [
-        {"paymentId": "p1", "status": "succeeded", "amount": 11200, "paidAt": "2026-10-20T09:00:00Z",
-         "vatRate": 12, "vat": rows((12, 11200))},
-        {"paymentId": "p2", "status": "refunded", "amount": 12500, "paidAt": "2026-10-19T09:00:00Z",
-         "vatRate": 25, "vat": rows((25, 12500)), "refund": {"amount": 12500, "at": "2026-10-20T10:00:00Z"}},
-    ]
-    entry = acc.build_entry(DAY, acc.card_events(payments, DAY, DAY, TZ), settings())
-    assert entry.balanced and not entry.warnings
-    assert by_account(entry) == {"3002": -10000, "2621": -1200, "3001": 10000, "2611": 2500, "1580": -1300}
-
-
-def test_older_free_amounts_without_a_rate_go_to_the_obs_account():
-    payments = [
-        {"paymentId": "p1", "status": "succeeded", "amount": 5000, "paidAt": "2026-10-20T09:00:00Z"},
-        {"paymentId": "p2", "status": "succeeded", "amount": 9000, "paidAt": "2026-10-20T09:00:00Z", "orderId": "o1"},
-        {"paymentId": "p3", "status": "succeeded", "amount": 7000, "paidAt": "2026-10-20T09:00:00Z", "kassaBillId": "b"},
-        {"paymentId": "p4", "status": "failed", "amount": 7000, "paidAt": "2026-10-20T09:00:00Z"},
-    ]
-    entry = acc.build_entry(DAY, acc.card_events(payments, DAY, DAY, TZ), settings())
-    assert by_account(entry) == {"1580": 5000, "2999": -5000}
-    assert "OBS-konto" in entry.warnings[0] and "Äldre" in entry.warnings[0]
+def test_kassa_cards_go_to_their_own_account_not_stripe():
+    sale = {"type": "kassakvitto", "local": "2026-10-20T19:10:00",
+            "data": {"total": 11200, "vat": rows((12, 11200)), "payments": [{"method": "Kort", "amount": 11200}]}}
+    entry = acc.build_entry(DAY, acc.kassa_events([sale], TZ), settings(cardTerminal="1581"))
+    assert entry.balanced and by_account(entry) == {"3002": -10000, "2621": -1200, "1581": 11200}
 
 
 def test_card_guarantee_fees_include_12_percent_vat_and_their_refund_reverses_it():

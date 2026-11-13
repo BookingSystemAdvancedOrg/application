@@ -66,7 +66,7 @@ system "i funktion" before it registers a sale or a return (KRAV 4 kap. 9 §).
 | f/g. articles and quantity | the menu item name as programmed (never editable at the till, KRAV 6 kap. 4 §) and the quantity |
 | h. amount per article incl. VAT, total | line totals and the total, kronor and öre; the unit price ("à 149,00") under a line with more than one |
 | i/j. VAT and VAT per rate | per rate (6/12/25 %), computed per line after discount |
-| k. payment method | "Kort" with brand and last four digits per card payment (split payments listed) |
+| k. payment method | "Kort" per card payment (split payments listed); the card is paid on the restaurant's own terminal, so Kassa has no card details |
 | l. control system manufacturing number | from the control system: fiskaly's kontrollserverns ID (17 characters) as each receipt brings it back; `ISTCSKS0000000011` in LIVE per FSK, `ISTCSKSVERIFY0001` in TEST; the simulator's `BOOQYSIMULATOR001` |
 | m. "Elektroniskt kassakvitto" | printed on e-mailed receipts |
 | control code | printed under the total, never shortened, in even rows of at most 30 characters (fits 58 mm paper, 32 columns): fiskaly's avstämningskod is 113 characters (4 rows), a control unit's code 59 (2 rows). FSK says printing it is not required; Booqy prints it anyway (KS, and the XML has it) |
@@ -88,7 +88,7 @@ The same fields go on a return receipt (7 kap. 1 § third paragraph).
 ### Returns and corrections (KRAV 2 kap. 19-20 §§, 7 kap. 1 §; ANV 4 kap. 4 §)
 
 - "Retur" on a receipt: staff pick lines and quantities and a reason; the
-  card is refunded (Stripe), then a return receipt with its own number in
+  card is paid back on the restaurant's own terminal, then a return receipt with its own number in
   the receipt series is issued, referencing the original number. Returned
   quantities per receipt are tracked so nothing is returned twice.
 - The return records what was returned (ANV 4 kap. 4 §).
@@ -210,9 +210,11 @@ fiskaly was opened implicitly by the receipt.
   control system such as fiskaly's); the export picks the element by length.
 - When: before the receipt exists. `kassa.finalize` can't write a receipt
   without a code; the code is stored in the journal entry and printed.
-- The till never asks for a code before the card payment has succeeded,
-  but it does check that the control system answers before the card is
-  charged (`status()`), so staff aren't left with money and no receipt.
+- The till never asks for a code before the card payment is registered,
+  but it does check that the control system answers before a card payment
+  is registered (`status()`), and tells staff not to charge the card on
+  the terminal while it doesn't, so they aren't left with money and no
+  receipt.
 - One interface (`ControlSystem`: `status`, `sign`, `register_register`,
   `pause_register`, `close_day`), two implementations: the simulator
   (HMAC-SHA256 code, "BOOQYSIMULATOR001") and fiskaly SIGN SE, the owner's
@@ -307,16 +309,16 @@ the tests against fiskaly's published OpenAPI spec.
   if signing is unreachable the POS halts, rolls back the payment and
   cancels the receipt. KRAV 4 kap. 9 §: no sale without the control system
   "i funktion". So status 2 is treated like any other outage: no receipt,
-  the card is checked before it is charged, and a paid bill stays open
+  the control system is checked before a card payment is registered, and a paid bill stays open
   ("Försök igen" or "Återbetala"). **Osäkert:** FSK's error table also says
   "print with offline text" for status 2; with no offline mode that row
   should not apply, confirm with fiskaly.
 - **Kontantnota: not offered.** FSK describes it as an extreme fallback (a
   separate number series, the customer's signature, the text
-  "Kontantfaktura"). Kassa is card only: a card that can't be charged
-  through Kassa is not charged, and the outage is documented on the
+  "Kontantfaktura"). Kassa is card only: staff don't charge a card on the
+  terminal while Kassa can't register it, and the outage is documented on the
   "Manuell försäljningslista" and reported (felanmälan). **Osäkert:** whether
-  a restaurant that takes cash or a separate card terminal during an outage
+  a restaurant that takes cash or charges its terminal without Kassa during an outage
   must issue kontantnotor; the manual tells staff to ask the owner.
 - Seen in fiskaly TEST (2026-10-26), which settles where the status and the
   code sit: `compliance.data` is one field on INTENTION::OPENING (the
@@ -385,9 +387,10 @@ the tests against fiskaly's published OpenAPI spec.
   503 `control_system_unreachable`, shows "Kontrollsystemet svarar inte -
   kvitto kan inte skapas", journals the status code and keeps the bill
   open and paid. "Försök igen" finishes it once the system answers.
-- Before a card payment Kassa checks the control system, so a known outage
-  stops the sale before money is taken. If it fails in between, staff can
-  retry, or refund the card on the bill ("Återbetala") so no sale exists.
+- Before a card payment is registered Kassa checks the control system, so
+  a known outage stops the sale before money is taken. If it fails in
+  between, staff can retry, or pay the card back on the terminal and press
+  "Återbetala" on the bill so no sale exists.
 - KS 5 kap.: a certified control program may itself buffer when its
   server is down (status codes, "Offline" on the receipt, 24/48 h
   warnings). That is the provider's job; Kassa prints "Offline" if the
@@ -430,10 +433,11 @@ later is the copy (one only).
 
 ### Card receipt paper (ANV 5 kap. 3 §)
 
-The S700 prints nothing; Booqy prints one receipt with the card part on
-it, on the same printer, so the "Ej kvitto på köp" paper is not needed.
-**Uncertain:** confirm that a server-driven reader counts as "dubbelriktad
-kommunikation" with the register.
+Cards are paid on the restaurant's own terminal, which is not connected to
+Kassa. Its card slip is not a receipt; Kassa's kassakvitto is.
+**Uncertain:** confirm that the restaurant's terminal marks its slip as
+not a receipt of the purchase ("Ej kvitto"), as ANV 5 kap. 3 § asks for a
+terminal without two-way communication with the register.
 
 ### Registering the till and the ID plates (SFL 39 kap.; ANV 3 kap. 8 §, 4 kap. 1 §; ANM)
 

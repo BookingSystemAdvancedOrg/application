@@ -8,7 +8,7 @@ Den här bruksanvisningen beskriver alla funktioner i Booqy Kassa, kassaregistre
 
 ## 1. Det här är kassan
 
-- Kassan tar betalt med kort på restaurangens kortläsare (Stripe Reader S700). Kontanter tas inte emot.
+- Kassan tar betalt med kort på restaurangens egen kortterminal. Du drar kortet på terminalen och registrerar beloppet i kassan när kortet är godkänt. Kontanter tas inte emot.
 - Varje försäljning ger ett kassakvitto med en kontrollkod från kontrollsystemet. Utan kontrollkod blir det inget kvitto och ingen försäljning.
 - Allt som registreras sparas i kassans journalminne. Ingen kan ändra eller ta bort något i journalen. Journalen sparas i minst sju år.
 - En plats kan ha upp till fem kassor. Varje kassa har ett eget namn, till exempel "Kassa 1", och en kassabeteckning som står på alla kvitton och rapporter. Kassabeteckningen är det tillverkningsnummer på 16 tecken som kontrollsystemet ger kassan när den skapas.
@@ -36,7 +36,7 @@ Vem får göra vad:
    4. Journalen sparas av Booqy i sju år. Du behöver inte göra något.
    5. Läs vad du gör om kontrollsystemet inte svarar (avsnitt 12) och skriv ut några **Manuell försäljningslista** i förväg.
 4. Koppla en skrivare under **Inställningar** (Star mC-Print3). Kvitton och köksnotor skrivs ut på den.
-5. Kortläsare kopplas av Booqy. De syns i kassan när de är klara.
+5. Använd restaurangens egen kortterminal. Den behöver inte kopplas till kassan.
 
 ## 3. Öppna dagen
 
@@ -79,7 +79,7 @@ Rader som inte skickats till köket när kvittot skapas skrivs ut på köksnotan
 ### Ta bort en nota
 
 1. Tryck **Ta bort nota** och bekräfta.
-2. Det går bara när notan inte har någon kortbetalning. Har gästen betalt men ångrat sig, tryck **Ångrade sig gästen? Återbetala** under kvittovalet och sedan **Återbetala**. Därefter går notan att ta bort.
+2. Det går bara när notan inte har någon kortbetalning. Har gästen betalt men ångrat sig, betala tillbaka på kortterminalen, tryck **Ångrade sig gästen? Återbetala** under kvittovalet och sedan **Återbetala**. Därefter går notan att ta bort.
 3. Det som redan skickats till köket registreras i journalen.
 
 ## 5. Rabatt
@@ -90,23 +90,20 @@ Rader som inte skickats till köket när kvittot skapas skrivs ut på köksnotan
 4. Tryck **Lägg på rabatt**. Rabatten fördelas på raderna, så momsen blir rätt.
 5. För att ta bort rabatten: tryck **Ändra rabatt** och **Ta bort rabatten**.
 
-Rabatten kan inte ändras när en kortbetalning har börjat.
+Rabatten kan inte ändras när en kortbetalning är registrerad.
 
 ## 6. Ta betalt med kort
 
-1. Tryck **Ta betalt** längst ner på notan. Notan låses.
-2. Beloppet är det som är kvar att betala. Vill gästerna dela notan, tryck **1/2**, **1/3**, **1/4** eller skriv ett eget belopp (minst 3 kr).
-3. Välj kortläsare. Kassan minns den du valde senast.
-4. Tryck **Skicka ... kr till läsaren**.
-5. Be gästen blippa eller sätta i kortet. Skärmen visar **Väntar på kort**.
-   - **Betald:** delas notan, visas det som är kvar. Ta nästa kort på samma sätt.
-   - **Inte betald** (nekat kort, avbrutet på läsaren): inget har dragits. Tryck **Försök igen** eller **Annat belopp eller läsare**.
-   - **Avbryt** tar bort betalningen från läsaren. Hann gästen betala ändå, räknas betalningen.
+1. Tryck **Ta betalt** längst ner på notan.
+2. Beloppet är det som är kvar att betala. Vill gästerna dela notan, tryck **1/2**, **1/3**, **1/4** eller skriv ett eget belopp.
+3. Slå in samma belopp på restaurangens kortterminal och låt gästen blippa eller sätta i kortet där.
+4. När terminalen visar att kortet är godkänt, tryck **Kortet godkänt, registrera ... kr**. Notan låses. Delas notan, visas det som är kvar. Ta nästa kort på samma sätt.
+5. Nekas kortet på terminalen: registrera ingenting i kassan. Försök igen på terminalen eller välj ett annat belopp.
 6. När allt är betalt visas **Betalt**. Gå vidare till kvittot (avsnitt 7).
 
-Ångrar sig gästen efter en betald del men innan kvittot: tryck **Återbetala** vid betalningen. Pengarna går tillbaka till kortet.
+Ångrar sig gästen efter en betald del men innan kvittot: betala tillbaka beloppet på kortterminalen och tryck sedan **Återbetala** vid betalningen i kassan, så tas den bort från notan.
 
-Svarar inte kontrollsystemet kan inget kort dras. Se avsnitt 12.
+Svarar inte kontrollsystemet går det inte att registrera kortbetalningar. Ta inte betalt på terminalen förrän kassan fungerar igen. Se avsnitt 12.
 
 ## 7. Kvitto
 
@@ -131,7 +128,7 @@ Om kvittot inte kunde skrivas ut eller mejlas sparas det ändå. Ta då en kopia
 - varje rätt med antal och pris inklusive moms, styckpris när det är fler än en, och eventuell rabatt
 - totalt att betala
 - moms per momssats (6, 12 eller 25 %) med nettobelopp
-- betalningssätt: kort, med korttyp och de fyra sista siffrorna
+- betalningssätt: kort
 - kontrollkoden (113 tecken, på fyra rader) och kontrollserverns id, som kontrollsystemet skickar med varje kvitto
 - "Elektroniskt kassakvitto" om kvittot mejlades
 
@@ -155,14 +152,14 @@ Varje kvitto får bara ha en kopia. Kopian märks **KOPIA** med stor text. Antal
 3. Skriv orsaken, till exempel "Fel rätt".
 4. Välj **Skriv ut returkvitto** eller **Mejla returkvitto**.
 
-Beloppet går tillbaka till kortet som betalade. Returkvittot får nästa nummer i kvittoserien och visar vilket kvitto returen gäller. Det går inte att returnera mer än som såldes.
+Betala tillbaka beloppet på restaurangens kortterminal, till kortet som betalade. Returkvittot får nästa nummer i kvittoserien och visar vilket kvitto returen gäller. Det går inte att returnera mer än som såldes.
 
 ## 9. Övningsläge
 
 Använd övningsläget när någon ska lära sig kassan.
 
 1. Tryck **Övningsläge** i raden överst. "Övningsläge" syns bredvid kassans namn.
-2. Sälj som vanligt. Notan heter "(övning)". Inget kort dras.
+2. Sälj som vanligt. Notan heter "(övning)". Ta inte betalt på kortterminalen.
 3. Tryck **Skapa övningskvitto** och välj hur det ska tas fram. Kvittot märks **ÖVNING** med stor text.
 4. Tryck **Övningsläge** igen för att gå tillbaka till vanlig försäljning.
 
@@ -206,15 +203,15 @@ Kontrollsystemets läge syns bredvid kassans namn: grönt "Kontrollsystem anslut
 
 När kontrollsystemet inte svarar:
 
-1. Inga kvitton kan skapas och inga kort dras. Kassan säger det tydligt.
+1. Inga kvitton kan skapas och inga kortbetalningar kan registreras. Kassan säger det tydligt.
 2. Tryck **Manuell försäljningslista**, skriv ut den och skriv upp varje försäljning för hand: tid, vad som såldes, belopp, momssats och betalningssätt. Skriv under listan.
 3. Tryck **Försök igen** då och då. När kontrollsystemet svarar igen fortsätter du i kassan.
 4. Har kontrollsystemet varit nere i 30 minuter, eller meddelar det själv att felet ska anmälas, visar kassan: "Kontrollsystemet har varit nere sedan HH:MM. Felanmäl till Skatteverket och använd den manuella listan." Felanmäl kassan i Skatteverkets e-tjänst (länken finns i meddelandet). Felet behöver inte anmälas vid strömavbrott.
 5. Spara den manuella listan i bokföringen. Slå inte in försäljningen i kassan i efterhand.
 
-Har ett kort redan dragits när kontrollsystemet slutade svara, ligger betalningen kvar på notan. Skapa kvittot när kontrollsystemet svarar igen, eller tryck **Återbetala** om gästen inte kan vänta.
+Har en kortbetalning redan registrerats när kontrollsystemet slutade svara, ligger den kvar på notan. Skapa kvittot när kontrollsystemet svarar igen, eller betala tillbaka på kortterminalen och tryck **Återbetala** om gästen inte kan vänta.
 
-Kassan tar aldrig fram kvitton utan kontrollkod och skriver inte ut kontantnotor. Tar restaurangen betalt på något annat sätt under avbrottet, till exempel kontant eller med en annan kortterminal, fråga ägaren först: Skatteverket kan då kräva en kontantnota med egen nummerserie och kundens underskrift.
+Kassan tar aldrig fram kvitton utan kontrollkod och skriver inte ut kontantnotor. Tar restaurangen betalt på något annat sätt under avbrottet, till exempel kontant eller på kortterminalen utan att registrera i kassan, fråga ägaren först: Skatteverket kan då kräva en kontantnota med egen nummerserie och kundens underskrift.
 
 Säger kassan "Kontrollsystemet tog inte emot uppgifterna" svarar kontrollsystemet, men något i uppgifterna är fel (till exempel organisationsnummer eller adress). Inget kvitto skapades. Kontakta Booqy.
 

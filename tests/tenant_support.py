@@ -9,6 +9,9 @@ Use inside an active moto `mock_aws()` context:
     event = with_tenant_claims(event, TENANT_A)
 """
 
+import importlib.util
+from pathlib import Path
+
 import boto3
 
 from shared import contracts
@@ -32,7 +35,7 @@ STAFF_A_SUB = "staff-a-sub"
 
 # Legacy default on purpose: without kassa and marketing. Adding them would turn
 # those features on in hundreds of existing tests and change what they test.
-ALL_FEATURES = {"reservations": True, "ordering": True, "catering": True, "terminal": True}
+ALL_FEATURES = {"reservations": True, "ordering": True, "catering": True}
 # Every new key off: twelve after the Run 0 addendum (events, phoneAgent).
 NEW_FEATURES = {k: False for k in contracts.NEW_FEATURE_KEYS}
 
@@ -186,3 +189,23 @@ def install_tenancy(monkeypatch, location_ids_a, *, location_table=LOCATION_TABL
     for location_id in location_ids_a:
         res.Table(location_table).put_item(Item=location_row(TENANT_A, location_id, **(location_extra or {})))
     res.Table(location_table).put_item(Item=location_row(TENANT_B, LOC_B))
+
+
+FUNCTIONS = Path(__file__).parents[1] / "functions"
+
+
+def location_item(tenant_id, location_id, **extra):
+    """A location row as platform-tenants writes it."""
+    item = {"PK": f"TENANT#{tenant_id}", "SK": f"LOCATION#{location_id}", "tenantId": tenant_id,
+            "locationId": location_id, "name": "Södermalm", "address": "Götgatan 1, Stockholm",
+            "timezone": "Europe/Stockholm", "createdBy": "c", "createdAt": "2026-08-20T10:00:00Z"}
+    item.update(extra)
+    return item
+
+
+def load_fn(name, module_name):
+    """functions/<name>/app.py as its own module."""
+    spec = importlib.util.spec_from_file_location(module_name, FUNCTIONS / name / "app.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

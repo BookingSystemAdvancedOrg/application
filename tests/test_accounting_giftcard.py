@@ -58,7 +58,7 @@ def test_roles_are_in_the_settings_and_accepted():
     assert settings["accounts"]["giftCardBreakage"] == "3990"
     stored = acc.validate_settings({"accounts": {"giftCardLiability": "2422"}}, LOC_A)
     assert stored["accounts"] == {"giftCardLiability": "2422"}
-    assert list(acc.ROLES)[-2:] == ["giftCardLiability", "giftCardBreakage"]
+    assert list(acc.ROLES)[-3:] == ["giftCardLiability", "giftCardBreakage", "cardTerminal"]
     names = acc.account_names(settings["accounts"])
     assert names["2421"] == "Ej inlösta presentkort" and names["3990"] == "Övriga ersättningar och intäkter"
 

@@ -35,7 +35,7 @@
 {
    #TRANS 3003 {} -50.00 20261021 "F”rs„ljning 6 % moms"
    #TRANS 2631 {} -3.00 20261021 "Utg†ende moms 6 %"
-   #TRANS 1580 {} 53.00 20261021 "Kort i restaurangen (Stripe Terminal)"
+   #TRANS 1580 {} 53.00 20261021 "Kort i kassan (egen kortterminal)"
 }
 #VER "B" 295 20261022 "Booqy dagsf”rs„ljning 2026-10-22 S”dermalm"
 {

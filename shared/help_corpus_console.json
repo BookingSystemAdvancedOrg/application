@@ -5,7 +5,6 @@
   "/",
   "/tenants/new",
   "/tenants/:tenantId",
-  "/readers",
   "/operators",
   "/mail",
   "/finance",
@@ -457,110 +456,6 @@
      ]
     }
    ],
-   "kind": "guide"
-  },
-  {
-   "id": "card-reader-pair",
-   "route": "/tenants/:tenantId",
-   "title": "Pair a card reader",
-   "audience": "all",
-   "keywords": [
-    "card reader",
-    "pair reader",
-    "register reader",
-    "pairing code",
-    "card terminal",
-    "terminal",
-    "enable card terminals",
-    "new reader"
-   ],
-   "answer": "Card readers are paired per location: on the customer's Locations tab, Manage under Card terminals opens the terminal settings. Readers take payments into the restaurant's own Stripe account.",
-   "steps": [
-    "Open Customers, click the customer and press the Locations tab.",
-    "Press Manage on the location.",
-    "The first time: check the address and press Enable card terminals.",
-    "On the reader: Settings, then Generate pairing code.",
-    "Type the Pairing code and a Name (e.g. Counter 1) and press Register reader."
-   ],
-   "actions": [
-    {
-     "id": "customers-open",
-     "label": "Open Customers",
-     "to": "/",
-     "highlight": [
-      "help:nav:/"
-     ]
-    },
-    {
-     "id": "card-reader-pair-readers",
-     "label": "Open Card readers",
-     "to": "/readers",
-     "highlight": [
-      "help:nav:/readers"
-     ]
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "card-readers",
-   "route": "/readers",
-   "title": "All card readers",
-   "audience": "all",
-   "keywords": [
-    "card readers",
-    "readers",
-    "reader status",
-    "offline readers",
-    "online readers",
-    "serial number",
-    "no reader paired"
-   ],
-   "answer": "Card readers lists every reader across all customers, online or offline, with the customer, location and when it was last seen. Below it: locations with card terminals on but no reader paired yet.",
-   "steps": [
-    "Open Card readers in the menu.",
-    "Search, or use the chips to filter."
-   ],
-   "actions": [
-    {
-     "id": "card-readers-open",
-     "label": "Open Card readers",
-     "to": "/readers",
-     "highlight": [
-      "help:nav:/readers"
-     ]
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "live-readers",
-   "route": "/readers",
-   "title": "Number of card readers",
-   "audience": "all",
-   "keywords": [
-    "how many readers",
-    "how many card readers",
-    "number of readers",
-    "readers do we have",
-    "reader count"
-   ],
-   "answer": "The count stands under the heading on Card readers.",
-   "steps": [],
-   "actions": [
-    {
-     "id": "live-readers-open",
-     "label": "Show on Card readers",
-     "to": "/readers",
-     "highlight": [
-      "help:readers:count"
-     ]
-    }
-   ],
-   "live": {
-    "metric": "readers",
-    "text": "There are {value} card readers paired across all customers."
-   },
    "kind": "guide"
   },
   {
@@ -1340,18 +1235,6 @@
    "text": "New customer is in the menu.",
    "highlight": [
     "help:nav:/tenants/new"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "nav:readers",
-   "kind": "page",
-   "route": "/readers",
-   "title": "Card readers",
-   "where": "the menu",
-   "text": "Card readers is in the menu.",
-   "highlight": [
-    "help:nav:/readers"
    ],
    "audience": "all"
   },
@@ -3242,18 +3125,6 @@
    "text": "Emails the platform would have sent (news from the Mail page included), plus a copy of every SMS - saved instead of sent until the sending domain is verified. Kept 30 days.",
    "highlight": [
     "text:Mail outbox"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-ReadersPage:card-readers:page",
-   "kind": "page",
-   "route": "/readers",
-   "title": "Card readers",
-   "where": "Card readers",
-   "text": "",
-   "highlight": [
-    "text:Card readers"
    ],
    "audience": "all"
   },

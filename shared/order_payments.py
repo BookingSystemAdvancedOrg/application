@@ -16,8 +16,7 @@
              Every write is conditional on status pending_payment, so the
              webhook, the guest's status page and Stripe's retries can all
              try - the first wins and the rest are no-ops.
-    refund   staff cancel -> Refund of the PaymentIntent (key refund-<orderId>);
-             also an order paid on the card reader (same PaymentIntent field)
+    refund   staff cancel -> Refund of the PaymentIntent (key refund-<orderId>)
 
 Only payment_status == "paid" confirms: Swish/Klarna complete the session
 first and settle later (checkout.session.async_payment_*).
@@ -96,7 +95,7 @@ def _conditional_failed(exc):
 def settle_paid(item, session, now, actor, *, method="online"):
     """pending_payment -> confirmed. Returns the updated item, or None when
     the order was already settled (by someone else first). ``method``
-    card_present: paid on the restaurant's card reader (shared/card_payments.py)."""
+    giftcard: paid in full with a gift card."""
     if item.get("status") != o.PENDING_PAYMENT:
         return None
     number = o.next_number(item["locationId"], item["date"])
@@ -130,10 +129,8 @@ def settle_paid(item, session, now, actor, *, method="online"):
 
 
 def settle_failed(item, now, actor, reason):
-    """pending_payment -> failed, unless the order is being paid on the
-    restaurant's card reader (cardPaymentId): its Checkout Session was
-    expired on purpose, and the order settles from the card payment."""
-    if item.get("status") != o.PENDING_PAYMENT or item.get("cardPaymentId"):
+    """pending_payment -> failed."""
+    if item.get("status") != o.PENDING_PAYMENT:
         return None
     entry = o.history_entry("payment_failed", actor, now, status=o.FAILED, reason=reason)
     try:
@@ -143,7 +140,7 @@ def settle_failed(item, now, actor, reason):
                 "SET #s = :failed, paymentStatus = :pfailed, failureReason = :reason, updatedAt = :now, "
                 "history = list_append(if_not_exists(history, :empty), :entry), "
                 "version = if_not_exists(version, :zero) + :one REMOVE #ttl"),
-            ConditionExpression="attribute_exists(PK) AND #s = :pending AND attribute_not_exists(cardPaymentId)",
+            ConditionExpression="attribute_exists(PK) AND #s = :pending",
             ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
             ExpressionAttributeValues={
                 ":failed": o.FAILED, ":pfailed": o.PAY_FAILED, ":reason": reason, ":now": o.iso(now),

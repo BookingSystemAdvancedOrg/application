@@ -109,23 +109,6 @@
   }
  },
  {
-  "question": "How do I pair a card reader?",
-  "role": "operator",
-  "features": "all",
-  "expect": {
-   "source": "card-reader-pair"
-  }
- },
- {
-  "question": "Where do I see all card readers and which are offline?",
-  "role": "operator",
-  "features": "all",
-  "expect": {
-   "source": "card-readers",
-   "route": "/readers"
-  }
- },
- {
   "question": "How do I add another operator?",
   "role": "operator",
   "features": "all",
@@ -428,15 +411,6 @@
    "source": "live-outbox",
    "route": "/outbox",
    "live": "outboxMessages"
-  }
- },
- {
-  "question": "How many card readers do we have?",
-  "role": "operator",
-  "features": "all",
-  "expect": {
-   "source": "live-readers",
-   "live": "readers"
   }
  },
  {

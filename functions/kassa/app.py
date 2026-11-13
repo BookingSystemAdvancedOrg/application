@@ -25,17 +25,17 @@ TRIGGER:
         PUT  bills/{b}                        {version, lines, discount}
         POST bills/{b}/send                   kitchen ticket for new lines
         POST bills/{b}/void                   throw away an unpaid bill
-        POST bills/{b}/payments               {checkoutId, readerId, amount}: card on a reader
+        POST bills/{b}/payments               {checkoutId, amount}: a card payment taken on
+                                              the restaurant's own terminal
                                               {kind: "giftcard", paymentId}: a gift card the
                                               gift-cards feature redeemed (giftCards on)
-        POST bills/{b}/payments/{p}/undo      a paid part back to the card (before the receipt)
+        POST bills/{b}/payments/{p}/undo      a paid part off the bill (before the receipt)
         POST bills/{b}/finalize               {delivery, email?}: control code, receipt
 
 PURPOSE:
     Kassa, the till (shared/kassa.py, docs/KASSA-REQUIREMENTS.md): bills per
-    table or takeaway, card payments on the restaurant's Stripe Terminal
-    readers (polling, cancel and retry stay on terminal-payments), receipts
-    with a control code, returns, one copy, training mode, X/Z reports and
+    table or takeaway, card payments taken on the restaurant's own terminal
+    and confirmed here, receipts with a control code, returns, one copy, training mode, X/Z reports and
     the journal export. Behind the per-tenant "kassa" feature (off by
     default). Until a certified control system is connected and the label is
     switched (KASSA_CERTIFIED), everything says "Testläge".
@@ -46,16 +46,16 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, KASSA_TABLE_NAME, KASSA_JOURNAL_TABLE_NAME, MENU_TABLE_NAME,
-    ORDER_TABLE_NAME, PRINT_TABLE_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION,
+    ORDER_TABLE_NAME, PRINT_TABLE_NAME,
     KASSA_CERTIFIED ("true" only with a certified control system),
     KASSA_CONTROL_SYSTEM (simulator | fiskaly), FISKALY_SECRET_ID
 
 AWS RESOURCE ACCESS:
     Kassa table GetItem/PutItem/UpdateItem/Query; journal table PutItem/
     GetItem/Query only (append-only, no Update/Delete); menu table GetItem/
-    BatchGetItem; order table GetItem/PutItem/UpdateItem/Query (card payment
-    records, receipt e-mail notices); print table GetItem/PutItem (Kassa
-    print jobs); the platform Stripe key; the fiskaly SIGN SE key (one
+    BatchGetItem; order table GetItem/PutItem/UpdateItem/Query (receipt
+    e-mail notices); print table GetItem/PutItem (Kassa print jobs); the
+    fiskaly SIGN SE key (one
     secret, when the environment uses fiskaly); tenant-context read policy.
 """
 
@@ -68,11 +68,9 @@ from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import card_payments as cp
 from shared import control_system as cs
 from shared import http, kassa, kassa_receipt, kassa_xml, printing, tenant
 from shared import orders as o
-from shared import stripe_client as stripe
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -142,7 +140,6 @@ def _manual():
 
 def _state(ctx, system):
     registers = kassa.list_registers(ctx.location_id)
-    terminal = (ctx.location.get("terminal") or {})
     now, user = o.now_utc(), kassa.user_of(ctx)
     return {
         "testMode": kassa.test_mode(system), "testNotice": kassa_receipt.TEST_NOTICE,
@@ -150,8 +147,6 @@ def _state(ctx, system):
         "registers": [_checked(ctx, system, r, now, user) for r in registers],
         "openBills": [_bill_summary(ctx, b) for b in kassa.list_open_bills(ctx.location_id)],
         "printer": bool(printing.get_settings(ctx.location_id).get("printerId")),
-        "cardReaders": bool(terminal.get("locationId")) and bool(
-            ((ctx.tenant.get("entitlements") or {}).get("features") or {}).get("terminal")),
         "isOwner": ctx.is_owner, "simulator": system.provider == cs.SIMULATOR,
         "canSimulate": os.environ.get("ENVIRONMENT") != "prod" and system.provider == cs.SIMULATOR,
     }
@@ -323,14 +318,14 @@ def _bill_route(event, method, ctx, parts, now, user, system):
         payment = kassa.add_gift_card_payment(ctx, bill_id, data.get("paymentId"), system=system, now=now)
         logger.info(json.dumps({"kassa": "payment", "bill": bill_id, "paymentId": payment["paymentId"],
                                 "method": "giftcard"}))
-        return http.respond(201, kassa.payment_view({**payment, "status": cp.SUCCEEDED}))
+        return http.respond(201, kassa.payment_view({**payment, "status": kassa.SUCCEEDED}))
     if action == "payments" and len(parts) == 3:
-        data = http.body(event, allowed={"checkoutId", "readerId", "amount"})
-        item = kassa.start_payment(ctx, bill_id, checkout_id=data.get("checkoutId"), reader_id=data.get("readerId"),
-                                   amount=data.get("amount"), system=system, now=now)
-        logger.info(json.dumps({"kassa": "payment", "bill": bill_id, "paymentId": item["paymentId"],
-                                "status": item.get("status")}))
-        return http.respond(201, cp.view(item))
+        data = http.body(event, allowed={"checkoutId", "amount"})
+        payment = kassa.add_card_payment(ctx, bill_id, checkout_id=data.get("checkoutId"), amount=data.get("amount"),
+                                         system=system, now=now)
+        logger.info(json.dumps({"kassa": "payment", "bill": bill_id, "paymentId": payment["paymentId"],
+                                "method": "card"}))
+        return http.respond(201, kassa.payment_view(payment))
     if action == "payments" and len(parts) == 5 and parts[4] == "undo":
         http.body(event, allowed=set(), required=False)
         return http.respond(200, kassa.payment_view(kassa.undo_payment(ctx, bill_id, parts[3], now=now)))
@@ -393,22 +388,17 @@ def handler(event, context):
         return exc.response()
     except _MethodNotAllowed as exc:
         return http.respond(405, {"error": "method not allowed"}, {"Allow": exc.allow})
-    except (kassa.NotFound, cp.NotFound, o.NotFound):
+    except (kassa.NotFound, o.NotFound):
         return http.error(404, "not found")
     except kassa.Conflict as exc:
         return http.error(409, exc.code)
-    except (cp.InvalidState, printing.Conflict) as exc:
+    except printing.Conflict as exc:
         return http.error(409, exc.code)
     except kassa.Unavailable as exc:
         return http.error(503, exc.code)
     except kassa.GiftCardReceiptUnsupported:
         logger.error(json.dumps({"kassa": "gift_card_receipt_not_supported"}))
         return http.error(501, "gift_card_receipt_not_supported")
-    except stripe.StripeError as exc:
-        logger.error(json.dumps({"stripe": "rejected", "path": path, "code": exc.code, "message": str(exc)}))
-        return http.error(502, "stripe_refused")
-    except stripe.StripeUnavailable:
-        return http.error(503, "payment_unavailable")
     except ValueError as exc:
         return http.error(400, str(exc))
     except (BotoCoreError, ClientError):

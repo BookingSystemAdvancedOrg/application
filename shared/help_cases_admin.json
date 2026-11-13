@@ -534,13 +534,14 @@
   }
  },
  {
-  "question": "Hur tar jag betalt med kortläsaren?",
-  "role": "owner_user",
+  "question": "Hur tar jag betalt med kort i kassan?",
+  "role": "staff_user",
   "features": [
-   "reservations"
+   "kassa"
   ],
   "expect": {
-   "answer": "unknown"
+   "source": "kassa-salja",
+   "route": "/kassa"
   }
  },
  {

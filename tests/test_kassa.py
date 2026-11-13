@@ -1,9 +1,9 @@
-"""Kassa (functions/kassa, shared/kassa.py): a full sale on the simulated
-reader and the simulated control system, gap-free serial numbers, no
+"""Kassa (functions/kassa, shared/kassa.py): a full sale paid by card on
+the restaurant's own terminal and the simulated control system, gap-free serial numbers, no
 receipt without a control code, the append-only journal and its hash
 chain, returns, the one copy, training mode, X and Z reports, discounts,
-the feature flag and tenant isolation. DynamoDB is moto; Stripe is the
-recording fake from test_card_payments with partial refunds."""
+the feature flag and tenant isolation. DynamoDB is moto; Booqy never
+talks to the card terminal, so nothing calls Stripe."""
 
 from error_body import err
 import json
@@ -15,34 +15,19 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from shared import card_payments as cp
 from shared import control_system as cs
 from shared import dynamo as shared_dynamo
-from shared import kassa, kassa_receipt, print_ticket, printing, stripe_client
+from shared import kassa, kassa_receipt, print_ticket, printing
 from shared import orders as o
 from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_B, REGION, STAFF_A_SUB, TENANT_A, TENANT_B, TENANT_TABLE, create_tables,
-                            tenant_row, with_tenant_claims)
-from test_card_payments import FakeStripe, load_fn, location_item
+                            load_fn, location_item, tenant_row, with_tenant_claims)
 
 ACCOUNT = "acct_roma"
 NOW = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)  # 14:00 in Stockholm
 PRINTER = "d" * 32
-FEATURES = {"reservations": True, "ordering": True, "catering": True, "terminal": True, "kassa": True}
+FEATURES = {"reservations": True, "ordering": True, "catering": True, "kassa": True}
 APP = Path(__file__).parents[1]
-
-
-class KassaStripe(FakeStripe):
-    """Partial refunds: each refund takes `amount` (or the rest)."""
-
-    def _handle(self, method, path, params, account):
-        if path == "/v1/refunds":
-            intent = self.intents[params["payment_intent"]]
-            charge = self.charges[intent["latest_charge"]]
-            amount = int(params.get("amount") or intent["amount"] - charge["amount_refunded"])
-            charge["amount_refunded"] += amount
-            return {"id": f"re_{self.count('/v1/refunds')}", "amount": amount, "status": "succeeded"}
-        return super()._handle(method, path, params, account)
 
 
 def _table(res, name, extra=(), gsis=()):
@@ -86,10 +71,8 @@ def env(monkeypatch):
             TENANT_A, name="Roma", features=FEATURES, stripe={"accountId": ACCOUNT}, legalName="Roma AB",
             orgNumber="556677-8899"))
         res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_B, features=FEATURES, orgNumber="556000-0001"))
-        res.Table("test-location").put_item(Item=location_item(TENANT_A, LOC_A, {"accountId": ACCOUNT,
-                                                                                  "locationId": "tml_a1"}))
-        res.Table("test-location").put_item(Item=location_item(TENANT_B, LOC_B, {"accountId": "acct_other",
-                                                                                  "locationId": "tml_b1"}))
+        res.Table("test-location").put_item(Item=location_item(TENANT_A, LOC_A))
+        res.Table("test-location").put_item(Item=location_item(TENANT_B, LOC_B))
         res.Table("test-user").put_item(Item={"PK": f"USER#{STAFF_A_SUB}", "SK": "PROFILE",
                                               "tenantId": TENANT_A, "locationId": LOC_A, "status": "active"})
         res.Table("test-print").put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS", "printerId": PRINTER,
@@ -97,12 +80,10 @@ def env(monkeypatch):
         _menu(res, "pasta", "Pasta carbonara", "149")
         _menu(res, "soup", "Dagens soppa", "89.50", category="starters")
         _menu(res, "wine", "Husets rött, glas", "95", category="drinks", alcohol=True)
-        fake = KassaStripe()
-        monkeypatch.setattr(stripe_client, "request", fake)
         clock = {"now": NOW}
         monkeypatch.setattr(o, "now_utc", lambda: clock["now"])
         fn = load_fn("kassa", "kassa_fn")
-        yield {"fn": fn, "res": res, "stripe": fake, "clock": clock}
+        yield {"fn": fn, "res": res, "clock": clock}
         shared_dynamo._resource = None
         shared_dynamo._client = None
         shared_tenant.reset_caches()
@@ -152,15 +133,10 @@ def bill(env, register_id, kind="table", table="5", lines=None, discount=None):
     return updated
 
 
-def pay(env, bill_id, amount, checkout, *, approve=True):
-    status, payment = call(env, "POST", f"bills/{bill_id}/payments",
-                           body={"checkoutId": checkout, "readerId": "tmr_a1", "amount": amount})
+def pay(env, bill_id, amount, checkout):
+    """The guest paid on the restaurant's own terminal; the staff confirm it."""
+    status, payment = call(env, "POST", f"bills/{bill_id}/payments", body={"checkoutId": checkout, "amount": amount})
     assert status == 201, payment
-    intent = env["stripe"].intents[env["stripe"].keys[f"card-pi-{checkout}"]["id"]]
-    if approve:
-        env["stripe"].pay(intent["id"])
-        cp.succeed(cp.load(LOC_A, checkout), env["stripe"]._intent(intent["id"], True), env["clock"]["now"],
-                   actor="stripe")
     return payment
 
 
@@ -215,7 +191,7 @@ def test_full_sale_end_to_end(env):
     assert kassa_receipt.TEST_NOTICE in texts
     assert any("Org.nr 556677-8899" in t for t in texts) and any("Götgatan 1" in t for t in texts)
     assert any(t.startswith("Kassabeteckning Kassa 1") for t in texts)
-    assert any("Kort Visa **** 4242" in t for t in texts)
+    assert any(t.startswith("Betalt, Kort ") for t in texts)
     assert any(t == "Kontrollsystem: BOOQYSIMULATOR001" for t in texts)
     sale_entry = receipts_of(env, rid)[0]
     data = sale_entry["data"]
@@ -238,8 +214,8 @@ def test_receipt_cannot_be_made_without_full_payment(env):
     b = bill(env, rid)
     assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"}) == (
         409, err("not_fully_paid"))
-    pay(env, b["billId"], 10000, "a" * 32, approve=False)
-    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == err("payment_in_progress")
+    pay(env, b["billId"], 10000, "a" * 32)
+    assert call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "print"})[1] == err("not_fully_paid")
     assert reg_row(env, rid)["receiptSeq"] == 0
 
 
@@ -248,7 +224,7 @@ def test_split_payment_two_cards(env):
     b = bill(env, rid)
     pay(env, b["billId"], 20000, "a" * 32)
     assert call(env, "POST", f"bills/{b['billId']}/payments",
-                body={"checkoutId": "c" * 32, "readerId": "tmr_a1", "amount": 20000}) == (
+                body={"checkoutId": "c" * 32, "amount": 20000}) == (
         409, err("amount_too_large"))
     pay(env, b["billId"], 18750, "b" * 32)
     status, done = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})
@@ -256,10 +232,10 @@ def test_split_payment_two_cards(env):
     assert [p["amount"] for p in receipts_of(env, rid)[0]["data"]["payments"]] == [20000, 18750]
 
 
-def test_bill_is_locked_once_a_card_payment_runs(env):
+def test_bill_is_locked_once_a_card_payment_is_on_it(env):
     rid = register(env)
     b = bill(env, rid)
-    pay(env, b["billId"], 1000, "a" * 32, approve=False)
+    pay(env, b["billId"], 1000, "a" * 32)
     current = call(env, "GET", f"bills/{b['billId']}")[1]
     assert current["locked"] is True
     assert call(env, "PUT", f"bills/{b['billId']}", body={"version": current["version"], "lines": []})[1] == err("bill_has_payments")
@@ -272,9 +248,9 @@ def test_control_system_down_stops_card_payment_before_money_is_taken(env):
     b = bill(env, rid)
     call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
     assert call(env, "POST", f"bills/{b['billId']}/payments",
-                body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": 38750}) == (
+                body={"checkoutId": "a" * 32, "amount": 38750}) == (
         503, err("control_system_unreachable"))
-    assert env["stripe"].count("/v1/payment_intents") == 0
+    assert call(env, "GET", f"bills/{b['billId']}")[1]["payments"] == []
 
 
 def test_no_receipt_without_control_code_and_no_number_burned(env):
@@ -388,7 +364,7 @@ def test_discount_is_spread_over_lines_and_vat(env):
 
 # --- returns, copies, training ---------------------------------------------------------------
 
-def test_partial_return_refunds_the_card_and_continues_the_series(env):
+def test_partial_return_pays_back_by_card_and_continues_the_series(env):
     rid = register(env)
     b, _ = sale(env, rid)
     pasta = next(line for line in b["lines"] if line["menuItemId"] == "pasta")
@@ -398,8 +374,8 @@ def test_partial_return_refunds_the_card_and_continues_the_series(env):
         "lines": [{"lineId": pasta["lineId"], "quantity": 1}], "reason": "Fel rätt", "delivery": "print"})
     assert status == 201, done
     assert done["document"]["title"] == "Returkvitto" and done["document"]["seq"] == 2
-    refund = [c for c in env["stripe"].calls if c["path"] == "/v1/refunds"][0]
-    assert refund["params"]["amount"] == 14900
+    entry = next(e for e in journal(env, rid) if e["type"] == kassa.RETURN)
+    assert [(p["method"], p["amount"]) for p in entry["data"]["payments"]] == [("Kort", 14900)]
     row = reg_row(env, rid)
     assert row["receiptSeq"] == 2 and row["gtReturn"] == 14900
     assert call(env, "POST", f"registers/{rid}/receipts/1/return", body={
@@ -407,15 +383,11 @@ def test_partial_return_refunds_the_card_and_continues_the_series(env):
     status, again = call(env, "POST", f"registers/{rid}/receipts/1/return", body={
         "lines": [{"lineId": pasta["lineId"], "quantity": 1}], "reason": "Kall", "delivery": "screen"})
     assert status == 201 and again["document"]["seq"] == 3
-    assert cp.load(LOC_A, "a" * 32)["refund"]["amount"] == 29800
-
-
-def test_card_payments_of_kassa_are_refunded_only_in_kassa(env):
-    rid = register(env)
-    sale(env, rid)
-    with pytest.raises(cp.InvalidState) as err:
-        cp.refund(cp.load(LOC_A, "a" * 32), actor="x", now=NOW)
-    assert err.value.code == "refund_via_kassa"
+    pointer = env["res"].Table("test-kassa").get_item(Key=kassa.receipt_key(LOC_A, rid, 1))["Item"]
+    assert pointer["payments"][0]["refunded"] == 29800 and pointer["payments"][0]["method"] == "Kort"
+    assert call(env, "POST", f"registers/{rid}/receipts/1/return", body={
+        "lines": [{"lineId": next(x for x in b["lines"] if x["menuItemId"] == "soup")["lineId"], "quantity": 1}],
+        "reason": "x", "delivery": "screen"})[0] == 201                          # the rest of the card part
 
 
 def test_only_one_copy_per_receipt(env):
@@ -437,7 +409,7 @@ def test_training_mode(env):
     b = bill(env, rid)
     assert b["training"] is True
     assert call(env, "POST", f"bills/{b['billId']}/payments",
-                body={"checkoutId": "a" * 32, "readerId": "tmr_a1", "amount": 1000})[1] == err("training_no_payment")
+                body={"checkoutId": "a" * 32, "amount": 1000})[1] == err("training_no_payment")
     status, done = call(env, "POST", f"bills/{b['billId']}/finalize", body={"delivery": "screen"})
     assert status == 201 and done["document"]["title"] == "Övningskvitto"
     assert [r.get("text") for r in done["document"]["rows"] if r.get("big")].count("ÖVNING") == 2
@@ -471,7 +443,7 @@ def test_x_and_z_reports(env):
     assert reg_row(env, rid).get("dayOpen") is None             # the Z ended the sales day
     assert call(env, "POST", "bills", body={"registerId": rid, "kind": "takeaway"})[0] == 201
     status, body = call(env, "POST", f"bills/{bill(env, rid)['billId']}/payments",
-                        body={"checkoutId": "c" * 32, "readerId": "tmr_a1", "amount": 100})
+                        body={"checkoutId": "c" * 32, "amount": 100})
     assert status == 409 and body["error"] == "day_not_open"
     call(env, "POST", f"registers/{rid}/open-day", body={"float": 0})
     sale(env, rid, checkout="b" * 32)
@@ -636,15 +608,21 @@ def test_org_digits():
     assert kassa.org_digits("abc") is None
 
 
-def test_partial_refund_is_idempotent(env):
+def test_card_payment_is_recorded_once_and_can_be_undone_before_the_receipt(env):
     rid = register(env)
-    sale(env, rid)
-    item = cp.load(LOC_A, "a" * 32)
-    once = cp.refund_part(item, 1000, key="k1", actor="x", now=NOW)
-    again = cp.refund_part(once, 1000, key="k1", actor="x", now=NOW)
-    assert again["refund"]["amount"] == 1000 and env["stripe"].count("/v1/refunds") == 1
-    with pytest.raises(cp.InvalidState):
-        cp.refund_part(again, 38750, key="k2", actor="x", now=NOW)
+    b = bill(env, rid)
+    first = pay(env, b["billId"], 1000, "a" * 32)
+    assert first["method"] == "Kort" and first["status"] == "succeeded"
+    assert pay(env, b["billId"], 1000, "a" * 32)["paymentId"] == first["paymentId"]      # a retry, not a second card
+    current = call(env, "GET", f"bills/{b['billId']}")[1]
+    assert current["paid"] == 1000 and current["remaining"] == b["total"] - 1000
+    assert call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "nope", "amount": 1})[0] == 400
+    assert call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "b" * 32, "amount": 0})[0] == 400
+    status, undone = call(env, "POST", f"bills/{b['billId']}/payments/{'a' * 32}/undo", body={})
+    assert status == 200 and undone["status"] == "refunded"
+    current = call(env, "GET", f"bills/{b['billId']}")[1]
+    assert current["paid"] == 0 and current["payments"] == [] and current["locked"] is False
+    assert call(env, "POST", f"bills/{b['billId']}/payments/{'a' * 32}/undo", body={})[0] == 404
 
 
 def test_print_device_renders_a_kassa_job(env, monkeypatch):
@@ -707,8 +685,7 @@ def test_failed_payment_check_marks_the_outage(env):
     rid = register(env)
     b = bill(env, rid)
     call(env, "POST", f"registers/{rid}/simulate", body={"down": True})
-    call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "a" * 32, "readerId": "tmr_a1",
-                                                             "amount": 1000})
+    call(env, "POST", f"bills/{b['billId']}/payments", body={"checkoutId": "a" * 32, "amount": 1000})
     assert reg_row(env, rid)["csDownCode"] == "EJ_KONTAKT_MED_KS"
 
 

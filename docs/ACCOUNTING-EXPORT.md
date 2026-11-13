@@ -53,23 +53,20 @@ month of the fiscal year (default January) and the location's cost centre
    (half up, the same way orders do).
 2. **Stripe settlement:** 1580.
 3. **Card fees:** 6570, no reverse charge: payment processing is VAT-exempt
-   financial services. Other Stripe charges (card readers and other hardware)
-   are separate purchases with their own supplier invoice and are not in the
-   export.
+   financial services. Other Stripe charges are separate purchases with
+   their own supplier invoice and are not in the export.
 4. **Catering paid before the delivery date is an advance.** At receipt: debit
    Stripe (or bank), credit 2420 with the net and output VAT with the VAT (VAT
    is due on advances). On the delivery date the net moves from 2420 to
    sales. A cancellation before delivery reverses it from 2420; after delivery
    from sales. Company invoices are booked when the invoice is created (at
    signing) and their payment later; unchanged.
-5. **Free amounts on the card reader need a VAT rate.** Staff choose 12 % (food
-   and drink) or 25 % (alcohol) in Ta betalt; the API refuses a free amount
-   without one. The rate and its VAT row are stored on the card payment and go
-   to the matching sales and VAT accounts (the guest's card receipt shows the
-   VAT too). Older records without a rate still go to 2999 with a warning.
-   Note: a free amount should only be used for a sale not registered in a
-   cash register; if the restaurant also rings it up in another register, the
-   sale would be booked twice.
+5. **Kassa cards are not Stripe money.** Kassa's card payments are taken on
+   the restaurant's own terminal and settled by its card acquirer, so they
+   are debited to their own role, `cardTerminal` ("Kort i kassan (egen
+   kortterminal)", 1580 by default; the owner can pick another account),
+   never to the Stripe settlement. The Stripe reconciliation only compares
+   Stripe money.
 6. **Several locations on one Stripe account = one company file.** Locations
    without a Stripe account of their own share the tenant's, so they are
    exported together, from any of them. Each location gets its own
@@ -95,10 +92,8 @@ computed from the fee).
 | Source | When | Debit | Credit |
 |---|---|---|---|
 | Online order (Stripe Checkout) | paid (`confirmedAt`) | Stripe settlement | sales + output VAT per rate |
-| Order paid on the card reader | paid | Stripe settlement ("Kort i restaurangen") | sales + VAT |
-| Kassa kassakvitto / returkvitto | journal day | Stripe settlement / sales + VAT reversed | sales + VAT / Stripe settlement |
-| Card reader free amount (Ta betalt) | paid | Stripe settlement | sales + VAT at the chosen rate (2999 for older records) |
-| Order or free amount refund | refund day | sales + VAT (scaled by amount if partial) | Stripe settlement |
+| Kassa kassakvitto / returkvitto | journal day | card terminal (`cardTerminal`) / sales + VAT reversed | sales + VAT / card terminal |
+| Order refund | refund day | sales + VAT (scaled by amount if partial) | Stripe settlement |
 | No-show / late-cancel fee | charged (`payment.settledAt`) | Stripe settlement | sales 12 % + VAT 12 % |
 | Catering, private guest, paid before delivery | paid | Stripe settlement | advances (net) + VAT |
 | ... on the delivery date | delivery date | advances | sales |
@@ -160,5 +155,5 @@ listing; Visma API access is requested by e-mail.
 
 - Guarantee fees refunded in several parts are booked on the last refund's
   day (the reservation keeps only the total and the last date).
-- Tips: if tipping on the reader is turned on, it needs storing per payment
-  before the export can book it to 2890.
+- Tips: tipping is not recorded by Booqy; if it is ever added it needs
+  storing per payment before the export can book it to 2890.

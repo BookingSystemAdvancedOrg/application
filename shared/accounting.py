@@ -6,16 +6,13 @@ Accounts, sources and the accountant's answers: docs/ACCOUNTING-EXPORT.md.
 Where the money comes from (amounts öre, VAT the stored per-rate VAT
 wherever one is stored):
     orders            ORDER# (order table): sale on the day it was paid
-                      (confirmedAt), VAT from `vat`; online (Stripe Checkout)
-                      or on the card reader (paymentMethod card_present);
-                      refund (`refund`) on its day
-    card payments     CARD# (order table): free amounts on the reader, with
-                      the VAT rate staff chose (`vat`). With an orderId the
-                      order is the sale; with a kassaBillId the Kassa journal
-                      is. Older free amounts without a rate go to the OBS
-                      account with a warning
+                      (confirmedAt), VAT from `vat`; online (Stripe
+                      Checkout); refund (`refund`) on its day
     Kassa             kassa-journal (byDay): kassakvitto and returkvitto,
-                      VAT per rate and card payments from the receipt
+                      VAT per rate and card payments from the receipt. The
+                      cards are paid on the restaurant's own terminal, so
+                      they go to the card terminal account (cardTerminal),
+                      not through Stripe
     card guarantee    RESERVATION# (reservation table): no-show and late
                       cancellation fees, 12 % VAT included, on the day they
                       were charged (payment.settledAt), refunds on refundedAt
@@ -102,6 +99,8 @@ DEFAULT_ACCOUNTS = {
     # stay as they were; an account appears in a file only when a line uses it.
     "giftCardLiability": ("2421", "Ej inlösta presentkort"),
     "giftCardBreakage": ("3990", "Övriga ersättningar och intäkter"),
+    # Kassa: cards paid on the restaurant's own terminal (its card acquirer settles them, not Stripe).
+    "cardTerminal": ("1580", "Fordringar för kontokort och kuponger"),
 }
 ROLES = tuple(DEFAULT_ACCOUNTS)
 # What each role is, for a renamed account's #KONTO line and the admin card.
@@ -112,12 +111,13 @@ ROLE_LABELS = {
     "advances": "Förskott från kunder", "cardFees": "Kortavgifter", "tips": "Dricks",
     "refundsOwed": "Återbetalningar att göra", "unclassified": "OBS-konto", "rounding": "Öresavrundning",
     "giftCardLiability": "Ej inlösta presentkort", "giftCardBreakage": "Presentkort som inte lösts in",
+    "cardTerminal": "Kort i kassan (egen kortterminal)",
 }
 VAT_RATES = (25, 12, 6)
 
 # Line texts (Swedish: they end up in the accounting program)
 T_ONLINE = "Onlinebetalningar (Stripe)"
-T_TERMINAL = "Kort i restaurangen (Stripe Terminal)"
+T_CARD_TERMINAL = "Kort i kassan (egen kortterminal)"
 T_GUARANTEE = "Kortgaranti (Stripe)"
 T_FEE_SALES = "Avgifter uteblivna gäster och sena avbokningar"
 T_CATERING = "Catering"
@@ -128,7 +128,6 @@ T_FEES = "Stripe-avgifter"
 T_PAYOUT = "Utbetalning från Stripe till bank"
 T_PAYOUT_BACK = "Utbetalning tillbaka till Stripe"
 T_STRIPE_OTHER = "Övrig Stripe-händelse (kontrollera)"
-T_FREE_AMOUNT = "Kortbetalning utan momsuppgift"
 T_REFUNDS_OWED = "Återbetalning catering att göra"
 T_ROUNDING = "Öresavrundning"
 T_GIFT_CARD = "Presentkort i kassan"
@@ -480,8 +479,7 @@ def order_events(orders, first, last, tz):
         rows = item.get("vat") or []
         if item.get("paymentStatus") not in (o.PAY_PAID, o.PAY_REFUNDED) or not rows:
             continue
-        terminal = item.get("paymentMethod") == "card_present"
-        role_text = T_TERMINAL if terminal else T_ONLINE
+        role_text = T_ONLINE
         paid_day = local_day(item.get("confirmedAt"), tz)
         if _in(paid_day, first, last):
             out.append(sale(paid_day, rows, "stripe", role_text, item.get("totalAmount")))
@@ -496,39 +494,9 @@ def order_events(orders, first, last, tz):
     return out
 
 
-def card_events(payments, first, last, tz):
-    """Free amounts on the card reader (no order, no Kassa bill), with the
-    VAT rate staff chose. Older records without one go to the OBS account
-    for the accountant to classify."""
-    out = []
-    for item in payments:
-        if item.get("orderId") or item.get("kassaBillId") or item.get("status") not in ("succeeded", "refunded"):
-            continue
-        amount = int(item.get("amount") or 0)
-        rows = item.get("vat") or []
-        paid_day = local_day(item.get("paidAt"), tz)
-        refund = item.get("refund") or {}
-        refund_day = local_day(refund.get("at"), tz)
-        refunded = int(refund.get("amount") or 0)
-        if rows:
-            if _in(paid_day, first, last):
-                out.append(sale(paid_day, rows, "stripe", T_TERMINAL, amount))
-            if refunded and _in(refund_day, first, last):
-                out.append(sale(refund_day, scaled_rows(rows, refunded), "stripe", T_TERMINAL, refunded, refund=True))
-            continue
-        warning = "Äldre kortbetalning med fritt belopp utan momssats: bokad på OBS-konto."
-        if _in(paid_day, first, last):
-            out.append(Event(paid_day, [Posting("stripe", amount, T_TERMINAL),
-                                        Posting("unclassified", -amount, T_FREE_AMOUNT)], [warning]))
-        if refunded and _in(refund_day, first, last):
-            out.append(Event(refund_day, [Posting("unclassified", refunded, T_FREE_AMOUNT),
-                                          Posting("stripe", -refunded, _refund_text(T_TERMINAL))], [warning]))
-    return out
-
-
 def kassa_events(entries, tz):
     """Kassa receipts and return receipts (training receipts are another
-    type and never counted). Payments are card payments on the reader."""
+    type and never counted). Cards are paid on the restaurant's own terminal."""
     out = []
     for entry in entries:
         kind, data = entry.get("type"), entry.get("data") or {}
@@ -539,7 +507,7 @@ def kassa_events(entries, tz):
         gift = sum(int(p.get("amount") or 0) for p in payments if p.get("method") == GIFT_CARD)
         paid = sum(int(p.get("amount") or 0) for p in payments) - gift
         other = [p for p in payments if (p.get("method") or "Kort") not in ("Kort", GIFT_CARD)]
-        event = sale(day, data.get("vat") or [], "stripe", T_TERMINAL, paid, refund=kind == "returkvitto")
+        event = sale(day, data.get("vat") or [], "cardTerminal", T_CARD_TERMINAL, paid, refund=kind == "returkvitto")
         if gift:
             sign = -1 if kind == "returkvitto" else 1
             event.postings.append(Posting("giftCardLiability", sign * gift,
@@ -715,10 +683,6 @@ def load_orders(location_id, first, last):
     return _between(o.order_table(), o.location_pk(location_id), "ORDER#", shift(first, -ORDER_LOOKBACK_DAYS), last)
 
 
-def load_card_payments(location_id, first, last):
-    return _between(o.order_table(), o.location_pk(location_id), "CARD#", shift(first, -ORDER_LOOKBACK_DAYS), last)
-
-
 def load_reservations(location_id, first, last):
     items = _between(r.reservation_table(), r.location_pk(location_id), "RESERVATION#",
                      shift(first, -FEE_LOOKBACK_DAYS), shift(last, FEE_LOOKAHEAD_DAYS))
@@ -786,8 +750,7 @@ def company_group(tenant_row, location, locations):
 def stripe_accounts(tenant_row, location):
     own = _acct((location or {}).get("stripeAccountId"))
     base = own or _acct(((tenant_row or {}).get("stripe") or {}).get("accountId"))
-    terminal = _acct(((location or {}).get("terminal") or {}).get("accountId"))
-    return {a for a in (base, terminal) if a}
+    return {base} if base else set()
 
 
 def list_balance_transactions(account, start, end):
@@ -843,7 +806,6 @@ def location_events(location, first, last):
     catering = load_catering(location_id, first, last, tz)
     events = []
     events += order_events(load_orders(location_id, first, last), first, last, tz)
-    events += card_events(load_card_payments(location_id, first, last), first, last, tz)
     events += kassa_events(load_kassa(location_id, first, last), tz)
     events += guarantee_events(load_reservations(location_id, first, last), first, last, tz)
     events += catering_events(catering, first, last, tz)

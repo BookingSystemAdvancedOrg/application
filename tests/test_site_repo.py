@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from moto import mock_aws
 
-from test_card_payments import load_fn
+from tenant_support import load_fn
 
 REGION = "eu-north-1"
 TENANT = "t-roma"

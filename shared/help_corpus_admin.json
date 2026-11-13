@@ -6,7 +6,6 @@
   "/statistik",
   "/bokningar",
   "/bestallningar",
-  "/ta-betalt",
   "/kassa",
   "/kassa/bruksanvisning",
   "/kassa/utskrift/:kind",
@@ -563,66 +562,6 @@
    "kind": "guide"
   },
   {
-   "id": "tabetalt",
-   "route": "/ta-betalt",
-   "title": "Ta betalt med kortläsaren",
-   "audience": "all",
-   "feature": "terminal",
-   "keywords": [
-    "ta betalt",
-    "kortläsare",
-    "kortbetalning",
-    "kort",
-    "betalterminal",
-    "terminal",
-    "blippa",
-    "kvitto"
-   ],
-   "answer": "Under Ta betalt tar du kortbetalningar på restaurangens kortläsare.",
-   "steps": [
-    "Öppna Ta betalt.",
-    "Välj Belopp (skriv belopp, moms och gärna en notering) eller Obetald beställning.",
-    "Välj kortläsare och tryck Ta betalt.",
-    "Gästen blippar kortet. Du ser direkt om det blev Betalt eller Nekat.",
-    "Vill gästen ha kvitto: tryck Skicka kvitto till e-post."
-   ],
-   "actions": [
-    {
-     "id": "tabetalt-open",
-     "label": "Öppna Ta betalt",
-     "to": "/ta-betalt"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "tabetalt-aterbetala",
-   "route": "/ta-betalt",
-   "title": "Återbetala ett kortköp",
-   "audience": "owner",
-   "feature": "terminal",
-   "keywords": [
-    "återbetala kortköp",
-    "återbetala kort",
-    "återbetalning kort",
-    "kortköp idag"
-   ],
-   "answer": "Ägaren kan återbetala dagens kortköp som inte hör till en beställning.",
-   "steps": [
-    "Öppna Ta betalt.",
-    "Under Kortköp idag trycker du Återbetala på köpet.",
-    "Bekräfta med Bekräfta: återbetala."
-   ],
-   "actions": [
-    {
-     "id": "tabetalt-open",
-     "label": "Öppna Ta betalt",
-     "to": "/ta-betalt"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
    "id": "kassa-salja",
    "route": "/kassa",
    "title": "Sälja i kassan",
@@ -637,15 +576,19 @@
     "öppna dagen",
     "växelkassa",
     "till köket",
-    "rabatt"
+    "rabatt",
+    "kort",
+    "kortterminal",
+    "ta betalt",
+    "dela notan"
    ],
-   "answer": "I Kassa öppnar du dagen, lägger rätter på en nota och tar betalt.",
+   "answer": "I Kassa öppnar du dagen, lägger rätter på en nota och tar betalt med kort på restaurangens egen kortterminal.",
    "steps": [
     "Öppna Kassa och tryck Öppna dagen. Fyll i växelkassan och tryck Öppna dagen.",
     "Tryck Bord (välj bord och Öppna nota) eller Avhämtning.",
     "Tryck på rätterna och ändra antal med plus och minus.",
     "Tryck Till köket när beställningen ska lagas. Rabatt lägger du till på notan.",
-    "Tryck Ta betalt och välj hur kvittot ska lämnas."
+    "Tryck Ta betalt och dra kortet på restaurangens kortterminal. När terminalen visar godkänt trycker du Kortet godkänt, registrera. Välj sedan hur kvittot ska lämnas."
    ],
    "actions": [
     {
@@ -1147,10 +1090,9 @@
     "funktioner",
     "egen domän",
     "domän",
-    "kortläsare beställa",
     "faktura booqy"
    ],
-   "answer": "Fler ägare, byte av plan, nya funktioner, egen domän och kortläsare ordnar Booqy åt er. Kontakta Booqy så hjälper vi till.",
+   "answer": "Fler ägare, byte av plan, nya funktioner och egen domän ordnar Booqy åt er. Kontakta Booqy så hjälper vi till.",
    "steps": [],
    "kind": "guide"
   },
@@ -3021,19 +2963,6 @@
    ],
    "audience": "all",
    "feature": "ordering"
-  },
-  {
-   "id": "nav:ta-betalt",
-   "kind": "page",
-   "route": "/ta-betalt",
-   "title": "Ta betalt",
-   "where": "vänstermenyn",
-   "text": "Ta betalt finns i vänstermenyn.",
-   "highlight": [
-    "help:nav:/ta-betalt"
-   ],
-   "audience": "all",
-   "feature": "terminal"
   },
   {
    "id": "nav:kassa",
@@ -5755,19 +5684,6 @@
    "feature": "kassa"
   },
   {
-   "id": "features-kassa-KassaPage:kortlasare:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Kortläsare",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Kortläsare"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
    "id": "features-layout-editor-FloorBooking:ingen-bordskarta-an:heading",
    "kind": "element",
    "route": "/layout",
@@ -6965,7 +6881,7 @@
    "route": "/statistik",
    "title": "Omsättning",
    "where": "Statistik",
-   "text": "Betalda beställningar, levererad catering och kortköp i kassan i perioden, inklusive moms. Bara ägaren ser beloppen.",
+   "text": "Betalda beställningar och levererad catering i perioden, inklusive moms. Bara ägaren ser beloppen.",
    "highlight": [
     "help:kpi:omsattning"
    ],
@@ -7296,175 +7212,6 @@
    ],
    "audience": "all",
    "insights": true
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:belopp:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Belopp",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Belopp"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:moms:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Moms",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Moms"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:notering-valfritt:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Notering (valfritt)",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Notering (valfritt)"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:bestallning:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Beställning",
-   "where": "Ta betalt",
-   "text": "Inga obetalda beställningar just nu. Beställningar som gästen inte betalat online visas här.",
-   "highlight": [
-    "text:Beställning"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:kortlasare:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Kortläsare",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Kortläsare"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:kortkop-idag:heading",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Kortköp idag",
-   "where": "Ta betalt",
-   "text": "Inga kortköp ännu idag.",
-   "highlight": [
-    "text:Kortköp idag"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:avbryt:button",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Avbryt",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Avbryt"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:pa-lasare:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "På läsare",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:På läsare"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:avbryt-kopet:button",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Avbryt köpet",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Avbryt köpet"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:ny-betalning:button",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Ny betalning",
-   "where": "Ta betalt",
-   "text": "Testläge, simulerad läsare:",
-   "highlight": [
-    "text:Ny betalning"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:kvitto:button",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Kvitto",
-   "where": "Ta betalt",
-   "text": "Testläge, simulerad läsare:",
-   "highlight": [
-    "text:Kvitto"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:stang:button",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Stäng",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Stäng"
-   ],
-   "audience": "all",
-   "feature": "terminal"
-  },
-  {
-   "id": "features-tabetalt-TaBetaltPage:skicka-kvitto-till-e-post:field",
-   "kind": "element",
-   "route": "/ta-betalt",
-   "title": "Skicka kvitto till e-post",
-   "where": "Ta betalt",
-   "text": "",
-   "highlight": [
-    "text:Skicka kvitto till e-post"
-   ],
-   "audience": "all",
-   "feature": "terminal"
   },
   {
    "id": "features-table-qr-TableQr:qr-koder-for-borden:heading",

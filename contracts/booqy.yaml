@@ -9,7 +9,6 @@ features:
   - {key: reservations, id: reservations, labelSv: Bokningar, labelEn: Reservations, existing: true, siteConfig: true}
   - {key: ordering, id: ordering, labelSv: Beställningar, labelEn: Online ordering, existing: true, siteConfig: true}
   - {key: catering, id: catering, labelSv: Catering, labelEn: Catering, existing: true, siteConfig: true}
-  - {key: terminal, id: terminal, labelSv: Ta betalt, labelEn: Card terminal, existing: true, siteConfig: true}
   - {key: marketing, id: marketing, labelSv: Marknadsföring, labelEn: Marketing, existing: true, siteConfig: true}
   - {key: kassa, id: kassa, labelSv: Kassa, labelEn: Kassa (cash register), existing: true, siteConfig: false}
   - {key: metaAds, id: meta-ads, labelSv: Annonser, labelEn: Meta ads, existing: false, siteConfig: false}
@@ -373,7 +372,7 @@ clients:
   agent_model: {env: AGENT_MODEL_CLIENT, tfvar: agent_model_client}
 
 siteConfig:
-  tenantFeatures: [reservations, ordering, catering, terminal, marketing, siteBuilder, giftCards, waitlist, events]
+  tenantFeatures: [reservations, ordering, catering, marketing, siteBuilder, giftCards, waitlist, events]
   tenant.site:
     mode: "enum[builder,custom]"
     version: int

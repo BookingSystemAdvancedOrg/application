@@ -27,7 +27,7 @@ PURPOSE:
 
     Export and erasure cover the marketing subscriber and welcome-offer
     rows, the consent log, and the guest's bookings, orders, catering
-    requests and card receipts (an e-mailed till receipt) in every location
+    requests and card receipts left from before 2026-11-13 in every location
     of the restaurant. Erasure:
       * consent: a withdrawal (source "erasure", by subject: the address is
         not written again) on every channel with records; data-retention turns it into a bare suppression record at

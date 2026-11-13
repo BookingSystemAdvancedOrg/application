@@ -1,7 +1,9 @@
 """Kassa: the till in the admin app, built for Skatteverket's cash register
 rules (SKVFS 2014:9 as amended by 2021:17, 2014:10 as amended by 2021:18,
 2021:16). How each rule is met: docs/KASSA-REQUIREMENTS.md. Card
-payments are Stripe Terminal card payments (shared/card_payments.py).
+payments are taken on the restaurant's own card terminal; the staff confirm
+the amount in Kassa and the bill keeps {paymentId, method "Kort", amount,
+at, by} in `cards` (Booqy never talks to the terminal).
 Gift cards (only with the giftCards feature): the gift-cards feature
 redeems the card, then the bill gets {paymentId, method "Presentkort",
 amount, last4, cardId, balanceAfter} in `giftCards` after the
@@ -19,7 +21,7 @@ Kassa table (KASSA_TABLE_NAME), mutable, one partition per location:
         gtSales, gtReturn (grand totals, öre), lastZJseq, lastZAt, lastZDay,
         float (växelkassa), dayOpen, training, lastHash, lockId/lockUntil
     PK LOCATION#<l>  SK BILL#<billId>              an open bill (nota): lines,
-        discount, card payment ids, gift card payments (giftCards);
+        discount, card payments (cards), gift card payments (giftCards);
         closed/void bills expire after 90 days
     PK LOCATION#<l>  SK RCPT#<registerId>#<seq>    a sale receipt's pointer:
         jseq, payments, returned lines, returnCount, copyJseq (one copy)
@@ -58,7 +60,6 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from shared import card_payments as cp
 from shared import control_system as cs
 from shared import dynamo, feature_hooks, printing
 from shared import orders as o
@@ -114,6 +115,10 @@ CATEGORY_NAMES = {"starters": "Förrätter", "mains": "Varmrätter", "desserts":
 CARD = "Kort"
 GIFT_CARD = "Presentkort"
 NOTICE_RECEIPT = "kassa_receipt"
+SUCCEEDED = "succeeded"
+MIN_PAYMENT_ORE = 1
+MAX_PAYMENT_ORE = o.MAX_ORDER_ORE
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}$")
 
 _ID = re.compile(r"[0-9a-f]{32}")
 _LINE_ID = re.compile(r"[0-9a-f]{8}")
@@ -710,28 +715,28 @@ def list_open_bills(location_id):
 
 
 def payments_of(ctx, bill):
-    out = []
-    for payment_id in bill.get("payments") or []:
-        try:
-            out.append(cp.load(ctx.location_id, payment_id))
-        except cp.NotFound:
-            continue
-    # Gift card payments count as paid from the moment they are on the bill.
-    return out + [{**_plain(g), "status": cp.SUCCEEDED} for g in bill.get("giftCards") or []]
+    """Card and gift card payments count as paid from the moment they are on the bill."""
+    return [{**_plain(p), "status": SUCCEEDED} for p in [*(bill.get("cards") or []), *(bill.get("giftCards") or [])]]
 
 
 def payment_view(p):
     if p.get("method") == GIFT_CARD:
         return {k: p.get(k) for k in ("paymentId", "method", "amount", "last4", "balanceAfter", "status")}
-    return cp.view(p)
+    return {k: p.get(k) for k in ("paymentId", "method", "amount", "at", "status")}
 
 
 def _paid(payments):
-    return sum(_int(p.get("amount")) for p in payments if p.get("status") == cp.SUCCEEDED)
+    return sum(_int(p.get("amount")) for p in payments if p.get("status") == SUCCEEDED)
 
 
 def _live(payments):
-    return [p for p in payments if p.get("status") in (cp.PROCESSING, cp.SUCCEEDED)]
+    return [p for p in payments if p.get("status") == SUCCEEDED]
+
+
+def clean_email(value):
+    if not isinstance(value, str) or not _EMAIL.fullmatch(value.strip()):
+        raise ValueError("email is invalid")
+    return value.strip().lower()
 
 
 def bill_view(ctx, bill, payments=None):
@@ -991,14 +996,18 @@ def _kitchen_job(ctx, bill, lines, now):
 
 # --- payments ---------------------------------------------------------------------------
 
-def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
-    """A card payment for (part of) the bill on a reader. The control system
-    must answer first: a known outage stops the sale before money is taken."""
+def add_card_payment(ctx, bill_id, *, checkout_id, amount, system, now):
+    """A card payment for (part of) the bill, taken on the restaurant's own
+    terminal: the staff confirm the approved amount here. The control system
+    must answer first: a known outage stops the sale before money is taken.
+    The same checkoutId twice records one payment."""
     bill = get_bill(ctx, bill_id)
     if bill.get("status") != OPEN:
         raise Conflict("bill_closed")
     if bill.get("training"):
         raise Conflict("training_no_payment")
+    if not valid_id(checkout_id):
+        raise ValueError("checkoutId must be 32 hex characters")
     register = get_register(ctx, bill["registerId"])
     _day_open(register)
     status = system.status(register)
@@ -1012,32 +1021,25 @@ def start_payment(ctx, bill_id, *, checkout_id, reader_id, amount, system, now):
     priced = price(bill)
     if not priced["lines"]:
         raise Conflict("bill_empty")
-    remaining = priced["total"] - sum(_int(p.get("amount")) for p in _live(payments))
-    amount = cp.validate_amount(amount)
+    remaining = priced["total"] - _paid(payments)
+    amount = o._whole(amount, MIN_PAYMENT_ORE, MAX_PAYMENT_ORE, "amount")
     if amount > remaining:
         raise Conflict("amount_too_large")
-    item, _ = cp.create(ctx, checkout_id=checkout_id, reader_id=reader_id, amount=amount,
-                        note=f"Kassa {bill.get('tableLabel') or 'avhämtning'}"[:cp.NOTE_MAX], actor=ctx.sub, now=now,
-                        kassa_bill_id=bill_id)
+    payment = {"paymentId": checkout_id, "method": CARD, "amount": amount, "at": o.iso(now), "by": ctx.sub}
     try:
         _table().update_item(
             Key=bill_key(ctx.location_id, bill_id),
-            UpdateExpression="SET payments = list_append(if_not_exists(payments, :empty), :p), "
+            UpdateExpression="SET cards = list_append(if_not_exists(cards, :empty), :p), "
                              "version = version + :one, updatedAt = :now",
             ConditionExpression="version = :v AND #s = :open",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":p": [item["paymentId"]], ":empty": [], ":one": 1, ":now": o.iso(now),
+            ExpressionAttributeValues={":p": [payment], ":empty": [], ":one": 1, ":now": o.iso(now),
                                        ":v": bill["version"], ":open": OPEN})
     except ClientError as exc:
         if not _conditional(exc):
             raise
-        # The bill changed while the reader was asked: cancel so nothing is charged for an old total.
-        try:
-            cp.cancel(item, actor=ctx.sub, now=now)
-        except (cp.InvalidState, cp.NotFound):
-            pass
         raise Conflict("changed_retry") from None
-    return item
+    return {**payment, "status": SUCCEEDED}
 
 
 def _day_open(register):
@@ -1119,8 +1121,9 @@ def add_gift_card_payment(ctx, bill_id, payment_id, *, system, now):
 
 
 def undo_payment(ctx, bill_id, payment_id, *, now):
-    """Before the receipt: a paid part back to the card (the guest changed
-    their mind). After the receipt it is a return."""
+    """Before the receipt: a paid part off the bill (the guest changed their
+    mind; a card part is paid back on the restaurant's terminal). After the
+    receipt it is a return."""
     bill = get_bill(ctx, bill_id)
     if bill.get("status") != OPEN:
         raise Conflict("bill_closed")
@@ -1130,12 +1133,23 @@ def undo_payment(ctx, bill_id, payment_id, *, now):
         answer = _gift_card_hook(ctx, "reverse", bill_id, payment_id)
         _set_gift_cards(ctx, bill, [g for g in gift_cards if g["paymentId"] != payment_id], now)
         return {**gift, "status": "reversed", "balanceAfter": _int(answer.get("balanceAfterOre"))}
-    if payment_id not in (bill.get("payments") or []):
+    cards = _plain(bill.get("cards") or [])
+    card = next((c for c in cards if c["paymentId"] == payment_id), None)
+    if not card:
         raise NotFound
-    item = cp.load(ctx.location_id, payment_id)
-    if item.get("status") != cp.SUCCEEDED:
-        raise Conflict(f"cannot_refund_{item.get('status')}")
-    return cp.refund_part(item, _int(item["amount"]), key=f"kassa-undo-{payment_id}", actor=ctx.sub, now=now)
+    try:
+        _table().update_item(
+            Key=bill_key(ctx.location_id, bill_id),
+            UpdateExpression="SET cards = :c, version = version + :one, updatedAt = :now",
+            ConditionExpression="version = :v AND #s = :open",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":c": [c for c in cards if c["paymentId"] != payment_id], ":one": 1,
+                                       ":now": o.iso(now), ":v": bill["version"], ":open": OPEN})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+        raise Conflict("changed_retry") from None
+    return {**card, "status": "refunded"}
 
 
 # --- receipts ---------------------------------------------------------------------------
@@ -1146,7 +1160,7 @@ def check_delivery(ctx, system, delivery, email):
     if delivery == PRINT and not printing.get_settings(ctx.location_id).get("printerId"):
         raise Conflict("no_printer")
     if delivery == EMAIL:
-        return cp.clean_email(email)
+        return clean_email(email)
     if delivery == SCREEN and not test_mode(system):
         raise Conflict("receipt_must_be_printed")
     return None
@@ -1158,9 +1172,7 @@ def _card_rows(payments):
         if p.get("method") == GIFT_CARD:
             out.append({k: p.get(k) for k in ("paymentId", "method", "amount", "last4", "cardId", "balanceAfter")})
             continue
-        card = p.get("card") or {}
-        out.append({"paymentId": p["paymentId"], "method": CARD, "amount": _int(p.get("amount")),
-                    "brand": card.get("brand"), "last4": card.get("last4"), "funding": card.get("funding")})
+        out.append({"paymentId": p["paymentId"], "method": CARD, "amount": _int(p.get("amount"))})
     return out
 
 
@@ -1219,10 +1231,8 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
     if not priced["lines"]:
         raise Conflict("bill_empty")
     payments = payments_of(ctx, bill)
-    if any(p.get("status") == cp.PROCESSING for p in payments):
-        raise Conflict("payment_in_progress")
     training = bool(bill.get("training"))
-    succeeded = [p for p in payments if p.get("status") == cp.SUCCEEDED]
+    succeeded = [p for p in payments if p.get("status") == SUCCEEDED]
     if not training and _paid(payments) != priced["total"]:
         raise Conflict("not_fully_paid")
     if not training:
@@ -1269,8 +1279,8 @@ def finalize(ctx, bill_id, *, delivery, email, user, now, system, tenant_row):
                 **receipt_key(ctx.location_id, register["registerId"], seq), "tenantId": ctx.tenant_id,
                 "registerId": register["registerId"], "seq": seq, "jseq": jseq, "billId": bill_id,
                 "returnCount": 0, "returned": {},
-                "payments": [{"paymentId": p["paymentId"], "amount": _int(p.get("amount")), "refunded": 0}
-                             for p in succeeded]}),
+                "payments": [{"paymentId": p["paymentId"], "method": p.get("method") or CARD,
+                              "amount": _int(p.get("amount")), "refunded": 0} for p in succeeded]}),
                 "ConditionExpression": "attribute_not_exists(PK)"}})
         return items
 
@@ -1394,9 +1404,9 @@ def _return_lines(original, pointer, wanted):
 
 
 def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, user, now, system, tenant_row):
-    """Retur: the chosen lines back to the card(s), then a return receipt
-    (its number from the receipt series) referring to the original. A retry
-    of the same return refunds nothing twice (Stripe idempotency keys)."""
+    """Retur: the chosen lines back the way they were paid (a card part is
+    paid back on the restaurant's own terminal), then a return receipt (its
+    number from the receipt series) referring to the original."""
     pointer = receipt_pointer(ctx, register_id, seq)
     original = journal_entry(register_id, pointer["jseq"])
     reason = " ".join(str(reason or "").split())[:REASON_MAX]
@@ -1417,12 +1427,8 @@ def return_receipt(ctx, register_id, seq, *, lines, reason, delivery, email, use
         take = min(left, _int(p["amount"]) - _int(p.get("refunded")))
         if take <= 0:
             continue
-        card = cp.refund_part(cp.load(ctx.location_id, p["paymentId"]), take,
-                              key=f"kassa-return-{pointer['billId']}-{count}-{p['paymentId'][:8]}",
-                              actor=ctx.sub, now=now)
         p["refunded"] = _int(p.get("refunded")) + take
-        refunds.append({"paymentId": p["paymentId"], "method": CARD, "amount": take,
-                        "brand": (card.get("card") or {}).get("brand"), "last4": (card.get("card") or {}).get("last4")})
+        refunds.append({"paymentId": p["paymentId"], "method": p.get("method") or CARD, "amount": take})
         left -= take
         if not left:
             break

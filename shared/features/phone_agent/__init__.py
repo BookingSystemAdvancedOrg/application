@@ -43,7 +43,11 @@ LIMIT_KEY = "phoneAgentMinutesPerMonth"
 
 MODES = ("after_hours", "overflow", "always")
 TONES = ("formal", "friendly")
-LANGUAGES = ("sv", "en")
+# The call languages (owner 2026-11-13): Swedish first, then whichever the
+# caller speaks (language.CALL_LANGUAGES). `languages` in CONFIG lists the
+# ones the agent may switch to; Swedish is always on.
+from shared.features.phone_agent.language import CALL_LANGUAGES as LANGUAGES  # noqa: E402
+BOOKING_LANGUAGES = ("sv", "en")   # what confirmation SMS and emails are written in
 RETENTION_DAYS = (7, 30, 90)  # [NEEDS YOUR OK: options and default 30]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 OUTCOMES = ("booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error")
@@ -266,8 +270,9 @@ def validate_config(body, *, ceiling) -> dict:
     if tone not in TONES:
         raise PhoneAgentError(400, "tone must be formal or friendly", "tone")
     languages = body.get("languages")
-    if not isinstance(languages, list) or not languages or any(x not in LANGUAGES for x in languages):
-        raise PhoneAgentError(400, "languages must be sv and/or en", "languages")
+    if not isinstance(languages, list) or any(x not in LANGUAGES for x in languages):
+        raise PhoneAgentError(400, "languages must be among " + ", ".join(LANGUAGES), "languages")
+    languages = ["sv", *languages]
     rec = body.get("recording") or {}
     if not isinstance(rec, dict) or not isinstance(rec.get("enabled", False), bool):
         raise PhoneAgentError(400, "recording must be an object", "recording")
@@ -335,7 +340,10 @@ def validate_location(body) -> dict:
     if not isinstance(offers, dict) or set(offers) - {"nearbyTables", "phoneOnlyTables"} or \
             any(not isinstance(offers.get(k, True), bool) for k in ("nearbyTables", "phoneOnlyTables")):
         raise PhoneAgentError(400, "invalid_counter_offers", "counterOffers")
-    return {"enabled": enabled, "mode": mode, "agentHours": hours,
+    share = body.get("shareNumberWith")
+    if share is not None and not valid_id(share):
+        raise PhoneAgentError(400, "shareNumberWith must be a location id", "shareNumberWith")
+    return {"enabled": enabled, "mode": mode, "agentHours": hours, "shareNumberWith": share,
             "greetingExtraSv": _text(body.get("greetingExtraSv"), "greetingExtraSv"),
             "greetingExtraEn": _text(body.get("greetingExtraEn"), "greetingExtraEn"),
             "transferTo": transfer, "maxCallSeconds": int(max_call),
@@ -350,7 +358,9 @@ def loc_view(loc, *, owner=True) -> dict:
            "greetingExtraEn": loc.get("greetingExtraEn") or "", "maxCallSeconds": int(loc.get("maxCallSeconds")
                                                                                        or MAX_CALL_DEFAULT),
            "counterOffers": plain(loc.get("counterOffers") or {"nearbyTables": True, "phoneOnlyTables": True}),
-           "number": (loc.get("number") or {}).get("e164"), "version": int(loc.get("version") or 0)}
+           "number": (loc.get("number") or {}).get("e164"),
+           "numberSharedWith": (loc.get("number") or {}).get("ownerLocationId") or None,
+           "version": int(loc.get("version") or 0)}
     if owner:
         out["transferTo"] = loc.get("transferTo")
     return out

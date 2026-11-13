@@ -806,6 +806,10 @@ components:
         number:
           type: string
           nullable: true
+        numberSharedWith:
+          type: string
+          nullable: true
+          description: The location whose number this location answers on (the agent asks which location first).
         version:
           type: integer
         forwarding:
@@ -854,6 +858,10 @@ components:
               type: boolean
             phoneOnlyTables:
               type: boolean
+        shareNumberWith:
+          type: string
+          nullable: true
+          description: Answer on another enabled location's number instead of a number of its own.
         version:
           type: integer
     PhoneAgentKillSwitchBody:
@@ -883,11 +891,23 @@ components:
           enum:
           - sv
           - en
+          - no
+          - da
+          - fi
+          - de
+          - fr
+          - es
+          - it
+          - pl
+          - ar
     PhoneAgentSimulateReply:
       type: object
       properties:
         reply:
           type: string
+        language:
+          type: string
+          description: The language of the simulated call after this text (starts in Swedish, follows the caller).
         toolCalls:
           type: array
           items:

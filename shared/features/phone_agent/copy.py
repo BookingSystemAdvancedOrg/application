@@ -13,10 +13,20 @@ DISCLOSURE = {
     SV: "Hej, du pratar med {agent}, en AI-assistent för {restaurant}.",
     EN: "Hello, you are speaking with {agent}, an AI assistant for {restaurant}.",
 }
-# Said again when the caller interrupts the disclosure, and once in a new language.
+# Said again when the caller interrupts the disclosure, and once in every new
+# language the call switches to (language.CALL_LANGUAGES).
 DISCLOSURE_SHORT = {
     SV: "Jag är en AI-assistent för {restaurant}.",
     EN: "I am an AI assistant for {restaurant}.",
+    "no": "Jeg er en AI-assistent for {restaurant}.",
+    "da": "Jeg er en AI-assistent for {restaurant}.",
+    "fi": "Olen ravintolan {restaurant} tekoälyavustaja.",
+    "de": "Ich bin ein KI-Assistent von {restaurant}.",
+    "fr": "Je suis un assistant IA de {restaurant}.",
+    "es": "Soy un asistente de IA de {restaurant}.",
+    "it": "Sono un assistente IA di {restaurant}.",
+    "pl": "Jestem asystentem AI restauracji {restaurant}.",
+    "ar": "أنا مساعد ذكاء اصطناعي لمطعم {restaurant}.",
 }
 RECORDING_NOTICE = {SV: "Samtalet spelas in.", EN: "This call is recorded."}
 DEFAULT_EXTRA = {SV: "Vad kan jag hjälpa dig med?", EN: "How can I help you?"}
@@ -42,33 +52,87 @@ def _restaurant(name):
 
 
 def disclosure(lang, agent_name, restaurant):
-    return DISCLOSURE[lang].format(agent=" ".join(str(agent_name or DEFAULT_AGENT_NAME).split()),
+    return pick(DISCLOSURE, lang).format(agent=" ".join(str(agent_name or DEFAULT_AGENT_NAME).split()),
                                    restaurant=_restaurant(restaurant))
 
 
+def pick(sentences, lang):
+    """A fixed sentence in `lang`, English when it has no translation of its own."""
+    return sentences.get(lang) or sentences[EN]
+
+
 def disclosure_short(lang, restaurant):
-    return DISCLOSURE_SHORT[lang].format(restaurant=_restaurant(restaurant))
+    return pick(DISCLOSURE_SHORT, lang).format(restaurant=_restaurant(restaurant))
+
+
+# A shared number (one number for several locations): the location is asked first.
+WHICH_LOCATION = {
+    SV: "Vilken av våra restauranger gäller det, {names}?",
+    EN: "Which of our restaurants is it about, {names}?",
+}
+WHICH_LOCATION_AGAIN = {
+    SV: "Förlåt, jag hörde inte vilken. Är det {names}?",
+    EN: "Sorry, I didn't catch which one. Is it {names}?",
+}
+
+
+def joined(names, lang):
+    names = [n for n in names if n]
+    if len(names) < 2:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + (" eller " if lang == SV else " or ") + names[-1]
+
+
+LOCATION_CHOSEN = {SV: "{name}, toppen. Vad kan jag hjälpa dig med?", EN: "{name}, great. How can I help you?"}
+
+
+def location_chosen(lang, name):
+    return pick(LOCATION_CHOSEN, lang).format(name=name)
+
+
+def which_location(lang, names, *, again=False):
+    return pick(WHICH_LOCATION_AGAIN if again else WHICH_LOCATION, lang).format(names=joined(names, lang))
 
 
 def greeting(lang, agent_name, restaurant, extra=None, *, recording=False):
     """The first utterance: [recording notice] + disclosure + the owner's text."""
     parts = []
     if recording:
-        parts.append(RECORDING_NOTICE[lang])
+        parts.append(pick(RECORDING_NOTICE, lang))
     parts.append(disclosure(lang, agent_name, restaurant))
-    parts.append(" ".join(str(extra).split()) if extra else DEFAULT_EXTRA[lang])
+    parts.append(" ".join(str(extra).split()) if extra else pick(DEFAULT_EXTRA, lang))
     return " ".join(parts)
 
 
+# The brain's instructions (ADR-L decisions 2, 6, 11, 13; owner 2026-11-13: a
+# natural tone, short sentences, warm and relaxed, the caller's language).
+# Written for speech: the reply is read aloud by the voice provider.
 SYSTEM_PROMPT = {
     SV: ("Du är {agent}, en AI-assistent som svarar i telefon för {restaurant}. Du är inte en människa: "
-         "säg alltid att du är en AI om någon frågar. Svara kort och vänligt på svenska. Boka, flytta och avboka "
-         "bara med verktygen och bara efter ett tydligt ja. Upprepa antal, dag, tid och namn innan du bokar. "
-         "Fråga aldrig efter kortuppgifter. Hitta aldrig på tider: erbjud bara det verktygen svarar. "
-         "Kan du inte hjälpa till, erbjud att någon ringer upp."),
+         "säg alltid att du är en AI om någon frågar. "
+         "Prata som en varm och avslappnad värd i telefon: korta meningar, en fråga i taget, vardagligt språk. "
+         "Inga listor, inga punkter, inga id-nummer. Säg tider som man säger dem, till exempel halv åtta eller "
+         "klockan sju, och datum som fredag den 7 november. Använd gärna uppringarens namn. "
+         "Om uppringaren pratar ett annat språk byter du till det språket direkt. "
+         "Boka, flytta och avboka bara med verktygen och bara efter ett tydligt ja. Upprepa antal, dag, tid "
+         "och namn innan du bokar. Fråga aldrig efter kortuppgifter. Hitta aldrig på tider: erbjud bara det "
+         "verktygen svarar, högst tre tider åt gången, närmast önskad tid först. Är dagen full, fråga om du ska "
+         "kolla dagen efter, en gång. Svara bara om den här restaurangen; du känner inte till andra "
+         "restauranger eller bokningar. Kan du inte hjälpa till, erbjud att någon ringer upp."),
     EN: ("You are {agent}, an AI assistant answering the phone for {restaurant}. You are not a human: always "
-         "say you are an AI when asked. Answer briefly and kindly in English. Book, move and cancel only with "
-         "the tools and only after a clear yes. Repeat party size, day, time and name before booking. Never ask "
-         "for card details. Never invent times: only offer what the tools return. If you cannot help, offer a "
-         "callback."),
+         "say you are an AI when asked. "
+         "Talk like a warm, relaxed host on the phone: short sentences, one question at a time, everyday words. "
+         "No lists, no bullet points, no id numbers. Say times the way people say them, like half past seven, "
+         "and dates like Friday the 7th of November. Use the caller's name now and then. "
+         "If the caller speaks another language, switch to it straight away. "
+         "Book, move and cancel only with the tools and only after a clear yes. Repeat party size, day, time "
+         "and name before booking. Never ask for card details. Never invent times: only offer what the tools "
+         "return, at most three times at once, closest to the asked time first. If the day is full, offer to "
+         "check the next day, once. Only talk about this restaurant; you know nothing about other restaurants "
+         "or bookings. If you cannot help, offer a callback."),
 }
+TONE = {
+    "formal": {SV: "Tilltala uppringaren artigt och lite formellt.", EN: "Address the caller politely and a little formally."},
+    "friendly": {SV: "Var personlig och vänlig, gärna med lite värme.", EN: "Be personal and friendly, with a bit of warmth."},
+}
+ANSWER_IN = "The caller speaks {name}. Answer in {name}; tool results are in Swedish or English, translate them."

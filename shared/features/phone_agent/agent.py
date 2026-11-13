@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from shared import agent_model
-from shared.features.phone_agent import copy
+from shared.features.phone_agent import copy, language
 from shared.features.phone_agent.tools import TOOLS
 
 MAX_ROUNDS = 5       # model passes per caller utterance (tool calls in between)
@@ -28,14 +28,27 @@ class TurnResult:
     error: bool = False
 
 
-def system_prompt(lang, agent_name, restaurant, today: date) -> str:
-    base = copy.SYSTEM_PROMPT[lang].format(agent=agent_name or copy.DEFAULT_AGENT_NAME,
-                                           restaurant=restaurant or "restaurangen")
-    return f"{base} Idag är det {today.isoformat()}." if lang == copy.SV else f"{base} Today is {today.isoformat()}."
+def system_prompt(lang, agent_name, restaurant, today: date, tone="friendly") -> str:
+    """Swedish instructions for a Swedish call, English ones (with "answer in
+    <language>") for every other language the call switched to."""
+    base_lang = copy.SV if lang == copy.SV else copy.EN
+    base = copy.SYSTEM_PROMPT[base_lang].format(agent=agent_name or copy.DEFAULT_AGENT_NAME,
+                                                restaurant=restaurant or "restaurangen")
+    parts = [base, copy.TONE.get(tone or "friendly", copy.TONE["friendly"])[base_lang]]
+    if lang not in (copy.SV, copy.EN):
+        name = language.NAMES.get(lang, "English")
+        parts.append(copy.ANSWER_IN.format(name=name))
+    parts.append(f"Idag är det {today.isoformat()}." if base_lang == copy.SV else f"Today is {today.isoformat()}.")
+    return " ".join(parts)
 
 
 def _ok(result) -> bool:
     return isinstance(result, dict) and result.get("ok") is not False
+
+
+def _error_sentence(caller_text):
+    lang = agent_model.language_of([caller_text])
+    return agent_model.CONFIRMATIONS["error"][0 if lang == "sv" else 1]
 
 
 def run_turn(model, messages: list, caller_text: str, executor, *, system: str) -> TurnResult:
@@ -49,8 +62,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str) 
         try:
             turn = model.converse(system, messages, TOOLS, max_tokens=MAX_TOKENS)
         except agent_model.AgentModelError:
-            lang = agent_model.language_of([caller_text])
-            text = agent_model.CONFIRMATIONS["error"][0 if lang == "sv" else 1]
+            text = _error_sentence(caller_text)
             messages.append({"role": "assistant", "content": text})
             return TurnResult(text, calls, int((time.monotonic() - started) * 1000), error=True)
         content = ([{"type": "text", "text": turn.text}] if turn.text else []) + [
@@ -65,8 +77,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str) 
             results.append({"type": "tool_result", "tool_use_id": use.id,
                             "content": json.dumps(result, ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
-    lang = agent_model.language_of([caller_text])
-    text = agent_model.CONFIRMATIONS["error"][0 if lang == "sv" else 1]
+    text = _error_sentence(caller_text)
     messages.append({"role": "assistant", "content": text})
     return TurnResult(text, calls, int((time.monotonic() - started) * 1000), error=True)
 

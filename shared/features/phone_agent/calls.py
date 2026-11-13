@@ -143,12 +143,19 @@ def disclosed(call, at, spoken=None):
     art. 50 evidence. `spoken` (the provider's own text) is stored as it
     came, with `verbatim` saying whether it equals the greeting Booqy sent
     once case, punctuation and whitespace are folded. Only ever the first
-    (status answered -> disclosed)."""
+    (`playedAt` still empty); status answered -> disclosed when it arrives
+    during the call. A provider that reports transcripts after the call
+    (ElevenLabs' post-call webhook) records the same evidence on a later
+    status, the status itself unchanged."""
     spoken = str(spoken or "")[:2000]
     verbatim = normalized_text(spoken) == normalized_text((call.get("disclosure") or {}).get("text"))
-    return _update(call, "SET #st = :d, disclosure.playedAt = :at, disclosure.spoken = :sp, disclosure.verbatim = :vb",
-                   {":d": "disclosed", ":at": pa.iso(at), ":sp": spoken, ":vb": verbatim},
-                   statuses=["answered"]) or call
+    values = {":at": pa.iso(at), ":sp": spoken, ":vb": verbatim, ":nul": "NULL"}
+    evidence = "disclosure.playedAt = :at, disclosure.spoken = :sp, disclosure.verbatim = :vb"
+    if call.get("status") == "answered":
+        return _update(call, "SET #st = :d, " + evidence, {**values, ":d": "disclosed"}, statuses=["answered"],
+                       extra_condition="attribute_type(disclosure.playedAt, :nul)") or call
+    return _update(call, "SET " + evidence, values, statuses=[*OPEN, "ended", "processed"],
+                   extra_condition="attribute_type(disclosure.playedAt, :nul)") or call
 
 
 def repeat_disclosure(call, lang, at, *, new_language=False):

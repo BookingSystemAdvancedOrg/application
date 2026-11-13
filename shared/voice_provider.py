@@ -42,15 +42,28 @@ class VoiceEvent:
 
 
 class VoiceProvider:
+    # A provider that cannot inject speech outside the LLM turn (ElevenLabs
+    # with a custom LLM): Booqy queues the sentence on the call row and the
+    # turn endpoint says it first in the next reply.
+    inline_speech = False
+    # A provider whose transfer, hangup and language switch are system tools
+    # the turn endpoint calls in its answer (OpenAI tool_calls), not REST calls.
+    deferred_tools = False
+
     def create_agent(self, config): raise NotImplementedError
     def update_agent(self, provider_agent_id, config): raise NotImplementedError
     def delete_agent(self, provider_agent_id): raise NotImplementedError
-    def sip_target(self, provider_agent_id): raise NotImplementedError
+    def sip_target(self, provider_agent_id, e164=None): raise NotImplementedError
     def say(self, call_ref, text): raise NotImplementedError
     def transfer(self, call_ref, to_e164, timeout_s): raise NotImplementedError
     def end(self, call_ref, reason): raise NotImplementedError
     def recording_url(self, call_ref): raise NotImplementedError
-    def parse_webhook(self, headers, body): raise NotImplementedError
+    def parse_webhook(self, headers, body, **request): raise NotImplementedError
+
+    def webhook_response(self, answer):
+        """The provider's shape of Booqy's answer to a webhook (call start:
+        `{dynamicVariables, firstMessage?, language?}`)."""
+        return answer
 
 
 def _agent_name(config) -> str:
@@ -97,7 +110,7 @@ class SimulatedVoiceProvider(external_client.Simulated, VoiceProvider):
         self._call("delete_agent", provider_agent_id)
         self.agents.pop(provider_agent_id, None)
 
-    def sip_target(self, provider_agent_id):
+    def sip_target(self, provider_agent_id, e164=None):
         self._call("sip_target", provider_agent_id)
         if provider_agent_id not in self.agents:
             raise VoiceProviderError("not_found")
@@ -117,7 +130,7 @@ class SimulatedVoiceProvider(external_client.Simulated, VoiceProvider):
         self._call("recording_url", call_ref)
         return SIM_RECORDING.as_uri() if self.recording else None
 
-    def parse_webhook(self, headers, body):
+    def parse_webhook(self, headers, body, **request):
         self._call("parse_webhook")
         if _header(headers, SIM_SIGNATURE_HEADER) != "ok":
             raise VoiceProviderError("unauthorized")

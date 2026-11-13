@@ -20,6 +20,7 @@ from datetime import date, timedelta
 
 from shared import guarantee
 from shared.features import phone_agent as pa
+from shared.features.phone_agent import copy
 from shared.features.phone_agent import offers as of
 
 TOOLS = [
@@ -106,13 +107,28 @@ def lambda_invoker(client):
     return invoke
 
 
+def _special_day(day):
+    """A special day as the site-config answers it ({date, kind, intervals?, note?}) in a few words."""
+    if not isinstance(day, dict) or not day.get("date"):
+        return ""
+    kind = day.get("kind")
+    if kind == "closed":
+        what = "stängt"
+    elif kind == "hours":
+        what = "öppet " + ", ".join(f"{i.get('opensAt')}-{i.get('closesAt')}" for i in day.get("intervals") or [])
+    else:
+        what = "ingen bokning online" if kind == "no_online" else str(kind or "")
+    note = f" ({' '.join(str(day['note']).split())[:80]})" if day.get("note") else ""
+    return f"{day['date']} {what}{note}"
+
+
 class Executor:
     """Runs one tool use for one call. `state` is the call's (or simulator
     session's) persisted tool state: proposals, the first request, the
     furthest counter-offer, and what the call achieved."""
 
     def __init__(self, *, tenant_id, tenant_row, location, loc_config, invoke, state, caller_phone=None, dry_run=False,
-                 voice=None, call_ref=None, callbacks=None, today=None):
+                 voice=None, call_ref=None, callbacks=None, today=None, language="sv"):
         self.tenant_id = tenant_id
         self.tenant_row = tenant_row
         self.location = location
@@ -127,6 +143,7 @@ class Executor:
         self.call_ref = call_ref
         self.callbacks = callbacks
         self.today = today or date.today()
+        self.language = language or "sv"
         self._cache = {}
 
     # -- plumbing ---------------------------------------------------------------------
@@ -190,18 +207,31 @@ class Executor:
             self.state["furthest"] = step
 
     def get_restaurant_info(self, args):
-        tenant_id = self.tenant_id
+        """This location's address, opening hours, special days and booking
+        rules, and nothing about any other location of the tenant."""
         status, body = self._call("tenant-site-config", "GET", "/site-config", {},
-                                  query={"tenantId": tenant_id})
+                                  query={"tenantId": self.tenant_id})
         if status != 200:
             return {"ok": False, "code": "info_unavailable"}
-        loc = next((x for x in body.get("locations") or [] if x.get("locationId") == self.location_id), {})
+        loc = next((x for x in body.get("locations") or [] if x.get("locationId") == self.location_id), None)
+        if not loc:
+            return {"ok": False, "code": "info_unavailable"}
         parts = []
-        if loc.get("address"):
-            parts.append(str(loc["address"]))
+        address = loc.get("address")
+        if isinstance(address, dict):
+            address = ", ".join(str(address[k]) for k in ("street", "postalCode", "city") if address.get(k))
+        if address:
+            parts.append(f"adress {address}")
         hours = loc.get("businessHours") or loc.get("openingHours")
         if hours:
-            parts.append("öppettider " + json.dumps(hours, ensure_ascii=False)[:300])
+            parts.append("öppettider " + json.dumps(hours, ensure_ascii=False)[:400])
+        special = [_special_day(d) for d in (loc.get("specialDays") or [])[:6]]
+        if special:
+            parts.append("avvikande dagar " + "; ".join(x for x in special if x))
+        rules = {k: loc.get(k) for k in ("maxPartySizeOnline", "bookingDurationHours", "gracePeriodMinutes")
+                 if loc.get(k) is not None}
+        if rules:
+            parts.append("bokningsregler " + json.dumps(rules))
         return {"summary": "; ".join(parts) or (loc.get("name") or ""), "name": loc.get("name")}
 
     def get_availability(self, args):
@@ -279,7 +309,8 @@ class Executor:
         else:
             body = {"date": proposal["date"], "startTime": proposal["time"], "tableIds": proposal["tableIds"],
                     "partySize": proposal["partySize"], "name": name, "source": "phone", "notifyGuest": True,
-                    "language": args.get("language") or "sv"}
+                    # Confirmations go out in Swedish or English (the booking languages).
+                    "language": self._booking_language(args.get("language"))}
             if phone:
                 body["phone"] = phone
             if args.get("note"):
@@ -310,6 +341,10 @@ class Executor:
             accepted = "other_time"
         self.state.update({"outcome": "booked", "reservationId": reservation_id, "accepted": accepted})
         return {"reservationId": reservation_id, "guaranteeRequired": False}
+
+    def _booking_language(self, asked):
+        lang = asked if asked in pa.BOOKING_LANGUAGES else self.language
+        return lang if lang in pa.BOOKING_LANGUAGES else "en"
 
     def send_guarantee_link(self, args):
         # Only after create_reservation answers guaranteeRequired, which the
@@ -384,6 +419,12 @@ class Executor:
         to = self.loc.get("transferTo")
         if self.dry_run or not to or not self.voice:
             return {"answered": False}
+        if getattr(self.voice, "deferred_tools", False):
+            # The provider transfers (its transfer_to_number system tool in this turn's answer).
+            self.state.setdefault("providerActions", []).append({"name": "transfer_to_number", "arguments": {
+                "transfer_number": to, "reason": str(args.get("reason") or "caller_asked")[:100],
+                "client_message": copy.pick(copy.TRANSFERRING, self.language),
+                "agent_message": "Samtal från telefonassistenten: " + str(args.get("reason") or "")[:100]}})
         result = self.voice.transfer(self.call_ref, to, pa.TRANSFER_TIMEOUT_S)
         self.state["transfer"] = {"answered": bool(result.answered)}
         if result.answered:
@@ -406,6 +447,9 @@ class Executor:
         if outcome in pa.OUTCOMES and outcome not in ("refused",):
             self.state.setdefault("outcome", outcome)
         self.state["summary"] = " ".join(str(args.get("summary") or "").split())[:200]
+        if getattr(self.voice, "deferred_tools", False):
+            self.state.setdefault("providerActions", []).append(
+                {"name": "end_call", "arguments": {"reason": str(args.get("outcome") or "done")}})
         return {"ok": True}
 
     def counter_offer(self) -> str:

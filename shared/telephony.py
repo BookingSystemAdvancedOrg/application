@@ -46,7 +46,7 @@ class Telephony:
     def release_number(self, provider_id): raise NotImplementedError
     def set_inbound(self, provider_id, sip, fallback_e164): raise NotImplementedError
     def transfer(self, call_ref, to_e164, timeout_s): raise NotImplementedError
-    def parse_webhook(self, headers, body): raise NotImplementedError
+    def parse_webhook(self, headers, body, **request): raise NotImplementedError
     def verify_forwarding(self, e164): raise NotImplementedError
 
 
@@ -97,7 +97,7 @@ class SimulatedTelephony(external_client.Simulated, Telephony):
         self._call("transfer", call_ref, to_e164, timeout_s)
         return TransferResult(bool(self.transfer_answered))
 
-    def parse_webhook(self, headers, body):
+    def parse_webhook(self, headers, body, **request):
         self._call("parse_webhook")
         auth = next((v for k, v in (headers or {}).items() if str(k).lower() == "authorization"), None)
         if auth != SIM_BASIC_AUTH:

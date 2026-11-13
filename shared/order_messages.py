@@ -135,10 +135,11 @@ def _local(item, value, fmt):
 
 
 def _table(item, lang):
+    # "bord 7" for a number; a named table ("Terrassen") as it is.
     label = item.get("tableLabel") or ""
-    if lang == "sv":
-        return label if label.lower().startswith("bord") else f"bord {label}"
-    return label if label.lower().startswith("table") else f"table {label}"
+    if label[:1].isdigit():
+        return f"bord {label}" if lang == "sv" else f"table {label}"
+    return label
 
 
 def _seller(tenant_row, location):

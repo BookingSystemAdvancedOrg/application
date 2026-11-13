@@ -3964,72 +3964,119 @@ paths:
   /locations/{locationId}/orders/table-codes:
     parameters:
       - $ref: '#/components/parameters/LocationId'
-    post:
+    get:
       tags:
         - Orders
-      summary: QR code values for tables
-      operationId: createTableCodes
+      summary: QR codes for the tables
+      operationId: listTableCodes
       description: |
-        Signed codes for the tables' QR codes - the guest site opens
-        `/bestall?bord=<code>`. The label is inside the code (it prints on
-        the order), so a renamed table needs a new QR code.
+        The QR code of every table in the location's ACTIVE published floor
+        plan (a draft never counts), in the plan's order, with the table's
+        current name. Each table has its own random code (no table id in
+        it), created on first use and stable across renaming and moving the
+        table; the guest site opens `/bestall?bord=<code>`. A table that
+        leaves the floor plan stops taking orders; a new table gets a new
+        code even when it reuses the old number.
       security:
         - bearerAuth: []
       x-required-groups:
         - staff_user
         - owner_user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-                - tables
-              properties:
-                tables:
-                  type: array
-                  minItems: 1
-                  maxItems: 200
-                  items:
-                    type: object
-                    additionalProperties: false
-                    required:
-                      - tableId
-                      - label
-                    properties:
-                      tableId:
-                        type: string
-                      label:
-                        type: string
-                        maxLength: 40
       responses:
         '200':
-          description: One code per table.
+          description: One code per table of the active floor plan (empty when none is published).
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tables:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        tableId:
-                          type: string
-                        label:
-                          type: string
-                        code:
-                          type: string
+                $ref: '#/components/schemas/TableCodeList'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+    post:
+      tags:
+        - Orders
+      summary: QR codes for the tables (older admin builds)
+      operationId: createTableCodes
+      description: |
+        Same answer as GET. A body (`{"tables": [...]}`, sent by older admin
+        builds) is accepted and ignored: the floor plan decides the tables.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                tables:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+      responses:
+        '200':
+          description: One code per table of the active floor plan.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableCodeList'
         '400':
           $ref: '#/components/responses/OrderBadRequest'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/table-codes/{tableId}/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - name: tableId
+        in: path
+        required: true
+        description: The table's element id in the active floor plan.
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,128}$'
+    post:
+      tags:
+        - Orders
+      summary: New QR code for one table
+      operationId: regenerateTableCode
+      description: |
+        For a stolen or worn sticker. The table's old code (and a code
+        printed before per-table codes existed) stops working at once; a
+        guest who scans it is told the code is no longer valid.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The table's new code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableCode'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
 
   /t:
     post:
@@ -8305,10 +8352,53 @@ components:
           format: date-time
         forTable:
           type: object
-          description: With ?table=<code> - the table the code belongs to.
+          description: |
+            With ?table=<code> - the table the code belongs to, named as in
+            the active floor plan now. 400 `table code is invalid` (not this
+            location's), `table code revoked` (regenerated) or `table
+            removed` (no longer in the floor plan).
           properties:
             label:
               type: string
+            title:
+              type: string
+              description: How to show it, e.g. "Bord 7" for "7".
+
+    TableCode:
+      type: object
+      required:
+        - tableId
+        - label
+        - title
+        - code
+        - url
+      properties:
+        tableId:
+          type: string
+        label:
+          type: string
+        title:
+          type: string
+          description: How to print it, e.g. "Bord 7" for "7".
+        seats:
+          type: integer
+        code:
+          type: string
+          description: Random 22-character code (the QR code's ?bord= value).
+        url:
+          type: string
+          nullable: true
+          description: The guest-site address to put in the QR code; null while the restaurant has no site address.
+
+    TableCodeList:
+      type: object
+      required:
+        - tables
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableCode'
 
     OrderCreateRequest:
       type: object

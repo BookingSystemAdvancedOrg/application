@@ -95,7 +95,10 @@ def order_ticket(order, location, *, width=80, copy=False, retry=False):
         t.line("KOPIA", bold=True, center=True)
     t.line(f"#{order.get('number') or '?'}", bold=True, big=True, center=True)
     if order.get("mode") == "table":
-        t.line(f"BORD {clean(order.get('tableLabel')) or '?'}", bold=True, big=True, center=True)
+        # "BORD 7" for a number; a named table ("Terrassen") as it is.
+        label = clean(order.get("tableLabel")) or "?"
+        t.line((f"BORD {label}" if label[0].isdigit() or label == "?" else label).upper(),
+               bold=True, big=True, center=True)
     else:
         t.line("AVHÄMTNING", bold=True, big=True, center=True)
     placed = _local(order.get("confirmedAt") or order.get("createdAt"), tz)

@@ -30,6 +30,9 @@ ROOT = Path(__file__).parents[1] / "functions"
 LOCATION_TABLE = "test-location"
 ORDER_TABLE = "test-order"
 MENU_TABLE = "test-menu"
+SNAPSHOT_TABLE = "test-layout-snapshot"
+# LOC_A's active floor plan: the tables the older tests order at.
+LAYOUT_A = [("t-7", "Bord 7"), ("t-3", "Fönsterbordet"), ("t1", "1"), ("t5", "5")]
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)  # 14:00 in Stockholm, a Tuesday
 TODAY = "2026-09-08"
 WEEK = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -120,6 +123,7 @@ def env(monkeypatch):
         "AWS_SESSION_TOKEN": "t", "AWS_DEFAULT_REGION": REGION, "ORDER_TABLE_NAME": ORDER_TABLE,
         "MENU_TABLE_NAME": MENU_TABLE, "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "USER_TABLE_NAME": "test-user",
+        "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME": SNAPSHOT_TABLE,
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
@@ -135,7 +139,7 @@ def env(monkeypatch):
         monkeypatch.setenv("ORDER_STRIPE_WEBHOOK_SECRET_ARN",
                            sm.create_secret(Name="whsec", SecretString=WHSEC)["ARN"])
         res = boto3.resource("dynamodb", region_name=REGION)
-        for name in (ORDER_TABLE, MENU_TABLE):
+        for name in (ORDER_TABLE, MENU_TABLE, SNAPSHOT_TABLE):
             res.create_table(
                 TableName=name,
                 KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
@@ -160,6 +164,7 @@ def env(monkeypatch):
                      menu_item(LOC_A, "old", "Borttagen", "50", active=False),
                      menu_item(LOC_B, "pizza", "Other pizza", "1")):
             menu.put_item(Item=item)
+        publish_layout(LOC_A, LAYOUT_A)
         fake = FakeStripe()
         monkeypatch.setattr(stripe_client, "request", fake)
         monkeypatch.setattr(o, "now_utc", lambda: NOW)
@@ -174,6 +179,26 @@ def env(monkeypatch):
 
 
 # --- helpers --------------------------------------------------------------------------------
+
+def publish_layout(location_id, tables, *, version=1, floors=None):
+    """Make `tables` [(tableId, label or None)] the location's active floor
+    plan (what publish-layout + activate-layout-version store)."""
+    res = boto3.resource("dynamodb", region_name=REGION).Table(SNAPSHOT_TABLE)
+    elements = list(floors or [])
+    for entry in tables:
+        table_id, label = entry[0], entry[1]
+        element = {"elementId": table_id, "type": "table", "shape": "rect", "seats": 4}
+        if label:
+            element["label"] = label
+        if len(entry) > 2:
+            element["floorId"] = entry[2]
+        elements.append(element)
+    pk = f"LOCATION#{location_id}"
+    res.put_item(Item={"PK": pk, "SK": f"LAYOUT#v{version}", "version": version, "isCurrent": True,
+                       "elements": elements})
+    res.put_item(Item={"PK": pk, "SK": "LAYOUT#ACTIVATION", "recordType": "layoutActivationState",
+                       "currentVersion": version, "revision": version})
+
 
 def body_of(response):
     return json.loads(response["body"])
@@ -599,7 +624,7 @@ def test_ordering_state_and_table_label(env):
              "queryStringParameters": {"table": code}}
     body = body_of(env["m"]["get"].handler(event, None))
     assert body == {"open": True, "pickup": True, "table": True, "prepMinutes": 20, "closesAt": "22:00",
-                    "lastOrderAt": "21:45", "forTable": {"label": "Fönsterbordet"}}
+                    "lastOrderAt": "21:45", "forTable": {"label": "Fönsterbordet", "title": "Fönsterbordet"}}
     event["queryStringParameters"] = {"table": "junk.sig"}
     assert env["m"]["get"].handler(event, None)["statusCode"] == 400
 
@@ -692,14 +717,135 @@ def test_pause_and_resume(env):
     assert env["m"]["staff"].handler(staff_event("PUT", "pause", body={"minutes": 241}), None)["statusCode"] == 400
 
 
-def test_table_codes_round_trip(env):
-    body = body_of(env["m"]["staff"].handler(staff_event("POST", "table-codes", body={
-        "tables": [{"tableId": "t1", "label": "  Bord   1 "}, {"tableId": "t2", "label": "Bar"}]}), None))
-    assert [(t["tableId"], t["label"]) for t in body["tables"]] == [("t1", "Bord 1"), ("t2", "Bar")]
-    assert o.read_table_code(TENANT_A, LOC_A, body["tables"][0]["code"]) == ("t1", "Bord 1")
-    assert body["tables"][0]["url"].startswith("https://dev123.cloudfront.net/bestall?restaurang=roma&bord=")
-    with pytest.raises(ValueError):
-        o.read_table_code(TENANT_B, LOC_A, body["tables"][0]["code"])
+def staff_codes(env, **kwargs):
+    response = env["m"]["staff"].handler(staff_event("GET", "table-codes", **kwargs), None)
+    assert response["statusCode"] == 200, response
+    return {t["tableId"]: t for t in body_of(response)["tables"]}
+
+
+def ordering_for(env, code, location_id=LOC_A):
+    return env["m"]["get"].handler({"routeKey": "GET /locations/{locationId}/ordering",
+                                    "pathParameters": {"locationId": location_id},
+                                    "queryStringParameters": {"table": code}}, None)
+
+
+def test_table_codes_come_from_the_published_floor_plan(env):
+    codes = staff_codes(env)
+    assert list(codes) == ["t-7", "t-3", "t1", "t5"]
+    seven = codes["t-7"]
+    assert (seven["label"], seven["title"], seven["seats"]) == ("Bord 7", "Bord 7", 4)
+    assert codes["t5"]["title"] == "Bord 5"
+    # Opaque and random: no table id in it, 128 bits.
+    assert "t-7" not in seven["code"] and len(seven["code"]) == 22
+    assert seven["url"] == ("https://dev123.cloudfront.net/bestall?restaurang=roma&bord=" + seven["code"])
+    # Stable: asking again (or with an old admin build's body) gives the same codes.
+    again = body_of(env["m"]["staff"].handler(staff_event("POST", "table-codes", body={
+        "tables": [{"tableId": "t1", "label": "whatever"}]}), None))["tables"]
+    assert {t["tableId"]: t["code"] for t in again} == {k: v["code"] for k, v in codes.items()}
+    assert body_of(ordering_for(env, seven["code"]))["forTable"] == {"label": "Bord 7", "title": "Bord 7"}
+
+
+def test_unpublished_location_has_no_table_codes(env):
+    response = env["m"]["staff"].handler(staff_event("GET", "table-codes", location_id=LOC_A2), None)
+    assert body_of(response) == {"tables": []}
+
+
+def test_renamed_and_moved_table_keeps_its_code(env):
+    code = staff_codes(env)["t-7"]["code"]
+    # Renamed and moved to another floor (a new layout version).
+    publish_layout(LOC_A, [("t-3", "Fönsterbordet"), ("t-7", "Terrassen", "f2")], version=2,
+                   floors=[{"elementId": "f1", "type": "floor", "level": 0, "name": "Inne"},
+                           {"elementId": "f2", "type": "floor", "level": 1, "name": "Ute"}])
+    assert body_of(ordering_for(env, code))["forTable"]["label"] == "Terrassen"
+    created = post_order(env, mode="table", tableCode=code)
+    assert created["statusCode"] == 201
+    item = stored(env, body_of(created)["orderId"])
+    assert (item["tableId"], item["tableLabel"]) == ("t-7", "Terrassen")
+    assert staff_codes(env)["t-7"]["code"] == code
+
+
+def test_deleted_table_code_says_so_and_a_new_table_7_gets_a_new_code(env):
+    old = staff_codes(env)["t-7"]["code"]
+    # Table 7 removed; a new table that is also called "Bord 7" is a new element.
+    publish_layout(LOC_A, [("t-3", "Fönsterbordet"), ("t-new", "Bord 7")], version=2)
+    response = ordering_for(env, old)
+    assert response["statusCode"] == 400 and body_of(response) == err("table removed")
+    assert body_of(post_order(env, mode="table", tableCode=old)) == err("table removed")
+    new = staff_codes(env)["t-new"]["code"]
+    assert new != old
+    assert body_of(ordering_for(env, new))["forTable"]["label"] == "Bord 7"
+
+
+def test_regenerated_code_revokes_the_old_sticker(env):
+    old = staff_codes(env)["t-7"]["code"]
+    response = env["m"]["staff"].handler(staff_event("POST", "table-codes/t-7/regenerate", role="staff_user"), None)
+    assert response["statusCode"] == 200, response
+    fresh = body_of(response)
+    assert fresh["tableId"] == "t-7" and fresh["code"] != old and fresh["url"].endswith(fresh["code"])
+    assert body_of(ordering_for(env, old)) == err("table code revoked")
+    assert body_of(post_order(env, mode="table", tableCode=old)) == err("table code revoked")
+    assert post_order(env, mode="table", tableCode=fresh["code"])["statusCode"] == 201
+    assert staff_codes(env)["t-7"]["code"] == fresh["code"]
+    # Only tables of the active floor plan; GET is not a regeneration.
+    assert env["m"]["staff"].handler(staff_event("POST", "table-codes/t-gone/regenerate"), None)["statusCode"] == 404
+    assert env["m"]["staff"].handler(staff_event("GET", "table-codes/t-7/regenerate"), None)["statusCode"] == 405
+
+
+def test_old_signed_codes_work_until_the_table_is_regenerated(env):
+    legacy = o.table_code(TENANT_A, LOC_A, "t-7", "Gammalt namn")
+    # The name comes from the floor plan now, not from the printed code.
+    assert body_of(ordering_for(env, legacy))["forTable"]["label"] == "Bord 7"
+    staff_codes(env)  # opening the QR codes doesn't kill old stickers
+    assert ordering_for(env, legacy)["statusCode"] == 200
+    env["m"]["staff"].handler(staff_event("POST", "table-codes/t-7/regenerate"), None)
+    assert body_of(ordering_for(env, legacy)) == err("table code revoked")
+    gone = o.table_code(TENANT_A, LOC_A, "t-deleted", "9")
+    assert body_of(ordering_for(env, gone)) == err("table removed")
+
+
+def test_a_tenants_table_code_never_orders_at_another_tenant(env):
+    """Two-tenant isolation: tenant B's code (or a guessed one) is unknown at
+    tenant A's location and the other way round; B's staff can't list or
+    regenerate A's codes."""
+    publish_layout(LOC_B, [("t-7", "Bord 7")])
+    a_code = staff_codes(env)["t-7"]["code"]
+    b_response = env["m"]["staff"].handler(
+        staff_event("GET", "table-codes", tenant_id=TENANT_B, location_id=LOC_B), None)
+    b_code = body_of(b_response)["tables"][0]["code"]
+    assert b_code != a_code
+    # B's sticker at A's location (same table id "t-7"): unknown.
+    assert body_of(ordering_for(env, b_code, LOC_A)) == err("table code is invalid")
+    assert body_of(post_order(env, mode="table", tableCode=b_code)) == err("table code is invalid")
+    # A's sticker at B's location: unknown.
+    assert body_of(ordering_for(env, a_code, LOC_B)) == err("table code is invalid")
+    # A's sticker at A's other location: unknown.
+    assert body_of(ordering_for(env, a_code, LOC_A2)) == err("table code is invalid")
+    # Guessing: right shape, wrong key.
+    assert body_of(ordering_for(env, "A" * 22)) == err("table code is invalid")
+    assert body_of(ordering_for(env, "../../x")) == err("table code is invalid")
+    # B's staff can't see or regenerate A's codes.
+    for method, suffix in (("GET", "table-codes"), ("POST", "table-codes/t-7/regenerate")):
+        response = env["m"]["staff"].handler(
+            staff_event(method, suffix, tenant_id=TENANT_B, location_id=LOC_A), None)
+        assert response["statusCode"] in (403, 404)
+    assert staff_codes(env)["t-7"]["code"] == a_code
+
+
+def test_table_numbers_follow_the_admin_numbering():
+    from shared import table_qr
+    elements = [
+        {"elementId": "f2", "type": "floor", "level": 1},
+        {"elementId": "f1", "type": "floor", "level": 0},
+        {"elementId": "a", "type": "table", "floorId": "f2", "seats": 2},
+        {"elementId": "w", "type": "wall", "floorId": "f1"},
+        {"elementId": "b", "type": "table", "floorId": "f1", "seats": 4},
+        {"elementId": "c", "type": "table", "floorId": "f1", "label": "  Bar  ", "seats": 2},
+        {"elementId": "d", "type": "table", "floorId": "f2"},
+    ]
+    assert [(t["tableId"], t["label"]) for t in table_qr.tables_from_layout(elements)] == [
+        ("b", "1"), ("c", "Bar"), ("a", "3"), ("d", "4")]
+    assert table_qr.table_title("7") == "Bord 7" and table_qr.table_title("Bord 7") == "Bord 7"
+    assert table_qr.table_title("12b") == "Bord 12b" and table_qr.table_title("Bar") == "Bar"
 
 
 # --- guest messages ------------------------------------------------------------------------------------

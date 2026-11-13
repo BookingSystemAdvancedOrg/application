@@ -50,7 +50,8 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     ORDER_TABLE_NAME, MENU_TABLE_NAME, SITE_DOMAIN, CUSTOMER_SITE_URL (dev return pages),
     STRIPE_SECRET_ARN, STRIPE_API_VERSION,
-    RESERVATION_LINK_KEY_SECRET_ARN (QR codes and status links are signed with it),
+    RESERVATION_LINK_KEY_SECRET_ARN (old QR codes and status links are signed with it),
+    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (table QR codes: the active floor plan),
     TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
     MARKETING_TABLE_NAME (discount codes; unset = codes are refused)
 
@@ -70,6 +71,7 @@ from shared import site
 from shared import marketing_offer as offer
 from shared import tenant, turnstile
 from shared import orders as o
+from shared import table_qr
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -160,7 +162,7 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
     policy = o.require_open(ctx.location, ctx.tenant, mode, now)
     table_id = table_label = None
     if mode == o.TABLE:
-        table_id, table_label = o.read_table_code(ctx.tenant_id, location_id, data.get("tableCode"))
+        table_id, table_label = table_qr.resolve(ctx.tenant_id, location_id, data.get("tableCode"))
     elif data.get("tableCode") not in (None, ""):
         raise ValueError("tableCode is only for table orders")
     account = o.stripe_account(ctx.tenant, ctx.location)

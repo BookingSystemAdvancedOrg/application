@@ -118,10 +118,33 @@ accountant; the receipt shows seller, org.nr, lines, VAT per rate and total.
 
 ## QR codes
 
-`POST /locations/{id}/orders/table-codes` signs `{tableId, label}` with the
-platform's link key (purpose `table-qr`), so a guest can't invent a table and
-the label prints on the order without a layout lookup. Renaming a table
-means printing a new code.
+One code per table of the ACTIVE published floor plan (`shared/table_qr.py`).
+The code is a random 128-bit key (22 characters) stored in the location's
+partition of the order table; it carries no table id, so it can't be guessed
+or edited into another table, and a code of another tenant or location is
+simply unknown there.
+
+- `GET /locations/{id}/orders/table-codes` (staff/owner): every published
+  table with its code, current name and the URL to print
+  (`/bestall?bord=<code>`); codes are created on first use. The admin shows
+  them in Layout (select a table, or "QR-koder" for all) and under
+  Inställningar -> Beställning, prints A6 cards or an A4 sheet (four per
+  page) and downloads PDF, PNG or SVG.
+- `POST .../table-codes/{tableId}/regenerate`: new code for a stolen sticker;
+  the old key is kept with `revokedAt`.
+- The guest's `GET /locations/{id}/ordering?table=<code>` and `POST /order`
+  resolve the code against the active floor plan: the name follows renames
+  and moves; 400 `table code is invalid` (unknown), `table code revoked`
+  (regenerated), `table removed` (no longer in the plan; a new table that
+  reuses the number is a new element with a new code). A draft layout never
+  counts. Opening hours, pauses and "ordering at the table" off still close
+  ordering as before.
+- The order stores `tableId` and the table's name at order time
+  (`tableLabel`); staff screens, the kitchen ticket and the guest messages
+  show it ("Bord 7" for a number, a named table as it is).
+- Codes printed before 2026-11-13 (`payload.signature`, name inside) still
+  work, with the name from the floor plan, until the table's code is
+  regenerated once or the table is removed.
 
 ## Security
 

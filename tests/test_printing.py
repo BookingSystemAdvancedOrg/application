@@ -172,6 +172,8 @@ def test_ticket_table_order_hides_phone_and_winter_time():
     text = t.order_ticket(order(mode="table", tableLabel="5", confirmedAt="2026-01-15T11:05:00Z"),
                           {"timezone": "Europe/Stockholm"}).decode("cp1252")
     assert "BORD 5" in text and "Tel:" not in text and "Beställd 12:05" in text
+    named = t.order_ticket(order(mode="table", tableLabel="Terrassen"), {}).decode("cp1252")
+    assert "TERRASSEN" in named and "BORD TERRASSEN" not in named
 
 
 def test_ticket_width_retry_and_copy():

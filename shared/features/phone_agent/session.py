@@ -30,9 +30,9 @@ def local_today(location) -> date:
 
 
 def allowed_languages(config):
-    """The languages a call may switch to: the tenant's list, Swedish always."""
-    chosen = set(config.get("languages") or pa.LANGUAGES) | {"sv"}
-    return tuple(x for x in pa.LANGUAGES if x in chosen)
+    """The languages a call may switch to: every language the voice speaks
+    (owner 2026-11-13: whatever the caller speaks)."""
+    return pa.LANGUAGES
 
 
 def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback):
@@ -48,24 +48,26 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     lang = current.get("language") or "sv"
     actions, spoken = [], []
-    new_lang = language.next_language(lang, caller_text, allowed_languages(config))
-    if new_lang != lang:
-        current, said = calls.repeat_disclosure(current, new_lang, at, new_language=True)
-        current = calls.set_status(current, current["status"], [current["status"]], language=new_lang) or current
-        lang = new_lang
-        actions.append({"name": "language_detection", "arguments": {
-            "reason": f"The caller speaks {language.NAMES[lang]}", "language": lang}})
-        if said:
-            spoken.append(said)
+    hint = language.next_language(lang, caller_text, language.CALL_LANGUAGES)   # what the prompt asks for
     messages = agent.loads(current.get("agentMessages"))
     state = json.loads(current.get("toolState") or "{}")
     executor = Executor(tenant_id=call["tenantId"], tenant_row=tenant_row, location=location, loc_config=loc,
                         invoke=invoke, state=state, caller_phone=call.get("from"), voice=voice,
                         call_ref=call.get("callRef"), callbacks=add_callback, today=local_today(location),
-                        language=lang)
-    system = agent.system_prompt(lang, config.get("agentName"), location.get("name"), executor.today,
+                        language=hint)
+    system = agent.system_prompt(hint, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"))
     result = agent.run_turn(model, messages, caller_text, executor, system=system)
+    new_lang = result.language if result.language in allowed_languages(config) else hint
+    if new_lang != lang:
+        # The short art. 50 disclosure once in the new language, before the reply,
+        # and the provider follows (its language_detection system tool).
+        current, said = calls.repeat_disclosure(current, new_lang, at, new_language=True)
+        current = calls.set_status(current, current["status"], [current["status"]], language=new_lang) or current
+        actions.append({"name": "language_detection", "arguments": {
+            "reason": f"The caller speaks {language.NAMES.get(new_lang, new_lang)}", "language": new_lang}})
+        if said:
+            spoken.append(said)
     state["counterOffer"] = executor.counter_offer()
     actions.extend(state.pop("providerActions", None) or [])
     metric("TurnLatencyMs", result.latency_ms, "Milliseconds")
@@ -123,10 +125,7 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     lang = start_lang = language_ or row.get("language") or "sv"
     switched = None
     if not language_:
-        new_lang = language.next_language(lang, text, allowed_languages(config))
-        if new_lang != lang:
-            switched = copy.disclosure_short(new_lang, location.get("name"))
-            lang = new_lang
+        lang = language.next_language(lang, text, language.CALL_LANGUAGES)
     messages = agent.loads(row.get("messages"))
     state = json.loads(row.get("toolState") or "{}")
     first = not messages
@@ -135,6 +134,10 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     system = agent.system_prompt(lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"))
     result = agent.run_turn(model, messages, text, executor, system=system)
+    if not language_ and result.language in allowed_languages(config):
+        lang = result.language
+    if lang != start_lang and lang != row.get("language", start_lang):
+        switched = copy.disclosure_short(lang, location.get("name"))
     reply = result.reply
     if first:  # the simulator shows the greeting with the disclosure first, like a call
         greeting = copy.greeting(start_lang, config.get("agentName"), location.get("name"),

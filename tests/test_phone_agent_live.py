@@ -123,14 +123,35 @@ def test_any_language_reaches_the_model_and_the_disclosure_follows(live):
     assert phone.row()["language"] == "de"
 
 
-def test_owner_can_keep_the_agent_to_swedish_and_english(live):
-    status, _ = call(live, "PUT", "/tenant/phone-agent/config", path=None, body={
-        "agentName": "Sara", "tone": "friendly", "languages": ["en"], "recording": {"enabled": False},
-        "minutesCapPerMonth": 100, "version": 0})
-    assert status == 200
+def test_any_language_the_model_answers_in_is_followed(live):
+    """A language the word lists do not know (Turkish): the model's [tr] tag
+    switches the call, Booqy says the fixed AI sentence in Turkish first."""
+    live.model.responses = [Turn(text="[tr] Tabii, kaç kişi için?")]
     phone = Phone(live)
-    phone.say("Hallo, ich möchte einen Tisch für morgen reservieren")
-    assert phone.row()["language"] == "sv"   # German is not on: the call stays in Swedish
+    status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
+        {"role": "user", "content": "Merhaba, yarın akşam için masa ayırtmak istiyorum"}]})
+    assert text == "Location loc-a-1 için bir yapay zekâ asistanıyım. Tabii, kaç kişi için?"
+    assert tools == [{"name": "language_detection", "arguments": {"reason": "The caller speaks Turkish",
+                                                                  "language": "tr"}}]
+    assert phone.row()["language"] == "tr" and phone.row()["disclosure"]["languages"] == ["sv", "tr"]
+    live.model.responses = [Turn(text="[tr] Harika.")]
+    status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
+        {"role": "user", "content": "Dört kişi"}]})
+    assert text == "Harika." and tools == []      # same language: no second disclosure, no second switch
+
+
+def test_a_tag_naming_a_language_the_voice_cannot_speak_is_ignored(live):
+    live.model.responses = [Turn(text="[xx] Hej hej.")]
+    phone = Phone(live)
+    assert phone.say("Hej, har ni öppet ikväll?") == "Hej hej."
+    assert phone.row()["language"] == "sv"
+
+
+def test_every_voice_language_has_the_fixed_disclosure():
+    from shared.features.phone_agent import copy
+    assert set(language.VOICE_LANGUAGES) <= set(copy.DISCLOSURE_SHORT)
+    for lang in language.VOICE_LANGUAGES:
+        assert "Bistro" in copy.disclosure_short(lang, "Bistro")
 
 
 # --- location from the number, one number for several locations ------------------------------------

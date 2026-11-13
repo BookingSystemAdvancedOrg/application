@@ -18,7 +18,7 @@ import json
 import os
 from datetime import date, timedelta
 
-from shared import guarantee
+from shared import agent_model, guarantee
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import copy
 from shared.features.phone_agent import offers as of
@@ -26,12 +26,14 @@ from shared.features.phone_agent import offers as of
 TOOLS = [
     {"name": "get_restaurant_info", "description": "Opening hours, special days, address and booking rules.",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_availability", "description": "Free start times for a party on a day.",
+    {"name": "get_availability", "description": "Free start times for a party on a day. With `time`, `suggest` "
+                                                "holds the (at most three) closest free times: offer those.",
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": {"type": "string"}, "partySize": {"type": "integer"}, "time": {"type": "string"},
          "timeFrom": {"type": "string"}, "timeTo": {"type": "string"}}}},
     {"name": "hold_table", "description": "Check that a table can be booked at a time; returns a proposal id or "
-                                          "counter-offers. Writes nothing.",
+                                          "counter-offers: offer `nearby` first if present, else exactly the "
+                                          "times in `suggest`. Writes nothing.",
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": {"type": "string"}, "time": {"type": "string"}, "partySize": {"type": "integer"},
          "tableIds": {"type": "array", "items": {"type": "string"}}}}},
@@ -248,6 +250,8 @@ class Executor:
         frm, to = args.get("timeFrom"), args.get("timeTo")
         if frm or to:
             answer["times"] = [t for t in answer["times"] if (not frm or t >= frm) and (not to or t <= to)]
+        if time and answer["times"]:
+            answer["suggest"] = agent_model.nearest_times(time, answer["times"], ())
         return answer
 
     def hold_table(self, args):
@@ -282,9 +286,11 @@ class Executor:
             self._reached("nearby_table")
         elif result.get("before") or result.get("after"):
             self._reached("other_time")
+        before, after = result.get("before") or [], result.get("after") or []
         return {"held": False, "reason": result.get("reason") or "time_taken", "time": time,
-                "before": result.get("before") or [], "after": result.get("after") or [],
-                "nearby": result.get("nearby") or [], "dayFull": bool(result.get("dayFull"))}
+                "suggest": agent_model.nearest_times(time, before, after) if (before or after) else [],
+                "before": before, "after": after, "nearby": result.get("nearby") or [],
+                "dayFull": bool(result.get("dayFull"))}
 
     # -- writes -----------------------------------------------------------------------
 

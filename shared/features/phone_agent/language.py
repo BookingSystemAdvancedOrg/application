@@ -1,30 +1,34 @@
 """The caller's language (owner requirement 2026-11-13: start in Swedish,
-switch when the caller speaks another language).
+then speak whatever language the caller speaks).
 
-The voice provider transcribes with a multilingual model; Booqy decides the
-language of the call from the caller's own words, so the art. 50 short
-disclosure, the system prompt and the provider's `language_detection` system
-tool all follow one decision that tests can drive. Deterministic and cheap:
-function words and letters per language, and a switch only on a clear win,
-so "ok", "ja" or a name never flips the call.
+Two signals, one decision per turn:
+  * `detect()`: function words and letters of eleven common languages, a
+    switch only on a clear win ("ok", "ja" or a name never flips the call).
+    Fast and deterministic: it sets the language the system prompt asks for
+    before the model runs (and drives the simulator).
+  * the model's own tag: every reply starts with `[<code>]` (`tagged()`), so
+    any language the voice model speaks is followed, not only the eleven.
 
-`CALL_LANGUAGES` are the languages the multilingual voice model speaks well
-that the agent may switch to; Swedish is always first.
+`VOICE_LANGUAGES` are the languages ElevenLabs' multilingual low-latency
+model speaks (eleven_flash_v2_5); the call may switch to any of them. The
+art. 50 short disclosure exists in each (copy.DISCLOSURE_SHORT).
 """
 
 from __future__ import annotations
 
 import re
 
-CALL_LANGUAGES = ("sv", "en", "no", "da", "fi", "de", "fr", "es", "it", "pl", "ar")
+CALL_LANGUAGES = ("sv", "en", "no", "da", "fi", "de", "fr", "es", "it", "pl", "ar")   # detect() knows these
 NAMES = {   # for the system prompt ("answer in <name>")
     "sv": "Swedish", "en": "English", "no": "Norwegian", "da": "Danish", "fi": "Finnish", "de": "German",
-    "fr": "French", "es": "Spanish", "it": "Italian", "pl": "Polish", "ar": "Arabic",
+    "fr": "French", "es": "Spanish", "it": "Italian", "pl": "Polish", "ar": "Arabic", "pt": "Portuguese",
+    "nl": "Dutch", "tr": "Turkish", "ru": "Russian", "uk": "Ukrainian", "cs": "Czech", "sk": "Slovak",
+    "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian", "hr": "Croatian", "el": "Greek", "ja": "Japanese",
+    "zh": "Chinese", "ko": "Korean", "hi": "Hindi", "id": "Indonesian", "ms": "Malay", "fil": "Filipino",
+    "vi": "Vietnamese", "ta": "Tamil",
 }
-NAMES_SV = {   # for admin and the call list
-    "sv": "svenska", "en": "engelska", "no": "norska", "da": "danska", "fi": "finska", "de": "tyska",
-    "fr": "franska", "es": "spanska", "it": "italienska", "pl": "polska", "ar": "arabiska",
-}
+VOICE_LANGUAGES = tuple(NAMES)
+_TAG = re.compile(r"^\s*\[([a-z]{2,3})(?:[-_][A-Za-z]{2})?\]\s*")
 
 _WORDS = {
     "sv": "jag och vill inte det är har ni hej tack bord boka för imorgon klockan kan ett vad hur med på vi du "
@@ -85,6 +89,18 @@ def detect(text, allowed=CALL_LANGUAGES):
     if len(ranked) > 1 and ranked[1][0] >= ranked[0][0]:
         return None
     return ranked[0][1]
+
+
+def tagged(text):
+    """(language, text without the tag) of a model reply that starts with
+    `[<code>]`; (None, text) when it has none or names a language the voice
+    cannot speak."""
+    m = _TAG.match(str(text or ""))
+    if not m:
+        return None, text
+    code = m.group(1).lower()
+    code = {"nb": "no", "nn": "no", "tl": "fil"}.get(code, code)
+    return (code if code in VOICE_LANGUAGES else None), str(text)[m.end():]
 
 
 def next_language(current, text, allowed=CALL_LANGUAGES):

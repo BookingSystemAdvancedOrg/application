@@ -74,7 +74,8 @@ def test_create_agent_builds_a_swedish_first_multilingual_agent_on_booqys_llm(vo
     transfer = llm["built_in_tools"]["transfer_to_number"]["params"]["transfers"][0]
     assert transfer["transfer_destination"]["phone_number"] == "+46812345678"
     assert body["conversation_config"]["tts"] == {"voice_id": "voice-sv-1", "model_id": "eleven_flash_v2_5"}
-    assert set(body["conversation_config"]["language_presets"]) == {"en", "de"}
+    presets = body["conversation_config"]["language_presets"]
+    assert len(presets) == 31 and {"en", "de", "tr", "ar", "fil"} <= set(presets) and "sv" not in presets
     assert body["conversation_config"]["conversation"]["max_duration_seconds"] == 480
     settings = body["platform_settings"]
     assert settings["overrides"]["enable_conversation_initiation_client_data_from_webhook"] is True

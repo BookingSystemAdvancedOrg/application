@@ -8,7 +8,7 @@ One ElevenLabs agent per location (idempotent by name). The agent:
   * starts in Swedish (`agent.language = "sv"`) with a multilingual low-latency
     TTS model (`PHONE_AGENT_TTS_MODEL`, default `eleven_flash_v2_5`) and a stock
     library voice (`PHONE_AGENT_VOICE_ID`, never a clone);
-  * has `language_presets` for every other language of the tenant's config and
+  * has `language_presets` for every other language the voice speaks and
     the `language_detection` system tool, which Booqy's turn endpoint calls when
     the caller switches language (the agent loop decides, ElevenLabs follows);
   * keeps barge-in on, but the first message (the art. 50 disclosure) cannot be
@@ -184,7 +184,9 @@ class RealVoiceProvider(VoiceProvider):
         init_secret = self._workspace_secret(f"{prefix}booqy-webhook-token", self.secret.get("initiationToken"))
         greeting_sv = str(config.get("greetingSv") or "")
         greeting_en = str(config.get("greetingEn") or greeting_sv)
-        others = [lang for lang in config.get("languages") or ("sv", "en") if lang != "sv"]
+        # Every language the voice speaks: the call follows whatever the caller speaks.
+        from shared.features.phone_agent.language import VOICE_LANGUAGES
+        others = [lang for lang in VOICE_LANGUAGES if lang != "sv"]
         tools = {"end_call": {"type": "system", "name": "end_call", "params": {"system_tool_type": "end_call"}}}
         if others:
             tools["language_detection"] = {"type": "system", "name": "language_detection",

@@ -46,7 +46,7 @@ TONES = ("formal", "friendly")
 # The call languages (owner 2026-11-13): Swedish first, then whichever the
 # caller speaks (language.CALL_LANGUAGES). `languages` in CONFIG lists the
 # ones the agent may switch to; Swedish is always on.
-from shared.features.phone_agent.language import CALL_LANGUAGES as LANGUAGES  # noqa: E402
+from shared.features.phone_agent.language import VOICE_LANGUAGES as LANGUAGES  # noqa: E402
 BOOKING_LANGUAGES = ("sv", "en")   # what confirmation SMS and emails are written in
 RETENTION_DAYS = (7, 30, 90)  # [NEEDS YOUR OK: options and default 30]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")

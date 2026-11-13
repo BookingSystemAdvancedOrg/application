@@ -27,6 +27,27 @@ DISCLOSURE_SHORT = {
     "it": "Sono un assistente IA di {restaurant}.",
     "pl": "Jestem asystentem AI restauracji {restaurant}.",
     "ar": "أنا مساعد ذكاء اصطناعي لمطعم {restaurant}.",
+    "pt": "Sou um assistente de IA do restaurante {restaurant}.",
+    "nl": "Ik ben een AI-assistent van {restaurant}.",
+    "tr": "{restaurant} için bir yapay zekâ asistanıyım.",
+    "ru": "Я ИИ-ассистент ресторана {restaurant}.",
+    "uk": "Я ШІ-асистент ресторану {restaurant}.",
+    "cs": "Jsem AI asistent restaurace {restaurant}.",
+    "sk": "Som AI asistent reštaurácie {restaurant}.",
+    "hu": "A(z) {restaurant} mesterséges intelligencia asszisztense vagyok.",
+    "ro": "Sunt un asistent AI al restaurantului {restaurant}.",
+    "bg": "Аз съм AI асистент на ресторант {restaurant}.",
+    "hr": "Ja sam AI asistent restorana {restaurant}.",
+    "el": "Είμαι βοηθός τεχνητής νοημοσύνης του εστιατορίου {restaurant}.",
+    "ja": "私は{restaurant}のAIアシスタントです。",
+    "zh": "我是{restaurant}的AI助手。",
+    "ko": "저는 {restaurant}의 AI 어시스턴트입니다.",
+    "hi": "मैं {restaurant} का एआई सहायक हूँ।",
+    "id": "Saya asisten AI untuk {restaurant}.",
+    "ms": "Saya pembantu AI untuk {restaurant}.",
+    "fil": "Ako ay isang AI assistant ng {restaurant}.",
+    "vi": "Tôi là trợ lý AI của {restaurant}.",
+    "ta": "நான் {restaurant} உணவகத்தின் AI உதவியாளர்.",
 }
 RECORDING_NOTICE = {SV: "Samtalet spelas in.", EN: "This call is recorded."}
 DEFAULT_EXTRA = {SV: "Vad kan jag hjälpa dig med?", EN: "How can I help you?"}
@@ -113,7 +134,9 @@ SYSTEM_PROMPT = {
          "Prata som en varm och avslappnad värd i telefon: korta meningar, en fråga i taget, vardagligt språk. "
          "Inga listor, inga punkter, inga id-nummer. Säg tider som man säger dem, till exempel halv åtta eller "
          "klockan sju, och datum som fredag den 7 november. Använd gärna uppringarens namn. "
-         "Om uppringaren pratar ett annat språk byter du till det språket direkt. "
+         "Om uppringaren pratar ett annat språk byter du till det språket direkt. Börja varje svar med "
+         "språkkoden för språket du svarar på inom hakparentes, till exempel [sv] eller [de]. Meningen om att du "
+         "är en AI säger systemet åt dig när språket byts: upprepa den inte. "
          "Boka, flytta och avboka bara med verktygen och bara efter ett tydligt ja. Upprepa antal, dag, tid "
          "och namn innan du bokar. Fråga aldrig efter kortuppgifter. Hitta aldrig på tider: erbjud bara det "
          "verktygen svarar, högst tre tider åt gången, närmast önskad tid först. Är dagen full, fråga om du ska "
@@ -124,7 +147,9 @@ SYSTEM_PROMPT = {
          "Talk like a warm, relaxed host on the phone: short sentences, one question at a time, everyday words. "
          "No lists, no bullet points, no id numbers. Say times the way people say them, like half past seven, "
          "and dates like Friday the 7th of November. Use the caller's name now and then. "
-         "If the caller speaks another language, switch to it straight away. "
+         "If the caller speaks another language, switch to it straight away. Start every reply with the "
+         "language code of the language you answer in, in square brackets, like [en] or [de]. The system says "
+         "the sentence that you are an AI when the language changes: do not repeat it. "
          "Book, move and cancel only with the tools and only after a clear yes. Repeat party size, day, time "
          "and name before booking. Never ask for card details. Never invent times: only offer what the tools "
          "return, at most three times at once, closest to the asked time first. If the day is full, offer to "

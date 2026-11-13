@@ -20,7 +20,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared.agent_model import AgentModel, AgentModelError, ToolUse, Turn
 
-TEMPERATURE = 0.3
 RETRYABLE = ("ThrottlingException", "ServiceUnavailableException", "ModelNotReadyException",
              "InternalServerException", "ModelTimeoutException")
 
@@ -117,7 +116,7 @@ class RealAgentModel(AgentModel):
         if not self.model_id:
             raise AgentModelError("not_configured")
         args = {"modelId": self.model_id, "system": [{"text": system}], "messages": to_bedrock_messages(messages),
-                "inferenceConfig": {"maxTokens": int(max_tokens), "temperature": TEMPERATURE}}
+                "inferenceConfig": {"maxTokens": int(max_tokens)}}  # newer models refuse `temperature`
         tool_config = to_bedrock_tools(tools)
         if tool_config:
             args["toolConfig"] = tool_config

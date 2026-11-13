@@ -26,6 +26,20 @@ class TurnResult:
     tool_calls: list = field(default_factory=list)   # [{"name", "ok"}]
     latency_ms: int = 0
     error: bool = False
+    language: str | None = None        # the model's `[<code>]` tag of the reply, when it gave one
+
+
+_DAYS = {copy.SV: ("måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag"),
+         copy.EN: ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")}
+
+
+def _calendar(today: date, lang) -> str:
+    """Today and the next week with weekdays, so the model never works out a weekday itself."""
+    from datetime import timedelta
+    days = [today + timedelta(days=i) for i in range(8)]
+    listed = ", ".join(f"{_DAYS[lang][d.weekday()]} {d.isoformat()}" for d in days)
+    return (f"Idag är det {listed.split(', ')[0]}. Kommande dagar: {listed}." if lang == copy.SV
+            else f"Today is {listed.split(', ')[0]}. The coming days: {listed}.")
 
 
 def system_prompt(lang, agent_name, restaurant, today: date, tone="friendly") -> str:
@@ -38,7 +52,7 @@ def system_prompt(lang, agent_name, restaurant, today: date, tone="friendly") ->
     if lang not in (copy.SV, copy.EN):
         name = language.NAMES.get(lang, "English")
         parts.append(copy.ANSWER_IN.format(name=name))
-    parts.append(f"Idag är det {today.isoformat()}." if base_lang == copy.SV else f"Today is {today.isoformat()}.")
+    parts.append(_calendar(today, base_lang))
     return " ".join(parts)
 
 
@@ -69,7 +83,8 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str) 
             {"type": "tool_use", "id": u.id, "name": u.name, "input": dict(u.input)} for u in turn.tool_uses]
         messages.append({"role": "assistant", "content": content})
         if not turn.tool_uses:
-            return TurnResult(turn.text or "", calls, int((time.monotonic() - started) * 1000))
+            lang, text = language.tagged(turn.text or "")
+            return TurnResult(text or "", calls, int((time.monotonic() - started) * 1000), language=lang)
         results = []
         for use in turn.tool_uses:
             result = executor.run(use.name, use.input)

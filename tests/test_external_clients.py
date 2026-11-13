@@ -44,15 +44,14 @@ def test_unknown_value_refused(monkeypatch, name, module, sim, real_mod, real_cl
         module.client()
 
 
-@pytest.mark.parametrize("name, module, sim, real_mod, real_cls, err", CLIENTS)
+@pytest.mark.parametrize("name, module, sim, real_mod, real_cls, err", [c for c in CLIENTS if c[0] != "bedrock"])
 def test_real_is_a_skeleton(monkeypatch, name, module, sim, real_mod, real_cls, err):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv(ENV[name], "real")
     client = module.client()
     assert type(client).__name__ == real_cls
-    method = {"bedrock": lambda c: c.complete("s", "p", max_tokens=5)}.get(name, lambda c: c.revoke("t"))
     with pytest.raises(NotImplementedError):
-        method(client)
+        client.revoke("t")
 
 
 @pytest.mark.parametrize("name, module, sim, real_mod, real_cls, err", CLIENTS)
@@ -145,3 +144,51 @@ def test_mode_reads_the_contract_env_var(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv("FORTNOX_CLIENT", "real")
     assert external_client.mode("fortnox") == "real"
+
+
+class _FakeConverse:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.calls = reply, error, []
+
+    def converse(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            from botocore.exceptions import ClientError
+            raise ClientError({"Error": {"Code": self.error}}, "Converse")
+        return {"output": {"message": {"content": [{"text": self.reply}]}}}
+
+
+def test_real_bedrock_converse(monkeypatch):
+    from shared import bedrock_real
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "eu.example-model")
+    fake = _FakeConverse('```json\n{"ok": true}\n```')
+    monkeypatch.setattr(bedrock_real, "_client", fake)
+    out = bedrock_real.RealTextModel().complete("sys", "fråga", max_tokens=50, json_schema={"type": "object"})
+    assert json.loads(out) == {"ok": True}
+    call = fake.calls[0]
+    assert call["modelId"] == "eu.example-model" and call["inferenceConfig"] == {"maxTokens": 50, "temperature": 0}
+    assert call["messages"] == [{"role": "user", "content": [{"text": "fråga"}]}]
+    assert "JSON-schema" in call["system"][0]["text"]
+
+
+@pytest.mark.parametrize("error, code, retryable", [("ThrottlingException", "throttled", True),
+                                                    ("ServiceUnavailableException", "unavailable", True),
+                                                    ("AccessDeniedException", "refused", False)])
+def test_real_bedrock_errors(monkeypatch, error, code, retryable):
+    from shared import bedrock_real
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "m")
+    monkeypatch.setattr(bedrock_real, "_client", _FakeConverse(error=error))
+    with pytest.raises(bedrock.TextModelError) as exc:
+        bedrock_real.RealTextModel().complete("s", "p", max_tokens=5)
+    assert (exc.value.code, exc.value.retryable) == (code, retryable)
+
+
+def test_real_bedrock_refuses_empty_model_and_bad_json(monkeypatch):
+    from shared import bedrock_real
+    monkeypatch.delenv("BEDROCK_MODEL_ID", raising=False)
+    with pytest.raises(bedrock.TextModelError, match="no_model"):
+        bedrock_real.RealTextModel().complete("s", "p", max_tokens=5)
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "m")
+    monkeypatch.setattr(bedrock_real, "_client", _FakeConverse("inte json"))
+    with pytest.raises(bedrock.TextModelError, match="bad_output"):
+        bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"})

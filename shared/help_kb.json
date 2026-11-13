@@ -1,0 +1,2435 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "oversikt",
+      "route": "/",
+      "title": "Översikten",
+      "audience": "all",
+      "keywords": [
+        "översikt",
+        "startsida",
+        "start",
+        "idag",
+        "dagens läge",
+        "att göra",
+        "genvägar"
+      ],
+      "answer": "Översikten visar dagens läge: öppettider, dagens bokningar, beställningar och det som väntar på dig.",
+      "steps": [
+        "Öppna Översikt högst upp i vänstermenyn.",
+        "Under Dagens bokningar trycker du Visa alla för hela listan.",
+        "Det som väntar på dig (till exempel en obekräftad bokning eller en cateringförfrågan) har en länk direkt dit."
+      ],
+      "actions": [
+        {
+          "id": "oversikt-open",
+          "label": "Öppna Översikt",
+          "to": "/"
+        }
+      ]
+    },
+    {
+      "id": "kom-igang",
+      "route": "/",
+      "title": "Kom igång med Booqy",
+      "audience": "owner",
+      "keywords": [
+        "kom igång",
+        "komma igång",
+        "börja",
+        "checklista",
+        "första",
+        "starta",
+        "nystartad",
+        "uppstart"
+      ],
+      "answer": "Checklistan Kom igång på Översikten tar dig igenom det som behövs innan gästerna kan boka och beställa.",
+      "steps": [
+        "Godkänn personuppgiftsbiträdesavtalet under Avtal.",
+        "Lägg in öppettider under Inställningar, Restaurang.",
+        "Lägg upp menyn under Meny.",
+        "Rita, publicera och aktivera en bordslayout under Layout.",
+        "Slutför Stripe under Inställningar, Betalningar, så att ni kan ta betalt med kort.",
+        "Bjud in personalen under Personal."
+      ],
+      "actions": [
+        {
+          "id": "kom-igang-open",
+          "label": "Öppna checklistan",
+          "to": "/"
+        }
+      ],
+      "suggestion": "Vad behöver jag göra för att komma igång?"
+    },
+    {
+      "id": "statistik",
+      "route": "/statistik",
+      "title": "Statistik över tid",
+      "audience": "all",
+      "insights": true,
+      "keywords": [
+        "statistik",
+        "siffror",
+        "rapport",
+        "omsättning",
+        "försäljning",
+        "beläggning",
+        "jämföra",
+        "period",
+        "csv",
+        "exportera statistik"
+      ],
+      "answer": "Under Statistik ser du restaurangens siffror för en period jämfört med en tidigare period.",
+      "steps": [
+        "Öppna Statistik i vänstermenyn.",
+        "Välj period med knapparna överst, till exempel Denna månad eller 30 dagar.",
+        "Välj plats, sittning, kanal och vad du vill jämföra med.",
+        "Fäll ut avsnitten, till exempel Omsättning eller Beläggning.",
+        "Tryck Exportera CSV om du vill ha siffrorna i ett kalkylark."
+      ],
+      "actions": [
+        {
+          "id": "statistik-month",
+          "label": "Visa månadens statistik",
+          "to": "/statistik",
+          "query": {
+            "period": "month"
+          }
+        }
+      ]
+    },
+    {
+      "id": "statistik-personal",
+      "route": "/installningar",
+      "title": "Låta personalen se statistik",
+      "audience": "owner",
+      "keywords": [
+        "personalen ser statistik",
+        "statistik för personal",
+        "dölja statistik",
+        "personal statistik"
+      ],
+      "answer": "Du bestämmer om personalen ser driftsiffrorna på Statistik. Belopp och omsättning ser personalen aldrig.",
+      "steps": [
+        "Öppna Inställningar och välj Statistik under Data och integritet.",
+        "Välj om personalen ser statistik.",
+        "Tryck Spara."
+      ],
+      "actions": [
+        {
+          "id": "inst-statistik-open",
+          "label": "Öppna inställningen",
+          "to": "/installningar",
+          "hash": "statistik"
+        }
+      ]
+    },
+    {
+      "id": "bokning-ny",
+      "route": "/bokningar",
+      "title": "Lägga in en ny bokning",
+      "audience": "all",
+      "keywords": [
+        "bokning",
+        "boka",
+        "boka bord",
+        "ny bokning",
+        "lägga in bokning",
+        "telefonbokning",
+        "drop-in",
+        "walk-in",
+        "reservation"
+      ],
+      "answer": "En bokning som kommer per telefon eller en gäst som kliver in lägger du in under Bokningar. Bordet blir då upptaget online också.",
+      "steps": [
+        "Öppna Bokningar.",
+        "Tryck Ny bokning och välj Telefon eller Drop-in.",
+        "Fyll i Antal personer, Datum, Tid och välj Bord.",
+        "Fyll i Namn och, om du vill, telefon, e-post och en anteckning.",
+        "Tryck Boka."
+      ],
+      "actions": [
+        {
+          "id": "bokning-ny-open",
+          "label": "Öppna Ny bokning",
+          "to": "/bokningar",
+          "pageAction": "new-booking"
+        }
+      ],
+      "suggestion": "Hur lägger jag in en bokning?"
+    },
+    {
+      "id": "bokning-andra",
+      "route": "/bokningar",
+      "title": "Ändra eller förlänga en bokning",
+      "audience": "all",
+      "keywords": [
+        "ändra bokning",
+        "redigera bokning",
+        "flytta bokning",
+        "förlänga",
+        "förläng",
+        "sluttid",
+        "korta bokningen",
+        "antal personer"
+      ],
+      "answer": "Du ändrar en bokning genom att öppna den i listan under Bokningar.",
+      "steps": [
+        "Öppna Bokningar och välj rätt dag med pilarna eller Välj datum.",
+        "Tryck på bokningen i listan.",
+        "Tryck Ändra för namn, kontaktuppgifter, antal personer eller anteckning och sedan Spara.",
+        "Vill du ändra hur länge bordet är bokat: tryck Förläng, välj Ny sluttid och tryck Förläng eller Korta bokningen."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "bokning-avboka",
+      "route": "/bokningar",
+      "title": "Avboka en bokning",
+      "audience": "all",
+      "keywords": [
+        "avboka",
+        "avbokning",
+        "ställa in bokning",
+        "ta bort bokning",
+        "avbokade"
+      ],
+      "answer": "Du avbokar en gäst genom att öppna bokningen under Bokningar. Gästen debiteras inte när ni avbokar.",
+      "steps": [
+        "Öppna Bokningar och leta upp bokningen.",
+        "Tryck på bokningen.",
+        "Tryck Avboka.",
+        "Välj om gästen ska meddelas och tryck Avboka igen.",
+        "Avbokade bokningar ser du med Visa avbokade."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "bokning-anlant",
+      "route": "/bokningar",
+      "title": "Markera att gästen har kommit",
+      "audience": "all",
+      "keywords": [
+        "anlänt",
+        "kommit",
+        "gästen kom",
+        "checka in gäst",
+        "ankomst"
+      ],
+      "answer": "När gästen kommer markerar du bokningen som anlänt.",
+      "steps": [
+        "Öppna Bokningar.",
+        "Tryck på bokningen.",
+        "Tryck Anlänt. Blev det fel trycker du Ångra anlänt."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "bokning-uteblev",
+      "route": "/bokningar",
+      "title": "Gäst som uteblev (no-show)",
+      "audience": "all",
+      "keywords": [
+        "uteblev",
+        "no-show",
+        "noshow",
+        "kom inte",
+        "avgift",
+        "debitera"
+      ],
+      "answer": "Kommer gästen inte markerar du bokningen som Uteblev. Har gästen lämnat kortgaranti kan du ta ut no-show-avgiften samtidigt.",
+      "steps": [
+        "Öppna Bokningar och tryck på bokningen.",
+        "Tryck Uteblev.",
+        "Kryssa i om no-show-avgiften ska dras från gästens kort.",
+        "Skriv gärna en intern anteckning (den syns inte för gästen).",
+        "Tryck Uteblev för att spara."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "bokning-aterbetala",
+      "route": "/bokningar",
+      "title": "Återbetala en no-show-avgift",
+      "audience": "owner",
+      "keywords": [
+        "återbetala avgift",
+        "återbetala no-show",
+        "pengarna tillbaka",
+        "återbetalning bokning"
+      ],
+      "answer": "En avgift som har dragits från en gäst kan ägaren betala tillbaka från bokningen.",
+      "steps": [
+        "Öppna Bokningar och tryck på bokningen.",
+        "Tryck Återbetala och bekräfta."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "bokning-ko",
+      "route": "/bokningar",
+      "title": "Kö och väntelista",
+      "audience": "all",
+      "feature": "waitlist",
+      "keywords": [
+        "kö",
+        "väntelista",
+        "ställ i kö",
+        "erbjud bord",
+        "placera",
+        "walk-in kö"
+      ],
+      "answer": "Kön finns i panelen på Bokningar. Där ställer du gäster i kö och erbjuder dem ett bord när det blir ledigt.",
+      "steps": [
+        "Öppna Bokningar.",
+        "Tryck Ställ i kö i köpanelen.",
+        "Fyll i Namn, Antal gäster och Mobilnummer och tryck Ställ i kö.",
+        "När ett bord blir ledigt trycker du Erbjud bord eller Placera nu. Ta bort tar bort gästen ur kön."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    },
+    {
+      "id": "ko-installningar",
+      "route": "/installningar",
+      "title": "Ställa in kön",
+      "audience": "owner",
+      "feature": "waitlist",
+      "keywords": [
+        "kö inställningar",
+        "kö från hemsidan",
+        "hålltid",
+        "max antal i kö"
+      ],
+      "answer": "Om gästerna kan ställa sig i kö från hemsidan, hur länge ett erbjudet bord hålls och hur lång kön får bli ställer du in under Inställningar, Bord.",
+      "steps": [
+        "Öppna Inställningar och välj Bord.",
+        "Under Kö slår du på kön och väljer om gäster kan ställa sig i kö från hemsidan.",
+        "Ställ in Hålltid (minuter) och Max antal i kö.",
+        "Tryck Spara bordsregler."
+      ],
+      "actions": [
+        {
+          "id": "inst-bord-open",
+          "label": "Öppna Bord",
+          "to": "/installningar",
+          "hash": "bord"
+        }
+      ]
+    },
+    {
+      "id": "bestallning-flode",
+      "route": "/bestallningar",
+      "title": "Hantera matbeställningar",
+      "audience": "all",
+      "feature": "ordering",
+      "keywords": [
+        "beställning",
+        "beställningar",
+        "order",
+        "köket",
+        "tillagas",
+        "klar",
+        "hämtad",
+        "serverad",
+        "avhämtning"
+      ],
+      "answer": "Matbeställningarna ligger på en tavla i tre kolumner: Nya, Tillagas och Klara. Gästen får sms när du flyttar beställningen vidare.",
+      "steps": [
+        "Öppna Beställningar.",
+        "Tryck Påbörja på en ny beställning när köket börjar.",
+        "Tryck Klar när maten är färdig (eller Klar att servera för bordsbeställningar).",
+        "Tryck Hämtad eller Serverad när gästen har fått maten."
+      ],
+      "actions": [
+        {
+          "id": "bestallningar-open",
+          "label": "Öppna Beställningar",
+          "to": "/bestallningar"
+        }
+      ]
+    },
+    {
+      "id": "bestallning-pausa",
+      "route": "/bestallningar",
+      "title": "Pausa nya beställningar",
+      "audience": "all",
+      "feature": "ordering",
+      "keywords": [
+        "pausa",
+        "paus",
+        "stoppa beställningar",
+        "hinner inte",
+        "ta emot igen"
+      ],
+      "answer": "Hinner köket inte med kan du pausa nya beställningar en stund. Beställningar som redan har kommit in påverkas inte.",
+      "steps": [
+        "Öppna Beställningar.",
+        "Tryck Pausa beställningar och välj hur länge (15, 30, 60 eller 120 minuter).",
+        "Tryck Ta emot beställningar igen när ni är redo."
+      ],
+      "actions": [
+        {
+          "id": "bestallningar-open",
+          "label": "Öppna Beställningar",
+          "to": "/bestallningar"
+        }
+      ]
+    },
+    {
+      "id": "bestallning-avbryt",
+      "route": "/bestallningar",
+      "title": "Avbryta en beställning",
+      "audience": "all",
+      "feature": "ordering",
+      "keywords": [
+        "avbryta beställning",
+        "avbryt",
+        "återbetala beställning",
+        "skriv ut igen"
+      ],
+      "answer": "En beställning som inte kan lagas avbryter du på tavlan. Gästen får pengarna tillbaka.",
+      "steps": [
+        "Öppna Beställningar och hitta beställningen.",
+        "Tryck Avbryt.",
+        "Bekräfta med Bekräfta: avbryt och återbetala, eller tryck Behåll.",
+        "Behöver du en ny kvittolapp i köket trycker du Skriv ut igen."
+      ],
+      "actions": [
+        {
+          "id": "bestallningar-open",
+          "label": "Öppna Beställningar",
+          "to": "/bestallningar"
+        }
+      ]
+    },
+    {
+      "id": "bestallning-installningar",
+      "route": "/installningar",
+      "title": "Slå på beställning och QR-koder",
+      "audience": "owner",
+      "feature": "ordering",
+      "keywords": [
+        "beställning vid bordet",
+        "qr-kod",
+        "qr",
+        "ta emot beställningar",
+        "tillagningstid",
+        "sista beställning",
+        "avhämtning inställning"
+      ],
+      "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Beställning.",
+      "steps": [
+        "Öppna Inställningar och välj Beställning.",
+        "Slå på Ta emot beställningar och välj Avhämtning och Beställning vid bordet (QR-kod).",
+        "Ställ in tillagningstid som gästen ser och sista beställning före stängning.",
+        "Tryck Spara beställning.",
+        "Under QR-koder för borden trycker du Skriv ut eller Ladda ner."
+      ],
+      "actions": [
+        {
+          "id": "inst-bestallning-open",
+          "label": "Öppna Beställning",
+          "to": "/installningar",
+          "hash": "bestallning"
+        }
+      ]
+    },
+    {
+      "id": "skrivare",
+      "route": "/installningar",
+      "title": "Koppla en kökskrivare",
+      "audience": "owner",
+      "feature": "ordering",
+      "keywords": [
+        "skrivare",
+        "kvittoskrivare",
+        "kökskrivare",
+        "utskrift",
+        "cloudprnt",
+        "testutskrift",
+        "pappersbredd"
+      ],
+      "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Skrivare.",
+      "steps": [
+        "Öppna Inställningar och välj Skrivare.",
+        "Tryck Lägg till skrivare och följ stegen. Uppgifterna som visas skriver du in i skrivaren direkt, de visas bara en gång.",
+        "Tryck Testutskrift för att se att den fungerar.",
+        "Slå på Skriv ut beställningar automatiskt, välj skrivare och pappersbredd och tryck Spara skrivare."
+      ],
+      "actions": [
+        {
+          "id": "inst-skrivare-open",
+          "label": "Öppna Skrivare",
+          "to": "/installningar",
+          "hash": "skrivare"
+        }
+      ]
+    },
+    {
+      "id": "tabetalt",
+      "route": "/ta-betalt",
+      "title": "Ta betalt med kortläsaren",
+      "audience": "all",
+      "feature": "terminal",
+      "keywords": [
+        "ta betalt",
+        "kortläsare",
+        "kortbetalning",
+        "kort",
+        "betalterminal",
+        "terminal",
+        "blippa",
+        "kvitto"
+      ],
+      "answer": "Under Ta betalt tar du kortbetalningar på restaurangens kortläsare.",
+      "steps": [
+        "Öppna Ta betalt.",
+        "Välj Belopp (skriv belopp, moms och gärna en notering) eller Obetald beställning.",
+        "Välj kortläsare och tryck Ta betalt.",
+        "Gästen blippar kortet. Du ser direkt om det blev Betalt eller Nekat.",
+        "Vill gästen ha kvitto: tryck Skicka kvitto till e-post."
+      ],
+      "actions": [
+        {
+          "id": "tabetalt-open",
+          "label": "Öppna Ta betalt",
+          "to": "/ta-betalt"
+        }
+      ]
+    },
+    {
+      "id": "tabetalt-aterbetala",
+      "route": "/ta-betalt",
+      "title": "Återbetala ett kortköp",
+      "audience": "owner",
+      "feature": "terminal",
+      "keywords": [
+        "återbetala kortköp",
+        "återbetala kort",
+        "återbetalning kort",
+        "kortköp idag"
+      ],
+      "answer": "Ägaren kan återbetala dagens kortköp som inte hör till en beställning.",
+      "steps": [
+        "Öppna Ta betalt.",
+        "Under Kortköp idag trycker du Återbetala på köpet.",
+        "Bekräfta med Bekräfta: återbetala."
+      ],
+      "actions": [
+        {
+          "id": "tabetalt-open",
+          "label": "Öppna Ta betalt",
+          "to": "/ta-betalt"
+        }
+      ]
+    },
+    {
+      "id": "kassa-salja",
+      "route": "/kassa",
+      "title": "Sälja i kassan",
+      "audience": "all",
+      "feature": "kassa",
+      "keywords": [
+        "kassa",
+        "kassan",
+        "nota",
+        "sälja",
+        "kassaregister",
+        "öppna dagen",
+        "växelkassa",
+        "till köket",
+        "rabatt"
+      ],
+      "answer": "I Kassa öppnar du dagen, lägger rätter på en nota och tar betalt.",
+      "steps": [
+        "Öppna Kassa och tryck Öppna dagen. Fyll i växelkassan och tryck Öppna dagen.",
+        "Tryck Bord (välj bord och Öppna nota) eller Avhämtning.",
+        "Tryck på rätterna och ändra antal med plus och minus.",
+        "Tryck Till köket när beställningen ska lagas. Rabatt lägger du till på notan.",
+        "Tryck Ta betalt och välj hur kvittot ska lämnas."
+      ],
+      "actions": [
+        {
+          "id": "kassa-open",
+          "label": "Öppna Kassa",
+          "to": "/kassa"
+        }
+      ]
+    },
+    {
+      "id": "kassa-presentkort",
+      "route": "/kassa",
+      "title": "Lösa in presentkort i kassan",
+      "audience": "all",
+      "feature": "kassa",
+      "keywords": [
+        "lösa in presentkort",
+        "presentkort i kassan",
+        "saldo presentkort",
+        "betala med presentkort"
+      ],
+      "answer": "Ett presentkort löser du in när du tar betalt i kassan.",
+      "steps": [
+        "Öppna Kassa och notan.",
+        "Tryck Ta betalt och välj Presentkort.",
+        "Skriv in koden och tryck Kolla saldo.",
+        "Tryck Ta betalt."
+      ],
+      "actions": [
+        {
+          "id": "kassa-open",
+          "label": "Öppna Kassa",
+          "to": "/kassa"
+        }
+      ]
+    },
+    {
+      "id": "kassa-rapporter",
+      "route": "/kassa",
+      "title": "Kvitton, X-rapport och Z-rapport",
+      "audience": "all",
+      "feature": "kassa",
+      "keywords": [
+        "z-rapport",
+        "x-rapport",
+        "dagsavslut",
+        "stänga dagen",
+        "kvitton",
+        "rapporter",
+        "journal"
+      ],
+      "answer": "Kassans kvitton och rapporter finns i menyn Rapporter. Z-rapporten stänger dagen.",
+      "steps": [
+        "Öppna Kassa.",
+        "Tryck Rapporter.",
+        "Välj Kvitton, X-rapport (läget just nu) eller Z-rapport (stänger dagen)."
+      ],
+      "actions": [
+        {
+          "id": "kassa-open",
+          "label": "Öppna Kassa",
+          "to": "/kassa"
+        }
+      ]
+    },
+    {
+      "id": "kassa-ny",
+      "route": "/kassa",
+      "title": "Skapa en kassa och exportera",
+      "audience": "owner",
+      "feature": "kassa",
+      "keywords": [
+        "ny kassa",
+        "skapa kassa",
+        "exportera kassa",
+        "kassa 1",
+        "övningsläge"
+      ],
+      "answer": "Ägaren skapar kassor (högst fem) och exporterar kassans data. Övningsläge finns i menyn Kassan.",
+      "steps": [
+        "Öppna Kassa.",
+        "Första gången: tryck Skapa Kassa 1.",
+        "Fler kassor: menyn Kassan, Ny kassa.",
+        "Export: menyn Rapporter, Exportera."
+      ],
+      "actions": [
+        {
+          "id": "kassa-open",
+          "label": "Öppna Kassa",
+          "to": "/kassa"
+        }
+      ]
+    },
+    {
+      "id": "kassa-bruksanvisning",
+      "route": "/kassa/bruksanvisning",
+      "title": "Kassans bruksanvisning",
+      "audience": "all",
+      "feature": "kassa",
+      "keywords": [
+        "bruksanvisning",
+        "manual",
+        "instruktioner kassa",
+        "hur fungerar kassan"
+      ],
+      "answer": "Kassans bruksanvisning finns i menyn Kassan.",
+      "steps": [
+        "Öppna Kassa.",
+        "Tryck Kassan och välj Bruksanvisning.",
+        "Tryck Till kassan för att gå tillbaka."
+      ],
+      "actions": [
+        {
+          "id": "kassa-manual-open",
+          "label": "Öppna bruksanvisningen",
+          "to": "/kassa/bruksanvisning"
+        }
+      ]
+    },
+    {
+      "id": "kassa-utskrift",
+      "route": "/kassa/utskrift/:kind",
+      "title": "Manuell försäljningslista vid avbrott",
+      "audience": "all",
+      "feature": "kassa",
+      "keywords": [
+        "manuell försäljningslista",
+        "avbrott",
+        "kassan fungerar inte",
+        "skriva ut lista",
+        "kassans uppgifter"
+      ],
+      "answer": "Fungerar inte kassan skriver du försäljningen på en manuell försäljningslista och för in den efteråt.",
+      "steps": [
+        "Öppna Kassa.",
+        "Tryck Rapporter och välj Manuell försäljningslista.",
+        "Tryck Skriv ut."
+      ],
+      "actions": [
+        {
+          "id": "kassa-open",
+          "label": "Öppna Kassa",
+          "to": "/kassa"
+        }
+      ]
+    },
+    {
+      "id": "meny-ny-ratt",
+      "route": "/meny",
+      "title": "Lägga till en ny rätt i menyn",
+      "audience": "all",
+      "keywords": [
+        "rätt",
+        "rätter",
+        "maträtt",
+        "meny",
+        "ny rätt",
+        "lägga till rätt",
+        "lägg till rätt",
+        "skapa rätt",
+        "dryck"
+      ],
+      "answer": "Nya rätter lägger du till under Meny. Rätten syns på webbplatsen så fort den är aktiv.",
+      "steps": [
+        "Öppna Meny (under Restaurang i vänstermenyn).",
+        "Tryck Lägg till rätt.",
+        "Fyll i Namn, Kategori och Pris (kr). Beskrivning är frivillig.",
+        "Välj en bild (krävs).",
+        "Låt Aktiv vara påslagen. Vill du bara visa rätten en tid slår du på Bara under en viss tid.",
+        "Tryck Lägg till rätt."
+      ],
+      "actions": [
+        {
+          "id": "meny-ny-ratt-open",
+          "label": "Öppna Meny med ny rätt",
+          "to": "/meny",
+          "pageAction": "new-dish"
+        }
+      ],
+      "suggestion": "Hur lägger jag till en ny rätt i menyn?"
+    },
+    {
+      "id": "meny-andra",
+      "route": "/meny",
+      "title": "Ändra eller ta bort en rätt",
+      "audience": "all",
+      "keywords": [
+        "ändra rätt",
+        "redigera rätt",
+        "ändra pris",
+        "pris",
+        "byta bild",
+        "radera rätt",
+        "ta bort rätt",
+        "redigera"
+      ],
+      "answer": "En rätt ändrar eller tar du bort från listan under Meny.",
+      "steps": [
+        "Öppna Meny och sök fram rätten.",
+        "Tryck Redigera, ändra pris, text eller bild och tryck Spara ändringar.",
+        "Ska rätten bort helt: tryck Radera och bekräfta. Det går inte att ångra."
+      ],
+      "actions": [
+        {
+          "id": "meny-open",
+          "label": "Öppna Meny",
+          "to": "/meny"
+        }
+      ]
+    },
+    {
+      "id": "meny-dolj",
+      "route": "/meny",
+      "title": "Dölja en rätt som är slut",
+      "audience": "all",
+      "keywords": [
+        "slut",
+        "slutsåld",
+        "dölja rätt",
+        "dölj",
+        "inaktiv",
+        "aktiv",
+        "tillfälligt"
+      ],
+      "answer": "Är en rätt slut för dagen slår du av den, så döljs den för gästerna utan att tas bort.",
+      "steps": [
+        "Öppna Meny.",
+        "Slå av reglaget på rättens rad.",
+        "Slå på det igen när rätten finns."
+      ],
+      "actions": [
+        {
+          "id": "meny-open",
+          "label": "Öppna Meny",
+          "to": "/meny"
+        }
+      ]
+    },
+    {
+      "id": "meny-dela",
+      "route": "/meny",
+      "title": "Dela en rätt i sociala medier",
+      "audience": "owner",
+      "feature": "socialPosting",
+      "keywords": [
+        "dela rätt",
+        "dela",
+        "inlägg",
+        "instagram",
+        "facebook"
+      ],
+      "answer": "En rätt kan delas som inlägg. Booqy gör ett utkast som du granskar under Marknadsföring, Inlägg.",
+      "steps": [
+        "Öppna Meny.",
+        "Tryck Dela på rätten.",
+        "Granska texten i utkastet och tryck Schemalägg eller Publicera nu."
+      ],
+      "actions": [
+        {
+          "id": "meny-open",
+          "label": "Öppna Meny",
+          "to": "/meny"
+        }
+      ]
+    },
+    {
+      "id": "catering-forfragningar",
+      "route": "/catering",
+      "title": "Cateringförfrågningar",
+      "audience": "all",
+      "feature": "catering",
+      "keywords": [
+        "catering",
+        "cateringförfrågan",
+        "förfrågan",
+        "förfrågningar",
+        "cateringorder"
+      ],
+      "answer": "Förfrågningar som gästerna skickar från er webbplats hamnar under Catering.",
+      "steps": [
+        "Öppna Catering.",
+        "Välj Pågående eller Alla.",
+        "Tryck på en förfrågan för att se kunden, kalkylen och offerten."
+      ],
+      "actions": [
+        {
+          "id": "catering-open",
+          "label": "Öppna Catering",
+          "to": "/catering"
+        }
+      ]
+    },
+    {
+      "id": "catering-offert",
+      "route": "/catering/:locationId/:requestId",
+      "title": "Skicka en cateringoffert",
+      "audience": "owner",
+      "feature": "catering",
+      "keywords": [
+        "offert",
+        "skicka offert",
+        "signera",
+        "bankid",
+        "neka förfrågan",
+        "avboka catering",
+        "faktura betald"
+      ],
+      "answer": "Ägaren svarar på en förfrågan med en offert och signerar den med BankID innan den skickas till kunden.",
+      "steps": [
+        "Öppna Catering och tryck på förfrågan.",
+        "Justera raderna, rabatt, leverans och moms. Lägg till från cateringmenyn vid behov.",
+        "Välj Giltig till och med och skriv ett meddelande till kunden.",
+        "Tryck Skicka offert (eller Spara utkast) och signera med BankID.",
+        "Vill du säga nej: tryck Neka förfrågan."
+      ],
+      "actions": [
+        {
+          "id": "catering-open",
+          "label": "Öppna Catering",
+          "to": "/catering"
+        }
+      ]
+    },
+    {
+      "id": "catering-levererad",
+      "route": "/catering/:locationId/:requestId",
+      "title": "Markera catering som levererad",
+      "audience": "all",
+      "feature": "catering",
+      "keywords": [
+        "levererad",
+        "leverera",
+        "markera levererad",
+        "leverans catering"
+      ],
+      "answer": "När cateringen är levererad markerar du det på förfrågan.",
+      "steps": [
+        "Öppna Catering och tryck på ordern.",
+        "Tryck Markera levererad."
+      ],
+      "actions": [
+        {
+          "id": "catering-open",
+          "label": "Öppna Catering",
+          "to": "/catering"
+        }
+      ]
+    },
+    {
+      "id": "catering-installningar",
+      "route": "/cateringkalkyl",
+      "title": "Inställningar för catering",
+      "audience": "owner",
+      "feature": "catering",
+      "keywords": [
+        "cateringinställningar",
+        "cateringkalkyl",
+        "kalkyl",
+        "leveranspris",
+        "minsta antal",
+        "cateringmeny",
+        "paket",
+        "allergener"
+      ],
+      "answer": "Om gästerna ser cateringkalkylen, beställningsregler, leveranspriser och cateringmenyn ställer ägaren in under Catering, Inställningar och rabatter.",
+      "steps": [
+        "Öppna Catering och tryck Inställningar och rabatter.",
+        "Slå på Visa kalkylen för kunder på webbplatsen.",
+        "Gå igenom korten (beställningsregler, leveranspris, moms och servering med flera) och tryck Spara inställningar.",
+        "Lägg till rätter och paket under cateringmenyn med Ny rätt och Nytt paket."
+      ],
+      "actions": [
+        {
+          "id": "catering-kalkyl-open",
+          "label": "Öppna cateringinställningar",
+          "to": "/cateringkalkyl"
+        }
+      ]
+    },
+    {
+      "id": "catering-rabatt",
+      "route": "/cateringkalkyl",
+      "title": "Rabattnivåer för catering",
+      "audience": "owner",
+      "feature": "catering",
+      "keywords": [
+        "rabattnivå",
+        "cateringrabatt",
+        "mängdrabatt",
+        "rabatt catering"
+      ],
+      "answer": "Rabatt efter antal gäster lägger ägaren upp som rabattnivåer.",
+      "steps": [
+        "Öppna Catering och tryck Inställningar och rabatter.",
+        "Tryck Ny rabattnivå.",
+        "Fyll i namn, från och till antal gäster och Rabatt (%).",
+        "Tryck Spara nivå."
+      ],
+      "actions": [
+        {
+          "id": "catering-kalkyl-open",
+          "label": "Öppna cateringinställningar",
+          "to": "/cateringkalkyl"
+        }
+      ]
+    },
+    {
+      "id": "personal-bjud-in",
+      "route": "/personal",
+      "title": "Bjuda in personal",
+      "audience": "owner",
+      "keywords": [
+        "personal",
+        "personalen",
+        "bjud in",
+        "bjuda in",
+        "anställd",
+        "medarbetare",
+        "inloggning",
+        "konto",
+        "användare",
+        "ny användare"
+      ],
+      "answer": "Ägaren bjuder in personalen under Personal. Den som bjuds in får ett mejl och loggar sedan in med egen inloggning.",
+      "steps": [
+        "Öppna Personal (under Restaurang i vänstermenyn).",
+        "Tryck Bjud in personal.",
+        "Fyll i Namn, E-post, Telefon, Roll och Plats.",
+        "Tryck Skicka inbjudan."
+      ],
+      "actions": [
+        {
+          "id": "personal-invite-open",
+          "label": "Öppna Bjud in personal",
+          "to": "/personal",
+          "pageAction": "invite-staff"
+        }
+      ],
+      "suggestion": "Hur bjuder jag in personal?"
+    },
+    {
+      "id": "personal-hantera",
+      "route": "/personal",
+      "title": "Spärra eller ta bort personal",
+      "audience": "owner",
+      "keywords": [
+        "inaktivera",
+        "spärra",
+        "slutat",
+        "ta bort personal",
+        "aktivera personal",
+        "redigera personal"
+      ],
+      "answer": "Personal som slutar spärrar eller tar ägaren bort under Personal.",
+      "steps": [
+        "Öppna Personal.",
+        "Tryck Inaktivera för att spärra inloggningen (Aktivera öppnar den igen).",
+        "Tryck Ta bort och bekräfta för att ta bort personen helt.",
+        "Redigera ändrar uppgifterna."
+      ],
+      "actions": [
+        {
+          "id": "personal-open",
+          "label": "Öppna Personal",
+          "to": "/personal"
+        }
+      ]
+    },
+    {
+      "id": "fler-agare",
+      "route": null,
+      "title": "Fler ägare och byta plan",
+      "audience": "owner",
+      "keywords": [
+        "fler ägare",
+        "ny ägare",
+        "byta plan",
+        "uppgradera",
+        "plan",
+        "abonnemang",
+        "ingår",
+        "funktioner",
+        "egen domän",
+        "domän",
+        "kortläsare beställa",
+        "faktura booqy"
+      ],
+      "answer": "Fler ägare, byte av plan, nya funktioner, egen domän och kortläsare ordnar Booqy åt er. Kontakta Booqy så hjälper vi till.",
+      "steps": []
+    },
+    {
+      "id": "personalliggare-checka",
+      "route": "/personalliggare",
+      "title": "Checka in och ut i personalliggaren",
+      "audience": "all",
+      "feature": "personalliggare",
+      "keywords": [
+        "personalliggare",
+        "personalliggaren",
+        "checka in",
+        "checka ut",
+        "stämpla",
+        "instämpling",
+        "liggare"
+      ],
+      "answer": "I Personalliggare checkar alla som jobbar in och ut.",
+      "steps": [
+        "Öppna Personalliggare.",
+        "Tryck Checka in när du börjar och Checka ut när du slutar.",
+        "Ägaren kan registrera för någon annan med Registrera för någon annan."
+      ],
+      "actions": [
+        {
+          "id": "personalliggare-open",
+          "label": "Öppna Personalliggare",
+          "to": "/personalliggare"
+        }
+      ]
+    },
+    {
+      "id": "personalliggare-skatteverket",
+      "route": "/personalliggare",
+      "title": "Visa liggaren för Skatteverket",
+      "audience": "all",
+      "feature": "personalliggare",
+      "keywords": [
+        "skatteverket",
+        "kontrollbesök",
+        "inspektion",
+        "visa liggaren"
+      ],
+      "answer": "Kommer Skatteverket på kontrollbesök visar du liggaren direkt i appen.",
+      "steps": [
+        "Öppna Personalliggare.",
+        "Tryck Visa för Skatteverket."
+      ],
+      "actions": [
+        {
+          "id": "personalliggare-open",
+          "label": "Öppna Personalliggare",
+          "to": "/personalliggare"
+        }
+      ]
+    },
+    {
+      "id": "personalliggare-personer",
+      "route": "/personalliggare",
+      "title": "Personer, rättelser och export i personalliggaren",
+      "audience": "owner",
+      "feature": "personalliggare",
+      "keywords": [
+        "lägg till person",
+        "personnummer",
+        "rättelse",
+        "rätta",
+        "exportera liggare",
+        "ladda ner csv"
+      ],
+      "answer": "Ägaren lägger till personer, rättar fel och exporterar liggaren.",
+      "steps": [
+        "Öppna Personalliggare.",
+        "Under Personer: Lägg till person, fyll i namn och personnummer eller samordningsnummer och tryck Spara.",
+        "Under Rättelser: tryck Rätta på raden, ange rätt tid och orsak och tryck Spara rättelse.",
+        "Under Exportera: välj Från och Till och tryck Ladda ner CSV."
+      ],
+      "actions": [
+        {
+          "id": "personalliggare-open",
+          "label": "Öppna Personalliggare",
+          "to": "/personalliggare"
+        }
+      ]
+    },
+    {
+      "id": "telefon-av-pa",
+      "route": "/telefon",
+      "title": "Stänga av eller slå på telefonassistenten",
+      "audience": "all",
+      "feature": "phoneAgent",
+      "keywords": [
+        "telefon",
+        "telefonassistent",
+        "stäng av assistenten",
+        "slå på assistenten",
+        "samtal",
+        "ai telefon"
+      ],
+      "answer": "Telefonassistenten svarar när ni inte hinner. Den kan stängas av direkt under Telefon.",
+      "steps": [
+        "Öppna Telefon.",
+        "Tryck Stäng av assistenten nu, eller Slå på assistenten för att starta den igen."
+      ],
+      "actions": [
+        {
+          "id": "telefon-open",
+          "label": "Öppna Telefon",
+          "to": "/telefon"
+        }
+      ]
+    },
+    {
+      "id": "telefon-samtal",
+      "route": "/telefon/samtal/:callId",
+      "title": "Se samtal och återuppringningar",
+      "audience": "all",
+      "feature": "phoneAgent",
+      "keywords": [
+        "samtalen",
+        "återuppringning",
+        "ringa upp",
+        "vill bli uppringd",
+        "uppringda",
+        "missade samtal"
+      ],
+      "answer": "Under Telefon ser du samtalen assistenten har tagit och vilka som vill bli uppringda.",
+      "steps": [
+        "Öppna Telefon.",
+        "Under Samtal trycker du på ett samtal för att se detaljerna.",
+        "Under Återuppringningar ringer du upp gästen och trycker Klar."
+      ],
+      "actions": [
+        {
+          "id": "telefon-open",
+          "label": "Öppna Telefon",
+          "to": "/telefon"
+        }
+      ]
+    },
+    {
+      "id": "telefon-installningar",
+      "route": "/telefon",
+      "title": "Ställa in telefonassistenten",
+      "audience": "owner",
+      "feature": "phoneAgent",
+      "keywords": [
+        "assistentens namn",
+        "ton",
+        "hälsning",
+        "vidarekoppling",
+        "inspelning",
+        "minuttak",
+        "nummer",
+        "prova assistenten"
+      ],
+      "answer": "Ägaren ställer in assistenten steg för steg under Telefon, Inställningar.",
+      "steps": [
+        "Öppna Telefon och fliken Inställningar.",
+        "Gå igenom stegen: namn och ton, tider och läge, vidarekoppling, inspelning och nummer. Varje steg sparas för sig.",
+        "Prova assistenten i sista steget innan du slår på den."
+      ],
+      "actions": [
+        {
+          "id": "telefon-open",
+          "label": "Öppna Telefon",
+          "to": "/telefon"
+        }
+      ]
+    },
+    {
+      "id": "layout-rita",
+      "route": "/layout",
+      "title": "Rita matsalen",
+      "audience": "all",
+      "keywords": [
+        "layout",
+        "planritning",
+        "matsal",
+        "bordskarta",
+        "rita",
+        "bord",
+        "vägg",
+        "fönster",
+        "entré",
+        "våning"
+      ],
+      "answer": "Under Layout ritar du matsalen. Gästerna väljer bord på planritningen när de bokar online.",
+      "steps": [
+        "Öppna Layout.",
+        "Välj verktyg: Mark (väggar kommer automatiskt), Fönster, Entré, Kök, Kassa och borden Fyrkant och Runt.",
+        "Dra för att flytta. Ångra med Cmd eller Ctrl + Z. Tryck ? för alla kortkommandon.",
+        "Tryck Spara utkast."
+      ],
+      "actions": [
+        {
+          "id": "layout-open",
+          "label": "Öppna Layout",
+          "to": "/layout"
+        }
+      ]
+    },
+    {
+      "id": "layout-publicera",
+      "route": "/layout",
+      "title": "Publicera bordslayouten",
+      "audience": "owner",
+      "keywords": [
+        "publicera layout",
+        "aktivera layout",
+        "versioner",
+        "utkast layout"
+      ],
+      "answer": "Ändringar sparas som utkast. Ägaren publicerar dem och väljer vilken version som gäller.",
+      "steps": [
+        "Öppna Layout och tryck Spara utkast.",
+        "Tryck Publicera layout.",
+        "Under Versioner trycker du Aktivera på den version gästerna ska se."
+      ],
+      "actions": [
+        {
+          "id": "layout-open",
+          "label": "Öppna Layout",
+          "to": "/layout"
+        }
+      ]
+    },
+    {
+      "id": "gaster-sok",
+      "route": "/gaster",
+      "title": "Hitta en gäst",
+      "audience": "all",
+      "feature": "guestCrm",
+      "keywords": [
+        "gästregister",
+        "gästregistret",
+        "stamgäst",
+        "stamgäster",
+        "sök gäst",
+        "hitta gäst",
+        "gästhistorik",
+        "historik"
+      ],
+      "answer": "Under Gäster ser du vilka som kommer tillbaka och vad de har bokat och beställt.",
+      "steps": [
+        "Öppna Gäster.",
+        "Välj vad du söker på (namn, e-post eller telefon) och tryck Sök.",
+        "Tryck på gästen för att se historiken."
+      ],
+      "actions": [
+        {
+          "id": "gaster-open",
+          "label": "Öppna Gäster",
+          "to": "/gaster"
+        }
+      ]
+    },
+    {
+      "id": "gaster-anteckning",
+      "route": "/gaster",
+      "title": "Anteckningar och taggar på gäster",
+      "audience": "owner",
+      "feature": "guestCrm",
+      "keywords": [
+        "anteckning gäst",
+        "taggar",
+        "tagg",
+        "födelsedag",
+        "allergi gäst"
+      ],
+      "answer": "Ägaren kan skriva anteckningar, taggar och födelsedag på en gäst.",
+      "steps": [
+        "Öppna Gäster och tryck på gästen.",
+        "Fyll i Anteckning, Taggar eller Födelsedag.",
+        "Tryck Spara."
+      ],
+      "actions": [
+        {
+          "id": "gaster-open",
+          "label": "Öppna Gäster",
+          "to": "/gaster"
+        }
+      ]
+    },
+    {
+      "id": "presentkort-salja",
+      "route": "/presentkort",
+      "title": "Sälja presentkort på hemsidan",
+      "audience": "owner",
+      "feature": "giftCards",
+      "keywords": [
+        "presentkort",
+        "sälja presentkort",
+        "gåvokort",
+        "värdebevis",
+        "giltighet"
+      ],
+      "answer": "Ägaren slår på försäljning av presentkort och väljer belopp och giltighet under Presentkort.",
+      "steps": [
+        "Öppna Presentkort.",
+        "Slå på Sälj presentkort på hemsidan.",
+        "Välj färdiga belopp, eget belopp (lägst och högst) och giltighet i månader (minst 12).",
+        "Tryck Spara."
+      ],
+      "actions": [
+        {
+          "id": "presentkort-open",
+          "label": "Öppna Presentkort",
+          "to": "/presentkort"
+        }
+      ]
+    },
+    {
+      "id": "presentkort-hitta",
+      "route": "/presentkort",
+      "title": "Hitta, förlänga eller återbetala ett presentkort",
+      "audience": "owner",
+      "feature": "giftCards",
+      "keywords": [
+        "förlänga presentkort",
+        "ny kod",
+        "tappat presentkort",
+        "återbetala presentkort",
+        "sök presentkort"
+      ],
+      "answer": "Ett sålt presentkort hittar ägaren med de fyra sista tecknen i koden.",
+      "steps": [
+        "Öppna Presentkort.",
+        "Sök på de fyra sista tecknen och tryck på kortet.",
+        "Tryck Förläng, Skicka ny kod eller Återbetala."
+      ],
+      "actions": [
+        {
+          "id": "presentkort-open",
+          "label": "Öppna Presentkort",
+          "to": "/presentkort"
+        }
+      ]
+    },
+    {
+      "id": "webbplats-redigera",
+      "route": "/webbplats",
+      "title": "Ändra hemsidan",
+      "audience": "owner",
+      "feature": "siteBuilder",
+      "keywords": [
+        "webbplats",
+        "hemsida",
+        "hemsidan",
+        "sida",
+        "block",
+        "färger",
+        "typsnitt",
+        "utseende hemsida"
+      ],
+      "answer": "Ägaren ändrar hemsidan under Webbplats: sidor, block och utseende.",
+      "steps": [
+        "Öppna Webbplats.",
+        "Välj sida, eller tryck Ny sida.",
+        "Tryck Lägg till block för text, bild, meny, öppettider, boka bord med mera.",
+        "Under Utseende väljer du färger och typsnitt.",
+        "Tryck Spara utkast."
+      ],
+      "actions": [
+        {
+          "id": "webbplats-open",
+          "label": "Öppna Webbplats",
+          "to": "/webbplats"
+        }
+      ]
+    },
+    {
+      "id": "webbplats-publicera",
+      "route": "/webbplats",
+      "title": "Publicera hemsidan",
+      "audience": "owner",
+      "feature": "siteBuilder",
+      "keywords": [
+        "publicera hemsida",
+        "publicera",
+        "förhandsgranska",
+        "förhandsvisning",
+        "versioner hemsida",
+        "återställ"
+      ],
+      "answer": "Ändringar på hemsidan syns för gästerna först när du publicerar. Personuppgiftsbiträdesavtalet måste vara godkänt.",
+      "steps": [
+        "Öppna Webbplats och tryck Spara utkast.",
+        "Tryck Förhandsgranska för att se resultatet.",
+        "Tryck Publicera.",
+        "Vill du gå tillbaka: Versioner, Återställ."
+      ],
+      "actions": [
+        {
+          "id": "webbplats-open",
+          "label": "Öppna Webbplats",
+          "to": "/webbplats"
+        }
+      ]
+    },
+    {
+      "id": "evenemang-skapa",
+      "route": "/evenemang",
+      "title": "Skapa ett evenemang med biljetter",
+      "audience": "owner",
+      "feature": "events",
+      "keywords": [
+        "evenemang",
+        "biljetter",
+        "biljett",
+        "event",
+        "konsert",
+        "middag",
+        "nytt evenemang",
+        "affisch"
+      ],
+      "answer": "Ägaren skapar evenemang med biljetttyper under Evenemang och publicerar dem.",
+      "steps": [
+        "Öppna Evenemang och tryck Nytt evenemang.",
+        "Fyll i namn, beskrivning, datum, tider och antal platser.",
+        "Lägg till biljetttyper med pris och moms.",
+        "Tryck Spara och sedan Publicera.",
+        "Tryck Skriv ut affisch om du vill sätta upp en affisch."
+      ],
+      "actions": [
+        {
+          "id": "evenemang-open",
+          "label": "Öppna Evenemang",
+          "to": "/evenemang"
+        }
+      ]
+    },
+    {
+      "id": "evenemang-detalj",
+      "route": "/evenemang/:eventId",
+      "title": "Ställa in ett evenemang eller återbetala biljett",
+      "audience": "owner",
+      "feature": "events",
+      "keywords": [
+        "ställa in evenemang",
+        "ställ in",
+        "återbetala biljett",
+        "inställt"
+      ],
+      "answer": "Ägaren ställer in ett tillfälle eller återbetalar enskilda biljetter från evenemanget.",
+      "steps": [
+        "Öppna Evenemang och tryck på evenemanget.",
+        "Tryck Ställ in på tillfället, skriv gärna ett meddelande och tryck Ställ in och återbetala.",
+        "En enskild biljett: under Köp, tryck Återbetala och ange anledning."
+      ],
+      "actions": [
+        {
+          "id": "evenemang-open",
+          "label": "Öppna Evenemang",
+          "to": "/evenemang"
+        }
+      ]
+    },
+    {
+      "id": "evenemang-inslapp",
+      "route": "/evenemang/:eventId/inslapp/:occurrenceId",
+      "title": "Släppa in gäster med biljett",
+      "audience": "all",
+      "feature": "events",
+      "keywords": [
+        "insläpp",
+        "släpp in",
+        "scanna biljett",
+        "skanna",
+        "gästlista",
+        "biljettkod"
+      ],
+      "answer": "Vid dörren scannar du biljetterna under Evenemang, Insläpp.",
+      "steps": [
+        "Öppna Evenemang och tryck på evenemanget.",
+        "Tryck Insläpp.",
+        "Tryck Skanna med kameran, eller skriv biljettkoden och tryck Släpp in.",
+        "Gästlistan visar alla biljetter."
+      ],
+      "actions": [
+        {
+          "id": "evenemang-open",
+          "label": "Öppna Evenemang",
+          "to": "/evenemang"
+        }
+      ]
+    },
+    {
+      "id": "marknad-oversikt",
+      "route": "/marknadsforing",
+      "title": "Besök på hemsidan",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "besök",
+        "besökare",
+        "trafik",
+        "marknadsföring",
+        "marknad"
+      ],
+      "answer": "Under Marknadsföring, Översikt ser ägaren hur många som besöker hemsidan och var de kommer ifrån.",
+      "steps": [
+        "Öppna Marknadsföring.",
+        "Fliken Översikt visar besöken."
+      ],
+      "actions": [
+        {
+          "id": "marknad-oversikt-open",
+          "label": "Öppna Marknadsföring",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "oversikt"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-kampanj",
+      "route": "/marknadsforing",
+      "title": "Skicka ett mejlutskick",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "utskick",
+        "nyhetsbrev",
+        "mejlutskick",
+        "kampanj",
+        "e-postkampanj",
+        "skicka mejl till gäster"
+      ],
+      "answer": "Mejlutskick till gästerna gör ägaren under Marknadsföring, Kampanjer.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Kampanjer.",
+        "Tryck Ny kampanj.",
+        "Fyll i namn, välj mall, ämnesrad, mottagare och plats och tryck Spara utkast.",
+        "Tryck Testa för att skicka ett prov till dig själv.",
+        "Tryck Skicka och välj Skicka nu eller Schemalägg."
+      ],
+      "actions": [
+        {
+          "id": "marknad-kampanj-open",
+          "label": "Öppna Kampanjer",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "kampanjer"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-mallar",
+      "route": "/marknadsforing",
+      "title": "Mallar för utskick",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "mall",
+        "mallar",
+        "mejlmall"
+      ],
+      "answer": "Mallarna för mejlutskick finns under Marknadsföring, Mallar.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Mallar.",
+        "Tryck Ny tom mall eller börja från en färdig mall.",
+        "Fyll i namn, ämnesrad och block och tryck Spara mallen."
+      ],
+      "actions": [
+        {
+          "id": "marknad-mallar-open",
+          "label": "Öppna Mallar",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "mallar"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-erbjudande",
+      "route": "/marknadsforing",
+      "title": "Välkomsterbjudande",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "välkomsterbjudande",
+        "erbjudande",
+        "rabattkod",
+        "nya gäster",
+        "popup"
+      ],
+      "answer": "Ett välkomsterbjudande ger nya gäster en rabattkod när de anmäler sig med e-post på hemsidan.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Välkomsterbjudande.",
+        "Fyll i rabatt, minsta beställning, hur länge koden gäller och texterna.",
+        "Tryck Spara."
+      ],
+      "actions": [
+        {
+          "id": "marknad-erbjudande-open",
+          "label": "Öppna Välkomsterbjudande",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "erbjudande"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-mottagare",
+      "route": "/marknadsforing",
+      "title": "Mottagare och målgrupper",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "mottagare",
+        "målgrupp",
+        "segment",
+        "prenumeranter",
+        "avregistrera"
+      ],
+      "answer": "Vilka som får utskicken ser ägaren under Marknadsföring, Mottagare.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Mottagare.",
+        "Filtrera listan eller ladda ned den som CSV.",
+        "Tryck Avregistrera eller Radera på en mottagare vid behov."
+      ],
+      "actions": [
+        {
+          "id": "marknad-mottagare-open",
+          "label": "Öppna Mottagare",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "mottagare"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-lankar",
+      "route": "/marknadsforing",
+      "title": "Länkar och QR-koder för kampanjer",
+      "audience": "owner",
+      "feature": "marketing",
+      "keywords": [
+        "länk",
+        "länkar",
+        "spårningslänk",
+        "kampanjlänk",
+        "qr-kod kampanj"
+      ],
+      "answer": "Länkar och QR-koder som visar var besökarna kommer ifrån skapar ägaren under Marknadsföring, Länkar och QR.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Länkar och QR.",
+        "Välj sida, var länken delas och ett kampanjnamn.",
+        "Tryck Kopiera länken eller Ladda ned QR-kod."
+      ],
+      "actions": [
+        {
+          "id": "marknad-lankar-open",
+          "label": "Öppna Länkar och QR",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "lankar"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-annonser",
+      "route": "/marknadsforing",
+      "title": "Annonsera på Facebook och Instagram",
+      "audience": "owner",
+      "feature": "metaAds",
+      "keywords": [
+        "annons",
+        "annonser",
+        "annonsera",
+        "meta",
+        "månadstak",
+        "budget"
+      ],
+      "answer": "Annonser för en rätt skapar ägaren under Marknadsföring, Annonser, efter att Meta är kopplat.",
+      "steps": [
+        "Öppna Marknadsföring och fliken Annonser.",
+        "Första gången: tryck Koppla Meta, välj konton och ett månadstak och tryck Spara.",
+        "Tryck Ny annons, välj rätt, text, total budget, antal dagar och område.",
+        "Tryck Skapa annonsen."
+      ],
+      "actions": [
+        {
+          "id": "marknad-annonser-open",
+          "label": "Öppna Annonser",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "annonser"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-omdomen",
+      "route": "/marknadsforing",
+      "title": "Be om omdömen på Google",
+      "audience": "owner",
+      "feature": "googleBusiness",
+      "keywords": [
+        "omdöme",
+        "omdömen",
+        "recension",
+        "google-omdöme",
+        "betyg"
+      ],
+      "answer": "Ägaren ställer in när gästerna ombeds lämna omdöme under Marknadsföring, Omdömen.",
+      "steps": [
+        "Koppla Google under Inställningar, Restaurang om det inte är gjort.",
+        "Öppna Marknadsföring och fliken Omdömen.",
+        "Välj fördröjning och hur ofta en gäst får frågan och tryck Spara."
+      ],
+      "actions": [
+        {
+          "id": "marknad-omdomen-open",
+          "label": "Öppna Omdömen",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "omdomen"
+          }
+        }
+      ]
+    },
+    {
+      "id": "marknad-inlagg",
+      "route": "/marknadsforing",
+      "title": "Inlägg i sociala medier",
+      "audience": "owner",
+      "feature": "socialPosting",
+      "keywords": [
+        "inlägg",
+        "sociala medier",
+        "schemalägg inlägg",
+        "publicera inlägg"
+      ],
+      "answer": "Inlägg skapas från Meny med Dela och granskas under Marknadsföring, Inlägg.",
+      "steps": [
+        "Öppna Meny och tryck Dela på en rätt.",
+        "Under Marknadsföring, Inlägg: ändra texten och tryck Schemalägg eller Publicera nu."
+      ],
+      "actions": [
+        {
+          "id": "marknad-inlagg-open",
+          "label": "Öppna Inlägg",
+          "to": "/marknadsforing",
+          "query": {
+            "flik": "inlagg"
+          }
+        }
+      ]
+    },
+    {
+      "id": "installningar",
+      "route": "/installningar",
+      "title": "Inställningar",
+      "audience": "all",
+      "keywords": [
+        "inställningar",
+        "inställning",
+        "ändra inställningar"
+      ],
+      "answer": "Under Inställningar ställer du in restaurangen i grupper: verksamheten, gäster, ekonomi, data och integritet samt den här enheten. Personalen kan se men bara ägaren kan ändra, utom Utseende och ljud.",
+      "steps": [
+        "Öppna Inställningar längst ned i vänstermenyn.",
+        "Välj den del du vill ändra.",
+        "Tryck Spara på det kortet. Alla inställningar tar dig tillbaka."
+      ],
+      "actions": [
+        {
+          "id": "installningar-open",
+          "label": "Öppna Inställningar",
+          "to": "/installningar"
+        }
+      ]
+    },
+    {
+      "id": "inst-oppettider",
+      "route": "/installningar",
+      "title": "Öppettider och restaurangens uppgifter",
+      "audience": "owner",
+      "keywords": [
+        "öppettider",
+        "öppet",
+        "adress",
+        "telefonnummer",
+        "restaurangens namn",
+        "e-post restaurang",
+        "grace period"
+      ],
+      "answer": "Öppettider, adress och kontaktuppgifter ändrar ägaren under Inställningar, Restaurang.",
+      "steps": [
+        "Öppna Inställningar och välj Restaurang.",
+        "Ändra namn, telefon, adress, e-post eller öppettider.",
+        "Tryck Spara ändringar."
+      ],
+      "actions": [
+        {
+          "id": "inst-profil-open",
+          "label": "Öppna Restaurang",
+          "to": "/installningar",
+          "hash": "profil"
+        }
+      ],
+      "suggestion": "Hur ändrar jag öppettiderna?"
+    },
+    {
+      "id": "inst-bokningstid",
+      "route": "/installningar",
+      "title": "Hur länge en bokning varar",
+      "audience": "owner",
+      "keywords": [
+        "bokningstid",
+        "standardlängd",
+        "sittningstid",
+        "sista sittning",
+        "specialtid",
+        "hur länge bokning"
+      ],
+      "answer": "Hur länge ett bord är bokat och sista sittning före stängning ställer ägaren in under Inställningar, Restaurang, Bokningstid.",
+      "steps": [
+        "Öppna Inställningar och välj Restaurang.",
+        "Under Bokningstid väljer du standardlängd och sista sittning före stängning.",
+        "Lägg till specialtider vid behov.",
+        "Tryck Spara bokningstid."
+      ],
+      "actions": [
+        {
+          "id": "inst-profil-open",
+          "label": "Öppna Restaurang",
+          "to": "/installningar",
+          "hash": "profil"
+        }
+      ]
+    },
+    {
+      "id": "inst-dagar",
+      "route": "/installningar",
+      "title": "Avvikande dagar och helger",
+      "audience": "owner",
+      "keywords": [
+        "avvikande dagar",
+        "helgdag",
+        "helgdagar",
+        "julafton",
+        "midsommar",
+        "stängt idag",
+        "privat fest",
+        "semester",
+        "stäng onlinebokning",
+        "stänga onlinebokning"
+      ],
+      "answer": "Helgdagar, stängda dagar och andra öppettider lägger ägaren in under Inställningar, Avvikande dagar.",
+      "steps": [
+        "Öppna Inställningar och välj Avvikande dagar.",
+        "Tryck Lägg till dag, välj datum och typ (Stängt, Andra öppettider eller Ingen onlinebokning).",
+        "Skriv gärna en anteckning till gästerna och tryck Lägg till.",
+        "Tryck Spara dagar.",
+        "Behöver ni stänga direkt: Stäng onlinebokning idag."
+      ],
+      "actions": [
+        {
+          "id": "inst-dagar-open",
+          "label": "Öppna Avvikande dagar",
+          "to": "/installningar",
+          "hash": "dagar"
+        }
+      ]
+    },
+    {
+      "id": "inst-bord",
+      "route": "/installningar",
+      "title": "Bord som kan bokas online",
+      "audience": "owner",
+      "keywords": [
+        "antal personer per bord",
+        "bordsregler",
+        "kombination",
+        "slå ihop bord",
+        "onlinebokning bord",
+        "kombinera bord"
+      ],
+      "answer": "Vilka bord som kan bokas online, för hur många och vilka bord som kan slås ihop ställer ägaren in under Inställningar, Bord.",
+      "steps": [
+        "Öppna Inställningar och välj Bord.",
+        "Välj för varje bord om det kan bokas online och för hur många personer.",
+        "Lägg till kombinationer under Ny kombination.",
+        "Tryck Spara bordsregler."
+      ],
+      "actions": [
+        {
+          "id": "inst-bord-open",
+          "label": "Öppna Bord",
+          "to": "/installningar",
+          "hash": "bord"
+        }
+      ]
+    },
+    {
+      "id": "inst-notiser",
+      "route": "/installningar",
+      "title": "Sms, påminnelser och mejl om bokningar",
+      "audience": "owner",
+      "keywords": [
+        "sms",
+        "påminnelse",
+        "notiser",
+        "notis",
+        "bekräftelse",
+        "mejl vid bokning",
+        "avsändarnamn"
+      ],
+      "answer": "Om gästerna får sms, när påminnelsen skickas och om ni får mejl vid nya bokningar ställer ägaren in under Inställningar, Notiser.",
+      "steps": [
+        "Öppna Inställningar och välj Notiser.",
+        "Slå på eller av SMS till gästen (kostar per sms) och välj avsändarnamn.",
+        "Välj påminnelse före besöket.",
+        "Välj om restaurangen får e-post vid nya bokningar.",
+        "Tryck Spara notiser."
+      ],
+      "actions": [
+        {
+          "id": "inst-notiser-open",
+          "label": "Öppna Notiser",
+          "to": "/installningar",
+          "hash": "notiser"
+        }
+      ]
+    },
+    {
+      "id": "inst-avbokning",
+      "route": "/installningar",
+      "title": "Kortgaranti och avgifter vid avbokning",
+      "audience": "owner",
+      "keywords": [
+        "kortgaranti",
+        "avbokningsregler",
+        "no-show-avgift",
+        "sen avbokning",
+        "avgift",
+        "garanti",
+        "policy"
+      ],
+      "answer": "Kortgaranti och avgifter för sen avbokning och no-show ställer ägaren in under Inställningar, Avbokning. Stripe måste vara klart först.",
+      "steps": [
+        "Öppna Inställningar och välj Avbokning.",
+        "Slå på Kortgaranti vid onlinebokning och välj från hur många personer.",
+        "Ange när en avbokning räknas som sen och avgifterna per person.",
+        "Tryck Spara policy."
+      ],
+      "actions": [
+        {
+          "id": "inst-avbokning-open",
+          "label": "Öppna Avbokning",
+          "to": "/installningar",
+          "hash": "avbokning"
+        }
+      ]
+    },
+    {
+      "id": "inst-betalningar",
+      "route": "/installningar",
+      "title": "Stripe och kortbetalningar",
+      "audience": "owner",
+      "keywords": [
+        "stripe",
+        "betalningar",
+        "utbetalning",
+        "bankkonto",
+        "kortbetalningar",
+        "ta emot betalning",
+        "betalkonto"
+      ],
+      "answer": "Kortbetalningar går via Stripe. Ägaren slutför kontot under Inställningar, Betalningar.",
+      "steps": [
+        "Öppna Inställningar och välj Betalningar.",
+        "Tryck Slutför Stripe-konfigurationen (eller Komplettera uppgifter hos Stripe).",
+        "Fyll i uppgifterna hos Stripe och kom tillbaka hit.",
+        "När det står Redo att ta emot betalningar är allt klart."
+      ],
+      "actions": [
+        {
+          "id": "inst-betalningar-open",
+          "label": "Öppna Betalningar",
+          "to": "/installningar",
+          "hash": "betalningar"
+        }
+      ]
+    },
+    {
+      "id": "inst-bokforing",
+      "route": "/installningar",
+      "title": "Bokföring och SIE-fil",
+      "audience": "owner",
+      "keywords": [
+        "bokföring",
+        "sie",
+        "sie-fil",
+        "revisor",
+        "konton",
+        "verifikation",
+        "fortnox",
+        "visma",
+        "redovisning"
+      ],
+      "answer": "Försäljningen för en period laddar ägaren ner som SIE- eller CSV-fil under Inställningar, Bokföring.",
+      "steps": [
+        "Öppna Inställningar och välj Bokföring.",
+        "Välj period och filformat.",
+        "Tryck Ladda ner SIE-fil eller Ladda ner CSV-fil.",
+        "Konton och verifikationsserie kan ändras på samma sida."
+      ],
+      "actions": [
+        {
+          "id": "inst-bokforing-open",
+          "label": "Öppna Bokföring",
+          "to": "/installningar",
+          "hash": "bokforing"
+        }
+      ]
+    },
+    {
+      "id": "inst-integritet",
+      "route": "/installningar",
+      "title": "Gästernas personuppgifter (GDPR)",
+      "audience": "owner",
+      "keywords": [
+        "gdpr",
+        "integritet",
+        "personuppgifter",
+        "radera gäst",
+        "samtycke",
+        "integritetstext",
+        "dataskydd"
+      ],
+      "answer": "Integritetstexten och förfrågningar från gäster om att radera sina uppgifter hanterar ägaren under Inställningar, Integritet.",
+      "steps": [
+        "Öppna Inställningar och välj Integritet.",
+        "Ändra texten och tryck Spara text.",
+        "Sök fram gästen med e-post eller telefon.",
+        "Tryck Återkalla samtycke eller Radera gästens uppgifter."
+      ],
+      "actions": [
+        {
+          "id": "inst-integritet-open",
+          "label": "Öppna Integritet",
+          "to": "/installningar",
+          "hash": "integritet"
+        }
+      ]
+    },
+    {
+      "id": "inst-utseende",
+      "route": "/installningar",
+      "title": "Mörkt eller ljust läge och klickljud",
+      "audience": "all",
+      "keywords": [
+        "mörkt läge",
+        "ljust läge",
+        "tema",
+        "utseende",
+        "ljud",
+        "klickljud",
+        "volym",
+        "dark mode"
+      ],
+      "answer": "Ljust eller mörkt läge och klickljudet väljer du själv under Inställningar, Utseende och ljud. Valet gäller den här webbläsaren.",
+      "steps": [
+        "Öppna Inställningar och välj Utseende och ljud.",
+        "Välj ljust eller mörkt läge.",
+        "Slå på eller av ljudet och välj volym."
+      ],
+      "actions": [
+        {
+          "id": "inst-utseende-open",
+          "label": "Öppna Utseende och ljud",
+          "to": "/installningar",
+          "hash": "utseende"
+        }
+      ]
+    },
+    {
+      "id": "inst-google",
+      "route": "/installningar",
+      "title": "Koppla Google-företagsprofilen",
+      "audience": "owner",
+      "feature": "googleBusiness",
+      "keywords": [
+        "google",
+        "google-profil",
+        "företagsprofil",
+        "google maps",
+        "koppla google"
+      ],
+      "answer": "Restaurangens Google-profil kopplar ägaren under Inställningar, Restaurang.",
+      "steps": [
+        "Öppna Inställningar och välj Restaurang.",
+        "Tryck Koppla Google och logga in hos Google.",
+        "Välj rätt plats."
+      ],
+      "actions": [
+        {
+          "id": "inst-profil-open",
+          "label": "Öppna Restaurang",
+          "to": "/installningar",
+          "hash": "profil"
+        }
+      ]
+    },
+    {
+      "id": "hjalp-guiden",
+      "route": "/hjalp",
+      "title": "Guiden och hjälpsidan",
+      "audience": "all",
+      "keywords": [
+        "guiden",
+        "guide",
+        "rundtur",
+        "introduktion",
+        "hjälp",
+        "hjälpsidan"
+      ],
+      "answer": "Under Hjälp startar du guiden igen och läser vad varje del av appen gör.",
+      "steps": [
+        "Öppna Hjälp längst ned i vänstermenyn.",
+        "Tryck Starta guiden för en rundtur sida för sida."
+      ],
+      "actions": [
+        {
+          "id": "hjalp-open",
+          "label": "Öppna Hjälp",
+          "to": "/hjalp"
+        }
+      ]
+    },
+    {
+      "id": "avtal",
+      "route": "/avtal",
+      "title": "Personuppgiftsbiträdesavtalet",
+      "audience": "owner",
+      "keywords": [
+        "avtal",
+        "personuppgiftsbiträdesavtal",
+        "biträdesavtal",
+        "pub-avtal",
+        "dpa",
+        "godkänna avtalet"
+      ],
+      "answer": "Ägaren läser och godkänner personuppgiftsbiträdesavtalet under Avtal. Hemsidan kan publiceras först när det är godkänt.",
+      "steps": [
+        "Öppna avtalet från rutan överst eller från Kom igång på Översikten.",
+        "Läs avtalet.",
+        "Kryssa i att du har läst och har rätt att godkänna det.",
+        "Tryck Godkänn avtalet."
+      ],
+      "actions": [
+        {
+          "id": "avtal-open",
+          "label": "Öppna avtalet",
+          "to": "/avtal"
+        }
+      ]
+    },
+    {
+      "id": "plats-byta",
+      "route": null,
+      "title": "Byta restaurang eller plats",
+      "audience": "all",
+      "keywords": [
+        "byta plats",
+        "byta restaurang",
+        "flera restauranger",
+        "välja plats",
+        "annan restaurang"
+      ],
+      "answer": "Har ni flera restauranger väljer du plats i vänstermenyn, under restaurangens namn. Allt du ser gäller den valda platsen.",
+      "steps": [
+        "Öppna vänstermenyn.",
+        "Välj plats i listan under restaurangens namn."
+      ]
+    },
+    {
+      "id": "sok-palett",
+      "route": null,
+      "title": "Snabbsök och kortkommandon",
+      "audience": "all",
+      "keywords": [
+        "snabbsök",
+        "sök",
+        "kortkommando",
+        "kommandopalett",
+        "cmd k",
+        "ctrl k"
+      ],
+      "answer": "Med snabbsöket hoppar du till en sida eller en åtgärd utan att leta i menyn.",
+      "steps": [
+        "Tryck Cmd + K på Mac eller Ctrl + K på Windows, eller tryck Sök i sidhuvudet.",
+        "Skriv vad du letar efter, till exempel Meny eller Ny bokning.",
+        "Välj med pilarna och tryck Enter."
+      ]
+    },
+    {
+      "id": "logga-ut",
+      "route": null,
+      "title": "Logga ut",
+      "audience": "all",
+      "keywords": [
+        "logga ut",
+        "utloggning"
+      ],
+      "answer": "Du loggar ut med knappen Logga ut längst ned i vänstermenyn.",
+      "steps": [
+        "Öppna vänstermenyn.",
+        "Tryck Logga ut längst ned och bekräfta."
+      ]
+    },
+    {
+      "id": "gast-boka",
+      "route": null,
+      "title": "Så bokar gästerna online",
+      "audience": "all",
+      "keywords": [
+        "gästerna bokar",
+        "onlinebokning",
+        "boka online",
+        "bokningssida",
+        "boka bord online"
+      ],
+      "answer": "Gästerna bokar på restaurangens hemsida under Boka bord. De väljer bord på er planritning och får en bekräftelse med en länk till bokningen.",
+      "steps": [
+        "Se till att öppettider, bord och en publicerad layout finns.",
+        "Gästen öppnar Boka bord på hemsidan, väljer datum, tid och bord.",
+        "Krävs kortgaranti lämnar gästen kort i samma steg.",
+        "Gästen får en bekräftelse. Bokningen syns direkt under Bokningar."
+      ],
+      "actions": [
+        {
+          "id": "layout-open",
+          "label": "Öppna Layout",
+          "to": "/layout"
+        }
+      ]
+    },
+    {
+      "id": "gast-avboka",
+      "route": null,
+      "title": "Så avbokar gästerna själva",
+      "audience": "all",
+      "keywords": [
+        "gästen avbokar",
+        "själv",
+        "länk i bekräftelsen",
+        "ändra sin bokning"
+      ],
+      "answer": "Gästen avbokar själv via länken i bekräftelsen, i mejlet eller sms:et. Avbokningen syns direkt under Bokningar.",
+      "steps": [
+        "Gästen öppnar länken i bekräftelsen.",
+        "Gästen trycker Avboka."
+      ]
+    },
+    {
+      "id": "gast-bestalla",
+      "route": null,
+      "title": "Så beställer gästerna mat",
+      "audience": "all",
+      "feature": "ordering",
+      "keywords": [
+        "gästerna beställer",
+        "beställ mat",
+        "beställa online",
+        "bordsbeställning",
+        "beställa via qr"
+      ],
+      "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. De betalar i förväg.",
+      "steps": [
+        "Gästen öppnar Beställ på hemsidan eller scannar QR-koden på bordet.",
+        "Gästen väljer rätter och betalar.",
+        "Beställningen dyker upp under Beställningar."
+      ],
+      "actions": [
+        {
+          "id": "bestallningar-open",
+          "label": "Öppna Beställningar",
+          "to": "/bestallningar"
+        }
+      ]
+    },
+    {
+      "id": "gast-catering",
+      "route": null,
+      "title": "Så skickar gästerna en cateringförfrågan",
+      "audience": "all",
+      "feature": "catering",
+      "keywords": [
+        "gästen catering",
+        "cateringförfrågan hemsida",
+        "beställa catering"
+      ],
+      "answer": "Gästen räknar fram en catering i kalkylen på hemsidan och skickar en förfrågan. Den hamnar under Catering.",
+      "steps": [
+        "Gästen öppnar Catering på hemsidan och fyller i kalkylen.",
+        "Gästen trycker Skicka förfrågan.",
+        "Ni svarar med en offert under Catering."
+      ],
+      "actions": [
+        {
+          "id": "catering-open",
+          "label": "Öppna Catering",
+          "to": "/catering"
+        }
+      ]
+    },
+    {
+      "id": "gast-presentkort",
+      "route": null,
+      "title": "Så köper gästerna presentkort",
+      "audience": "all",
+      "feature": "giftCards",
+      "keywords": [
+        "köpa presentkort",
+        "gästen köper presentkort",
+        "saldo"
+      ],
+      "answer": "Gästerna köper presentkort under Presentkort på hemsidan och kan kolla saldot där. Presentkortet löses in i kassan.",
+      "steps": [
+        "Gästen öppnar Presentkort på hemsidan och väljer belopp.",
+        "Gästen betalar och får koden.",
+        "Saldot kollas under Presentkort, saldo."
+      ]
+    },
+    {
+      "id": "gast-ko",
+      "route": null,
+      "title": "Så ställer sig gästerna i kö",
+      "audience": "all",
+      "feature": "waitlist",
+      "keywords": [
+        "gästen kö",
+        "kö hemsidan",
+        "ställa sig i kö"
+      ],
+      "answer": "Är det påslaget kan gästerna ställa sig i kö från hemsidan. De hamnar i köpanelen under Bokningar.",
+      "steps": [
+        "Gästen öppnar Kö på hemsidan och fyller i namn, antal och mobilnummer.",
+        "Ni ser gästen i köpanelen under Bokningar och erbjuder bord."
+      ],
+      "actions": [
+        {
+          "id": "bokningar-open",
+          "label": "Öppna Bokningar",
+          "to": "/bokningar"
+        }
+      ]
+    }
+  ]
+}

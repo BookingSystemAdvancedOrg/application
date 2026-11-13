@@ -36,7 +36,7 @@ from http import HTTPStatus
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import menu, prices, tenant
+from shared import image_focus, menu, prices, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -58,6 +58,8 @@ _EDITABLE_FIELDS = {
     # Optional UTC schedule window (shared/menu.py); null clears.
     "availableFrom",
     "availableUntil",
+    # Optional photo focal point (shared/image_focus.py); null = centre.
+    "imageFocus",
 }
 _PUBLIC_FIELDS = (
     "menuItemId",
@@ -241,6 +243,7 @@ def _menu_fields(event, *, partial):
             raise ValueError("alcohol must be a boolean")
         fields["alcohol"] = body["alcohol"]
     fields.update(menu.validate_schedule(body))
+    fields.update(image_focus.validate(body))
     return fields
 
 
@@ -316,6 +319,7 @@ def _public_item(item):
         **{field: item[field] for field in _PUBLIC_FIELDS},
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
+        **image_focus.view(item),
     }
 
 

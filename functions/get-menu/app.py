@@ -37,7 +37,7 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import menu, tenant
+from shared import image_focus, menu, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -187,7 +187,11 @@ def _public_item(item, location_id):
     ):
         raise _MenuServiceFailure
 
-    return {**{field: item[field] for field in _CUSTOMER_FIELDS}, "alcohol": item.get("alcohol") is True}
+    return {
+        **{field: item[field] for field in _CUSTOMER_FIELDS},
+        "alcohol": item.get("alcohol") is True,
+        **image_focus.view(item),
+    }
 
 
 def _valid_management_price(value):
@@ -263,6 +267,7 @@ def _management_item(item, location_id, expected_item_id=None):
         **{field: item[field] for field in _MANAGEMENT_FIELDS},
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
+        **image_focus.view(item),
     }
 
 

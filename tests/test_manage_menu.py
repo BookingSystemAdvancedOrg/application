@@ -1709,3 +1709,60 @@ def test_clearing_an_absent_schedule_is_a_no_op(app_and_table):
     event = make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"availableFrom": None})
     assert app.handler(event, None)["statusCode"] == 200
     assert get_item(menu_table) == menu_item()
+
+
+# --- photo focal point (imageFocus) ---------------------------------------------------
+
+
+def test_image_focus_is_optional_and_absent_by_default(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body=valid_body()), None)
+    assert response["statusCode"] == 201
+    assert "imageFocus" not in response_body(response)
+    assert "imageFocus" not in get_item(menu_table)
+
+
+def test_image_focus_is_stored_and_returned(app_and_table):
+    app, menu_table = app_and_table
+    body = valid_body(imageFocus={"x": 0, "y": 100})
+    response = app.handler(make_event(method="POST", body=body), None)
+    assert response["statusCode"] == 201
+    assert response_body(response)["imageFocus"] == {"x": 0, "y": 100}
+    assert get_item(menu_table)["imageFocus"] == {"x": 0, "y": 100}
+
+
+def test_image_focus_can_be_changed_and_cleared(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    response = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"imageFocus": {"x": 30, "y": 72.0}}), None
+    )
+    assert response["statusCode"] == 200
+    assert response_body(response)["imageFocus"] == {"x": 30, "y": 72}
+
+    response = app.handler(make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"imageFocus": None}), None)
+    assert response["statusCode"] == 200
+    assert "imageFocus" not in response_body(response)
+    assert "imageFocus" not in get_item(menu_table)
+
+
+@pytest.mark.parametrize(
+    "focus",
+    [
+        {"x": -1, "y": 50},
+        {"x": 50, "y": 101},
+        {"x": 12.5, "y": 50},
+        {"x": True, "y": 50},
+        {"x": "50", "y": 50},
+        {"x": 50},
+        {"x": 50, "y": 50, "z": 1},
+        [50, 50],
+        "center",
+    ],
+)
+def test_image_focus_rejects_values_outside_0_to_100(app_and_table, focus):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body=valid_body(imageFocus=focus)), None)
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+

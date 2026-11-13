@@ -1087,3 +1087,24 @@ def test_malformed_stored_schedule_is_rejected(app_and_table):
     assert app.handler(make_event(), None)["statusCode"] == 503
     response = app.handler(make_event(proxy=f"items/{ITEM_ID}", groups='["staff_user"]'), None)
     assert response["statusCode"] == 409
+
+
+def test_image_focus_is_returned_publicly_and_to_staff(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(imageFocus={"x": Decimal("20"), "y": Decimal("80")}))
+
+    public = response_body(app.handler(make_event(), None))["items"][0]
+    assert public["imageFocus"] == {"x": 20, "y": 80}
+
+    staff = response_body(app.handler(make_event(proxy="items", groups='["staff_user"]'), None))
+    assert staff["items"][0]["imageFocus"] == {"x": 20, "y": 80}
+
+
+def test_missing_or_malformed_image_focus_means_the_centre(app_and_table):
+    app, menu_table = app_and_table
+    menu_table.put_item(Item=menu_item(item_id="plain"))
+    menu_table.put_item(Item=menu_item(item_id="broken", imageFocus={"x": Decimal("140"), "y": Decimal("2")}))
+
+    items = response_body(app.handler(make_event(), None))["items"]
+    assert len(items) == 2
+    assert all("imageFocus" not in item for item in items)

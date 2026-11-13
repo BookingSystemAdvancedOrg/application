@@ -7,6 +7,10 @@ TRIGGER:
         POST   /me/backdrops/{id}/complete   -> {item}
         PUT    /me/backdrops/selected        {id | null} -> {selectedId}
         DELETE /me/backdrops/{id}            -> 204
+        GET    /me/avatar                    -> {url | null}
+        POST   /me/avatar/upload             {contentType, size} -> {url, fields}
+        POST   /me/avatar/complete           -> {url}
+        DELETE /me/avatar                    -> 204
 
 PURPOSE:
     The signed-in user's personal background image library in Booqy Admin
@@ -28,6 +32,14 @@ PURPOSE:
 
     The first version kept one image at admin/<tenantId>/<sub>/backdrop: the
     first GET moves it into the library (selected) and deletes the old key.
+
+    Optional profile picture (nobody is asked for one; the UI shows initials
+    without): the browser posts its square crop to the staging key
+    admin/<tenantId>/<sub>/avatar.upload (max 5 MB, 300 s); complete decodes
+    it, centre-crops to a square and writes a 256x256 WebP at .../avatar.webp,
+    then deletes the staging object. No item: HeadObject says whether there
+    is one. Owners remove a staff member's picture through manage-user
+    (DELETE /users/{sub}/avatar); manage-user also shows avatarUrl.
 
     Tenant and user come from the token only (shared/tenant.py).
 
@@ -132,6 +144,14 @@ class _Owner:
         self.prefix = f"admin/{ctx.tenant_id}/{ctx.sub}/"
 
     @property
+    def avatar_key(self):
+        return self.prefix + "avatar.webp"
+
+    @property
+    def avatar_staging_key(self):
+        return self.prefix + "avatar.upload"
+
+    @property
     def legacy_key(self):
         return self.prefix + "backdrop"
 
@@ -186,6 +206,28 @@ def make_thumbnail(data):
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError, EOFError) as exc:
         raise ValueError("not_an_image") from exc
     return int(width), int(height), out.getvalue()
+
+
+AVATAR_MAX_BYTES = 5 * 1024 * 1024
+AVATAR_SIDE = 256
+
+
+def make_avatar(data):
+    """A 256x256 WebP of the centre square of a JPEG, PNG or WebP image.
+    ValueError when it isn't one."""
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            if img.format not in _FORMATS:
+                raise ValueError("not_an_image")
+            img.draft("RGB", (AVATAR_SIDE * 2, AVATAR_SIDE * 2))
+            shown = ImageOps.exif_transpose(img)
+            shown = shown.convert("RGBA" if "A" in shown.getbands() else "RGB")
+            shown = ImageOps.fit(shown, (AVATAR_SIDE, AVATAR_SIDE), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            out = io.BytesIO()
+            shown.save(out, "WEBP", quality=85, method=4)
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError, EOFError) as exc:
+        raise ValueError("not_an_image") from exc
+    return out.getvalue()
 
 
 # ---------------------------------------------------------------------- store
@@ -395,12 +437,72 @@ def delete_backdrop(event, ctx):
     return {"statusCode": 204, "headers": {"Cache-Control": "no-store"}, "body": ""}
 
 
+def _link(key):
+    return _s3_client().generate_presigned_url("get_object", Params={"Bucket": _bucket(), "Key": key},
+                                               ExpiresIn=VIEW_EXPIRES_SECONDS)
+
+
+def get_avatar(event, ctx):
+    owner = _Owner(ctx)
+    return http.respond(200, {"url": _link(owner.avatar_key) if _head(owner.avatar_key) else None})
+
+
+def create_avatar_upload(event, ctx):
+    owner = _Owner(ctx)
+    body = http.body(event, allowed=("contentType", "size"))
+    content_type = body.get("contentType")
+    if not isinstance(content_type, str) or not content_type.strip():
+        raise ValueError("contentType is required")
+    content_type = content_type.strip().lower()
+    if content_type not in CONTENT_TYPES:
+        raise ValueError("contentType must be image/jpeg, image/png or image/webp")
+    _int_field(body, "size", 1, AVATAR_MAX_BYTES)
+    post = _s3_client().generate_presigned_post(
+        Bucket=_bucket(),
+        Key=owner.avatar_staging_key,
+        Fields={"Content-Type": content_type},
+        Conditions=[{"Content-Type": content_type}, ["content-length-range", 1, AVATAR_MAX_BYTES]],
+        ExpiresIn=UPLOAD_EXPIRES_SECONDS,
+    )
+    return http.respond(200, {"url": post["url"], "fields": post["fields"]})
+
+
+def complete_avatar(event, ctx):
+    owner = _Owner(ctx)
+    staging = owner.avatar_staging_key
+    head = _head(staging)
+    if head is None:
+        raise _Refused(400, {"error": "upload_missing"})
+    if int(head.get("ContentLength") or 0) > AVATAR_MAX_BYTES:
+        _delete_objects(staging)
+        raise _Refused(400, {"error": "not_an_image"})
+    data = _s3_client().get_object(Bucket=_bucket(), Key=staging)["Body"].read()
+    try:
+        webp = make_avatar(data)
+    except ValueError:
+        _delete_objects(staging)
+        raise _Refused(400, {"error": "not_an_image"}) from None
+    _s3_client().put_object(Bucket=_bucket(), Key=owner.avatar_key, Body=webp, ContentType="image/webp")
+    _delete_objects(staging)
+    return http.respond(200, {"url": _link(owner.avatar_key)})
+
+
+def delete_avatar(event, ctx):
+    owner = _Owner(ctx)
+    _delete_objects(owner.avatar_key, owner.avatar_staging_key)
+    return {"statusCode": 204, "headers": {"Cache-Control": "no-store"}, "body": ""}
+
+
 ROUTES = {
     "GET /me/backdrops": list_backdrops,
     "POST /me/backdrops/upload": create_upload,
     "POST /me/backdrops/{id}/complete": complete_upload,
     "PUT /me/backdrops/selected": select_backdrop,
     "DELETE /me/backdrops/{id}": delete_backdrop,
+    "GET /me/avatar": get_avatar,
+    "POST /me/avatar/upload": create_avatar_upload,
+    "POST /me/avatar/complete": complete_avatar,
+    "DELETE /me/avatar": delete_avatar,
 }
 
 

@@ -890,7 +890,7 @@ The function has no Location-table access, so it validates the shape of an assig
 | `ENVIRONMENT` | `dev` or `prod` |
 | `USER_TABLE_NAME` | App-side user record (role, assigned location, etc.) |
 | `COGNITO_USER_POOL_ID` | Target user pool for the Cognito admin calls below |
-| `USER_BACKDROPS_BUCKET_NAME` / `USER_BACKDROPS_TABLE_NAME` | Background image library: `DELETE /users/<cognitoSub>` first deletes every object under `admin/<tenantId>/<cognitoSub>/` and the items `USER#<tenantId>#<cognitoSub>` (a failure there answers `503` and leaves the user for a retry); empty = skipped |
+| `USER_BACKDROPS_BUCKET_NAME` / `USER_BACKDROPS_TABLE_NAME` | Profile pictures: `GET /list-users` and `GET /users/<cognitoSub>` add `avatarUrl` (one-hour presigned GET of `admin/<tenantId>/<sub>/avatar.webp`, or null; one listing of the tenant's prefix, best effort); `DELETE /users/<cognitoSub>/avatar` (owner, own tenant only, else 404) removes a user's picture. Background image library: `DELETE /users/<cognitoSub>` first deletes every object under `admin/<tenantId>/<cognitoSub>/` and the items `USER#<tenantId>#<cognitoSub>` (a failure there answers `503` and leaves the user for a retry); empty = skipped |
 
 **AWS resource access:**
 - Full `dynamodb:*` on the User table.
@@ -1023,7 +1023,7 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 **AWS resource access:** URL generation locally signs the permitted S3 `PutObject` operation; it does not call S3 to inspect or write an object and it does not call any other AWS service. The existing `cloudfront:CreateInvalidation` grant is unused. Correct post-upload invalidation would require both a CloudFront distribution ID and an S3 upload-completion trigger/callback, neither of which is present in this function's trigger or allowed environment-variable contract. If same-key replacement is introduced later, infra and this specification must add those inputs rather than accepting a client-supplied distribution ID or invalidating before the upload succeeds.
 
 ### 21a. `user-backdrop`
-**Trigger:** API Gateway - `GET /me/backdrops`, `POST /me/backdrops/upload`, `POST /me/backdrops/{id}/complete`, `PUT /me/backdrops/selected`, `DELETE /me/backdrops/{id}` - Auth: `JWT` (owners and staff)
+**Trigger:** API Gateway - `GET /me/backdrops`, `POST /me/backdrops/upload`, `POST /me/backdrops/{id}/complete`, `PUT /me/backdrops/selected`, `DELETE /me/backdrops/{id}`, `GET /me/avatar`, `POST /me/avatar/upload`, `POST /me/avatar/complete`, `DELETE /me/avatar` - Auth: `JWT` (owners and staff)
 **Purpose:** The signed-in user's personal background image library in Booqy Admin (the selected one is shown blurred behind the glass UI on every device), at most 20 images. Tenant and sub come from the token only.
 
 | Route | Request | Success |
@@ -1035,6 +1035,8 @@ The URL signs only `PutObject` against `MENU_IMAGES_BUCKET_NAME`, expires after 
 | `DELETE /me/backdrops/{id}` | none | `204`: image, thumbnail and item deleted; a selected image leaves `selectedId` null. Idempotent |
 
 Table `USER_BACKDROPS_TABLE_NAME`: PK `USER#<tenantId>#<sub>`, SK `IMG#<id>` (ids sort by upload time) or `SELECTED` (`selectedId`, `legacyChecked`); `tenantId` on every item for the `byTenant` index (tenant-purge). The first version's single image (`admin/<tenantId>/<sub>/backdrop`) is moved into the library as the selected image on the first `GET`, then the old key is deleted. Bad input `400`; no tenant claim `403`; inactive tenant `403 tenant_inactive`; S3/DynamoDB failures `503 service_unavailable`. Every response has `Cache-Control: no-store`; logs carry route, status and role only.
+
+**Profile picture (optional):** `GET /me/avatar` -> `{"url": string|null}`; `POST /me/avatar/upload` `{contentType, size}` -> presigned POST `{url, fields}` to the staging key `admin/<tenantId>/<sub>/avatar.upload` (1 B to 5 MB, 300 s); `POST /me/avatar/complete` decodes it, centre-crops to a square, writes a 256x256 WebP at `.../avatar.webp`, deletes the staging object and answers `{url}` (`400 upload_missing` / `not_an_image`); `DELETE /me/avatar` -> `204`. No item: HeadObject answers whether there is one. `manage-user` adds `avatarUrl` to the user list and lets owners delete a staff member's picture.
 
 **Environment variables:** `ENVIRONMENT`, `TENANT_TABLE_NAME`, `LOCATION_TABLE_NAME`, `LOCATION_ID_INDEX_NAME`, `USER_BACKDROPS_BUCKET_NAME`, `USER_BACKDROPS_TABLE_NAME`.
 **AWS resource access:** `s3:PutObject` (presigned POST, thumbnails), `s3:GetObject` (HeadObject, presigned GETs, reading an upload) and `s3:DeleteObject` on `<bucket>/admin/*`; no `s3:ListBucket`, so HeadObject of a missing object answers 403, read as missing. `Query`, `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem` on the table. The tenant-context read of the tenant table. Deleted with the user (`manage-user`) and the restaurant (`tenant-purge`).
@@ -1187,7 +1189,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 19 | `no-show-check` | EventBridge Scheduler (one-time, per-reservation) | n/a |
 | 20 | `notification` | DynamoDB Streams (Reservation and Order tables, filtered on a notice) | n/a |
 | 21 | `pre-signed-url` | API GW `GET /menu-images/presigned-url` | JWT |
-| 21a | `user-backdrop` | API GW `GET /me/backdrops`, `POST /me/backdrops/upload`, `POST /me/backdrops/{id}/complete`, `PUT /me/backdrops/selected`, `DELETE /me/backdrops/{id}` | JWT (owners and staff) |
+| 21a | `user-backdrop` | API GW `GET /me/backdrops`, `POST /me/backdrops/upload`, `POST /me/backdrops/{id}/complete`, `PUT /me/backdrops/selected`, `DELETE /me/backdrops/{id}`, `GET/DELETE /me/avatar`, `POST /me/avatar/upload`, `POST /me/avatar/complete` | JWT (owners and staff) |
 | 22 | `payment-intent` | API GW `POST /order` | NONE |
 | 23 | `webhook-payment-intent` | Function URL (Stripe order payments) | Stripe signature |
 | 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |

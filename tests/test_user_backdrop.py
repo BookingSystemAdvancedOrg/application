@@ -327,3 +327,66 @@ def test_a_sub_that_could_leave_the_callers_prefix_is_refused(app):
 
 def test_old_single_image_routes_are_gone(app):
     assert app.handler(with_tenant_claims({"routeKey": "GET /me/backdrop"}, TENANT_A))["statusCode"] == 404
+
+
+# ----------------------------------------------------------- profile picture
+
+AVATAR_MAX = 5 * 1024 * 1024
+
+
+def stage_avatar(app, data, content_type="image/png", **claims):
+    status, body = call(app, "POST /me/avatar/upload", {"contentType": content_type, "size": len(data)}, **claims)
+    assert status == 200, body
+    s3().put_object(Bucket=BUCKET, Key=body["fields"]["key"], Body=data, ContentType=content_type)
+    return body
+
+
+def test_no_picture_yet(app):
+    assert call(app, "GET /me/avatar") == (200, {"url": None})
+
+
+def test_avatar_upload_is_a_presigned_post_to_the_staging_key(app):
+    status, body = call(app, "POST /me/avatar/upload", {"contentType": "image/jpeg", "size": 1000})
+    assert status == 200 and set(body) == {"url", "fields"}
+    assert body["fields"]["key"] == f"{PREFIX}avatar.upload"
+    policy = json.loads(base64.b64decode(body["fields"]["policy"]))
+    assert ["content-length-range", 1, AVATAR_MAX] in policy["conditions"]
+    assert {"Content-Type": "image/jpeg"} in policy["conditions"]
+
+
+@pytest.mark.parametrize("body, field", [
+    ({"contentType": "image/gif", "size": 10}, "contentType"),
+    ({"contentType": "image/png", "size": AVATAR_MAX + 1}, "size"),
+    ({"contentType": "image/png"}, "size"),
+])
+def test_avatar_upload_rejects_bad_input(app, body, field):
+    status, error = call(app, "POST /me/avatar/upload", body)
+    assert status == 400 and error["error"].startswith(field)
+
+
+def test_avatar_complete_makes_a_256_square_webp(app):
+    stage_avatar(app, image_bytes("PNG", (500, 300)))
+    status, body = call(app, "POST /me/avatar/complete")
+    assert status == 200 and urlsplit(body["url"]).path == f"/{PREFIX}avatar.webp"
+    assert keys() == [f"{PREFIX}avatar.webp"]
+    obj = s3().get_object(Bucket=BUCKET, Key=f"{PREFIX}avatar.webp")
+    with Image.open(io.BytesIO(obj["Body"].read())) as img:
+        assert img.format == "WEBP" and img.size == (256, 256)
+    assert urlsplit(call(app, "GET /me/avatar")[1]["url"]).path == f"/{PREFIX}avatar.webp"
+
+
+def test_avatar_complete_without_upload_or_with_junk(app):
+    assert call(app, "POST /me/avatar/complete") == (400, {"error": "upload_missing"})
+    stage_avatar(app, b"junk")
+    assert call(app, "POST /me/avatar/complete") == (400, {"error": "not_an_image"})
+    assert keys() == []
+
+
+def test_avatar_is_per_user_and_delete_is_own(app):
+    stage_avatar(app, image_bytes())
+    call(app, "POST /me/avatar/complete")
+    stage_avatar(app, image_bytes(), role="staff_user")
+    call(app, "POST /me/avatar/complete", role="staff_user")
+    assert call(app, "DELETE /me/avatar", role="staff_user") == (204, None)
+    assert call(app, "GET /me/avatar", role="staff_user")[1]["url"] is None
+    assert call(app, "GET /me/avatar")[1]["url"] is not None

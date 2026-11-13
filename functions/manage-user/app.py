@@ -25,6 +25,8 @@ ROUTES:
     POST   /users/{cognitoSub}/reactivate
     PUT    /users/{cognitoSub}/group
     DELETE /users/{cognitoSub}
+    DELETE /users/{cognitoSub}/avatar   -- remove a user's optional profile
+                                           picture (owner, own tenant only)
     GET    /users/me/guide   -- any role: has the caller finished the intro guide?
     PUT    /users/me/guide   -- any role: mark the caller's intro guide as done
 
@@ -51,7 +53,8 @@ AWS RESOURCE ACCESS:
     AdminUpdateUserAttributes, AdminAddUserToGroup,
     AdminRemoveUserFromGroup, AdminGetUser, and AdminListGroupsForUser on the
     configured user pool. s3:ListBucket (prefix admin/) and s3:DeleteObject
-    under admin/ in the user-backdrops bucket; Query, DeleteItem and
+    under admin/ in the user-backdrops bucket, s3:GetObject on
+    admin/*/avatar.webp (avatarUrl on GET /list-users and GET /users/{sub}); Query, DeleteItem and
     BatchWriteItem on the user-backdrops table.
 
 NOTES:
@@ -247,6 +250,66 @@ def _delete_backdrop(target_sub):
                 kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
+_AVATAR_EXPIRES_SECONDS = 3600
+
+
+def _avatar_key(tenant_id, sub):
+    return f"admin/{tenant_id}/{sub}/avatar.webp"
+
+
+def _avatar_link(bucket, key):
+    return _get_s3_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=_AVATAR_EXPIRES_SECONDS,
+    )
+
+
+def _avatar_urls(subs):
+    """{sub: one-hour link} for the given users' optional profile pictures
+    (admin/<tenantId>/<sub>/avatar.webp, user-backdrop). One listing of the
+    tenant's prefix, not a call per user. Best effort: a failure here shows
+    initials instead of failing the request."""
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    tenant_id = _TENANT_ID.get()
+    if not bucket or "/" in tenant_id:
+        return {}
+    wanted = {_avatar_key(tenant_id, sub): sub for sub in subs if "/" not in sub}
+    found = {}
+    try:
+        pages = _get_s3_client().get_paginator("list_objects_v2").paginate(
+            Bucket=bucket,
+            Prefix=f"admin/{tenant_id}/",
+        )
+        for page in pages:
+            for obj in page.get("Contents", []):
+                sub = wanted.get(obj.get("Key"))
+                if sub is not None:
+                    found[sub] = _avatar_link(bucket, obj["Key"])
+    except (BotoCoreError, ClientError) as exc:
+        _logger.warning(json.dumps({"avatars": "unavailable", "error": type(exc).__name__}))
+        return {}
+    return found
+
+
+def _with_avatar(public_user, avatars):
+    return {**public_user, "avatarUrl": avatars.get(public_user["cognitoSub"])}
+
+
+def _delete_avatar(caller_sub, caller_groups, target_sub):
+    """DELETE /users/{sub}/avatar: an owner removes the picture of a user of
+    their own tenant (404 for anyone else). Nobody uploads for others."""
+    target = _load_user(target_sub)
+    if target is None:
+        return _user_error(HTTPStatus.NOT_FOUND.value, "user not found")
+    tenant_id = _TENANT_ID.get()
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    if bucket and "/" not in tenant_id and "/" not in target_sub:
+        for key in (_avatar_key(tenant_id, target_sub), f"admin/{tenant_id}/{target_sub}/avatar.upload"):
+            _get_s3_client().delete_object(Bucket=bucket, Key=key)
+    return _empty_response(HTTPStatus.NO_CONTENT.value)
+
+
 def _user_response(status_code, body, *, headers=None):
     return json_response(
         status_code,
@@ -423,6 +486,8 @@ def _match_route(proxy_path):
             return "reactivate", target_sub, ("POST",)
         if suffix == "group":
             return "group", target_sub, ("PUT",)
+        if suffix == "avatar":
+            return "avatar", target_sub, ("DELETE",)
 
     return None
 
@@ -584,9 +649,10 @@ def _list_users(caller_sub, caller_groups):
                     user["cognitoSub"],
                 )
             )
+            avatars = _avatar_urls([user["cognitoSub"] for user in users])
             return _user_response(
                 HTTPStatus.OK.value,
-                {"items": users},
+                {"items": [_with_avatar(user, avatars) for user in users]},
             )
 
         if (
@@ -1014,7 +1080,10 @@ def _get_user(caller_sub, caller_groups, target_sub):
         target,
         action="read",
     )
-    return _user_response(HTTPStatus.OK.value, _public_user(target))
+    return _user_response(
+        HTTPStatus.OK.value,
+        _with_avatar(_public_user(target), _avatar_urls([target_sub])),
+    )
 
 
 def _update_profile(event, caller_sub, caller_groups, target_sub):
@@ -1419,6 +1488,8 @@ def handler(event, context):
             )
         if route_name == "user" and method == "DELETE":
             return _delete_user(caller_sub, caller_groups, target_sub)
+        if route_name == "avatar":
+            return _delete_avatar(caller_sub, caller_groups, target_sub)
         if route_name == "deactivate":
             return _set_user_status(
                 caller_sub,

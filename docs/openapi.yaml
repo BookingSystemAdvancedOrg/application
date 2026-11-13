@@ -658,6 +658,36 @@ paths:
         '503':
           $ref: '#/components/responses/UserServiceUnavailable'
 
+  /users/{cognitoSub}/avatar:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    delete:
+      tags:
+        - Users
+      summary: Remove a user's profile picture
+      operationId: deleteUserAvatar
+      description: |
+        An owner removes the optional profile picture of a user of their own
+        tenant (404 for anyone else). Nobody can upload for someone else.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '204':
+          description: Removed (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
   /users/{cognitoSub}/deactivate:
     parameters:
       - $ref: '#/components/parameters/CognitoSub'
@@ -2994,6 +3024,163 @@ paths:
           $ref: '#/components/responses/NoStoreForbidden'
         '404':
           $ref: '#/components/responses/BackdropNotFound'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar:
+    get:
+      tags:
+        - Media
+      summary: The caller's profile picture
+      operationId: getMyAvatar
+      description: |
+        A one-hour presigned link to the caller's optional profile picture
+        (256x256 WebP), or null. Nobody is asked for one; the UI shows
+        initials without.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The link, or null.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarLink'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+    delete:
+      tags:
+        - Media
+      summary: Remove the caller's profile picture
+      operationId: deleteMyAvatar
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '204':
+          description: Removed (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar/upload:
+    post:
+      tags:
+        - Media
+      summary: Start a profile picture upload
+      operationId: createMyAvatarUpload
+      description: |
+        An S3 presigned POST (valid 300 s) to the staging key
+        `admin/{tenantId}/{sub}/avatar.upload`: `Content-Type` bound to the
+        requested type, 1 B to 5 MB. Post the (square) crop, then call
+        complete.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - contentType
+                - size
+              properties:
+                contentType:
+                  type: string
+                  enum:
+                    - image/jpeg
+                    - image/png
+                    - image/webp
+                size:
+                  type: integer
+                  minimum: 1
+                  maximum: 5242880
+      responses:
+        '200':
+          description: The presigned POST.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - url
+                  - fields
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                  fields:
+                    type: object
+                    additionalProperties:
+                      type: string
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar/complete:
+    post:
+      tags:
+        - Media
+      summary: Finish a profile picture upload
+      operationId: completeMyAvatar
+      description: |
+        Decodes the staged upload, centre-crops it to a square, writes a
+        256x256 WebP at `admin/{tenantId}/{sub}/avatar.webp` and deletes the
+        staging object. 400 `upload_missing` without an upload, 400
+        `not_an_image` (staging deleted) when it isn't a JPEG, PNG or WebP.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The new picture's link.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarLink'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
         '503':
           $ref: '#/components/responses/BackdropServiceUnavailable'
 
@@ -9219,6 +9406,14 @@ components:
         createdAt:
           type: string
           format: date-time
+        avatarUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: >-
+            One-hour presigned link to the user's optional profile picture
+            (256x256 WebP), or null (show initials). Only on GET /list-users
+            and GET /users/{cognitoSub}.
 
     UserList:
       type: object
@@ -11755,6 +11950,18 @@ components:
           description: Width as displayed (EXIF orientation applied).
         height:
           type: integer
+
+    AvatarLink:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: One-hour presigned S3 GET of the 256x256 WebP, or null.
 
     UserBackdropLibrary:
       type: object

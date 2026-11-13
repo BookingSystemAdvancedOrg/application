@@ -96,6 +96,23 @@ def build_days(tenant_id, location, first, last, *, built_at=None):
     ]
 
 
+def upcoming(location_id, first, last):
+    """{day: {bookings, guests}} of the bookings still on for first..last
+    (days after today: nothing is rolled up for them). One Query."""
+    items = _query(os.environ["RESERVATION_TABLE_NAME"],
+                   Key("PK").eq(f"LOCATION#{location_id}")
+                   & Key("SK").between(f"RESERVATION#{first}#", f"RESERVATION#{last}#~"),
+                   ProjectionExpression="SK, #s, partySize", ExpressionAttributeNames={"#s": "status"})
+    out = {}
+    for item in items:
+        if item.get("status") in ins.NOT_A_BOOKING or item.get("status") in ins.CANCELLED:
+            continue
+        day = out.setdefault(str(item.get("SK", ""))[12:22], {"bookings": 0, "guests": 0})
+        day["bookings"] += 1
+        day["guests"] += max(1, ins._int(item.get("partySize"), 1))
+    return out
+
+
 def write_rows(rows):
     table = dynamo.table(os.environ["INSIGHTS_TABLE_NAME"])
     with table.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as batch:

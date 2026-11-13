@@ -2938,6 +2938,15 @@ paths:
             type: string
             enum: [previous, year, none]
             default: previous
+        - name: ahead
+          in: query
+          required: false
+          description: Also the bookings still on for this many days after today (`upcoming`), live.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 14
+            default: 0
       responses:
         '200':
           description: The figures.
@@ -8130,6 +8139,19 @@ components:
           allOf:
             - $ref: '#/components/schemas/InsightsSummary'
           nullable: true
+        upcoming:
+          type: array
+          description: The `ahead` days after today, bookings still on (not cancelled, held or pending).
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              bookings:
+                type: integer
+              guests:
+                type: integer
 
     InsightsSummary:
       type: object
@@ -8140,7 +8162,7 @@ components:
         noShows, noShowPct, cancelled, cancelledPct, lateCancels,
         lateCancelPct, cardOnFilePct, occupancy, seatFill, sources {online,
         phone, onsite}, lead [{label, bookings}] (days ahead: 0, 1, 2-6,
-        7-13, 14+), party [{size, bookings}] (8 = 8+), bySize [{size,
+        7-13, 14+; online and phone bookings only), party [{size, bookings}] (8 = 8+), bySize [{size,
         occupancy}], feesCharged, feeCount, feesFailed, feesRefunded,
         orders, orderRevenue, tableRevenue, pickupRevenue, tableOrders,
         avgOrder, prepMinutes, latePct, cateringRevenue, revenue, catering
@@ -8148,7 +8170,9 @@ components:
         conversionPct, avgCatering}, web {visits, pageviews, bookings,
         orders, catering, conversionPct, channels[]}, dishes [{id, name,
         quantity, revenue, previousQuantity}], pairs [{a, b, orders}],
-        byHour, byWeekday (0 = Monday), byDay, heat [{weekday, hour,
+        byHour, byWeekday (0 = Monday; days = how many of that
+        weekday the period has; occupancy null when closed), byDay (with
+        arrived), heat [{weekday, hour,
         occupancy}].
 
         Margin per dish (owners only, when the restaurant has dishMargin):

@@ -229,6 +229,35 @@ def test_service_filter_uses_each_locations_split(rollup, api):
     {"from": "2024-01-01", "to": "2026-10-21"},
     {"from": "2026-10-01", "to": "2026-10-21", "service": "brunch"},
     {"from": "2026-10-01", "to": "2026-10-21", "compare": "lastweek"},
+    {"from": "2026-10-01", "to": "2026-10-21", "ahead": "15"},
+    {"from": "2026-10-01", "to": "2026-10-21", "ahead": "-1"},
 ])
 def test_bad_queries_are_refused(api, query):
     assert api.handler(event(query), None)["statusCode"] == 400
+
+
+def test_a_booking_made_today_shows_at_once(rollup, api, env):
+    rollup.handler({}, None)  # last night's run; today is never stored
+    query = {"from": "2026-10-21", "to": "2026-10-21", "locationId": LOC_A, "compare": "none"}
+    before = body(api.handler(event(query), None))["current"]
+    env.Table(TABLES["RESERVATION_TABLE_NAME"]).put_item(
+        Item=booking(LOC_A, "2026-10-21", "walk", start="13:00", end="14:00", party=5, source="walk_in"))
+    after = body(api.handler(event(query), None))["current"]
+    assert (after["bookings"], after["guests"]) == (before["bookings"] + 1, before["guests"] + 5)
+    assert after["sources"]["onsite"] == 1
+
+
+def test_upcoming_counts_the_bookings_still_on_after_today(api, env):
+    table = env.Table(TABLES["RESERVATION_TABLE_NAME"])
+    table.put_item(Item=booking(LOC_A, "2026-10-22", "u1", party=4))
+    table.put_item(Item=booking(LOC_A, "2026-10-22", "u2", party=2, status="cancelled_no_charge"))
+    table.put_item(Item=booking(LOC_A, "2026-10-22", "u3", party=6, status="held"))
+    table.put_item(Item=booking(LOC_A, "2026-10-24", "u4", party=3, source="phone"))
+    table.put_item(Item=booking(LOC_A, "2026-10-30", "u5", party=9))  # past the window
+    out = body(api.handler(event({"from": "2026-10-21", "to": "2026-10-21", "locationId": LOC_A,
+                                  "ahead": "3"}), None))
+    assert out["upcoming"] == [{"date": "2026-10-22", "bookings": 1, "guests": 4},
+                               {"date": "2026-10-23", "bookings": 0, "guests": 0},
+                               {"date": "2026-10-24", "bookings": 1, "guests": 3}]
+    plain = body(api.handler(event({"from": "2026-10-21", "to": "2026-10-21", "locationId": LOC_A}), None))
+    assert plain["upcoming"] == []

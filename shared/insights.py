@@ -36,7 +36,8 @@ Row (insights table, PK LOCATION#<loc>, SK DAY#<date>). No personal data:
            ch: {"<channel>": {visits, bookings, orders, catering}}}
 
 Hours are the location's local clock. Sources: online, phone, onsite
-(walk-in and staff). Table sizes: "2" (1-2 seats), "4" (3-4), "6" (5-6),
+(walk-in and staff). Lead time ("how far ahead") is summed for online and
+phone bookings only: a walk-in never booked ahead. Table sizes: "2" (1-2 seats), "4" (3-4), "6" (5-6),
 "8" (7+). Amounts are öre.
 
 Service: a booking or order before the location's `lunchUntil` hour
@@ -470,6 +471,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     heat = {}
     by_weekday = [{"weekday": i, "bookings": 0, "guests": 0, "bookedMin": 0, "openMin": 0, "orders": 0}
                   for i in range(7)]
+    weekday_dates = [set() for _ in range(7)]
     by_day = {}
     dishes = {}
     pairs = {}
@@ -481,7 +483,9 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         day = row.get("date") or str(row.get("SK", ""))[4:]
         split = splits.get(row.get("locationId"), DEFAULT_LUNCH_UNTIL)
         wd = date.fromisoformat(day).weekday()
-        point = by_day.setdefault(day, {"date": day, "bookings": 0, "guests": 0, "orders": 0, "orderRevenue": 0,
+        weekday_dates[wd].add(day)
+        point = by_day.setdefault(day, {"date": day, "bookings": 0, "guests": 0, "arrived": 0, "orders": 0,
+                                        "orderRevenue": 0,
                                         "cateringRevenue": 0, "inPersonRevenue": 0, "bookedMin": 0, "openMin": 0, "noShows": 0,
                                         "cancelled": 0, "visits": 0})
         for key, cell in (row.get("b") or {}).items():
@@ -505,7 +509,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
             if source in sources:
                 sources[source] += n
             for i, v in enumerate(cell.get("lead") or ()):
-                if i < len(lead):
+                if i < len(lead) and source != "onsite":
                     lead[i] += _int(v)
             for size, v in (cell.get("party") or {}).items():
                 _add(party, str(size), _int(v))
@@ -516,6 +520,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
             by_weekday[wd]["guests"] += g
             point["bookings"] += n
             point["guests"] += g
+            point["arrived"] += _int(cell.get("ar"))
             point["noShows"] += _int(cell.get("ns"))
             point["cancelled"] += _int(cell.get("cx"))
         for key, occ in (row.get("occ") or {}).items():
@@ -621,6 +626,11 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     heat_cells.sort(key=lambda c: (c["weekday"], c["hour"]))
 
     for w in by_weekday:
+        # days: how many of that weekday the period has, so the page can show
+        # an average per day instead of a sum that favours a weekday that
+        # occurs once more; occupancy is None on a weekday with no opening
+        # hours in the period (closed, or not in the period at all).
+        w["days"] = len(weekday_dates[w["weekday"]])
         w["occupancy"] = _fill(w.pop("bookedMin"), w.pop("openMin"))
     days_out = []
     for d in sorted(by_day.values(), key=lambda p: p["date"]):

@@ -6,7 +6,8 @@ TRIGGER:
     Query: from, to (yyyy-mm-dd, at most MAX_DAYS days), locationId (one of
     the tenant's locations, or "all"), service (all | lunch | dinner),
     channel (all | online | phone | onsite: booking figures only), compare
-    (previous | year | none).
+    (previous | year | none), ahead (0-14: also the bookings still on for
+    that many days after today, as `upcoming`; default 0).
 
 PURPOSE:
     Statistik in the admin app: the restaurant's own figures for a period
@@ -57,6 +58,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MAX_DAYS = 731
+MAX_AHEAD = 14
 LIVE_DAYS = 31
 SERVICES = ("all", "lunch", "dinner")
 CHANNELS = ("all", "online", "phone", "onsite")
@@ -154,6 +156,22 @@ def _summaries(ctx, locations, first, last, compare, service, channel, now):
     return summary, previous, pending, (min(built) if built else None)
 
 
+def upcoming_for(locations, ahead, now):
+    """[{date, bookings, guests}] for the `ahead` days after today, live from
+    the reservation table (future days are never rolled up)."""
+    if not ahead or not locations:
+        return []
+    today = date.fromisoformat(_today(locations[0], now))
+    days = [(today + timedelta(days=i)).isoformat() for i in range(1, ahead + 1)]
+    out = {d: {"date": d, "bookings": 0, "guests": 0} for d in days}
+    for loc in locations:
+        for day, counts in store.upcoming(loc["locationId"], days[0], days[-1]).items():
+            if day in out:
+                out[day]["bookings"] += counts["bookings"]
+                out[day]["guests"] += counts["guests"]
+    return [out[d] for d in days]
+
+
 def get_insights(event):
     params = http.query(event)
     location_param = params.get("locationId") or "all"
@@ -186,6 +204,10 @@ def get_insights(event):
         service = _choice(params, "service", SERVICES)
         channel = _choice(params, "channel", CHANNELS)
         compare_mode = _choice(params, "compare", COMPARES)
+        ahead = str(params.get("ahead") or "0")
+        if not ahead.isdigit() or int(ahead) > MAX_AHEAD:
+            raise ValueError(f"ahead must be 0-{MAX_AHEAD}")
+        ahead = int(ahead)
     except ValueError as exc:
         return http.respond(400, {"error": str(exc)})
 
@@ -217,6 +239,7 @@ def get_insights(event):
         "builtAt": built_at,
         "current": summary,
         "previous": previous,
+        "upcoming": upcoming_for(locations, ahead, now),
     }
     return http.respond(200, ins.plain(body))
 

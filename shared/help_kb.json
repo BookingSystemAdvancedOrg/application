@@ -2214,7 +2214,7 @@
     },
     {
       "id": "ladda-ner-appen",
-      "route": "/ladda-ner",
+      "route": "/installningar",
       "title": "Skrivbordsappen",
       "audience": "all",
       "keywords": [
@@ -2226,7 +2226,7 @@
         "windows",
         "linux"
       ],
-      "answer": "Booqy Admin finns som app för Mac, Windows och Linux, med samma inloggning som här. Under Ladda ner appen längst ned i vänstermenyn markeras filen för din dator när den går att avgöra.",
+      "answer": "Booqy Admin finns som app för Mac, Windows och Linux, med samma inloggning som här. Ladda ner appen längst ned i vänstermenyn öppnar kortet Skrivbordsappen under Inställningar, Den här enheten. Där markeras filen för din dator när den går att avgöra säkert.",
       "steps": [
         "Öppna Ladda ner appen längst ned i vänstermenyn.",
         "Ladda ner filen som rekommenderas för din dator, eller välj i listan.",
@@ -2236,7 +2236,8 @@
         {
           "id": "ladda-ner-open",
           "label": "Ladda ner appen",
-          "to": "/ladda-ner"
+          "to": "/installningar",
+          "hash": "skrivbordsappen"
         }
       ]
     },

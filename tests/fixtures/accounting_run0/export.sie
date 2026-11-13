@@ -12,10 +12,8 @@
 #KONTO 1930 "F”retagskonto/checkkonto/aff„rskonto"
 #KONTO 2611 "Utg†ende moms p† f”rs„ljning inom Sverige, 25 %"
 #KONTO 2621 "Utg†ende moms p† f”rs„ljning inom Sverige, 12 %"
-#KONTO 2631 "Utg†ende moms p† f”rs„ljning inom Sverige, 6 %"
 #KONTO 3001 "F”rs„ljning inom Sverige, 25 % moms"
 #KONTO 3002 "F”rs„ljning inom Sverige, 12 % moms"
-#KONTO 3003 "F”rs„ljning inom Sverige, 6 % moms"
 #KONTO 6570 "Bankkostnader"
 #VER "B" 293 20261020 "Booqy dagsf”rs„ljning 2026-10-20 S”dermalm"
 {
@@ -30,12 +28,6 @@
    #TRANS 1580 {} -500.00 20261020 "Utbetalning fr†n Stripe till bank"
    #TRANS 1930 {} 500.00 20261020 "Utbetalning fr†n Stripe till bank"
    #TRANS 6570 {} 13.10 20261020 "Stripe-avgifter"
-}
-#VER "B" 294 20261021 "Booqy dagsf”rs„ljning 2026-10-21 S”dermalm"
-{
-   #TRANS 3003 {} -50.00 20261021 "F”rs„ljning 6 % moms"
-   #TRANS 2631 {} -3.00 20261021 "Utg†ende moms 6 %"
-   #TRANS 1580 {} 53.00 20261021 "Kort i kassan (egen kortterminal)"
 }
 #VER "B" 295 20261022 "Booqy dagsf”rs„ljning 2026-10-22 S”dermalm"
 {

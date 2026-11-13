@@ -1,2 +1,0 @@
-# boto3 is already present in the public.ecr.aws/lambda/python base image.
-tzdata

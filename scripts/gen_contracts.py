@@ -87,8 +87,8 @@ def validate(data: dict) -> list[str]:
     for name, values in (("feature key", keys), ("feature id", ids)):
         dupes = sorted({v for v in values if values.count(v) > 1})
         errors += [f"duplicate {name} {d}" for d in dupes]
-    if len(keys) != 17 or sum(not f["existing"] for f in features) != 12:
-        errors.append("expected 17 features, 12 of them new")
+    if len(keys) != 16 or sum(not f["existing"] for f in features) != 12:
+        errors.append("expected 16 features, 12 of them new")
     new_ids = {f["id"] for f in features if not f["existing"]}
     for name, lim in data["limits"].items():
         if lim["feature"] not in keys:

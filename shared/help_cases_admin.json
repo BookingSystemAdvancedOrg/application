@@ -112,15 +112,6 @@
   }
  },
  {
-  "question": "Hur gör jag en Z-rapport?",
-  "role": "staff_user",
-  "features": "all",
-  "expect": {
-   "source": "kassa-rapporter",
-   "route": "/kassa"
-  }
- },
- {
   "question": "Rätten är slut, hur döljer jag den?",
   "role": "staff_user",
   "features": [
@@ -531,17 +522,6 @@
   "staffInsights": false,
   "expect": {
    "answer": "unknown"
-  }
- },
- {
-  "question": "Hur tar jag betalt med kort i kassan?",
-  "role": "staff_user",
-  "features": [
-   "kassa"
-  ],
-  "expect": {
-   "source": "kassa-salja",
-   "route": "/kassa"
   }
  },
  {

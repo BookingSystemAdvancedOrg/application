@@ -32,8 +32,7 @@ PURPOSE:
     Tickets are rendered at fetch time (shared/print_ticket.py): a station
     ticket from its TICKET item (shared/routing.py) and the order (name), so
     the job itself holds no personal data; a ticket that was cancelled, or
-    whose order is no longer open, is dropped instead of printed; a Kassa job carries its own
-    document (receipt, report or kitchen ticket, shared/kassa_receipt.py). An automatic job whose order
+    whose order is no longer open, is dropped instead of printed. An automatic job whose order
     is already completed or cancelled is dropped instead of printed.
 
 ENV_VARS:
@@ -166,8 +165,6 @@ def _render(job, device, ctx, settings, now, fmt="star"):
     retry = int(job.get("attempts") or 0) > 1
     if kind == p.TEST:
         return print_ticket.test_ticket(ctx.location, device.get("name"), width=width, now=now, fmt=fmt)
-    if kind == p.KASSA:
-        return print_ticket.document_ticket(job.get("ticket"), width=width, retry=retry, fmt=fmt)
     if kind in (p.STATION, p.ALLERGY):
         ticket = p.get_job(ctx.location_id, job.get("ticketSk"))
         if not ticket:

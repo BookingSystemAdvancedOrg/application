@@ -1,6 +1,6 @@
 """functions/accounting: the account mapping (owner only, version check,
 reset by sending the defaults) and the export of a month with orders, a
-Kassa receipt, a card guarantee fee, a catering invoice and Stripe
+card guarantee fee, a catering invoice and Stripe
 balance transactions, as SIE, CSV and JSON. DynamoDB is moto; Stripe's
 balance transaction list is a fake. Tenant isolation: another tenant's
 location answers 404, staff 403."""
@@ -27,10 +27,8 @@ NOW = datetime(2026, 11, 2, 9, 0, tzinfo=timezone.utc)
 TABLES = {
     "ORDER_TABLE_NAME": "test-order", "RESERVATION_TABLE_NAME": "test-reservation",
     "CATERING_REQUESTS_TABLE_NAME": "test-catering", "CATERING_REQUEST_HISTORY_TABLE_NAME": "test-catering-history",
-    "KASSA_TABLE_NAME": "test-kassa",
 }
 REQ = "c" * 32
-REG = "e" * 32
 
 
 def _table(res, name, extra=(), gsis=()):
@@ -64,7 +62,7 @@ class FakeBalance:
 def env(monkeypatch):
     for key, value in {"ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "t", "AWS_SECRET_ACCESS_KEY": "t",
                        "AWS_SESSION_TOKEN": "t", "AWS_DEFAULT_REGION": REGION, "USER_TABLE_NAME": "test-user",
-                       "KASSA_JOURNAL_TABLE_NAME": "test-kassa-journal", **TABLES}.items():
+                       **TABLES}.items():
         monkeypatch.setenv(key, value)
     fake = FakeBalance()
     monkeypatch.setattr(stripe_client, "request", fake)
@@ -74,9 +72,6 @@ def env(monkeypatch):
         res = boto3.resource("dynamodb", region_name=REGION)
         for name in TABLES.values():
             _table(res, name)
-        _table(res, "test-kassa-journal", ("regDay",), [
-            {"IndexName": "byDay", "Projection": {"ProjectionType": "ALL"},
-             "KeySchema": [{"AttributeName": "regDay", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}]}])
         create_tables(monkeypatch)
         res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, name="Roma", stripe={"accountId": ACCOUNT},
                                                          legalName="Rökeri Åkesson AB", orgNumber="556677-8899"))
@@ -92,12 +87,6 @@ def env(monkeypatch):
         res.Table("test-reservation").put_item(Item={
             "PK": pk, "SK": f"RESERVATION#2026-10-20#{'b' * 32}",
             "payment": {"status": "succeeded", "amount": 40000, "settledAt": "2026-10-20T09:00:09Z"}})
-        res.Table("test-kassa").put_item(Item={"PK": pk, "SK": f"REGISTER#{REG}", "registerId": REG, "label": "K1"})
-        res.Table("test-kassa-journal").put_item(Item={
-            "PK": f"REG#{REG}", "SK": "J#000000000002", "jseq": 2, "regDay": f"REG#{REG}#2026-10-21",
-            "type": "kassakvitto", "local": "2026-10-21T19:00:00",
-            "data": {"total": 5300, "vat": [{"rate": 6, "gross": 5300, "net": 5000, "vat": 300}],
-                     "payments": [{"method": "Kort", "amount": 5300}]}})
         res.Table("test-catering").put_item(Item={
             "PK": pk, "SK": f"REQUEST#{REQ}", "requestId": REQ, "locationId": LOC_A, "status": "signed",
             "stripeInvoiceId": "in_1", "signedAt": "2026-10-22T10:00:00Z", "signedOfferVersion": 1,
@@ -151,9 +140,9 @@ def test_export_json_month_balances_and_reconciles(app, env):
     status, body = call(app, "GET", "/export", query={"from": "2026-10-01", "to": "2026-10-31", "format": "json"})
     assert status == 200, body
     summary = body["summary"]
-    assert summary["days"] == 31 and summary["bookedDays"] == 3 and summary["balanced"]
-    assert summary["sales"] == 30000 + 35714 + 5000 + 100000 and summary["vat"] == 4900 + 4286 + 300 + 12000
-    assert summary["verifications"] == 3 and summary["locations"] == [{"locationId": LOC_A, "name": "Södermalm"}]
+    assert summary["days"] == 31 and summary["bookedDays"] == 2 and summary["balanced"]
+    assert summary["sales"] == 30000 + 35714 + 100000 and summary["vat"] == 4900 + 4286 + 12000
+    assert summary["verifications"] == 2 and summary["locations"] == [{"locationId": LOC_A, "name": "Södermalm"}]
     assert summary["warnings"] == []
     day = {e["date"]: e for e in body["entries"]}
     lines = {(ln["account"], ln["text"]): ln["amount"] for ln in day["2026-10-20"]["lines"]}
@@ -163,7 +152,7 @@ def test_export_json_month_balances_and_reconciles(app, env):
     assert lines[("1930", acc.T_PAYOUT)] == 50000
     assert sum(ln["amount"] for ln in day["2026-10-20"]["lines"]) == 0
     assert {ln["account"] for ln in day["2026-10-22"]["lines"]} == {"1510", "3002", "2621"}
-    assert day["2026-10-21"]["lines"][0]["name"] == "Försäljning inom Sverige, 6 % moms"
+    assert day["2026-10-21"]["lines"] == []
     fake = env[1]
     assert len(fake.calls) == 2 and fake.calls[1]["starting_after"] == "txn_2"
     assert fake.calls[0]["created"]["gte"] == int(datetime(2026, 9, 30, 22, tzinfo=timezone.utc).timestamp())
@@ -176,7 +165,7 @@ def test_export_sie_and_csv_files(app):
     raw = base64.b64decode(body["content"])
     records = parse_sie(raw)
     assert ("#FNAMN", ["Rökeri Åkesson AB"]) in records and b"R\x94keri \x8fkesson AB" in raw
-    assert len([r for r in records if r[0] == "#VER"]) == 3
+    assert len([r for r in records if r[0] == "#VER"]) == 2
     status, body = call(app, "GET", "/export", query={"from": "2026-10-20", "to": "2026-10-20", "format": "csv"})
     text = base64.b64decode(body["content"]).decode("utf-8-sig")
     assert body["mediaType"].startswith("text/csv") and "1580;Fordringar för kontokort och kuponger" in text

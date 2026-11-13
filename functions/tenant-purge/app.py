@@ -33,11 +33,6 @@ PURPOSE:
       * every user's background image library (admin/<tenantId>/ in the
         user-backdrops bucket and the users' items in the user-backdrops
         table, found through its byTenant index; user-backdrop)
-      * Kassa's fiskaly API key for the restaurant (the secret
-        FISKALY_UNIT_PREFIX + tenantId, 7-day recovery window). The fiskaly
-        UNIT itself, Kassa's journal and its receipts stay (bookkeeping,
-        Skatteverket audits); fiskaly has no API to disable the key, so
-        Booqy disables it in fiskaly HUB if wanted.
       * domains we ran DNS for: auto-renew is switched off for domains
         registered through us, and the hosted zone is deleted once the
         domain no longer points at it (a zone still in use is kept and
@@ -85,7 +80,7 @@ ENV_VARS:
     USER_BACKDROPS_TABLE_NAME (empty: skipped),
     RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
-    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/), SITE_REPO_FUNCTION_ARN
+    SITE_REPO_FUNCTION_ARN
     (empty: site repos are off)
 
 AWS RESOURCE ACCESS:
@@ -97,8 +92,7 @@ AWS RESOURCE ACCESS:
     and admin/ (user-backdrops bucket), Query (byTenant) and BatchWriteItem
     on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
-    DisableDomainAutoRenew, secretsmanager:DeleteSecret on
-    booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
+    DisableDomainAutoRenew, sns:Publish on the alert topic, and
     lambda:InvokeFunction on itself (continuation) and on site-repo.
 """
 
@@ -310,20 +304,6 @@ def _purge_backdrop_items(tenant_id, budget):
     _delete_keys(table_name, [{"PK": k["PK"], "SK": k["SK"]} for k in keys], budget)
 
 
-def _purge_fiskaly_key(tenant_id, counts):
-    """Kassa's fiskaly key of the restaurant. Gone or already scheduled for
-    deletion counts as done."""
-    prefix = os.environ.get("FISKALY_UNIT_PREFIX")
-    if not prefix:
-        return
-    try:
-        _client("secretsmanager").delete_secret(SecretId=prefix + tenant_id, RecoveryWindowInDays=7)
-        counts["fiskalyKey"] = 1
-    except ClientError as e:
-        if e.response["Error"]["Code"] not in ("ResourceNotFoundException", "InvalidRequestException"):
-            raise
-
-
 def _ns_lookup(domain):
     """The domain's public name servers (lower case, no trailing dot), or
     None when the lookup itself failed."""
@@ -508,7 +488,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     if not profile or profile.get("status") != "offboarded" or not purge_at or purge_at > now:
         return None
     counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
-                             "backdrops", "fiskalyKey")}
+                             "backdrops")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
               "zonesDeleted": [], "zonesKept": [], "notes": [], "waitingOn": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
@@ -522,7 +502,6 @@ def purge_tenant(tenant_id, budget, round_=0):
     _purge_images(tenant_id, budget, counts)
     _purge_backdrops(tenant_id, budget, counts)
     _purge_backdrop_items(tenant_id, budget)
-    _purge_fiskaly_key(tenant_id, counts)
     repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)
     if repo:

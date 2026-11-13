@@ -1516,6 +1516,42 @@
    "audience": "all"
   },
   {
+   "id": "components-AvatarSetting:profile-picture:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Profile picture",
+   "where": "Settings",
+   "text": "Shown next to your name in the operator list. Only you can change yours.",
+   "highlight": [
+    "text:Profile picture"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-AvatarSetting:position-your-picture:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Position your picture",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "text:Position your picture"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-AvatarSetting:cancel:button",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Cancel",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "text:Cancel"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "components-BillingTab:billing:agreement:heading",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -1608,6 +1644,84 @@
    "text": "No invoices yet. The first one is created on the 25th after the first period (and after \"Import from Stripe\" on the Finance page for older ones).",
    "highlight": [
     "help:card:invoices"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:app-on-your-phone:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "App on your phone",
+   "where": "Settings, Desktop app",
+   "text": "Add Booqy Console to your home screen and it opens as its own full-screen app, with the same sign-in and features as here.",
+   "highlight": [
+    "text:App on your phone"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:the-app-is-installed-open-booqy-console-from-your-home-screen:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "The app is installed. Open Booqy Console from your home screen.",
+   "where": "Settings, Desktop app",
+   "text": "Add Booqy Console to your home screen and it opens as its own full-screen app, with the same sign-in and features as here.",
+   "highlight": [
+    "text:The app is installed. Open Booqy Console from your home screen."
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:share:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Share",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Share"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:add-to-home-screen:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Add to Home Screen",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Add to Home Screen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:add:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Add",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Add"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:install-app:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Install app",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Install app"
    ],
    "audience": "all"
   },
@@ -3134,9 +3248,21 @@
    "route": "/settings",
    "title": "Settings",
    "where": "Settings",
-   "text": "Press to switch: dark surfaces are easier on the eyes at night. Light is the default.",
+   "text": "",
    "highlight": [
     "text:Settings"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:your-profile:heading",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Your profile",
+   "where": "Settings",
+   "text": "Press to switch: dark surfaces are easier on the eyes at night. Light is the default.",
+   "highlight": [
+    "text:Your profile"
    ],
    "audience": "all"
   },
@@ -3701,18 +3827,6 @@
    "text": "",
    "highlight": [
     "text:Customers"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantsPage:new-customer:button",
-   "kind": "element",
-   "route": "/",
-   "title": "New customer",
-   "where": "Customers",
-   "text": "",
-   "highlight": [
-    "help:customers:count"
    ],
    "audience": "all"
   },

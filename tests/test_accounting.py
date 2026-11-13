@@ -128,28 +128,6 @@ def test_a_partial_refund_spreads_the_vat_by_amount():
     assert "Delvis återbetald" in entry.warnings[0]
 
 
-def test_kassa_receipts_and_returns():
-    sale = {"type": "kassakvitto", "local": "2026-10-20T19:10:00",
-            "data": {"total": 34900, "vat": rows((12, 22400), (25, 12500)), "payments": [{"method": "Kort", "amount": 34900}]}}
-    ret = {"type": "returkvitto", "local": "2026-10-20T20:00:00",
-           "data": {"total": 12500, "vat": rows((25, 12500)), "payments": [{"method": "Kort", "amount": 12500}]}}
-    training = {"type": "ovningskvitto", "local": "2026-10-20T20:05:00", "data": {"total": 99900, "vat": rows((25, 99900))}}
-    entry = acc.build_entry(DAY, acc.kassa_events([sale, ret, training], TZ), settings())
-    assert entry.balanced
-    got = by_account(entry)
-    assert got["3001"] == 0 if "3001" in got else True
-    assert got["3002"] == -20000 and got["1580"] == 22400
-    assert lines(entry)[("1580", acc.T_CARD_TERMINAL)] == 34900
-    assert lines(entry)[("1580", "Återbetalt, kort i kassan (egen kortterminal)")] == -12500
-
-
-def test_kassa_cards_go_to_their_own_account_not_stripe():
-    sale = {"type": "kassakvitto", "local": "2026-10-20T19:10:00",
-            "data": {"total": 11200, "vat": rows((12, 11200)), "payments": [{"method": "Kort", "amount": 11200}]}}
-    entry = acc.build_entry(DAY, acc.kassa_events([sale], TZ), settings(cardTerminal="1581"))
-    assert entry.balanced and by_account(entry) == {"3002": -10000, "2621": -1200, "1581": 11200}
-
-
 def test_card_guarantee_fees_include_12_percent_vat_and_their_refund_reverses_it():
     reservations = [
         {"payment": {"status": "succeeded", "amount": 40000, "settledAt": "2026-10-20T21:00:00Z"}},

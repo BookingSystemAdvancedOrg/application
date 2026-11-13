@@ -61,12 +61,8 @@ month of the fiscal year (default January) and the location's cost centre
    sales. A cancellation before delivery reverses it from 2420; after delivery
    from sales. Company invoices are booked when the invoice is created (at
    signing) and their payment later; unchanged.
-5. **Kassa cards are not Stripe money.** Kassa's card payments are taken on
-   the restaurant's own terminal and settled by its card acquirer, so they
-   are debited to their own role, `cardTerminal` ("Kort i kassan (egen
-   kortterminal)", 1580 by default; the owner can pick another account),
-   never to the Stripe settlement. The Stripe reconciliation only compares
-   Stripe money.
+5. **Online only.** Booqy has no till (Kassa was removed on 2026-11-14), so
+   every sale in the export is an online payment through Stripe.
 6. **Several locations on one Stripe account = one company file.** Locations
    without a Stripe account of their own share the tenant's, so they are
    exported together, from any of them. Each location gets its own
@@ -92,7 +88,6 @@ computed from the fee).
 | Source | When | Debit | Credit |
 |---|---|---|---|
 | Online order (Stripe Checkout) | paid (`confirmedAt`) | Stripe settlement | sales + output VAT per rate |
-| Kassa kassakvitto / returkvitto | journal day | card terminal (`cardTerminal`) / sales + VAT reversed | sales + VAT / card terminal |
 | Order refund | refund day | sales + VAT (scaled by amount if partial) | Stripe settlement |
 | No-show / late-cancel fee | charged (`payment.settledAt`) | Stripe settlement | sales 12 % + VAT 12 % |
 | Catering, private guest, paid before delivery | paid | Stripe settlement | advances (net) + VAT |

@@ -10,7 +10,6 @@ features:
   - {key: ordering, id: ordering, labelSv: Beställningar, labelEn: Online ordering, existing: true, siteConfig: true}
   - {key: catering, id: catering, labelSv: Catering, labelEn: Catering, existing: true, siteConfig: true}
   - {key: marketing, id: marketing, labelSv: Marknadsföring, labelEn: Marketing, existing: true, siteConfig: true}
-  - {key: kassa, id: kassa, labelSv: Kassa, labelEn: Kassa (cash register), existing: true, siteConfig: false}
   - {key: metaAds, id: meta-ads, labelSv: Annonser, labelEn: Meta ads, existing: false, siteConfig: false}
   - {key: siteBuilder, id: site-builder, labelSv: Webbplats, labelEn: Site builder, existing: false, siteConfig: true}
   - {key: guestCrm, id: guest-crm, labelSv: Gäster, labelEn: Guest CRM, existing: false, siteConfig: false}
@@ -129,7 +128,7 @@ events:
         locationId: string
         amountOre: int
         balanceAfterOre: int
-        channel: "enum[online,kassa]"
+        channel: "enum[online]"
         txId: string
       GiftCard.RedemptionReversed:
         cardId: string
@@ -317,10 +316,6 @@ hooks:
     caller: payment-intent, webhook-payment-intent, manage-order
     targets: [gift-cards]
     gate: "giftCards on and giftCardCode present (reserve); order carries giftCard (reverse, refund: regardless of the flag)"
-  kassa.giftcard:
-    caller: kassa
-    targets: [gift-cards]
-    gate: giftCards and kassa on
   accounting.events:
     caller: shared/accounting.location_events
     targets: [gift-cards, events-tickets]
@@ -393,7 +388,6 @@ slots:
     installningar.bokforing.sync: {feature: accountingSync, ownerOnly: true, host: InstallningarPage ekonomi bokforing}
     bokningar.panel.waitlist: {feature: waitlist, ownerOnly: false, host: BokningarPage next to the day list}
     bokningar.reservation.badge: {feature: guestCrm, ownerOnly: false, host: BokningarPage reservation row}
-    kassa.payment.giftcard: {feature: giftCards, ownerOnly: false, host: KassaPage bill payment actions}
     meny.dish.cost: {feature: dishMargin, ownerOnly: true, host: DishModal below price}
     meny.dish.share: {feature: socialPosting, ownerOnly: true, host: MenyPage dish actions}
     statistik.dishes.margin: {feature: dishMargin, ownerOnly: true, host: StatistikPage dishes section}

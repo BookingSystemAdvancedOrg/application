@@ -33,7 +33,7 @@ def err(fn, *a, **kw):
 
 def test_features_come_from_the_contract():
     assert tenant.FEATURES == contracts.FEATURE_KEYS
-    assert {"marketing", "kassa"} <= set(tenant.FEATURES)
+    assert "marketing" in tenant.FEATURES and "kassa" not in tenant.FEATURES
 
 
 def test_any_of_gate_on_jwt(aws):

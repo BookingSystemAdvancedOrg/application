@@ -8,11 +8,6 @@ wherever one is stored):
     orders            ORDER# (order table): sale on the day it was paid
                       (confirmedAt), VAT from `vat`; online (Stripe
                       Checkout); refund (`refund`) on its day
-    Kassa             kassa-journal (byDay): kassakvitto and returkvitto,
-                      VAT per rate and card payments from the receipt. The
-                      cards are paid on the restaurant's own terminal, so
-                      they go to the card terminal account (cardTerminal),
-                      not through Stripe
     card guarantee    RESERVATION# (reservation table): no-show and late
                       cancellation fees, 12 % VAT included, on the day they
                       were charged (payment.settledAt), refunds on refundedAt
@@ -28,9 +23,7 @@ wherever one is stored):
                       anything else that moves the Stripe balance
     features          the accounting.events hook (shared/feature_hooks.py):
                       gift cards sold, redeemed online, expired (breakage)
-                      come from the gift-cards feature as ready postings.
-                      A Kassa payment with a gift card debits the gift card
-                      liability instead of the settlement account
+                      come from the gift-cards feature as ready postings
 
 Everything paid through Stripe goes via the settlement account
 (avräkningskonto), so its balance is the Stripe balance and the bank
@@ -99,8 +92,6 @@ DEFAULT_ACCOUNTS = {
     # stay as they were; an account appears in a file only when a line uses it.
     "giftCardLiability": ("2421", "Ej inlösta presentkort"),
     "giftCardBreakage": ("3990", "Övriga ersättningar och intäkter"),
-    # Kassa: cards paid on the restaurant's own terminal (its card acquirer settles them, not Stripe).
-    "cardTerminal": ("1580", "Fordringar för kontokort och kuponger"),
 }
 ROLES = tuple(DEFAULT_ACCOUNTS)
 # What each role is, for a renamed account's #KONTO line and the admin card.
@@ -111,13 +102,11 @@ ROLE_LABELS = {
     "advances": "Förskott från kunder", "cardFees": "Kortavgifter", "tips": "Dricks",
     "refundsOwed": "Återbetalningar att göra", "unclassified": "OBS-konto", "rounding": "Öresavrundning",
     "giftCardLiability": "Ej inlösta presentkort", "giftCardBreakage": "Presentkort som inte lösts in",
-    "cardTerminal": "Kort i kassan (egen kortterminal)",
 }
 VAT_RATES = (25, 12, 6)
 
 # Line texts (Swedish: they end up in the accounting program)
 T_ONLINE = "Onlinebetalningar (Stripe)"
-T_CARD_TERMINAL = "Kort i kassan (egen kortterminal)"
 T_GUARANTEE = "Kortgaranti (Stripe)"
 T_FEE_SALES = "Avgifter uteblivna gäster och sena avbokningar"
 T_CATERING = "Catering"
@@ -130,8 +119,6 @@ T_PAYOUT_BACK = "Utbetalning tillbaka till Stripe"
 T_STRIPE_OTHER = "Övrig Stripe-händelse (kontrollera)"
 T_REFUNDS_OWED = "Återbetalning catering att göra"
 T_ROUNDING = "Öresavrundning"
-T_GIFT_CARD = "Presentkort i kassan"
-GIFT_CARD = "Presentkort"
 
 _ACCOUNT = re.compile(r"[1-8]\d{3}")
 _SERIES = re.compile(r"[A-Z]")
@@ -494,30 +481,6 @@ def order_events(orders, first, last, tz):
     return out
 
 
-def kassa_events(entries, tz):
-    """Kassa receipts and return receipts (training receipts are another
-    type and never counted). Cards are paid on the restaurant's own terminal."""
-    out = []
-    for entry in entries:
-        kind, data = entry.get("type"), entry.get("data") or {}
-        if kind not in ("kassakvitto", "returkvitto"):
-            continue
-        day = str(entry.get("local") or "")[:10] or local_day(entry.get("at"), tz)
-        payments = data.get("payments") or []
-        gift = sum(int(p.get("amount") or 0) for p in payments if p.get("method") == GIFT_CARD)
-        paid = sum(int(p.get("amount") or 0) for p in payments) - gift
-        other = [p for p in payments if (p.get("method") or "Kort") not in ("Kort", GIFT_CARD)]
-        event = sale(day, data.get("vat") or [], "cardTerminal", T_CARD_TERMINAL, paid, refund=kind == "returkvitto")
-        if gift:
-            sign = -1 if kind == "returkvitto" else 1
-            event.postings.append(Posting("giftCardLiability", sign * gift,
-                                          _refund_text(T_GIFT_CARD) if sign < 0 else T_GIFT_CARD))
-        if other:
-            event.warnings.append("Kassan har betalningar med annat sätt än kort: kontrollera.")
-        out.append(event)
-    return out
-
-
 def guarantee_events(reservations, first, last, tz):
     """Card guarantee fees: payment for the booked restaurant service, so
     12 % VAT is included in the fee (docs/ACCOUNTING-EXPORT.md). Refunds
@@ -689,17 +652,6 @@ def load_reservations(location_id, first, last):
     return [i for i in items if isinstance(i.get("payment"), dict)]
 
 
-def load_kassa(location_id, first, last):
-    if not os.environ.get("KASSA_TABLE_NAME") or not os.environ.get("KASSA_JOURNAL_TABLE_NAME"):
-        return []
-    from shared import kassa
-    out = []
-    for register in kassa.list_registers(location_id):
-        for day in days(first, last):
-            out.extend(kassa.journal_day(register["registerId"], day))
-    return out
-
-
 def load_catering(location_id, first, last, tz):
     """Requests with money (signed and later), their signed offer and their
     audit entries. A request untouched since before the period, and not
@@ -806,7 +758,6 @@ def location_events(location, first, last):
     catering = load_catering(location_id, first, last, tz)
     events = []
     events += order_events(load_orders(location_id, first, last), first, last, tz)
-    events += kassa_events(load_kassa(location_id, first, last), tz)
     events += guarantee_events(load_reservations(location_id, first, last), first, last, tz)
     events += catering_events(catering, first, last, tz)
     events += feature_events(location, first, last)

@@ -39,7 +39,7 @@ def test_yaml_is_consistent():
 
 def test_feature_counts():
     from shared import contracts
-    assert len(contracts.FEATURE_KEYS) == 17 and len(contracts.NEW_FEATURE_KEYS) == 12
+    assert len(contracts.FEATURE_KEYS) == 16 and len(contracts.NEW_FEATURE_KEYS) == 12
     assert set(contracts.SITE_CONFIG_FEATURES) <= set(contracts.FEATURE_KEYS)
     assert "kassa" not in contracts.SITE_CONFIG_FEATURES
 

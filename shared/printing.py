@@ -7,8 +7,6 @@ Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK JOB#<orderId>#cancel   "MAKULERAD" slip
     PK LOCATION#<l>  SK JOB#<orderId>#m<ms>    "Skriv ut igen"
     PK LOCATION#<l>  SK JOB#test#<ms>          test print for one device
-    PK LOCATION#<l>  SK JOB#kassa#<id>         Kassa: a receipt or report, carried
-                                               in the job (ticket)
     PK LOCATION#<l>  SK ROUTING                stations and routing (shared/routing.py)
     PK LOCATION#<l>  SK TICKET#<src>#<station> one station's ticket of an online or QR
                                                table order (src = orderId)
@@ -22,12 +20,10 @@ Print table (PRINT_TABLE_NAME), one partition per location:
 Station tickets are made for every paid order (the kitchen display shows
 them); their printers print them when auto print is on. Jobs with a
 deviceId go to that printer only; older jobs without one (auto, cancel,
-reprint, kassa) go to the order printer (settings.printerId), which also
-prints Kassa receipts.
+reprint) go to the order printer (settings.printerId).
 
 A job holds no personal data: the ticket is rendered from the order when
-the printer fetches it. Kassa jobs carry their document (shared/kassa_receipt.py),
-which has no guest data either. Jobs expire after 30 days.
+the printer fetches it. Jobs expire after 30 days.
 
 Job states:
     PENDING  --printer GET (lease 60 s, attempts+1)-->  PRINTING
@@ -66,7 +62,7 @@ from shared import orders as o
 
 PENDING, PRINTING, PRINTED, FAILED, CANCELLED = "PENDING", "PRINTING", "PRINTED", "FAILED", "CANCELLED"
 OPEN = (PENDING, PRINTING, FAILED)
-AUTO, CANCEL, REPRINT, TEST, KASSA = "auto", "cancel", "reprint", "test", "kassa"
+AUTO, CANCEL, REPRINT, TEST = "auto", "cancel", "reprint", "test"
 STATION, ALLERGY = "station", "allergy"
 PROTOCOLS = ("star", "epson")
 
@@ -536,16 +532,6 @@ def test_job(tenant_id, location_id, device_id, now):
     return item
 
 
-def kassa_job(tenant_id, location_id, ticket, now):
-    """A Kassa print (shared/kassa.py) on the location's printer."""
-    if not get_settings(location_id)["printerId"]:
-        raise Conflict("no_printer")
-    item = _new_job(tenant_id, location_id, f"JOB#kassa#{uuid.uuid4().hex}", KASSA, now)
-    item["ticket"] = ticket
-    _put_once(item)
-    return item
-
-
 def queue(location_id, *, due_by=None):
     """Open jobs of a location, oldest due first (only those due by `due_by`)."""
     cond = Key("queue").eq(pk(location_id))
@@ -566,7 +552,7 @@ def get_job(location_id, sk):
 
 def for_device(job, device_id, printer_id):
     """A job with a device (test prints, station tickets, slips) goes to that
-    printer; older jobs and Kassa receipts to the order printer."""
+    printer; older jobs to the order printer."""
     if job.get("deviceId"):
         return job["deviceId"] == device_id
     return device_id == printer_id
@@ -664,8 +650,6 @@ def _stale(job, settings, device_ids, now):
     if (job.get("deviceId") or settings.get("printerId")) not in device_ids:
         return True
     if job.get("status") == FAILED:
-        if job.get("kind") == KASSA:
-            return age > FAILED_SECONDS
         return age > FAILED_SECONDS or not _order_open(job["locationId"], job.get("orderId"))
     return False
 

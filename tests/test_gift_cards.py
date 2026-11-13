@@ -1,5 +1,5 @@
 """Gift cards (feature E, ADR-E, CONTRACTS.md 6.E, 9.2): routes E1-E13, the
-stripe.event / checkout.giftcard / kassa.giftcard / accounting.events /
+stripe.event / checkout.giftcard / accounting.events /
 privacy / purge hooks, the nightly expiry and the two-tenant isolation
 suite. Stripe is a fake; nothing leaves the test."""
 
@@ -73,7 +73,7 @@ def env(monkeypatch):
         monkeypatch.setenv("USER_TABLE_NAME", "test-user")
         secret = boto3.client("secretsmanager", region_name=REGION).create_secret(Name="pepper", SecretString="p" * 48)
         monkeypatch.setenv("GIFT_CARD_PEPPER_SECRET_ARN", secret["ARN"])
-        on = features_on("giftCards", "kassa")
+        on = features_on("giftCards")
         seed_tenancy(monkeypatch,
                      tenant_a=tenant_row(TENANT_A, features=on, stripe={"accountId": ACCT_A, "chargesEnabled": True}),
                      tenant_b=tenant_row(TENANT_B, features=on, stripe={"accountId": ACCT_B, "chargesEnabled": True}),
@@ -188,7 +188,7 @@ def test_offer_public_and_off(env):
     assert status == 200 and body == {"amountsSek": [250, 500, 1000], "customMinSek": 100, "customMaxSek": 5000,
                                       "validityMonths": 24}
     shared_tenant.reset_caches()
-    env.res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, features=features_on("kassa")))
+    env.res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, features=features_on("marketing")))
     shared_tenant.reset_caches()
     assert http_call(env, "GET", OFFER, params={"locationId": LOC_A})[0] == 404
 
@@ -272,74 +272,28 @@ def test_webhook_amount_mismatch_ignored(env):
     assert succeed(env, amount=100)["result"] == "ignored:mismatch"
 
 
-# --- E3 balance, E11 lookup ----------------------------------------------------------------------
+# --- E3 balance ----------------------------------------------------------------------------
 
-def test_balance_and_lookup(env):
+def test_balance(env):
     code, card_id = issue(env)
     path = "/public/locations/{locationId}/gift-cards/balance"
     status, body = http_call(env, "POST", path, params={"locationId": LOC_A}, body={"code": code.lower()})
     assert status == 200 and body["balanceSek"] == 500 and body["status"] == "active"
     assert http_call(env, "POST", path, params={"locationId": LOC_A}, body={"code": "AAAA-BBBB"})[0] == 404
     assert http_call(env, "POST", path, params={"locationId": LOC_B}, body={"code": code})[0] == 404  # B's site
-    look = "/locations/{locationId}/gift-cards/lookup"
-    status, body = http_call(env, "POST", look, params={"locationId": LOC_A}, body={"code": code}, claims=STAFF_A)
-    assert status == 200 and body["cardId"] == card_id
-    assert http_call(env, "POST", look, params={"locationId": LOC_A}, body={}, claims=STAFF_A)[0] == 400
-    assert http_call(env, "POST", look, params={"locationId": LOC_A2}, body={"code": code}, claims=STAFF_A)[0] == 404
-    assert http_call(env, "POST", look, params={"locationId": LOC_B}, body={"code": code}, claims=OWNER_B)[0] == 404
+    assert gc.find_card_by_code(TENANT_A, code)["cardId"] == card_id
 
 
-# --- E12/E13 Kassa redemptions and the kassa hook -------------------------------------------------
+# --- redemptions (balance changes) ----------------------------------------------------------------
 
-REDEEM = "/locations/{locationId}/gift-cards/redemptions"
-
-
-def redeem(e, code, tx="01PAYMENTAAAAAAAAAAAAAAAAA", amount=12000, claims=STAFF_A, loc=LOC_A, bill="01BILLAAAAAAAAA"):
-    return http_call(e, "POST", REDEEM, params={"locationId": loc}, claims=claims,
-                     body={"txId": tx, "code": code, "amountOre": amount, "billId": bill})
-
-
-def test_kassa_redemption_partial_idempotent_and_verify(env):
-    code, card_id = issue(env)
-    status, body = redeem(env, code)
-    assert status == 200 and body["balanceAfterSek"] == 380
-    assert redeem(env, code)[1]["balanceAfterSek"] == 380  # same txId -> one debit
-    assert redeem(env, code, amount=100)[1]["code"] == "changed_retry"
-    assert redeem(env, code, tx="01PAYMENTBBBBBBBBBBBBBBBBB", amount=99999)[1]["code"] == "insufficient_balance"
-    verified = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="01BILLAAAAAAAAA",
-                    paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
-    assert verified == {"ok": True, "amountOre": 12000, "cardId": card_id, "cardLast4": code[-4:],
-                        "balanceAfterOre": 38000}
-    wrong_bill = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="other1234",
-                      paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
-    assert wrong_bill["status"] == 404
-    # after Kassa took it, the direct reverse is refused; Kassa's undo reverses once
-    rev = REDEEM + "/{txId}/reverse"
-    assert http_call(env, "POST", rev, params={"locationId": LOC_A, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"},
-                     claims=STAFF_A)[1]["code"] == "receipt_issued"
-    undo = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="reverse", locationId=LOC_A, billId="01BILLAAAAAAAAA",
-                paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
-    assert undo["balanceAfterOre"] == 50000
-    again = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="reverse", locationId=LOC_A, billId="01BILLAAAAAAAAA",
-                 paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
-    assert again["balanceAfterOre"] == 50000
-
-
-def test_direct_reverse_before_kassa_and_needs_kassa(env):
-    code, _ = issue(env)
-    redeem(env, code)
-    rev = REDEEM + "/{txId}/reverse"
-    status, body = http_call(env, "POST", rev, params={"locationId": LOC_A, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"},
-                             claims=STAFF_A, body={})
-    assert status == 200 and body["balanceAfterSek"] == 500
-    assert http_call(env, "POST", rev, params={"locationId": LOC_A, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"},
-                     claims=STAFF_A, body={})[1]["balanceAfterSek"] == 500  # second reverse: same balance
-    assert http_call(env, "POST", rev, params={"locationId": LOC_B, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"},
-                     claims=OWNER_B, body={})[0] == 404
-    env.res.Table(TENANT_TABLE).put_item(Item=tenant_row(TENANT_A, features=features_on("giftCards"),
-                                                         stripe={"accountId": ACCT_A, "chargesEnabled": True}))
-    shared_tenant.reset_caches()
-    assert redeem(env, code, tx="01PAYMENTCCCCCCCCCCCCCCCCC")[1]["error"] == "feature_not_in_plan"
+def redeem(e, code, tx="01PAYMENTAAAAAAAAAAAAAAAAA", amount=12000, loc=LOC_A):
+    """A redemption as the online checkout makes it, straight on the card."""
+    card = gc.find_card_by_code(TENANT_A, code)
+    try:
+        _, txr, _ = gc.change_balance(TENANT_A, card["cardId"], tx, -amount, "redeem", "online", loc)
+    except gc.GiftCardError as exc:
+        return exc.status, {"code": exc.code}
+    return 200, {"balanceAfterSek": int(txr["balanceAfterOre"]) // 100}
 
 
 def test_concurrent_redemptions_never_go_negative(env):
@@ -437,7 +391,7 @@ def test_refund_race_with_a_redemption_refunds_only_what_the_card_held(env, monk
 
     def redeem_in_between(*args, **kwargs):
         if kwargs.get("expect_version") is not None and args[4] == "refund":
-            real_change(TENANT_A, card_id, "01REDEEMAAAAAAAAAAAAAAAAAA", -10000, "redeem", "kassa", LOC_A)
+            real_change(TENANT_A, card_id, "01REDEEMAAAAAAAAAAAAAAAAAA", -10000, "redeem", "online", LOC_A)
         return real_change(*args, **kwargs)
 
     monkeypatch.setattr(gc, "change_balance", redeem_in_between)
@@ -602,55 +556,10 @@ def test_nightly_counts_failures_per_day_and_resumes_at_the_first_failed_day(env
     assert gc.get_card(TENANT_A, card_b)["status"] == "expired"
 
 
-def test_nightly_reverses_unverified_kassa_redemptions_after_30_minutes(env):
-    code, card_id = issue(env)
-    redeem(env, code)  # Kassa never verifies (it refuses gift cards with 501 until the voucher means is decided)
-    redeem(env, code, tx="01PAYMENTBBBBBBBBBBBBBBBBBB", amount=1000, bill="01BILLBBBBBBBBB")
-    hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="01BILLBBBBBBBBB",
-         paymentId="01PAYMENTBBBBBBBBBBBBBBBBBB")
-    env.clock.value = NOW + timedelta(minutes=10)
-    assert env.api.handler({"job": "nightly"})["reversed"] == 0  # too young: Kassa may still take it
-    env.clock.value = NOW + timedelta(minutes=31)
-    counts = env.api.handler({"job": "nightly"})
-    assert counts["reversed"] == 1 and counts["failed"] == 0
-    assert int(gc.get_card(TENANT_A, card_id)["balanceOre"]) == 50000 - 1000  # the verified one stays
-    assert env.api.handler({"job": "nightly"})["reversed"] == 0  # once
-    kinds = [t["kind"] for t in gc.transactions(TENANT_A, card_id)]
-    assert kinds.count("reverse") == 1
-    late = hook(env, "kassa.giftcard", tenantId=TENANT_A, op="verify", locationId=LOC_A, billId="01BILLAAAAAAAAA",
-                paymentId="01PAYMENTAAAAAAAAAAAAAAAAA")
-    assert late["code"] == "redemption_reversed"  # Kassa can no longer take the reversed payment
-
-
-def test_direct_reverse_refused_when_kassa_verifies_in_between(env):
-    code, card_id = issue(env)
-    redeem(env, code)
-    real_get = gc.get_tx
-
-    def verify_first(tenant_id, cid, tx_id):  # Kassa verifies between E13's read and its write
-        row = real_get(tenant_id, cid, tx_id)
-        if tx_id == "01PAYMENTAAAAAAAAAAAAAAAAA" and not verify_first.done:
-            verify_first.done = True
-            assert gc.mark_verified(tenant_id, cid, tx_id)
-        return row
-    verify_first.done = False
-    env.api.gc.get_tx = verify_first
-    try:
-        status, body = http_call(env, "POST", REDEEM + "/{txId}/reverse",
-                                 params={"locationId": LOC_A, "txId": "01PAYMENTAAAAAAAAAAAAAAAAA"}, claims=STAFF_A,
-                                 body={})
-    finally:
-        env.api.gc.get_tx = real_get
-    assert status == 409 and body["code"] == "receipt_issued"
-    assert int(gc.get_card(TENANT_A, card_id)["balanceOre"]) == 50000 - 12000
-    assert "reverse" not in [t["kind"] for t in gc.transactions(TENANT_A, card_id)]
-
-
 def test_accounting_events_balanced_sale_online_breakage(env):
     code, card_id = issue(env)
     hook(env, "checkout.giftcard", tenantId=TENANT_A, op="reserve", locationId=LOC_A, orderId="ord9", code=code,
          totalOre=20000)
-    redeem(env, code)  # Kassa: booked by the receipt, nothing here
     answer = hook(env, "accounting.events", tenantId=TENANT_A, locationId=LOC_A, first="2026-11-04", last="2026-11-04")
     assert answer["ok"] and len(answer["events"]) == 1
     postings = answer["events"][0]["postings"]

@@ -213,25 +213,6 @@ def test_ticket(location, device_name, *, width=80, now=None, fmt="star"):
     return t.done()
 
 
-def document_ticket(document, *, width=80, retry=False, fmt="star"):
-    """A Kassa document (shared/kassa_receipt.py): rows of text, pairs
-    (left text, right-aligned amount) and rules. A receipt printed on a
-    retry says so: the earlier attempt may have printed already."""
-    t = _new(width, fmt)
-    if retry:
-        t.line("KAN VARA DUBBLETT", bold=True, center=True)
-    for row in (document or {}).get("rows") or []:
-        if row.get("rule"):
-            t.rule()
-        elif "pair" in row:
-            left, right = (clean(x) for x in row["pair"])
-            t.pair(left, right, bold=bool(row.get("bold")), big=bool(row.get("big")))
-        else:
-            t.line(clean(row.get("text")), bold=bool(row.get("bold")), big=bool(row.get("big")),
-                   center=bool(row.get("center")))
-    return t.done()
-
-
 def _where(mode, table_label):
     if mode == "table":
         label = clean(table_label) or "?"
@@ -250,8 +231,6 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
     order = order or {}
     t = _new(width, fmt)
     t.line("Köksnota, ej kvitto", center=True)
-    if ticket.get("training"):
-        t.line("ÖVNING", bold=True, big=True, center=True)
     if allergy:
         t.line("!! ALLERGI !!", bold=True, big=True, center=True)
     if retry:

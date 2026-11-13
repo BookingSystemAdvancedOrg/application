@@ -1,5 +1,5 @@
-"""Accounting with gift cards (AP13): the two gift card roles, Kassa gift
-card payments on the liability account, feature postings through the
+"""Accounting with gift cards (AP13): the two gift card roles, feature
+postings through the
 accounting.events hook, and the regression that a tenant without gift
 cards gets byte-identical SIE, CSV and JSON exports (golden files written
 by the code before this change)."""
@@ -15,7 +15,7 @@ from hooks_fake import entitle, ever_entitled, install_hook, no_hooks, record_in
 from shared import accounting as acc
 from test_accounting import parse_sie
 from tenant_support import LOC_A, TENANT_A
-from test_accounting_function import REG, app, call, env  # fixtures used by name
+from test_accounting_function import app, call, env  # fixtures used by name
 
 GOLDEN = Path(__file__).parent / "fixtures" / "accounting_run0"
 MONTH = {"from": "2026-10-01", "to": "2026-10-31"}
@@ -58,7 +58,7 @@ def test_roles_are_in_the_settings_and_accepted():
     assert settings["accounts"]["giftCardBreakage"] == "3990"
     stored = acc.validate_settings({"accounts": {"giftCardLiability": "2422"}}, LOC_A)
     assert stored["accounts"] == {"giftCardLiability": "2422"}
-    assert list(acc.ROLES)[-3:] == ["giftCardLiability", "giftCardBreakage", "cardTerminal"]
+    assert list(acc.ROLES)[-2:] == ["giftCardLiability", "giftCardBreakage"]
     names = acc.account_names(settings["accounts"])
     assert names["2421"] == "Ej inlösta presentkort" and names["3990"] == "Övriga ersättningar och intäkter"
 
@@ -89,23 +89,6 @@ def test_feature_postings_are_booked_balanced_with_the_new_accounts(app, env, mo
     records = parse_sie(_export(app, "sie", {"from": "2026-10-23", "to": "2026-10-24"}))
     konton = {r[1][0]: r[1][1] for r in records if r[0] == "#KONTO"}
     assert konton["2421"] == "Ej inlösta presentkort" and konton["3990"] == "Övriga ersättningar och intäkter"
-
-
-def test_kassa_gift_card_payment_debits_the_liability(app, env, monkeypatch):
-    no_hooks(monkeypatch)
-    res, _ = env
-    res.Table("test-kassa-journal").put_item(Item={
-        "PK": f"REG#{REG}", "SK": "J#000000000003", "jseq": 3, "regDay": f"REG#{REG}#2026-10-25",
-        "type": "kassakvitto", "local": "2026-10-25T19:00:00",
-        "data": {"total": 5300, "vat": [{"rate": 6, "gross": 5300, "net": 5000, "vat": 300}],
-                 "payments": [{"method": "Presentkort", "amount": 3000, "last4": "1234"},
-                              {"method": "Kort", "amount": 2300}]}})
-    status, body = call(app, "GET", "/export", query={"from": "2026-10-25", "to": "2026-10-25", "format": "json"})
-    (entry,) = [e for e in body["entries"] if e["locationId"] == LOC_A]
-    lines = {ln["account"]: ln["amount"] for ln in entry["lines"]}
-    assert lines["2421"] == 3000 and lines["1580"] == 2300 and lines["3003"] == -5000
-    assert body["summary"]["balanced"] is True
-    assert not any("annat sätt än kort" in w["text"] for w in body["summary"]["warnings"])
 
 
 @pytest.mark.parametrize("answer", [

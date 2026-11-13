@@ -50,8 +50,7 @@ _HOST = re.compile(r"(?=.{1,253}\Z)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
-# The guest-facing flags (CONTRACTS.md 7). kassa stays out: staff-only,
-# nothing about it is shown to guests.
+# The guest-facing flags (CONTRACTS.md 7).
 _FEATURES = contracts.SITE_CONFIG_FEATURES
 _SITE_MODES = ("builder", "custom")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",

@@ -1,8 +1,9 @@
 # Parked: card readers (Stripe Terminal)
 
 Removed on 2026-11-13 (owner: restaurants use their own card terminals).
-Kassa stayed: it now records card payments taken on the restaurant's own
-terminal. This note is the record for bringing readers back.
+Kassa first recorded card payments taken on the restaurant's own terminal,
+then Kassa itself was removed on 2026-11-14 (`docs/FUTURE-kassa.md`).
+This note is the record for bringing readers back.
 
 ## What the feature did
 
@@ -77,15 +78,15 @@ infrastructure, application, frontends):
 
 ## What a re-add needs
 
-- Decide the model first: Booqy-provided readers (Stripe Terminal, money on
-  the restaurant's Stripe account) or stay with the restaurant's own
-  terminal. Kassa's manual path (`cards` on the bill, `cardTerminal`
-  accounting role) can live next to a reader path; don't remove it.
+- Readers only make sense with a till: bring Kassa back first
+  (`docs/FUTURE-kassa.md`), then decide between Booqy-provided readers
+  (Stripe Terminal, money on the restaurant's Stripe account) and the
+  restaurant's own terminal.
 - Revert or re-apply the commits above. Conflicts to expect: Kassa
   (`shared/kassa.py`, `KassaPage.tsx`) was rewritten for the manual card
   path, accounting now books Kassa cards to `cardTerminal`, and the generic
   ECR module moved to `storage/ecr/function`.
-- Contract: add `terminal` back to `contracts/booqy.yaml` (18 features) and
+- Contract: add `terminal` back to `contracts/booqy.yaml` (one more feature) and
   run `scripts/gen_contracts.py`.
 - Stripe: Terminal: Write on the Lambda key, a new webhook endpoint and
   secret (Terraform creates both), the plan feature on the tenants.

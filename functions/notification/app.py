@@ -57,8 +57,6 @@ PURPOSE:
                          no SMS can be sent
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
-      kassa_receipt      e-mail: a Kassa receipt or copy, already rendered
-                         (order table, KASSAMAIL# items, shared/kassa_receipt.py)
 
     Feature notices (CONTRACTS.md 9.4): a direct invoke (InvocationType
     Event, retries 0) with {"notice": {"version": 1, "kind":
@@ -121,7 +119,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering, catering_messages, finance, manage_link, messages
-from shared import contracts, kassa, kassa_receipt, marketing, order_messages, orders, site, sms, tenant
+from shared import contracts, marketing, order_messages, orders, site, sms, tenant
 from shared import calendar_invite
 
 logger = logging.getLogger()
@@ -438,39 +436,9 @@ def _fresh_notice(new, old, types):
     return notice, None
 
 
-def _kassa_receipt(new, old):
-    """An e-mailed Kassa receipt or copy (shared/kassa.py queue_email): the
-    document is rendered already; the item expires a day later."""
-    notice, skipped = _fresh_notice(new, old, (kassa.NOTICE_RECEIPT,))
-    if not notice or not new.get("receiptEmail"):
-        return skipped or "no_address"
-    tenant_id, location_id = new.get("tenantId"), new.get("locationId")
-    try:
-        tenant_row = tenant.get_tenant(tenant_id) if tenant_id else None
-        location = tenant.get_location(tenant_id, location_id) if tenant_row else None
-    except (BotoCoreError, ClientError) as exc:
-        if _retryable(exc):
-            raise Retry from exc
-        raise
-    if not tenant_row or tenant_row.get("status") != "active" or not location:
-        return "inactive"
-    subject, text, html_body = kassa_receipt.email(new.get("document") or {}, tenant_row, location)
-    try:
-        _send_email(new["receiptEmail"], subject, text, html_body, source=_from_address(tenant_row, location),
-                    reply_to=_reply_to(tenant_row, location), tenant_id=tenant_id, location_id=location_id)
-    except (BotoCoreError, ClientError) as exc:
-        if _retryable(exc):
-            raise Retry from exc
-        raise
-    logger.info(json.dumps({"notice": notice["type"], "tenantId": tenant_id}))
-    return "sent"
-
-
 def _order(record):
     new = _image(record["dynamodb"].get("NewImage"))
     old = _image(record["dynamodb"].get("OldImage"))
-    if str(new.get("SK", "")).startswith("KASSAMAIL#"):
-        return _kassa_receipt(new, old)
     notice, skipped = _fresh_notice(new, old, orders.NOTICE_TYPES)
     if not notice:
         if skipped == "stale":

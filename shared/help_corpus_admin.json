@@ -6,9 +6,6 @@
   "/statistik",
   "/bokningar",
   "/bestallningar",
-  "/kassa",
-  "/kassa/bruksanvisning",
-  "/kassa/utskrift/:kind",
   "/meny",
   "/cateringkalkyl",
   "/catering",
@@ -557,186 +554,6 @@
      "label": "Öppna Skrivare",
      "to": "/installningar",
      "hash": "skrivare"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-salja",
-   "route": "/kassa",
-   "title": "Sälja i kassan",
-   "audience": "all",
-   "feature": "kassa",
-   "keywords": [
-    "kassa",
-    "kassan",
-    "nota",
-    "sälja",
-    "kassaregister",
-    "öppna dagen",
-    "växelkassa",
-    "till köket",
-    "rabatt",
-    "kort",
-    "kortterminal",
-    "ta betalt",
-    "dela notan"
-   ],
-   "answer": "I Kassa öppnar du dagen, lägger rätter på en nota och tar betalt med kort på restaurangens egen kortterminal.",
-   "steps": [
-    "Öppna Kassa och tryck Öppna dagen. Fyll i växelkassan och tryck Öppna dagen.",
-    "Tryck Bord (välj bord och Öppna nota) eller Avhämtning.",
-    "Tryck på rätterna och ändra antal med plus och minus.",
-    "Tryck Till köket när beställningen ska lagas. Rabatt lägger du till på notan.",
-    "Tryck Ta betalt och dra kortet på restaurangens kortterminal. När terminalen visar godkänt trycker du Kortet godkänt, registrera. Välj sedan hur kvittot ska lämnas."
-   ],
-   "actions": [
-    {
-     "id": "kassa-open",
-     "label": "Öppna Kassa",
-     "to": "/kassa"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-presentkort",
-   "route": "/kassa",
-   "title": "Lösa in presentkort i kassan",
-   "audience": "all",
-   "feature": "kassa",
-   "keywords": [
-    "lösa in presentkort",
-    "presentkort i kassan",
-    "saldo presentkort",
-    "betala med presentkort"
-   ],
-   "answer": "Ett presentkort löser du in när du tar betalt i kassan.",
-   "steps": [
-    "Öppna Kassa och notan.",
-    "Tryck Ta betalt och välj Presentkort.",
-    "Skriv in koden och tryck Kolla saldo.",
-    "Tryck Ta betalt."
-   ],
-   "actions": [
-    {
-     "id": "kassa-open",
-     "label": "Öppna Kassa",
-     "to": "/kassa"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-rapporter",
-   "route": "/kassa",
-   "title": "Kvitton, X-rapport och Z-rapport",
-   "audience": "all",
-   "feature": "kassa",
-   "keywords": [
-    "z-rapport",
-    "x-rapport",
-    "dagsavslut",
-    "stänga dagen",
-    "kvitton",
-    "rapporter",
-    "journal"
-   ],
-   "answer": "Kassans kvitton och rapporter finns i menyn Rapporter. Z-rapporten stänger dagen.",
-   "steps": [
-    "Öppna Kassa.",
-    "Tryck Rapporter.",
-    "Välj Kvitton, X-rapport (läget just nu) eller Z-rapport (stänger dagen)."
-   ],
-   "actions": [
-    {
-     "id": "kassa-open",
-     "label": "Öppna Kassa",
-     "to": "/kassa"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-ny",
-   "route": "/kassa",
-   "title": "Skapa en kassa och exportera",
-   "audience": "owner",
-   "feature": "kassa",
-   "keywords": [
-    "ny kassa",
-    "skapa kassa",
-    "exportera kassa",
-    "kassa 1",
-    "övningsläge"
-   ],
-   "answer": "Ägaren skapar kassor (högst fem) och exporterar kassans data. Övningsläge finns i menyn Kassan.",
-   "steps": [
-    "Öppna Kassa.",
-    "Första gången: tryck Skapa Kassa 1.",
-    "Fler kassor: menyn Kassan, Ny kassa.",
-    "Export: menyn Rapporter, Exportera."
-   ],
-   "actions": [
-    {
-     "id": "kassa-open",
-     "label": "Öppna Kassa",
-     "to": "/kassa"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-bruksanvisning",
-   "route": "/kassa/bruksanvisning",
-   "title": "Kassans bruksanvisning",
-   "audience": "all",
-   "feature": "kassa",
-   "keywords": [
-    "bruksanvisning",
-    "manual",
-    "instruktioner kassa",
-    "hur fungerar kassan"
-   ],
-   "answer": "Kassans bruksanvisning finns i menyn Kassan.",
-   "steps": [
-    "Öppna Kassa.",
-    "Tryck Kassan och välj Bruksanvisning.",
-    "Tryck Till kassan för att gå tillbaka."
-   ],
-   "actions": [
-    {
-     "id": "kassa-manual-open",
-     "label": "Öppna bruksanvisningen",
-     "to": "/kassa/bruksanvisning"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "kassa-utskrift",
-   "route": "/kassa/utskrift/:kind",
-   "title": "Manuell försäljningslista vid avbrott",
-   "audience": "all",
-   "feature": "kassa",
-   "keywords": [
-    "manuell försäljningslista",
-    "avbrott",
-    "kassan fungerar inte",
-    "skriva ut lista",
-    "kassans uppgifter"
-   ],
-   "answer": "Fungerar inte kassan skriver du försäljningen på en manuell försäljningslista och för in den efteråt.",
-   "steps": [
-    "Öppna Kassa.",
-    "Tryck Rapporter och välj Manuell försäljningslista.",
-    "Tryck Skriv ut."
-   ],
-   "actions": [
-    {
-     "id": "kassa-open",
-     "label": "Öppna Kassa",
-     "to": "/kassa"
     }
    ],
    "kind": "guide"
@@ -2506,7 +2323,7 @@
     "gästen köper presentkort",
     "saldo"
    ],
-   "answer": "Gästerna köper presentkort under Presentkort på hemsidan och kan kolla saldot där. Presentkortet löses in i kassan.",
+   "answer": "Gästerna köper presentkort under Presentkort på hemsidan och kan kolla saldot där. Presentkortet löses in när gästen beställer online.",
    "steps": [
     "Gästen öppnar Presentkort på hemsidan och väljer belopp.",
     "Gästen betalar och får koden.",
@@ -2965,19 +2782,6 @@
    "feature": "ordering"
   },
   {
-   "id": "nav:kassa",
-   "kind": "page",
-   "route": "/kassa",
-   "title": "Kassa",
-   "where": "vänstermenyn",
-   "text": "Kassa finns i vänstermenyn.",
-   "highlight": [
-    "help:nav:/kassa"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
    "id": "nav:catering",
    "kind": "page",
    "route": "/catering",
@@ -3136,6 +2940,19 @@
    "title": "Ladda ner appen",
    "where": "vänstermenyn",
    "text": "Ladda ner appen finns i vänstermenyn.",
+   "highlight": [
+    "help:nav:/installningar#skrivbordsappen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:installningar:skrivbordsappen:17",
+   "kind": "page",
+   "route": "/installningar",
+   "hash": "skrivbordsappen",
+   "title": "Installera appen",
+   "where": "vänstermenyn",
+   "text": "Installera appen finns i vänstermenyn.",
    "highlight": [
     "help:nav:/installningar#skrivbordsappen"
    ],
@@ -4716,6 +4533,19 @@
    "audience": "owner"
   },
   {
+   "id": "features-installningar-DesktopAppCard:appen-pa-telefonen:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Appen på telefonen",
+   "where": "Inställningar, Utseende och ljud",
+   "text": "Lägg Booqy Admin på hemskärmen, så öppnas den som en egen app i helskärm. Samma inloggning och samma funktioner som här, och den visar alltid den senaste versionen.",
+   "highlight": [
+    "text:Appen på telefonen"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "features-installningar-DesktopAppCard:skrivbordsappen:heading",
    "kind": "element",
    "route": "/installningar",
@@ -4954,15 +4784,15 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-PrinterCard:koksskrivare:heading",
+   "id": "features-installningar-PrinterCard:bongskrivare:heading",
    "kind": "element",
    "route": "/installningar",
    "hash": "skrivare",
-   "title": "Köksskrivare",
+   "title": "Bongskrivare",
    "where": "Inställningar, Skrivare",
    "text": "Välj en plats först.",
    "highlight": [
-    "text:Köksskrivare"
+    "text:Bongskrivare"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -4996,13 +4826,27 @@
    "feature": "ordering"
   },
   {
+   "id": "features-installningar-PrinterCard:marke:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Märke",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Märke"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
    "id": "features-installningar-PrinterCard:lagg-till:button",
    "kind": "element",
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Lägg till",
    "where": "Inställningar, Skrivare",
-   "text": "När en gäst har betalat kommer köksnotan ut direkt.",
+   "text": "När en gäst har betalat kommer varje stations bong ut direkt.",
    "highlight": [
     "text:Lägg till"
    ],
@@ -5010,15 +4854,15 @@
    "feature": "ordering"
   },
   {
-   "id": "features-installningar-PrinterCard:skrivare-for-bestallningar:field",
+   "id": "features-installningar-PrinterCard:orderskrivare-omtryck-och-makulering:field",
    "kind": "element",
    "route": "/installningar",
    "hash": "skrivare",
-   "title": "Skrivare för beställningar",
+   "title": "Orderskrivare (omtryck och makulering)",
    "where": "Inställningar, Skrivare",
    "text": "",
    "highlight": [
-    "text:Skrivare för beställningar"
+    "text:Orderskrivare (omtryck och makulering)"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -5061,6 +4905,20 @@
    "text": "",
    "highlight": [
     "text:Om något inte fungerar"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-PrinterCard:epson-tm-m30iii-och-andra-epson-med-server-direct-print:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Epson TM-m30III och andra Epson med Server Direct Print",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Epson TM-m30III och andra Epson med Server Direct Print"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -5320,6 +5178,62 @@
    "audience": "owner"
   },
   {
+   "id": "features-installningar-StationsCard:bongar-och-stationer:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Bongar och stationer",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Bongar och stationer"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-StationsCard:station:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Station",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Station"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-StationsCard:lagg-till-station:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Lägg till station",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Lägg till station"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-installningar-StationsCard:vart-gar-menyns-kategorier:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Vart går menyns kategorier?",
+   "where": "Inställningar, Skrivare",
+   "text": "",
+   "highlight": [
+    "text:Vart går menyns kategorier?"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
    "id": "features-installningar-TableRulesCard:bord-vid-onlinebokning:heading",
    "kind": "element",
    "route": "/installningar",
@@ -5396,292 +5310,6 @@
     "text:Lägg till kombination"
    ],
    "audience": "owner"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:klar:button",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Klar",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Klar"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:gastens-e-post:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Gästens e-post",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Gästens e-post"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:dag:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Dag",
-   "where": "Kassa",
-   "text": "Inga kvitton eller rapporter den dagen.",
-   "highlight": [
-    "text:Dag"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:orsak:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Orsak",
-   "where": "Kassa",
-   "text": "Välj minst en rad och skriv en orsak.",
-   "highlight": [
-    "text:Orsak"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:fran:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Från",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Från"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:till:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Till",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Till"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:ladda-ner:button",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Ladda ner",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Ladda ner"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:benamning:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Benämning",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Benämning"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaDialogs:lagg-pa-rabatt:button",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Lägg på rabatt",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Lägg på rabatt"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:bruksanvisning:page",
-   "kind": "page",
-   "route": "/kassa/bruksanvisning",
-   "title": "Bruksanvisning",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Bruksanvisning"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:manuell-forsaljningslista:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Manuell försäljningslista",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Manuell försäljningslista"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:kassans-uppgifter:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Kassans uppgifter",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Kassans uppgifter"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:kassaregister-registreringsenhet:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Kassaregister (registreringsenhet)",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Kassaregister (registreringsenhet)"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:kontrollsystem:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Kontrollsystem",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Kontrollsystem"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:ovriga-delar:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Övriga delar",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Övriga delar"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:1-kontrollenheten:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "1. Kontrollenheten",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:1. Kontrollenheten"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:2-kassaregistret:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "2. Kassaregistret",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:2. Kassaregistret"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:installningar:heading",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Inställningar",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Inställningar"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:forsok-igen:button",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Försök igen",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Försök igen"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaGuide:stang:button",
-   "kind": "element",
-   "route": "/kassa/bruksanvisning",
-   "title": "Stäng",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Stäng"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaPage:ingen-kassa-an:heading",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Ingen kassa än",
-   "where": "Kassa",
-   "text": "Skapa platsens första kassa. Namnet står på varje kvitto och rapport och kan inte ändras.",
-   "highlight": [
-    "text:Ingen kassa än"
-   ],
-   "audience": "all",
-   "feature": "kassa"
-  },
-  {
-   "id": "features-kassa-KassaPage:belopp-pa-det-har-kortet:field",
-   "kind": "element",
-   "route": "/kassa",
-   "title": "Belopp på det här kortet",
-   "where": "Kassa",
-   "text": "",
-   "highlight": [
-    "text:Belopp på det här kortet"
-   ],
-   "audience": "all",
-   "feature": "kassa"
   },
   {
    "id": "features-layout-editor-FloorBooking:ingen-bordskarta-an:heading",
@@ -6512,6 +6140,30 @@
    "audience": "all"
   },
   {
+   "id": "features-meny-DishModal:vart-gar-ratten:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Vart går rätten?",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Vart går rätten?"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:bong:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Bong",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Bong"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "features-meny-DishModal:visas-fran:field",
    "kind": "element",
    "route": "/meny",
@@ -7011,7 +6663,7 @@
    "route": "/statistik",
    "title": "Omsättning per dag",
    "where": "Statistik",
-   "text": "Betalda beställningar på dagen de betalades, catering på leveransdagen och kortköp i kassan, inklusive moms.",
+   "text": "Betalda beställningar på dagen de betalades, catering på leveransdagen, inklusive moms.",
    "highlight": [
     "help:card:omsattning-per-dag"
    ],

@@ -1633,18 +1633,6 @@
    "audience": "all"
   },
   {
-   "id": "components-BackdropSetting:see-through:button",
-   "kind": "element",
-   "route": "/settings",
-   "title": "See-through",
-   "where": "Settings",
-   "text": "",
-   "highlight": [
-    "text:See-through"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "components-BillingTab:billing:agreement:heading",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -3311,7 +3299,7 @@
    "route": "/settings",
    "title": "Background",
    "where": "Settings",
-   "text": "See-through shows whatever is behind the window. Colour puts the glass over a colour you pick.",
+   "text": "See-through shows whatever is behind the window. Colour puts the glass over a colour you pick, Your image over a picture you upload.",
    "highlight": [
     "help:settings:background"
    ],

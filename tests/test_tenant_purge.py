@@ -410,24 +410,39 @@ def test_no_query_filters_on_a_key_attribute(env):
         events.unregister("before-call.dynamodb.Query", check)
 
 
-def test_users_backdrop_images_are_deleted_with_the_restaurant(env, monkeypatch):
-    bucket = "test-user-backdrops"
+def test_users_backdrop_libraries_are_deleted_with_the_restaurant(env, monkeypatch):
+    bucket, table_name = "test-user-backdrops", "test-user-backdrops-table"
     monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", bucket)
+    monkeypatch.setenv("USER_BACKDROPS_TABLE_NAME", table_name)
     s3 = env["s3"]
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    library = boto3.resource("dynamodb", region_name=REGION).create_table(
+        TableName=table_name, BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in ("PK", "SK", "tenantId")],
+        GlobalSecondaryIndexes=[{"IndexName": "byTenant", "Projection": {"ProjectionType": "KEYS_ONLY"},
+                                 "KeySchema": [{"AttributeName": "tenantId", "KeyType": "HASH"},
+                                               {"AttributeName": "PK", "KeyType": "RANGE"}]}])
     seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
                 offboarded_at=NOW - timedelta(days=90), slug="gone")
     seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
     for tenant_id in (GONE, KEEP):
         for sub in ("owner-sub", "staff-sub"):
-            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrop", Body=b"img")
-    s3.put_object(Bucket=bucket, Key="console/operator-sub/backdrop", Body=b"img")
+            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrops/1", Body=b"img")
+            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrops/1.thumb.webp", Body=b"img")
+            for sk in ("IMG#1", "SELECTED"):
+                library.put_item(Item={"PK": f"USER#{tenant_id}#{sub}", "SK": sk, "tenantId": tenant_id})
+    s3.put_object(Bucket=bucket, Key="console/operator-sub/backdrops/1", Body=b"img")
+    library.put_item(Item={"PK": "OPERATOR#operator-sub", "SK": "IMG#1"})
 
     result = env["app"].handler({}, Context())
 
     assert result["purged"] == [GONE]
     left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
-    assert left == ["admin/" + KEEP + "/owner-sub/backdrop", "admin/" + KEEP + "/staff-sub/backdrop",
-                    "console/operator-sub/backdrop"]
+    assert left == ["admin/" + KEEP + "/owner-sub/backdrops/1", "admin/" + KEEP + "/owner-sub/backdrops/1.thumb.webp",
+                    "admin/" + KEEP + "/staff-sub/backdrops/1", "admin/" + KEEP + "/staff-sub/backdrops/1.thumb.webp",
+                    "console/operator-sub/backdrops/1"]
+    rows = {i["PK"] for i in library.scan()["Items"]}
+    assert rows == {f"USER#{KEEP}#owner-sub", f"USER#{KEEP}#staff-sub", "OPERATOR#operator-sub"}
     stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
-    assert stone["purgeSummary"]["backdrops"] == 2
+    assert stone["purgeSummary"]["backdrops"] == 4

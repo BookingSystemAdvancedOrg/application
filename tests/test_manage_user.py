@@ -2282,26 +2282,43 @@ def test_staff_still_cannot_use_the_owner_routes(app_state):
 
 
 BACKDROPS_BUCKET = "test-user-backdrops"
+BACKDROPS_TABLE = "test-user-backdrops-table"
 
 
-def _backdrops_bucket(monkeypatch):
+def _backdrops(monkeypatch):
     monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    monkeypatch.setenv("USER_BACKDROPS_TABLE_NAME", BACKDROPS_TABLE)
     s3 = boto3.client("s3", region_name="eu-north-1")
     s3.create_bucket(
         Bucket=BACKDROPS_BUCKET,
         CreateBucketConfiguration={"LocationConstraint": "eu-north-1"},
     )
-    return s3
+    library = boto3.resource("dynamodb", region_name="eu-north-1").create_table(
+        TableName=BACKDROPS_TABLE,
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+    )
+    return s3, library
 
 
-def test_delete_also_deletes_the_users_backdrop_image(app_state, monkeypatch):
+def test_delete_also_deletes_the_users_backdrop_library(app_state, monkeypatch):
     app, user_table, cognito = app_state
-    s3 = _backdrops_bucket(monkeypatch)
+    s3, library = _backdrops(monkeypatch)
     put_user(user_table)
-    own = f"admin/{TENANT_A}/{TARGET_SUB}/backdrop"
-    other = f"admin/{TENANT_A}/{CALLER_SUB}/backdrop"
-    for key in (own, other):
+    target = f"admin/{TENANT_A}/{TARGET_SUB}/"
+    other = f"admin/{TENANT_A}/{CALLER_SUB}/backdrops/1"
+    for key in (target + "backdrop", target + "backdrops/1", target + "backdrops/1.thumb.webp", other):
         s3.put_object(Bucket=BACKDROPS_BUCKET, Key=key, Body=b"img")
+    for pk, sk in ((f"USER#{TENANT_A}#{TARGET_SUB}", "IMG#1"), (f"USER#{TENANT_A}#{TARGET_SUB}", "SELECTED"),
+                   (f"USER#{TENANT_A}#{CALLER_SUB}", "IMG#1")):
+        library.put_item(Item={"PK": pk, "SK": sk})
 
     response = app.handler(
         make_event(method="DELETE", proxy=TARGET_SUB),
@@ -2311,12 +2328,13 @@ def test_delete_also_deletes_the_users_backdrop_image(app_state, monkeypatch):
     assert_response(response, 204, None)
     keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BACKDROPS_BUCKET).get("Contents", [])]
     assert keys == [other]
+    assert [i["PK"] for i in library.scan()["Items"]] == [f"USER#{TENANT_A}#{CALLER_SUB}"]
     cognito.admin_delete_user.assert_called_once()
 
 
-def test_delete_without_a_backdrop_image_still_succeeds(app_state, monkeypatch):
+def test_delete_without_a_backdrop_library_still_succeeds(app_state, monkeypatch):
     app, user_table, cognito = app_state
-    _backdrops_bucket(monkeypatch)
+    _backdrops(monkeypatch)
     put_user(user_table)
 
     response = app.handler(
@@ -2332,7 +2350,7 @@ def test_backdrop_delete_failure_keeps_the_user_for_a_retry(app_state, monkeypat
     app, user_table, cognito = app_state
     monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
     s3 = Mock()
-    s3.delete_object.side_effect = client_error("AccessDenied", "DeleteObject")
+    s3.get_paginator.return_value.paginate.side_effect = client_error("AccessDenied", "ListObjectsV2")
     monkeypatch.setattr(app, "_s3_client", s3)
     original = user_item()
     put_user(user_table, original)

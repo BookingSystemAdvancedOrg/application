@@ -40,17 +40,19 @@ ENV_VARS:
     TENANT_TABLE_NAME / LOCATION_TABLE_NAME / LOCATION_ID_INDEX_NAME --
         tenant context (shared/tenant.py)
     COGNITO_USER_POOL_ID -- Target user pool for the Cognito admin calls
-    USER_BACKDROPS_BUCKET_NAME -- user-backdrops bucket: deleting a user
-        also deletes their own background image
-        (admin/<tenantId>/<sub>/backdrop, user-backdrop); empty = skipped
+    USER_BACKDROPS_BUCKET_NAME / USER_BACKDROPS_TABLE_NAME -- the
+        background image library (user-backdrop): deleting a user also
+        deletes every object under admin/<tenantId>/<sub>/ and their items
+        (PK USER#<tenantId>#<sub>); empty = skipped
 
 AWS RESOURCE ACCESS:
     Full dynamodb:* on the User table. Cognito AdminCreateUser,
     AdminDeleteUser, AdminDisableUser, AdminEnableUser,
     AdminUpdateUserAttributes, AdminAddUserToGroup,
     AdminRemoveUserFromGroup, AdminGetUser, and AdminListGroupsForUser on the
-    configured user pool. s3:DeleteObject under admin/ in the user-backdrops
-    bucket.
+    configured user pool. s3:ListBucket (prefix admin/) and s3:DeleteObject
+    under admin/ in the user-backdrops bucket; Query, DeleteItem and
+    BatchWriteItem on the user-backdrops table.
 
 NOTES:
     User listing uses the DynamoDB directory mirror so it does not make one
@@ -206,19 +208,43 @@ def _get_s3_client():
 
 
 def _delete_backdrop(target_sub):
-    """The user's own background image (user-backdrop). Before Cognito and
-    the profile: a failure here leaves the user intact for a retry, and S3
-    deletes are idempotent."""
-    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
-    if not bucket:
-        return
+    """The user's background image library (user-backdrop): every object
+    under admin/<tenantId>/<sub>/ and their items. Before Cognito and the
+    profile: a failure here leaves the user intact for a retry, and every
+    step is idempotent."""
     tenant_id = _TENANT_ID.get()
-    if "/" in tenant_id or "/" in target_sub:
+    if "/" in tenant_id or "/" in target_sub or "#" in target_sub:
         raise _UserServiceFailure
-    _get_s3_client().delete_object(
-        Bucket=bucket,
-        Key=f"admin/{tenant_id}/{target_sub}/backdrop",
-    )
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    if bucket:
+        s3 = _get_s3_client()
+        pages = s3.get_paginator("list_objects_v2").paginate(
+            Bucket=bucket,
+            Prefix=f"admin/{tenant_id}/{target_sub}/",
+        )
+        for page in pages:
+            objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objects:
+                s3.delete_objects(
+                    Bucket=bucket,
+                    Delete={"Objects": objects, "Quiet": True},
+                )
+    table_name = os.environ.get("USER_BACKDROPS_TABLE_NAME")
+    if table_name:
+        library = table(table_name)
+        pk = f"USER#{tenant_id}#{target_sub}"
+        kwargs = {
+            "KeyConditionExpression": Key("PK").eq(pk),
+            "ProjectionExpression": "PK, SK",
+        }
+        with library.batch_writer() as batch:
+            while True:
+                page = library.query(**kwargs)
+                for item in page.get("Items", []):
+                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                if "LastEvaluatedKey" not in page:
+                    break
+                kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
 def _user_response(status_code, body, *, headers=None):

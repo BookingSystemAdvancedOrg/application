@@ -30,8 +30,9 @@ PURPOSE:
         (CONSENT_TABLE_NAME)
       * users: the Cognito users of the tenant pool and their profiles
       * menu images (menu-images/<tenantId>/ in the menu image bucket)
-      * every user's own background image (admin/<tenantId>/ in the
-        user-backdrops bucket, user-backdrop)
+      * every user's background image library (admin/<tenantId>/ in the
+        user-backdrops bucket and the users' items in the user-backdrops
+        table, found through its byTenant index; user-backdrop)
       * Kassa's fiskaly API key for the restaurant (the secret
         FISKALY_UNIT_PREFIX + tenantId, 7-day recovery window). The fiskaly
         UNIT itself, Kassa's journal and its receipts stay (bookkeeping,
@@ -80,7 +81,8 @@ ENV_VARS:
     COGNITO_USER_POOL_ID, LOCATION_TABLE_NAMES (JSON list),
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
-    MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME (empty: skipped),
+    MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME and
+    USER_BACKDROPS_TABLE_NAME (empty: skipped),
     RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
     FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/), SITE_REPO_FUNCTION_ARN
@@ -92,7 +94,8 @@ AWS RESOURCE ACCESS:
     the catering history, marketing, location and user tables (user table
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
     pool, s3:ListBucket/DeleteObject under menu-images/ (menu image bucket)
-    and admin/ (user-backdrops bucket), Route 53 record and
+    and admin/ (user-backdrops bucket), Query (byTenant) and BatchWriteItem
+    on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
     DisableDomainAutoRenew, secretsmanager:DeleteSecret on
     booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
@@ -296,6 +299,15 @@ def _purge_backdrops(tenant_id, budget, counts):
         if objects:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
             counts["backdrops"] += len(objects)
+
+
+def _purge_backdrop_items(tenant_id, budget):
+    """The library items (images and selection) of the restaurant's users."""
+    table_name = os.environ.get("USER_BACKDROPS_TABLE_NAME")
+    if not table_name:
+        return
+    keys = _query_keys(table_name, Key("tenantId").eq(tenant_id), index="byTenant")
+    _delete_keys(table_name, [{"PK": k["PK"], "SK": k["SK"]} for k in keys], budget)
 
 
 def _purge_fiskaly_key(tenant_id, counts):
@@ -509,6 +521,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     _purge_users(tenant_id, budget, counts)
     _purge_images(tenant_id, budget, counts)
     _purge_backdrops(tenant_id, budget, counts)
+    _purge_backdrop_items(tenant_id, budget)
     _purge_fiskaly_key(tenant_id, counts)
     repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)

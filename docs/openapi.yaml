@@ -64,8 +64,6 @@ tags:
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
   - name: Insights
     description: The restaurant's own figures for a period (Statistik in the admin app).
-  - name: Card payments
-    description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
   - name: Accounting
     description: The accounting export (Bokföring) - the location's BAS account mapping and one balanced verifikation per business day as SIE 4, CSV or JSON (docs/ACCOUNTING-EXPORT.md).
   - name: Kassa
@@ -2785,17 +2783,17 @@ paths:
         '503':
           $ref: '#/components/responses/ImageUploadServiceUnavailable'
 
-  /me/backdrop:
+  /me/backdrops:
     get:
       tags:
         - Media
-      summary: The caller's own background image
-      operationId: getUserBackdrop
+      summary: The caller's background image library
+      operationId: listUserBackdrops
       description: |
-        The signed-in user's own background image (shown blurred behind the
-        admin app's glass UI, on every device). `url` is a one-hour presigned
-        S3 GET of `admin/{tenantId}/{sub}/backdrop`, a new one on every call;
-        both fields are null when the user has no image.
+        The signed-in user's images, newest first, with one-hour presigned
+        links to the full image and its ~400 px WebP thumbnail, the selected
+        image's id and the cap. The first call moves an image uploaded with
+        the first version (one image per user) into the library, selected.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2803,40 +2801,14 @@ paths:
         - owner_user
       responses:
         '200':
-          description: The image link, or nulls.
+          description: The library.
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserBackdrop'
-              example:
-                url: https://user-backdrops.s3.eu-north-1.amazonaws.com/admin/01aaaaaaaaaaaaaaaaaaaaaaaa/sub/backdrop?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=3600
-                updatedAt: '2026-11-13T20:00:00Z'
-        '401':
-          $ref: '#/components/responses/GatewayUnauthorized'
-        '403':
-          $ref: '#/components/responses/NoStoreForbidden'
-        '503':
-          $ref: '#/components/responses/BackdropServiceUnavailable'
-    delete:
-      tags:
-        - Media
-      summary: Delete the caller's own background image
-      operationId: deleteUserBackdrop
-      description: Deletes the image. Idempotent (204 also when there is none).
-      security:
-        - bearerAuth: []
-      x-required-groups:
-        - staff_user
-        - owner_user
-      responses:
-        '204':
-          description: Deleted (or there was none).
-          headers:
-            Cache-Control:
-              $ref: '#/components/headers/CacheControlNoStore'
+                $ref: '#/components/schemas/UserBackdropLibrary'
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
@@ -2844,18 +2816,18 @@ paths:
         '503':
           $ref: '#/components/responses/BackdropServiceUnavailable'
 
-  /me/backdrop/upload:
+  /me/backdrops/upload:
     post:
       tags:
         - Media
-      summary: Create an upload for the caller's own background image
+      summary: Start an upload to the caller's library
       operationId: createUserBackdropUpload
       description: |
-        An S3 presigned POST (valid 300 s) for the caller's fixed key: the
-        policy binds the key, `Content-Type` to the requested type and the
-        size to 1 B to 10 MB. POST multipart form data to `url` with every
-        entry of `fields` and then the file (field name `file`), then call
-        GET /me/backdrop. A new upload replaces the old image.
+        An S3 presigned POST (valid 300 s) for a new image id: the policy
+        binds the key `admin/{tenantId}/{sub}/backdrops/{id}`, `Content-Type`
+        to the requested type and the size to 1 B to 10 MB. POST multipart
+        form data to `url` with every entry of `fields` and then the file
+        (field name `file`), then call complete with the `id`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2870,6 +2842,8 @@ paths:
             example:
               contentType: image/webp
               size: 482113
+              width: 2400
+              height: 1600
       responses:
         '200':
           description: The presigned POST.
@@ -2886,6 +2860,140 @@ paths:
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
           $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/BackdropLimitReached'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/{id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/BackdropId'
+    post:
+      tags:
+        - Media
+      summary: Finish an upload
+      operationId: completeUserBackdropUpload
+      description: |
+        After the browser's S3 POST: checks the object (type, size), decodes
+        it, writes a ~400 px wide WebP thumbnail and stores the item. A
+        missing upload answers 400 `upload_missing`; anything that isn't a
+        JPEG, PNG or WebP image is deleted and answers 400 `not_an_image`.
+        Calling it again answers the same item.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The new library item.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - item
+                properties:
+                  item:
+                    $ref: '#/components/schemas/UserBackdropItem'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
+        '409':
+          $ref: '#/components/responses/BackdropLimitReached'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/selected:
+    put:
+      tags:
+        - Media
+      summary: Choose the caller's background image
+      operationId: selectUserBackdrop
+      description: Selects one of the caller's images, or none with `null`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - id
+              properties:
+                id:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: The selection.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - selectedId
+                properties:
+                  selectedId:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BackdropId'
+    delete:
+      tags:
+        - Media
+      summary: Delete an image from the caller's library
+      operationId: deleteUserBackdrop
+      description: |
+        Deletes the image, its thumbnail and its item; a selected image
+        leaves no selection. Idempotent.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '204':
+          description: Deleted (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
         '503':
           $ref: '#/components/responses/BackdropServiceUnavailable'
 
@@ -3772,7 +3880,9 @@ paths:
       description: |
         Public. The guest orders dishes from a location's menu (quantity 1-20
         per dish, at most 30 lines) for pickup, or at a table with the code
-        from the table's QR code. Prices and VAT are taken from the menu,
+        from the table's QR code. Each line may carry `note` ("ingen lök")
+        and `allergy` ("jordnötsallergi"), at most 140 characters each; they
+        follow the item onto its station's kitchen ticket. Prices and VAT are taken from the menu,
         never from the request. Alcohol can't be ordered for pickup.
 
         The order is created `pending_payment` and the answer carries a
@@ -5721,217 +5831,6 @@ paths:
         '204':
           description: Deleted
 
-  # --- Card payments at the till (Stripe Terminal) ---------------------------
-  /locations/{locationId}/card-payments:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Card payments]
-      summary: 'The day''s in-person card payments, newest first'
-      operationId: listCardPayments
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payments.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPaymentList'}
-      parameters:
-        - {name: date, in: query, required: false, schema: {type: string, format: date}}
-    post:
-      tags: [Card payments]
-      summary: 'Take a card payment on a reader ("Ta betalt")'
-      operationId: createCardPayment
-      description: 'One PaymentIntent (card_present, automatic capture) per checkoutId on the restaurant''s connected account, sent to the reader. The same checkoutId again answers 200 with the same payment. An orderId takes the amount from that unpaid order. 409 terminal_not_enabled, order_not_payable, order_other_account, order_already_paid; 404 for a reader of another location.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [checkoutId, readerId]
-              properties:
-                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                readerId: {type: string, pattern: '^tmr_'}
-                amount: {type: integer, minimum: 300, maximum: 5000000, description: Öre}
-                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                note: {type: string, maxLength: 120}
-                vatRate: {type: integer, enum: [12, 25], description: 'Required with amount (a free amount): 12 food and drink, 25 alcohol'}
-      responses:
-        '201':
-          description: 'Sent to the reader (processing), or failed with reader_offline / reader_busy.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/readers:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Card payments]
-      summary: 'The location''s card readers (registered in Booqy Console)'
-      operationId: listCardReaders
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'Readers with online/offline status.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardReaderList'}
-  /locations/{locationId}/card-payments/{paymentId}:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    get:
-      tags: [Card payments]
-      summary: 'One payment (the till polls it; asks Stripe when the webhook is late)'
-      operationId: getCardPayment
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/cancel:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Cancel the payment on the reader ("Avbryt")'
-      operationId: cancelCardPayment
-      description: 'If the card went through meanwhile, the answer is the paid payment.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/retry:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Try the same PaymentIntent again ("Försök igen")'
-      operationId: retryCardPayment
-      description: 'From failed or canceled only. Never a second PaymentIntent.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                readerId: {type: string, pattern: '^tmr_'}
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/refund:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Refund the whole payment ("Återbetala")'
-      operationId: refundCardPayment
-      description: '409 refund_via_order: a payment for an order is refunded by cancelling the order.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/simulate:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Test mode: the simulated reader taps a card'
-      operationId: simulateCardPayment
-      description: 'Not in prod (404). Simulated readers only (409 not_simulated).'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [outcome]
-              properties:
-                outcome: {type: string, enum: [approve, decline]}
-      responses:
-        '202':
-          description: 'Accepted.'
-  /locations/{locationId}/card-payments/{paymentId}/receipt:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    get:
-      tags: [Card payments]
-      summary: 'The Swedish receipt (Kvitto) of a payment'
-      operationId: getCardReceipt
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment and its receipt.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardReceipt'}
-    post:
-      tags: [Card payments]
-      summary: 'E-mail the receipt ("Skicka kvitto")'
-      operationId: sendCardReceipt
-      description: 'Paid payments only (409 not_paid), at most 5 e-mails per payment (409 receipt_limit).'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [email]
-              properties:
-                email: {type: string, format: email}
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-
   # --- Printing (issue 2) ------------------------------------------------------
   /locations/{locationId}/accounting:
     parameters:
@@ -6572,7 +6471,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'Card payment for (part of) the bill on a reader; 503 control_system_unreachable before any charge'
+      summary: 'Card payment for (part of) the bill, taken on the restaurant''s own terminal and confirmed here; 503 control_system_unreachable before the guest pays'
       operationId: startKassaPayment
       security:
         - bearerAuth: []
@@ -6587,11 +6486,10 @@ paths:
               oneOf:
                 - type: object
                   additionalProperties: false
-                  required: [checkoutId, readerId, amount]
+                  required: [checkoutId, amount]
                   properties:
-                    checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                    readerId: {type: string, pattern: '^tmr_'}
-                    amount: {type: integer, minimum: 300, description: Öre}
+                    checkoutId: {type: string, pattern: '^[0-9a-f]{32}$', description: 'The same id again records one payment'}
+                    amount: {type: integer, minimum: 1, description: Öre}
                 - type: object
                   description: |
                     A gift card the gift-cards feature already redeemed for this
@@ -6615,7 +6513,7 @@ paths:
       - $ref: '#/components/parameters/LocationId'
     post:
       tags: [Kassa]
-      summary: 'A paid part back to the card, before the receipt'
+      summary: 'A paid part off the bill, before the receipt (a card part is paid back on the restaurant''s terminal)'
       operationId: undoKassaPayment
       security:
         - bearerAuth: []
@@ -6748,14 +6646,15 @@ paths:
               required: [name]
               properties:
                 name: {type: string, minLength: 1, maxLength: 40}
+                protocol: {type: string, enum: [star, epson], default: star, description: 'star = CloudPRNT, epson = Server Direct Print'}
       responses:
         '201':
-          description: The printer and its CloudPRNT credentials.
+          description: The printer and its CloudPRNT or Server Direct Print credentials.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrinterCredentials'}
         '409':
-          description: too_many_printers (5 per location)
+          description: too_many_printers (12 per location)
 
   /locations/{locationId}/print/devices/{deviceId}:
     parameters:
@@ -6832,16 +6731,157 @@ paths:
               required: [orderId]
               properties:
                 orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                stationId: {type: string, description: 'only this station''s ticket'}
       responses:
         '202':
-          description: Queued.
+          description: Queued (jobIds, one per printer and ticket).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrintJobQueued'}
         '404':
-          description: Unknown order.
+          description: Unknown order or station.
         '409':
           description: no_printer, order_not_paid, order_cancelled
+
+  /locations/{locationId}/print/routing:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Stations, their printers, category routing and the allergy ticket
+      operationId: getTicketRouting
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: The routing (defaults Kök and Bar when never saved).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketRouting'}
+    put:
+      tags: [Printing]
+      summary: Save stations and routing
+      operationId: putTicketRouting
+      description: Conditional on `version` (409 `changed_retry`). A station without stationId is new.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketRouting'}
+      responses:
+        '200':
+          description: Saved with the new version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketRouting'}
+        '400':
+          description: Invalid routing.
+        '409':
+          description: changed_retry
+
+  /locations/{locationId}/print/tickets:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Kitchen display, the last day's station tickets
+      operationId: listStationTickets
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Tickets, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tickets:
+                    type: array
+                    items: {$ref: '#/components/schemas/StationTicket'}
+
+  /locations/{locationId}/print/tickets/{sourceId}/{stationId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: sourceId, in: path, required: true, schema: {type: string}}
+      - {name: stationId, in: path, required: true, schema: {type: string}}
+    put:
+      tags: [Printing]
+      summary: Station status of a ticket (skickad, tillagas, klar)
+      operationId: putStationTicketStatus
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {type: string, enum: [sent, preparing, ready]}
+      responses:
+        '200':
+          description: The ticket.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StationTicket'}
+        '404':
+          description: Unknown or cancelled ticket.
+
+  /locations/{locationId}/print/tickets/{sourceId}/{stationId}/print:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: sourceId, in: path, required: true, schema: {type: string}}
+      - {name: stationId, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [Printing]
+      summary: Print a station ticket again on its printers
+      operationId: reprintStationTicket
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '202':
+          description: Queued.
+        '404':
+          description: Unknown or cancelled ticket.
+        '409':
+          description: no_printer
+
+  /print/epson/{deviceId}:
+    parameters:
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: Epson Server Direct Print (the printer polls)
+      operationId: epsonServerDirectPrint
+      description: HTTP Basic (device id, secret). Form field ConnectionType=GetRequest answers the next job as
+        PrintRequestInfo with ePOS-Print XML (empty body when none); SetResponse with ResponseFile confirms jobs.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                ConnectionType: {type: string, enum: [GetRequest, SetResponse]}
+                ID: {type: string}
+                Name: {type: string}
+                ResponseFile: {type: string}
+      responses:
+        '200':
+          description: text/xml
+        '401':
+          description: Wrong device or secret.
 
   /print/cloudprnt/{deviceId}:
     parameters:
@@ -6939,6 +6979,16 @@ components:
       schema:
         type: string
         enum: [cookie]
+    BackdropId:
+      name: id
+      in: path
+      required: true
+      description: Id of an image in the caller's backdrop library.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{26}$'
+      example: 019a7f3c2b1e4d5a6b7c8d9e0f
+
     CognitoSub:
       name: cognitoSub
       in: path
@@ -7104,59 +7154,53 @@ components:
           type: object
           description: orderId -> PENDING | PRINTING | FAILED for orders not printed yet.
           additionalProperties: {type: string, enum: [PENDING, PRINTING, FAILED]}
-    CardPayment:
+    TicketRouting:
       type: object
+      required: [stations, categories, allergyTicket, version]
       properties:
-        paymentId: {type: string}
-        locationId: {type: string}
-        date: {type: string, format: date}
-        amount: {type: integer, description: Öre}
-        currency: {type: string, enum: [sek]}
-        orderId: {type: string}
-        orderNumber: {type: integer}
-        note: {type: string}
-        readerId: {type: string}
-        readerLabel: {type: string}
-        status: {type: string, enum: [processing, succeeded, failed, canceled, refunded]}
-        attempt: {type: integer}
-        failure:
-          type: object
-          properties:
-            code: {type: string}
-            message: {type: string}
-        card: {$ref: '#/components/schemas/LooseObject'}
-        refund: {$ref: '#/components/schemas/LooseObject'}
-        simulated: {type: boolean}
-        createdAt: {type: string, format: date-time}
-        paidAt: {type: string, format: date-time}
-        receiptsSent: {type: integer}
-    CardPaymentList:
-      type: object
-      properties:
-        date: {type: string, format: date}
-        enabled: {type: boolean}
-        payments:
+        stations:
           type: array
-          items: {$ref: '#/components/schemas/CardPayment'}
-    CardReaderList:
+          minItems: 1
+          maxItems: 12
+          items:
+            type: object
+            required: [name]
+            properties:
+              stationId: {type: string, pattern: '^[a-z0-9]{2,16}$'}
+              name: {type: string, minLength: 1, maxLength: 30}
+              printerIds: {type: array, items: {type: string}}
+        categories:
+          type: object
+          description: starters, mains, desserts, drinks -> stationId or "none" (no ticket)
+          additionalProperties: {type: string}
+        allergyTicket: {type: boolean}
+        version: {type: integer}
+    StationTicket:
       type: object
       properties:
-        enabled: {type: boolean}
-        readers:
+        sourceId: {type: string, description: 'orderId, or k<id> for a Kassa send'}
+        stationId: {type: string}
+        stationName: {type: string}
+        status: {type: string, enum: [sent, preparing, ready, cancelled]}
+        allergy: {type: boolean}
+        notes: {type: string}
+        orderId: {type: string}
+        billId: {type: string}
+        number: {type: integer}
+        mode: {type: string, enum: [pickup, table]}
+        tableLabel: {type: string}
+        placedAt: {type: string, format: date-time}
+        entries:
           type: array
           items:
             type: object
             properties:
-              id: {type: string}
-              label: {type: string}
-              deviceType: {type: string}
-              status: {type: string, enum: [online, offline]}
-              simulated: {type: boolean}
-    CardReceipt:
-      type: object
-      properties:
-        payment: {$ref: '#/components/schemas/CardPayment'}
-        receipt: {$ref: '#/components/schemas/LooseObject'}
+              name: {type: string}
+              quantity: {type: integer}
+              course: {type: string, nullable: true, enum: [starters, mains, desserts, drinks, null]}
+              partOf: {type: string}
+              note: {type: string}
+              allergy: {type: string}
     PrintJobQueued:
       type: object
       properties:
@@ -7562,7 +7606,7 @@ components:
             features:
               type: object
               description: |
-                reservations, ordering, catering, terminal, marketing,
+                reservations, ordering, catering, marketing,
                 siteBuilder, giftCards, waitlist, events. Never kassa
                 (and never phoneAgent).
               additionalProperties:
@@ -8143,7 +8187,7 @@ components:
               type: object
               additionalProperties:
                 type: boolean
-              description: e.g. reservations, ordering, catering, terminal.
+              description: e.g. reservations, ordering, catering, kassa.
         locationCount:
           type: integer
         stripe:
@@ -10023,6 +10067,47 @@ components:
           $ref: '#/components/schemas/MenuScheduleBound'
         availableUntil:
           $ref: '#/components/schemas/MenuScheduleBound'
+        station:
+          type: string
+          nullable: true
+          description: Kitchen ticket station (print/routing stationId), "none" for no ticket, null = the category's.
+        components:
+          type: array
+          maxItems: 8
+          description: A combo's parts, each to its own station (null station = the dish's).
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string, maxLength: 60}
+              station: {type: string, nullable: true}
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
+
+    MenuImageFocus:
+      type: object
+      nullable: true
+      additionalProperties: false
+      required:
+        - x
+        - y
+      properties:
+        x:
+          type: integer
+          minimum: 0
+          maximum: 100
+        y:
+          type: integer
+          minimum: 0
+          maximum: 100
+      example:
+        x: 50
+        y: 30
+      description: |
+        Focal point of the dish photo in whole percent of its width (x) and
+        height (y), used as CSS `object-position` wherever the photo is
+        cropped. Omitted in responses and null in a request mean the centre
+        (50, 50); null in a PUT clears a stored value.
 
     MenuScheduleBound:
       type: string
@@ -10096,6 +10181,22 @@ components:
           $ref: '#/components/schemas/MenuScheduleBound'
         availableUntil:
           $ref: '#/components/schemas/MenuScheduleBound'
+        station:
+          type: string
+          nullable: true
+          description: Kitchen ticket station (print/routing stationId), "none" for no ticket, null = the category's.
+        components:
+          type: array
+          maxItems: 8
+          description: A combo's parts, each to its own station (null station = the dish's).
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string, maxLength: 60}
+              station: {type: string, nullable: true}
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
         createdBy:
           type: string
         createdAt:
@@ -10135,6 +10236,8 @@ components:
             prefix; legacy values are returned unchanged.
         alcohol:
           type: boolean
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
 
     PublicMenuItemList:
       type: object
@@ -11620,23 +11723,58 @@ components:
         - image/png
         - image/webp
 
-    UserBackdrop:
+    UserBackdropItem:
       type: object
       additionalProperties: false
       required:
+        - id
         - url
-        - updatedAt
+        - thumbUrl
+        - uploadedAt
+        - width
+        - height
       properties:
+        id:
+          type: string
+          pattern: '^[0-9a-f]{26}$'
         url:
           type: string
           format: uri
-          nullable: true
-          description: One-hour presigned S3 GET, or null when there is no image.
-        updatedAt:
+          description: One-hour presigned S3 GET of the full image.
+        thumbUrl:
+          type: string
+          format: uri
+          description: One-hour presigned S3 GET of the ~400 px wide WebP thumbnail.
+        uploadedAt:
           type: string
           format: date-time
+        width:
+          type: integer
+          description: Width as displayed (EXIF orientation applied).
+        height:
+          type: integer
+
+    UserBackdropLibrary:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - selectedId
+        - max
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          description: Newest first.
+          items:
+            $ref: '#/components/schemas/UserBackdropItem'
+        selectedId:
+          type: string
           nullable: true
-          description: When the image was last uploaded (UTC), or null.
+        max:
+          type: integer
+          enum:
+            - 20
 
     UserBackdropUploadRequest:
       type: object
@@ -11644,6 +11782,8 @@ components:
       required:
         - contentType
         - size
+        - width
+        - height
       properties:
         contentType:
           type: string
@@ -11656,14 +11796,27 @@ components:
           minimum: 1
           maximum: 10485760
           description: File size in bytes.
+        width:
+          type: integer
+          minimum: 1
+          maximum: 20000
+        height:
+          type: integer
+          minimum: 1
+          maximum: 20000
 
     UserBackdropUpload:
       type: object
       additionalProperties: false
       required:
+        - id
         - url
         - fields
       properties:
+        id:
+          type: string
+          pattern: '^[0-9a-f]{26}$'
+          description: The new image's id, for complete.
         url:
           type: string
           format: uri
@@ -12409,6 +12562,42 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout version service unavailable
+    BackdropLimitReached:
+      description: The caller already has 20 images.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required:
+              - error
+              - max
+            properties:
+              error:
+                type: string
+                enum:
+                  - limit_reached
+              max:
+                type: integer
+          example:
+            error: limit_reached
+            max: 20
+
+    BackdropNotFound:
+      description: No such image of the caller.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: not_found
+
     BackdropServiceUnavailable:
       description: S3 did not answer; try again.
       headers:

@@ -2213,6 +2213,34 @@
       ]
     },
     {
+      "id": "ladda-ner-appen",
+      "route": "/ladda-ner",
+      "title": "Skrivbordsappen",
+      "audience": "all",
+      "keywords": [
+        "app",
+        "skrivbordsapp",
+        "ladda ner",
+        "installera",
+        "mac",
+        "windows",
+        "linux"
+      ],
+      "answer": "Booqy Admin finns som app för Mac, Windows och Linux, med samma inloggning som här. Under Ladda ner appen längst ned i vänstermenyn markeras filen för din dator när den går att avgöra.",
+      "steps": [
+        "Öppna Ladda ner appen längst ned i vänstermenyn.",
+        "Ladda ner filen som rekommenderas för din dator, eller välj i listan.",
+        "Första gången: på Mac öppnar du appen via Systeminställningar, Integritet och säkerhet, Öppna ändå. På Windows klickar du Mer information och Kör ändå."
+      ],
+      "actions": [
+        {
+          "id": "ladda-ner-open",
+          "label": "Ladda ner appen",
+          "to": "/ladda-ner"
+        }
+      ]
+    },
+    {
       "id": "avtal",
       "route": "/avtal",
       "title": "Personuppgiftsbiträdesavtalet",

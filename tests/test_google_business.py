@@ -331,6 +331,18 @@ def test_mapping_closed_hours_no_online_and_twelve_month_cut():
     assert gbp.hours_hash(mapped) == gbp.hours_hash(gbp.map_hours(location, today))
 
 
+def test_mapping_hours_past_midnight_close_on_the_next_day():
+    location = {"businessHours": {**HOURS, "saturday": [{"opensAt": "18:00", "closesAt": "02:00"}],
+                                  "sunday": [{"opensAt": "20:00", "closesAt": "00:00"}]}}
+    periods = gbp.map_hours(location, date(2026, 11, 4))["regularHours"]["periods"]
+    saturday = next(p for p in periods if p["openDay"] == "SATURDAY")
+    assert saturday["closeDay"] == "SUNDAY" and saturday["closeTime"] == {"hours": 2}
+    sunday = next(p for p in periods if p["openDay"] == "SUNDAY")
+    assert sunday["closeDay"] == "MONDAY"
+    friday = next(p for p in periods if p["openDay"] == "FRIDAY")
+    assert friday["closeDay"] == "FRIDAY"
+
+
 # --- hourly job ------------------------------------------------------------------------
 
 def test_hourly_job_idempotent_and_continues_after_failure(env):

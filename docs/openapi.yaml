@@ -8889,8 +8889,14 @@ components:
         - opensAt
         - closesAt
       description: |
-        Both times use local 24-hour `HH:MM`. `opensAt` must precede
-        `closesAt`; overnight intervals are not accepted.
+        Both times use local 24-hour `HH:MM` and must differ. In the
+        weekly `businessHours`, a `closesAt` earlier than `opensAt` (or
+        `00:00`) closes after midnight, on the next day: saturday
+        `18:00`-`02:00` is open until Sunday 02:00. Only a day's last
+        interval may do so, and it must end by the next day's first
+        opening. Bookings end on the date they start (by 23:59); the hours
+        after midnight are bookable from 00:00 on the next date. Special-day
+        intervals stay within their date (`opensAt` before `closesAt`).
       properties:
         opensAt:
           type: string

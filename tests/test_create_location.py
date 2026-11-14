@@ -475,9 +475,35 @@ def test_requires_all_weekdays(app_and_table):
         (
             {
                 **{day: [] for day in WEEKDAYS},
-                "monday": [{"opensAt": "17:00", "closesAt": "09:00"}],
+                "monday": [{"opensAt": "17:00", "closesAt": "17:00"}],
             },
-            "businessHours.monday opening time must precede closing time",
+            "businessHours.monday opening and closing time must differ",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "monday": [
+                    {"opensAt": "18:00", "closesAt": "02:00"},
+                    {"opensAt": "22:00", "closesAt": "23:00"},
+                ],
+            },
+            "businessHours.monday entries must not overlap",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "saturday": [{"opensAt": "18:00", "closesAt": "02:00"}],
+                "sunday": [{"opensAt": "01:00", "closesAt": "05:00"}],
+            },
+            "businessHours.saturday hours after midnight overlap the next day's opening",
+        ),
+        (
+            {
+                **{day: [] for day in WEEKDAYS},
+                "sunday": [{"opensAt": "20:00", "closesAt": "03:00"}],
+                "monday": [{"opensAt": "02:00", "closesAt": "05:00"}],
+            },
+            "businessHours.sunday hours after midnight overlap the next day's opening",
         ),
         (
             {
@@ -1496,3 +1522,26 @@ def test_grace_period_is_15_to_60_minutes(app_and_table):
         assert response["statusCode"] == 400
         assert "15 and 60 minutes" in json.loads(response["body"])["error"]
     assert put_rules(app, {"gracePeriodHours": 0.25})["statusCode"] == 200
+
+
+def test_accepts_hours_past_midnight_as_stored(app_and_table, monkeypatch):
+    # Lördag 18:00-02:00 closes Sunday 02:00; Sunday may open again at 02:00.
+    app, location_table = app_and_table
+    monkeypatch.setattr(app, "_new_location_id", lambda: "location-id")
+    body = valid_body()
+    body["businessHours"]["saturday"] = [
+        {"opensAt": "18:00", "closesAt": "02:00"},
+        {"opensAt": "11:00", "closesAt": "15:00"},
+    ]
+    body["businessHours"]["sunday"] = [{"opensAt": "02:00", "closesAt": "04:00"}]
+    body["businessHours"]["friday"] = [{"opensAt": "17:00", "closesAt": "00:00"}]
+
+    response = app.handler(make_event(body), None)
+
+    assert response["statusCode"] == 201, response["body"]
+    hours = json.loads(response["body"])["businessHours"]
+    assert hours["saturday"] == [
+        {"opensAt": "11:00", "closesAt": "15:00"},
+        {"opensAt": "18:00", "closesAt": "02:00"},
+    ]
+    assert hours["friday"] == [{"opensAt": "17:00", "closesAt": "00:00"}]

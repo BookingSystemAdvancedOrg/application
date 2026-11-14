@@ -48,6 +48,35 @@ def test_open_table_minutes_follow_hours_and_tables():
     assert "15" not in row["open"]
 
 
+def test_hours_past_midnight_count_on_both_dates():
+    location = {**LOCATION, "businessHours": {d: [{"opensAt": "20:00", "closesAt": "02:00"}] for d in ins.WEEKDAYS}}
+    assert ins.open_intervals(location, DAY) == [(0, 2 * 60), (20 * 60, 24 * 60)]
+    # closing at midnight adds nothing to the next date
+    midnight = {**LOCATION, "businessHours": {d: [{"opensAt": "20:00", "closesAt": "00:00"}] for d in ins.WEEKDAYS}}
+    assert ins.open_intervals(midnight, DAY) == [(20 * 60, 24 * 60)]
+
+
+def test_a_booking_after_midnight_has_open_minutes_on_its_date():
+    # Monday 18:00-02:00, a booking at 00:00 on Tuesday's date
+    hours = {d: [] for d in ins.WEEKDAYS}
+    hours["monday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    location = {**LOCATION, "businessHours": hours}
+    row = ins.build_day(location=location, day=DAY, snapshots=SNAPSHOTS, built_at="x",
+                        reservations=[booking("00:00", "01:30")])
+    assert row["open"]["0"]["t"] == 60 * 2
+    assert row["open"]["1"]["t"] == 60 * 2
+    assert "2" not in row["open"]
+    assert row["occ"]["0|online"]["t"] <= row["open"]["0"]["t"]
+
+
+def test_a_special_day_cuts_the_previous_evening_in_insights():
+    hours = {d: [] for d in ins.WEEKDAYS}
+    hours["monday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    location = {**LOCATION, "businessHours": hours,
+                "specialDays": [{"date": DAY, "kind": "hours", "intervals": [{"opensAt": "00:30", "closesAt": "03:00"}]}]}
+    assert ins.open_intervals(location, DAY) == [(0, 30), (30, 3 * 60)]
+
+
 def test_special_day_closed_has_no_open_minutes():
     location = {**LOCATION, "specialDays": [{"date": DAY, "kind": "closed"}]}
     row = ins.build_day(location=location, day=DAY, snapshots=SNAPSHOTS)

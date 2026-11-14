@@ -199,9 +199,9 @@ def tables_of_snapshots(snapshots, day):
     return out
 
 
-def open_intervals(location, day):
-    """[(open minute, close minute)] on that date: a special day's hours,
-    none when closed, otherwise the weekday's."""
+def _raw_intervals(location, day):
+    """The intervals that apply on that date (YYYY-MM-DD): a special day's
+    hours, none when closed, otherwise the weekday's."""
     weekday = WEEKDAYS[date.fromisoformat(day).weekday()]
     special = None
     raw = (location or {}).get("specialDays")
@@ -212,17 +212,34 @@ def open_intervals(location, day):
     if isinstance(special, dict) and special.get("kind") == "closed":
         return []
     if isinstance(special, dict) and special.get("kind") == "hours":
-        intervals = special.get("intervals") or []
-    else:
-        intervals = ((location or {}).get("businessHours") or {}).get(weekday) or []
+        return special.get("intervals") or []
+    return ((location or {}).get("businessHours") or {}).get(weekday) or []
+
+
+def _spans(location, day):
     out = []
-    for iv in intervals:
+    for iv in _raw_intervals(location, day):
         if not isinstance(iv, dict):
             continue
         a, b = _minute(iv.get("opensAt")), _minute(iv.get("closesAt"))
-        if a is not None and b is not None and a < b:
-            out.append((a, b))
+        if a is None or b is None or a == b:
+            continue
+        out.append((a, b + 24 * 60 if b < a else b))
     return out
+
+
+def open_intervals(location, day):
+    """[(open minute, close minute)] within that date: its own hours until
+    midnight, and the previous evening's hours past midnight (00:00 until
+    it closes, at the latest this date's first opening), as bookings and
+    orders use them (shared/booking_rules.py date_spans)."""
+    own = _spans(location, day)
+    first = min((a for a, _ in own), default=24 * 60)
+    previous = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+    out = [(0, min(b - 24 * 60, first)) for _, b in _spans(location, previous)
+           if min(b - 24 * 60, first) > 0]
+    out += [(a, min(b, 24 * 60)) for a, b in own]
+    return sorted(out)
 
 
 # --- the day row ---------------------------------------------------------------------

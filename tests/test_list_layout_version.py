@@ -1011,7 +1011,7 @@ def test_public_active_invalid_location_returns_400_before_dynamodb(
     table_factory.assert_not_called()
 
 
-def test_public_active_missing_activation_state_returns_404(
+def test_public_active_missing_activation_state_returns_an_empty_plan(
     app_and_table,
     monkeypatch,
 ):
@@ -1020,7 +1020,7 @@ def test_public_active_missing_activation_state_returns_404(
 
     response = app.handler(make_public_event(), None)
 
-    assert_response(response, 404, err("active layout not found"))
+    assert_response(response, 200, {"floors": [], "elements": []})
 
 
 @pytest.mark.parametrize(

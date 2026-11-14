@@ -1140,6 +1140,9 @@ paths:
       operationId: getAvailability
       description: |
         Publicly returns future canonical slots for one local calendar date.
+        A new restaurant that has not accepted the DPA answers 404 here,
+        except to its own staff (a tenant-pool access token of the same
+        tenant in Authorization).
         Slot starts are bounded by exact elapsed UTC time:
         `now < slotStartUtc <= now + 21 days`. The local calendar date that
         contains the upper boundary remains valid, but any later slots on that
@@ -2137,8 +2140,11 @@ paths:
         elements. Optional table and cash-register display labels are returned
         for customer presentation, while `elementId` remains the stable
         identity for booking and blocking. A legacy flat layout has an empty
-        `floors` array and elements without `floorId`. This route is
-        intentionally public and does not inspect JWT claims.
+        `floors` array and elements without `floorId`. A location with no
+        active layout yet returns 200 with empty `floors` and `elements`.
+        This route is intentionally public; a tenant-pool access token is
+        only used to let a new restaurant's own staff past the DPA go-live
+        gate.
       security: []
       x-required-groups: []
       responses:
@@ -11940,7 +11946,7 @@ components:
           example:
             error: pending layout activation not found
     ActiveLayoutNotFound:
-      description: The location has no active published layout.
+      description: Unknown location, an inactive tenant, or a new restaurant that has not accepted the DPA yet.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -11949,7 +11955,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: active layout not found
+            error: not found
     ActiveLayoutConflict:
       description: The active layout state or referenced snapshot is inconsistent.
       headers:

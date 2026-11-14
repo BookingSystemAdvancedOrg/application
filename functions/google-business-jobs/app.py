@@ -42,6 +42,7 @@ from botocore.exceptions import ClientError
 from shared import consent, dynamo, events, marketing_mail, tenant
 from shared.features import google_business as gbp
 from shared.features import guest_crm as crm
+from shared import google_business as google_port
 from shared.google_business import GoogleBusinessError
 
 logger = logging.getLogger()
@@ -305,6 +306,7 @@ def _deliver(channel, to, tenant_id, location_id, tenant_row, restaurant, subjec
 
 def handler(event, context=None):
     event = event or {}
+    google_port.start_run(context)  # one Google deadline per run, inside the Lambda timeout
     if event.get("job") == "sync":
         return run_sync()
     if isinstance(event.get("reviewJob"), dict):

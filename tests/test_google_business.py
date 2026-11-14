@@ -314,6 +314,59 @@ def test_callback_without_offline_grant_is_invalid_state(env, monkeypatch):
     assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "disconnected"
 
 
+def test_quota_zero_from_the_real_client_is_409_without_retry(env, monkeypatch):
+    # Google's likely first answer while the project has no API access: retrying will not help
+    import io
+    import urllib.error
+    from shared import google_business_real as real
+    port._RUN["deadline"] = None
+    body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
+                      "details": [{"reason": "RATE_LIMIT_EXCEEDED", "metadata": {"quota_limit_value": "0"}}]}}
+    requests = []
+
+    def urlopen(request, timeout=None):
+        requests.append(request)
+        raise urllib.error.HTTPError(request.full_url, 429, "x", {}, io.BytesIO(json.dumps(body).encode()))
+    monkeypatch.setattr(real.urllib.request, "urlopen", urlopen)
+    connect(env)
+    monkeypatch.setattr(env.google, "list_locations", real.RealGoogleBusiness().list_locations)
+    status, out = call(env, "GET", "/tenant/google-business/locations")
+    assert (status, out["code"], out["field"]) == (409, "google_rejected", "quota_exceeded")
+    assert "retryAfter" not in out and len(requests) == 1
+
+
+@pytest.mark.parametrize("code", ["api_disabled", "misconfigured", "permission_denied", "not_found",
+                                  "invalid_request", "quota_exceeded"])
+def test_google_errors_that_will_not_heal_offer_no_retry(env, monkeypatch, code):
+    connect(env)
+    link(env)
+    monkeypatch.setattr(env.google, "patch_hours", _raise(code))
+    status, body = call(env, "POST", SYNC, params={"locationId": LOC_A}, body={})
+    assert (status, body["code"], body["field"]) == (409, "google_rejected", code)
+    assert "retryAfter" not in body
+
+
+def test_callback_without_a_google_account_is_409(env, monkeypatch):
+    url = call(env, "POST", "/tenant/google-business/connection/start", body={})[1]["authorizeUrl"]
+    state = re.search(r"state=([^&]+)", url).group(1)
+    monkeypatch.setattr(env.google, "exchange_code", _raise("not_found"))
+    status, body = call(env, "POST", "/tenant/google-business/connection/callback",
+                        body={"code": "simulated", "state": state})
+    assert (status, body["code"]) == (409, "no_google_account") and "retryAfter" not in body
+
+
+def test_every_api_run_gets_its_own_google_deadline(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(port, "start_run", lambda context, **kw: seen.append((context, kw)))
+    ctx = SimpleNamespace(get_remaining_time_in_millis=lambda: 27000)
+    event = {"routeKey": "GET /tenant/google-business/connection", "pathParameters": {},
+             "queryStringParameters": None, "body": None}
+    with_tenant_claims(event, TENANT_A, "owner_user")
+    env.api.handler(event, ctx)
+    env.jobs.handler({"job": "sync"}, ctx)
+    assert seen == [(ctx, {"default_seconds": 28}), (ctx, {})]
+
+
 def test_hourly_sync_marks_needs_reauth_on_the_real_code(env, monkeypatch):
     connect(env)
     link(env)

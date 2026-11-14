@@ -3,6 +3,7 @@ against a fake urlopen: OAuth URL, exchange, refresh, revoke, accounts and
 locations with pagination, the hours PATCH body and updateMask, retries and
 the error mapping. Nothing here reaches Google."""
 
+import http.client
 import io
 import json
 import logging
@@ -90,6 +91,13 @@ def secrets(monkeypatch):
     real.reset_cache()
 
 
+@pytest.fixture(autouse=True)
+def no_run_deadline():
+    google_business._RUN["deadline"] = None  # a handler test may have left one
+    yield
+    google_business._RUN["deadline"] = None
+
+
 def use(monkeypatch, *answers):
     fake = FakeGoogle(*answers)
     monkeypatch.setattr(real.urllib.request, "urlopen", fake)
@@ -144,7 +152,9 @@ def test_bad_secret_is_misconfigured_and_not_logged(secrets, caplog, value):
     with caplog.at_level(logging.INFO), pytest.raises(GoogleBusinessError) as exc:
         real.RealGoogleBusiness().authorize_url("state-abc-123", REDIRECT)
     assert exc.value.code == "misconfigured"
-    assert value not in caplog.text or value == "{}"
+    assert CLIENT_SECRET not in caplog.text and CLIENT_ID not in caplog.text
+    if value != "{}":
+        assert value not in caplog.text
 
 
 def test_exchange_code_posts_the_code_and_reads_the_account(secrets, monkeypatch):
@@ -179,11 +189,16 @@ def test_exchange_redirect_mismatch_is_misconfigured(secrets, monkeypatch):
     assert exc.value.code == "misconfigured"
 
 
-def test_exchange_never_retries_a_timeout(secrets, monkeypatch):
-    fake = use(monkeypatch, TimeoutError())
+@pytest.mark.parametrize("answer", [TimeoutError(), (503, {}), (500, {}),
+                                    err(429, "RESOURCE_EXHAUSTED", "RATE_LIMIT_EXCEEDED")])
+def test_exchange_is_never_retried(secrets, monkeypatch, answer):
+    # Google may have used the one-time code before it answered: a retry would
+    # only get invalid_grant and hide the real cause
+    fake = use(monkeypatch, answer, token_answer())
     with pytest.raises(GoogleBusinessError) as exc:
         real.RealGoogleBusiness().exchange_code("4/x", REDIRECT)
-    assert exc.value.code == "unavailable" and exc.value.retryable and len(fake.requests) == 1
+    assert exc.value.retryable and exc.value.code in ("unavailable", "rate_limited")
+    assert len(fake.requests) == 1
 
 
 @pytest.mark.parametrize("answer", [token_answer(refresh_token=None),
@@ -243,6 +258,14 @@ def test_revoke_posts_the_token_and_ignores_already_revoked(secrets, monkeypatch
     client.revoke(REFRESH)
     assert fake.requests[0].full_url == "https://oauth2.googleapis.com/revoke"
     assert fake.requests[0].get_method() == "POST" and fake.form(0) == {"token": REFRESH}
+
+
+def test_revoke_other_400_is_invalid_request_and_logged(secrets, monkeypatch, caplog):
+    use(monkeypatch, (400, {"error": "invalid_request", "error_description": "Missing token"}))
+    with caplog.at_level(logging.INFO), pytest.raises(GoogleBusinessError) as exc:
+        real.RealGoogleBusiness().revoke(REFRESH)
+    assert exc.value.code == "invalid_request" and not exc.value.retryable
+    assert '"oauthError": "invalid_request"' in caplog.text and REFRESH not in caplog.text
 
 
 def test_revoke_google_down_is_unavailable(secrets, monkeypatch):
@@ -350,6 +373,31 @@ def test_patch_hours_all_closed_clears_both_fields(secrets, monkeypatch):
     assert fake.query(0) == {"updateMask": "regularHours,specialHours"}
 
 
+def test_patch_hours_special_days_without_regular_hours_clears_both(secrets, monkeypatch, caplog):
+    # Google: specialHours "cannot be set without regular hours"; sending it alone is a 400 every hour
+    fake = use(monkeypatch, {})
+    special = {"specialHourPeriods": [{"startDate": {"year": 2026, "month": 12, "day": 24},
+                                       "endDate": {"year": 2026, "month": 12, "day": 24}, "closed": True}]}
+    with caplog.at_level(logging.INFO):
+        real.RealGoogleBusiness().patch_hours(ACCESS, "locations/10", {"periods": []}, special)
+    assert json.loads(fake.requests[0].data) == {}
+    assert fake.query(0) == {"updateMask": "regularHours,specialHours"}
+    assert '{"google": "locations.patch", "skipped": "special_without_regular"}' in caplog.text
+
+
+def test_special_period_closing_at_midnight_ends_the_next_day(secrets, monkeypatch):
+    from datetime import date
+    location = {"businessHours": {"friday": [{"opensAt": "11:00", "closesAt": "22:00"}]},
+                "specialDays": [{"date": "2026-12-20", "kind": "hours",
+                                 "intervals": [{"opensAt": "18:00", "closesAt": "00:00"}]}]}
+    mapped = gbp.map_hours(location, date(2026, 11, 14))
+    fake = use(monkeypatch, {})
+    real.RealGoogleBusiness().patch_hours(ACCESS, "locations/10", mapped["regularHours"], mapped["specialHours"])
+    assert json.loads(fake.requests[0].data)["specialHours"]["specialHourPeriods"] == [
+        {"startDate": {"year": 2026, "month": 12, "day": 20}, "endDate": {"year": 2026, "month": 12, "day": 21},
+         "closed": False, "openTime": {"hours": 18}, "closeTime": {"hours": 0}}]
+
+
 def test_patch_hours_bad_location_never_calls(secrets, monkeypatch):
     fake = use(monkeypatch)
     with pytest.raises(GoogleBusinessError) as exc:
@@ -374,18 +422,99 @@ def test_rate_limit_after_all_attempts_is_retryable(secrets, monkeypatch):
     assert exc.value.code == "rate_limited" and exc.value.retryable and len(fake.requests) == real.ATTEMPTS
 
 
-def test_retries_stop_at_the_time_budget(secrets, monkeypatch):
+def _fake_clock(monkeypatch):
     now = [0.0]
     monkeypatch.setattr(real, "_clock", lambda: now[0])
-    monkeypatch.setattr(real, "_sleep", lambda s: None)
+    monkeypatch.setattr(real, "_sleep", lambda s: now.__setitem__(0, now[0] + s))
+    return now
 
-    def slow(*args):
-        now[0] += 12
+
+def test_retries_stop_at_the_time_budget(secrets, monkeypatch):
+    now = _fake_clock(monkeypatch)
+    timeouts = []
+
+    def slow(method, url, data, headers, timeout):
+        timeouts.append(timeout)
+        now[0] += min(timeout, 5)
         raise real._HttpFailure(503, {})
     monkeypatch.setattr(real, "_once", slow)
     with pytest.raises(GoogleBusinessError) as exc:
         real.RealGoogleBusiness().patch_hours(ACCESS, "locations/10", {}, {})
-    assert exc.value.code == "unavailable" and now[0] == 12
+    assert exc.value.code == "unavailable"
+    # the last attempt only gets what is left of the call's budget, never past it
+    assert timeouts[0] == real.TIMEOUT_SECONDS and len(timeouts) == 3 and timeouts[-1] < real.TIMEOUT_SECONDS
+    assert now[0] <= real.BUDGET_SECONDS
+
+
+def test_one_deadline_for_every_call_of_the_run(secrets, monkeypatch):
+    # list locations = refresh, accounts.list, locations.list: together they stay
+    # inside the run deadline instead of 18 s each past the Lambda timeout
+    now = _fake_clock(monkeypatch)
+    google_business._RUN["deadline"] = 20.0
+    timeouts = []
+
+    def slow(method, url, data, headers, timeout):
+        timeouts.append(timeout)
+        now[0] += timeout
+        raise real._HttpFailure(503, {})
+    monkeypatch.setattr(real, "_once", slow)
+    client = real.RealGoogleBusiness()
+    with pytest.raises(GoogleBusinessError):
+        client.refresh(REFRESH)
+    used = len(timeouts)
+    with pytest.raises(GoogleBusinessError) as exc:
+        client.list_locations(ACCESS)
+    assert exc.value.code == "unavailable" and exc.value.retryable
+    # the second call only gets what the run has left, then nothing more is tried
+    assert len(timeouts) > used and all(t < real.TIMEOUT_SECONDS for t in timeouts[used:])
+    assert now[0] <= 20.0
+    calls = len(timeouts)
+    with pytest.raises(GoogleBusinessError) as exc:
+        client.list_locations(ACCESS)
+    assert exc.value.code == "unavailable" and len(timeouts) == calls  # never reaches Google
+
+
+def test_second_call_gets_only_the_time_left(secrets, monkeypatch):
+    now = _fake_clock(monkeypatch)
+    google_business._RUN["deadline"] = 20.0
+    timeouts = []
+
+    def answer(method, url, data, headers, timeout):
+        timeouts.append(timeout)
+        now[0] += 7
+        return {"access_token": "a1", "expires_in": 3600} if "token" in url else {"accounts": []}
+    monkeypatch.setattr(real, "_once", answer)
+    client = real.RealGoogleBusiness()
+    client.refresh(REFRESH)
+    client.list_locations(ACCESS)
+    assert timeouts == [real.TIMEOUT_SECONDS, real.TIMEOUT_SECONDS]
+    google_business._RUN["deadline"] = now[0] + 5
+    client.refresh("other-refresh")
+    assert timeouts[-1] == 5
+
+
+def test_start_run_uses_the_lambda_time_left(monkeypatch):
+    monkeypatch.setattr(google_business.time, "monotonic", lambda: 100.0)
+    google_business.start_run(type("Ctx", (), {"get_remaining_time_in_millis": lambda self: 28000})())
+    assert google_business.run_deadline() == 126.0
+    google_business.start_run(None, default_seconds=28)
+    assert google_business.run_deadline() == 126.0
+    google_business.start_run(None)
+    assert google_business.run_deadline() is None
+
+
+def test_broken_http_response_is_retried_not_raised(secrets, monkeypatch):
+    # IncompleteRead and BadStatusLine are http.client.HTTPException, not OSError
+    fake = use(monkeypatch, http.client.IncompleteRead(b"par"), http.client.BadStatusLine("x"), {})
+    real.RealGoogleBusiness().patch_hours(ACCESS, "locations/10", {}, {})
+    assert len(fake.requests) == 3
+
+
+def test_broken_http_response_every_time_is_unavailable(secrets, monkeypatch):
+    use(monkeypatch, *[http.client.RemoteDisconnected("gone")] * 3)
+    with pytest.raises(GoogleBusinessError) as exc:
+        real.RealGoogleBusiness().patch_hours(ACCESS, "locations/10", {}, {})
+    assert exc.value.code == "unavailable" and exc.value.retryable
 
 
 def test_network_failure_is_retried_then_unavailable(secrets, monkeypatch):

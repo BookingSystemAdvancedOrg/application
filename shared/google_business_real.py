@@ -40,6 +40,7 @@ Errors (GoogleBusinessError.code, see shared/google_business.py):
 """
 
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ from datetime import date, timedelta
 
 import boto3
 
+from shared import google_business as port
 from shared.google_business import GoogleBusiness, GoogleBusinessError, Token
 
 logger = logging.getLogger()
@@ -68,7 +70,8 @@ UPDATE_MASK = "regularHours,specialHours"
 
 TIMEOUT_SECONDS = 8
 ATTEMPTS = 3
-BUDGET_SECONDS = 18  # all retries of one call stay inside the API Lambda's 28 s
+BUDGET_SECONDS = 18  # all retries of one call; the run's deadline (port.start_run) caps every call too
+MIN_ATTEMPT_SECONDS = 1.5  # less time than this left: no new attempt
 MAX_RETRY_AFTER = 4
 MAX_PAGES = 25
 TOKEN_EARLY_SECONDS = 120
@@ -123,10 +126,10 @@ def _retry_after(headers):
         return None
 
 
-def _once(method, url, data, headers):
+def _once(method, url, data, headers, timeout=TIMEOUT_SECONDS):
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
         try:
@@ -134,7 +137,8 @@ def _once(method, url, data, headers):
         except ValueError:
             payload = {}
         raise _HttpFailure(exc.code, payload, _retry_after(exc.headers)) from None
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
+        # HTTPException (IncompleteRead, BadStatusLine, RemoteDisconnected) is not an OSError
         raise _HttpFailure(0, {}) from None
     if not body:
         return {}
@@ -156,9 +160,18 @@ def _quota_gone(failure):
     return False
 
 
-def _send(op, method, url, *, form=None, body=None, token=None, retry_network=True):
-    """One Google call with timeouts and bounded retries on 429/5xx/network.
-    Raises _HttpFailure with the last answer."""
+def _limit(started):
+    """When this call has to be done: its own budget or the run's deadline."""
+    deadline = port.run_deadline()
+    return started + BUDGET_SECONDS if deadline is None else min(started + BUDGET_SECONDS, deadline)
+
+
+def _send(op, method, url, *, form=None, body=None, token=None, retry=True):
+    """One Google call with timeouts and bounded retries on 429/5xx/network,
+    inside BUDGET_SECONDS and the run's deadline (each attempt's timeout is
+    capped at the time left). retry=False: exactly one attempt (a one-time
+    code may already be used when Google answers 5xx). Raises _HttpFailure
+    with the last answer."""
     headers = {"Accept": "application/json"}
     data = None
     if form is not None:
@@ -169,12 +182,16 @@ def _send(op, method, url, *, form=None, body=None, token=None, retry_network=Tr
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    started = _clock()
-    for attempt in range(ATTEMPTS):
+    limit = _limit(_clock())
+    for attempt in range(ATTEMPTS if retry else 1):
+        left = limit - _clock()
+        if left < MIN_ATTEMPT_SECONDS:
+            logger.warning(json.dumps({"google": op, "status": 0, "skipped": "no_time_left"}))
+            raise _HttpFailure(0, {})
         try:
-            return _once(method, url, data, headers)
+            return _once(method, url, data, headers, min(TIMEOUT_SECONDS, left))
         except _HttpFailure as failure:
-            retryable = failure.status in _RETRY_STATUS or (failure.status == 0 and retry_network)
+            retryable = retry and (failure.status in _RETRY_STATUS or failure.status == 0)
             if failure.status == 429 and _quota_gone(failure):
                 retryable = False
             if not retryable or attempt == ATTEMPTS - 1:
@@ -182,7 +199,7 @@ def _send(op, method, url, *, form=None, body=None, token=None, retry_network=Tr
                 raise
             wait = failure.retry_after if failure.retry_after is not None else 0.5 * (2 ** attempt)
             wait = min(MAX_RETRY_AFTER, wait) + random.uniform(0, 0.25)
-            if _clock() - started + wait + TIMEOUT_SECONDS > BUDGET_SECONDS:
+            if _clock() + wait + MIN_ATTEMPT_SECONDS > limit:
                 _log(op, failure)
                 raise
             _sleep(wait)
@@ -310,12 +327,16 @@ def special_periods(special_hours):
 
 def hours_body(regular_hours, special_hours):
     """The Location body for PATCH ?updateMask=regularHours,specialHours.
-    An empty field is left out, which clears it at Google (the mask names it)."""
-    body = {}
+    An empty field is left out, which clears it at Google (the mask names it).
+    Google refuses specialHours without regularHours ("This field cannot be
+    set without regular hours"), so no regular hours clears both."""
     periods = list((regular_hours or {}).get("periods") or [])
-    if periods:
-        body["regularHours"] = {"periods": periods}
     special = special_periods(special_hours)
+    if not periods:
+        if special:
+            logger.info(json.dumps({"google": "locations.patch", "skipped": "special_without_regular"}))
+        return {}
+    body = {"regularHours": {"periods": periods}}
     if special:
         body["specialHours"] = {"specialHourPeriods": special}
     return body
@@ -333,7 +354,7 @@ class RealGoogleBusiness(GoogleBusiness):
     def exchange_code(self, code, redirect_uri):
         app = _app()
         try:
-            payload = _send("token.exchange", "POST", TOKEN_URL, retry_network=False,
+            payload = _send("token.exchange", "POST", TOKEN_URL, retry=False,
                             form={"code": code, "client_id": app["clientId"], "client_secret": app["clientSecret"],
                                   "redirect_uri": redirect_uri, "grant_type": "authorization_code"})
         except _HttpFailure as failure:
@@ -418,8 +439,8 @@ class RealGoogleBusiness(GoogleBusiness):
         try:
             _send("token.revoke", "POST", REVOKE_URL, form={"token": token})
         except _HttpFailure as failure:
-            if failure.status == 400:  # invalid_token: already revoked or expired
-                return
+            if failure.status == 400 and failure.payload.get("error") == "invalid_token":
+                return  # already revoked or expired
             raise _oauth_error(failure, "needs_reauth") from None
 
     def _revoke_quietly(self, token):

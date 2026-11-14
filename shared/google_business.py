@@ -2,9 +2,34 @@
 picks the simulator or shared/google_business_real.py from
 GOOGLE_BUSINESS_CLIENT."""
 
+import time
 from dataclasses import dataclass
 
 from shared import external_client
+
+_RUN = {"deadline": None}
+
+
+def start_run(context, default_seconds=None, margin_seconds=2.0):
+    """One time budget for every Google call of this Lambda run: the time
+    the invocation has left minus a margin, so a run answers a mapped
+    `unavailable` instead of being killed by the Lambda timeout. Without a
+    context (tests, local) `default_seconds`, or no run deadline at all."""
+    remaining = None
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(getter):
+        try:
+            remaining = getter() / 1000.0 - margin_seconds
+        except Exception:
+            remaining = None
+    if remaining is None and default_seconds is not None:
+        remaining = default_seconds - margin_seconds
+    _RUN["deadline"] = None if remaining is None else time.monotonic() + max(0.0, remaining)
+
+
+def run_deadline():
+    """time.monotonic() value every Google call of this run ends by, or None."""
+    return _RUN["deadline"]
 
 
 class GoogleBusinessError(Exception):

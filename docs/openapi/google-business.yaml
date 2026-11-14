@@ -170,8 +170,13 @@ paths:
           content:
             application/json:
               schema: *id001
+        '409':
+          description: 'no_google_account (the Google user has no Business Profile account; the grant is revoked), google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
+          content:
+            application/json:
+              schema: *id001
         '502':
-          description: google_unavailable (retryAfter).
+          description: 'google_unavailable (retryAfter); only for Google errors a later try may fix (rate limit, 5xx, timeout).'
           content:
             application/json:
               schema: *id001
@@ -218,12 +223,12 @@ paths:
             application/json:
               schema: *id001
         '409':
-          description: not_connected
+          description: 'not_connected, google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
           content:
             application/json:
               schema: *id001
         '502':
-          description: google_unavailable (retryAfter).
+          description: 'google_unavailable (retryAfter); only for Google errors a later try may fix (rate limit, 5xx, timeout).'
           content:
             application/json:
               schema: *id001
@@ -330,12 +335,12 @@ paths:
             application/json:
               schema: *id001
         '409':
-          description: already_linked, not_connected, changed_retry.
+          description: 'already_linked, not_connected, changed_retry, google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
           content:
             application/json:
               schema: *id001
         '502':
-          description: google_unavailable (retryAfter).
+          description: 'google_unavailable (retryAfter); only for Google errors a later try may fix (rate limit, 5xx, timeout).'
           content:
             application/json:
               schema: *id001
@@ -437,12 +442,12 @@ paths:
             application/json:
               schema: *id001
         '409':
-          description: not_linked, not_connected.
+          description: 'not_linked, not_connected, google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
           content:
             application/json:
               schema: *id001
         '502':
-          description: google_unavailable (retryAfter).
+          description: 'google_unavailable (retryAfter); only for Google errors a later try may fix (rate limit, 5xx, timeout).'
           content:
             application/json:
               schema: *id001

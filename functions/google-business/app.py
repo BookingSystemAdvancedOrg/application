@@ -21,7 +21,12 @@ PURPOSE:
     Connect a restaurant's Google Business Profile, push Booqy's opening
     hours one way (Booqy is the source) and configure post-visit review
     requests (ADR-D). Every Google call goes through shared/google_business
-    (simulator unless GOOGLE_BUSINESS_CLIENT=real, refused in prod).
+    (simulator unless GOOGLE_BUSINESS_CLIENT=real; prod only with the
+    Terraform release flag google_business_prod_released). Every Google
+    call of one run shares one deadline (google_business.start_run).
+    Google errors: retryable ones are 502 google_unavailable with
+    retryAfter; ones a retry cannot fix are 409 google_rejected (field: the
+    port's code) or, on the callback, 409 no_google_account.
 
 ENV_VARS:
     ENVIRONMENT, GOOGLE_BUSINESS_TABLE_NAME, TENANT_TABLE_NAME,
@@ -39,12 +44,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import events, http, tenant
 from shared.features import google_business as gbp
+from shared import google_business as google_port
 from shared.google_business import GoogleBusinessError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 RETRY_AFTER_SECONDS = 60
+LAMBDA_TIMEOUT_SECONDS = 28  # infrastructure/google-business/main.tf; the run deadline without a context
 
 
 def _err(status, code, field=None, extra=None):
@@ -420,6 +427,7 @@ def handler(event, context=None):
         if "hook" in event:
             return _hook(event)
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    google_port.start_run(context, default_seconds=LAMBDA_TIMEOUT_SECONDS)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)
@@ -455,7 +463,13 @@ def handler(event, context=None):
             return _err(409, "not_connected")
         if exc.code == "not_connected":
             return _err(409, "not_connected")
-        return _err(502, "google_unavailable", extra={"retryAfter": RETRY_AFTER_SECONDS})
+        if exc.retryable:  # rate limit, 5xx, timeout: a later try may work
+            return _err(502, "google_unavailable", extra={"retryAfter": RETRY_AFTER_SECONDS})
+        if exc.code == "not_found" and fn is callback:  # the Google user has no Business Profile account
+            return _err(409, "no_google_account")
+        # quota_exceeded, api_disabled, misconfigured, permission_denied, not_found,
+        # invalid_request: retrying will not help, so no retryAfter
+        return _err(409, "google_rejected", exc.code)
     except ValueError as exc:
         return http.respond(400, {"error": str(exc)})
     except (BotoCoreError, ClientError) as exc:

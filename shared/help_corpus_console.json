@@ -127,6 +127,45 @@
    "kind": "guide"
   },
   {
+   "id": "free-plan",
+   "route": "/tenants/:tenantId",
+   "title": "Give a customer the Free plan",
+   "audience": "all",
+   "keywords": [
+    "free",
+    "free plan",
+    "free period",
+    "free trial",
+    "free months",
+    "no charge",
+    "for free",
+    "free until",
+    "extend free",
+    "end date"
+   ],
+   "answer": "Free has no monthly charge and Growth's features. Pick Free on the Plan tab (or in step 4 of New customer): it lasts three months by default, or tick No end date. The owner gets an email 14 days before it ends, and the day after it the customer moves to the plan in Then switch to. Change the date or the plan any time.",
+   "steps": [
+    "Open Customers and click the customer.",
+    "Press the Plan tab and pick Free.",
+    "Set Free until (or tick No end date) and Then switch to.",
+    "Press Save plan."
+   ],
+   "actions": [
+    {
+     "id": "customers-open-free",
+     "label": "Open Customers",
+     "to": "/",
+     "highlight": [
+      "help:nav:/"
+     ]
+    }
+   ],
+   "highlight": [
+    "help:tenant-tab:plan"
+   ],
+   "kind": "guide"
+  },
+  {
    "id": "location-add",
    "route": "/tenants/:tenantId",
    "title": "Add a location",
@@ -865,7 +904,7 @@
     "missed invoices",
     "invoices on the 25th"
    ],
-   "answer": "Invoices are created on the 25th for the period from the 25th to the 24th (monthly price plus SMS parts). After a missed 25th you run it by hand on Finance, Payments, with a preview first.",
+   "answer": "Invoices are created on the 25th for the period from the 25th to the 24th (the monthly price; SMS are included, Free has no charge). After a missed 25th you run it by hand on Finance, Payments, with a preview first.",
    "steps": [
     "Open Finance and press Payments.",
     "Press Run invoicing and check the preview.",
@@ -1570,18 +1609,6 @@
    "audience": "all"
   },
   {
-   "id": "components-BillingTab:billing:save:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Save",
-   "where": "a customer's page, Billing tab",
-   "text": "",
-   "highlight": [
-    "text:Save"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "components-BillingTab:billing:open:button",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -2095,6 +2122,18 @@
    "text": "",
    "highlight": [
     "text:Send reminder"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-StepFlow:edit:button",
+   "kind": "element",
+   "route": "/tenants/new",
+   "title": "Edit",
+   "where": "New customer",
+   "text": "",
+   "highlight": [
+    "text:Edit"
    ],
    "audience": "all"
   },
@@ -2764,21 +2803,9 @@
    "route": "/tenants/new",
    "title": "New customer",
    "where": "New customer",
-   "text": "Creates the tenant, invites the owner, opens their Stripe account and sets up their site - no deploy needed.",
-   "highlight": [
-    "text:New customer"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-NewTenantPage:1-restaurant-company:heading",
-   "kind": "element",
-   "route": "/tenants/new",
-   "title": "1 · Restaurant company",
-   "where": "New customer",
    "text": "",
    "highlight": [
-    "help:card:1-restaurant-company"
+    "text:New customer"
    ],
    "audience": "all"
   },
@@ -2879,18 +2906,6 @@
    "audience": "all"
   },
   {
-   "id": "pages-NewTenantPage:2-owner-login:heading",
-   "kind": "element",
-   "route": "/tenants/new",
-   "title": "2 · Owner login",
-   "where": "New customer",
-   "text": "Used to sign in",
-   "highlight": [
-    "help:card:2-owner-login"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "pages-NewTenantPage:owner-full-name:field",
    "kind": "element",
    "route": "/tenants/new",
@@ -2923,18 +2938,6 @@
    "text": "",
    "highlight": [
     "text:Owner phone"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-NewTenantPage:3-contact-communication:heading",
-   "kind": "element",
-   "route": "/tenants/new",
-   "title": "3 · Contact & communication",
-   "where": "New customer",
-   "text": "",
-   "highlight": [
-    "help:card:3-contact-communication"
    ],
    "audience": "all"
   },
@@ -2999,18 +3002,6 @@
    "audience": "all"
   },
   {
-   "id": "pages-NewTenantPage:4-plan:heading",
-   "kind": "element",
-   "route": "/tenants/new",
-   "title": "4 · Plan",
-   "where": "New customer",
-   "text": ")}</span> </label> ))} </div> {fields.planId && <p className=",
-   "highlight": [
-    "help:card:4-plan"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "pages-NewTenantPage:locations-allowed-override:field",
    "kind": "element",
    "route": "/tenants/new",
@@ -3035,14 +3026,14 @@
    "audience": "all"
   },
   {
-   "id": "pages-NewTenantPage:4b-invoicing:heading",
+   "id": "pages-NewTenantPage:invoicing:heading",
    "kind": "element",
    "route": "/tenants/new",
-   "title": "4b · Invoicing",
+   "title": "Invoicing",
    "where": "New customer",
    "text": "",
    "highlight": [
-    "help:card:4b-invoicing"
+    "text:Invoicing"
    ],
    "audience": "all"
   },
@@ -3100,21 +3091,9 @@
    "route": "/tenants/new",
    "title": "Email",
    "where": "New customer",
-   "text": "No locations yet - the owner (or you) can add them later.",
+   "text": "No locations yet: the owner (or you) can add them later.",
    "highlight": [
     "text:Email"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-NewTenantPage:6-internal-notes:heading",
-   "kind": "element",
-   "route": "/tenants/new",
-   "title": "6 · Internal notes",
-   "where": "New customer",
-   "text": "",
-   "highlight": [
-    "help:card:6-internal-notes"
    ],
    "audience": "all"
   },

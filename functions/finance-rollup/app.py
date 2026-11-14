@@ -39,11 +39,13 @@ PURPOSE:
          that location's requests (the log line carries loc=), bookings,
          orders and its share of the customer's cost (by requests, else by
          bookings and orders, else equally); the Finance page's location
-         filter reads these. Both rows also get smsRevenueSek = the SMS
-         parts the senders counted x the customer's SMS price, and the
-         customer row mrrSek = the monthly price of a running agreement
-         (own price or the plan's). The counters and the revenue fields other
-         writers own are never touched. PLATFORM / DAY#<day> gets the
+         filter reads these. The customer row also gets mrrSek = the
+         monthly price of a running agreement (own price or the plan's; 0
+         on the Free plan). SMS are included in the monthly price: they are
+         counted (smsParts) and their AWS cost is split by them, but they
+         earn nothing of their own (smsRevenueSek from before is removed).
+         The counters and the revenue fields other writers own are never
+         touched. PLATFORM / DAY#<day> gets the
          totals and PLATFORM / JOB#latest the run (warnings included: e.g.
          Cost Explorer not enabled yet).
 
@@ -60,8 +62,7 @@ ENV_VARS:
     LAMBDA_LOG_GROUPS (JSON list of log group names), LOG_RETENTION_DAYS
     (their retention, default 30: older days are not queried), COST_DAYS, USAGE_DAYS,
     USD_TO_SEK, COST_ALLOCATION (JSON {baseline, email, sms}: service lists),
-    SMS_PRICE_SEK (default price per SMS part; a customer's own
-    PROFILE.billing.smsPriceSek wins), ALERT_TOPIC_ARN
+    ALERT_TOPIC_ARN
 
 AWS RESOURCE ACCESS:
     ce:GetCostAndUsage; logs:StartQuery/StopQuery on the listed log groups
@@ -96,6 +97,7 @@ REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=*" as tenant, loc
 NOT_A_BOOKING = ("held", "pending", "expired")
 NOT_AN_ORDER = ("pending_payment", "failed", "cancelled")
 CENTS = Decimal("0.01")
+FREE_PLAN_ID = "free"     # Booqy Console's Free plan: no monthly charge
 MICRO = Decimal("0.0001")
 
 _clients = {}
@@ -217,9 +219,10 @@ def list_plans():
 def mrr_on(tenant, plans, day=None):
     """The monthly price of a customer whose agreement runs on `day`: their
     own price or the plan's (PROFILE.billing: status, startsAt, endsAt,
-    priceSek), as invoiced in arrears for the period the day falls in."""
+    priceSek), as invoiced in arrears for the period the day falls in. The
+    Free plan pays nothing."""
     billing = tenant.get("billing") if isinstance(tenant.get("billing"), dict) else {}
-    if billing.get("status") not in ("active", "ending"):
+    if billing.get("status") not in ("active", "ending") or tenant.get("planId") == FREE_PLAN_ID:
         return Decimal(0)
     if day:
         if (billing.get("startsAt") or "")[:10] > day or (billing.get("endsAt") and (billing.get("endsAt") or "")[:10] < day):
@@ -230,16 +233,6 @@ def mrr_on(tenant, plans, day=None):
         return _q(plans.get(tenant.get("planId") or "", Decimal(0)))
     except ArithmeticError:
         return Decimal(0)
-
-
-def sms_price_on(tenant):
-    billing = tenant.get("billing") if isinstance(tenant.get("billing"), dict) else {}
-    try:
-        if billing.get("smsPriceSek") is not None:
-            return Decimal(billing["smsPriceSek"])
-        return Decimal(os.environ.get("SMS_PRICE_SEK") or "0.70")
-    except ArithmeticError:
-        return Decimal("0.70")
 
 
 def list_locations(tenant_id):
@@ -493,17 +486,6 @@ def _day_rows(tenant_ids, day):
     return rows
 
 
-def _location_rows(tenant_id, location_ids, day):
-    """The existing LOC rows (counters) of a tenant's locations, by location id."""
-    table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
-    rows = {}
-    for location_id in location_ids:
-        item = table.get_item(Key={"PK": finance.tenant_pk(tenant_id),
-                                   "SK": finance.location_sk(location_id, day)}).get("Item")
-        rows[location_id] = item or {}
-    return rows
-
-
 def split_by_location(total, usage_by_location):
     """A tenant's cost over its locations: by requests, else by bookings and
     orders, else equally. {location_id: sek}."""
@@ -521,30 +503,30 @@ def split_by_location(total, usage_by_location):
     return {loc: _q(Decimal(total) * weights[loc] / denominator, MICRO) for loc in ids}
 
 
-def write_location_day(tenant_id, location_id, day, usage, cost, sms_revenue):
+def write_location_day(tenant_id, location_id, day, usage, cost):
     dynamo.table(os.environ["FINANCE_TABLE_NAME"]).update_item(
         Key={"PK": finance.tenant_pk(tenant_id), "SK": finance.location_sk(location_id, day)},
-        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, smsRevenueSek = :sr, locationId = :l, "
-                         "#d = :d, computedAt = :now",
+        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, locationId = :l, "
+                         "#d = :d, computedAt = :now REMOVE smsRevenueSek",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
-                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost), ":sr": sms_revenue,
+                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost),
                                    ":l": location_id, ":d": day, ":now": _iso(now_utc())})
 
 
-def write_tenant_day(tenant, day, usage, cost, mrr, active, sms_revenue):
+def write_tenant_day(tenant, day, usage, cost, mrr, active):
     table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
     table.update_item(
         Key={"PK": finance.tenant_pk(tenant["tenantId"]), "SK": finance.day_sk(day)},
         UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, costSplitSek = :s, "
-                         "mrrSek = :m, smsRevenueSek = :sr, planId = :p, active = :a, computedAt = :now, #d = :d",
+                         "mrrSek = :m, planId = :p, active = :a, computedAt = :now, #d = :d REMOVE smsRevenueSek",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={
             ":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
             ":o": Decimal(usage.get("orders") or 0),
             ":c": cost.get("total", Decimal(0)),
             ":s": {k: v for k, v in cost.items() if k != "total"},
-            ":m": mrr, ":sr": sms_revenue, ":p": tenant.get("planId") or "-", ":a": active, ":now": _iso(now_utc()), ":d": day})
+            ":m": mrr, ":p": tenant.get("planId") or "-", ":a": active, ":now": _iso(now_utc()), ":d": day})
 
 
 def write_platform_day(day, totals):
@@ -598,23 +580,17 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
                 "costSplitSek": {k: _q(v) for k, v in totals.items()},
                 "unallocatedSek": Decimal(0),
                 "requests": 0, "bookings": 0, "orders": 0, "emails": 0, "sms": 0, "smsParts": 0, "marketingEmails": 0,
-                "smsRevenueSek": Decimal(0),
                 "invoicedSek": Decimal(0), "paidSek": Decimal(0), "creditedSek": Decimal(0)}
     if not active:
         platform["unallocatedSek"] = platform["costSek"]
     for t in active:
         tenant_id = t["tenantId"]
         mrr = mrr_on(t, plans, day)
-        sms_price = sms_price_on(t)
-        sms_revenue = _q(Decimal(usage[tenant_id]["smsParts"]) * sms_price)
-        write_tenant_day(t, day, usage[tenant_id], split[tenant_id], mrr, True, sms_revenue)
+        write_tenant_day(t, day, usage[tenant_id], split[tenant_id], mrr, True)
         location_cost = split_by_location(split[tenant_id].get("total", Decimal(0)), by_location[tenant_id])
-        location_rows = _location_rows(tenant_id, list(by_location[tenant_id]), day)
         for loc, loc_usage in by_location[tenant_id].items():
-            loc_parts = Decimal(int((location_rows.get(loc) or {}).get("smsParts") or 0))
-            write_location_day(tenant_id, loc, day, loc_usage, location_cost.get(loc, Decimal(0)), _q(loc_parts * sms_price))
+            write_location_day(tenant_id, loc, day, loc_usage, location_cost.get(loc, Decimal(0)))
         platform["mrrSek"] += mrr
-        platform["smsRevenueSek"] += sms_revenue
         for k in ("requests", "bookings", "orders", "emails", "sms", "smsParts", "marketingEmails"):
             platform[k] += usage[tenant_id][k]
         row = rows.get(tenant_id) or {}

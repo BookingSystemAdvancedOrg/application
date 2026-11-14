@@ -478,5 +478,13 @@
   "expect": {
    "answer": "unknown"
   }
+ },
+ {
+  "question": "How do I give a restaurant three months for free?",
+  "role": "operator",
+  "features": "all",
+  "expect": {
+   "source": "free-plan"
+  }
  }
 ]

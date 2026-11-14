@@ -7792,6 +7792,17 @@ components:
         planId:
           type: string
           nullable: true
+        free:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: The Free plan (planId "free"), no monthly charge; null on any other plan.
+          properties:
+            until:
+              type: string
+              format: date
+              nullable: true
+              description: The last free day (Europe/Stockholm); null = no end date.
         entitlements:
           type: object
           properties:

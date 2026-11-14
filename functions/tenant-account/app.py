@@ -180,6 +180,15 @@ def _locations(ctx):
     return [_location_summary(row) for row in rows]
 
 
+def _free(row):
+    """The Free plan (Booqy Console): no monthly charge; `until` is the last
+    free day, None = no end date. None on any other plan."""
+    if row.get("planId") != "free":
+        return None
+    billing = row.get("billing") if isinstance(row.get("billing"), dict) else {}
+    return {"until": billing.get("freeUntil") or None}
+
+
 def _public_tenant(ctx, row):
     tenant_id, role = ctx.tenant_id, ctx.role
     stripe = row.get("stripe") or {}
@@ -190,6 +199,7 @@ def _public_tenant(ctx, row):
         "slug": row.get("slug"),
         "status": row.get("status"),
         "planId": row.get("planId"),
+        "free": _free(row),
         "entitlements": {
             "maxLocations": entitlements.get("maxLocations"),
             "features": entitlements.get("features") or {},

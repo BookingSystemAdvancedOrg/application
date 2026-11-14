@@ -1868,7 +1868,7 @@
    "answer": "Om gästerna får sms, när påminnelsen skickas och om ni får mejl vid nya bokningar ställer ägaren in under Inställningar, Gäster, Notiser.",
    "steps": [
     "Öppna Inställningar, välj Gäster och sedan Notiser.",
-    "Slå på eller av SMS till gästen (kostar per sms) och välj avsändarnamn.",
+    "Slå på eller av SMS till gästen (ingår i priset) och välj avsändarnamn.",
     "Välj påminnelse före besöket.",
     "Välj om restaurangen får e-post vid nya bokningar.",
     "Tryck Spara notiser."
@@ -4831,6 +4831,19 @@
    "text": "Tillbaka från Stripe. Hämtar den nya statusen…",
    "highlight": [
     "text:Betalningar"
+   ],
+   "audience": "owner"
+  },
+  {
+   "id": "features-installningar-PlanCard:abonnemang:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "profil",
+   "title": "Abonnemang",
+   "where": "Inställningar, Verksamheten, Restaurang",
+   "text": "Inget att betala. SMS ingår.",
+   "highlight": [
+    "text:Abonnemang"
    ],
    "audience": "owner"
   },

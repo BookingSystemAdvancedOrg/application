@@ -104,7 +104,6 @@ def env(monkeypatch):
               "RESERVATION_TABLE_NAME": "test-reservation", "ORDER_TABLE_NAME": "test-order",
               "LAMBDA_LOG_GROUPS": json.dumps(["/aws/lambda/dev-a", "/aws/lambda/dev-b"]),
               "COST_DAYS": "3", "USAGE_DAYS": "2", "USD_TO_SEK": "10", "COST_ALLOCATION": json.dumps(ALLOCATION),
-              "SMS_PRICE_SEK": "0.70",
               "ALERT_TOPIC_ARN": "arn:aws:sns:eu-north-1:123456789012:alerts"}
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -119,7 +118,7 @@ def env(monkeypatch):
             tables["tenant"].put_item(Item={"PK": f"PLAN#{plan_id}", "SK": "PLAN", "GSI1PK": "PLAN", "GSI1SK": plan_id,
                                             "planId": plan_id, "priceSek": Decimal(price)})
         for tenant_id, extra in ((A, {"createdAt": "2026-09-01T10:00:00Z", "planId": "growth",
-                                      "billing": {"status": "active", "startsAt": "2026-09-01", "smsPriceSek": Decimal("0.5")}}),
+                                      "billing": {"status": "active", "startsAt": "2026-09-01"}}),
                                  (B, {"createdAt": "2026-10-01T10:00:00Z", "planId": "starter", "status": "suspended",
                                       "billing": {"status": "active", "startsAt": "2026-10-01", "priceSek": Decimal("890")}}),
                                  (GONE, {"createdAt": "2026-01-01T10:00:00Z", "status": "offboarded",
@@ -138,7 +137,8 @@ def env(monkeypatch):
         tables["reservation"].put_item(Item={"PK": f"LOCATION#{LOC_B}", "SK": "RESERVATION#2026-10-19#r9", "status": "reserved"})
         # counters the senders wrote
         tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": "DAY#2026-10-18", "emails": 30, "sms": 0,
-                                         "smsParts": 10, "invoicedSek": Decimal("1990")})
+                                         "smsParts": 10, "invoicedSek": Decimal("1990"),
+                                         "smsRevenueSek": Decimal("5.00")})   # from before SMS were included
         tables["finance"].put_item(Item={"PK": f"TENANT#{B}", "SK": "DAY#2026-10-18", "emails": 10, "sms": 5, "smsParts": 7})
         tables["finance"].put_item(Item={"PK": f"TENANT#{A}", "SK": f"LOC#{LOC_A}#DAY#2026-10-18", "emails": 30, "smsParts": 4})
 
@@ -186,14 +186,14 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     assert b["costSplitSek"] == {"requests": Decimal("15"), "baseline": Decimal("10"), "email": Decimal("2.5"), "sms": Decimal("5")}
     assert a["costSek"] == Decimal("62.50") and b["costSek"] == Decimal("32.50")
     assert a["mrrSek"] == Decimal("1990") and b["mrrSek"] == Decimal("890") and a["planId"] == "growth"
-    # SMS revenue = parts x the customer's price (A has its own 0,50; B the default 0,70)
-    assert a["smsRevenueSek"] == Decimal("5.00") and b["smsRevenueSek"] == Decimal("4.90")
+    # SMS are included in the monthly price: counted and costed, never revenue
+    assert "smsRevenueSek" not in a and "smsRevenueSek" not in b and a["smsParts"] == 10 and b["smsParts"] == 7
     # per location: A has one location that took 240 of its 300 requests and all its bookings; the
     # whole tenant cost lands on it (only location); the senders' counter on the row is kept
     loc = _row(env, f"TENANT#{A}", f"LOC#{LOC_A}#DAY#2026-10-18")
     assert loc["requests"] == 240 and loc["bookings"] == 3 and loc["orders"] == 2 and loc["emails"] == 30
     assert loc["costSek"] == Decimal("62.50") and loc["locationId"] == LOC_A
-    assert loc["smsParts"] == 4 and loc["smsRevenueSek"] == Decimal("2.00")
+    assert loc["smsParts"] == 4 and "smsRevenueSek" not in loc
     assert a["invoicedSek"] == Decimal("1990")  # untouched revenue field
     # the offboarded and the provisioning tenants are not customers on the 18th
     assert _row(env, f"TENANT#{GONE}", "DAY#2026-10-18") is None
@@ -203,7 +203,7 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     assert platform["activeTenants"] == 2 and platform["costSek"] == Decimal("95.00")
     assert platform["mrrSek"] == Decimal("2880") and platform["requests"] == 400 and platform["bookings"] == 3
     assert platform["invoicedSek"] == Decimal("1990") and platform["emails"] == 40
-    assert platform["smsParts"] == 17 and platform["smsRevenueSek"] == Decimal("9.90")
+    assert platform["smsParts"] == 17 and "smsRevenueSek" not in platform
     job = _row(env, "PLATFORM", "JOB#latest")
     assert job["done"] == ["2026-10-18", "2026-10-19"] and job["warnings"] == []
     assert env["sns"].calls == []
@@ -313,3 +313,8 @@ def test_mrr_follows_the_agreement_not_stripe(env):
     assert app.mrr_on({"planId": "starter", "billing": {"status": "active", "startsAt": "2026-10-20"}}, plans, "2026-10-18") == Decimal("0")
     assert app.mrr_on({"planId": "starter", "billing": {"status": "ended"}}, plans, "2026-10-18") == Decimal("0")
     assert app.mrr_on({"planId": "starter"}, plans, "2026-10-18") == Decimal("0")
+    # the Free plan: an agreement may run, nothing is charged
+    assert app.mrr_on({"planId": "free", "billing": {"status": "active", "startsAt": "2026-10-01"}},
+                      {**plans, "free": Decimal("0")}, "2026-10-18") == Decimal("0")
+    assert app.mrr_on({"planId": "free", "billing": {"status": "active", "startsAt": "2026-10-01", "priceSek": 500}},
+                      plans, "2026-10-18") == Decimal("0")

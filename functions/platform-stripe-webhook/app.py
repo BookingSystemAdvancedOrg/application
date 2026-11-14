@@ -29,7 +29,7 @@ PURPOSE:
 
     /billing: the platform account's invoices to the restaurants, built in
     arrears by platform-tenants on the 25th for the period 25th to 24th
-    (monthly price plus SMS parts). No Stripe subscriptions are used; a
+    (the monthly price; SMS are included). No Stripe subscriptions are used; a
     customer.subscription.* event is acknowledged and ignored.
 
       invoice.finalized/paid/payment_failed/voided/marked_uncollectible

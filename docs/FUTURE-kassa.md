@@ -47,10 +47,14 @@ bringing Kassa back.
 
 ## Kept on purpose
 
-The prod tables `kassa` and `kassa-journal` were empty on 2026-11-14 and
-are kept anyway (infrastructure `kassa-records/`, prod only): Bokföringslagen
-and Skatteverket's rules keep kassaregister data for 7 years. Never delete
-them without the owner. Dev's tables were deleted.
+The tables `kassa` and `kassa-journal` stay, at their old Terraform
+addresses (infrastructure `kassa.tf`, module `kassa`, nothing else in it):
+Bokföringslagen and Skatteverket's rules keep kassaregister data for 7
+years. Prod's were empty on 2026-11-14 and keep deletion protection. Dev's
+`kassa` table was emptied; dev's journal keeps its 17 test entries because
+its append-only Deny policy refuses deletes. Never delete them without the
+owner. (Moving them to a prod-only module was tried and dropped: CI's
+targeted ECR apply refuses pending `moved` blocks.)
 
 ## Commits
 
@@ -68,8 +72,10 @@ Removed:
 |---|---|
 | admin-front-end | 4f94ee1 |
 | booqy-console | efac301 |
-| application | see `git log --grep "remove Kassa"` |
-| infrastructure | see `git log --grep "remove Kassa"` (two steps, like the card readers) |
+| application | 6be9970 |
+| customer-front-end | 504c014 (contract regen) |
+| booqy-website | 035873b (unused CSS and screenshots) |
+| infrastructure | 9802fe5 and 63237d4 (step 1), 1ebe5da (step 2, ECR) |
 
 `git show <sha>` gives the full diff; `git revert <sha>` restores it, in
 the order infrastructure, application, frontends.
@@ -87,5 +93,5 @@ the order infrastructure, application, frontends.
 - Contract: add `kassa` back to `contracts/booqy.yaml` (17 features) and
   the `kassa.giftcard` hook and `kassa.payment.giftcard` slot, then run
   `scripts/gen_contracts.py`.
-- Infrastructure: move the prod tables back from `kassa-records` into the
-  kassa module with `moved` blocks; recreate them in dev.
+- Infrastructure: the tables are still in `module "kassa"`; add the
+  function, role and routes back next to them.

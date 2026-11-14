@@ -904,9 +904,28 @@ def test_concurrent_transaction_is_a_conflict_not_an_outage(monkeypatch):
     ("0046701234567", "+46701234567"),
     ("08-123 456 78", "+46812345678"),
     ("+47 412 34 567", "+4741234567"),
+    ("701740605", "+46701740605"),
+    ("70 174 06 05", "+46701740605"),
+    ("+46701740605", "+46701740605"),
+    ("+46 070 174 06 05", "+46701740605"),
+    ("0046 70 174 06 05", "+46701740605"),
+    ("08-123 45 67", "+4681234567"),
 ])
 def test_phone_normalization(raw, expected):
     assert shared_r.normalize_phone(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [
+    "", "12345678", "070-12", "+0701234567", "telefon",
+    "70174060",  # mobile one digit short
+    "7017406051",  # mobile one digit too many, no prefix
+    "+4670174060",  # +46 mobile one digit short
+    "+467017406051",  # +46 mobile one digit too many
+    "0812345",  # Stockholm too short
+])
+def test_phone_normalization_refuses_invalid_numbers(raw):
+    with pytest.raises(ValueError, match="phone must be a valid"):
+        shared_r.normalize_phone(raw)
 
 
 def test_same_day_move_keeps_the_pointer_expiry_in_step(env):

@@ -76,10 +76,10 @@
    "answer": "Checklistan Kom igång på Översikten tar dig igenom det som behövs innan gästerna kan boka och beställa.",
    "steps": [
     "Godkänn personuppgiftsbiträdesavtalet under Avtal.",
-    "Lägg in öppettider under Inställningar, Restaurang.",
+    "Lägg in öppettider under Inställningar, Verksamheten, Restaurang.",
     "Lägg upp menyn under Meny.",
     "Rita, publicera och aktivera en bordslayout under Layout.",
-    "Slutför Stripe under Inställningar, Betalningar, så att ni kan ta betalt med kort.",
+    "Slutför Stripe under Inställningar, Ekonomi, Betalningar, så att ni kan ta betalt med kort.",
     "Bjud in personalen under Personal."
    ],
    "actions": [
@@ -143,7 +143,7 @@
    ],
    "answer": "Du bestämmer om personalen ser driftsiffrorna på Statistik. Belopp och omsättning ser personalen aldrig.",
    "steps": [
-    "Öppna Inställningar och välj Statistik under Data och integritet.",
+    "Öppna Inställningar, välj Data och integritet och sedan Statistik.",
     "Välj om personalen ser statistik.",
     "Tryck Spara."
    ],
@@ -383,9 +383,9 @@
     "hålltid",
     "max antal i kö"
    ],
-   "answer": "Om gästerna kan ställa sig i kö från hemsidan, hur länge ett erbjudet bord hålls och hur lång kön får bli ställer du in under Inställningar, Bord.",
+   "answer": "Om gästerna kan ställa sig i kö från hemsidan, hur länge ett erbjudet bord hålls och hur lång kön får bli ställer du in under Inställningar, Verksamheten, Bord.",
    "steps": [
-    "Öppna Inställningar och välj Bord.",
+    "Öppna Inställningar, välj Verksamheten och sedan Bord.",
     "Under Kö slår du på kön och väljer om gäster kan ställa sig i kö från hemsidan.",
     "Ställ in Hålltid (minuter) och Max antal i kö.",
     "Tryck Spara bordsregler."
@@ -508,9 +508,9 @@
     "gästerna kan beställa",
     "kan beställa vid bordet"
    ],
-   "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Beställning.",
+   "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Gäster, Beställning.",
    "steps": [
-    "Öppna Inställningar och välj Beställning.",
+    "Öppna Inställningar, välj Gäster och sedan Beställning.",
     "Slå på Ta emot beställningar och välj Avhämtning och Beställning vid bordet (QR-kod).",
     "Ställ in tillagningstid som gästen ser och sista beställning före stängning.",
     "Tryck Spara beställning.",
@@ -541,9 +541,9 @@
     "testutskrift",
     "pappersbredd"
    ],
-   "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Skrivare.",
+   "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Gäster, Skrivare.",
    "steps": [
-    "Öppna Inställningar och välj Skrivare.",
+    "Öppna Inställningar, välj Gäster och sedan Skrivare.",
     "Tryck Lägg till skrivare och följ stegen. Uppgifterna som visas skriver du in i skrivaren direkt, de visas bara en gång.",
     "Tryck Testutskrift för att se att den fungerar.",
     "Slå på Skriv ut beställningar automatiskt, välj skrivare och pappersbredd och tryck Spara skrivare."
@@ -1649,7 +1649,7 @@
    ],
    "answer": "Ägaren ställer in när gästerna ombeds lämna omdöme under Marknadsföring, Omdömen.",
    "steps": [
-    "Koppla Google under Inställningar, Restaurang om det inte är gjort.",
+    "Koppla Google under Inställningar, Verksamheten, Restaurang om det inte är gjort.",
     "Öppna Marknadsföring och fliken Omdömen.",
     "Välj fördröjning och hur ofta en gäst får frågan och tryck Spara."
    ],
@@ -1733,9 +1733,9 @@
     "e-post restaurang",
     "grace period"
    ],
-   "answer": "Öppettider, adress och kontaktuppgifter ändrar ägaren under Inställningar, Restaurang.",
+   "answer": "Öppettider, adress och kontaktuppgifter ändrar ägaren under Inställningar, Verksamheten, Restaurang.",
    "steps": [
-    "Öppna Inställningar och välj Restaurang.",
+    "Öppna Inställningar, välj Verksamheten och sedan Restaurang.",
     "Ändra namn, telefon, adress, e-post eller öppettider.",
     "Tryck Spara ändringar."
    ],
@@ -1763,9 +1763,9 @@
     "specialtid",
     "hur länge bokning"
    ],
-   "answer": "Hur länge ett bord är bokat och sista sittning före stängning ställer ägaren in under Inställningar, Restaurang, Bokningstid.",
+   "answer": "Hur länge ett bord är bokat och sista sittning före stängning ställer ägaren in under Inställningar, Verksamheten, Restaurang, Bokningstid.",
    "steps": [
-    "Öppna Inställningar och välj Restaurang.",
+    "Öppna Inställningar, välj Verksamheten och sedan Restaurang.",
     "Under Bokningstid väljer du standardlängd och sista sittning före stängning.",
     "Lägg till specialtider vid behov.",
     "Tryck Spara bokningstid."
@@ -1803,9 +1803,9 @@
     "stänga onlinebokningen",
     "stäng onlinebokningen"
    ],
-   "answer": "Helgdagar, stängda dagar och andra öppettider lägger ägaren in under Inställningar, Avvikande dagar.",
+   "answer": "Helgdagar, stängda dagar och andra öppettider lägger ägaren in under Inställningar, Verksamheten, Avvikande dagar.",
    "steps": [
-    "Öppna Inställningar och välj Avvikande dagar.",
+    "Öppna Inställningar, välj Verksamheten och sedan Avvikande dagar.",
     "Tryck Lägg till dag, välj datum och typ (Stängt, Andra öppettider eller Ingen onlinebokning).",
     "Skriv gärna en anteckning till gästerna och tryck Lägg till.",
     "Tryck Spara dagar.",
@@ -1834,9 +1834,9 @@
     "onlinebokning bord",
     "kombinera bord"
    ],
-   "answer": "Vilka bord som kan bokas online, för hur många och vilka bord som kan slås ihop ställer ägaren in under Inställningar, Bord.",
+   "answer": "Vilka bord som kan bokas online, för hur många och vilka bord som kan slås ihop ställer ägaren in under Inställningar, Verksamheten, Bord.",
    "steps": [
-    "Öppna Inställningar och välj Bord.",
+    "Öppna Inställningar, välj Verksamheten och sedan Bord.",
     "Välj för varje bord om det kan bokas online och för hur många personer.",
     "Lägg till kombinationer under Ny kombination.",
     "Tryck Spara bordsregler."
@@ -1865,9 +1865,9 @@
     "mejl vid bokning",
     "avsändarnamn"
    ],
-   "answer": "Om gästerna får sms, när påminnelsen skickas och om ni får mejl vid nya bokningar ställer ägaren in under Inställningar, Notiser.",
+   "answer": "Om gästerna får sms, när påminnelsen skickas och om ni får mejl vid nya bokningar ställer ägaren in under Inställningar, Gäster, Notiser.",
    "steps": [
-    "Öppna Inställningar och välj Notiser.",
+    "Öppna Inställningar, välj Gäster och sedan Notiser.",
     "Slå på eller av SMS till gästen (kostar per sms) och välj avsändarnamn.",
     "Välj påminnelse före besöket.",
     "Välj om restaurangen får e-post vid nya bokningar.",
@@ -1897,9 +1897,9 @@
     "garanti",
     "policy"
    ],
-   "answer": "Kortgaranti och avgifter för sen avbokning och no-show ställer ägaren in under Inställningar, Avbokning. Stripe måste vara klart först.",
+   "answer": "Kortgaranti och avgifter för sen avbokning och no-show ställer ägaren in under Inställningar, Gäster, Avbokning. Stripe måste vara klart först.",
    "steps": [
-    "Öppna Inställningar och välj Avbokning.",
+    "Öppna Inställningar, välj Gäster och sedan Avbokning.",
     "Slå på Kortgaranti vid onlinebokning och välj från hur många personer.",
     "Ange när en avbokning räknas som sen och avgifterna per person.",
     "Tryck Spara policy."
@@ -1928,9 +1928,9 @@
     "ta emot betalning",
     "betalkonto"
    ],
-   "answer": "Kortbetalningar går via Stripe. Ägaren slutför kontot under Inställningar, Betalningar.",
+   "answer": "Kortbetalningar går via Stripe. Ägaren slutför kontot under Inställningar, Ekonomi, Betalningar.",
    "steps": [
-    "Öppna Inställningar och välj Betalningar.",
+    "Öppna Inställningar, välj Ekonomi och sedan Betalningar.",
     "Tryck Slutför Stripe-konfigurationen (eller Komplettera uppgifter hos Stripe).",
     "Fyll i uppgifterna hos Stripe och kom tillbaka hit.",
     "När det står Redo att ta emot betalningar är allt klart."
@@ -1961,9 +1961,9 @@
     "visma",
     "redovisning"
    ],
-   "answer": "Försäljningen för en period laddar ägaren ner som SIE- eller CSV-fil under Inställningar, Bokföring.",
+   "answer": "Försäljningen för en period laddar ägaren ner som SIE- eller CSV-fil under Inställningar, Ekonomi, Bokföring.",
    "steps": [
-    "Öppna Inställningar och välj Bokföring.",
+    "Öppna Inställningar, välj Ekonomi och sedan Bokföring.",
     "Välj period och filformat.",
     "Tryck Ladda ner SIE-fil eller Ladda ner CSV-fil.",
     "Konton och verifikationsserie kan ändras på samma sida."
@@ -1992,9 +1992,9 @@
     "integritetstext",
     "dataskydd"
    ],
-   "answer": "Integritetstexten och förfrågningar från gäster om att radera sina uppgifter hanterar ägaren under Inställningar, Integritet.",
+   "answer": "Integritetstexten och förfrågningar från gäster om att radera sina uppgifter hanterar ägaren under Inställningar, Data och integritet, Integritet.",
    "steps": [
-    "Öppna Inställningar och välj Integritet.",
+    "Öppna Inställningar, välj Data och integritet och sedan Integritet.",
     "Ändra texten och tryck Spara text.",
     "Sök fram gästen med e-post eller telefon.",
     "Tryck Återkalla samtycke eller Radera gästens uppgifter."
@@ -2024,9 +2024,9 @@
     "volym",
     "dark mode"
    ],
-   "answer": "Ljust eller mörkt läge och klickljudet väljer du själv under Inställningar, Utseende och ljud. Valet gäller den här webbläsaren.",
+   "answer": "Ljust eller mörkt läge och klickljudet väljer du själv under Inställningar, Den här enheten, Utseende och ljud. Valet gäller den här webbläsaren.",
    "steps": [
-    "Öppna Inställningar och välj Utseende och ljud.",
+    "Öppna Inställningar, välj Den här enheten och sedan Utseende och ljud.",
     "Välj ljust eller mörkt läge.",
     "Slå på eller av ljudet och välj volym."
    ],
@@ -2053,9 +2053,9 @@
     "google maps",
     "koppla google"
    ],
-   "answer": "Restaurangens Google-profil kopplar ägaren under Inställningar, Restaurang.",
+   "answer": "Restaurangens Google-profil kopplar ägaren under Inställningar, Verksamheten, Restaurang.",
    "steps": [
-    "Öppna Inställningar och välj Restaurang.",
+    "Öppna Inställningar, välj Verksamheten och sedan Restaurang.",
     "Tryck Koppla Google och logga in hos Google.",
     "Välj rätt plats."
    ],
@@ -2370,7 +2370,8 @@
     "gästerna idag",
     "idag",
     "dag",
-    "dagens"
+    "dagens",
+    "gäster hade vi"
    ],
    "answer": "Gäster idag står överst på Statistik, under Idag.",
    "steps": [],
@@ -2386,7 +2387,9 @@
    ],
    "live": {
     "metric": "guestsToday",
-    "text": "Idag har ni {value} gäster i bokningarna. Avbokade räknas inte."
+    "text": "Idag har ni {value} gäster i bokningarna. Avbokade räknas inte.",
+    "countText": "Idag har ni {value} {gäst|gäster} i bokningarna. Avbokade räknas inte.",
+    "rangeText": "{period}: {value} {gäst|gäster} i bokningarna. Avbokade räknas inte."
    },
    "kind": "guide"
   },
@@ -2402,7 +2405,9 @@
     "bokningar har vi",
     "idag",
     "dag",
-    "dagens"
+    "dagens",
+    "hur många bokningar",
+    "bokningar hade vi"
    ],
    "answer": "Bokningar idag står överst på Statistik, under Idag.",
    "steps": [],
@@ -2418,7 +2423,9 @@
    ],
    "live": {
     "metric": "bookingsToday",
-    "text": "Idag har ni {value} bokningar. Avbokade räknas inte."
+    "text": "Idag har ni {value} bokningar. Avbokade räknas inte.",
+    "countText": "Idag har ni {value} {bokning|bokningar}. Avbokade räknas inte.",
+    "rangeText": "{period}: {value} {bokning|bokningar}. Avbokade räknas inte."
    },
    "kind": "guide"
   },
@@ -2451,7 +2458,9 @@
    ],
    "live": {
     "metric": "arrivedToday",
-    "text": "{value} bokningar är markerade som Kommit idag."
+    "text": "{value} bokningar är markerade som Kommit idag.",
+    "countText": "{value} {bokning är markerad|bokningar är markerade} som Kommit idag.",
+    "rangeText": "{period}: {value} {bokning är markerad|bokningar är markerade} som Kommit."
    },
    "kind": "guide"
   },
@@ -2484,7 +2493,8 @@
    ],
    "live": {
     "metric": "occupancyToday",
-    "text": "Beläggningen idag är {value} av bordstiden under öppettiderna."
+    "text": "Beläggningen idag är {value} av bordstiden under öppettiderna.",
+    "rangeText": "{period}: beläggningen är {value} av bordstiden under öppettiderna."
    },
    "kind": "guide"
   },
@@ -2516,7 +2526,9 @@
    ],
    "live": {
     "metric": "noShowsToday",
-    "text": "{value} bokningar uteblev idag."
+    "text": "{value} bokningar uteblev idag.",
+    "countText": "{value} {bokning uteblev|bokningar uteblev} idag.",
+    "rangeText": "{period}: {value} {bokning uteblev|bokningar uteblev}."
    },
    "kind": "guide"
   },
@@ -2531,6 +2543,9 @@
     "hur många beställningar",
     "beställningar idag",
     "antal beställningar",
+    "hur många ordrar",
+    "ordrar idag",
+    "antal ordrar",
     "idag",
     "dag",
     "dagens"
@@ -2546,7 +2561,9 @@
    ],
    "live": {
     "metric": "ordersToday",
-    "text": "Idag har ni fått {value} beställningar."
+    "text": "Idag har ni fått {value} beställningar.",
+    "countText": "Idag har ni fått {value} {beställning|beställningar}.",
+    "rangeText": "{period}: {value} {beställning|beställningar}."
    },
    "kind": "guide"
   },
@@ -2576,7 +2593,8 @@
    ],
    "live": {
     "metric": "revenueToday",
-    "text": "Omsättningen idag är {value}."
+    "text": "Omsättningen idag är {value}.",
+    "rangeText": "{period}: omsättningen är {value}."
    },
    "kind": "guide"
   },
@@ -2609,7 +2627,9 @@
    ],
    "live": {
     "metric": "guestsWeek",
-    "text": "Den här veckan har ni {value} gäster i bokningarna hittills."
+    "text": "Den här veckan har ni {value} gäster i bokningarna hittills.",
+    "countText": "Den här veckan har ni {value} {gäst|gäster} i bokningarna hittills.",
+    "rangeText": "{period}: {value} {gäst|gäster} i bokningarna. Avbokade räknas inte."
    },
    "kind": "guide"
   },
@@ -2642,7 +2662,9 @@
    ],
    "live": {
     "metric": "guestsMonth",
-    "text": "Den här månaden har ni {value} gäster i bokningarna hittills."
+    "text": "Den här månaden har ni {value} gäster i bokningarna hittills.",
+    "countText": "Den här månaden har ni {value} {gäst|gäster} i bokningarna hittills.",
+    "rangeText": "{period}: {value} {gäst|gäster} i bokningarna. Avbokade räknas inte."
    },
    "kind": "guide"
   },
@@ -2674,7 +2696,9 @@
    ],
    "live": {
     "metric": "bookingsMonth",
-    "text": "Den här månaden har ni {value} bokningar hittills."
+    "text": "Den här månaden har ni {value} bokningar hittills.",
+    "countText": "Den här månaden har ni {value} {bokning|bokningar} hittills.",
+    "rangeText": "{period}: {value} {bokning|bokningar}. Avbokade räknas inte."
    },
    "kind": "guide"
   },
@@ -2706,7 +2730,8 @@
    ],
    "live": {
     "metric": "revenueMonth",
-    "text": "Omsättningen den här månaden är {value} hittills."
+    "text": "Omsättningen den här månaden är {value} hittills.",
+    "rangeText": "{period}: omsättningen är {value}."
    },
    "kind": "guide"
   },
@@ -2964,8 +2989,8 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Restaurang",
-   "where": "Inställningar, Restaurang",
-   "text": "Restaurang finns under Inställningar. Namn, adress, telefon, e-post och öppettider.",
+   "where": "Inställningar, Verksamheten, Restaurang",
+   "text": "Restaurang finns under Inställningar, Verksamheten. Namn, adress, telefon, e-post och öppettider.",
    "highlight": [
     "help:settings-tab:profil"
    ],
@@ -2977,8 +3002,8 @@
    "route": "/installningar",
    "hash": "betalningar",
    "title": "Betalningar",
-   "where": "Inställningar, Betalningar",
-   "text": "Betalningar finns under Inställningar. Koppla Stripe så att gästerna kan betala online.",
+   "where": "Inställningar, Ekonomi, Betalningar",
+   "text": "Betalningar finns under Inställningar, Ekonomi. Koppla Stripe så att gästerna kan betala online.",
    "highlight": [
     "help:settings-tab:betalningar"
    ],
@@ -2990,8 +3015,8 @@
    "route": "/installningar",
    "hash": "notiser",
    "title": "Notiser",
-   "where": "Inställningar, Notiser",
-   "text": "Notiser finns under Inställningar. Sms och mejl till gästerna, och mejl till er.",
+   "where": "Inställningar, Gäster, Notiser",
+   "text": "Notiser finns under Inställningar, Gäster. Sms och mejl till gästerna, och mejl till er.",
    "highlight": [
     "help:settings-tab:notiser"
    ],
@@ -3003,8 +3028,8 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "Avbokning",
-   "where": "Inställningar, Avbokning",
-   "text": "Avbokning finns under Inställningar. Kortgaranti och avgift om gästen inte kommer.",
+   "where": "Inställningar, Gäster, Avbokning",
+   "text": "Avbokning finns under Inställningar, Gäster. Kortgaranti och avgift om gästen inte kommer.",
    "highlight": [
     "help:settings-tab:avbokning"
    ],
@@ -3016,8 +3041,8 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Beställning",
-   "where": "Inställningar, Beställning",
-   "text": "Beställning finns under Inställningar. Avhämtning, beställning vid bordet och QR-koder.",
+   "where": "Inställningar, Gäster, Beställning",
+   "text": "Beställning finns under Inställningar, Gäster. Avhämtning, beställning vid bordet och QR-koder.",
    "highlight": [
     "help:settings-tab:bestallning"
    ],
@@ -3030,8 +3055,8 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Skrivare",
-   "where": "Inställningar, Skrivare",
-   "text": "Skrivare finns under Inställningar. Skrivaren i köket som skriver ut beställningarna.",
+   "where": "Inställningar, Gäster, Skrivare",
+   "text": "Skrivare finns under Inställningar, Gäster. Skrivaren i köket som skriver ut beställningarna.",
    "highlight": [
     "help:settings-tab:skrivare"
    ],
@@ -3044,8 +3069,8 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Avvikande dagar",
-   "where": "Inställningar, Avvikande dagar",
-   "text": "Avvikande dagar finns under Inställningar. Helgdagar, stängt eller andra tider en viss dag.",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
+   "text": "Avvikande dagar finns under Inställningar, Verksamheten. Helgdagar, stängt eller andra tider en viss dag.",
    "highlight": [
     "help:settings-tab:dagar"
    ],
@@ -3057,8 +3082,8 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Bord",
-   "where": "Inställningar, Bord",
-   "text": "Bord finns under Inställningar. Hur många gäster varje bord tar och vilka bord som kan ställas ihop.",
+   "where": "Inställningar, Verksamheten, Bord",
+   "text": "Bord finns under Inställningar, Verksamheten. Hur många gäster varje bord tar och vilka bord som kan ställas ihop.",
    "highlight": [
     "help:settings-tab:bord"
    ],
@@ -3070,8 +3095,8 @@
    "route": "/installningar",
    "hash": "statistik",
    "title": "Statistik",
-   "where": "Inställningar, Statistik",
-   "text": "Statistik finns under Inställningar. Vad personalen får se och när lunchen slutar.",
+   "where": "Inställningar, Data och integritet, Statistik",
+   "text": "Statistik finns under Inställningar, Data och integritet. Vad personalen får se och när lunchen slutar.",
    "highlight": [
     "help:settings-tab:statistik"
    ],
@@ -3083,8 +3108,8 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Bokföring",
-   "where": "Inställningar, Bokföring",
-   "text": "Bokföring finns under Inställningar. Exportera försäljningen till bokföringsprogrammet.",
+   "where": "Inställningar, Ekonomi, Bokföring",
+   "text": "Bokföring finns under Inställningar, Ekonomi. Exportera försäljningen till bokföringsprogrammet.",
    "highlight": [
     "help:settings-tab:bokforing"
    ],
@@ -3096,8 +3121,8 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Integritet",
-   "where": "Inställningar, Integritet",
-   "text": "Integritet finns under Inställningar. Integritetspolicyn och gästernas uppgifter.",
+   "where": "Inställningar, Data och integritet, Integritet",
+   "text": "Integritet finns under Inställningar, Data och integritet. Integritetspolicyn och gästernas uppgifter.",
    "highlight": [
     "help:settings-tab:integritet"
    ],
@@ -3109,8 +3134,8 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Utseende och ljud",
-   "where": "Inställningar, Utseende och ljud",
-   "text": "Utseende och ljud finns under Inställningar. Ljust eller mörkt läge och klickljud, bara på den här skärmen.",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
+   "text": "Utseende och ljud finns under Inställningar, Den här enheten. Ljust eller mörkt läge och klickljud, bara på den här skärmen.",
    "highlight": [
     "help:settings-tab:utseende"
    ],
@@ -4096,7 +4121,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Utseende och ljud",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Gäller den här webbläsaren. Ljust läge och klickljud är på från början.",
    "highlight": [
     "text:Utseende och ljud"
@@ -4109,7 +4134,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Ljust eller mörkt",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Tryck för att byta. Mörka ytor passar till exempel en mörk lokal på kvällen.",
    "highlight": [
     "help:utseende:tema"
@@ -4122,7 +4147,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Bakgrund",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Genomskinligt visar det som ligger bakom fönstret. Färg lägger glaset över en färg du väljer, Egen bild över en bild du laddar upp.",
    "highlight": [
     "help:utseende:bakgrund"
@@ -4135,7 +4160,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Klickljud",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Ett mjukt klick när du trycker på knappar och länkar.",
    "highlight": [
     "help:utseende:klickljud"
@@ -4148,7 +4173,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Volym",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Hur högt klicket låter. 40 % är standard, 0 % är tyst.",
    "highlight": [
     "help:utseende:volym"
@@ -4161,7 +4186,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Bokföring",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "Välj en plats först.",
    "highlight": [
     "text:Bokföring"
@@ -4174,7 +4199,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Exportera till bokföringen",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "En verifikation per dag med försäljning per momssats, betalningar, återbetalningar, Stripes avgifter och utbetalningar till banken. Läs in SIE-filen i Fortnox, Visma eller ett annat bokföringsprogram.",
    "highlight": [
     "text:Exportera till bokföringen"
@@ -4187,7 +4212,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Period",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Period"
@@ -4200,7 +4225,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Filformat",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Filformat"
@@ -4213,7 +4238,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Från och med",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Från och med"
@@ -4226,7 +4251,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Till och med",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Till och med"
@@ -4239,7 +4264,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Konton",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "Standardkonton enligt BAS-kontoplanen. Stäm av dem med er redovisningskonsult och ändra det som ska bokas på andra konton.",
    "highlight": [
     "text:Konton"
@@ -4252,7 +4277,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Verifikationsserie",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Verifikationsserie"
@@ -4265,7 +4290,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Räkenskapsåret börjar",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Räkenskapsåret börjar"
@@ -4278,7 +4303,7 @@
    "route": "/installningar",
    "hash": "bokforing",
    "title": "Kostnadsställe",
-   "where": "Inställningar, Bokföring",
+   "where": "Inställningar, Ekonomi, Bokföring",
    "text": "",
    "highlight": [
     "text:Kostnadsställe"
@@ -4291,7 +4316,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Högst",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Högst"
@@ -4304,7 +4329,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Bokningstid",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Hur länge ett bord är bokat. Specialtider (t.ex. lunchbuffé) gäller bokningar som börjar inom dem. Varje bokning behåller tiden den fick, även om du ändrar här.",
    "highlight": [
     "text:Bokningstid"
@@ -4317,7 +4342,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Standardlängd",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Ingen bokning börjar senare än så här före stängning. Är bokningen längre gäller längden (hela bokningen ska rymmas före stängning).",
    "highlight": [
     "text:Standardlängd"
@@ -4330,7 +4355,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Sista sittning före stängning",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Ingen bokning börjar senare än så här före stängning. Är bokningen längre gäller längden (hela bokningen ska rymmas före stängning).",
    "highlight": [
     "text:Sista sittning före stängning"
@@ -4343,7 +4368,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Specialtider",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Inga specialtider. Alla bokningar får standardlängden.",
    "highlight": [
     "text:Specialtider"
@@ -4356,7 +4381,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Namn (visas för gästen)",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Namn (visas för gästen)"
@@ -4369,7 +4394,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Längd",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Längd"
@@ -4382,7 +4407,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Veckodagar",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Veckodagar"
@@ -4395,7 +4420,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Starttider från",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Starttider från"
@@ -4408,7 +4433,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "till (inte med)",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:till (inte med)"
@@ -4421,7 +4446,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Från datum (valfritt)",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Från datum (valfritt)"
@@ -4434,7 +4459,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Till datum (valfritt)",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Till datum (valfritt)"
@@ -4447,7 +4472,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Prioritet",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Om två specialtider överlappar gäller den med datum först, sedan den med högst prioritet.",
    "highlight": [
     "text:Prioritet"
@@ -4460,7 +4485,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Lägg till specialtid",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:+ Lägg till specialtid"
@@ -4473,7 +4498,7 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "Avbokningspolicy",
-   "where": "Inställningar, Avbokning",
+   "where": "Inställningar, Gäster, Avbokning",
    "text": "Med kortgaranti sparar gästen sitt kort när hen bokar online - inget dras då. Uteblir gästen eller avbokar för sent kan avgiften debiteras. Beloppen låses på bokningen.",
    "highlight": [
     "text:Avbokningspolicy"
@@ -4486,7 +4511,7 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "Kort krävs från (antal personer)",
-   "where": "Inställningar, Avbokning",
+   "where": "Inställningar, Gäster, Avbokning",
    "text": "",
    "highlight": [
     "text:Kort krävs från (antal personer)"
@@ -4499,7 +4524,7 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "Sen avbokning: senare än (timmar före)",
-   "where": "Inställningar, Avbokning",
+   "where": "Inställningar, Gäster, Avbokning",
    "text": "",
    "highlight": [
     "text:Sen avbokning: senare än (timmar före)"
@@ -4512,7 +4537,7 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "No-show-avgift (kr per person)",
-   "where": "Inställningar, Avbokning",
+   "where": "Inställningar, Gäster, Avbokning",
    "text": "",
    "highlight": [
     "text:No-show-avgift (kr per person)"
@@ -4525,7 +4550,7 @@
    "route": "/installningar",
    "hash": "avbokning",
    "title": "Avgift sen avbokning (kr per person)",
-   "where": "Inställningar, Avbokning",
+   "where": "Inställningar, Gäster, Avbokning",
    "text": "Nu: kortgaranti är avstängd - gästerna bokar utan kort. Slå på reglaget ovan och spara.",
    "highlight": [
     "text:Avgift sen avbokning (kr per person)"
@@ -4538,7 +4563,7 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Appen på telefonen",
-   "where": "Inställningar, Utseende och ljud",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
    "text": "Lägg Booqy Admin på hemskärmen, så öppnas den som en egen app i helskärm. Samma inloggning och samma funktioner som här, och den visar alltid den senaste versionen.",
    "highlight": [
     "text:Appen på telefonen"
@@ -4551,10 +4576,36 @@
    "route": "/installningar",
    "hash": "utseende",
    "title": "Skrivbordsappen",
-   "where": "Inställningar, Utseende och ljud",
-   "text": "Booqy Admin som app på datorn, i ett eget fönster. Samma inloggning och samma funktioner som här. Appen visar alltid den senaste versionen av Booqy och frågar när själva appen kan uppdateras.",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
+   "text": "Booqy Admin som app på datorn, i ett eget fönster. Samma inloggning och samma funktioner som här. Appen visar alltid den senaste versionen av Booqy och uppdaterar sig själv utan frågor.",
    "highlight": [
     "text:Skrivbordsappen"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-DesktopAppCard:installera-med-ett-kommando-rekommenderas:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Installera med ett kommando (rekommenderas)",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
+   "text": "",
+   "highlight": [
+    "text:Installera med ett kommando (rekommenderas)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-installningar-DesktopAppCard:eller-ladda-ner-filen:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Eller ladda ner filen",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
+   "text": "",
+   "highlight": [
+    "text:Eller ladda ner filen"
    ],
    "audience": "all"
   },
@@ -4564,7 +4615,7 @@
    "route": "/installningar",
    "hash": "statistik",
    "title": "Statistik",
-   "where": "Inställningar, Statistik",
+   "where": "Inställningar, Data och integritet, Statistik",
    "text": "Du ser alltid alla siffror. Här väljer du vad personalen ser och hur dagen delas i lunch och middag.",
    "highlight": [
     "text:Statistik"
@@ -4577,7 +4628,7 @@
    "route": "/installningar",
    "hash": "statistik",
    "title": "Lunchen slutar",
-   "where": "Inställningar, Statistik",
+   "where": "Inställningar, Data och integritet, Statistik",
    "text": "",
    "highlight": [
     "text:Lunchen slutar"
@@ -4590,7 +4641,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Restaurangprofil",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Letar efter restaurangens plats…",
    "highlight": [
     "help:settings:profil:InstallningarPage"
@@ -4603,7 +4654,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Namn",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Namn"
@@ -4616,7 +4667,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Telefon",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Telefon"
@@ -4629,7 +4680,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Adress",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Adress"
@@ -4642,7 +4693,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "E-post",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Hur länge bordet hålls om gästen är sen. Därefter blir bordet ledigt igen.",
    "highlight": [
     "text:E-post"
@@ -4655,7 +4706,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Grace period (minuter)",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Hur länge bordet hålls om gästen är sen. Därefter blir bordet ledigt igen.",
    "highlight": [
     "text:Grace period (minuter)"
@@ -4668,7 +4719,7 @@
    "route": "/installningar",
    "hash": "profil",
    "title": "Öppettider",
-   "where": "Inställningar, Restaurang",
+   "where": "Inställningar, Verksamheten, Restaurang",
    "text": "",
    "highlight": [
     "text:Öppettider"
@@ -4681,7 +4732,7 @@
    "route": "/installningar",
    "hash": "notiser",
    "title": "Notiser",
-   "where": "Inställningar, Notiser",
+   "where": "Inställningar, Gäster, Notiser",
    "text": "Gäster får alltid bokningsbekräftelse per e-post med en länk för att se eller avboka, och besked om ni ändrar eller avbokar.",
    "highlight": [
     "text:Notiser"
@@ -4694,7 +4745,7 @@
    "route": "/installningar",
    "hash": "notiser",
    "title": "Avsändarnamn i SMS",
-   "where": "Inställningar, Notiser",
+   "where": "Inställningar, Gäster, Notiser",
    "text": "",
    "highlight": [
     "text:Avsändarnamn i SMS"
@@ -4707,7 +4758,7 @@
    "route": "/installningar",
    "hash": "notiser",
    "title": "Påminnelse före besöket",
-   "where": "Inställningar, Notiser",
+   "where": "Inställningar, Gäster, Notiser",
    "text": "Vid ny onlinebokning och när en gäst avbokar.",
    "highlight": [
     "text:Påminnelse före besöket"
@@ -4720,7 +4771,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Beställning",
-   "where": "Inställningar, Beställning",
+   "where": "Inställningar, Gäster, Beställning",
    "text": "Gästerna beställer och betalar online. Avhämtning: sms när maten är klar. Vid bordet: QR-koden på bordet, maten serveras där. Bara under öppettiderna.",
    "highlight": [
     "text:Beställning"
@@ -4734,7 +4785,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Tillagningstid som gästen ser (min)",
-   "where": "Inställningar, Beställning",
+   "where": "Inställningar, Gäster, Beställning",
    "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
    "highlight": [
     "text:Tillagningstid som gästen ser (min)"
@@ -4748,7 +4799,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Sista beställning (min före stängning)",
-   "where": "Inställningar, Beställning",
+   "where": "Inställningar, Gäster, Beställning",
    "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
    "highlight": [
     "text:Sista beställning (min före stängning)"
@@ -4762,7 +4813,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "QR-koder för borden",
-   "where": "Inställningar, Beställning",
+   "where": "Inställningar, Gäster, Beställning",
    "text": "Publicera en planritning med bord först (Layout).",
    "highlight": [
     "text:QR-koder för borden"
@@ -4776,7 +4827,7 @@
    "route": "/installningar",
    "hash": "betalningar",
    "title": "Betalningar",
-   "where": "Inställningar, Betalningar",
+   "where": "Inställningar, Ekonomi, Betalningar",
    "text": "Tillbaka från Stripe. Hämtar den nya statusen…",
    "highlight": [
     "text:Betalningar"
@@ -4789,7 +4840,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Bongskrivare",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "Välj en plats först.",
    "highlight": [
     "text:Bongskrivare"
@@ -4803,7 +4854,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Skriv in detta i skrivaren nu",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "Lösenordet visas bara den här gången. Tappar du bort det: välj Ny nyckel och skriv in det nya.",
    "highlight": [
     "text:Skriv in detta i skrivaren nu"
@@ -4817,7 +4868,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Lägg till skrivare",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Lägg till skrivare"
@@ -4831,7 +4882,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Märke",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Märke"
@@ -4845,7 +4896,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Lägg till",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "När en gäst har betalat kommer varje stations bong ut direkt.",
    "highlight": [
     "text:Lägg till"
@@ -4859,7 +4910,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Orderskrivare (omtryck och makulering)",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Orderskrivare (omtryck och makulering)"
@@ -4873,7 +4924,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Pappersbredd",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Pappersbredd"
@@ -4887,7 +4938,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Så kopplar du skrivaren",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Så kopplar du skrivaren"
@@ -4901,7 +4952,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Om något inte fungerar",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Om något inte fungerar"
@@ -4915,7 +4966,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Epson TM-m30III och andra Epson med Server Direct Print",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Epson TM-m30III och andra Epson med Server Direct Print"
@@ -4929,7 +4980,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Avbryt",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Avbryt"
@@ -4942,7 +4993,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Integritetspolicy för gäster",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Integritetspolicy för gäster"
@@ -4955,7 +5006,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Text",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Text"
@@ -4968,7 +5019,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Återställ mallen",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Återställ mallen"
@@ -4981,7 +5032,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Gästens uppgifter och samtycken",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Gästens uppgifter och samtycken"
@@ -4994,7 +5045,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "E-post",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:E-post"
@@ -5007,7 +5058,7 @@
    "route": "/installningar",
    "hash": "integritet",
    "title": "Telefon",
-   "where": "Inställningar, Integritet",
+   "where": "Inställningar, Data och integritet, Integritet",
    "text": "",
    "highlight": [
     "text:Telefon"
@@ -5020,7 +5071,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Avvikande öppettider",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "Välj en plats först.",
    "highlight": [
     "text:Avvikande öppettider"
@@ -5033,7 +5084,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Stäng onlinebokning idag",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "Inga avvikande dagar.",
    "highlight": [
     "text:Stäng onlinebokning idag"
@@ -5046,7 +5097,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Lägg till dag",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "",
    "highlight": [
     "text:Lägg till dag"
@@ -5059,7 +5110,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Datum",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "",
    "highlight": [
     "text:Datum"
@@ -5072,7 +5123,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Typ",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "",
    "highlight": [
     "text:Typ"
@@ -5085,7 +5136,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Anteckning till gästerna (valfritt)",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "",
    "highlight": [
     "text:Anteckning till gästerna (valfritt)"
@@ -5098,7 +5149,7 @@
    "route": "/installningar",
    "hash": "dagar",
    "title": "Lägg till",
-   "where": "Inställningar, Avvikande dagar",
+   "where": "Inställningar, Verksamheten, Avvikande dagar",
    "text": "",
    "highlight": [
     "text:Lägg till"
@@ -5183,7 +5234,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Bongar och stationer",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Bongar och stationer"
@@ -5197,7 +5248,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Station",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Station"
@@ -5211,7 +5262,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Lägg till station",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Lägg till station"
@@ -5225,7 +5276,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Vart går menyns kategorier?",
-   "where": "Inställningar, Skrivare",
+   "where": "Inställningar, Gäster, Skrivare",
    "text": "",
    "highlight": [
     "text:Vart går menyns kategorier?"
@@ -5239,7 +5290,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Bord vid onlinebokning",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "Gästerna väljer bord på planritningen, men bara bord som passar sällskapet. Personalen kan alltid boka och kombinera alla bord.",
    "highlight": [
     "text:Bord vid onlinebokning"
@@ -5252,7 +5303,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Kombinationer",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "Bord som gästerna får boka tillsammans, t.ex. två fyrabord för 5-8 personer. Utan kombinationer bokar gästerna ett bord per bokning.",
    "highlight": [
     "text:Kombinationer"
@@ -5265,7 +5316,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Ny kombination",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "",
    "highlight": [
     "text:Ny kombination"
@@ -5278,7 +5329,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Från (pers)",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "",
    "highlight": [
     "text:Från (pers)"
@@ -5291,7 +5342,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Till (pers)",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "",
    "highlight": [
     "text:Till (pers)"
@@ -5304,7 +5355,7 @@
    "route": "/installningar",
    "hash": "bord",
    "title": "Lägg till kombination",
-   "where": "Inställningar, Bord",
+   "where": "Inställningar, Verksamheten, Bord",
    "text": "",
    "highlight": [
     "text:Lägg till kombination"

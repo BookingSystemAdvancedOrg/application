@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import re
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -16,6 +17,7 @@ from moto import mock_aws
 
 from shared import contracts
 from shared import help_assistant as help
+from shared import help_dates
 from shared.bedrock import SimulatedTextModel
 from tenant_support import REGION, TENANT_A, TENANT_TABLE, seed_tenancy, tenant_row, with_tenant_claims
 
@@ -141,6 +143,69 @@ def test_live_answer_carries_the_metric_not_a_number(app):
     assert code == 200 and body["answer"]["live"]["metric"] == "guestsToday"
     assert "{value}" in body["answer"]["live"]["text"]
     assert body["answer"]["actions"][0]["highlight"] == ["help:kpi:gaster-idag"]
+
+
+def test_live_answer_for_another_day_carries_the_range(app, monkeypatch):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    code, body = ask(app, "Hur många bokningar har vi imorgon?", role="staff_user")
+    live = body["answer"]["live"]
+    assert code == 200 and body["answer"]["known"]
+    assert live["metric"] == "bookings" and live["range"] == {"from": "2026-11-15", "to": "2026-11-15"}
+    assert live["text"] == "Imorgon, söndag 15 november: {value} {bokning|bokningar}. Avbokade räknas inte."
+    # A follow-up names only the day.
+    code, body = ask(app, "Och nästa vecka?", role="staff_user",
+                     history=[{"role": "user", "text": "Hur många gäster har vi idag?"}])
+    assert body["answer"]["live"]["metric"] == "guests"
+    assert body["answer"]["live"]["range"] == {"from": "2026-11-16", "to": "2026-11-22"}
+
+
+def test_another_day_without_a_count_is_not_a_live_number(app, monkeypatch):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    _, body = ask(app, "Vad blir vädret imorgon?")
+    assert body["answer"]["known"] is False and "live" not in body["answer"]
+    _, body = ask(app, "Hur ändrar jag öppettiderna på fredag?")
+    assert body["answer"]["known"] and "live" not in body["answer"]
+
+
+def test_live_for_other_days():
+    today = date(2026, 11, 14)
+    live = {"metric": "guestsWeek", "text": "x {value}", "rangeText": "{period}: {value} {gäst|gäster}."}
+    assert help.live_for(live, "Hur många gäster i helgen?", "admin", today) == {
+        "metric": "guests", "text": "I helgen, 14 till 15 november: {value} {gäst|gäster}.",
+        "range": {"from": "2026-11-14", "to": "2026-11-15"}}
+    assert help.live_for(live, "Hur många gäster den här veckan?", "admin", today) is live
+    # A corpus from before rangeText: no number rather than today's number for another day.
+    assert help.live_for({"metric": "guestsToday", "text": "{value}"}, "imorgon", "admin", today) is None
+    # The console has no days.
+    assert help.live_for({"metric": "mrr", "text": "{value}"}, "MRR imorgon", "console", today)["metric"] == "mrr"
+
+
+@pytest.mark.parametrize("case", json.loads((ROOT / "tests" / "help_dates_cases.json").read_text(encoding="utf-8")),
+                         ids=lambda c: f"{c['today']}:{c['question'][:40]}")
+def test_parse_when(case):
+    # The same examples as the admin app's dates.test.ts (helpDateCases.json).
+    got = help_dates.parse_when(case["question"], date.fromisoformat(case["today"]))
+    want = case["expect"]
+    assert (got and {k: got[k] for k in ("from", "to", "label")}) == want if want else got is None
+
+
+@pytest.mark.parametrize("name", ["help_corpus_admin.json", "help_corpus_console.json"])
+def test_live_text_stays_plain_for_older_apps(name):
+    # Apps from before countText fill only {value}: text must never carry {one|many}.
+    corpus = json.loads((ROOT / "shared" / name).read_text(encoding="utf-8"))
+    lives = [e["live"] for e in corpus["docs"] if e.get("live")]
+    assert lives and all(not re.search(r"\{[^{}]*\|[^{}]*\}", live["text"]) for live in lives)
+    assert any("countText" in live for live in lives)
+
+
+def test_parse_when_gives_a_query_for_today():
+    got = help_dates.parse_when("Hur många gäster har vi i helgen?", date(2026, 11, 14))
+    assert got["query"] == "hur manga gaster har vi idag"
+
+
+def test_today_is_in_stockholm():
+    # 23:30 UTC on 14 November is already 15 November in Stockholm.
+    assert help_dates.today_in(now=datetime(2026, 11, 14, 23, 30, tzinfo=timezone.utc)) == date(2026, 11, 15)
 
 
 # --- corpus --------------------------------------------------------------------------------

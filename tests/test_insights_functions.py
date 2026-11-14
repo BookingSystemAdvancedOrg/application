@@ -261,3 +261,13 @@ def test_upcoming_counts_the_bookings_still_on_after_today(api, env):
                                {"date": "2026-10-24", "bookings": 1, "guests": 3}]
     plain = body(api.handler(event({"from": "2026-10-21", "to": "2026-10-21", "locationId": LOC_A}), None))
     assert plain["upcoming"] == []
+
+
+def test_a_day_after_today_is_counted_from_upcoming(api, env):
+    """Fråga Booqy's "Hur många bokningar har vi imorgon?" asks for tomorrow's range
+    with ahead: current never counts days after today, upcoming does."""
+    env.Table(TABLES["RESERVATION_TABLE_NAME"]).put_item(Item=booking(LOC_A, "2026-10-22", "t1", party=3))
+    out = body(api.handler(event({"from": "2026-10-22", "to": "2026-10-22", "locationId": LOC_A,
+                                  "compare": "none", "ahead": "1"}), None))
+    assert out["current"]["bookings"] == 0
+    assert out["upcoming"] == [{"date": "2026-10-22", "bookings": 1, "guests": 3}]

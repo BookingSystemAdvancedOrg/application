@@ -236,6 +236,24 @@ def test_new_tenant_goes_live_only_after_accepting_the_dpa(aws):
     assert tenant.for_public(LOC_B).tenant_id == TENANT_B
 
 
+def test_own_staff_pass_the_dpa_gate_but_guests_and_other_tenants_do_not(aws):
+    res = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
+    res.put_item(Item=tenant_row(TENANT_B, dpaRequired=True))
+    tenant.reset_caches()
+    asked = []
+
+    def staff(value):
+        return lambda: asked.append(value) or value
+
+    assert tenant.for_public(LOC_B, staff_tenant=staff(TENANT_B)).tenant_id == TENANT_B
+    assert err(tenant.for_public, LOC_B, staff_tenant=staff(TENANT_A)) == (404, "not found")
+    assert err(tenant.for_public, LOC_B, staff_tenant=staff(None)) == (404, "not found")
+    # A live restaurant never asks Cognito.
+    asked.clear()
+    assert tenant.for_public(LOC_A, staff_tenant=staff(TENANT_B)).tenant_id == TENANT_A
+    assert asked == []
+
+
 def test_existing_tenant_without_the_flag_is_never_gated(aws):
     assert "dpaRequired" not in tenant.get_tenant(TENANT_B, fresh=True)
     assert tenant.for_public(LOC_B).tenant_id == TENANT_B

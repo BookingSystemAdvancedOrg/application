@@ -20,6 +20,9 @@ PURPOSE:
     Multi-tenant (shared/tenant.py): the location decides the tenant. An
     unknown location, an inactive (suspended/offboarded) tenant, or a tenant
     without the "reservations" feature answers 404 - nothing is bookable.
+    A new restaurant that has not accepted the DPA is 404 for guests, but
+    its own staff (Cognito access token in Authorization, checked with
+    GetUser in shared/staff_token.py) still get availability in admin.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -41,7 +44,7 @@ from http import HTTPStatus
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import availability as engine
-from shared import tenant
+from shared import staff_token, tenant
 from shared.availability import (  # noqa: F401 - re-exported for tests
     _DATE_PATTERN,
     _QUERY_FIELDS,
@@ -245,7 +248,13 @@ def handler(event, context):
 
     try:
         details = _request_details(event)
-        ctx = tenant.for_public(details["locationId"], feature="reservations")
+        # Admin sends the staff token: their own restaurant is bookable in
+        # admin before the DPA is accepted (the guest site stays gated).
+        ctx = tenant.for_public(
+            details["locationId"],
+            feature="reservations",
+            staff_tenant=lambda: staff_token.tenant_of(event),
+        )
         _TENANT_ID.set(ctx.tenant_id)
         return _handle_availability(details)
     except tenant.TenantError as exc:

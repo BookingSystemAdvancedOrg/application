@@ -198,6 +198,13 @@ This function has no User-table permission, so it can check the caller's group b
 **Purpose:** Publicly computes the bookable local-time slots and free tables
 for one location and date. This route intentionally performs no JWT check;
 customers do not have Cognito accounts.
+A new tenant that has not accepted the DPA answers `404` to guests; when the
+request carries an access token (`Authorization: Bearer`) whose claims name
+the tenant pool (`iss`), `token_use: access` and the staff app client
+(`client_id`), that Cognito GetUser then accepts, and whose `custom:tenant_id`
+is the location's tenant,
+the gate is lifted so the restaurant's own staff can book in admin
+(`shared/staff_token.py`, unsigned call, no IAM permission).
 
 **Request:** `GET /locations/{locationId}/availability?date=YYYY-MM-DD`.
 `locationId` must be nonblank, at most 128 characters, and may not contain
@@ -299,6 +306,8 @@ requested table; clients must handle a booking-time conflict.
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Activation state and current/pending published tables and seat counts |
+| `TENANT_USER_POOL_ID` | Tenant pool: staff tokens past the DPA gate must be issued by it (unset: nobody passes) |
+| `TENANT_APP_CLIENT_ID` | Staff app client: staff tokens past the DPA gate must be issued to it |
 
 **AWS resource access:** Read-only on Location, Slot Occupancy, and Published
 Layout Snapshot tables. The implementation calls strongly consistent
@@ -616,13 +625,15 @@ The public branch treats `LAYOUT#ACTIVATION.currentVersion` as authoritative. It
 
 A successful public response is `{"floors": [...], "elements": [...]}`. Floor records become exactly `floorId` (their element ID), `name`, and `level`. Non-floor records retain `elementId`, `type`, geometry (`x`, `y`, `z`, `width`, `height`, `depth`, `rotationY`), optional `floorId`, and their applicable table (`shape`, `seats`, `zone`, and optional `label`), cash-register (optional `label`), or door/window (`wallId`) fields. Floor areas appear in `elements` with common geometry and optional `floorId`; they are never placed in the `floors` metadata array. A door also retains its optional `kind` (`entrance` or `kitchen`) so the customer renderer can distinguish the two purposes; legacy/unspecified doors simply omit it. Legacy tables and cash registers simply omit `label`. The response omits element audit fields, snapshot version/top-level label/lifecycle/audit fields, `validPositions`, DynamoDB keys, unexpected attributes, and activation metadata. An empty active snapshot returns two empty arrays; a legacy flat snapshot returns `floors: []` and elements without `floorId`.
 
-Malformed paths return `400`. A recognized request with the wrong method returns `405` with `Allow: GET` for a read route or `Allow: DELETE` for the archive route. The public route returns `404` with `active layout not found` when no activation state exists; DELETE returns `404` when its version does not exist. Inconsistent activation state, malformed or partial archive metadata, snapshot content/lifecycle, duplicate content, a current/pending archive attempt, or an unresolved concurrent change returns `409`. Malformed DynamoDB results and unexpected DynamoDB or transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
+Malformed paths return `400`. A recognized request with the wrong method returns `405` with `Allow: GET` for a read route or `Allow: DELETE` for the archive route. The public route returns `200` with empty `floors` and `elements` when no activation state exists, and `404` for an unknown location, an inactive tenant or a new tenant that has not accepted the DPA (its own staff pass: a staff app client access token from the tenant pool, verified with Cognito GetUser); DELETE returns `404` when its version does not exist. Inconsistent activation state, malformed or partial archive metadata, snapshot content/lifecycle, duplicate content, a current/pending archive attempt, or an unresolved concurrent change returns `409`. Malformed DynamoDB results and unexpected DynamoDB or transport failures return a sanitized `503`. All Lambda responses include `Cache-Control: no-store`, and raw dependency details are never exposed.
 
 **Environment variables:**
 | Name | Meaning |
 |---|---|
 | `ENVIRONMENT` | `dev` or `prod` |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read and soft-archive versions in |
+| `TENANT_USER_POOL_ID` | Tenant pool: staff tokens past the DPA gate must be issued by it (unset: nobody passes) |
+| `TENANT_APP_CLIENT_ID` | Staff app client: staff tokens past the DPA gate must be issued to it |
 
 **AWS resource access:** `GetItem`, `Query`, and `TransactWriteItems` on Published Layout Snapshot only. The protected listing calls `Query`; the public resolver calls strongly consistent `GetItem` for state/snapshot/state; archive performs strongly consistent `GetItem` calls followed by one transaction containing a snapshot update and an activation-state condition check. It accesses no other table or AWS service.
 

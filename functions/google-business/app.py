@@ -8,8 +8,8 @@ TRIGGER:
     DELETE /tenant/google-business/connection                       D4 revoke, secret, links, schedules
     GET    /tenant/google-business/locations                        D5 Google locations + links
     GET    /locations/{locationId}/google-business                  D6 link, preview, settings, stats
-    PUT    /locations/{locationId}/google-business/link             D7 {googleLocation, version?}
-    DELETE /locations/{locationId}/google-business/link             D8
+    PUT    /locations/{locationId}/google-business/link             D7 {googleLocation, version?} | {skipped: true}
+    DELETE /locations/{locationId}/google-business/link             D8 unlink, also undoes a skip
     POST   /locations/{locationId}/google-business/sync             D9 "Synka nu"
     PUT    /locations/{locationId}/google-business/review-settings  D10
 
@@ -136,6 +136,20 @@ def callback(event, ctx):
     return http.respond(200, _connection_view(item))
 
 
+def _skip_key(location_id):
+    # "Vi har ingen Google-profil": Google is optional, the location says so once (Kom igång counts it done).
+    return {"PK": gbp.location_pk(location_id), "SK": "SKIP"}
+
+
+def _skipped(tenant_id, location_id):
+    item = gbp.table().get_item(Key=_skip_key(location_id), ConsistentRead=True).get("Item")
+    return bool(item and item.get("tenantId") == tenant_id)
+
+
+def _clear_skip(location_id):
+    gbp.table().delete_item(Key=_skip_key(location_id))
+
+
 def _remove_link(tenant_id, location_id):
     link = gbp.get_link(tenant_id, location_id)
     if not link:
@@ -203,11 +217,26 @@ def get_location_view(event, ctx):
            "stats": gbp.stats(ctx.tenant_id, ctx.location_id)}
     if link:
         out["link"] = gbp.link_view(link)
+    elif _skipped(ctx.tenant_id, ctx.location_id):
+        out["skipped"] = True
     return http.respond(200, out)
 
 
+def _put_skip(ctx):
+    if gbp.get_link(ctx.tenant_id, ctx.location_id):
+        raise gbp.GbpError(409, "already_linked")
+    gbp.table().put_item(Item={**_skip_key(ctx.location_id), "tenantId": ctx.tenant_id,
+                               "locationId": ctx.location_id, "skippedAt": gbp.iso(gbp.now()),
+                               "skippedBy": ctx.sub})
+    return http.respond(200, {"skipped": True})
+
+
 def put_link(event, ctx):
-    body = http.body(event, allowed=("googleLocation", "version"))
+    body = http.body(event, allowed=("googleLocation", "version", "skipped"))
+    if "skipped" in body:
+        if body["skipped"] is not True or set(body) != {"skipped"}:
+            raise gbp.GbpError(400, "skipped is invalid", "skipped")
+        return _put_skip(ctx)
     google_location = body.get("googleLocation")
     if not gbp.valid_google_location(google_location):
         raise gbp.GbpError(400, "googleLocation is invalid", "googleLocation")
@@ -253,12 +282,14 @@ def put_link(event, ctx):
         if reasons and reasons[0] == "ConditionalCheckFailed":
             raise gbp.GbpError(409, "already_linked", "googleLocation")
         raise gbp.GbpError(409, "changed_retry")
+    _clear_skip(ctx.location_id)
     # First sync: the hourly job picks up the pending link (no hash yet).
     return http.respond(200, gbp.link_view(link))
 
 
 def delete_link(event, ctx):
     _remove_link(ctx.tenant_id, ctx.location_id)
+    _clear_skip(ctx.location_id)
     return _no_content()
 
 

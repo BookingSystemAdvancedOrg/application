@@ -309,11 +309,18 @@ paths:
               $ref: '#/components/schemas/GoogleBusinessLinkBody'
       responses:
         '200':
-          description: Link (first sync queued for the hourly job).
+          description: 'Link (first sync queued for the hourly job), or {"skipped": true}.'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleBusinessLink'
+                oneOf:
+                - $ref: '#/components/schemas/GoogleBusinessLink'
+                - type: object
+                  required:
+                  - skipped
+                  properties:
+                    skipped:
+                      type: boolean
         '400':
           description: Validation error (unsupported fields, bad values).
           content:
@@ -335,7 +342,7 @@ paths:
             application/json:
               schema: *id001
         '409':
-          description: 'already_linked, not_connected, changed_retry, google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
+          description: 'already_linked (also a skip while linked), not_connected, changed_retry, google_rejected (field: quota_exceeded, api_disabled, misconfigured, permission_denied, not_found or invalid_request; a retry will not help, no retryAfter).'
           content:
             application/json:
               schema: *id001
@@ -366,7 +373,7 @@ paths:
           type: string
       responses:
         '204':
-          description: Unlinked (idempotent).
+          description: Unlinked, and a skip undone (idempotent).
         '400':
           description: Validation error (unsupported fields, bad values).
           content:
@@ -590,14 +597,18 @@ components:
             at: *id002
     GoogleBusinessLinkBody:
       type: object
-      required:
-      - googleLocation
+      description: 'A Google location to link, or {"skipped": true} when the restaurant has no
+        Google profile (Google is optional; DELETE link undoes it).'
       additionalProperties: false
       properties:
         googleLocation:
           type: string
           pattern: ^locations/
         version: *id003
+        skipped:
+          type: boolean
+          enum:
+          - true
     GoogleBusinessSyncResult:
       type: object
       required:
@@ -657,6 +668,9 @@ components:
       properties:
         link:
           $ref: '#/components/schemas/GoogleBusinessLink'
+        skipped:
+          type: boolean
+          description: True when the owner chose "Vi har ingen Google-profil" (never with link).
         preview:
           type: object
           properties:

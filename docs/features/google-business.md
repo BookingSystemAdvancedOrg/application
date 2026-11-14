@@ -20,6 +20,10 @@ ADR: `infrastructure/docs/adr/ADR-D-google-business-profile.md`. Contract: CONTR
   the sha256 of the mapped payload differs from `lastSyncHash`. Edits made
   in Google are overwritten (the admin card says so).
 - **Owner only, every route** (staff 403 `owner_only`); foreign locations 404.
+- **Optional.** A restaurant without a Google profile sends
+  `PUT .../link {"skipped": true}` (row `LOCATION#<id>` / `SKIP`, no
+  connection needed); D6 then returns `skipped: true` and admin Kom igång
+  counts Google as done. `DELETE .../link` or linking a place removes it.
 - **Review request = direct marketing** (ADR-D 5): sent only with a current
   consent grant for that channel (`consent.may_send`), with the one-click
   withdraw link (List-Unsubscribe), at most once per guest per

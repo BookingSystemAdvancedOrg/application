@@ -513,10 +513,15 @@ def _platform(event):
     end = pa.period_end()
     use = pa.usage(tenant_id, end)
     per_loc = pa.plain(use.get("loc") or {})
+    # The locations set up for the agent, from its own table (LOC#<l>#CONFIG): this
+    # role has no Query on the location table, and a tenant that never set up the
+    # agent gets an empty list (not configured), not an error.
+    configs = {row["SK"].removeprefix("LOC#").removesuffix("#CONFIG"): row
+               for row in pa.query_all(pa.tenant_pk(tenant_id), "LOC#", ConsistentRead=True)
+               if row["SK"].endswith("#CONFIG")}
     locations = []
-    for loc_row in tenant.list_locations(tenant_id):
-        lid = loc_row.get("locationId")
-        loc = pa.get_loc(tenant_id, lid)
+    for lid in sorted(set(configs) | set(per_loc)):
+        loc = configs.get(lid) or {}
         locations.append({"locationId": lid, "enabled": bool(loc.get("enabled")),
                           "number": (loc.get("number") or {}).get("e164"), "minutesThisPeriod": int(per_loc.get(lid)
                                                                                                     or 0)})

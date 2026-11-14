@@ -306,11 +306,16 @@ def _platform(event):
     if not isinstance(tenant_id, str) or not tenant_id or not tenant.get_tenant(tenant_id, fresh=True):
         return {"ok": False, "status": 404, "code": "not_found"}
     connection = gbp.get_connection(tenant_id) or {}
+    # Linked locations come from this feature's own GLOC# rows (written with each LINK):
+    # this role has no Query on the location table, and a tenant that never connected
+    # simply has none (status disconnected), not an error.
+    location_ids = sorted({row.get("locationId") for row in gbp.query_all(gbp.tenant_pk(tenant_id), "GLOC#",
+                                                                          ConsistentRead=True)} - {None, ""})
     links = []
-    for loc in tenant.list_locations(tenant_id):
-        link = gbp.get_link(tenant_id, loc.get("locationId") or "")
+    for location_id in location_ids:
+        link = gbp.get_link(tenant_id, location_id)
         if link:
-            links.append({"locationId": loc["locationId"], "title": link.get("title") or "",
+            links.append({"locationId": location_id, "title": link.get("title") or "",
                           "syncStatus": link.get("syncStatus") or "pending", "lastSyncAt": link.get("lastSyncAt")})
     return {"ok": True, "status": 200, "body": {"status": connection.get("status") or "disconnected",
                                                 "links": links}}

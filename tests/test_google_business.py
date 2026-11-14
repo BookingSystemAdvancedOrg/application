@@ -572,6 +572,14 @@ def test_platform_hook_d11(env):
     assert env.api.handler({"hook": "platform", "op": "x", "tenantId": TENANT_A})["code"] == "unknown_op"
 
 
+def test_platform_hook_d11_never_connected(env, monkeypatch):
+    """Never connected: status disconnected, no links, and no location table
+    read (the role has no Query on it), so no FunctionError and no 503."""
+    monkeypatch.setattr(shared_tenant, "list_locations", lambda *_: pytest.fail("location table read"))
+    answer = env.api.handler({"hook": "platform", "op": "google-business.tenant.get", "tenantId": TENANT_A})
+    assert answer == {"ok": True, "status": 200, "body": {"status": "disconnected", "links": []}}
+
+
 def test_privacy_export_and_erase(env):
     enable(env)
     grant()

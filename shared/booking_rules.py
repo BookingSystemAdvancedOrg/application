@@ -242,18 +242,34 @@ def date_spans(business_hours, special_by_date, day):
     minutes from its midnight, sorted: the previous date's hours that run
     past midnight (opens below 0) and this date's own (closes above 1440
     when they run past midnight). ``special_by_date`` is {iso date: special
-    day}."""
-    previous = day - timedelta(days=1)
-    spans = []
-    for when, shift in ((previous, -1440), (day, 0)):
+    day}. This date's own hours win: the previous evening ends at this
+    date's first opening at the latest (a special day's hours may start
+    before the weekly evening would have closed)."""
+    def spans_of(when, shift):
+        out = []
         for interval in day_intervals(
                 business_hours, WEEKDAYS[when.weekday()], special_by_date.get(when.isoformat())):
             opens, closes = _minute(interval["opensAt"]), _minute(interval["closesAt"])
             if overnight(interval):
                 closes += 1440
-            if closes + shift > 0:
-                spans.append((opens + shift, closes + shift))
-    return sorted(spans)
+            out.append((opens + shift, closes + shift))
+        return out
+
+    own = spans_of(day, 0)
+    first = min((opens for opens, _ in own), default=1440)
+    spans = []
+    for opens, closes in spans_of(day - timedelta(days=1), -1440):
+        closes = min(closes, first)
+        if closes > 0:
+            spans.append((opens, closes))
+    merged = []
+    for opens, closes in sorted(spans + own):
+        if merged and merged[-1][0] < 0 and merged[-1][1] == opens:
+            # the evening runs straight into this date's first opening
+            merged[-1] = (merged[-1][0], closes)
+        else:
+            merged.append((opens, closes))
+    return merged
 
 
 def date_intervals(business_hours, special_by_date, day):

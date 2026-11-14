@@ -476,3 +476,19 @@ def test_special_days_decide_whose_evening_runs_past_midnight():
     assert rules.date_intervals(LATE, closed_saturday, SUN) == [{"opensAt": "12:00", "closesAt": "20:00"}]
     closed_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "closed"}}
     assert rules.date_intervals(LATE, closed_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "02:00"}]
+
+
+def test_a_special_day_cuts_the_previous_evening_at_its_first_opening():
+    early_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                      "intervals": [{"opensAt": "00:30", "closesAt": "03:00"}]}}
+    # open straight through: one span, no start time twice
+    assert rules.date_spans(LATE, early_sunday, SUN) == [(-6 * 60, 3 * 60)]
+    assert rules.date_intervals(LATE, early_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "03:00"}]
+    later_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                      "intervals": [{"opensAt": "01:00", "closesAt": "01:30"},
+                                                    {"opensAt": "12:00", "closesAt": "14:00"}]}}
+    assert rules.date_intervals(LATE, later_sunday, SUN) == [
+        {"opensAt": "00:00", "closesAt": "01:30"}, {"opensAt": "12:00", "closesAt": "14:00"}]
+    midnight_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                         "intervals": [{"opensAt": "00:00", "closesAt": "04:00"}]}}
+    assert rules.date_intervals(LATE, midnight_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "04:00"}]

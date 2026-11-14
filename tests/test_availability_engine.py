@@ -206,3 +206,15 @@ def test_hours_past_midnight_offer_the_evening_and_the_night_after():
     assert starts(engine.candidate_slots({"date": "2026-09-28"}, loc, AT_13_32)) == []
     assert engine.closing_minute(loc, "2026-09-27", 30) == 120
     assert engine.closing_minute(loc, "2026-09-26", 22 * 60) == 23 * 60 + 59
+
+
+def test_a_special_day_after_midnight_does_not_offer_a_start_twice():
+    # Saturday 18:00-02:00, and Sunday 2026-09-27 a special day 00:30-03:00
+    loc = location(duration=30)
+    loc["businessHours"] = {d: [] for d in WEEK}
+    loc["businessHours"]["saturday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    loc["specialDays"] = {"2026-09-27": {"date": "2026-09-27", "kind": "hours",
+                                         "intervals": [{"opensAt": "00:30", "closesAt": "03:00"}]}}
+    sunday = starts(engine.candidate_slots({"date": "2026-09-27"}, loc, AT_13_32))
+    assert sunday and sunday[0] == "00:00"
+    assert len(sunday) == len(set(sunday))

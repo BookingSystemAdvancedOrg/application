@@ -287,6 +287,42 @@ def test_sync_google_down_is_502_with_retry_after_and_recorded(env):
     assert call(env, "POST", SYNC, params={"locationId": LOC_A}, body={})[1]["changed"] is True
 
 
+def _raise(code):
+    def fail(*args, **kwargs):
+        raise port.GoogleBusinessError(code)
+    return fail
+
+
+def test_revoked_grant_marks_needs_reauth_and_is_409(env, monkeypatch):
+    connect(env)
+    monkeypatch.setattr(env.google, "refresh", _raise("needs_reauth"))
+    status, body = call(env, "GET", "/tenant/google-business/locations")
+    assert (status, body["code"]) == (409, "not_connected")
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "needs_reauth"
+    monkeypatch.delattr(env.google, "refresh")  # back to the class method
+    connect(env)  # connecting again restores it
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "connected"
+
+
+def test_callback_without_offline_grant_is_invalid_state(env, monkeypatch):
+    url = call(env, "POST", "/tenant/google-business/connection/start", body={})[1]["authorizeUrl"]
+    state = re.search(r"state=([^&]+)", url).group(1)
+    monkeypatch.setattr(env.google, "exchange_code", _raise("needs_reauth"))
+    status, body = call(env, "POST", "/tenant/google-business/connection/callback",
+                        body={"code": "simulated", "state": state})
+    assert (status, body["code"], body["field"]) == (400, "invalid_state", "code")
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "disconnected"
+
+
+def test_hourly_sync_marks_needs_reauth_on_the_real_code(env, monkeypatch):
+    connect(env)
+    link(env)
+    monkeypatch.setattr(env.google, "refresh", _raise("needs_reauth"))
+    counts = env.jobs.run_sync()
+    assert counts["failed"] == 1
+    assert gbp.get_connection(TENANT_A)["status"] == "needs_reauth"
+
+
 # --- D10 -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("over,code", [({"delayMinutes": 10}, "invalid_delay"),

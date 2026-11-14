@@ -96,10 +96,8 @@ def run_sync() -> dict:
                 _publish("GoogleHours.Synced", {"tenantId": tenant_id, "locationId": location_id, "changed": True})
         except GoogleBusinessError as exc:
             counts["failed"] += 1
-            if exc.code in ("unauthorized", "invalid_grant"):
-                gbp.table().update_item(Key=gbp.connection_key(tenant_id), UpdateExpression="SET #s = :r",
-                                        ConditionExpression="#s = :c", ExpressionAttributeNames={"#s": "status"},
-                                        ExpressionAttributeValues={":r": "needs_reauth", ":c": "connected"})
+            if exc.code in gbp.REAUTH_CODES:
+                gbp.mark_needs_reauth(tenant_id)
             _publish("GoogleHours.SyncFailed", {"tenantId": tenant_id, "locationId": location_id, "code": exc.code})
         except ClientError as exc:  # one bad location never stops the run
             counts["failed"] += 1

@@ -44,7 +44,8 @@ def test_unknown_value_refused(monkeypatch, name, module, sim, real_mod, real_cl
         module.client()
 
 
-@pytest.mark.parametrize("name, module, sim, real_mod, real_cls, err", [c for c in CLIENTS if c[0] != "bedrock"])
+@pytest.mark.parametrize("name, module, sim, real_mod, real_cls, err",
+                         [c for c in CLIENTS if c[0] not in ("bedrock", "google_business")])
 def test_real_is_a_skeleton(monkeypatch, name, module, sim, real_mod, real_cls, err):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv(ENV[name], "real")

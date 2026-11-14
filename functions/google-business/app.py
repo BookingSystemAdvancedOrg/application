@@ -425,6 +425,7 @@ def handler(event, context=None):
     fn = ROUTES.get(route)
     if fn is None:
         return _err(404, "not found")
+    ctx = None
     try:
         location_id = None
         if "{locationId}" in path:
@@ -444,6 +445,14 @@ def handler(event, context=None):
         logger.warning(json.dumps({"route": route, "google": exc.code}))
         if exc.code == "invalid_code":
             return _err(400, "invalid_state", "code")
+        if exc.code in gbp.REAUTH_CODES and fn is callback:  # no offline grant or the scope was unticked
+            return _err(400, "invalid_state", "code")
+        if exc.code in gbp.REAUTH_CODES and ctx is not None:
+            try:  # D1 then shows needs_reauth and the owner connects again
+                gbp.mark_needs_reauth(ctx.tenant_id)
+            except (BotoCoreError, ClientError):
+                pass
+            return _err(409, "not_connected")
         if exc.code == "not_connected":
             return _err(409, "not_connected")
         return _err(502, "google_unavailable", extra={"retryAfter": RETRY_AFTER_SECONDS})

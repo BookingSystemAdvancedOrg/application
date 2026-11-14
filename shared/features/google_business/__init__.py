@@ -369,6 +369,20 @@ def reset_client(instance=None) -> None:
         _CLIENT["c"] = instance
 
 
+REAUTH_CODES = ("needs_reauth", "unauthorized", "invalid_grant")
+
+
+def mark_needs_reauth(tenant_id) -> None:
+    """Google refused the tenant's grant: the owner has to connect again."""
+    try:
+        table().update_item(Key=connection_key(tenant_id), UpdateExpression="SET #s = :r",
+                            ConditionExpression="#s = :c", ExpressionAttributeNames={"#s": "status"},
+                            ExpressionAttributeValues={":r": "needs_reauth", ":c": "connected"})
+    except ClientError as exc:
+        if not conditional_failed(exc):
+            raise
+
+
 def access_token(tenant_id) -> Optional[str]:
     refresh = get_refresh_token(tenant_id)
     return client().refresh(refresh) if refresh else None

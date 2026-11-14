@@ -8,6 +8,11 @@ from shared import external_client
 
 
 class GoogleBusinessError(Exception):
+    """`code`: invalid_code, needs_reauth, permission_denied, api_disabled,
+    quota_exceeded, rate_limited, not_found, invalid_request, conflict,
+    unavailable, misconfigured, not_connected (shared/google_business_real.py
+    maps Google's answers to these); `retryable` when a later try may work."""
+
     def __init__(self, code, retryable=False):
         super().__init__(code)
         self.code = code

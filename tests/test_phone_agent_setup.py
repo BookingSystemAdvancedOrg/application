@@ -115,3 +115,44 @@ def test_dev_test_line_is_the_forwarding_target(env):
     assert status == 200 and view["testNumber"] == "+358759899876"
     assert view["forwarding"]["number"] == "+358759899876"
     assert view["forwarding"]["codes"][0]["on"] == "**004*+358759899876#"
+
+
+@pytest.mark.parametrize("operator, reset", [
+    ("telia", ["##002#"]), ("other", ["##002#"]), ("telia_fast", ["#21#", "#61#", "#67#"]), ("vaxel", []),
+])
+def test_an_older_forwarding_is_turned_off_first(operator, reset):
+    loc = {"mode": "after_hours", "number": {"e164": "+46100000001"}, "setup": {"operator": operator}}
+    assert [c["on"] for c in pa.forwarding(loc)["reset"]] == reset
+    assert pa.forwarding({"mode": "always"})["reset"] == []                  # no number, nothing to dial
+
+
+def test_always_then_after_hours_turns_the_old_forwarding_off_first(env):
+    """Alltid (**21*) and then När ni har stängt (**004*): **21* would stay on
+    and win, so every call would still go to Booqy while the restaurant is open."""
+    enable(env, mode="always")
+    assert call(env, "POST", SETUP, body={"forwarded": True, "version": 1})[0] == 200
+    out = enable(env, version=2, mode="after_hours")
+    assert out["setup"]["forwardedAt"] is None                               # asked to forward again
+    assert [c["on"] for c in out["forwarding"]["reset"]] == ["##002#"]
+    assert [c["on"] for c in out["forwarding"]["codes"]] == ["**004*+46100000001#"]
+
+
+def test_changing_the_operator_after_forwarding_asks_again(env):
+    enable(env, mode="after_hours")
+    call(env, "POST", SETUP, body={"operator": "telia", "version": 1})
+    call(env, "POST", SETUP, body={"forwarded": True, "version": 2})
+    status, same = call(env, "POST", SETUP, body={"tested": True, "version": 3})
+    status, same = call(env, "POST", SETUP, body={"operator": "tele2", "version": 4})      # same **004* code
+    assert status == 200 and same["setup"]["forwardedAt"] and same["setup"]["testedAt"]
+    status, other = call(env, "POST", SETUP, body={"operator": "telia_fast", "version": 5})  # *61* and *67*
+    assert status == 200 and other["setup"]["operator"] == "telia_fast"
+    assert other["setup"]["forwardedAt"] is None and other["setup"]["testedAt"] is None
+
+
+def test_a_span_to_2359_covers_the_last_minute():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    loc = {"mode": "after_hours", "agentHours": {"sat": [{"from": "22:00", "to": "23:59"}]}}
+    at = datetime(2026, 11, 14, 23, 59, 30, tzinfo=ZoneInfo("Europe/Stockholm"))         # a Saturday
+    assert pa.inside_hours(loc, at)
+    assert not pa.inside_hours({**loc, "agentHours": {"sat": [{"from": "22:00", "to": "23:30"}]}}, at)

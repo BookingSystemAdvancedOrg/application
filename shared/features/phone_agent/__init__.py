@@ -435,6 +435,16 @@ _TELIA_FIXED = {"always": [{"label": "Vidarekoppla alla samtal", "on": "*21*{n}#
                                 {"label": "Vidarekoppla vid upptaget", "on": "*67*{n}#", "off": "#67#"}]}
 FORWARDING = {**{op: _MOBILE for op in ("telia", "tele2", "telenor", "tre", "other")},
               "telia_fast": _TELIA_FIXED, "vaxel": {"always": [], "conditional": []}}
+# Dialled before the codes above: an older forwarding (an earlier mode, or one
+# the restaurant set up itself) is turned off first. Without it an old
+# "always" (**21*) stays on and wins over the conditional code, so Booqy gets
+# every call, also while the restaurant is open. ##002# turns off every
+# forwarding on a mobile line; a fixed Telia line has one code per kind.
+_RESET = {"mobile": [{"label": "Stäng av gammal vidarekoppling", "on": "##002#"}],
+          "telia_fast": [{"label": "Stäng av gammal vidarekoppling", "on": "#21#"},
+                         {"label": "Stäng av gammal vidarekoppling", "on": "#61#"},
+                         {"label": "Stäng av gammal vidarekoppling", "on": "#67#"}],
+          "vaxel": []}
 
 
 def forwarding(loc, test_number=None) -> dict:
@@ -447,7 +457,8 @@ def forwarding(loc, test_number=None) -> dict:
     number = test_number if test_number and simulated() else (loc.get("number") or {}).get("e164")
     kind = "always" if (loc.get("mode") or "after_hours") == "always" else "conditional"
     codes = [] if not number else [{**c, "on": c["on"].format(n=number)} for c in FORWARDING[operator][kind]]
-    return {"number": number, "operator": operator, "codes": codes}
+    reset = [dict(c) for c in _RESET.get(operator, _RESET["mobile"])] if codes else []
+    return {"number": number, "operator": operator, "reset": reset, "codes": codes}
 
 
 # --- hours and guards --------------------------------------------------------------------
@@ -459,7 +470,8 @@ def inside_hours(loc, at: datetime, timezone_name="Europe/Stockholm") -> bool:
     local = at.astimezone(ZoneInfo(timezone_name or "Europe/Stockholm"))
     clock = local.strftime("%H:%M")
     spans = (plain(loc.get("agentHours") or {})).get(DAYS[local.weekday()]) or []
-    return any(s["from"] <= clock < s["to"] for s in spans)
+    # A span that ends at 23:59 runs to midnight (the minute 23:59 included).
+    return any(s["from"] <= clock and (clock < s["to"] or s["to"] == "23:59") for s in spans)
 
 
 def usage(tenant_id, end) -> dict:

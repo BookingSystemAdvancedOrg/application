@@ -916,6 +916,13 @@ components:
             operator:
               type: string
               description: The operator the codes are for (other when not chosen).
+            reset:
+              type: array
+              description: Codes dialled before `codes` that turn off an older forwarding
+                (##002# on a mobile line; #21#, #61#, #67# on a fixed Telia line). Empty without codes.
+              items:
+                type: object
+                additionalProperties: true
             codes:
               type: array
               items:

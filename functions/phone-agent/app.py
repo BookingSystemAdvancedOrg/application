@@ -168,6 +168,10 @@ def post_setup(event, ctx):
     if int(loc.get("version") or 0) != version:
         raise pa.PhoneAgentError(409, "changed_retry")
     setup = {**pa.setup_view(loc), **changes}
+    if "operator" in changes and "forwarded" not in body and \
+            pa.forwarding({**loc, "setup": setup})["codes"] != pa.forwarding(loc)["codes"]:
+        # Another operator dials other codes: the checklist asks to forward again.
+        setup = {**setup, "forwardedAt": None, "testedAt": None}
     setup = {k: v for k, v in setup.items() if v is not None}
     try:
         new = pa.table().update_item(

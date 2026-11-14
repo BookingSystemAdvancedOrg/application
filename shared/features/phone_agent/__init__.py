@@ -447,6 +447,14 @@ _RESET = {"mobile": [{"label": "Stäng av gammal vidarekoppling", "on": "##002#"
           "vaxel": []}
 
 
+def desk_number(e164: str) -> str:
+    """A desk phone has no `+` key: a Swedish number in national form
+    ("+46101234567" -> "0101234567"), any other with 00 ("+358..." -> "00358...")."""
+    if e164.startswith("+46"):
+        return "0" + e164[3:]
+    return "00" + e164[1:] if e164.startswith("+") else e164
+
+
 def forwarding(loc, test_number=None) -> dict:
     """Where and how the restaurant forwards its own number: the Booqy number
     (the dev test line while the telephony provider is the simulator) and the
@@ -456,7 +464,8 @@ def forwarding(loc, test_number=None) -> dict:
         operator = "other"
     number = test_number if test_number and simulated() else (loc.get("number") or {}).get("e164")
     kind = "always" if (loc.get("mode") or "after_hours") == "always" else "conditional"
-    codes = [] if not number else [{**c, "on": c["on"].format(n=number)} for c in FORWARDING[operator][kind]]
+    dial = desk_number(number) if number and operator == "telia_fast" else number
+    codes = [] if not number else [{**c, "on": c["on"].format(n=dial)} for c in FORWARDING[operator][kind]]
     reset = [dict(c) for c in _RESET.get(operator, _RESET["mobile"])] if codes else []
     return {"number": number, "operator": operator, "reset": reset, "codes": codes}
 

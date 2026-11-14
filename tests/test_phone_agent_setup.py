@@ -36,8 +36,8 @@ def test_agent_name_defaults_to_booqy_and_empty_is_refused(env):
     ("other", "always", ["**21*{n}#"], ["##21#"]),
     ("telia", "after_hours", ["**004*{n}#"], ["##004#"]),
     ("tre", "overflow", ["**004*{n}#"], ["##004#"]),
-    ("telia_fast", "always", ["*21*{n}#"], ["#21#"]),
-    ("telia_fast", "after_hours", ["*61*{n}#", "*67*{n}#"], ["#61#", "#67#"]),
+    ("telia_fast", "always", ["*21*0100000001#"], ["#21#"]),
+    ("telia_fast", "after_hours", ["*61*0100000001#", "*67*0100000001#"], ["#61#", "#67#"]),
     ("vaxel", "after_hours", [], []),
 ])
 def test_forwarding_codes_per_operator(operator, mode, on, off):
@@ -46,6 +46,13 @@ def test_forwarding_codes_per_operator(operator, mode, on, off):
     assert out["number"] == n and out["operator"] == operator
     assert [c["on"] for c in out["codes"]] == [x.format(n=n) for x in on]
     assert [c["off"] for c in out["codes"]] == off
+
+
+def test_desk_phone_codes_have_no_plus():
+    assert pa.desk_number("+46101234567") == "0101234567"
+    assert pa.desk_number("+358759899876") == "00358759899876"
+    out = pa.forwarding({"mode": "overflow", "number": {"e164": "+46812345670"}, "setup": {"operator": "telia_fast"}})
+    assert all("+" not in c["on"] for c in out["codes"]) and out["number"] == "+46812345670"
 
 
 def test_forwarding_without_operator_is_other_and_without_number_has_no_codes():
@@ -77,7 +84,7 @@ def test_setup_records_progress_without_calling_providers(env):
     before = list(env.tel.calls), list(env.voice.calls)
     status, out = call(env, "POST", SETUP, body={"operator": "telia_fast", "version": 1})
     assert (status, out["setup"]["operator"], out["version"]) == (200, "telia_fast", 2)
-    assert out["forwarding"]["codes"][0]["on"] == "*21*+46100000001#"
+    assert out["forwarding"]["codes"][0]["on"] == "*21*0100000001#"
     status, out = call(env, "POST", SETUP, body={"forwarded": True, "version": 2})
     assert status == 200 and out["setup"]["forwardedAt"] and out["setup"]["operator"] == "telia_fast"
     status, out = call(env, "POST", SETUP, body={"tested": True, "version": 3})

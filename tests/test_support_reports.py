@@ -208,3 +208,31 @@ def test_notification_failure_still_stores(env, monkeypatch):
     monkeypatch.setenv("ALERT_TOPIC_ARN", "arn:aws:sns:eu-north-1:123456789012:missing")
     assert report(app, BASE)[0] == 201
     assert len(stored(app)) == 1
+
+
+def test_open_filter_reads_past_a_full_page_of_handled_reports(env, monkeypatch):
+    # Limit applies before the filter: with the newest reports all handled,
+    # "open" must still find the older open ones, and page on from the last
+    # one shown.
+    app, _, _ = env
+    monkeypatch.setattr(app, "PAGE_SIZE", 2)
+    start = datetime(2026, 11, 14, 10, 0, tzinfo=timezone.utc)
+    for n in range(8):
+        monkeypatch.setattr(app, "_now", lambda n=n: start + timedelta(minutes=n))
+        report(app, {**BASE, "path": f"/p{n}"})
+    every = []
+    cursor = None
+    while True:
+        page = operator(app, "GET /platform/support/reports", query={"cursor": cursor} if cursor else None)[1]
+        every += [i["reportId"] for i in page["items"]]
+        cursor = page["cursor"]
+        if not cursor:
+            break
+    for report_id in every[:5]:  # /p7 .. /p3 handled
+        operator(app, "POST /platform/support/reports/{reportId}/handled", {"handled": True}, {"reportId": report_id})
+    first = operator(app, "GET /platform/support/reports", query={"status": "open"})[1]
+    assert [i["path"] for i in first["items"]] == ["/p2", "/p1"] and first["cursor"]
+    second = operator(app, "GET /platform/support/reports", query={"status": "open", "cursor": first["cursor"]})[1]
+    assert [i["path"] for i in second["items"]] == ["/p0"] and second["cursor"] is None
+    handled = operator(app, "GET /platform/support/reports", query={"status": "handled"})[1]
+    assert [i["path"] for i in handled["items"]] == ["/p7", "/p6"]

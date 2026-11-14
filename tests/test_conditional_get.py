@@ -52,3 +52,25 @@ def test_request_context_method_and_decorator():
     tag = handler(event, None)["headers"]["ETag"]
     assert handler({**event, "headers": {"If-None-Match": tag}}, None)["statusCode"] == 304
     assert handler.__name__ == "handler"
+
+
+def test_blanket_no_store_from_the_respond_helpers_becomes_no_cache():
+    # shared/http.respond (and the per-function respond helpers) put
+    # Cache-Control: no-store on every answer; a GET JSON 200 still gets
+    # its ETag, and the 304 works.
+    from shared import http
+
+    res = conditional(get(), http.respond(200, {"items": [1]}))
+    assert res["headers"]["Cache-Control"] == "private, no-cache" and res["headers"]["ETag"].startswith('W/"')
+    assert [k for k in res["headers"] if k.lower() == "cache-control"] == ["Cache-Control"]
+    lower = json_response(200, {"a": 1}, headers={"cache-control": "no-store"})
+    assert conditional(get(), lower)["headers"]["Cache-Control"] == "private, no-cache"
+    assert "cache-control" not in conditional(get(), lower)["headers"]
+    tag = res["headers"]["ETag"]
+    again = conditional(get({"If-None-Match": tag}), http.respond(200, {"items": [1]}))
+    assert again["statusCode"] == 304 and again["body"] == ""
+    # anything else a handler chose stays as it is
+    chosen = json_response(200, {"a": 1}, headers={"Cache-Control": "public, max-age=60"})
+    assert conditional(get(), chosen) is chosen
+    errors = http.respond(404, {"error": "not_found"})
+    assert conditional(get(), errors) is errors

@@ -186,7 +186,10 @@ def response_body(response):
 
 def assert_response(response, status_code, body=NO_BODY):
     assert response["statusCode"] == status_code
-    assert response["headers"]["Cache-Control"] == "no-store"
+    # Never stored by a shared cache: no-store, or for a GET 200 the
+    # conditional-GET pair (private, no-cache with an ETag, shared/responses).
+    cache = response["headers"]["Cache-Control"]
+    assert cache == "no-store" or (cache == "private, no-cache" and response["headers"]["ETag"].startswith('W/"'))
     if body is not NO_BODY:
         assert response_body(response) == body
 

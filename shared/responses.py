@@ -135,14 +135,26 @@ def conditional(event: Any, response: Any) -> Any:
     headers = response.get("headers")
     if (response.get("statusCode") != 200 or not isinstance(body, str) or response.get("isBase64Encoded")
             or response.get("cookies") or not isinstance(headers, dict)
-            or any(isinstance(k, str) and k.lower() in ("set-cookie", "etag", "cache-control") for k in headers)
+            or any(isinstance(k, str) and k.lower() in ("set-cookie", "etag") for k in headers)
+            or any(_explicit_cache(k, v) for k, v in headers.items())
             or not str(headers.get("Content-Type", "")).startswith("application/json")):
         return response
     tag = _etag(body)
     cache = {"ETag": tag, "Cache-Control": "private, no-cache"}
     if tag.removeprefix("W/") in _if_none_match(event):
         return {"statusCode": 304, "headers": cache, "body": ""}
-    return {**response, "headers": {**headers, **cache}}
+    kept = {k: v for k, v in headers.items() if not (isinstance(k, str) and k.lower() == "cache-control")}
+    return {**response, "headers": {**kept, **cache}}
+
+
+def _explicit_cache(key: Any, value: Any) -> bool:
+    """A Cache-Control the handler chose on purpose. The helpers' blanket
+    `no-store` (shared/http.respond and the per-function respond helpers) is
+    not one: on a GET JSON 200 it becomes `private, no-cache` with an ETag,
+    which still never reuses a body without asking the API first."""
+    if not (isinstance(key, str) and key.lower() == "cache-control"):
+        return False
+    return not (isinstance(value, str) and value.strip().lower() == "no-store")
 
 
 def with_etag(handler: Callable) -> Callable:

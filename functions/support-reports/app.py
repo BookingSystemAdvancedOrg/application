@@ -67,6 +67,10 @@ DEDUPE_SECONDS = 600
 KEEP_SECONDS = 180 * 24 * 3600
 REPORTS_PK = "REPORTS"
 PAGE_SIZE = 50
+# One list call reads at most this many query pages (PAGE_SIZE items each)
+# while looking for open or handled ones; past that it answers with what it
+# found and a cursor to go on from.
+MAX_READS_PER_PAGE = 20
 
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9=_.:-]{1,100}$")
@@ -275,14 +279,28 @@ def list_reports(event, actor):
         raise ValueError("status must be all, open or handled")
     args = {"KeyConditionExpression": Key("PK").eq(REPORTS_PK), "ScanIndexForward": False, "Limit": PAGE_SIZE}
     if show != "all":
+        # Limit counts the items read, before the filter: keep reading until
+        # a full page matches (or the end), so "open" never comes back empty
+        # just because the newest 50 are handled.
         args["FilterExpression"] = Attr("handled").eq(show == "handled")
     start = _cursor(query.get("cursor"))
     if start:
         args["ExclusiveStartKey"] = start
-    page = _reports().query(**args)
-    last = page.get("LastEvaluatedKey")
+    items, last = [], None
+    for _ in range(MAX_READS_PER_PAGE):
+        page = _reports().query(**args)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if len(items) >= PAGE_SIZE or not last:
+            break
+        args["ExclusiveStartKey"] = last
+    if len(items) > PAGE_SIZE or (last and len(items) == PAGE_SIZE):
+        # Go on after the last one shown, not after the last one read (the
+        # rest of that read was not shown).
+        items = items[:PAGE_SIZE]
+        last = {"PK": REPORTS_PK, "SK": items[-1]["SK"]}
     cursor = base64.urlsafe_b64encode(last["SK"].encode("ascii")).decode("ascii").rstrip("=") if last else None
-    return http.respond(200, {"items": [_public(i) for i in page.get("Items", [])], "cursor": cursor})
+    return http.respond(200, {"items": [_public(i) for i in items], "cursor": cursor})
 
 
 def mark_handled(event, actor):

@@ -310,3 +310,74 @@ def test_an_attached_card_becomes_the_default_only_when_there_is_none(app, strip
            "data": {"object": {"id": "pm_1", "object": "payment_method", "type": "card", "customer": CUS_A}}}
     assert _send(app, evt) == "applied:card"
     assert _send(app, evt) == "ignored:has_default"
+
+
+def test_a_late_payment_failed_event_never_marks_a_paid_invoice_past_due(app, sns):
+    _send(app, _invoice(invoice_id="in_1"))
+    _send(app, _invoice(invoice_id="in_1", status="paid", created=1_800_100_000, paid_at=1_800_100_000,
+                        amount_paid=123_750, kind="invoice.paid"))
+    # the failed attempt before the payment, delivered after it
+    late = _invoice(invoice_id="in_1", status="open", created=1_800_050_000, kind="invoice.payment_failed")
+    late["data"]["object"]["attempt_count"] = 1
+    assert _send(app, late).startswith("stale")
+    b = _billing(TENANT_A)
+    assert "pastDueSince" not in b and "pastDueInvoices" not in b and sns == []
+    # a payment_failed whose invoice already says paid: the same
+    paid_obj = _invoice(invoice_id="in_2", status="paid", created=1_800_200_000, paid_at=1_800_190_000,
+                        amount_paid=123_750, kind="invoice.payment_failed")
+    _send(app, paid_obj)
+    assert "pastDueSince" not in _billing(TENANT_A) and sns == []
+
+
+def test_a_voided_or_uncollectible_invoice_no_longer_keeps_past_due(app, sns):
+    _send(app, _invoice(invoice_id="in_1", created=1_800_050_000, kind="invoice.payment_failed"))
+    _send(app, _invoice(invoice_id="in_2", created=1_800_050_100, kind="invoice.payment_failed"))
+    assert _billing(TENANT_A)["pastDueInvoices"] == {"in_1", "in_2"}
+    _send(app, _invoice(invoice_id="in_1", status="void", created=1_800_100_000, voided_at=1_800_100_000,
+                        kind="invoice.voided"))
+    b = _billing(TENANT_A)
+    assert b["pastDueInvoices"] == {"in_2"} and b["pastDueSince"]
+    _send(app, _invoice(invoice_id="in_2", status="uncollectible", created=1_800_100_100,
+                        kind="invoice.marked_uncollectible"))
+    b = _billing(TENANT_A)
+    assert "pastDueSince" not in b and "pastDueInvoices" not in b and "lastPaidAt" not in b
+    # the ledger still has it as owed (the console's reminders read it)
+    row = _fin(finance.tenant_pk(TENANT_A), "INVOICE#2027-01-14#in_2")
+    assert row["status"] == "uncollectible"
+
+
+def test_an_alert_whose_restaurant_name_could_not_be_read_is_not_lost(app, sns, monkeypatch):
+    failed = _invoice(status="open", created=1_800_100_000, kind="invoice.payment_failed")
+    real = app.billing.tenant_name
+    calls = {"n": 0}
+
+    def flaky(tenant_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}}, "GetItem")
+        return real(tenant_id)
+    monkeypatch.setattr(app.billing, "tenant_name", flaky)
+    res = app.handler(_event(failed), None)
+    assert res["statusCode"] == 500 and sns == []                                    # Stripe redelivers
+    assert _send(app, failed).endswith(":alerted") and len(sns) == 1
+
+
+def test_a_card_invoice_without_a_due_date_is_due_when_finalized(app, sns):
+    evt = _invoice(status="open", created=1_800_100_000, kind="invoice.payment_failed")
+    evt["data"]["object"].update({"due_date": None, "collection_method": "charge_automatically", "attempt_count": 1})
+    _send(app, evt)
+    row = _fin(finance.tenant_pk(TENANT_A), "INVOICE#2027-01-14#in_1")
+    assert row["dueDate"] == app.billing._iso(1_800_000_000)
+    (msg,) = sns
+    assert "Due date: " + app.billing._iso(1_800_000_000)[:10] in msg["Message"]
+
+
+def test_an_older_customer_updated_event_never_overwrites_the_card(app, stripe_api):
+    newer = {"id": "evt_cu2", "type": "customer.updated", "created": 1_800_000_200, "livemode": False,
+             "data": {"object": {"id": CUS_A, "object": "customer", "invoice_settings": {"default_payment_method": "pm_1"}}}}
+    older = {"id": "evt_cu1", "type": "customer.updated", "created": 1_800_000_100, "livemode": False,
+             "data": {"object": {"id": CUS_A, "object": "customer", "invoice_settings": {"default_payment_method": None}}}}
+    assert _send(app, newer) == "applied:card"
+    assert _send(app, older) == "ignored:stale"
+    b = _billing(TENANT_A)
+    assert b["defaultPaymentMethod"] == "pm_1" and b["cardEventCreated"] == 1_800_000_200

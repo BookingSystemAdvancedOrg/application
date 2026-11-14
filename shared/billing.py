@@ -13,8 +13,9 @@ payment fails.
     TENANT#<id> / PROFILE.billing   customerId, pastDueSince, pastDueInvoices
                                     (string set), lastPaidAt,
                                     lastPaymentFailedAt, defaultPaymentMethod,
-                                    cardBrand, cardLast4, cardAddedAt (this
-                                    module); the agreement fields (console)
+                                    cardBrand, cardLast4, cardAddedAt,
+                                    cardEventCreated (this module); the
+                                    agreement fields (console)
     STRIPE_CUSTOMER#<cus> / TENANT  tenantId (written by the console)
 
 Finance table (shared/finance.py has the day rows):
@@ -92,7 +93,9 @@ def tenant_of_customer(customer_id):
 def mark_payment(tenant_id, customer_id, *, paid, when, invoice_id=None):
     """A failed payment starts the past-due clock (if it isn't running) and
     remembers the invoice; invoice.paid forgets that invoice and clears past
-    due only when no other failed invoice is still unpaid."""
+    due only when no other failed invoice is still unpaid. The webhook only
+    calls the failed side for an event that is not older than what the
+    ledger has (a late payment_failed never re-marks a paid invoice)."""
     key = {"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"}
     names = {"#b": "billing", "#c": "customerId", "#l": "lastPaidAt" if paid else "lastPaymentFailedAt"}
     if not paid:
@@ -129,10 +132,35 @@ def mark_payment(tenant_id, customer_id, *, paid, when, invoice_id=None):
     return True
 
 
-def record_payment_method(tenant_id, customer_id, payment_method):
+def forget_failed_invoice(tenant_id, customer_id, invoice_id):
+    """A voided (or uncollectible) invoice no longer keeps the customer past
+    due on the profile: it leaves pastDueInvoices, and past due clears when
+    no other failed invoice is left (the ledger still lists an uncollectible
+    invoice as owed, for the console and the reminders)."""
+    key = {"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"}
+    names = {"#b": "billing", "#c": "customerId", "#p": "pastDueSince", "#i": "pastDueInvoices"}
+    try:
+        _tenant_table().update_item(
+            Key=key, UpdateExpression="DELETE #b.#i :inv", ConditionExpression="#b.#c = :cus",
+            ExpressionAttributeNames={"#b": "billing", "#c": "customerId", "#i": "pastDueInvoices"},
+            ExpressionAttributeValues={":cus": customer_id, ":inv": {invoice_id}})
+        _tenant_table().update_item(
+            Key=key, UpdateExpression="REMOVE #b.#p",
+            ConditionExpression="#b.#c = :cus AND attribute_exists(#b.#p) AND attribute_not_exists(#b.#i)",
+            ExpressionAttributeNames=names, ExpressionAttributeValues={":cus": customer_id})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def record_payment_method(tenant_id, customer_id, payment_method, event_created=None):
     """The customer's default card (customer.updated or a finished Checkout
     setup): its id, brand and last four digits on PROFILE.billing; None
-    removes it (the card was detached)."""
+    removes it (the card was detached). With `event_created`, an event older
+    than the last one applied (cardEventCreated) changes nothing: Stripe does
+    not guarantee order."""
     names = {"#b": "billing", "#c": "customerId"}
     if payment_method is None:
         expression = "REMOVE #b.defaultPaymentMethod, #b.cardBrand, #b.cardLast4"
@@ -143,10 +171,17 @@ def record_payment_method(tenant_id, customer_id, payment_method):
                       "#b.cardAddedAt = if_not_exists(#b.cardAddedAt, :now)")
         values = {":cus": customer_id, ":pm": payment_method["id"], ":brand": card.get("brand") or "card",
                   ":last4": card.get("last4") or "", ":now": now_iso()}
+    condition = "#b.#c = :cus"
+    if isinstance(event_created, int):
+        names["#e"] = "cardEventCreated"
+        values[":ec"] = event_created
+        condition += " AND (attribute_not_exists(#b.#e) OR #b.#e <= :ec)"
+        expression = (expression.replace("REMOVE", "SET #b.#e = :ec REMOVE", 1) if payment_method is None
+                      else expression + ", #b.#e = :ec")
     try:
         _tenant_table().update_item(
             Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"}, UpdateExpression=expression,
-            ConditionExpression="#b.#c = :cus", ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+            ConditionExpression=condition, ExpressionAttributeNames=names, ExpressionAttributeValues=values)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return False
@@ -197,6 +232,16 @@ def _ex_vat(amount_minor, invoice):
         Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def due_date_of(invoice):
+    """The due date: Stripe's own for an emailed invoice; a card invoice
+    (charge_automatically) has none, so the day it was finalized (charged):
+    reminders and the console count the days late from it."""
+    due = _iso(invoice.get("due_date"))
+    if due or invoice.get("collection_method") != "charge_automatically":
+        return due
+    return _iso((invoice.get("status_transitions") or {}).get("finalized_at"))
+
+
 def invoice_row(tenant_id, invoice, event_created):
     """The ledger row for an invoice (without the booking flags)."""
     transitions = invoice.get("status_transitions") or {}
@@ -218,7 +263,7 @@ def invoice_row(tenant_id, invoice, event_created):
         "paidAt": _iso(transitions.get("paid_at")),
         "voidedAt": _iso(transitions.get("voided_at")),
         "uncollectibleAt": _iso(transitions.get("marked_uncollectible_at")),
-        "dueDate": _iso(invoice.get("due_date")),
+        "dueDate": due_date_of(invoice),
         # The console puts the billed period (a calendar month, or part of
         # one) in the metadata; Stripe's own period_start/end of a one-off
         # invoice is its creation.

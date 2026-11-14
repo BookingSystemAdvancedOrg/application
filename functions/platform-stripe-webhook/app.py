@@ -49,6 +49,11 @@ PURPOSE:
                                            customer's default (Stripe call,
                                            idempotency key default-pm-<seti>)
       customer.updated                  -> the default card on PROFILE.billing
+                                           (older events than the last one
+                                           applied are ignored)
+      invoice.voided / marked_uncollectible
+                                        -> the invoice no longer keeps the
+                                           customer past due on the profile
       payment_method.attached           -> the default card when there is none
       credit_note.created               -> finance table: creditedSek
 
@@ -174,16 +179,28 @@ def _sek_text(minor):
 def _alert_ops(tenant_id, invoice, step, headline):
     """One email to the operators about one invoice, claimed on its ledger
     row first (never twice for the same invoice and step); released when
-    publishing fails, so Stripe's redelivery tries again."""
+    anything after the claim fails, so Stripe's redelivery tries again."""
     topic = os.environ.get("ALERT_TOPIC_ARN")
-    if not topic or not billing.claim_alert(tenant_id, invoice, step):
+    if not topic:
         return False
+    # Read before the claim: a failed read leaves nothing claimed.
     name, slug = billing.tenant_name(tenant_id)
+    if not billing.claim_alert(tenant_id, invoice, step):
+        return False
+    try:
+        _publish_alert(topic, tenant_id, invoice, name, slug, headline)
+    except Exception:
+        billing.unclaim_alert(tenant_id, invoice, step)
+        raise
+    return True
+
+
+def _publish_alert(topic, tenant_id, invoice, name, slug, headline):
     number = invoice.get("number") or invoice.get("id")
-    due = billing._iso(invoice.get("due_date"))
-    late = 0
-    if due:
-        late = max(0, (time.time() - invoice["due_date"]) // 86400)
+    due = billing.due_date_of(invoice)
+    # A card invoice has no due date of its own: due when it was finalized.
+    due_ts = invoice.get("due_date") or (invoice.get("status_transitions") or {}).get("finalized_at") if due else None
+    late = max(0, (time.time() - due_ts) // 86400) if isinstance(due_ts, (int, float)) else 0
     base = (os.environ.get("PLATFORM_ADMIN_APP_URL") or "").rstrip("/")
     intent = invoice.get("payment_intent")
     error = (invoice.get("last_finalization_error") or {}).get("message") or (
@@ -202,20 +219,15 @@ def _alert_ops(tenant_id, invoice, step, headline):
         *( [f"Invoice: {invoice['hosted_invoice_url']}"] if invoice.get("hosted_invoice_url") else []),
     ]
     subject = f"[{os.environ.get('ENVIRONMENT', 'dev')}] Booqy: {name} {headline} ({number})"[:100]
-    try:
-        boto3.client("sns").publish(TopicArn=topic, Subject=subject, Message="\n".join(lines))
-    except (BotoCoreError, ClientError):
-        billing.unclaim_alert(tenant_id, invoice, step)
-        raise
-    return True
+    boto3.client("sns").publish(TopicArn=topic, Subject=subject, Message="\n".join(lines))
 
 
-def _set_default_card(tenant_id, customer_id, payment_method_id, key):
+def _set_default_card(tenant_id, customer_id, payment_method_id, key, created):
     """Makes the card the customer's default for invoices (platform key)."""
     stripe.request("POST", f"/v1/customers/{customer_id}",
                    {"invoice_settings": {"default_payment_method": payment_method_id}}, idempotency_key=key)
     pm = stripe.request("GET", f"/v1/payment_methods/{payment_method_id}")
-    billing.record_payment_method(tenant_id, customer_id, pm)
+    billing.record_payment_method(tenant_id, customer_id, pm, created)
 
 
 def _billing(evt):
@@ -234,13 +246,19 @@ def _billing(evt):
     if kind.startswith("invoice."):
         result = billing.record_invoice(tenant_id, obj, created)
         when = billing.now_iso()
+        # An event older than what the ledger has (e.g. payment_failed
+        # delivered after invoice.paid) or about an invoice already paid
+        # never marks past due or alerts the operators.
+        settled = result.startswith("stale") or obj.get("status") in ("paid", "void")
         if kind == "invoice.paid":
             billing.mark_payment(tenant_id, customer_id, paid=True, when=when, invoice_id=obj.get("id"))
-        elif kind == "invoice.payment_failed":
+        elif kind in ("invoice.voided", "invoice.marked_uncollectible") and obj.get("id"):
+            billing.forget_failed_invoice(tenant_id, customer_id, obj["id"])
+        elif kind == "invoice.payment_failed" and not settled:
             billing.mark_payment(tenant_id, customer_id, paid=False, when=when, invoice_id=obj.get("id"))
             if _alert_ops(tenant_id, obj, f"Fail{obj.get('attempt_count') or 1}", "card payment failed"):
                 result += ":alerted"
-        elif kind == "invoice.payment_action_required":
+        elif kind == "invoice.payment_action_required" and not settled:
             if _alert_ops(tenant_id, obj, "Action", "card payment needs the restaurant's approval (3-D Secure)"):
                 result += ":alerted"
         return result
@@ -253,24 +271,24 @@ def _billing(evt):
         pm = pm.get("id") if isinstance(pm, dict) else pm
         if not pm:
             return "ignored:no_payment_method"
-        _set_default_card(tenant_id, customer_id, pm, f"default-pm-{seti}")
+        _set_default_card(tenant_id, customer_id, pm, f"default-pm-{seti}", created)
         return "applied:card"
     if kind == "customer.updated":
         default = (obj.get("invoice_settings") or {}).get("default_payment_method")
         default = default.get("id") if isinstance(default, dict) else default
         if not default:
-            billing.record_payment_method(tenant_id, customer_id, None)
-            return "applied:no_card"
+            applied = billing.record_payment_method(tenant_id, customer_id, None, created)
+            return "applied:no_card" if applied else "ignored:stale"
         pm = stripe.request("GET", f"/v1/payment_methods/{default}")
-        billing.record_payment_method(tenant_id, customer_id, pm)
-        return "applied:card"
+        applied = billing.record_payment_method(tenant_id, customer_id, pm, created)
+        return "applied:card" if applied else "ignored:stale"
     if kind == "payment_method.attached":
         if obj.get("type") != "card" or not obj.get("id"):
             return "ignored"
         customer = stripe.request("GET", f"/v1/customers/{customer_id}")
         if (customer.get("invoice_settings") or {}).get("default_payment_method"):
             return "ignored:has_default"
-        _set_default_card(tenant_id, customer_id, obj["id"], f"default-pm-{obj['id']}")
+        _set_default_card(tenant_id, customer_id, obj["id"], f"default-pm-{obj['id']}", created)
         return "applied:card"
     if kind == "credit_note.created":
         return billing.record_credit_note(tenant_id, obj, created)

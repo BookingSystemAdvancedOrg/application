@@ -45,6 +45,8 @@ ENV_VARS:
     STRIPE_SECRET_ARN -- platform Stripe key, Secrets Manager {"apiKey": ...}
     STRIPE_API_VERSION -- Stripe-Version header
     ADMIN_APP_URL -- admin app base URL (Stripe return/refresh links)
+    BILLING_DAYS_UNTIL_DUE / BILLING_DAYS_UNTIL_DUE_NO_CARD -- days to pay an
+        emailed invoice (invoice preference / no card yet), shown to the owner
 
 AWS RESOURCE ACCESS:
     Tenant table GetItem/Query; location table Query on the caller's own
@@ -245,10 +247,20 @@ def _public_tenant(ctx, row):
     }
 
 
-def _billing_summary(row):
+def _days_until_due(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+def _billing_summary(row, invoices=None):
     """Booqy's subscription as the owner sees it: is there a card that is
-    charged automatically, or do invoices come by email (10 days without a
-    card, 30 when Booqy agreed to invoice). Never the card number."""
+    charged automatically, or do invoices come by email (the days to pay
+    from the config: BILLING_DAYS_UNTIL_DUE_NO_CARD without a card,
+    BILLING_DAYS_UNTIL_DUE when Booqy agreed to invoice). Past due: a failed
+    card payment, or (with `invoices`, GET /tenant/billing) an open invoice
+    past its due date. Never the card number."""
     billing = row.get("billing") if isinstance(row.get("billing"), dict) else {}
     pref = billing.get("collectionPreference")
     if pref not in ("card", "invoice"):
@@ -261,8 +273,10 @@ def _billing_summary(row):
         "cardLast4": billing.get("cardLast4") if has_card else None,
         "collection": "card" if pref == "card" and has_card else "invoice",
         "preference": pref,
-        "daysUntilDue": None if pref == "card" and has_card else (30 if pref == "invoice" else 10),
-        "pastDue": bool(billing.get("pastDueSince")),
+        "daysUntilDue": None if pref == "card" and has_card else (
+            _days_until_due("BILLING_DAYS_UNTIL_DUE", 30) if pref == "invoice"
+            else _days_until_due("BILLING_DAYS_UNTIL_DUE_NO_CARD", 10)),
+        "pastDue": bool(billing.get("pastDueSince")) or any(i.get("overdue") for i in invoices or []),
     }
 
 
@@ -573,6 +587,9 @@ def _open_invoices(ctx, row):
         if not isinstance(inv, dict) or (inv.get("metadata") or {}).get("tenantId") not in (None, ctx.tenant_id):
             continue
         due = inv.get("due_date")
+        if not isinstance(due, int) and inv.get("collection_method") == "charge_automatically":
+            # A card invoice has no due date: due when it was charged.
+            due = (inv.get("status_transitions") or {}).get("finalized_at")
         invoices.append({
             "number": inv.get("number"),
             "amountDueSek": round((inv.get("amount_remaining") or 0) / 100, 2),
@@ -583,7 +600,7 @@ def _open_invoices(ctx, row):
             "description": inv.get("description"),
         })
     invoices.sort(key=lambda i: i["dueDate"] or "")
-    return _response(HTTPStatus.OK.value, {"billing": _billing_summary(row), "invoices": invoices})
+    return _response(HTTPStatus.OK.value, {"billing": _billing_summary(row, invoices), "invoices": invoices})
 
 
 def _card_session(ctx, row):

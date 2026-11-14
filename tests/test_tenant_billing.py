@@ -83,6 +83,23 @@ def test_open_invoices_with_their_payment_links(app, stripe_calls):  # noqa: F81
                                  "collection": "invoice", "url": "https://invoice.stripe.com/i/1",
                                  "description": "Booqy, 1 dec till 31 dec 2026"}]
     assert calls[0][2] == {"customer": "cus_A", "status": "open", "limit": 20}
+    # an emailed invoice past its due date makes it past due for the owner too
+    assert body["billing"]["pastDue"] is True
+    # a card invoice has no due date: due when it was charged
+    answers["invoices"] = [{"id": "in_3", "number": "F-0003", "amount_remaining": 123750, "due_date": None,
+                            "collection_method": "charge_automatically", "status_transitions": {"finalized_at": 1_700_000_000},
+                            "metadata": {"tenantId": TENANT_A}}]
+    (inv,) = body_of(module.handler(make_event("GET", "/tenant/billing"), None))["invoices"]
+    assert inv["dueDate"] == "2023-11-14" and inv["overdue"] is True and inv["collection"] == "card"
+
+
+def test_the_days_to_pay_come_from_the_config(app, monkeypatch):  # noqa: F811
+    module, tenants = app
+    monkeypatch.setenv("BILLING_DAYS_UNTIL_DUE_NO_CARD", "14")
+    monkeypatch.setenv("BILLING_DAYS_UNTIL_DUE", "20")
+    assert body_of(module.handler(make_event(), None))["billing"]["daysUntilDue"] == 14
+    _billing(tenants, customerId="cus_A", collectionPreference="invoice")
+    assert body_of(module.handler(make_event(), None))["billing"]["daysUntilDue"] == 20
 
 
 def test_stripe_down_is_503(app, monkeypatch):  # noqa: F811

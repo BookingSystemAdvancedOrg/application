@@ -1107,7 +1107,7 @@
    "answer": "Under Layout ritar du matsalen. Gästerna väljer bord på planritningen när de bokar online.",
    "steps": [
     "Öppna Layout.",
-    "Välj verktyg: Mark (väggar kommer automatiskt), Fönster, Entré, Kök, Kassa och borden Fyrkant och Runt.",
+    "Välj verktyg: Mark (väggar kommer automatiskt), Fönster, Entré, Kök och borden Fyrkant och Runt.",
     "Dra för att flytta. Ångra med Cmd eller Ctrl + Z. Tryck ? för alla kortkommandon.",
     "Tryck Spara utkast."
    ],

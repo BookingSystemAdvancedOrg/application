@@ -438,16 +438,26 @@ def test_ai_mode_answers_other_days_with_a_live_number(app, monkeypatch, questio
     assert answer["live"]["range"] == {"from": period[0], "to": period[1]}
     assert answer["live"]["text"].startswith(f"{label}: {{value}}")
     # The model is told which day the app shows a number for, never a number.
-    assert spy.prompts[0]["SIFFRA"].startswith(f"{label}: N ")
+    assert spy.prompts[0]["SIFFRA"] == f"Appen visar antalet för {label[:1].lower()}{label[1:]} under ditt svar."
 
 
 def test_ai_mode_keeps_the_model_text_for_another_day(app, monkeypatch):
     monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
-    model_spy(monkeypatch, app, json.dumps({"known": True, "text": "Antalet för imorgon visas nedan.", "steps": [],
+    model_spy(monkeypatch, app, json.dumps({"known": True, "text": "Antalet för imorgon, söndag 15 november, visas nedan.", "steps": [],
                                             "actionIds": [], "sourceIds": ["live-bokningar-idag"]}))
     code, body = ask(app, "Hur många bokningar har vi imorgon?")
-    assert code == 200 and body["mode"] == "ai" and body["answer"]["text"] == "Antalet för imorgon visas nedan."
+    assert code == 200 and body["mode"] == "ai" and body["answer"]["text"] == "Antalet för imorgon, söndag 15 november, visas nedan."
     assert body["answer"]["live"]["range"] == {"from": "2026-11-15", "to": "2026-11-15"}
+
+
+@pytest.mark.parametrize("text", ["Imorgon, söndag 15 november, har ni 2 bokningar.", "Idag har ni 12 bokningar.",
+                                  "Enligt SIFFRA har ni bokningar imorgon."])
+def test_ai_mode_never_shows_a_number_the_model_made_up(app, monkeypatch, text):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    model_spy(monkeypatch, app, json.dumps({"known": True, "text": text, "steps": [], "actionIds": [], "sourceIds": []}))
+    _, body = ask(app, "Hur många bokningar har vi imorgon?")
+    assert body["answer"]["text"] != text and "live" in body["answer"]
+    assert not re.search(r"\b(2|12) bokningar", body["answer"]["text"])
 
 
 def test_ai_mode_today_has_no_day_in_the_prompt(app, monkeypatch):
@@ -455,7 +465,7 @@ def test_ai_mode_today_has_no_day_in_the_prompt(app, monkeypatch):
                                                   "actionIds": [], "sourceIds": []}))
     _, body = ask(app, "Hur många bokningar har vi idag?")
     assert body["answer"]["live"]["metric"] == "bookingsToday"
-    assert spy.prompts[0]["SIFFRA"].startswith("Idag har ni N bokningar")
+    assert spy.prompts[0]["SIFFRA"] == "Appen visar antalet för idag under ditt svar."
 
 
 @pytest.mark.parametrize("previous", ["", "Hur många bokningar har vi imorgon?", "Hur många bokningar har vi idag?"])

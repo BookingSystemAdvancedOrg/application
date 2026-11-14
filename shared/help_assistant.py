@@ -108,7 +108,7 @@ Regler:
 5. Välj knappar bara bland actionIds i KUNSKAP, högst två, den viktigaste först. Ange sourceIds för de delar du använde.
 6. Nämn aldrig lösenord, nycklar, koder, tekniska detaljer, andra restauranger eller personuppgifter. Be om sådant: säg vänligt nej.
 7. Använd aldrig tankstreck; skriv kommatecken, kolon eller bindestreck i stället.
-8. Finns SIFFRA visar appen själv antalet för den dagen eller perioden under ditt svar, med siffror som hämtas just nu. Sätt då known till true, nämn dagen som den står i SIFFRA och säg var man ser den i Booqy, även om KUNSKAP beskriver idag. Skriv aldrig någon siffra själv.""",
+8. Finns SIFFRA visar appen själv antalet för den dagen eller perioden under ditt svar, hämtat just nu. Sätt då known till true, nämn dagen och säg var man ser antalet i Booqy, även om KUNSKAP beskriver idag. Du vet inte antalet: skriv aldrig något antal och nämn aldrig ordet SIFFRA.""",
     "console": """You are the help assistant in Booqy Console, the operator console of a restaurant SaaS. You explain how to use the console.
 
 Rules:
@@ -521,13 +521,22 @@ def prompt(question: str, history: list, found: list, app: str = "admin", live: 
     keys = ("FRÅGA", "HISTORIK", "KUNSKAP") if app == "admin" else ("QUESTION", "HISTORY", "KNOWLEDGE")
     message = dict(zip(keys, (question, history, knowledge)))
     if live:
-        shown = re.sub(r"\{(\w+)\|(\w+)\}", r"\2", (live.get("text") or "")).replace("{value}", "N")
-        message["SIFFRA" if app == "admin" else "LIVE"] = shown[:200]
+        day = (live.get("text") or "").split(":")[0] if live.get("range") else ("idag" if app == "admin" else "")
+        message["SIFFRA" if app == "admin" else "LIVE"] = (
+            f"Appen visar antalet för {day[:1].lower()}{day[1:]} under ditt svar." if app == "admin"
+            else "The console shows the number below your answer.")[:200]
     return json.dumps(message, ensure_ascii=False)
 
 
 def _clean(text, limit: int) -> str:
     return _DASHES.sub("-", str(text)).strip()[:limit]
+
+
+def _invents(text: str, live: dict) -> bool:
+    """A number in the model's text that is not in the day ("15 november"), or a prompt key."""
+    day = (live.get("text") or "").split("{value}")[0]
+    return bool(set(re.findall(r"\d+", text)) - set(re.findall(r"\d+", day))) or \
+        bool(re.search(r"SIFFRA|KUNSKAP|LIVE|KNOWLEDGE", text))
 
 
 def from_model(raw: str, found: list, question: str = "", app: str = "admin", today=None) -> Optional[dict]:
@@ -563,6 +572,9 @@ def from_model(raw: str, found: list, question: str = "", app: str = "admin", to
         # A button to the same place as the best match lights up the same things.
         picked = [{**a, "highlight": list(dict.fromkeys([*(a.get("highlight") or ()), *lead["highlight"]]))}
                   if a["to"] == lead["to"] and (a.get("hash") or "") == (lead.get("hash") or "") else a for a in picked]
+    if base.get("live") and _invents(text, base["live"]):
+        # The model never knows the number; one it writes anyway is made up.
+        return base
     sources = [i for i in parsed.get("sourceIds") or () if isinstance(i, str) and i in docs]
     answer = {"known": True, "text": _clean(text, MAX_TEXT),
               "steps": [_clean(s, MAX_STEP) for s in steps if isinstance(s, str) and s.strip()][:MAX_STEPS],

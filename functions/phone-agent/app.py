@@ -14,6 +14,7 @@ TRIGGER:
     GET    /locations/{locationId}/phone-agent/callbacks                     L10 owner, staff
     POST   /locations/{locationId}/phone-agent/callbacks/{callbackId}/close  L11 owner, staff
     GET    /locations/{locationId}/phone-agent/reservations/{reservationId}/call  L12 owner, staff
+    POST   /locations/{locationId}/phone-agent/setup                         L19 owner (setup checklist)
 
     Lambda invoke (no requestContext): {"hook": ...} platform (L15-L18, Booqy Console),
     privacy.export, privacy.erase, tenant.purge, billing.usage
@@ -139,9 +140,49 @@ def put_config(event, ctx):
 
 # --- L3, L4, L5 ----------------------------------------------------------------------------
 
+def _test_number(ctx):
+    """The dev test line of the location (never looked up in prod)."""
+    if os.environ.get("ENVIRONMENT") == "prod":
+        return None
+    return pa.test_line(ctx.tenant_id, ctx.location_id)
+
+
+def _full_view(ctx, loc, *, owner=True):
+    test_number = _test_number(ctx)
+    return {**pa.loc_view(loc, owner=owner, test_number=test_number), "forwarding": pa.forwarding(loc, test_number)}
+
+
 def get_location_view(event, ctx):
     loc = {**pa.get_loc(ctx.tenant_id, ctx.location_id), "locationId": ctx.location_id}
-    return http.respond(200, {**pa.loc_view(loc, owner=ctx.is_owner), "forwarding": pa.forwarding(loc)})
+    return http.respond(200, _full_view(ctx, loc, owner=ctx.is_owner))
+
+
+def post_setup(event, ctx):
+    """L19: the setup checklist's progress (operator, forwarded, tested). Never
+    provisions or calls a provider: recording a step can not fail on them."""
+    _owner(ctx)
+    body = http.body(event, allowed=("operator", "forwarded", "tested", "version"))
+    version = _version(body)
+    changes = pa.validate_setup(body)
+    loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
+    if int(loc.get("version") or 0) != version:
+        raise pa.PhoneAgentError(409, "changed_retry")
+    setup = {**pa.setup_view(loc), **changes}
+    setup = {k: v for k, v in setup.items() if v is not None}
+    try:
+        new = pa.table().update_item(
+            Key=pa.loc_key(ctx.tenant_id, ctx.location_id),
+            UpdateExpression="SET #s = :s, version = :nv, tenantId = :t, locationId = :l, updatedAt = :at",
+            ConditionExpression="attribute_not_exists(version) OR version = :v",
+            ExpressionAttributeNames={"#s": "setup"},
+            ExpressionAttributeValues={":s": setup, ":nv": version + 1, ":v": version, ":t": ctx.tenant_id,
+                                       ":l": ctx.location_id, ":at": pa.iso(pa.now())},
+            ReturnValues="ALL_NEW")["Attributes"]
+    except ClientError as exc:
+        if pa.conditional_failed(exc):
+            raise pa.PhoneAgentError(409, "changed_retry")
+        raise
+    return http.respond(200, _full_view(ctx, new))
 
 
 def _agent_user(tenant_id, location_id, *, present):
@@ -234,7 +275,10 @@ def _provision(ctx, loc, clean):
         sip = client("voice").sip_target(agent_id, number["e164"])
     except voice_provider.VoiceProviderError:
         raise pa.PhoneAgentError(502, "voice_provider_unavailable")
-    fallback = clean.get("transferTo") or ctx.location.get("phoneNumber")
+    # Never the restaurant's own number: it is forwarded to Booqy, so a call
+    # would go round in a loop. No transfer number: the provider hangs up.
+    transfer = clean.get("transferTo")
+    fallback = transfer if transfer and not pa.same_phone(transfer, ctx.location.get("phoneNumber")) else None
     try:
         client("telephony").set_inbound(number["providerId"], sip, fallback)
     except telephony.TelephonyError:
@@ -248,7 +292,7 @@ def put_location(event, ctx):
                                      "transferTo", "maxCallSeconds", "counterOffers", "shareNumberWith",
                                      "version"))
     version = _version(body)
-    clean = pa.validate_location(body)
+    clean = pa.validate_location(body, restaurant_phone=ctx.location.get("phoneNumber"))
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
     if int(loc.get("version") or 0) != version:
         raise pa.PhoneAgentError(409, "changed_retry")
@@ -270,6 +314,7 @@ def put_location(event, ctx):
         extra = {"number": number if others else
                  {**number, "releaseAfter": pa.iso(pa.now() + timedelta(days=pa.NUMBER_GRACE_DAYS))}}
         _agent_user(ctx.tenant_id, ctx.location_id, present=False)
+    before = pa.forwarding(loc)["codes"]
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)  # the number written during provisioning
     item = {**loc, **pa.loc_key(ctx.tenant_id, ctx.location_id), "tenantId": ctx.tenant_id,
             "locationId": ctx.location_id, **{k: v for k, v in clean.items() if k != "shareNumberWith"}, **extra,
@@ -277,6 +322,10 @@ def put_location(event, ctx):
             "version": version + 1, "updatedAt": pa.iso(pa.now())}
     if item.get("number") and item["number"].get("releaseAfter") is None:
         item["number"] = {k: v for k, v in item["number"].items() if k != "releaseAfter"}
+    setup = pa.plain(item.get("setup") or {})
+    if setup.get("forwardedAt") and before and pa.forwarding(item)["codes"] != before:
+        # Another mode or number needs another code: the checklist asks again.
+        item["setup"] = {k: v for k, v in setup.items() if k not in ("forwardedAt", "testedAt")}
     cond = {"ConditionExpression": "attribute_not_exists(version) OR version = :v",
             "ExpressionAttributeValues": {":v": version}}
     try:
@@ -285,7 +334,7 @@ def put_location(event, ctx):
         if pa.conditional_failed(exc):
             raise pa.PhoneAgentError(409, "changed_retry")
         raise
-    return http.respond(200, {**pa.loc_view(item), "forwarding": pa.forwarding(item)})
+    return http.respond(200, _full_view(ctx, item))
 
 
 def kill_switch(event, ctx):
@@ -672,6 +721,7 @@ ROUTES = {
     "GET /locations/{locationId}/phone-agent/callbacks": list_callbacks,
     "POST /locations/{locationId}/phone-agent/callbacks/{callbackId}/close": close_callback,
     "GET /locations/{locationId}/phone-agent/reservations/{reservationId}/call": reservation_call,
+    "POST /locations/{locationId}/phone-agent/setup": post_setup,
 }
 
 

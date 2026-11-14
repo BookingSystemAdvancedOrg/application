@@ -177,7 +177,7 @@ paths:
                 $ref: '#/components/schemas/PhoneAgentLocation'
         '400':
           description: invalid_hours, invalid_phone, invalid_max_call, text_too_long,
-            invalid_counter_offers.
+            invalid_counter_offers, transfer_is_forwarded (transferTo is the restaurant's own number, which is forwarded to Booqy).
           content:
             application/json:
               schema:
@@ -250,6 +250,71 @@ paths:
                 $ref: '#/components/schemas/PhoneAgentLocation'
         '400':
           description: missing on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: changed_retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /locations/{locationId}/phone-agent/setup:
+    post:
+      tags:
+      - PhoneAgent
+      summary: Record setup checklist progress (operator, forwarded, tested); never calls a provider (owner)
+      operationId: phoneAgentPostLocationsLocationidPhoneAgentSetup
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: locationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneAgentSetupBody'
+      responses:
+        '200':
+          description: Location with the new setup progress and forwarding codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneAgentLocation'
+        '400':
+          description: invalid_operator, or forwarded/tested not a boolean.
           content:
             application/json:
               schema:
@@ -703,6 +768,7 @@ components:
       properties:
         agentName:
           type: string
+          description: Booqy when nothing is saved yet.
         tone:
           type: string
           enum:
@@ -812,17 +878,73 @@ components:
           description: The location whose number this location answers on (the agent asks which location first).
         version:
           type: integer
+        setup:
+          type: object
+          description: Setup checklist progress (POST .../setup).
+          properties:
+            operator:
+              type: string
+              nullable: true
+              enum:
+              - telia
+              - tele2
+              - telenor
+              - tre
+              - telia_fast
+              - vaxel
+              - other
+              - null
+            forwardedAt:
+              type: string
+              nullable: true
+            testedAt:
+              type: string
+              nullable: true
+        simulated:
+          type: boolean
+          description: True while the telephony provider is the simulator (dev without a real operator).
+        testNumber:
+          type: string
+          description: The dev test line routed to this location (never in prod).
         forwarding:
           type: object
           properties:
             number:
               type: string
               nullable: true
+              description: Where to forward the restaurant's number (the test line while simulated).
+            operator:
+              type: string
+              description: The operator the codes are for (other when not chosen).
             codes:
               type: array
               items:
                 type: object
                 additionalProperties: true
+    PhoneAgentSetupBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        operator:
+          type: string
+          enum:
+          - telia
+          - tele2
+          - telenor
+          - tre
+          - telia_fast
+          - vaxel
+          - other
+        forwarded:
+          type: boolean
+          description: true stores the time, false clears it.
+        tested:
+          type: boolean
+          description: true stores the time, false clears it.
+        version:
+          type: integer
     PhoneAgentLocationBody:
       type: object
       additionalProperties: false

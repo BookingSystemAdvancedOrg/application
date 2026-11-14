@@ -31,10 +31,10 @@ from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
-from shared import dynamo, finance
+from shared import dynamo, external_client, finance
 from shared import tenant as shared_tenant
 
 FEATURE_ID = "phone-agent"
@@ -42,6 +42,9 @@ FEATURE_KEY = "phoneAgent"
 LIMIT_KEY = "phoneAgentMinutesPerMonth"
 
 MODES = ("after_hours", "overflow", "always")
+# The restaurant's phone operator (setup step 4): which forwarding codes to show.
+OPERATORS = ("telia", "tele2", "telenor", "tre", "telia_fast", "vaxel", "other")
+DEFAULT_AGENT_NAME = "Booqy"
 TONES = ("formal", "friendly")
 # The call languages (owner 2026-11-13): Swedish first, then whichever the
 # caller speaks (language.CALL_LANGUAGES). `languages` in CONFIG lists the
@@ -239,7 +242,7 @@ def tenant_cap(tenant_row, config) -> int:
 
 
 def config_view(tenant_row, config) -> dict:
-    return {"agentName": config.get("agentName") or "", "tone": config.get("tone") or "friendly",
+    return {"agentName": config.get("agentName") or DEFAULT_AGENT_NAME, "tone": config.get("tone") or "friendly",
             "languages": list(config.get("languages") or LANGUAGES),
             "recording": plain(config.get("recording") or {"enabled": False}),
             "minutesCapPerMonth": tenant_cap(tenant_row, config), "version": int(config.get("version") or 0)}
@@ -265,7 +268,7 @@ def _int(value, field, code):
 def validate_config(body, *, ceiling) -> dict:
     name = _text(body.get("agentName"), "agentName", NAME_MAX)
     if not name:
-        raise PhoneAgentError(400, "agentName is required", "agentName")
+        raise PhoneAgentError(400, "agent_name_required", "agentName")
     tone = body.get("tone")
     if tone not in TONES:
         raise PhoneAgentError(400, "tone must be formal or friendly", "tone")
@@ -320,7 +323,15 @@ def validate_hours(value) -> dict:
     return out
 
 
-def validate_location(body) -> dict:
+def same_phone(a, b) -> bool:
+    """Both numbers parse and are the same E.164 number."""
+    try:
+        return bool(a and b) and normalize_e164(a) == normalize_e164(b)
+    except PhoneAgentError:
+        return False
+
+
+def validate_location(body, *, restaurant_phone=None) -> dict:
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         raise PhoneAgentError(400, "enabled must be true or false", "enabled")
@@ -330,6 +341,9 @@ def validate_location(body) -> dict:
     hours = validate_hours(body.get("agentHours") or {})
     transfer = body.get("transferTo")
     transfer = normalize_e164(transfer) if transfer not in (None, "") else None
+    # The restaurant's own number is forwarded to Booqy: transferring there loops.
+    if transfer and same_phone(transfer, restaurant_phone):
+        raise PhoneAgentError(400, "transfer_is_forwarded", "transferTo")
     max_call = body.get("maxCallSeconds", MAX_CALL_DEFAULT)
     if isinstance(max_call, bool) or not isinstance(max_call, (int, Decimal)) or \
             not MAX_CALL_MIN <= max_call <= MAX_CALL_MAX:
@@ -351,7 +365,45 @@ def validate_location(body) -> dict:
                               "phoneOnlyTables": offers.get("phoneOnlyTables", True)}}
 
 
-def loc_view(loc, *, owner=True) -> dict:
+def validate_setup(body) -> dict:
+    """POST .../setup: the setup checklist's progress, {operator?, forwarded?,
+    tested?}; true is stored as the time, false clears it."""
+    out = {}
+    if "operator" in body:
+        if body["operator"] not in OPERATORS:
+            raise PhoneAgentError(400, "invalid_operator", "operator")
+        out["operator"] = body["operator"]
+    for field, key in (("forwarded", "forwardedAt"), ("tested", "testedAt")):
+        if field in body:
+            if not isinstance(body[field], bool):
+                raise PhoneAgentError(400, f"{field} must be true or false", field)
+            out[key] = iso(now()) if body[field] else None
+    return out
+
+
+def simulated() -> bool:
+    """The telephony provider is the simulator (dev without a real operator)."""
+    try:
+        return external_client.mode("telephony") != external_client.REAL
+    except (ValueError, RuntimeError):
+        return False
+
+
+def test_line(tenant_id, location_id) -> Optional[str]:
+    """The dev test line (Amazon Connect) routed to this location, from the
+    NUMBER# row Terraform writes with `testLine = true` (phone-test-line.tf)."""
+    rows = query_all(tenant_pk(tenant_id), "NUMBER#",
+                     FilterExpression=Attr("testLine").eq(True) & Attr("locationIds").contains(location_id))
+    return rows[0]["SK"][len("NUMBER#"):] if rows else None
+
+
+def setup_view(loc) -> dict:
+    setup = plain(loc.get("setup") or {})
+    return {"operator": setup.get("operator"), "forwardedAt": setup.get("forwardedAt"),
+            "testedAt": setup.get("testedAt")}
+
+
+def loc_view(loc, *, owner=True, test_number=None) -> dict:
     out = {"locationId": loc.get("locationId"), "enabled": bool(loc.get("enabled")),
            "killSwitch": bool(loc.get("killSwitch")), "mode": loc.get("mode") or "after_hours",
            "agentHours": plain(loc.get("agentHours") or {}), "greetingExtraSv": loc.get("greetingExtraSv") or "",
@@ -360,29 +412,42 @@ def loc_view(loc, *, owner=True) -> dict:
            "counterOffers": plain(loc.get("counterOffers") or {"nearbyTables": True, "phoneOnlyTables": True}),
            "number": (loc.get("number") or {}).get("e164"),
            "numberSharedWith": (loc.get("number") or {}).get("ownerLocationId") or None,
-           "version": int(loc.get("version") or 0)}
+           "version": int(loc.get("version") or 0),
+           "setup": setup_view(loc), "simulated": simulated()}
+    if os.environ.get("ENVIRONMENT") != "prod" and test_number:
+        out["testNumber"] = test_number
     if owner:
         out["transferTo"] = loc.get("transferTo")
     return out
 
 
-# Forwarding codes per Swedish operator (GSM/MMI codes; [NEEDS YOUR OK: verified by a human]).
-FORWARDING = {
-    "after_hours": [{"operator": "Telia, Tele2, Telenor, Tre", "label": "Vidarekoppla alla samtal",
-                     "on": "**21*{n}#", "off": "##21#"}],
-    "overflow": [{"operator": "Telia, Tele2, Telenor, Tre", "label": "Vidarekoppla vid ej svar",
-                  "on": "**61*{n}**25#", "off": "##61#"},
-                 {"operator": "Telia, Tele2, Telenor, Tre", "label": "Vidarekoppla vid upptaget",
-                  "on": "**67*{n}#", "off": "##67#"}],
-}
-FORWARDING["always"] = FORWARDING["after_hours"]
+# Forwarding codes per Swedish operator (GSM/MMI codes) [NEEDS YOUR OK: verified by a human].
+# One code per mode on a mobile line: `always` forwards every call (**21*);
+# `after_hours` and `overflow` use the conditional code **004* (busy, no
+# answer and unreachable in one), so calls ring the restaurant first and
+# Booqy answers what nobody picks up. Fixed Telia lines have no **004*: no
+# answer (*61*) and busy (*67*) are two codes. A switchboard (vaxel) is set up
+# in the switchboard itself, so no code is shown.
+_MOBILE = {"always": [{"label": "Vidarekoppla alla samtal", "on": "**21*{n}#", "off": "##21#"}],
+           "conditional": [{"label": "Vidarekoppla när ni inte svarar", "on": "**004*{n}#", "off": "##004#"}]}
+_TELIA_FIXED = {"always": [{"label": "Vidarekoppla alla samtal", "on": "*21*{n}#", "off": "#21#"}],
+                "conditional": [{"label": "Vidarekoppla vid ej svar", "on": "*61*{n}#", "off": "#61#"},
+                                {"label": "Vidarekoppla vid upptaget", "on": "*67*{n}#", "off": "#67#"}]}
+FORWARDING = {**{op: _MOBILE for op in ("telia", "tele2", "telenor", "tre", "other")},
+              "telia_fast": _TELIA_FIXED, "vaxel": {"always": [], "conditional": []}}
 
 
-def forwarding(loc) -> dict:
-    number = (loc.get("number") or {}).get("e164")
-    codes = [] if not number else [{**c, "on": c["on"].format(n=number)}
-                                   for c in FORWARDING[loc.get("mode") or "after_hours"]]
-    return {"number": number, "codes": codes}
+def forwarding(loc, test_number=None) -> dict:
+    """Where and how the restaurant forwards its own number: the Booqy number
+    (the dev test line while the telephony provider is the simulator) and the
+    codes for the location's operator and mode."""
+    operator = (plain(loc.get("setup") or {})).get("operator") or "other"
+    if operator not in FORWARDING:
+        operator = "other"
+    number = test_number if test_number and simulated() else (loc.get("number") or {}).get("e164")
+    kind = "always" if (loc.get("mode") or "after_hours") == "always" else "conditional"
+    codes = [] if not number else [{**c, "on": c["on"].format(n=number)} for c in FORWARDING[operator][kind]]
+    return {"number": number, "operator": operator, "codes": codes}
 
 
 # --- hours and guards --------------------------------------------------------------------

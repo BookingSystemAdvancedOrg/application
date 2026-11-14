@@ -3530,6 +3530,158 @@ paths:
         '503':
           $ref: '#/components/responses/AccountServiceUnavailable'
 
+  /tenant/terms/accept:
+    post:
+      tags:
+        - Account
+      summary: Accept the current Allmänna villkor för restauranger
+      operationId: acceptTenantTerms
+      description: |
+        Owner only. Like the DPA: records that the caller accepted `version`,
+        which must be the current terms version (409 `terms_version_outdated`
+        with `currentVersion` otherwise), as an append-only row; the response
+        is the tenant with an updated `terms`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version:
+                  type: string
+      responses:
+        '200':
+          description: Accepted; the tenant as GET /tenant returns it.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/billing:
+    get:
+      tags:
+        - Account
+      summary: Booqy's open invoices to the restaurant
+      operationId: getTenantBilling
+      description: |
+        Owner only. The restaurant as Booqy's customer (the platform Stripe
+        account, never the restaurant's own connected account): the billing
+        summary and the open invoices, oldest due first, each with its
+        Stripe payment page. 503 when Stripe cannot be reached.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: The summary and the open invoices.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [billing, invoices]
+                properties:
+                  billing:
+                    $ref: '#/components/schemas/TenantBillingSummary'
+                  invoices:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        number:
+                          type: string
+                          nullable: true
+                        amountDueSek:
+                          type: number
+                        dueDate:
+                          type: string
+                          format: date
+                          nullable: true
+                        overdue:
+                          type: boolean
+                        collection:
+                          type: string
+                          enum: [card, invoice]
+                        url:
+                          type: string
+                          nullable: true
+                        description:
+                          type: string
+                          nullable: true
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/billing/card-session:
+    post:
+      tags:
+        - Account
+      summary: Add a card for Booqy's monthly fee (Stripe Checkout, setup mode)
+      operationId: createTenantCardSession
+      description: |
+        Owner only. A Stripe Checkout page in setup mode, in Swedish, for the
+        billing customer on the platform account. When the owner finishes,
+        platform-stripe-webhook makes the card the default and the monthly
+        invoice (on the 1st, in advance) is charged to it automatically.
+        Returns to `ADMIN_APP_URL/installningar?kort=klart` (or
+        `?kort=avbrutet`). 409 `no_billing_customer` before Booqy has started
+        the agreement.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: The Checkout page to open.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [url]
+                properties:
+                  url:
+                    type: string
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
   /locations/{locationId}/reservations:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -7763,6 +7915,35 @@ components:
         refundedAmount:
           type: integer
 
+    TenantBillingSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        customer:
+          type: boolean
+          description: Booqy has created the billing customer (the agreement has started).
+        hasCard:
+          type: boolean
+        cardBrand:
+          type: string
+          nullable: true
+        cardLast4:
+          type: string
+          nullable: true
+        collection:
+          type: string
+          enum: [card, invoice]
+          description: How the next monthly invoice (on the 1st, in advance) is collected.
+        preference:
+          type: string
+          enum: [card, invoice]
+          description: card = the saved card is charged automatically (default); invoice = Booqy agreed to invoice with 30 days to pay.
+        daysUntilDue:
+          type: integer
+          nullable: true
+          description: Days to pay an emailed invoice (10 without a card, 30 when invoicing was agreed); null when the card is charged.
+        pastDue:
+          type: boolean
     Tenant:
       type: object
       additionalProperties: false
@@ -7882,6 +8063,27 @@ components:
               description: A new tenant - its public routes answer 404 until a version is accepted.
             upToDate:
               type: boolean
+        terms:
+          type: object
+          additionalProperties: false
+          description: Allmänna villkor för restauranger (Booqy's terms for the restaurant as a customer). Never a gate for the site.
+          properties:
+            currentVersion:
+              type: string
+            acceptedVersion:
+              type: string
+              nullable: true
+            acceptedAt:
+              type: string
+              format: date-time
+              nullable: true
+            upToDate:
+              type: boolean
+        billing:
+          nullable: true
+          description: Owners only (null for staff). Booqy's own subscription on the platform Stripe account.
+          allOf:
+            - $ref: '#/components/schemas/TenantBillingSummary'
         role:
           type: string
           enum: [owner_user, staff_user]

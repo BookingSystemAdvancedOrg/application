@@ -12,6 +12,7 @@ from pathlib import Path
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
@@ -188,3 +189,124 @@ def test_live_event_in_dev_is_ignored(app):
     evt = _invoice()
     evt["livemode"] = True
     assert _send(app, evt) == "ignored:livemode"
+
+
+# --- cards, several failed invoices and the operators' alerts -----------------------------
+
+@pytest.fixture
+def sns(app, monkeypatch):
+    """The operators' alerts: published messages, recorded."""
+    sent = []
+    real = app.boto3.client
+
+    class FakeSns:
+        def publish(self, **kw):
+            if sent and sent[-1] == "FAIL":
+                sent.pop()
+                raise ClientError({"Error": {"Code": "Throttling", "Message": "slow"}}, "Publish")
+            sent.append(kw)
+            return {"MessageId": "m-1"}
+
+    monkeypatch.setattr(app.boto3, "client", lambda name, *a, **k: FakeSns() if name == "sns" else real(name, *a, **k))
+    monkeypatch.setenv("ALERT_TOPIC_ARN", "arn:aws:sns:eu-north-1:123456789012:dev-platform-alerts")
+    monkeypatch.setenv("PLATFORM_ADMIN_APP_URL", "https://ops.example.se")
+    return sent
+
+
+@pytest.fixture
+def stripe_api(app, monkeypatch):
+    calls = []
+    cards = {"pm_1": {"id": "pm_1", "type": "card", "card": {"brand": "visa", "last4": "4242"}}}
+    state = {"default": None}
+
+    def fake(method, path, params=None, *, account=None, idempotency_key=None):
+        calls.append((method, path, params, idempotency_key))
+        if path.startswith("/v1/setup_intents/"):
+            return {"id": path.split("/")[-1], "payment_method": "pm_1"}
+        if path.startswith("/v1/payment_methods/"):
+            return cards[path.split("/")[-1]]
+        if method == "GET" and path.startswith("/v1/customers/"):
+            return {"id": path.split("/")[-1], "invoice_settings": {"default_payment_method": state["default"]}}
+        if method == "POST" and path.startswith("/v1/customers/"):
+            state["default"] = params["invoice_settings"]["default_payment_method"]
+            return {"id": path.split("/")[-1]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(app.stripe, "request", fake)
+    return {"calls": calls, "state": state}
+
+
+def test_past_due_ends_only_when_the_last_failed_invoice_is_paid(app, sns):
+    _send(app, _invoice(invoice_id="in_1"))
+    _send(app, _invoice(invoice_id="in_2", created=1_800_000_100))
+    _send(app, _invoice(invoice_id="in_1", created=1_800_050_000, kind="invoice.payment_failed"))
+    _send(app, _invoice(invoice_id="in_2", created=1_800_050_100, kind="invoice.payment_failed"))
+    assert _billing(TENANT_A)["pastDueInvoices"] == {"in_1", "in_2"}
+    _send(app, _invoice(invoice_id="in_1", status="paid", created=1_800_100_000, paid_at=1_800_100_000,
+                        amount_paid=123_750, kind="invoice.paid"))
+    b = _billing(TENANT_A)
+    assert b["pastDueSince"] and b["pastDueInvoices"] == {"in_2"}                   # in_2 is still unpaid
+    _send(app, _invoice(invoice_id="in_2", status="paid", created=1_800_100_100, paid_at=1_800_100_000,
+                        amount_paid=123_750, kind="invoice.paid"))
+    b = _billing(TENANT_A)
+    assert "pastDueSince" not in b and "pastDueInvoices" not in b
+
+
+def test_a_failed_card_payment_alerts_the_operators_once_per_attempt(app, sns):
+    failed = _invoice(status="open", created=1_800_100_000, kind="invoice.payment_failed")
+    failed["data"]["object"].update({"attempt_count": 1, "collection_method": "charge_automatically",
+                                     "next_payment_attempt": 1_800_300_000})
+    assert _send(app, failed) == "applied:invoiced:alerted"
+    (msg,) = sns
+    assert msg["Subject"].startswith("[dev] Booqy: ") and "card payment failed" in msg["Subject"]
+    assert f"https://ops.example.se/tenants/{TENANT_A}?tab=billing" in msg["Message"]
+    assert "Invoice: F-0001" in msg["Message"] and "Amount due: 1 237,50 kr incl. VAT" in msg["Message"]
+    assert "next retry by Stripe" in msg["Message"]
+    assert "–" not in msg["Message"] and "—" not in msg["Message"]
+    # redelivered: no second email; the next attempt: one more
+    assert _send(app, failed) == "applied"
+    failed["data"]["object"]["attempt_count"] = 2
+    failed["created"] = 1_800_200_000
+    assert _send(app, failed) == "applied:alerted" and len(sns) == 2
+
+
+def test_an_alert_that_could_not_be_sent_is_retried(app, sns):
+    failed = _invoice(status="open", created=1_800_100_000, kind="invoice.payment_failed")
+    sns.append("FAIL")
+    res = app.handler(_event(failed), None)
+    assert res["statusCode"] == 500                                                  # Stripe redelivers
+    assert _send(app, failed) == "applied:alerted" and len(sns) == 1
+
+
+def test_a_card_added_in_checkout_becomes_the_default(app, stripe_api):
+    evt = {"id": "evt_cs", "type": "checkout.session.completed", "created": 1_800_000_000, "livemode": False,
+           "data": {"object": {"id": "cs_1", "object": "checkout.session", "mode": "setup", "customer": CUS_A,
+                               "setup_intent": "seti_1"}}}
+    assert _send(app, evt) == "applied:card"
+    post = next(c for c in stripe_api["calls"] if c[0] == "POST")
+    assert post[1] == f"/v1/customers/{CUS_A}" and post[3] == "default-pm-seti_1"
+    b = _billing(TENANT_A)
+    assert b["defaultPaymentMethod"] == "pm_1" and b["cardLast4"] == "4242" and b["cardBrand"] == "visa" and b["cardAddedAt"]
+    # a payment-mode session is not ours
+    evt["data"]["object"]["mode"] = "payment"
+    assert _send(app, evt) == "ignored"
+
+
+def test_customer_updated_keeps_the_card_on_the_profile(app, stripe_api):
+    evt = {"id": "evt_cu", "type": "customer.updated", "created": 1_800_000_000, "livemode": False,
+           "data": {"object": {"id": CUS_A, "object": "customer",
+                               "invoice_settings": {"default_payment_method": "pm_1"}}}}
+    assert _send(app, evt) == "applied:card" and _billing(TENANT_A)["cardLast4"] == "4242"
+    evt["data"]["object"]["invoice_settings"]["default_payment_method"] = None
+    assert _send(app, evt) == "applied:no_card"
+    assert "defaultPaymentMethod" not in _billing(TENANT_A)
+    # another tenant's customer can never touch this one
+    evt["data"]["object"]["id"] = CUS_B
+    assert _send(app, evt) == "applied:no_card" and "defaultPaymentMethod" not in _billing(TENANT_B)
+
+
+def test_an_attached_card_becomes_the_default_only_when_there_is_none(app, stripe_api):
+    evt = {"id": "evt_pm", "type": "payment_method.attached", "created": 1_800_000_000, "livemode": False,
+           "data": {"object": {"id": "pm_1", "object": "payment_method", "type": "card", "customer": CUS_A}}}
+    assert _send(app, evt) == "applied:card"
+    assert _send(app, evt) == "ignored:has_default"

@@ -4,13 +4,17 @@ PROFILE.billing and how an invoice becomes revenue in the finance table.
 
 Booqy Console (booqy-console/api, billing.py) creates the Stripe customer,
 keeps the agreement (terms, prices, start and end) on PROFILE.billing and
-builds one invoice per restaurant and period (25th to 24th) in arrears;
-platform-stripe-webhook keeps the ledger and the past-due state truthful
-through this module.
+builds one invoice per restaurant and calendar month, in advance (the card
+on file is charged automatically, else the invoice is emailed);
+platform-stripe-webhook keeps the ledger, the past-due state and the card
+truthful through this module, and alerts the operators at once when a card
+payment fails.
 
-    TENANT#<id> / PROFILE.billing   customerId, pastDueSince, lastPaidAt,
-                                    lastPaymentFailedAt (this module); the
-                                    agreement fields (console)
+    TENANT#<id> / PROFILE.billing   customerId, pastDueSince, pastDueInvoices
+                                    (string set), lastPaidAt,
+                                    lastPaymentFailedAt, defaultPaymentMethod,
+                                    cardBrand, cardLast4, cardAddedAt (this
+                                    module); the agreement fields (console)
     STRIPE_CUSTOMER#<cus> / TENANT  tenantId (written by the console)
 
 Finance table (shared/finance.py has the day rows):
@@ -85,22 +89,98 @@ def tenant_of_customer(customer_id):
 
 # --- past due on the profile ------------------------------------------------------------
 
-def mark_payment(tenant_id, customer_id, *, paid, when):
-    """invoice.paid clears past due (and remembers the date); a failed
-    payment starts the past-due clock if it isn't running."""
-    names = {"#b": "billing", "#c": "customerId", "#p": "pastDueSince",
-             "#l": "lastPaidAt" if paid else "lastPaymentFailedAt"}
-    expression = "SET #b.#l = :w" + (" REMOVE #b.#p" if paid else ", #b.#p = if_not_exists(#b.#p, :w)")
+def mark_payment(tenant_id, customer_id, *, paid, when, invoice_id=None):
+    """A failed payment starts the past-due clock (if it isn't running) and
+    remembers the invoice; invoice.paid forgets that invoice and clears past
+    due only when no other failed invoice is still unpaid."""
+    key = {"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"}
+    names = {"#b": "billing", "#c": "customerId", "#l": "lastPaidAt" if paid else "lastPaymentFailedAt"}
+    if not paid:
+        names["#p"] = "pastDueSince"
+    if invoice_id:
+        names["#i"] = "pastDueInvoices"
+    values = {":cus": customer_id, ":w": when}
+    if paid:
+        expression = "SET #b.#l = :w"
+        if invoice_id:
+            expression += " DELETE #b.#i :inv"
+            values[":inv"] = {invoice_id}
+    else:
+        expression = "SET #b.#l = :w, #b.#p = if_not_exists(#b.#p, :w)"
+        if invoice_id:
+            expression += " ADD #b.#i :inv"
+            values[":inv"] = {invoice_id}
     try:
         _tenant_table().update_item(
-            Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
-            UpdateExpression=expression, ConditionExpression="#b.#c = :cus",
-            ExpressionAttributeNames=names, ExpressionAttributeValues={":cus": customer_id, ":w": when})
+            Key=key, UpdateExpression=expression, ConditionExpression="#b.#c = :cus",
+            ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+        if paid:
+            # Past due only ends with the last failed invoice paid.
+            _tenant_table().update_item(
+                Key=key, UpdateExpression="REMOVE #b.#p",
+                ConditionExpression="#b.#c = :cus AND attribute_not_exists(#b.#i)",
+                ExpressionAttributeNames={"#b": "billing", "#c": "customerId", "#p": "pastDueSince",
+                                          "#i": "pastDueInvoices"},
+                ExpressionAttributeValues={":cus": customer_id})
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             return False
         raise
     return True
+
+
+def record_payment_method(tenant_id, customer_id, payment_method):
+    """The customer's default card (customer.updated or a finished Checkout
+    setup): its id, brand and last four digits on PROFILE.billing; None
+    removes it (the card was detached)."""
+    names = {"#b": "billing", "#c": "customerId"}
+    if payment_method is None:
+        expression = "REMOVE #b.defaultPaymentMethod, #b.cardBrand, #b.cardLast4"
+        values = {":cus": customer_id}
+    else:
+        card = payment_method.get("card") or {}
+        expression = ("SET #b.defaultPaymentMethod = :pm, #b.cardBrand = :brand, #b.cardLast4 = :last4, "
+                      "#b.cardAddedAt = if_not_exists(#b.cardAddedAt, :now)")
+        values = {":cus": customer_id, ":pm": payment_method["id"], ":brand": card.get("brand") or "card",
+                  ":last4": card.get("last4") or "", ":now": now_iso()}
+    try:
+        _tenant_table().update_item(
+            Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"}, UpdateExpression=expression,
+            ConditionExpression="#b.#c = :cus", ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def claim_alert(tenant_id, invoice, step):
+    """Marks one operator alert for an invoice as sent, once (opsAlert<step>At
+    on the ledger row): a redelivered event never alerts twice."""
+    row = invoice_row(tenant_id, invoice, 0)
+    field = f"opsAlert{step}At"
+    try:
+        _finance_table().update_item(
+            Key={"PK": row["PK"], "SK": row["SK"]}, UpdateExpression="SET #f = :n",
+            ConditionExpression="attribute_exists(PK) AND attribute_not_exists(#f)",
+            ExpressionAttributeNames={"#f": field}, ExpressionAttributeValues={":n": now_iso()})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def unclaim_alert(tenant_id, invoice, step):
+    row = invoice_row(tenant_id, invoice, 0)
+    _finance_table().update_item(Key={"PK": row["PK"], "SK": row["SK"]}, UpdateExpression="REMOVE #f",
+                                 ExpressionAttributeNames={"#f": f"opsAlert{step}At"})
+
+
+def tenant_name(tenant_id):
+    item = _tenant_table().get_item(Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"},
+                                    ProjectionExpression="#n, slug", ExpressionAttributeNames={"#n": "name"}).get("Item")
+    return (item or {}).get("name") or tenant_id, (item or {}).get("slug")
 
 
 # --- invoices and revenue ---------------------------------------------------------------
@@ -139,8 +219,10 @@ def invoice_row(tenant_id, invoice, event_created):
         "voidedAt": _iso(transitions.get("voided_at")),
         "uncollectibleAt": _iso(transitions.get("marked_uncollectible_at")),
         "dueDate": _iso(invoice.get("due_date")),
-        # The console puts the billed period (25th to 24th) in the metadata;
-        # Stripe's own period_start/end of a one-off invoice is its creation.
+        # The console puts the billed period (a calendar month, or part of
+        # one) in the metadata; Stripe's own period_start/end of a one-off
+        # invoice is its creation.
+        "kind": metadata.get("kind"),
         "periodStart": metadata.get("periodStart") or _iso(invoice.get("period_start")),
         "periodEnd": metadata.get("periodEnd") or _iso(invoice.get("period_end")),
         "hostedInvoiceUrl": invoice.get("hosted_invoice_url"),

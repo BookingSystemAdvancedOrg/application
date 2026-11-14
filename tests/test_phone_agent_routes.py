@@ -209,6 +209,18 @@ def test_platform_ops(env):
     assert platform(env, "phone-agent.tenant.get", tenant_id=TENANT_B)["status"] == 404   # off -> 404
 
 
+def test_platform_get_before_setup_is_not_configured(env, monkeypatch):
+    """Feature on, nothing set up: an empty answer (not configured), never a
+    FunctionError; the location table is not read (the role has no Query on it)."""
+    set_feature(env, TENANT_B, True)
+    monkeypatch.setattr(env.api.tenant, "list_locations", lambda *_: pytest.fail("location table read"))
+    out = platform(env, "phone-agent.tenant.get", tenant_id=TENANT_B)
+    assert out == {"ok": True, "status": 200, "body": {"paused": False, "locations": [], "usage": []}}
+    enable(env)
+    (loc,) = platform(env, "phone-agent.tenant.get")["body"]["locations"]
+    assert loc["locationId"] == LOC_A and loc["enabled"] is True
+
+
 def test_billing_usage_privacy_and_purge(env):
     enable(env)
     call_id = _a_call(env)

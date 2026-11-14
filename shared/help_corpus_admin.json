@@ -4720,7 +4720,7 @@
    "hash": "profil",
    "title": "Öppettider",
    "where": "Inställningar, Verksamheten, Restaurang",
-   "text": "",
+   "text": "Har ni öppet efter midnatt? Ange stängningstiden som vanligt, t.ex. lördag 18:00-02:00. Passet räknas då in på natten till söndag.",
    "highlight": [
     "text:Öppettider"
    ],
@@ -6143,6 +6143,66 @@
    "audience": "all"
   },
   {
+   "id": "features-meny-CategoriesModal:kategorier:heading",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Kategorier",
+   "where": "Meny",
+   "text": "Ordningen här är ordningen på menyn för gästerna. En kategori med rätter kan inte tas bort.",
+   "highlight": [
+    "text:Kategorier"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-CategoriesModal:ny-kategori:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Ny kategori",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Ny kategori"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-CategoriesModal:lagg-till:button",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Lägg till",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Lägg till"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-CategoriesModal:avbryt:button",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Avbryt",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-DishModal:bild-frivilligt:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Bild (frivilligt)",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Bild (frivilligt)"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "features-meny-DishModal:namn:field",
    "kind": "element",
    "route": "/meny",
@@ -6239,14 +6299,14 @@
    "audience": "all"
   },
   {
-   "id": "features-meny-DishModal:avbryt:button",
+   "id": "features-meny-DishModal:ladda-om-ratten:button",
    "kind": "element",
    "route": "/meny",
-   "title": "Avbryt",
+   "title": "Ladda om rätten",
    "where": "Meny",
    "text": "",
    "highlight": [
-    "text:Avbryt"
+    "text:Ladda om rätten"
    ],
    "audience": "all"
   },
@@ -6307,6 +6367,18 @@
    "text": "",
    "highlight": [
     "text:Rensa filter"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "features-meny-OptionsEditor:gasten-valjer:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Gästen väljer",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Gästen väljer"
    ],
    "audience": "all"
   },

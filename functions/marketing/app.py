@@ -67,7 +67,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import dynamo, feature_hooks, http, marketing as m, marketing_mail, site, tenant
 from shared import marketing_offer as offer
 from shared import menu as menu_rules
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -696,7 +695,6 @@ def _subscribers(ctx, method, rest, event):
 
 # --- dispatch -----------------------------------------------------------------------------
 
-@with_etag
 def handler(event, context):
     method, _ = http.route(event)
     method = ((event.get("requestContext") or {}).get("http") or {}).get("method", method).upper()

@@ -51,7 +51,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import catering as c
 from shared import dynamo, geo, http, tenant
 from shared.reservations import normalize_phone
-from shared.responses import with_etag
 
 _PATH = "/locations/{locationId}/catering/settings"
 _MENU = "/locations/{locationId}/catering/menu"
@@ -170,7 +169,6 @@ def _menu(event, method, path):
     return http.respond(200, {id_field: item_id, **item})
 
 
-@with_etag
 def handler(event, context):
     method, path = http.route(event)
     if path != _PATH and path != _MENU and not any(path in (k, v[0]) for k, v in _KINDS.items()):

@@ -42,7 +42,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import image_focus, menu, prices, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
-from shared.responses import json_response, with_etag
+from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_TABLE_NAME = os.environ["MENU_TABLE_NAME"]
@@ -722,7 +722,6 @@ def _delete_item(location_id, menu_item_id):
     return _empty_response(HTTPStatus.NO_CONTENT.value)
 
 
-@with_etag
 def handler(event, context):
     try:
         get_claims(event)

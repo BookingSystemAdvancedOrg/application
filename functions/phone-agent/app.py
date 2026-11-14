@@ -47,7 +47,6 @@ from shared import agent_model, dynamo, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import calls, copy, session
 from shared.features.phone_agent.tools import lambda_invoker
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -730,7 +729,6 @@ ROUTES = {
 }
 
 
-@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

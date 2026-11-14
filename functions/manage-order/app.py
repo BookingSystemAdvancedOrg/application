@@ -58,7 +58,6 @@ from shared import dynamo, feature_hooks, http, manage_link, order_payments, sit
 from shared import orders as o
 from shared import table_qr
 from shared import stripe_client as stripe
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -306,7 +305,6 @@ def _item_route(event, method):
     return http.error(404, "not found")
 
 
-@with_etag
 def handler(event, context):
     method, path = http.route(event)
     try:

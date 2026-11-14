@@ -40,7 +40,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import events, http, tenant
 from shared.features import google_business as gbp
 from shared.google_business import GoogleBusinessError
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -416,7 +415,6 @@ ROUTES = {
 }
 
 
-@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

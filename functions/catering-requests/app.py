@@ -57,7 +57,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import catering as c
 from shared import consent, dynamo, http, marketing, request_guard, tenant, turnstile
 from shared import reservations as r
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -303,7 +302,6 @@ def _list(event):
     return http.respond(200, {"requests": out})
 
 
-@with_etag
 def handler(event, context):
     method, path = http.route(event)
     if path not in (_PATH, _QUOTE):

@@ -42,7 +42,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import booking_rules, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
-from shared.responses import json_response, with_etag
+from shared.responses import json_response
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
@@ -400,7 +400,6 @@ def _read_location_response(event, *, customer_facing):
     )
 
 
-@with_etag
 def handler(event, context):
     if _request_method(event) != "GET":
         return _location_response(

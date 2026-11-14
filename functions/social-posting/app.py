@@ -46,7 +46,6 @@ from shared import dynamo, events, http, tenant
 from shared.features import meta_ads as ads
 from shared.features import social_posting as sp
 from shared.meta_graph import MetaGraphError
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -566,7 +565,6 @@ ROUTES = {
 }
 
 
-@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if event.get("hook") == "tenant.purge" and isinstance(event.get("tenantId"), str) and event["tenantId"]:

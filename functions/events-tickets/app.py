@@ -79,7 +79,6 @@ from shared import dynamo, events, http, orders, request_guard, site, tenant, tu
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
 from shared.features.events_tickets import qr, series
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -2283,7 +2282,6 @@ ROUTES = {
 }
 
 
-@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

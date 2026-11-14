@@ -88,7 +88,7 @@ def test_get_returns_own_tenant_without_operator_fields(app):
 
     response = module.handler(make_event(), None)
 
-    assert response["statusCode"] == 200 and response["headers"]["Cache-Control"] == "private, no-cache"
+    assert response["statusCode"] == 200 and response["headers"]["Cache-Control"] == "no-store"
     body = body_of(response)
     assert body["tenantId"] == TENANT_A and body["slug"] == "roma" and body["role"] == "owner_user"
     assert body["stripe"] == {"connected": True, "chargesEnabled": True, "payoutsEnabled": False,

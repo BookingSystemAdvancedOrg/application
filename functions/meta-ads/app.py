@@ -48,7 +48,6 @@ from shared import dynamo, events, http, tenant
 from shared.bedrock import TextModelError
 from shared.features import meta_ads as ads
 from shared.meta_graph import MetaGraphError
-from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -639,7 +638,6 @@ ROUTES = {
 }
 
 
-@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

@@ -544,7 +544,7 @@ def test_privileged_groups_can_list_locations(app_and_table, groups):
     )
 
     assert response["statusCode"] == 200
-    assert response["headers"]["Cache-Control"] == "private, no-cache" and response["headers"]["ETag"]
+    assert response["headers"]["Cache-Control"] == "no-store"
     assert len(json.loads(response["body"])["items"]) == 1
 
 
@@ -769,7 +769,7 @@ def test_single_read_returns_optional_update_audit_fields(app_and_table):
 
     assert response["statusCode"] == 200
     assert json.loads(response["body"]) == public_location(stored)
-    assert response["headers"]["Cache-Control"] == "private, no-cache" and response["headers"]["ETag"]
+    assert response["headers"]["Cache-Control"] == "no-store"
 
 
 def test_single_read_rejects_an_overlong_location_id_before_dynamodb(

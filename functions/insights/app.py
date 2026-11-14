@@ -53,6 +53,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import dish_margin, feature_hooks, http, tenant
 from shared import insights as ins
 from shared import insights_store as store
+from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -244,6 +245,7 @@ def get_insights(event):
     return http.respond(200, ins.plain(body))
 
 
+@with_etag
 def handler(event, context):
     method, path = http.route(event)
     if path != "/insights":

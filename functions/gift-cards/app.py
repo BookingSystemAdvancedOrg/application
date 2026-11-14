@@ -49,6 +49,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import dynamo, events, http, orders, request_guard, tenant, turnstile
 from shared import stripe_client as stripe
 from shared.features import gift_cards as gc
+from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -872,6 +873,7 @@ ROUTES = {
 }
 
 
+@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

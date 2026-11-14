@@ -92,7 +92,7 @@ from boto3.dynamodb.conditions import Key
 
 from shared import tenant
 from shared.dynamo import table
-from shared.responses import json_response
+from shared.responses import json_response, with_etag
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 USER_TABLE_NAME = os.environ["USER_TABLE_NAME"]
@@ -1404,6 +1404,7 @@ def _guide(event, caller_sub, method):
     )
 
 
+@with_etag
 def handler(event, context):
     try:
         get_claims(event)

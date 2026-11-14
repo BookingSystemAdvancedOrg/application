@@ -54,6 +54,7 @@ from shared import accounting_export as ax
 from shared import dynamo, feature_hooks, http, tenant
 from shared import stripe_client as stripe
 from shared.order_messages import _seller
+from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -158,6 +159,7 @@ def _export(event, ctx):
     return http.respond(200, body)
 
 
+@with_etag
 def handler(event, context):
     method, path = http.route(event)
     try:

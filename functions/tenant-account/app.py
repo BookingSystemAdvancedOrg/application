@@ -63,7 +63,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dpa, tenant
 from shared.dynamo import table
-from shared.responses import json_response
+from shared.responses import json_response, with_etag
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 TENANT_TABLE_NAME = os.environ["TENANT_TABLE_NAME"]
@@ -525,6 +525,7 @@ def _account_link(ctx):
 
 # --- handler ------------------------------------------------------------------------
 
+@with_etag
 def handler(event, context):
     method, path = _route(event)
     if (method, path) not in _ROUTES:

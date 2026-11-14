@@ -5,10 +5,12 @@ Not used by the three functions that aren't behind API Gateway
 docstrings for what they should return/do instead.
 """
 
+import functools
+import hashlib
 import json
 import re
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Error bodies: {"error": <what it always was>, "code": <stable snake_case>,
 # "field": <the request field it is about, when a validation message names
@@ -88,3 +90,64 @@ def json_response(status_code: int, body: Any, headers: Optional[dict] = None) -
 def error_response(status_code: int, message: str) -> dict:
     """Shorthand for the common case of returning a single error message."""
     return json_response(status_code, {"error": message})
+
+
+# --- Conditional GET ----------------------------------------------------------
+#
+# The admin app and the console refetch what is on screen every 15 s while the
+# tab is visible, so changes by other staff show up by themselves. Most of
+# those reads return exactly what the browser already has. A GET answered 200
+# gets a weak ETag (a hash of the body) and `Cache-Control: private, no-cache`:
+# the browser keeps the body and asks again with If-None-Match every time
+# (never reused without asking), and an unchanged answer goes back as an empty
+# 304. The handler still runs (the data is read as before); what is saved is
+# the response transfer and the client's parse and re-render. Only plain JSON
+# 200s are touched: no cookies, no base64 bodies, nothing that is not HTTP.
+
+def _etag(body: str) -> str:
+    return 'W/"' + hashlib.sha256(body.encode("utf-8")).hexdigest()[:32] + '"'
+
+
+def _if_none_match(event: dict) -> list:
+    headers = event.get("headers")
+    if not isinstance(headers, dict):
+        return []
+    for key, value in headers.items():
+        if isinstance(key, str) and key.lower() == "if-none-match" and isinstance(value, str):
+            return [tag.strip().removeprefix("W/") for tag in value.split(",") if tag.strip()]
+    return []
+
+
+def _method(event: dict) -> str:
+    route_key = event.get("routeKey")
+    if isinstance(route_key, str) and " " in route_key:
+        return route_key.split(" ", 1)[0].upper()
+    context = event.get("requestContext")
+    http_ctx = context.get("http") if isinstance(context, dict) else None
+    return str((http_ctx or {}).get("method", "")).upper() if isinstance(http_ctx, dict) else ""
+
+
+def conditional(event: Any, response: Any) -> Any:
+    """`response` with an ETag, or an empty 304 when the caller has that one."""
+    if not isinstance(event, dict) or not isinstance(response, dict) or _method(event) != "GET":
+        return response
+    body = response.get("body")
+    headers = response.get("headers")
+    if (response.get("statusCode") != 200 or not isinstance(body, str) or response.get("isBase64Encoded")
+            or response.get("cookies") or not isinstance(headers, dict)
+            or any(isinstance(k, str) and k.lower() in ("set-cookie", "etag", "cache-control") for k in headers)
+            or not str(headers.get("Content-Type", "")).startswith("application/json")):
+        return response
+    tag = _etag(body)
+    cache = {"ETag": tag, "Cache-Control": "private, no-cache"}
+    if tag.removeprefix("W/") in _if_none_match(event):
+        return {"statusCode": 304, "headers": cache, "body": ""}
+    return {**response, "headers": {**headers, **cache}}
+
+
+def with_etag(handler: Callable) -> Callable:
+    """Decorator for an API handler: see `conditional`."""
+    @functools.wraps(handler)
+    def wrapped(event, context=None):
+        return conditional(event, handler(event, context))
+    return wrapped

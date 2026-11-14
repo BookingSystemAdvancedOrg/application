@@ -49,6 +49,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import availability, events, guarantee, http, manage_link, request_guard, site, tenant, turnstile
 from shared import reservations as r
 from shared.features import waitlist as wl
+from shared.responses import with_etag
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -760,6 +761,7 @@ ROUTES = {
 }
 
 
+@with_etag
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

@@ -60,7 +60,7 @@ from shared.auth import (
     get_sub,
 )
 from shared.dynamo import table
-from shared.responses import json_response
+from shared.responses import json_response, with_etag
 
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 LOCATION_TABLE_NAME = os.environ["LOCATION_TABLE_NAME"]
@@ -1594,6 +1594,7 @@ def _handle_block_request(details, caller_sub):
     return _block_response(status, _public_block(slot))
 
 
+@with_etag
 def handler(event, context):
     if _request_method(event) != "POST":
         return _block_response(

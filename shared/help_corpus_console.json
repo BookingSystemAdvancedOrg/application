@@ -9,6 +9,7 @@
   "/mail",
   "/finance",
   "/website",
+  "/reports",
   "/settings",
   "/download",
   "/outbox"
@@ -496,6 +497,39 @@
      "to": "/website",
      "highlight": [
       "help:nav:/website"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "support-reports",
+   "route": "/reports",
+   "title": "Error reports from restaurants",
+   "audience": "all",
+   "keywords": [
+    "reports",
+    "error reports",
+    "rapportera till booqy",
+    "bug report",
+    "errors",
+    "request id",
+    "mark handled",
+    "support reports"
+   ],
+   "answer": "Reports under Platform lists the errors restaurants sent with Rapportera till Booqy in Booqy Admin, newest first. Each one is a Booqy fault: look the request id up in the logs, fix or explain it, then mark it handled. Reports are kept 180 days and every new one is also emailed to the operators.",
+   "steps": [
+    "Open Reports in the menu.",
+    "Pick Open, Handled or All.",
+    "Look the request id up in the logs, then press Mark handled."
+   ],
+   "actions": [
+    {
+     "id": "support-reports-open",
+     "label": "Open Reports",
+     "to": "/reports",
+     "highlight": [
+      "help:nav:/reports"
      ]
     }
    ],
@@ -1304,6 +1338,18 @@
    "text": "Mail is in the menu.",
    "highlight": [
     "help:nav:/mail"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "nav:reports",
+   "kind": "page",
+   "route": "/reports",
+   "title": "Reports",
+   "where": "the menu",
+   "text": "Reports is in the menu.",
+   "highlight": [
+    "help:nav:/reports"
    ],
    "audience": "all"
   },
@@ -3250,6 +3296,18 @@
    "text": "Emails the platform would have sent (news from the Mail page included), plus a copy of every SMS - saved instead of sent until the sending domain is verified. Kept 30 days.",
    "highlight": [
     "text:Mail outbox"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-ReportsPage:reports:page",
+   "kind": "page",
+   "route": "/reports",
+   "title": "Reports",
+   "where": "Reports",
+   "text": "Errors restaurants reported from Booqy Admin with Rapportera till Booqy. Each one is ours to fix: look the request id up in the logs, then mark it handled. Kept 180 days.",
+   "highlight": [
+    "text:Reports"
    ],
    "audience": "all"
   },

@@ -42,7 +42,8 @@ class SimulatedGoogleBusiness(external_client.Simulated, GoogleBusiness):
 
     def authorize_url(self, state, redirect_uri):
         self._call("authorize_url", state)
-        return f"{redirect_uri}?code=simulated&state={state}"
+        sep = "&" if "?" in redirect_uri else "?"
+        return f"{redirect_uri}{sep}code=simulated&state={state}"
 
     def exchange_code(self, code, redirect_uri):
         self._call("exchange_code", code)

@@ -665,3 +665,16 @@ def test_schedule_name_is_valid_for_long_ids():
     name = gbp.schedule_name("order", "x" * 80)
     assert len(name) <= 64 and re.fullmatch(r"[0-9A-Za-z_.-]+", name)
     assert gbp.schedule_name("booking", "res-1") == "gbp-review-booking-res-1"
+
+
+def test_simulated_authorize_url_keeps_the_redirect_query():
+    """The dev redirect URI already has ?google=1; the simulated Google must add
+    its code and state with & so the admin recognises the return (it used to
+    produce a second ? and Koppla Google did nothing)."""
+    from urllib.parse import parse_qs, urlsplit
+    from shared.google_business import SimulatedGoogleBusiness
+    url = SimulatedGoogleBusiness().authorize_url("st4te", "https://restaurang.dev.booqy.se/installningar?google=1")
+    q = parse_qs(urlsplit(url).query)
+    assert q == {"google": ["1"], "code": ["simulated"], "state": ["st4te"]}
+    plain = SimulatedGoogleBusiness().authorize_url("s", "https://x.test/cb")
+    assert parse_qs(urlsplit(plain).query) == {"code": ["simulated"], "state": ["s"]}

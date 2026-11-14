@@ -1423,8 +1423,85 @@ paths:
                     price: 125.50
                     category: starters
                     imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/central/menu/mushroom-toast.jpg
+                    allergens: [gluten, milk]
+                    options: []
+                categories:
+                  - categoryId: starters
+                    name: Förrätter
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+
+  /locations/{locationId}/menu/categories:
+    parameters:
+      - $ref: '#/components/parameters/MenuLocationId'
+    get:
+      tags:
+        - Menu
+      summary: The location's menu categories
+      operationId: getMenuCategories
+      description: The four defaults (version 0) until the owner saves their own.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Categories in display order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuCategoryList'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+    put:
+      tags:
+        - Menu
+      summary: Replace the location's menu categories
+      operationId: putMenuCategories
+      description: |
+        The whole list in display order: add (no categoryId), rename,
+        reorder, delete. Deleting a category that still has dishes is 409
+        `category_in_use` (with `categoryIds`); a version that is not the
+        stored one is 409 `stale_categories` (with the current list).
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MenuCategoryList'
+            example:
+              version: 0
+              categories:
+                - categoryId: starters
+                  name: Förrätter
+                - name: Pizzor
+      responses:
+        '200':
+          description: Saved; the new version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuCategoryList'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/MenuServiceUnavailable'
 
@@ -8119,6 +8196,27 @@ components:
                 type: integer
                 minimum: 1
                 maximum: 20
+              note:
+                type: string
+                maxLength: 140
+              allergy:
+                type: string
+                maxLength: 140
+              options:
+                type: array
+                maxItems: 30
+                description: |
+                  The guest's picks from the dish's option groups. Checked
+                  against the menu (400 `option_invalid`, or
+                  `option_required` when a required group has no pick); the
+                  choices' prices are added to the unit price by the server.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [group, choice]
+                  properties:
+                    group: {type: string, maxLength: 40}
+                    choice: {type: string, maxLength: 40}
         name:
           type: string
         phone:
@@ -8219,11 +8317,20 @@ components:
           type: string
         unitPrice:
           type: integer
-          description: Öre, including VAT.
+          description: Öre, including VAT and the chosen options.
         quantity:
           type: integer
         total:
           type: integer
+        options:
+          type: array
+          description: The guest's picks with their price (öre per unit).
+          items:
+            type: object
+            properties:
+              group: {type: string}
+              choice: {type: string}
+              price: {type: integer}
         vatRate:
           type: integer
           enum:
@@ -9556,11 +9663,83 @@ components:
 
     MenuCategory:
       type: string
-      enum:
-        - starters
-        - mains
-        - desserts
-        - drinks
+      pattern: '^[a-z0-9]{2,32}$'
+      description: |
+        A categoryId of the location's own categories (GET/PUT
+        /locations/{locationId}/menu/categories). Until the owner changes
+        them every location has starters, mains, desserts and drinks. A
+        dish's category must be one of the location's (400 otherwise).
+
+    MenuCategoryEntry:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        categoryId:
+          type: string
+          pattern: '^[a-z0-9]{2,32}$'
+          description: Omitted for a new category; the server assigns one.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+
+    MenuCategoryList:
+      type: object
+      additionalProperties: false
+      required: [categories, version]
+      properties:
+        categories:
+          type: array
+          minItems: 1
+          maxItems: 30
+          description: Display order.
+          items:
+            $ref: '#/components/schemas/MenuCategoryEntry'
+        version:
+          type: integer
+          minimum: 0
+          description: Optimistic lock; send the version you loaded (0 = the defaults).
+
+    MenuAllergens:
+      type: array
+      uniqueItems: true
+      description: EU 1169/2011 annex II allergens; returned in this enum's order. null or [] clears.
+      items:
+        type: string
+        enum: [gluten, crustaceans, eggs, fish, peanuts, soy, milk, nuts, celery, mustard, sesame, sulphites,
+               lupin, molluscs]
+
+    MenuOptionGroups:
+      type: array
+      maxItems: 10
+      description: |
+        Option groups the guest picks from when ordering (Storlek, Extra ...).
+        Group names are unique per dish and choice names per group. A
+        required group needs at least one pick; at most maxChoices picks
+        (default 1, at most the number of choices). Each choice's price (kr,
+        0 = free) is added to the dish price by the server when the order is
+        priced. null or [] clears.
+      items:
+        type: object
+        additionalProperties: false
+        required: [name, choices]
+        properties:
+          name: {type: string, minLength: 1, maxLength: 40}
+          required: {type: boolean, default: false}
+          maxChoices: {type: integer, minimum: 1, maximum: 20, default: 1}
+          choices:
+            type: array
+            minItems: 1
+            maxItems: 20
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, price]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 40}
+                price:
+                  $ref: '#/components/schemas/MenuPrice'
 
     MenuPrice:
       type: number
@@ -9592,12 +9771,15 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           minLength: 1
           pattern: '.*\S.*'
           description: |
-            For a new upload, use the complete S3 object key returned by the
-            upload-URL endpoint, including its `menu-images/` prefix. Legacy
-            keys remain accepted. Existence is not checked by this Lambda.
+            Optional: a dish needs no photo. For a new upload, use the
+            complete S3 object key returned by the upload-URL endpoint,
+            including its `menu-images/` prefix. Legacy keys remain accepted.
+            null in a PUT removes the photo. Existence is not checked by this
+            Lambda.
         active:
           type: boolean
         alcohol:
@@ -9623,6 +9805,17 @@ components:
               station: {type: string, nullable: true}
         imageFocus:
           $ref: '#/components/schemas/MenuImageFocus'
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
+        expectedUpdatedAt:
+          type: string
+          description: |
+            PUT only: the updatedAt of the dish as the editor loaded it. When
+            the dish was saved by someone else since, the answer is 409 with
+            code `stale_item` and the current dish in `item`; nothing is
+            saved.
 
     MenuImageFocus:
       type: object
@@ -9672,7 +9865,6 @@ components:
             - description
             - price
             - category
-            - imageKey
             - active
 
     MenuItemUpdateRequest:
@@ -9691,7 +9883,6 @@ components:
         - description
         - price
         - category
-        - imageKey
         - active
         - createdBy
         - createdAt
@@ -9710,11 +9901,17 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           description: |
-            Stored S3 object key. New uploads include the `menu-images/`
-            prefix; legacy values are returned unchanged.
+            Stored S3 object key, null when the dish has no photo. New
+            uploads include the `menu-images/` prefix; legacy values are
+            returned unchanged.
         active:
           type: boolean
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
         alcohol:
           type: boolean
         availableFrom:
@@ -9771,9 +9968,15 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           description: |
-            Stored S3 object key. New uploads include the `menu-images/`
-            prefix; legacy values are returned unchanged.
+            Stored S3 object key, null when the dish has no photo. New
+            uploads include the `menu-images/` prefix; legacy values are
+            returned unchanged.
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
         alcohol:
           type: boolean
         imageFocus:
@@ -9784,11 +9987,17 @@ components:
       additionalProperties: false
       required:
         - items
+        - categories
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/PublicMenuItem'
+        categories:
+          type: array
+          description: The location's categories in display order; group the dishes by them.
+          items:
+            $ref: '#/components/schemas/MenuCategoryEntry'
 
     MenuItemList:
       type: object

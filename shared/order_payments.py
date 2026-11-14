@@ -41,7 +41,7 @@ def create_checkout(item, account, success_url, cancel_url, now, *, embedded=Fal
             "price_data": {
                 "currency": o.CURRENCY,
                 "unit_amount": line["unitPrice"],
-                "product_data": {"name": line["name"]},
+                "product_data": {"name": o.line_label(line)[:250]},
             },
             "quantity": line["quantity"],
         } for line in item["lines"]],

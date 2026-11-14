@@ -1154,3 +1154,68 @@ def test_dish_inside_its_schedule_can_be_ordered(env):
                                                 "availableFrom": "2026-09-08T12:00:00Z",
                                                 "availableUntil": "2026-09-08T12:00:01Z"})
     assert post_order(env)["statusCode"] == 201
+
+
+# --- option groups (shared/menu.py) -------------------------------------------------------
+
+PIZZA_OPTIONS = [
+    {"name": "Storlek", "required": True, "maxChoices": 1,
+     "choices": [{"name": "Normal", "price": Decimal("0")}, {"name": "Stor", "price": Decimal("30")}]},
+    {"name": "Extra", "required": False, "maxChoices": 2,
+     "choices": [{"name": "Ost", "price": Decimal("10.50")}, {"name": "Skinka", "price": Decimal("15")},
+                 {"name": "Oliver", "price": Decimal("5")}]},
+]
+
+
+def _with_options(env):
+    env["res"].Table(MENU_TABLE).put_item(Item={**menu_item(LOC_A, "pizza", "Margherita", "125"),
+                                                "options": PIZZA_OPTIONS, "allergens": ["gluten", "milk"]})
+
+
+def test_option_prices_are_added_on_the_server(env):
+    _with_options(env)
+    items = [{"menuItemId": "pizza", "quantity": 2,
+              "options": [{"group": "Storlek", "choice": "Stor"}, {"group": "Extra", "choice": "Ost"}]},
+             {"menuItemId": "pizza", "quantity": 1, "options": [{"group": "Storlek", "choice": "Normal"}]}]
+    response = post_order(env, items=items)
+    assert response["statusCode"] in (200, 201), response["body"]
+    order = stored(env, body_of(response)["orderId"])
+    big, small = order["lines"]
+    assert big["unitPrice"] == 12500 + 3000 + 1050 and big["total"] == 2 * 16550
+    assert big["options"] == [{"group": "Storlek", "choice": "Stor", "price": 3000},
+                              {"group": "Extra", "choice": "Ost", "price": 1050}]
+    assert small["unitPrice"] == 12500
+    assert order["totalAmount"] == 2 * 16550 + 12500
+    # the guest's checkout shows the picks; the price is what the server computed
+    line_items = env["stripe"].calls[-1]["params"]["line_items"]
+    assert line_items[0]["price_data"]["product_data"]["name"] == "Margherita (Stor, Ost)"
+    assert line_items[0]["price_data"]["unit_amount"] == 16550
+
+
+@pytest.mark.parametrize("picks, code", [
+    ([], "option_required"),
+    ([{"group": "Storlek", "choice": "Jätte"}], "option_invalid"),
+    ([{"group": "Sås", "choice": "Bea"}, {"group": "Storlek", "choice": "Stor"}], "option_invalid"),
+    ([{"group": "Storlek", "choice": "Stor"}, {"group": "Storlek", "choice": "Normal"}], "option_invalid"),
+    ([{"group": "Storlek", "choice": "Stor"}, {"group": "Extra", "choice": "Ost"},
+      {"group": "Extra", "choice": "Skinka"}, {"group": "Extra", "choice": "Oliver"}], "option_invalid"),
+])
+def test_invalid_option_picks_are_refused(env, picks, code):
+    _with_options(env)
+    response = post_order(env, items=[{"menuItemId": "pizza", "quantity": 1, "options": picks}])
+    assert response["statusCode"] == 400
+    assert code in response["body"]
+
+
+def test_ticket_lists_the_guests_options():
+    from shared import routing
+    lines = [{"name": "Margherita", "quantity": 1, "category": "mains",
+              "options": [{"group": "Storlek", "choice": "Stor", "price": 3000}]}]
+    entries = routing.split(lines, routing.default_config())["kok"]
+    assert entries[0]["options"] == ["Storlek: Stor"]
+
+
+def test_custom_category_goes_to_the_first_station():
+    from shared import routing
+    entries = routing.split([{"name": "IPA", "quantity": 1, "category": "c0a1b2c3d4"}], routing.default_config())
+    assert list(entries) == ["kok"] and entries["kok"][0]["course"] is None

@@ -41,6 +41,7 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/tables/{tableId}/block": frozenset({"post"}),
     "/locations/{locationId}/menu": frozenset({"get"}),
     "/locations/{locationId}/menu/items": frozenset({"get", "post"}),
+    "/locations/{locationId}/menu/categories": frozenset({"get", "put"}),
     "/locations/{locationId}/menu/items/{menuItemId}": frozenset(
         {"get", "put", "delete"}
     ),
@@ -235,6 +236,8 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/tables/{tableId}/block", "post"),
         ("/locations/{locationId}/menu/items", "get"),
         ("/locations/{locationId}/menu/items", "post"),
+        ("/locations/{locationId}/menu/categories", "get"),
+        ("/locations/{locationId}/menu/categories", "put"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "get"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "put"),
         ("/locations/{locationId}/menu/items/{menuItemId}", "delete"),

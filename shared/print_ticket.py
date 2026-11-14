@@ -169,6 +169,8 @@ def order_ticket(order, location, *, width=80, copy=False, retry=False, fmt="sta
     t.rule()
     for line in order.get("lines") or []:
         t.item(int(line.get("quantity") or 1), clean(line.get("name")))
+        for pick in line.get("options") or []:
+            t.line(f"     + {clean(pick.get('group'))}: {clean(pick.get('choice'))}", bold=True)
     notes = clean(order.get("notes"))
     if notes:
         t.rule()
@@ -262,6 +264,8 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
             t.item(int(entry.get("quantity") or 1), clean(entry.get("name")))
             if entry.get("partOf"):
                 t.line(f"     ({clean(entry['partOf'])})")
+            for option in entry.get("options") or []:
+                t.line(f"     + {clean(option)}", bold=True)
             if entry.get("note"):
                 t.line(f"     {clean(entry['note'])}", bold=True)
             if entry.get("allergy"):

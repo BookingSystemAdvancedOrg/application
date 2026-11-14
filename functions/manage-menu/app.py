@@ -6,8 +6,11 @@ TRIGGER:
 
 PURPOSE:
     Staff-facing menu-item writes. Dispatches POST on ``items`` and
-    PUT/DELETE on ``items/{menuItemId}``. Protected reads are handled by
-    get-menu. Categories are fixed Menu data-model values, not resources.
+    PUT/DELETE on ``items/{menuItemId}`` and PUT on ``categories`` (the
+    location's own categories in display order, shared/menu.py). Protected
+    reads are handled by get-menu. A PUT on an item may carry
+    ``expectedUpdatedAt`` (the updatedAt the screen loaded): when the dish
+    changed since, the answer is 409 ``stale_item`` and nothing is saved.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -44,7 +47,6 @@ from shared.responses import json_response
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_TABLE_NAME = os.environ["MENU_TABLE_NAME"]
 
-_CATEGORIES = frozenset({"starters", "mains", "desserts", "drinks"})
 _EDITABLE_FIELDS = {
     "name",
     "description",
@@ -63,6 +65,11 @@ _EDITABLE_FIELDS = {
     # Optional kitchen ticket routing (shared/menu.py): station, combo parts.
     "station",
     "components",
+    # Optional EU allergens and option groups (shared/menu.py); null clears.
+    "allergens",
+    "options",
+    # PUT only: the updatedAt the editor loaded (409 stale_item when changed).
+    "expectedUpdatedAt",
 }
 _PUBLIC_FIELDS = (
     "menuItemId",
@@ -70,7 +77,6 @@ _PUBLIC_FIELDS = (
     "description",
     "price",
     "category",
-    "imageKey",
     "active",
     "createdBy",
     "createdAt",
@@ -210,11 +216,19 @@ def _price(body):
 
 def _category(body):
     value = _present(body, "category")
-    if not isinstance(value, str) or value not in _CATEGORIES:
-        raise ValueError(
-            "category must be starters, mains, desserts, or drinks"
-        )
+    if not menu.valid_category_id(value):
+        raise ValueError("category must be one of the location's categories")
     return value
+
+
+def _image_key(body, *, partial):
+    """Optional: no photo is fine for any dish. null (PUT) removes the photo."""
+    value = body.get("imageKey")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("imageKey must be an image key or null")
+    return value.strip()
 
 
 def _active(body):
@@ -226,6 +240,9 @@ def _active(body):
 
 def _menu_fields(event, *, partial):
     body = _parse_json_body(event)
+    expected = body.pop("expectedUpdatedAt", None)
+    if expected is not None and (not partial or not isinstance(expected, str) or len(expected) > 40):
+        raise ValueError("expectedUpdatedAt must be the updatedAt of the dish")
     _validate_fields(body, partial=partial)
 
     fields = {}
@@ -237,8 +254,8 @@ def _menu_fields(event, *, partial):
         fields["price"] = _price(body)
     if not partial or "category" in body:
         fields["category"] = _category(body)
-    if not partial or "imageKey" in body:
-        fields["imageKey"] = _nonempty_string(body, "imageKey")
+    if "imageKey" in body:
+        fields["imageKey"] = _image_key(body, partial=partial)
     if not partial or "active" in body:
         fields["active"] = _active(body)
     if "alcohol" in body:
@@ -248,7 +265,8 @@ def _menu_fields(event, *, partial):
     fields.update(menu.validate_schedule(body))
     fields.update(image_focus.validate(body))
     fields.update(menu.validate_routing(body))
-    return fields
+    fields.update(menu.validate_options(body))
+    return fields, expected
 
 
 def _path_value(event, field):
@@ -273,6 +291,8 @@ def _match_route(proxy_path):
     segments = proxy_path.strip("/").split("/")
     if segments == ["items"]:
         return "collection", None, ("POST",)
+    if segments == ["categories"]:
+        return "categories", None, ("PUT",)
     if len(segments) == 2 and segments[0] == "items" and segments[1]:
         return "item", segments[1], ("PUT", "DELETE")
     return None
@@ -304,7 +324,8 @@ def _public_item(item):
         _description(item)
         _validated_price(item["price"])
         _category(item)
-        _nonempty_string(item, "imageKey")
+        if item.get("imageKey") is not None:
+            _nonempty_string(item, "imageKey")
         _active(item)
         _nonempty_string(item, "createdBy")
         _nonempty_string(item, "updatedBy")
@@ -317,15 +338,18 @@ def _public_item(item):
             raise ValueError
         menu.validate_schedule(item)
         menu.validate_routing({f: item[f] for f in menu.ROUTING_FIELDS if f in item})
+        menu.options_view(item)
     except (OverflowError, TypeError, ValueError):
         raise _MenuConflict("menu item record is inconsistent") from None
 
     return {
         **{field: item[field] for field in _PUBLIC_FIELDS},
+        "imageKey": item.get("imageKey"),
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
         **image_focus.view(item),
         **menu.routing_view(item),
+        **menu.options_view(item),
     }
 
 
@@ -550,8 +574,28 @@ def _require_own_image(fields, tenant_id, location_id, previous=None):
         raise ValueError("imageKey must be an image uploaded for this location")
 
 
+def _load_categories(location_id):
+    response = table(MENU_TABLE_NAME).get_item(
+        Key=menu.categories_key(location_id), ConsistentRead=True
+    )
+    if not isinstance(response, dict):
+        raise _MenuServiceFailure
+    return menu.categories_view(response.get("Item"))
+
+
+def _require_category(fields, location_id, previous=None):
+    """A new or changed category must be one of the location's own."""
+    category = fields.get("category")
+    if category is None or (previous is not None and previous.get("category") == category):
+        return
+    ids = {c["categoryId"] for c in _load_categories(location_id)["categories"]}
+    if category not in ids:
+        raise ValueError("category must be one of the location's categories")
+
+
 def _create_item(event, location_id, caller_sub, tenant_id):
-    fields = _menu_fields(event, partial=False)
+    fields, _ = _menu_fields(event, partial=False)
+    _require_category(fields, location_id)
     _require_own_image(fields, tenant_id, location_id)
     menu_item_id = _new_menu_item_id()
     timestamp = _utc_now()
@@ -577,10 +621,18 @@ def _create_item(event, location_id, caller_sub, tenant_id):
 
 
 def _update_item(event, location_id, menu_item_id, caller_sub, tenant_id):
-    updates = _menu_fields(event, partial=True)
+    updates, expected_updated_at = _menu_fields(event, partial=True)
     item = _load_item(location_id, menu_item_id)
     if item is None:
         return _menu_error(HTTPStatus.NOT_FOUND.value, "menu item not found")
+    if expected_updated_at is not None and expected_updated_at != item.get("updatedAt"):
+        # Someone else saved the dish after this editor loaded it.
+        return _menu_response(
+            HTTPStatus.CONFLICT.value,
+            {"error": "menu item was changed by someone else", "code": "stale_item",
+             "item": _public_item(item)},
+        )
+    _require_category(updates, location_id, previous=item)
     # A partial PUT must still leave end after start with the stored bound.
     menu.validate_schedule(
         {f: v for f, v in updates.items() if f in menu.SCHEDULE_FIELDS}, item
@@ -603,6 +655,62 @@ def _update_item(event, location_id, menu_item_id, caller_sub, tenant_id):
     }
     _put_existing_item(updated, item)
     return _menu_response(HTTPStatus.OK.value, _public_item(updated))
+
+
+def _dish_categories(location_id):
+    """{categoryId: number of dishes} of the location."""
+    from boto3.dynamodb.conditions import Key
+
+    counts = {}
+    request = {
+        "KeyConditionExpression": Key("PK").eq(f"LOCATION#{location_id}")
+        & Key("SK").begins_with("MENU#"),
+        "ConsistentRead": True,
+        "ProjectionExpression": "category",
+    }
+    while True:
+        page = table(MENU_TABLE_NAME).query(**request)
+        for row in page.get("Items") or []:
+            counts[row.get("category")] = counts.get(row.get("category"), 0) + 1
+        if "LastEvaluatedKey" not in page:
+            return counts
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+def _put_categories(event, location_id, caller_sub):
+    """Replaces the location's categories (order = display order). A removed
+    category that still has dishes -> 409 category_in_use; a version that is
+    not the stored one -> 409 stale_categories."""
+    categories, version = menu.validate_categories(_parse_json_body(event))
+    current = _load_categories(location_id)
+    if version != current["version"]:
+        return _menu_response(
+            HTTPStatus.CONFLICT.value,
+            {"error": "categories were changed by someone else", "code": "stale_categories", **current},
+        )
+    kept = {c["categoryId"] for c in categories}
+    in_use = sorted(cid for cid, n in _dish_categories(location_id).items() if n and cid not in kept)
+    if in_use:
+        return _menu_response(
+            HTTPStatus.CONFLICT.value,
+            {"error": "category still has dishes", "code": "category_in_use", "categoryIds": in_use},
+        )
+    try:
+        table(MENU_TABLE_NAME).put_item(
+            Item={**menu.categories_key(location_id), "categories": categories, "version": version + 1,
+                  "updatedBy": caller_sub, "updatedAt": _utc_now()},
+            **({"ConditionExpression": "attribute_not_exists(PK)"} if version == 0 else {
+                "ConditionExpression": "version = :v", "ExpressionAttributeValues": {":v": version}}),
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return _menu_response(
+                HTTPStatus.CONFLICT.value,
+                {"error": "categories were changed by someone else", "code": "stale_categories",
+                 **_load_categories(location_id)},
+            )
+        raise
+    return _menu_response(HTTPStatus.OK.value, {"categories": categories, "version": version + 1})
 
 
 def _delete_item(location_id, menu_item_id):
@@ -671,6 +779,8 @@ def handler(event, context):
 
         if route_name == "collection":
             return _create_item(event, location_id, caller_sub, ctx.tenant_id)
+        if route_name == "categories":
+            return _put_categories(event, location_id, caller_sub)
         if method == "PUT":
             return _update_item(
                 event,

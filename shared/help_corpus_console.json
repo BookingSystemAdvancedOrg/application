@@ -143,7 +143,7 @@
     "extend free",
     "end date"
    ],
-   "answer": "Free has no monthly charge and Growth's features. Pick Free on the Plan tab (or in step 4 of New customer): it lasts three months by default, or tick No end date. The owner gets an email 14 days before it ends, and the day after it the customer moves to the plan in Then switch to. Change the date or the plan any time.",
+   "answer": "Free has no monthly charge and Growth's features. Pick Free on the Plan tab (or in step 4 of New customer): it lasts three months by default (a new end date is at least 14 days ahead), or tick No end date. The owner gets an email 14 days before it ends, and the day after it the customer moves to the plan in Then switch to, at Price after Free (an own price stays). If the email could not go out in time, the free period runs until 14 days after it does. Change the date, the plan or the price any time.",
    "steps": [
     "Open Customers and click the customer.",
     "Press the Plan tab and pick Free.",
@@ -3610,6 +3610,18 @@
    "text": "",
    "highlight": [
     "text:Locations allowed"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:plan:price-after-free-sek-ex-vat:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Price after Free, SEK ex VAT",
+   "where": "a customer's page, Plan tab",
+   "text": "",
+   "highlight": [
+    "text:Price after Free, SEK ex VAT"
    ],
    "audience": "all"
   },

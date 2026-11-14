@@ -394,6 +394,105 @@ def test_staff_candidates_never_include_owner_documents(app, monkeypatch):
     assert body["answer"]["known"] is False
 
 
+# --- the deployed path: real-model mode, the model only sees the help texts --------------------
+
+MODEL_UNSURE = json.dumps({"known": False, "text": "Det vet jag inte.", "steps": [], "actionIds": [], "sourceIds": []})
+
+
+class PromptSpy(SimulatedTextModel):
+    """The model as deployed: answers known false (it sees only "Bokningar idag") and keeps the prompts."""
+
+    def __init__(self, raw=MODEL_UNSURE):
+        super().__init__()
+        self.raw, self.prompts = raw, []
+
+    def complete(self, system, prompt, *, max_tokens, json_schema=None):
+        self.prompts.append(json.loads(prompt))
+        return self.raw
+
+
+def model_spy(monkeypatch, app, raw=MODEL_UNSURE):
+    monkeypatch.setenv("BEDROCK_CLIENT", "real")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "eu.test-model")
+    spy = PromptSpy(raw)
+    monkeypatch.setattr(app, "_model", spy)
+    return spy
+
+
+@pytest.mark.parametrize("question, metric, period, label", [
+    ("Hur många bokningar har vi imorgon?", "bookings", ("2026-11-15", "2026-11-15"), "Imorgon, söndag 15 november"),
+    ("Hur många bokningar hade vi igår?", "bookings", ("2026-11-13", "2026-11-13"), "Igår, fredag 13 november"),
+    ("Hur många bokningar har vi på fredag?", "bookings", ("2026-11-20", "2026-11-20"), "Fredag 20 november"),
+    ("Hur många gäster har vi i helgen?", "guests", ("2026-11-14", "2026-11-15"), "I helgen, 14 till 15 november"),
+    ("Hur många bokningar har vi nästa vecka?", "bookings", ("2026-11-16", "2026-11-22"),
+     "Nästa vecka, 16 till 22 november"),
+    ("Hur många bokningar har vi 20 november?", "bookings", ("2026-11-20", "2026-11-20"), "Fredag 20 november"),
+])
+def test_ai_mode_answers_other_days_with_a_live_number(app, monkeypatch, question, metric, period, label):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    spy = model_spy(monkeypatch, app)
+    code, body = ask(app, question)
+    answer = body["answer"]
+    assert code == 200 and answer["known"] is True
+    assert answer["live"]["metric"] == metric
+    assert answer["live"]["range"] == {"from": period[0], "to": period[1]}
+    assert answer["live"]["text"].startswith(f"{label}: {{value}}")
+    # The model is told which day the app shows a number for, never a number.
+    assert spy.prompts[0]["SIFFRA"].startswith(f"{label}: N ")
+
+
+def test_ai_mode_keeps_the_model_text_for_another_day(app, monkeypatch):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    model_spy(monkeypatch, app, json.dumps({"known": True, "text": "Antalet för imorgon visas nedan.", "steps": [],
+                                            "actionIds": [], "sourceIds": ["live-bokningar-idag"]}))
+    code, body = ask(app, "Hur många bokningar har vi imorgon?")
+    assert code == 200 and body["mode"] == "ai" and body["answer"]["text"] == "Antalet för imorgon visas nedan."
+    assert body["answer"]["live"]["range"] == {"from": "2026-11-15", "to": "2026-11-15"}
+
+
+def test_ai_mode_today_has_no_day_in_the_prompt(app, monkeypatch):
+    spy = model_spy(monkeypatch, app, json.dumps({"known": True, "text": "Se Statistik.", "steps": [],
+                                                  "actionIds": [], "sourceIds": []}))
+    _, body = ask(app, "Hur många bokningar har vi idag?")
+    assert body["answer"]["live"]["metric"] == "bookingsToday"
+    assert spy.prompts[0]["SIFFRA"].startswith("Idag har ni N bokningar")
+
+
+@pytest.mark.parametrize("previous", ["", "Hur många bokningar har vi imorgon?", "Hur många bokningar har vi idag?"])
+def test_ai_mode_where_question_finds_the_settings_section(app, monkeypatch, previous):
+    """As in the app (and the E2E): asked right after a question about bookings."""
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    spy = model_spy(monkeypatch, app)
+    history = [{"role": "user", "text": previous}, {"role": "assistant", "text": "Svar."}] if previous else []
+    code, body = ask(app, "Var ändrar jag öppettiderna?", history=history)
+    answer = body["answer"]
+    assert code == 200 and answer["known"] is True and "live" not in answer
+    assert answer["sources"] == ["inst-oppettider"]
+    assert "Inställningar, Verksamheten, Restaurang" in answer["text"]
+    assert answer["actions"][0]["to"] == "/installningar" and answer["actions"][0]["hash"] == "profil"
+    assert spy.prompts[0]["KUNSKAP"][0]["id"] == "inst-oppettider" and "SIFFRA" not in spy.prompts[0]
+
+
+def test_ai_mode_unsure_model_still_unknown_without_a_grounded_answer(app, monkeypatch):
+    model_spy(monkeypatch, app)
+    _, body = ask(app, "Hur ändrar jag priset på en rätt?", role="staff_user")
+    assert body["answer"]["known"] is False
+
+
+def test_short_follow_up_still_reads_the_previous_question(app, monkeypatch):
+    monkeypatch.setattr(help.help_dates, "today_in", lambda *a, **k: date(2026, 11, 14))
+    model_spy(monkeypatch, app)
+    _, body = ask(app, "Och imorgon?", history=[{"role": "user", "text": "Hur många gäster har vi idag?"}])
+    assert body["answer"]["live"]["metric"] == "guests"
+    assert body["answer"]["live"]["range"] == {"from": "2026-11-15", "to": "2026-11-15"}
+
+
+def test_console_short_question_that_stands_alone(app):
+    res = app.handler(operator_event("POST /platform/help-assistant/answers", {
+        "question": "Where is the outbox?", "history": [{"role": "user", "text": "How do I add another operator?"}]}))
+    assert json.loads(res["body"])["answer"]["sources"][0] == "live-outbox"
+
+
 @pytest.mark.parametrize("raw", ["inte json", json.dumps({"known": "ja"}), json.dumps({"known": True, "text": ""})])
 def test_bad_model_output_falls_back(app, monkeypatch, raw):
     use_model(monkeypatch, app, raw)

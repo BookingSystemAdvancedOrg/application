@@ -141,7 +141,7 @@ def answers(event, caller):
             outcome = "capped"
         else:
             try:
-                raw = _text_model().complete(help.SYSTEM[app], help.prompt(question, history, found, app),
+                raw = _text_model().complete(help.SYSTEM[app], help.prompt(question, history, found, app, answer.get("live")),
                                              max_tokens=MAX_TOKENS, json_schema=help.ANSWER_SCHEMA)
                 model_answer = help.from_model(raw, found, question, app)
                 if model_answer is None:

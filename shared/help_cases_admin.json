@@ -563,5 +563,86 @@
   "expect": {
    "answer": "unknown"
   }
+ },
+ {
+  "question": "Hur många bokningar har vi imorgon?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "bookings",
+   "route": "/statistik"
+  }
+ },
+ {
+  "question": "Hur många gäster har vi på fredag?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "guests"
+  }
+ },
+ {
+  "question": "Hur många bokningar hade vi igår?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "bookings"
+  }
+ },
+ {
+  "question": "Hur många gäster har vi i helgen?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "guests"
+  }
+ },
+ {
+  "question": "Hur många bokningar har vi nästa vecka?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "bookings"
+  }
+ },
+ {
+  "question": "Hur många bokningar har vi den 20 november?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "bookings"
+  }
+ },
+ {
+  "question": "Hur många beställningar fick vi igår?",
+  "role": "staff_user",
+  "features": [
+   "reservations",
+   "ordering"
+  ],
+  "expect": {
+   "live": "orders"
+  }
+ },
+ {
+  "question": "Var ändrar jag öppettiderna på fredag?",
+  "role": "owner_user",
+  "features": "all",
+  "expect": {
+   "route": "/installningar",
+   "live": null
+  }
  }
 ]

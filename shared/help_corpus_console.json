@@ -259,7 +259,7 @@
    ],
    "live": {
     "metric": "waitingForStripe",
-    "text": "{value} active customers can't take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which."
+    "text": "{value} active {customer can't|customers can't} take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which."
    },
    "kind": "guide"
   },
@@ -291,7 +291,7 @@
    ],
    "live": {
     "metric": "customers",
-    "text": "There are {value} customers on the platform, counting every status."
+    "text": "There {is|are} {value} {customer|customers} on the platform, counting every status."
    },
    "kind": "guide"
   },
@@ -320,7 +320,7 @@
    ],
    "live": {
     "metric": "activeCustomers",
-    "text": "{value} customers are active right now."
+    "text": "{value} {customer is|customers are} active right now."
    },
    "kind": "guide"
   },
@@ -352,7 +352,7 @@
    ],
    "live": {
     "metric": "setupFailed",
-    "text": "{value} customers have a failed setup."
+    "text": "{value} {customer has|customers have} a failed setup."
    },
    "kind": "guide"
   },
@@ -714,7 +714,7 @@
    ],
    "live": {
     "metric": "outboxMessages",
-    "text": "The outbox has {value} messages from the last 30 days."
+    "text": "The outbox has {value} {message|messages} from the last 30 days."
    },
    "kind": "guide"
   },
@@ -810,7 +810,7 @@
    ],
    "live": {
     "metric": "payingCustomers",
-    "text": "{value} customers are paying this billing period."
+    "text": "{value} {customer is|customers are} paying this billing period."
    },
    "kind": "guide"
   },
@@ -1732,9 +1732,35 @@
    "hash": "desktop-app",
    "title": "Desktop app",
    "where": "Settings, Desktop app",
-   "text": "Booqy Console in its own window: same sign-in and features as here, always the latest console. The app asks when the app itself has a new version.",
+   "text": "Booqy Console in its own window: same sign-in and features as here, always the latest console. It updates itself without asking.",
    "highlight": [
     "help:settings:desktop-app"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:install-with-one-command-recommended:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Install with one command (recommended)",
+   "where": "Settings, Desktop app",
+   "text": "",
+   "highlight": [
+    "text:Install with one command (recommended)"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-DesktopAppCard:or-download-the-file:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "Or download the file",
+   "where": "Settings, Desktop app",
+   "text": "Pick the file for your computer from the list.",
+   "highlight": [
+    "text:Or download the file"
    ],
    "audience": "all"
   },
@@ -3176,7 +3202,7 @@
    "route": "/operators",
    "title": "Edit operator",
    "where": "Operators",
-   "text": "The email is the sign-in name and can't be changed. Add a new operator instead.",
+   "text": "",
    "highlight": [
     "text:Edit operator"
    ],

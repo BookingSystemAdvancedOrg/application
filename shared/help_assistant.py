@@ -37,6 +37,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from shared import help_dates
+
 HERE = Path(__file__).parent
 APPS = ("admin", "console")
 
@@ -61,7 +63,7 @@ CORPUS_TTL = 600
 _SV_STOP = (
     "jag du vi ni man en ett och att det den de som hur var vad kan ska gor gora har hor till for pa i "
     "av med om fran nar dar min mitt mina er ert era sin sitt sina vill skulle mig dig oss "
-    "nagon nagot inte ar blir bli finns the a an how do i "
+    "nagon nagot inte ar blir bli finns hade the a an how do i "
     "hitta hittar ser se visa vart vilken vilka where is what can my our "
     "andra andrar byt byta byter stall stalla staller satt satta satter gor gora lagg lagga lagger "
     "skapa skapar ta tar oppna oppnar fixa fixar anvanda anvander fa far koppla kopplar ladda laddar "
@@ -395,7 +397,28 @@ def doc_actions(doc: dict, app: str = "admin") -> list:
     return [action]
 
 
-def compose(found: list, question: str = "", app: str = "admin") -> dict:
+_PERIOD = re.compile(r"(Today|Week|Month)$")
+
+
+def live_for(live: dict, question: str, app: str = "admin", today=None) -> Optional[dict]:
+    """The live metric for the question. Another day or period ("imorgon", "på fredag",
+    "nästa vecka", "20 november") gives the period-free metric with its range and the
+    doc's rangeText; None when the doc has no text for other days (a corpus from before
+    rangeText), so a number for the wrong day is never shown."""
+    if app != "admin":
+        return live
+    when = help_dates.parse_when(question, today or help_dates.today_in())
+    if not when:
+        return live
+    metric = _PERIOD.sub("", live.get("metric") or "")
+    text = live.get("rangeText")
+    if not text or metric == live.get("metric"):
+        return None
+    label = when["label"][:1].upper() + when["label"][1:]
+    return {"metric": metric, "text": text.replace("{period}", label), "range": {"from": when["from"], "to": when["to"]}}
+
+
+def compose(found: list, question: str = "", app: str = "admin", today=None) -> dict:
     doc, top = found[0]
     actions = doc_actions(doc, app)[:2]
     if actions:
@@ -419,8 +442,9 @@ def compose(found: list, question: str = "", app: str = "admin") -> dict:
             (f" {doc['text']}" if doc.get("text") else "")
     answer = {"known": True, "text": text, "steps": list(doc.get("steps") or ())[:MAX_STEPS],
               "actions": actions, "sources": [doc["id"]]}
-    if doc.get("live") and not is_where_question(question):
-        answer["live"] = doc["live"]
+    live = live_for(doc["live"], question, app, today) if doc.get("live") and not is_where_question(question) else None
+    if live:
+        answer["live"] = live
     return answer
 
 
@@ -434,18 +458,38 @@ def refusal(app: str = "admin") -> dict:
     return {"known": False, "text": TEXTS[app]["refuse"], "steps": [], "actions": [], "sources": []}
 
 
-def answer_locally(data: dict, question: str, view: dict, previous: str = "", app: str = "admin") -> tuple:
+def _about(doc: dict, asked: str, app: str) -> bool:
+    """Does the question name what the doc counts ("bokningar", "gäster"), not only the day?"""
+    head = set(tokens(" ".join([doc.get("title") or "", *(doc.get("keywords") or ())]), app))
+    return any(match_weight(q, d) > 0 for q in tokens(asked, app) if q != "idag" for d in head)
+
+
+def answer_locally(data: dict, question: str, view: dict, previous: str = "", app: str = "admin",
+                   today=None) -> tuple:
     """(answer, candidates) without a model."""
     if is_secret_question(question):
         return refusal(app), []
-    # A short follow-up ("Och hur länge?") is read together with the previous question.
+    # A short follow-up ("Och hur länge?", "Och imorgon?") is read together with the previous question.
     short = previous and len(tokens(question, app)) <= 2
-    found, owner_hit = candidates(data, f"{previous} {question}" if short else question, view, app)
-    if not found and previous:
-        found, owner_hit = candidates(data, question if short else f"{previous} {question}", view, app)
+
+    def lookup(asked: str) -> tuple:
+        found, owner_hit = candidates(data, f"{previous} {asked}" if short else asked, view, app)
+        if not found and previous:
+            found, owner_hit = candidates(data, asked if short else f"{previous} {asked}", view, app)
+        return found, owner_hit
+
+    # Another day ("imorgon", "på fredag") is looked up as today when that finds a live
+    # number (compose then sets the day); other questions are read as asked.
+    when = help_dates.parse_when(question, today or help_dates.today_in()) if app == "admin" else None
+    day = lookup(when["query"]) if when else ([], False)
+    if day[0] and day[0][0][0].get("live") and _about(day[0][0][0], f"{previous} {when['query']}" if short else when["query"], app):
+        found, owner_hit = day
+    else:
+        found, owner_hit = lookup(question)
+        owner_hit = owner_hit or (not found and day[1])
     if not found:
         return unknown_answer(owner_hit, app), []
-    return compose(found, question, app), found
+    return compose(found, question, app, today), found
 
 
 def prompt(question: str, history: list, found: list, app: str = "admin") -> str:
@@ -466,7 +510,7 @@ def _clean(text, limit: int) -> str:
     return _DASHES.sub("-", str(text)).strip()[:limit]
 
 
-def from_model(raw: str, found: list, question: str = "", app: str = "admin") -> Optional[dict]:
+def from_model(raw: str, found: list, question: str = "", app: str = "admin", today=None) -> Optional[dict]:
     """The model's JSON as an answer, or None if unusable. Actions and sources
     outside the candidates are dropped, never trusted."""
     try:
@@ -481,7 +525,7 @@ def from_model(raw: str, found: list, question: str = "", app: str = "admin") ->
     steps = parsed.get("steps") or []
     if not isinstance(text, str) or not text.strip() or not isinstance(steps, list):
         return None
-    base = compose(found, question, app)
+    base = compose(found, question, app, today)
     actions = {a["id"]: a for d, _ in found for a in doc_actions(d, app)}
     if base["actions"]:
         # The first button carries the highlights of related matches on the same page.

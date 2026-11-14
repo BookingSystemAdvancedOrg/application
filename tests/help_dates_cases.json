@@ -1,0 +1,297 @@
+[
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi imorgon?",
+  "expect": {
+   "from": "2026-11-15",
+   "to": "2026-11-15",
+   "label": "imorgon, söndag 15 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Och i morgon?",
+  "expect": {
+   "from": "2026-11-15",
+   "to": "2026-11-15",
+   "label": "imorgon, söndag 15 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många gäster hade vi igår?",
+  "expect": {
+   "from": "2026-11-13",
+   "to": "2026-11-13",
+   "label": "igår, fredag 13 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "i går",
+  "expect": {
+   "from": "2026-11-13",
+   "to": "2026-11-13",
+   "label": "igår, fredag 13 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "i övermorgon",
+  "expect": {
+   "from": "2026-11-16",
+   "to": "2026-11-16",
+   "label": "i övermorgon, måndag 16 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "i förrgår",
+  "expect": {
+   "from": "2026-11-12",
+   "to": "2026-11-12",
+   "label": "i förrgår, torsdag 12 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många gäster har vi på fredag?",
+  "expect": {
+   "from": "2026-11-20",
+   "to": "2026-11-20",
+   "label": "fredag 20 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "på lördag",
+  "expect": {
+   "from": "2026-11-14",
+   "to": "2026-11-14",
+   "label": "idag, lördag 14 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "nästa lördag",
+  "expect": {
+   "from": "2026-11-21",
+   "to": "2026-11-21",
+   "label": "lördag 21 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "i fredags",
+  "expect": {
+   "from": "2026-11-13",
+   "to": "2026-11-13",
+   "label": "fredag 13 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "i lördags",
+  "expect": {
+   "from": "2026-11-07",
+   "to": "2026-11-07",
+   "label": "lördag 7 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "förra måndagen",
+  "expect": {
+   "from": "2026-11-09",
+   "to": "2026-11-09",
+   "label": "måndag 9 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi i helgen?",
+  "expect": {
+   "from": "2026-11-14",
+   "to": "2026-11-15",
+   "label": "i helgen, 14 till 15 november"
+  }
+ },
+ {
+  "today": "2026-11-18",
+  "question": "i helgen",
+  "expect": {
+   "from": "2026-11-21",
+   "to": "2026-11-22",
+   "label": "i helgen, 21 till 22 november"
+  }
+ },
+ {
+  "today": "2026-11-15",
+  "question": "i helgen",
+  "expect": {
+   "from": "2026-11-14",
+   "to": "2026-11-15",
+   "label": "i helgen, 14 till 15 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "nästa helg",
+  "expect": {
+   "from": "2026-11-21",
+   "to": "2026-11-22",
+   "label": "nästa helg, 21 till 22 november"
+  }
+ },
+ {
+  "today": "2026-11-18",
+  "question": "nästa helg",
+  "expect": {
+   "from": "2026-11-21",
+   "to": "2026-11-22",
+   "label": "nästa helg, 21 till 22 november"
+  }
+ },
+ {
+  "today": "2026-11-18",
+  "question": "förra helgen",
+  "expect": {
+   "from": "2026-11-14",
+   "to": "2026-11-15",
+   "label": "förra helgen, 14 till 15 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi nästa vecka?",
+  "expect": {
+   "from": "2026-11-16",
+   "to": "2026-11-22",
+   "label": "nästa vecka, 16 till 22 november"
+  }
+ },
+ {
+  "today": "2026-11-28",
+  "question": "nästa vecka",
+  "expect": {
+   "from": "2026-11-30",
+   "to": "2026-12-06",
+   "label": "nästa vecka, 30 november till 6 december"
+  }
+ },
+ {
+  "today": "2026-12-30",
+  "question": "nästa vecka",
+  "expect": {
+   "from": "2027-01-04",
+   "to": "2027-01-10",
+   "label": "nästa vecka, 4 till 10 januari 2027"
+  }
+ },
+ {
+  "today": "2026-12-23",
+  "question": "nästa vecka",
+  "expect": {
+   "from": "2026-12-28",
+   "to": "2027-01-03",
+   "label": "nästa vecka, 28 december 2026 till 3 januari 2027"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "förra veckan",
+  "expect": {
+   "from": "2026-11-02",
+   "to": "2026-11-08",
+   "label": "förra veckan, 2 till 8 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi den 20 november?",
+  "expect": {
+   "from": "2026-11-20",
+   "to": "2026-11-20",
+   "label": "fredag 20 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "20:e nov",
+  "expect": {
+   "from": "2026-11-20",
+   "to": "2026-11-20",
+   "label": "fredag 20 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "20/11",
+  "expect": {
+   "from": "2026-11-20",
+   "to": "2026-11-20",
+   "label": "fredag 20 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "2026-11-20",
+  "expect": {
+   "from": "2026-11-20",
+   "to": "2026-11-20",
+   "label": "fredag 20 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "3 januari",
+  "expect": {
+   "from": "2027-01-03",
+   "to": "2027-01-03",
+   "label": "söndag 3 januari 2027"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "1 maj 2026",
+  "expect": {
+   "from": "2026-05-01",
+   "to": "2026-05-01",
+   "label": "fredag 1 maj"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "14 november",
+  "expect": {
+   "from": "2026-11-14",
+   "to": "2026-11-14",
+   "label": "idag, lördag 14 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "30 februari",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi idag?",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur stänger jag för helgdagar?",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur går det?",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Bord för 2 personer",
+  "expect": null
+ }
+]

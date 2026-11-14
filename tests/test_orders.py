@@ -630,6 +630,21 @@ def test_status_page_settles_a_paid_order_before_the_webhook(env):
     assert stored(env, created["orderId"])["paymentIntentId"] == "pi_9"
 
 
+def test_ordering_follows_hours_past_midnight(env):
+    # NOW is Tuesday 14:00 in Stockholm. Monday 20:00-16:00 is still open
+    # (it closes Tuesday 16:00); Tuesday's own 23:00-03:00 has not opened.
+    event = {"routeKey": "GET /locations/{locationId}/ordering", "pathParameters": {"locationId": LOC_A}}
+    set_location(env, businessHours={**{d: [] for d in WEEK}, "monday": [{"opensAt": "20:00", "closesAt": "16:00"}]})
+    body = body_of(env["m"]["get"].handler(event, None))
+    assert body["open"] is True and body["closesAt"] == "16:00" and body["lastOrderAt"] == "15:45"
+    assert post_order(env)["statusCode"] == 201
+    set_location(env, businessHours={**{d: [] for d in WEEK}, "tuesday": [{"opensAt": "23:00", "closesAt": "03:00"}]})
+    assert body_of(env["m"]["get"].handler(event, None))["open"] is False
+    set_location(env, businessHours={**{d: [] for d in WEEK}, "tuesday": [{"opensAt": "10:00", "closesAt": "00:10"}]})
+    body = body_of(env["m"]["get"].handler(event, None))
+    assert body["closesAt"] == "00:10" and body["lastOrderAt"] == "23:55"
+
+
 def test_ordering_state_and_table_label(env):
     code = o.table_code(TENANT_A, LOC_A, "t-3", "Fönsterbordet")
     event = {"routeKey": "GET /locations/{locationId}/ordering", "pathParameters": {"locationId": LOC_A},

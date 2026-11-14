@@ -220,8 +220,11 @@ def open_intervals(location, day):
         if not isinstance(iv, dict):
             continue
         a, b = _minute(iv.get("opensAt")), _minute(iv.get("closesAt"))
-        if a is not None and b is not None and a < b:
-            out.append((a, b))
+        if a is None or b is None or a == b:
+            continue
+        if b < a:
+            b = 24 * 60  # past midnight: this day's part, until midnight
+        out.append((a, b))
     return out
 
 

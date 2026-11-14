@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import booking_rules, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -227,12 +227,13 @@ def _required_business_hours(source):
                 or not _TIME_PATTERN.fullmatch(opens_at)
                 or not isinstance(closes_at, str)
                 or not _TIME_PATTERN.fullmatch(closes_at)
-                or opens_at >= closes_at
+                or opens_at == closes_at
                 or previous_closes_at is not None
                 and previous_closes_at > opens_at
             ):
                 raise ValueError("businessHours is invalid")
-            previous_closes_at = closes_at
+            # past midnight (closes before it opens) only as the last interval
+            previous_closes_at = booking_rules.end_on_day(interval)
     return business_hours
 
 

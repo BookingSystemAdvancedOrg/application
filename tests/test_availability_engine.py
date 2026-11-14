@@ -192,3 +192,17 @@ def test_dst_fall_back_2026_10_25():
     day = by_start(engine.candidate_slots({"date": "2026-10-25"}, ruled(), AUTUMN))
     assert day["11:00"]["startUtc"] == datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
     assert day["14:00"]["endUtc"] - day["14:00"]["startUtc"] == timedelta(minutes=90)
+
+
+def test_hours_past_midnight_offer_the_evening_and_the_night_after():
+    # 2026-09-26 is a Saturday: open 18:00-02:00, closed on Sunday otherwise.
+    loc = location(duration=60)
+    loc["businessHours"] = {d: [] for d in WEEK}
+    loc["businessHours"]["saturday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    saturday = starts(engine.candidate_slots({"date": "2026-09-26"}, loc, AT_13_32))
+    assert saturday[0] == "18:00" and saturday[-1] == "22:30"  # a booking ends by 23:59 on its date
+    sunday = starts(engine.candidate_slots({"date": "2026-09-27"}, loc, AT_13_32))
+    assert sunday == ["00:00"]  # last seating (default 2 h) before 02:00
+    assert starts(engine.candidate_slots({"date": "2026-09-28"}, loc, AT_13_32)) == []
+    assert engine.closing_minute(loc, "2026-09-27", 30) == 120
+    assert engine.closing_minute(loc, "2026-09-26", 22 * 60) == 23 * 60 + 59

@@ -278,10 +278,12 @@ def map_hours(location: dict, today: date) -> dict:
     and notes are never sent; only today .. today + 12 months."""
     business = location.get("businessHours") or {}
     periods = []
-    for day in _WEEKDAYS:
+    for index, day in enumerate(_WEEKDAYS):
         for interval in business.get(day) or []:
+            # closes before it opens: past midnight, on the next day
+            close_day = _WEEKDAYS[(index + 1) % 7] if interval["closesAt"] <= interval["opensAt"] else day
             periods.append({"openDay": day.upper(), "openTime": _time(interval["opensAt"]),
-                            "closeDay": day.upper(), "closeTime": _time(interval["closesAt"])})
+                            "closeDay": close_day.upper(), "closeTime": _time(interval["closesAt"])})
     last = add_months(today, SPECIAL_MONTHS)
     special = []
     for entry in sorted(location.get("specialDays") or [], key=lambda e: e.get("date") or ""):

@@ -48,6 +48,11 @@ def test_open_table_minutes_follow_hours_and_tables():
     assert "15" not in row["open"]
 
 
+def test_hours_past_midnight_count_until_midnight_on_their_day():
+    location = {**LOCATION, "businessHours": {d: [{"opensAt": "20:00", "closesAt": "02:00"}] for d in ins.WEEKDAYS}}
+    assert ins.open_intervals(location, DAY) == [(20 * 60, 24 * 60)]
+
+
 def test_special_day_closed_has_no_open_minutes():
     location = {**LOCATION, "specialDays": [{"date": DAY, "kind": "closed"}]}
     row = ins.build_day(location=location, day=DAY, snapshots=SNAPSHOTS)

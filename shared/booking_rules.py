@@ -182,6 +182,92 @@ def day_intervals(business_hours, weekday, special):
     return business_hours[weekday]
 
 
+# --- opening hours past midnight ------------------------------------------------
+#
+# A weekly interval whose closesAt is earlier than its opensAt runs past
+# midnight: saturday 18:00-02:00 is open Saturday 18:00 to Sunday 02:00
+# ("00:00" closes at midnight). It is stored exactly as written, so every
+# existing same-day interval keeps its meaning. Only the last interval of a
+# day can do this, and what runs into the next day must end before that
+# day's first opening. Special days stay within their own date.
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+DAY_END = "24:00"  # sorts after every HH:MM: the end of an interval that runs past midnight
+_LAST_MINUTE = 23 * 60 + 59
+
+
+def overnight(interval):
+    """True when the interval closes after midnight, on the next day."""
+    return interval["closesAt"] < interval["opensAt"] or interval["closesAt"] == "00:00"
+
+
+def end_on_day(interval):
+    """closesAt for comparisons within the opening day ("24:00" past midnight)."""
+    return DAY_END if overnight(interval) else interval["closesAt"]
+
+
+def week_problem(business_hours):
+    """None, or (weekday, problem) for weekly hours that are not usable:
+    "same" (opens and closes at the same time), "overlap" (within a day, also
+    an interval after one that runs past midnight) or "next_day" (the hours
+    after midnight run into the next day's first opening). Expects all seven
+    days with well-formed HH:MM intervals."""
+    for day in WEEKDAYS:
+        intervals = sorted(business_hours[day], key=lambda item: item["opensAt"])
+        for interval in intervals:
+            if interval["opensAt"] == interval["closesAt"]:
+                return day, "same"
+        for previous, current in zip(intervals, intervals[1:]):
+            if end_on_day(previous) > current["opensAt"]:
+                return day, "overlap"
+    for index, day in enumerate(WEEKDAYS):
+        following = business_hours[WEEKDAYS[(index + 1) % 7]]
+        for interval in business_hours[day]:
+            if (overnight(interval) and following
+                    and interval["closesAt"] > min(item["opensAt"] for item in following)):
+                return day, "next_day"
+    return None
+
+
+def _minute(value):
+    return int(value[:2]) * 60 + int(value[3:])
+
+
+def _clock(minute):
+    return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def date_spans(business_hours, special_by_date, day):
+    """The opening spans that cover ``day`` (a date) as (opens, closes)
+    minutes from its midnight, sorted: the previous date's hours that run
+    past midnight (opens below 0) and this date's own (closes above 1440
+    when they run past midnight). ``special_by_date`` is {iso date: special
+    day}."""
+    previous = day - timedelta(days=1)
+    spans = []
+    for when, shift in ((previous, -1440), (day, 0)):
+        for interval in day_intervals(
+                business_hours, WEEKDAYS[when.weekday()], special_by_date.get(when.isoformat())):
+            opens, closes = _minute(interval["opensAt"]), _minute(interval["closesAt"])
+            if overnight(interval):
+                closes += 1440
+            if closes + shift > 0:
+                spans.append((opens + shift, closes + shift))
+    return sorted(spans)
+
+
+def date_intervals(business_hours, special_by_date, day):
+    """The HH:MM intervals bookable within ``day``: after midnight from
+    00:00 until the previous evening's closing, and this evening's hours
+    cut at 23:59 (a booking ends on the date it starts)."""
+    out = []
+    for opens, closes in date_spans(business_hours, special_by_date, day):
+        opens, closes = max(opens, 0), min(closes, _LAST_MINUTE)
+        if opens < closes:
+            out.append({"opensAt": _clock(opens), "closesAt": _clock(closes)})
+    return out
+
+
 def day_status(special):
     """What clients are told about a special day (None on a normal day)."""
     if special is None:

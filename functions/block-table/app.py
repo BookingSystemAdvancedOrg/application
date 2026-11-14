@@ -321,12 +321,13 @@ def _validate_business_hours(value):
                 or _TIME_PATTERN.fullmatch(opens_at) is None
                 or not isinstance(closes_at, str)
                 or _TIME_PATTERN.fullmatch(closes_at) is None
-                or opens_at >= closes_at
+                or opens_at == closes_at
                 or previous_close is not None
                 and previous_close > opens_at
             ):
                 raise ValueError
-            previous_close = closes_at
+            # past midnight (closes before it opens) only as the last interval
+            previous_close = booking_rules.end_on_day(interval)
     return value
 
 
@@ -438,11 +439,11 @@ def _slot_details(request_details, location, now):
     )["durationMinutes"]
     end_minute = start_minute + duration_minutes
 
-    weekday = _WEEKDAYS[requested_date.weekday()]
     canonical = False
-    # A closed day has no slots to block; special hours replace the weekday's.
-    special = (location.get("specialDays") or {}).get(request_details["date"])
-    for interval in booking_rules.day_intervals(location["businessHours"], weekday, special):
+    # A closed day has no slots to block; special hours replace the weekday's;
+    # hours past midnight count from 00:00 on the next date.
+    for interval in booking_rules.date_intervals(
+            location["businessHours"], location.get("specialDays") or {}, requested_date):
         opens_at = _minute_of_day(interval["opensAt"])
         closes_at = _minute_of_day(interval["closesAt"])
         # The same start times guests and staff book: the clock's half

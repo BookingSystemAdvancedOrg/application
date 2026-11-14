@@ -110,6 +110,15 @@ def lambda_invoker(client):
     return invoke
 
 
+def _past_midnight(hours):
+    """True when a weekday closes after midnight (closesAt before opensAt, or 00:00)."""
+    if not isinstance(hours, dict):
+        return False
+    return any(isinstance(i, dict) and isinstance(i.get("opensAt"), str) and isinstance(i.get("closesAt"), str)
+               and (i["closesAt"] < i["opensAt"] or i["closesAt"] == "00:00")
+               for day in hours.values() if isinstance(day, list) for i in day)
+
+
 def _special_day(day):
     """A special day as the site-config answers it ({date, kind, intervals?, note?}) in a few words."""
     if not isinstance(day, dict) or not day.get("date"):
@@ -228,6 +237,9 @@ class Executor:
         hours = loc.get("businessHours") or loc.get("openingHours")
         if hours:
             parts.append("öppettider " + json.dumps(hours, ensure_ascii=False)[:400])
+            if _past_midnight(hours):
+                parts.append("en stängningstid före öppningstiden betyder öppet efter midnatt, "
+                             "till den tiden nästa dag")
         special = [_special_day(d) for d in (loc.get("specialDays") or [])[:6]]
         if special:
             parts.append("avvikande dagar " + "; ".join(x for x in special if x))

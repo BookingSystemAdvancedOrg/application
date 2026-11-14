@@ -104,7 +104,6 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MENU_ID_MAX = 128
 _TABLE_ID_MAX = 128
 _TABLE_LABEL_MAX = 40
-_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
 class NotFound(Exception):
@@ -262,7 +261,9 @@ def paused_until(location, now):
     return until if until > now else None
 
 
-def _intervals_today(location, local):
+def _spans_today(location, local):
+    """(opens, closes) minutes from today's midnight, yesterday's hours past
+    midnight included (shared/booking_rules.py date_spans)."""
     hours = (location or {}).get("businessHours")
     if not isinstance(hours, dict):
         return []
@@ -271,11 +272,9 @@ def _intervals_today(location, local):
             booking_rules.validate_special_days((location or {}).get("specialDays")))
     except ValueError:
         special_days = {}
-    special = special_days.get(local.date().isoformat())
-    weekday = _WEEKDAYS[local.weekday()]
     try:
-        return list(booking_rules.day_intervals(hours, weekday, special) or [])
-    except (KeyError, TypeError):
+        return booking_rules.date_spans(hours, special_days, local.date())
+    except (KeyError, TypeError, ValueError, IndexError):
         return []
 
 
@@ -295,22 +294,18 @@ def availability(location, tenant_row, now):
         return {**base, "open": False, "reason": "paused", "pausedUntil": iso(paused)}
     local = local_now(location, now)
     minute = local.hour * 60 + local.minute
-    for interval in _intervals_today(location, local):
-        try:
-            opens = _minutes(interval["opensAt"])
-            closes = _minutes(interval["closesAt"])
-        except (KeyError, TypeError, ValueError):
-            continue
+    for opens, closes in _spans_today(location, local):
         last = closes - policy["lastOrderMinutes"]
         if opens <= minute < last:
-            return {**base, "open": True, "closesAt": interval["closesAt"],
-                    "lastOrderAt": f"{last // 60:02d}:{last % 60:02d}"}
+            return {**base, "open": True, "closesAt": _clock(closes),
+                    "lastOrderAt": _clock(last)}
     return {**base, "open": False, "reason": "closed"}
 
 
-def _minutes(value):
-    hours, minutes = value.split(":")
-    return int(hours) * 60 + int(minutes)
+def _clock(minute):
+    """HH:MM of a minute from today's midnight (past midnight wraps: 1560 -> 02:00)."""
+    minute %= 1440
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def require_open(location, tenant_row, mode, now):

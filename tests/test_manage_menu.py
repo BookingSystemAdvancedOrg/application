@@ -168,6 +168,8 @@ def public_item(item):
         "availableUntil": item.get("availableUntil"),
         "station": item.get("station"),
         "components": item.get("components") or [],
+        "allergens": [],
+        "options": [],
     }
 
 
@@ -444,7 +446,6 @@ def test_known_route_wrong_method_returns_405(
     [
         "",
         "unknown",
-        "categories",
         "items/one/two",
         f"categories/{ITEM_ID}",
     ],
@@ -557,7 +558,7 @@ def test_accepts_base64_encoded_create_body(app_and_table):
 
 @pytest.mark.parametrize(
     "field",
-    ["name", "description", "price", "category", "imageKey", "active"],
+    ["name", "description", "price", "category", "active"],
 )
 def test_create_requires_every_editable_field(app_and_table, field):
     app, menu_table = app_and_table
@@ -582,7 +583,6 @@ def test_create_requires_every_editable_field(app_and_table, field):
         ("name", 123),
         ("description", None),
         ("description", 123),
-        ("imageKey", None),
         ("imageKey", ""),
         ("imageKey", "   "),
         ("imageKey", 123),
@@ -1023,7 +1023,7 @@ def test_mutations_reject_corrupt_stored_item_without_changing_it(
     method,
 ):
     app, menu_table = app_and_table
-    corrupt = menu_item(category="snacks")
+    corrupt = menu_item(category="Snacks!")
     put_item(menu_table, corrupt)
     body = {"name": "Must not apply"} if method == "PUT" else NO_BODY
 

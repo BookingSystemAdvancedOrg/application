@@ -76,7 +76,15 @@ def public_item(item):
             "category",
             "imageKey",
         )
-    } | {"alcohol": item.get("alcohol") is True}
+    } | {"alcohol": item.get("alcohol") is True, "allergens": [], "options": []}
+
+
+DEFAULT_CATEGORIES = [
+    {"categoryId": "starters", "name": "Förrätter"},
+    {"categoryId": "mains", "name": "Varmrätter"},
+    {"categoryId": "desserts", "name": "Efterrätter"},
+    {"categoryId": "drinks", "name": "Drycker"},
+]
 
 
 def management_item(item):
@@ -85,6 +93,8 @@ def management_item(item):
         "availableUntil": item.get("availableUntil"),
         "station": item.get("station"),
         "components": item.get("components") or [],
+        "allergens": [],
+        "options": [],
     }
 
 
@@ -180,7 +190,7 @@ def test_public_request_returns_only_active_customer_fields(app_and_table):
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
     }
-    assert response_body(response) == {"items": [public_item(active_item)]}
+    assert response_body(response) == {"items": [public_item(active_item)], "categories": DEFAULT_CATEGORIES}
     returned_item = response_body(response)["items"][0]
     for private_field in (
         "PK",
@@ -223,7 +233,7 @@ def test_location_without_menu_returns_an_empty_list(app_and_table):
     response = app.handler(make_event(location_id=OTHER_LOCATION_ID), None)
 
     assert response["statusCode"] == 200
-    assert response_body(response) == {"items": []}
+    assert response_body(response) == {"items": [], "categories": DEFAULT_CATEGORIES}
 
 
 def test_unknown_location_returns_404(app_and_table):
@@ -275,7 +285,7 @@ def test_inactive_item_does_not_need_customer_fields(app_and_table):
     response = app.handler(make_event(), None)
 
     assert response["statusCode"] == 200
-    assert response_body(response) == {"items": []}
+    assert response_body(response) == {"items": [], "categories": DEFAULT_CATEGORIES}
 
 
 @pytest.mark.parametrize(
@@ -351,6 +361,7 @@ def test_location_id_is_trimmed_and_query_is_partition_scoped(
     app, _ = app_and_table
     stored = menu_item()
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.return_value = {"Items": [stored]}
     table_factory = Mock(return_value=menu_table)
     monkeypatch.setattr(app, "table", table_factory)
@@ -361,7 +372,7 @@ def test_location_id_is_trimmed_and_query_is_partition_scoped(
     )
 
     assert response["statusCode"] == 200
-    table_factory.assert_called_once_with(TABLE_NAME)
+    table_factory.assert_called_with(TABLE_NAME)
     menu_table.query.assert_called_once()
     query = menu_table.query.call_args.kwargs
     assert query["ConsistentRead"] is True
@@ -390,6 +401,7 @@ def test_query_follows_every_page_and_filters_each_page(
     second = menu_item(item_id=OTHER_ITEM_ID, name="Second item")
     last_key = {"PK": first["PK"], "SK": first["SK"]}
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.side_effect = [
         {"Items": [first, hidden], "LastEvaluatedKey": last_key},
         {"Items": [second]},
@@ -401,13 +413,14 @@ def test_query_follows_every_page_and_filters_each_page(
 
     assert response["statusCode"] == 200
     assert response_body(response) == {
-        "items": [public_item(first), public_item(second)]
+        "items": [public_item(first), public_item(second)],
+        "categories": DEFAULT_CATEGORIES,
     }
     assert menu_table.query.call_count == 2
     first_call, second_call = menu_table.query.call_args_list
     assert "ExclusiveStartKey" not in first_call.kwargs
     assert second_call.kwargs["ExclusiveStartKey"] == last_key
-    table_factory.assert_called_once_with(TABLE_NAME)
+    table_factory.assert_called_with(TABLE_NAME)
 
 
 @pytest.mark.parametrize(
@@ -430,6 +443,7 @@ def test_malformed_query_results_return_sanitized_503(
 ):
     app, _ = app_and_table
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.return_value = malformed_response
     monkeypatch.setattr(app, "table", lambda _: menu_table)
 
@@ -449,6 +463,7 @@ def test_repeated_pagination_key_returns_503_instead_of_looping(
         "SK": f"MENU#{ITEM_ID}",
     }
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.return_value = {
         "Items": [],
         "LastEvaluatedKey": last_key,
@@ -473,7 +488,7 @@ def test_repeated_pagination_key_returns_503_instead_of_looping(
         ("description", None),
         ("price", Decimal("-1")),
         ("price", Decimal("1.234")),
-        ("category", "snacks"),
+        ("category", "Snacks!"),
         ("imageKey", ""),
     ],
 )
@@ -487,6 +502,7 @@ def test_inconsistent_active_records_return_503(
     stored = menu_item()
     stored[field] = value
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.return_value = {"Items": [stored]}
     monkeypatch.setattr(app, "table", lambda _: menu_table)
 
@@ -520,6 +536,7 @@ def test_dynamodb_failures_return_sanitized_503(
 ):
     app, _ = app_and_table
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.side_effect = aws_error
     monkeypatch.setattr(app, "table", lambda _: menu_table)
 
@@ -550,7 +567,8 @@ def test_bare_public_route_stays_public_when_jwt_claims_are_present(
 
     assert response["statusCode"] == 200
     assert response_body(response) == {
-        "items": [public_item(active_item)]
+        "items": [public_item(active_item)],
+        "categories": DEFAULT_CATEGORIES,
     }
     assert "active" not in response["body"]
     assert "createdBy" not in response["body"]
@@ -743,6 +761,7 @@ def test_protected_list_uses_a_strong_partition_query_and_all_pages(
     second = menu_item(item_id=OTHER_ITEM_ID, active=False)
     last_key = {"PK": first["PK"], "SK": first["SK"]}
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.side_effect = [
         {"Items": [first], "LastEvaluatedKey": last_key},
         {"Items": [second]},
@@ -765,7 +784,7 @@ def test_protected_list_uses_a_strong_partition_query_and_all_pages(
     assert "FilterExpression" not in first_call.kwargs
     assert "ExclusiveStartKey" not in first_call.kwargs
     assert second_call.kwargs["ExclusiveStartKey"] == last_key
-    table_factory.assert_called_once_with(TABLE_NAME)
+    table_factory.assert_called_with(TABLE_NAME)
 
     expression = first_call.kwargs["KeyConditionExpression"].get_expression()
     partition_condition, sort_condition = expression["values"]
@@ -889,7 +908,7 @@ def test_protected_non_get_method_returns_405_before_reading(
         ("items", menu_item(active="yes")),
         (
             f"items/{ITEM_ID}",
-            menu_item(category="snacks"),
+            menu_item(category="Snacks!"),
         ),
         (
             f"items/{ITEM_ID}",
@@ -927,7 +946,7 @@ def test_protected_reads_reject_inconsistent_records_with_409(
         ("price", "free"),
         ("price", Decimal("-1")),
         ("price", Decimal("1.234")),
-        ("category", "snacks"),
+        ("category", "Snacks!"),
         ("name", "   "),
         ("imageKey", ""),
         ("description", Decimal("123")),
@@ -981,6 +1000,7 @@ def test_malformed_protected_list_results_return_503(
 ):
     app, _ = app_and_table
     menu_table = Mock()
+    menu_table.get_item.return_value = {}
     menu_table.query.return_value = malformed_response
     monkeypatch.setattr(app, "table", lambda _: menu_table)
 
@@ -1075,7 +1095,7 @@ def test_public_menu_hides_scheduled_and_expired_dishes(app_and_table):
         menu_table.put_item(Item=item)
 
     body = response_body(app.handler(make_event(), None))
-    assert body == {"items": [public_item(visible)]}
+    assert body == {"items": [public_item(visible)], "categories": DEFAULT_CATEGORIES}
     assert "availableFrom" not in body["items"][0]
 
     staff = response_body(app.handler(make_event(proxy="items", groups='["staff_user"]'), None))

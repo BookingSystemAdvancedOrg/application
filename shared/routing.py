@@ -159,13 +159,17 @@ def _resolve(wanted, category, config):
 
 def split(lines, config):
     """Order/bill lines -> {stationId: [entry]} in station order. An entry is
-    {name, quantity, course, note?, allergy?, partOf?}."""
+    {name, quantity, course, note?, allergy?, options?, partOf?}; options
+    are the guest's picks as "Group: Choice" text."""
     out = {}
     for line in lines or []:
         category = line.get("category")
         course = category if category in COURSES else None
         own = _resolve(line.get("station"), category, config)
         extra = {k: line[k] for k in ("note", "allergy") if line.get(k)}
+        picks = [f"{p.get('group')}: {p.get('choice')}" for p in line.get("options") or [] if isinstance(p, dict)]
+        if picks:
+            extra["options"] = picks
         quantity = int(line.get("quantity") or 1)
         parts = line.get("components") or []
         if not parts:

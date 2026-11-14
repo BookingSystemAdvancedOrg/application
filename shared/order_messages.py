@@ -18,6 +18,7 @@ import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from shared import orders as o
 from shared.messages import _brand_color, contact_line, money, restaurant_name
 
 _TEXT = {
@@ -222,7 +223,7 @@ def email(kind, item, tenant_row, location, link):
     text = [hello, "", lead, ""]
     if show_receipt:
         text += [f"{_t(lang, 'receipt')} - {_t(lang, 'order')} #{number}", f"{_t(lang, 'date')}: {when}", ""]
-        text += [f"{line['quantity']} x {line['name']}  {money(line['total'])}" for line in lines]
+        text += [f"{line['quantity']} x {o.line_label(line)}  {money(line['total'])}" for line in lines]
         discount = item.get("discount") or {}
         if discount.get("code"):
             text += ["", f"{_t(lang, 'discount', percent=discount.get('percent'), code=discount['code'])}: "
@@ -248,7 +249,7 @@ def email(kind, item, tenant_row, location, link):
     receipt_html = ""
     if show_receipt:
         rows = "".join(
-            f'<tr><td style="padding:4px 12px 4px 0">{e(str(line["quantity"]))} &times; {e(line["name"])}</td>'
+            f'<tr><td style="padding:4px 12px 4px 0">{e(str(line["quantity"]))} &times; {e(o.line_label(line))}</td>'
             f'<td style="padding:4px 0;text-align:right;white-space:nowrap">{e(money(line["total"]))}</td></tr>'
             for line in lines)
         discount = item.get("discount") or {}

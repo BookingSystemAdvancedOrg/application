@@ -9,7 +9,10 @@ PURPOSE:
     can order now (toggle on and inside the optional availableFrom /
     availableUntil window, shared/menu.py) without requiring a JWT. Protected ``items`` and
     ``items/{menuItemId}`` routes return the complete staff-facing menu-item
-    representation after validating the caller's Cognito group.
+    representation after validating the caller's Cognito group. The
+    location's categories (shared/menu.py, the four defaults until the owner
+    changes them) come with the public menu and on the protected
+    ``categories`` route. A dish may have no photo (imageKey null).
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -45,14 +48,12 @@ from shared.responses import json_response
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 MENU_TABLE_NAME = os.environ["MENU_TABLE_NAME"]
 
-_CATEGORIES = frozenset({"starters", "mains", "desserts", "drinks"})
 _CUSTOMER_FIELDS = (
     "menuItemId",
     "name",
     "description",
     "price",
     "category",
-    "imageKey",
 )
 _MANAGEMENT_FIELDS = (
     *_CUSTOMER_FIELDS,
@@ -136,6 +137,8 @@ def _match_protected_route(proxy_path):
     segments = proxy_path.strip("/").split("/")
     if segments == ["items"]:
         return "collection", None
+    if segments == ["categories"]:
+        return "categories", None
     if len(segments) == 2 and segments[0] == "items" and segments[1]:
         return "item", segments[1]
     return None
@@ -181,17 +184,26 @@ def _public_item(item, location_id):
         or not item["name"].strip()
         or not isinstance(item.get("description"), str)
         or not _valid_public_price(item.get("price"))
-        or item.get("category") not in _CATEGORIES
-        or not isinstance(item.get("imageKey"), str)
-        or not item["imageKey"].strip()
+        or not menu.valid_category_id(item.get("category"))
+        or not _optional_image_key(item.get("imageKey"))
     ):
         raise _MenuServiceFailure
 
+    try:
+        options = menu.options_view(item)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise _MenuServiceFailure from None
     return {
         **{field: item[field] for field in _CUSTOMER_FIELDS},
+        "imageKey": item.get("imageKey"),
         "alcohol": item.get("alcohol") is True,
         **image_focus.view(item),
+        **options,
     }
+
+
+def _optional_image_key(value):
+    return value is None or isinstance(value, str) and bool(value.strip())
 
 
 def _valid_management_price(value):
@@ -249,8 +261,8 @@ def _management_item(item, location_id, expected_item_id=None):
         or not _nonempty_string(item.get("name"))
         or not isinstance(item.get("description"), str)
         or not _valid_management_price(item.get("price"))
-        or item.get("category") not in _CATEGORIES
-        or not _nonempty_string(item.get("imageKey"))
+        or not menu.valid_category_id(item.get("category"))
+        or not _optional_image_key(item.get("imageKey"))
         or not isinstance(item.get("active"), bool)
         or not _nonempty_string(item.get("createdBy"))
         or not _valid_utc_timestamp(item.get("createdAt"))
@@ -260,15 +272,18 @@ def _management_item(item, location_id, expected_item_id=None):
         raise _MenuConflict("menu item record is inconsistent")
     try:
         menu.validate_schedule(item)
-    except ValueError:
+        options = menu.options_view(item)
+    except (KeyError, TypeError, ValueError, AttributeError):
         raise _MenuConflict("menu item record is inconsistent") from None
 
     return {
         **{field: item[field] for field in _MANAGEMENT_FIELDS},
+        "imageKey": item.get("imageKey"),
         "alcohol": item.get("alcohol") is True,
         **{field: item.get(field) for field in menu.SCHEDULE_FIELDS},
         **image_focus.view(item),
         **menu.routing_view(item),
+        **options,
     }
 
 
@@ -310,6 +325,15 @@ def _query_items(location_id, item_converter):
 
         seen_last_keys.append(last_key)
         request["ExclusiveStartKey"] = last_key
+
+
+def _get_categories(location_id):
+    response = table(MENU_TABLE_NAME).get_item(
+        Key=menu.categories_key(location_id), ConsistentRead=True
+    )
+    if not isinstance(response, dict):
+        raise _MenuServiceFailure
+    return menu.categories_view(response.get("Item"))
 
 
 def _list_active_items(location_id):
@@ -355,6 +379,7 @@ def _handle_public(event):
     try:
         tenant.for_public(location_id)
         items = _list_active_items(location_id)
+        categories = _get_categories(location_id)["categories"]
     except tenant.TenantError as exc:
         return exc.response()
     except (BotoCoreError, ClientError, _MenuServiceFailure):
@@ -363,7 +388,7 @@ def _handle_public(event):
             "menu service unavailable",
         )
 
-    return _menu_response(HTTPStatus.OK.value, {"items": items})
+    return _menu_response(HTTPStatus.OK.value, {"items": items, "categories": categories})
 
 
 def _handle_protected(event):
@@ -406,6 +431,8 @@ def _handle_protected(event):
                 HTTPStatus.OK.value,
                 {"items": _list_management_items(location_id)},
             )
+        if route_name == "categories":
+            return _menu_response(HTTPStatus.OK.value, _get_categories(location_id))
 
         menu_item_id = _path_value(
             {

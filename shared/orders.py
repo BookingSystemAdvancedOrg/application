@@ -366,10 +366,29 @@ def _line_text(value, field):
     return text or None
 
 
+MAX_OPTION_PICKS = 30
+
+
+def _line_options(raw):
+    """[{group, choice}] the guest picked -> a sorted list (checked against
+    the dish in price_lines)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_OPTION_PICKS:
+        raise ValueError(f"options must be a list of at most {MAX_OPTION_PICKS}")
+    out = []
+    for pick in raw:
+        if not isinstance(pick, dict) or set(pick) != {"group", "choice"} \
+                or not all(isinstance(pick[k], str) and 0 < len(pick[k]) <= menu.OPTION_NAME_MAX for k in pick):
+            raise ValueError("each option needs group and choice")
+        out.append({"group": pick["group"], "choice": pick["choice"]})
+    return sorted(out, key=lambda p: (p["group"], p["choice"]))
+
+
 def validate_lines(raw):
-    """[{menuItemId, quantity, note?, allergy?}] -> [(menuItemId, quantity,
-    {note?, allergy?})]. Lines with the same dish and the same note and
-    allergy are summed; a dish may appear at most 20 times in all."""
+    """[{menuItemId, quantity, note?, allergy?, options?}] -> [(menuItemId,
+    quantity, {note?, allergy?, options?})]. Lines with the same dish, note,
+    allergy and options are summed; a dish may appear at most 20 times in all."""
     if not isinstance(raw, list) or not raw:
         raise ValueError("items must be a non-empty list")
     if len(raw) > MAX_LINES:
@@ -377,7 +396,7 @@ def validate_lines(raw):
     quantities, extras, per_dish = {}, {}, {}
     order = []
     for entry in raw:
-        if not isinstance(entry, dict) or set(entry) - {"menuItemId", "quantity", "note", "allergy"}:
+        if not isinstance(entry, dict) or set(entry) - {"menuItemId", "quantity", "note", "allergy", "options"}:
             raise ValueError("each item needs menuItemId and quantity")
         item_id = entry.get("menuItemId")
         if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > _MENU_ID_MAX \
@@ -385,7 +404,11 @@ def validate_lines(raw):
             raise ValueError("menuItemId is invalid")
         quantity = _whole(entry.get("quantity"), 1, MAX_QUANTITY, "quantity")
         extra = {k: v for k in ("note", "allergy") if (v := _line_text(entry.get(k), k))}
-        key = (item_id, extra.get("note"), extra.get("allergy"))
+        picks = _line_options(entry.get("options"))
+        if picks:
+            extra["options"] = picks
+        key = (item_id, extra.get("note"), extra.get("allergy"),
+               tuple((p["group"], p["choice"]) for p in picks))
         if key not in quantities:
             order.append(key)
             quantities[key] = 0
@@ -395,6 +418,14 @@ def validate_lines(raw):
         if per_dish[item_id] > MAX_QUANTITY:
             raise ValueError(f"quantity must be at most {MAX_QUANTITY} per dish")
     return [(key[0], quantities[key], extras[key]) for key in order]
+
+
+def line_label(line):
+    """The line's name with the guest's options, for receipts and checkout:
+    "Pizza Margherita (Stor, Extra ost)"."""
+    picks = [p.get("choice") for p in line.get("options") or [] if isinstance(p, dict) and p.get("choice")]
+    name = str(line.get("name") or "")
+    return f"{name} ({', '.join(picks)})" if picks else name
 
 
 def _price_ore(value):
@@ -441,6 +472,10 @@ def price_lines(location_id, wanted, mode, on_date):
             unit = _price_ore(item.get("price"))
         except ValueError:
             raise ValueError("menu_item_unavailable") from None
+        extra = dict(rest[0]) if rest else {}
+        # Option prices come from the menu too, never from the browser.
+        option_ore, chosen = menu.choose_options(item, extra.pop("options", None))
+        unit += option_ore
         name = item.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("menu_item_unavailable")
@@ -456,7 +491,8 @@ def price_lines(location_id, wanted, mode, on_date):
             "total": unit * quantity,
             "vatRate": vat_rate(alcohol, mode, on_date),
             **({"alcohol": True} if alcohol else {}),
-            **(rest[0] if rest else {}),
+            **extra,
+            **({"options": chosen} if chosen else {}),
             # Kitchen ticket routing, as the dish was when ordered (shared/routing.py).
             **({"category": item["category"]} if isinstance(item.get("category"), str) else {}),
             **({k: item[k] for k in menu.ROUTING_FIELDS if item.get(k)}),
@@ -594,7 +630,7 @@ def next_number(location_id, date_str):
 
 def _lines_view(item):
     return [{k: line[k] for k in ("menuItemId", "name", "unitPrice", "quantity", "total", "vatRate", "note",
-                                  "allergy") if k in line} for line in item.get("lines") or []]
+                                  "allergy", "options") if k in line} for line in item.get("lines") or []]
 
 
 def guest_view(item, location=None):

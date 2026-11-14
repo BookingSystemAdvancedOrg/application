@@ -3,7 +3,10 @@
 `parse_when(question, today)` finds one day or period other than today:
 imorgon, i övermorgon, igår, i förrgår, a weekday ("på fredag", "nästa
 fredag", "i fredags"), i helgen, förra/nästa helg, nästa/förra vecka and dates
-("20 november", "den 20:e nov 2026", "20/11", "2026-11-20"). Days are in
+("20 november", "den 20:e nov 2026", "20/11", "2026-11-20"), a range of
+dates ("5 sep till 10 sep", "mellan 1 och 7 nov") and a start up to today
+("sedan måndag", "sedan 1 november"). Two days that are not a range ("1/2
+imorgon") give None, so no wrong day is guessed. Days are in
 Europe/Stockholm. The admin app has the same rules (src/features/help/
 dates.ts) and both are tested with the same examples.
 
@@ -100,22 +103,106 @@ def _day(d: date, today: date, word: Optional[str], query: str) -> dict:
     return _result(d, d, f"{word}, {name}" if word else name, query)
 
 
+MAX_DAYS = 31
+_ISO = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+_SLASH = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{4}))?(?![\d/])")
+_DATE = rf"(?:den )?(\d{{1,2}})(?: e| a)? ({_MONTH})(?: (\d{{4}}))?"
+# "5 sep till 10 sep", "5 till 10 sep", "från 1/11 till 7/11", "mellan 1 och 7 nov".
+_RANGE = (re.compile(rf" (?:fran (?:och med )?)?(?:den )?(\d{{1,2}})(?: e| a)?(?: ({_MONTH}))?(?: (\d{{4}}))?"
+                     rf" (?:till(?: och med)?|t o m|tom) {_DATE}(?= )"),
+          re.compile(rf" mellan (?:den )?(\d{{1,2}})(?: e| a)?(?: ({_MONTH}))?(?: (\d{{4}}))? och {_DATE}(?= )"))
+
+
+def _spelled(raw: str) -> Optional[str]:
+    """Numeric dates written out ("20/11" -> "20 november"), so one pattern reads
+    them all; None for a month that does not exist."""
+    bad = []
+
+    def spell(day, month, year):
+        if not 1 <= int(month) <= 12:
+            bad.append(month)
+            return " "
+        return f" {int(day)} {MONTH_NAMES[int(month) - 1]}{f' {year}' if year else ''} "
+
+    raw = _ISO.sub(lambda m: spell(m.group(3), m.group(2), m.group(1)), raw)
+    raw = _SLASH.sub(lambda m: spell(m.group(1), m.group(2), m.group(3)), raw)
+    return None if bad else raw
+
+
+def _span(start: date, end: date, today: date, query: str) -> Optional[dict]:
+    if end < start or (end - start).days + 1 > MAX_DAYS:
+        return None
+    if start == end:
+        return _day(start, today, None, query)
+    return _result(start, end, range_label(start, end, today), query)
+
+
+def _since(start: date, today: date, query: str) -> Optional[dict]:
+    if start == today:
+        return _day(start, today, None, query)
+    if (today - start).days + 1 > MAX_DAYS:
+        return None
+    return _result(start, today, f"sedan {day_label(start, today)}", query)
+
+
 def parse_when(question: str, today: date) -> Optional[dict]:
-    """A day or period other than today in the question, or None."""
-    raw = (question or "").lower()
-    q = f" {_fold(question)} "
+    """A day or period other than today in the question, or None. Two days
+    that are not one range ("1/2 imorgon") give None rather than a guess."""
+    found = _parse(question, today)
+    if found and _parse(found["query"], today):
+        return None
+    return found
+
+
+def names_day(question: str, today: date) -> bool:
+    """Does the question name a day or period at all (also two, which parse_when
+    does not guess between)?"""
+    return _parse(question, today) is not None
+
+
+def _parse(question: str, today: date) -> Optional[dict]:
+    raw = _spelled((question or "").lower())
+    if raw is None:
+        return None
+    q = f" {_fold(raw)} "
+
+    # A range of dates: the end names the month, the start may leave it out.
+    for pattern in _RANGE:
+        m = pattern.search(q)
+        if m:
+            d1, m1, y1, d2, m2, y2 = m.groups()
+            first, last = MONTHS[m1 or m2], MONTHS[m2]
+            if y1 or y2:
+                start = _date(int(y1 or y2), first, int(d1))
+                end = _date(int(y2 or y1), last, int(d2))
+                if start and end and start > end:  # "30 dec till 2 jan 2027": the year left out moves
+                    start, end = (start, _date(start.year + 1, last, int(d2))) if not y2 else \
+                        (_date(end.year - 1, first, int(d1)), end)
+            else:
+                start = _nearest(first, int(d1), today)
+                end = _date(start.year, last, int(d2)) if start else None
+                if start and end and end < start:
+                    end = _date(start.year + 1, last, int(d2))
+            return _span(start, end, today, _swap(q, m.span())) if start and end else None
+
+    # "sedan måndag", "sedan 1 november", "sedan igår": from that day up to today.
+    m = re.search(rf" sedan (?:i )?(?:(?:forra|forriga) )?({_WD})(?:en|s)? ", q)
+    if m:
+        start = today - timedelta(days=(today.weekday() - WEEKDAYS.index(m.group(1))) % 7 or 7)
+        return _since(start, today, _swap(q, m.span()))
+    m = re.search(rf" sedan {_DATE}(?= )", q)
+    if m:
+        day, month = int(m.group(1)), MONTHS[m.group(2)]
+        start = _date(int(m.group(3)) if m.group(3) else today.year, month, day)
+        if start and start > today and not m.group(3):
+            start = _date(today.year - 1, month, day)
+        return _since(start, today, _swap(q, m.span())) if start and start <= today else None
+    m = re.search(r" sedan (i ?gar|i ?forrgar) ", q)
+    if m:
+        return _since(today - timedelta(days=2 if "forrgar" in m.group(1) else 1), today, _swap(q, m.span()))
 
     # Dates: 2026-11-20, 20/11(/2026), 20 november (2026), den 20:e nov.
-    m = re.search(r" (\d{4}) (\d{1,2}) (\d{1,2}) ", q)
-    if m and re.search(r"\d{4}-\d{1,2}-\d{1,2}", raw):
-        d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        return _day(d, today, None, _swap(q, m.span())) if d else None
-    s = re.search(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{4}))?(?![\d/])", raw)
-    if s:
-        day, month = int(s.group(1)), int(s.group(2))
-        d = _date(int(s.group(3)), month, day) if s.group(3) else _nearest(month, day, today)
-        return _day(d, today, None, _fold(f"{raw[:s.start()]} idag {raw[s.end():]}")) if d else None
-    m = re.search(rf" (?:den )?(\d{{1,2}})(?: e| a)? ({_MONTH})(?: (\d{{4}}))?(?= )", q)
+    m = re.search(rf" {_DATE}(?= )", q)
     if m:
         day, month = int(m.group(1)), MONTHS[m.group(2)]
         d = _date(int(m.group(3)), month, day) if m.group(3) else _nearest(month, day, today)

@@ -293,5 +293,97 @@
   "today": "2026-11-14",
   "question": "Bord för 2 personer",
   "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många ordrar har vi fått sedan måndag?",
+  "expect": {
+   "from": "2026-11-09",
+   "to": "2026-11-14",
+   "label": "sedan måndag 9 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Gäster sedan 1 november",
+  "expect": {
+   "from": "2026-11-01",
+   "to": "2026-11-14",
+   "label": "sedan söndag 1 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar sedan igår",
+  "expect": {
+   "from": "2026-11-13",
+   "to": "2026-11-14",
+   "label": "sedan fredag 13 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "sedan 20 november",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "antal bokningar 5 sep till 10 sep",
+  "expect": {
+   "from": "2026-09-05",
+   "to": "2026-09-10",
+   "label": "5 till 10 september"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar 5 till 10 sep",
+  "expect": {
+   "from": "2026-09-05",
+   "to": "2026-09-10",
+   "label": "5 till 10 september"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Gäster från 2026-11-01 till 2026-11-07",
+  "expect": {
+   "from": "2026-11-01",
+   "to": "2026-11-07",
+   "label": "1 till 7 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar mellan 1/11 och 7/11",
+  "expect": {
+   "from": "2026-11-01",
+   "to": "2026-11-07",
+   "label": "1 till 7 november"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar 20 dec till 5 jan",
+  "expect": {
+   "from": "2026-12-20",
+   "to": "2027-01-05",
+   "label": "20 december 2026 till 5 januari 2027"
+  }
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar 1 jan till 30 mars",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "bokningar 1/2 imorgon",
+  "expect": null
+ },
+ {
+  "today": "2026-11-14",
+  "question": "Hur många bokningar har vi imorgon och på fredag?",
+  "expect": null
  }
 ]

@@ -259,7 +259,8 @@
    ],
    "live": {
     "metric": "waitingForStripe",
-    "text": "{value} active {customer can't|customers can't} take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which."
+    "text": "{value} active customers can't take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which.",
+    "countText": "{value} active {customer can't|customers can't} take card payments yet: their Stripe setup isn't finished. The Payments column on Customers shows which."
    },
    "kind": "guide"
   },
@@ -291,7 +292,8 @@
    ],
    "live": {
     "metric": "customers",
-    "text": "There {is|are} {value} {customer|customers} on the platform, counting every status."
+    "text": "There are {value} customers on the platform, counting every status.",
+    "countText": "There {is|are} {value} {customer|customers} on the platform, counting every status."
    },
    "kind": "guide"
   },
@@ -320,7 +322,8 @@
    ],
    "live": {
     "metric": "activeCustomers",
-    "text": "{value} {customer is|customers are} active right now."
+    "text": "{value} customers are active right now.",
+    "countText": "{value} {customer is|customers are} active right now."
    },
    "kind": "guide"
   },
@@ -352,7 +355,8 @@
    ],
    "live": {
     "metric": "setupFailed",
-    "text": "{value} {customer has|customers have} a failed setup."
+    "text": "{value} customers have a failed setup.",
+    "countText": "{value} {customer has|customers have} a failed setup."
    },
    "kind": "guide"
   },
@@ -714,7 +718,8 @@
    ],
    "live": {
     "metric": "outboxMessages",
-    "text": "The outbox has {value} {message|messages} from the last 30 days."
+    "text": "The outbox has {value} messages from the last 30 days.",
+    "countText": "The outbox has {value} {message|messages} from the last 30 days."
    },
    "kind": "guide"
   },
@@ -810,7 +815,8 @@
    ],
    "live": {
     "metric": "payingCustomers",
-    "text": "{value} {customer is|customers are} paying this billing period."
+    "text": "{value} customers are paying this billing period.",
+    "countText": "{value} {customer is|customers are} paying this billing period."
    },
    "kind": "guide"
   },

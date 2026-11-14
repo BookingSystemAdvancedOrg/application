@@ -407,9 +407,10 @@ def live_for(live: dict, question: str, app: str = "admin", today=None) -> Optio
     rangeText), so a number for the wrong day is never shown."""
     if app != "admin":
         return live
-    when = help_dates.parse_when(question, today or help_dates.today_in())
-    if not when:
-        return live
+    today = today or help_dates.today_in()
+    when = help_dates.parse_when(question, today)
+    if not when:  # two days ("1/2 imorgon"): no number at all rather than today's
+        return None if help_dates.names_day(question, today) else live
     metric = _PERIOD.sub("", live.get("metric") or "")
     text = live.get("rangeText")
     if not text or metric == live.get("metric"):

@@ -189,6 +189,15 @@ def test_parse_when(case):
     assert (got and {k: got[k] for k in ("from", "to", "label")}) == want if want else got is None
 
 
+@pytest.mark.parametrize("name", ["help_corpus_admin.json", "help_corpus_console.json"])
+def test_live_text_stays_plain_for_older_apps(name):
+    # Apps from before countText fill only {value}: text must never carry {one|many}.
+    corpus = json.loads((ROOT / "shared" / name).read_text(encoding="utf-8"))
+    lives = [e["live"] for e in corpus["docs"] if e.get("live")]
+    assert lives and all(not re.search(r"\{[^{}]*\|[^{}]*\}", live["text"]) for live in lives)
+    assert any("countText" in live for live in lives)
+
+
 def test_parse_when_gives_a_query_for_today():
     got = help_dates.parse_when("Hur många gäster har vi i helgen?", date(2026, 11, 14))
     assert got["query"] == "hur manga gaster har vi idag"

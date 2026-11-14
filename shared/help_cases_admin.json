@@ -644,5 +644,47 @@
    "route": "/installningar",
    "live": null
   }
+ },
+ {
+  "question": "Hur många ordrar har vi fått sedan måndag?",
+  "role": "owner_user",
+  "features": [
+   "reservations",
+   "ordering"
+  ],
+  "expect": {
+   "live": "orders"
+  }
+ },
+ {
+  "question": "Hur många ordrar har vi idag?",
+  "role": "owner_user",
+  "features": [
+   "reservations",
+   "ordering"
+  ],
+  "expect": {
+   "live": "ordersToday"
+  }
+ },
+ {
+  "question": "antal bokningar 5 sep till 10 sep",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": "bookings"
+  }
+ },
+ {
+  "question": "Hur många bokningar har vi 1/2 imorgon?",
+  "role": "staff_user",
+  "features": [
+   "reservations"
+  ],
+  "expect": {
+   "live": null
+  }
  }
 ]

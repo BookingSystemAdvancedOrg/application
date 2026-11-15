@@ -910,6 +910,26 @@ def test_a_mapped_domain_label_goes_into_the_host_map_only_for_its_claim_holder(
         fn.handler({"action": "testHost", "tenantId": "t-dev-roma", "op": "put", "label": "roma"}, None)
 
 
+def test_a_live_mapped_domain_makes_the_slug_answer_with_a_301_and_back(world):
+    fn = world["use"]("dev")
+    fn.handler({"action": "provision", "tenantId": TEST}, None)
+    kvs = world["kvs"]
+    with pytest.raises(fn.SiteRepoError, match="not claimed by"):
+        fn.handler({"action": "testHost", "tenantId": TEST, "op": "redirect", "label": "example-se"}, None)
+    _claim(world["table"], "example-se", TEST)
+    fn.handler({"action": "testHost", "tenantId": TEST, "op": "put", "label": "example-se"}, None)
+    fn.handler({"action": "testHost", "tenantId": TEST, "op": "redirect", "label": "example-se"}, None)
+    assert kvs.keys == {"pasta": ">example-se", "example-se": TEST}
+    for bad in ("pasta", "a.b", "-x"):
+        with pytest.raises(fn.SiteRepoError, match="not a host label"):
+            fn.handler({"action": "testHost", "tenantId": TEST, "op": "redirect", "label": bad}, None)
+    fn.handler({"action": "testHost", "tenantId": TEST, "op": "redirect", "label": ""}, None)
+    assert kvs.keys == {"pasta": TEST, "example-se": TEST}
+    _profile(world["table"], "t-dev-roma", "roma", "prod-link")
+    with pytest.raises(fn.SiteRepoError, match="only a test customer"):
+        fn.handler({"action": "testHost", "tenantId": "t-dev-roma", "op": "redirect", "label": ""}, None)
+
+
 def test_the_host_map_write_retries_when_another_writer_got_in_between(world, monkeypatch):
     fn = world["use"]("dev")
     kvs = world["kvs"]

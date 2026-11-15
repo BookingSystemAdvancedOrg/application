@@ -11,7 +11,7 @@ TRIGGER:
                           (Booqy Console, Website tab); delete (Danger
                           zone, Delete customer); dev only: linkProvision
                           {repo} (a site task from prod, below) and
-                          testHost {op put|delete, label} (Domains tab)
+                          testHost {op put|delete|redirect, label} (Domains tab)
 
 PURPOSE:
     Every restaurant has its own public website repo site-<slug>, created
@@ -62,7 +62,10 @@ PURPOSE:
     provision, and each mapped own domain (example-se for example.se), put
     and deleted by testHost; archive and delete remove them all. A label is
     written only for the tenant that holds its DOMAIN#<label>.<main zone>
-    claim (or, removing, when nobody holds it).
+    claim (or, removing, when nobody holds it). Once a mapped domain is the
+    site's primary, guests only see it: testHost redirect {label} sets the
+    slug's value to ">example-se" (the function answers <slug>.<zone> with
+    a 301 to example-se.<same zone>); an empty label sets it back.
     Two roles /booqy-test-sites/test-site-<slug>-main and -dev (boundary
     TEST_DEPLOY_BOUNDARY_ARN, tags tenantId and stage), each trusted for its
     own branch and able to write only its own stage folder; variables
@@ -791,9 +794,25 @@ def _unmap_all(tenant_id, mode, slug, row):
         _unmap_label(tenant_id, mode, label)
 
 
+def _redirect_slug(tenant_id, mode, slug, target):
+    """<slug>.<zone> -> 301 to <target>.<zone> (both stages), or, target
+    empty, back to serving the site. Only labels this tenant holds."""
+    if _claim_holder(slug) != tenant_id:
+        raise SiteRepoError(f"refused: {slug}.{os.environ['TEST_MAIN_DOMAIN']} is not claimed by {tenant_id}")
+    if not target:
+        _kvs_write(mode, "put", slug, tenant_id)
+        return
+    if not isinstance(target, str) or not _LABEL.fullmatch(target) or target == slug:
+        raise SiteRepoError(f"refused: {target!r} is not a host label")
+    if _claim_holder(target) != tenant_id:
+        raise SiteRepoError(f"refused: {target}.{os.environ['TEST_MAIN_DOMAIN']} is not claimed by {tenant_id}")
+    _kvs_write(mode, "put", slug, ">" + target)
+
+
 def test_host(tenant_id, op, label):
     """The Domains tab (dev): a test customer's mapped own domain, label
-    example-se for example.se, on both its sandbox hosts."""
+    example-se for example.se, on both its sandbox hosts; redirect: the
+    slug's hosts answer with a 301 to it (empty label: they serve again)."""
     profile = _profile(tenant_id)
     mode = Mode(profile)
     if not mode.test:
@@ -806,6 +825,10 @@ def test_host(tenant_id, op, label):
         if label == profile.get("slug"):
             raise SiteRepoError("refused: the slug's own host goes only with the customer")
         _unmap_label(tenant_id, mode, label)
+    elif op == "redirect":
+        if profile.get("status") in _FINISHED_TENANT and label:
+            raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
+        _redirect_slug(tenant_id, mode, profile.get("slug"), label)
     else:
         raise SiteRepoError(f"unknown testHost op {op!r}")
     log.info(json.dumps({"action": "testHost", "op": op, "tenantId": tenant_id, "label": label}))

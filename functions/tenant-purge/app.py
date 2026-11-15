@@ -33,10 +33,14 @@ PURPOSE:
       * every user's background image library (admin/<tenantId>/ in the
         user-backdrops bucket and the users' items in the user-backdrops
         table, found through its byTenant index; user-backdrop)
-      * domains we ran DNS for: auto-renew is switched off for domains
-        registered through us, and the hosted zone is deleted once the
-        domain no longer points at it (a zone still in use is kept and
-        reported, so the restaurant's email doesn't stop working)
+      * domains we ran DNS for: a domain registered through us (bought,
+        moved in, or its registration moved here) stays the restaurant's:
+        auto-renew and the transfer lock are switched off and its order row
+        and claim are KEPT, so Booqy Console can hand the restaurant the
+        transfer-out code (never deleted, never given to anyone else); the
+        hosted zone is deleted once the domain no longer points at it (a
+        zone still in use is kept and reported, so the restaurant's email
+        doesn't stop working)
       * the deployed website (sites/<tenantId>/ in the sites bucket,
         SITES_BUCKET_NAME; the bucket's 30-day version expiry removes the
         older versions), and in dev a test customer's main/sites/<tenantId>/
@@ -97,7 +101,8 @@ AWS RESOURCE ACCESS:
     dev/sites/ (dev sandbox bucket), Query (byTenant) and BatchWriteItem
     on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
-    DisableDomainAutoRenew, sns:Publish on the alert topic, and
+    DisableDomainAutoRenew and DisableDomainTransferLock, sns:Publish on
+    the alert topic, and
     lambda:InvokeFunction on itself (continuation) and on site-repo.
 """
 
@@ -124,7 +129,16 @@ MARKETING_PARTS = ("STATS", "SUB", "SEEN", "TPL", "CMP", "USAGE", "OFFER", "CODE
 TOMBSTONE_FIELDS = ("PK", "SK", "GSI1PK", "GSI1SK", "tenantId", "name", "legalName", "orgNumber",
                     "vatNumber", "slug", "planId", "createdAt", "offboardingStartedAt",
                     "offboardingRequestedBy", "offboardedAt", "purgeAt", "entitlements")
-REGISTERED_MODES = ("register", "transfer")
+REGISTERED_MODES = ("register", "transfer_in", "transfer")
+
+
+def _registered_here(row):
+    """Bought, moved in, or a connected domain whose registration moved here."""
+    if row.get("transferStatus") == "transferred" or row.get("registeredAt"):
+        return True
+    return row.get("mode") in REGISTERED_MODES and row.get("status") not in (
+        "failed", "transfer_rejected", "transfer_expired", "awaiting_owner_approval", "awaiting_verification",
+        "registering", "creating_zone")
 DOH_URL = "https://dns.google/resolve"
 
 _clients = {}
@@ -373,12 +387,17 @@ def _purge_zones(tenant_id, zones, budget, report):
     for row in zones:
         budget.check()
         domain = row.get("domain") or str(row["SK"]).removeprefix("ZONE#")
-        if row.get("mode") in REGISTERED_MODES:
+        handover = _registered_here(row)
+        if handover:
             try:
                 domains.disable_domain_auto_renew(DomainName=domain)
                 report["autoRenewOff"].append(domain)
             except ClientError as e:
                 report["notes"].append(f"{domain}: auto-renew not switched off ({e.response['Error']['Code']})")
+            try:
+                domains.disable_domain_transfer_lock(DomainName=domain)
+            except ClientError as e:
+                report["notes"].append(f"{domain}: transfer lock not switched off ({e.response['Error']['Code']})")
         zone_id = str(row.get("hostedZoneId") or "").split("/")[-1]
         if zone_id and zone_id in protected:
             report["notes"].append(f"{domain}: hosted zone {zone_id} is a platform zone, not deleted")
@@ -394,6 +413,13 @@ def _purge_zones(tenant_id, zones, budget, report):
                 continue
             _delete_zone(zone_id, budget)
             report["zonesDeleted"].append(domain)
+        if handover:
+            # The restaurant's domain: the order row stays for the transfer-out
+            # code in Booqy Console, the claim keeps it from another tenant.
+            report["notes"].append(f"{domain}: registered through Booqy, kept for the restaurant (transfer-out code "
+                                   "in Booqy Console)")
+            kept.append(row)
+            continue
         _release_claim(tenant_id, domain)
     return kept
 

@@ -5,7 +5,11 @@ pages, QR codes, marketing mail).
 In order:
   1. the restaurant's own domain once it is attached and its certificate
      issued (an active DOMAIN# row that is not kind platform; primaryDomain
-     first), so links switch to it as soon as domain-attach finishes;
+     first), so links switch to it as soon as domain-attach finishes. An
+     own-domain order (Booqy Console, own_domains.py) makes its canonical
+     host the primary domain: example.se (www.example.se and the slug
+     address answer with a 301 to it), or www.example.se when the
+     restaurant keeps its DNS; in dev dev.example.se;
   2. its slug address <slug>.<platform domain> (<slug>.booqy.se in prod,
      <slug>.dev.booqy.se in dev): the active kind-platform row onboarding
      writes in the same step that creates the slug's CloudFront
@@ -68,6 +72,12 @@ def base(tenant_id, tenant_row):
     if url:
         return url, tenant_row["slug"]
     return None, None
+
+
+def canonical_host(tenant_id, tenant_row):
+    """The host guests are sent to (base() without the scheme), or None."""
+    url, slug = base(tenant_id, tenant_row)
+    return url.removeprefix("https://") if url and not slug else None
 
 
 def hosts(tenant_id, tenant_row):

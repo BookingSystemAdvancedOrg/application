@@ -42,9 +42,13 @@ def _table(res, name, gsis=()):
 class FakeDomains:
     def __init__(self):
         self.auto_renew_off = []
+        self.unlocked = []
 
     def disable_domain_auto_renew(self, DomainName):
         self.auto_renew_off.append(DomainName)
+
+    def disable_domain_transfer_lock(self, DomainName):
+        self.unlocked.append(DomainName)
 
 
 class FakeClient:
@@ -271,14 +275,17 @@ def test_domains_auto_renew_off_and_unused_zone_deleted(env, monkeypatch):
 
     assert env["app"].handler({}, Context())["purged"] == [GONE]
 
-    assert env["domains"].auto_renew_off == ["bought.se"]
+    # bought.se stays the restaurant's: auto-renew and transfer lock off, its
+    # order and claim kept for the transfer-out code; its unused zone goes
+    assert env["domains"].auto_renew_off == ["bought.se"] and env["domains"].unlocked == ["bought.se"]
     remaining = {z["Name"].rstrip(".") for z in r53.list_hosted_zones()["HostedZones"]}
     assert remaining == {"connected.se"}
-    assert count(t["tenant"], "DOMAIN#bought.se") == 0
+    assert count(t["tenant"], "DOMAIN#bought.se") == 1
     rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
                                                ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
-    assert rows == {"PROFILE", "ZONE#connected.se", "DOMAIN#www.stuck.se"}
+    assert rows == {"PROFILE", "ZONE#bought.se", "ZONE#connected.se", "DOMAIN#www.stuck.se"}
     message = env["sns"].calls[0]["Message"]
+    assert "bought.se: registered through Booqy, kept for the restaurant" in message
     assert "Hosted zones kept: connected.se (still points at it)" in message
     assert "www.stuck.se is still attached" in message
 
@@ -466,3 +473,20 @@ def test_a_test_customers_two_sandbox_builds_are_deleted_too(env, monkeypatch):
     assert left == ["_platform/robots.txt", f"dev/sites/{KEEP}/index.html", f"main/sites/{KEEP}/index.html"]
     stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
     assert stone["purgeSummary"]["siteFiles"] == 2
+
+
+def test_a_failed_transfer_in_is_not_handed_over(env, monkeypatch):
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(hours=1), slug="gone")
+    t = env["t"]
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#moved.se", "domain": "moved.se",
+                               "mode": "transfer_in", "status": "live", "registeredAt": "2026-11-01T00:00:00Z"})
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#rejected.se", "domain": "rejected.se",
+                               "mode": "transfer_in", "status": "transfer_rejected"})
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#linked.se", "domain": "linked.se",
+                               "mode": "connect", "status": "live", "transferStatus": "transferred"})
+    monkeypatch.setattr(env["app"], "_ns_lookup", lambda d: {"ns1.other-registrar.se"})
+    env["app"].handler({}, Context())
+    assert sorted(env["domains"].auto_renew_off) == ["linked.se", "moved.se"]
+    rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
+                                               ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
+    assert "ZONE#rejected.se" not in rows and {"ZONE#moved.se", "ZONE#linked.se"} <= rows

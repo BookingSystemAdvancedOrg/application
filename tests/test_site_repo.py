@@ -1018,3 +1018,40 @@ def test_a_delete_racing_another_delete_ends_as_gone_not_as_an_error(world):
     tg.handle = racing
     assert fn.handler({"action": "delete", "tenantId": TEST}, None) == \
         {"status": "gone", "repo": "site-pasta", "repoDeleted": False}
+
+
+# ------------------------------------------------------------- own domains
+def test_an_own_domain_going_live_writes_booqy_json_on_both_branches(world):
+    """domain-provision's UpdateSite: the prod section gets the live domain
+    (the primary), dev's comes from dev through the link; dev and main both
+    get the file so both sites deploy with their canonical domain."""
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    world["table"].update_item(Key={"PK": f"TENANT#{PLAIN}", "SK": "PROFILE"},
+                               UpdateExpression="SET primaryDomain = :d", ExpressionAttributeValues={":d": "roma.se"})
+    world["table"].update_item(Key={"PK": "TENANT#t-dev-roma", "SK": "PROFILE"},
+                               UpdateExpression="SET primaryDomain = :d", ExpressionAttributeValues={":d": "dev.roma.se"})
+    out = prod.handler({"action": "domainLive", "tenantId": PLAIN}, None)
+    assert out["result"] == "done" and out["committed"] == {"dev": True, "main": True}
+    gh = world["github"]
+    for branch in ("dev", "main"):
+        doc = gh.booqy_json("site-roma", branch)
+        assert doc["environments"]["prod"]["domain"] == "roma.se", branch
+        assert doc["environments"]["dev"]["domain"] == "dev.roma.se", branch
+    # nothing changed: nothing committed again
+    assert prod.handler({"action": "domainLive", "tenantId": PLAIN}, None)["committed"] == {"dev": False, "main": False}
+
+
+def test_domain_live_refuses_test_customers(world):
+    dev = world["use"]("dev")
+    with pytest.raises(dev.SiteRepoError):
+        dev.handler({"action": "domainLive", "tenantId": TEST}, None)
+
+
+def test_dev_domain_ops_for_the_own_domain_pipeline(world, monkeypatch):
+    prod = world["use"]("prod")
+    seen = []
+    monkeypatch.setattr(prod, "_dev_link", lambda task: seen.append(task) or {"state": "live"})
+    for op in ("setCanonical", "unmount"):
+        prod.handler({"action": "devDomain", "tenantId": PLAIN, "op": op, "host": "dev.roma.se"}, None)
+    assert [t["op"] for t in seen] == ["setCanonical", "unmount"]

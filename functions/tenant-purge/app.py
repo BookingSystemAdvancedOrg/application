@@ -30,11 +30,9 @@ PURPOSE:
         (CONSENT_TABLE_NAME)
       * users: the Cognito users of the tenant pool and their profiles
       * menu images (menu-images/<tenantId>/ in the menu image bucket)
-      * Kassa's fiskaly API key for the restaurant (the secret
-        FISKALY_UNIT_PREFIX + tenantId, 7-day recovery window). The fiskaly
-        UNIT itself, Kassa's journal and its receipts stay (bookkeeping,
-        Skatteverket audits); fiskaly has no API to disable the key, so
-        Booqy disables it in fiskaly HUB if wanted.
+      * every user's background image library (admin/<tenantId>/ in the
+        user-backdrops bucket and the users' items in the user-backdrops
+        table, found through its byTenant index; user-backdrop)
       * domains we ran DNS for: auto-renew is switched off for domains
         registered through us, and the hosted zone is deleted once the
         domain no longer points at it (a zone still in use is kept and
@@ -78,9 +76,11 @@ ENV_VARS:
     COGNITO_USER_POOL_ID, LOCATION_TABLE_NAMES (JSON list),
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
-    MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
+    MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME and
+    USER_BACKDROPS_TABLE_NAME (empty: skipped),
+    RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
-    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/), SITE_REPO_FUNCTION_ARN
+    SITE_REPO_FUNCTION_ARN
     (empty: site repos are off)
 
 AWS RESOURCE ACCESS:
@@ -88,10 +88,11 @@ AWS RESOURCE ACCESS:
     table, Query + BatchWriteItem/DeleteItem on the location-keyed tables,
     the catering history, marketing, location and user tables (user table
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
-    pool, s3:ListBucket/DeleteObject under menu-images/, Route 53 record and
+    pool, s3:ListBucket/DeleteObject under menu-images/ (menu image bucket)
+    and admin/ (user-backdrops bucket), Query (byTenant) and BatchWriteItem
+    on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
-    DisableDomainAutoRenew, secretsmanager:DeleteSecret on
-    booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
+    DisableDomainAutoRenew, sns:Publish on the alert topic, and
     lambda:InvokeFunction on itself (continuation) and on site-repo.
 """
 
@@ -279,18 +280,28 @@ def _purge_images(tenant_id, budget, counts):
             counts["images"] += len(objects)
 
 
-def _purge_fiskaly_key(tenant_id, counts):
-    """Kassa's fiskaly key of the restaurant. Gone or already scheduled for
-    deletion counts as done."""
-    prefix = os.environ.get("FISKALY_UNIT_PREFIX")
-    if not prefix:
+def _purge_backdrops(tenant_id, budget, counts):
+    """Each of the restaurant's users' own background image
+    (admin/<tenantId>/<sub>/backdrop, user-backdrop)."""
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    if not bucket:
         return
-    try:
-        _client("secretsmanager").delete_secret(SecretId=prefix + tenant_id, RecoveryWindowInDays=7)
-        counts["fiskalyKey"] = 1
-    except ClientError as e:
-        if e.response["Error"]["Code"] not in ("ResourceNotFoundException", "InvalidRequestException"):
-            raise
+    s3 = _client("s3")
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"admin/{tenant_id}/"):
+        budget.check()
+        objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+            counts["backdrops"] += len(objects)
+
+
+def _purge_backdrop_items(tenant_id, budget):
+    """The library items (images and selection) of the restaurant's users."""
+    table_name = os.environ.get("USER_BACKDROPS_TABLE_NAME")
+    if not table_name:
+        return
+    keys = _query_keys(table_name, Key("tenantId").eq(tenant_id), index="byTenant")
+    _delete_keys(table_name, [{"PK": k["PK"], "SK": k["SK"]} for k in keys], budget)
 
 
 def _ns_lookup(domain):
@@ -477,7 +488,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     if not profile or profile.get("status") != "offboarded" or not purge_at or purge_at > now:
         return None
     counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
-                             "fiskalyKey")}
+                             "backdrops")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
               "zonesDeleted": [], "zonesKept": [], "notes": [], "waitingOn": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
@@ -489,7 +500,8 @@ def purge_tenant(tenant_id, budget, round_=0):
     _purge_marketing(tenant_id, budget, counts)
     _purge_users(tenant_id, budget, counts)
     _purge_images(tenant_id, budget, counts)
-    _purge_fiskaly_key(tenant_id, counts)
+    _purge_backdrops(tenant_id, budget, counts)
+    _purge_backdrop_items(tenant_id, budget)
     repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)
     if repo:
@@ -561,7 +573,8 @@ def _notify(result):
         c = r["counts"]
         lines.append(f"Deleted: {r['name']} ({r['tenantId']}): {c['locations']} location(s), "
                      f"{c['locationRows']} booking/order/menu/layout/catering rows, {c['cateringHistory']} catering "
-                     f"history rows, {c['marketing']} marketing rows, {c['users']} user(s), {c['images']} image(s).")
+                     f"history rows, {c['marketing']} marketing rows, {c['users']} user(s), {c['images']} image(s), "
+                     f"{c.get('backdrops', 0)} backdrop image(s).")
         for label, items in (("Auto-renew off", r["autoRenewOff"]), ("Hosted zones deleted", r["zonesDeleted"]),
                              ("Hosted zones kept", r["zonesKept"]), ("Check", r["notes"])):
             if items:

@@ -1,0 +1,572 @@
+paths:
+  /tenant/social-posts:
+    get:
+      tags:
+      - Social posting
+      summary: Posts and the Meta connection
+      operationId: socialPostingGetTenantSocialPosts
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Connection (page, instagram, missing permissions) and posts, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingList'
+        '400':
+          description: bad status.
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    post:
+      tags:
+      - Social posting
+      summary: Create a draft
+      operationId: socialPostingPostTenantSocialPosts
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialPostingCreateBody'
+      responses:
+        '201':
+          description: The draft (same postId again returns it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingPost'
+        '400':
+          description: caption_too_long, invalid_channels, image_not_allowed, unsupported fields.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/social-posts/drafts:
+    post:
+      tags:
+      - Social posting
+      summary: Drafts from menu items
+      operationId: socialPostingPostTenantSocialPostsDrafts
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialPostingDraftsBody'
+      responses:
+        '200':
+          description: Drafts with ids <menuItemId>-<yyyymmdd>; alcohol dishes and dishes without a photo are skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingDrafts'
+        '400':
+          description: 1-10 menu items.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/social-posts/{postId}:
+    get:
+      tags:
+      - Social posting
+      summary: One post
+      operationId: socialPostingGetTenantSocialPostsPostId
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: postId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The post.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingPost'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    put:
+      tags:
+      - Social posting
+      summary: Edit a draft or scheduled post
+      operationId: socialPostingPutTenantSocialPostsPostId
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: postId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialPostingUpdateBody'
+      responses:
+        '200':
+          description: The post.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingPost'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+    delete:
+      tags:
+      - Social posting
+      summary: Delete a draft
+      operationId: socialPostingDeleteTenantSocialPostsPostId
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: postId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Deleted (idempotent).
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: invalid_state (only drafts).
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/social-posts/{postId}/schedule:
+    post:
+      tags:
+      - Social posting
+      summary: Schedule or publish now
+      operationId: socialPostingPostTenantSocialPostsPostIdSchedule
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: postId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialPostingScheduleBody'
+      responses:
+        '200':
+          description: The scheduled post (a retry re-queues only failed channels).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingPost'
+        '400':
+          description: invalid_schedule, alcohol_confirmation_required.
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: meta_not_connected, meta_permission_missing (field = channel), invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+  /tenant/social-posts/{postId}/cancel:
+    post:
+      tags:
+      - Social posting
+      summary: Cancel before publishing
+      operationId: socialPostingPostTenantSocialPostsPostIdCancel
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      parameters:
+      - name: postId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialPostingVersionBody'
+      responses:
+        '200':
+          description: The cancelled post.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialPostingPost'
+        '400':
+          description: Validation error (unsupported fields, bad values).
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: *id001
+        '403':
+          description: no_tenant, tenant_inactive, feature_not_in_plan or owner_only.
+          content:
+            application/json:
+              schema: *id001
+        '404':
+          description: Unknown or another tenant's resource (same answer).
+          content:
+            application/json:
+              schema: *id001
+        '409':
+          description: invalid_state, changed_retry.
+          content:
+            application/json:
+              schema: *id001
+        '503':
+          description: AWS error.
+          content:
+            application/json:
+              schema: *id001
+components:
+  schemas:
+    SocialPostingPost:
+      type: object
+      required:
+      - postId
+      - locationId
+      - caption
+      - imageKey
+      - status
+      - channels
+      - version
+      properties:
+        postId: &id002
+          type: string
+        locationId: *id002
+        caption: *id002
+        imageKey: *id002
+        source:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum:
+              - dish
+              - special
+              - free
+            menuItemId: *id002
+        status:
+          type: string
+          enum:
+          - draft
+          - scheduled
+          - publishing
+          - published
+          - partly_published
+          - failed
+          - cancelled
+        channels:
+          type: object
+          properties:
+            facebook: &id003
+              type: object
+              properties:
+                state:
+                  type: string
+                  enum:
+                  - queued
+                  - publishing
+                  - published
+                  - needs_check
+                  - failed
+                containerId: *id002
+                metaPostId: *id002
+                permalink: *id002
+                publishedAt: *id002
+                attempts: &id004
+                  type: integer
+                lastError:
+                  type: object
+                  properties:
+                    code: *id002
+            instagram: *id003
+        scheduledAt: *id002
+        alcoholConfirmed: &id005
+          type: boolean
+        createdAt: *id002
+        updatedAt: *id002
+        version: *id004
+    SocialPostingList:
+      type: object
+      properties:
+        connection:
+          type: object
+          properties:
+            page: *id002
+            instagram: *id002
+            missingPermissions:
+              type: array
+              items: *id002
+        posts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SocialPostingPost'
+    SocialPostingDrafts:
+      type: object
+      properties:
+        posts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SocialPostingPost'
+    SocialPostingCreateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - postId
+      - locationId
+      - caption
+      - imageKey
+      - channels
+      - source
+      properties:
+        postId: *id002
+        locationId: *id002
+        caption:
+          type: string
+          maxLength: 2000
+        imageKey: *id002
+        channels:
+          type: array
+          items: *id002
+        source:
+          type: object
+    SocialPostingDraftsBody:
+      type: object
+      additionalProperties: false
+      required:
+      - locationId
+      - menuItemIds
+      properties:
+        locationId: *id002
+        menuItemIds:
+          type: array
+          items: *id002
+          minItems: 1
+          maxItems: 10
+    SocialPostingUpdateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        caption: *id002
+        imageKey: *id002
+        channels:
+          type: array
+          items: *id002
+        alcoholConfirmed: *id005
+        version: *id004
+    SocialPostingScheduleBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        scheduledAt: *id002
+        now: *id005
+        version: *id004
+    SocialPostingVersionBody:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        version: *id004

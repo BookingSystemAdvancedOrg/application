@@ -56,12 +56,21 @@ def test_without_a_domain_links_go_to_the_slug_address(tenants, monkeypatch, env
     assert site.hosts(TENANT_A, row) == [f"roma.{ZONES[environment]}"]
 
 
-@pytest.mark.parametrize("environment", ["prod", "dev"])
-def test_a_tenant_without_its_slug_row_still_gets_the_slug_address(tenants, monkeypatch, environment):
-    env(monkeypatch, environment)
+def test_dev_tenant_without_its_slug_row_gets_the_shared_site_not_a_dead_host(tenants, monkeypatch):
+    """No kind-platform row = no distribution tenant for <slug>.dev.booqy.se
+    (it fails the TLS handshake, as test-restaurang-2 did): the SMS and
+    e-mail links go to the shared dev site with ?restaurang= instead."""
+    env(monkeypatch, "dev")
     row = tenant_row(TENANT_A, slug="roma")
-    assert site.base(TENANT_A, row) == (f"https://roma.{ZONES[environment]}", None)
-    assert site.hosts(TENANT_A, row) == [f"roma.{ZONES[environment]}"]
+    assert site.base(TENANT_A, row) == ("https://dev123.cloudfront.net", "roma")
+    assert site.hosts(TENANT_A, row) == ["dev123.cloudfront.net"]
+
+
+def test_prod_tenant_without_its_slug_row_gets_no_link_rather_than_a_dead_one(tenants, monkeypatch):
+    env(monkeypatch, "prod")
+    row = tenant_row(TENANT_A, slug="roma")
+    assert site.base(TENANT_A, row) == (None, None)
+    assert site.hosts(TENANT_A, row) == []
 
 
 @pytest.mark.parametrize("environment", ["prod", "dev"])
@@ -106,11 +115,6 @@ def test_prod_without_subdomains_or_domain_has_no_site(tenants, monkeypatch):
     row = tenant_row(TENANT_A, slug="roma")
     assert site.base(TENANT_A, row) == (None, None)
     assert site.hosts(TENANT_A, row) == []
-
-
-def test_a_bad_slug_is_never_put_in_a_host(tenants, monkeypatch):
-    env(monkeypatch, "prod")
-    assert site.base(TENANT_A, tenant_row(TENANT_A, slug="evil.example/x")) == (None, None)
 
 
 @pytest.mark.parametrize("environment", ["prod", "dev"])

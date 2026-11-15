@@ -31,7 +31,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from boto3.dynamodb.conditions import Key
 
@@ -251,18 +251,33 @@ def _groups(claims: dict) -> list:
     return [g for g in raw if isinstance(g, str)]
 
 
+# The phone agent's system principal (CONTRACTS.md 4, ADR-L "agent principal"):
+# `USER#agent:<l>/PROFILE` with `status: "system"`, a staff user of exactly
+# one location that never logs in. Only a sub with this prefix may carry that
+# status; a human profile with status "system" is as unusable as a disabled one.
+SYSTEM_SUB_PREFIX = "agent:"
+_SYSTEM_STATUS = "system"
+
+
+def _usable_status(sub: str, status) -> bool:
+    if status == "active":
+        return True
+    return status == _SYSTEM_STATUS and isinstance(sub, str) and sub.startswith(SYSTEM_SUB_PREFIX)
+
+
 def staff_location(sub: str, tenant_id: str) -> Optional[str]:
     """The location an active staff user of this tenant is assigned to
     (their USER# profile) when the function has the user table; None = not
     checked here; "" = no usable assignment (missing, disabled, other
-    tenant), which matches no location."""
+    tenant), which matches no location. The agent system user
+    (`agent:<l>`, status "system") counts as active for its own location."""
     table_name = os.environ.get("USER_TABLE_NAME")
     if not table_name:
         return None
     item = dynamo.table(table_name).get_item(
         Key={"PK": f"USER#{sub}", "SK": "PROFILE"}
     ).get("Item") or {}
-    if item.get("tenantId") != tenant_id or item.get("status") != "active":
+    if item.get("tenantId") != tenant_id or not _usable_status(sub, item.get("status")):
         return ""
     return item.get("locationId") or ""
 
@@ -307,11 +322,21 @@ def for_jwt(
     return TenantContext(tenant_id, tenant_row, role, sub, location, claims)
 
 
-def for_public(location_id: str, *, feature: Union[str, tuple, None] = None) -> TenantContext:
+def for_public(
+    location_id: str,
+    *,
+    feature: Union[str, tuple, None] = None,
+    staff_tenant: Optional[Callable[[], Optional[str]]] = None,
+) -> TenantContext:
     """Public (no-login) routes: the location decides the tenant. Unknown
     locations, inactive tenants and features outside the plan all look like
     nothing is there (404) - a suspended restaurant's site simply has no
-    menu or availability."""
+    menu or availability.
+
+    `staff_tenant` (optional) returns the verified tenant of a signed-in
+    caller (shared/staff_token.py). It is asked only when the DPA gate would
+    block, so the restaurant's own staff can work in admin before the owner
+    has accepted; guests still see nothing."""
     if not isinstance(location_id, str) or not location_id.strip():
         raise _not_found()
     tenant_id = tenant_of_location(location_id)
@@ -322,7 +347,7 @@ def for_public(location_id: str, *, feature: Union[str, tuple, None] = None) -> 
         raise _not_found()
     # A new restaurant goes live only once the owner has accepted the DPA
     # (shared/dpa.py); restaurants without the flag are never affected.
-    if dpa.blocks_public(tenant_row):
+    if dpa.blocks_public(tenant_row) and (staff_tenant is None or staff_tenant() != tenant_id):
         raise _not_found()
     try:
         require_feature(tenant_row, feature)

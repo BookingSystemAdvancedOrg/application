@@ -1,0 +1,3 @@
+# boto3 is already present in the public.ecr.aws/lambda/python base image.
+# tzdata: the days in help questions ("imorgon") are in Europe/Stockholm.
+tzdata

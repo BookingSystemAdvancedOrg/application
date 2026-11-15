@@ -463,7 +463,7 @@ def brand_color(tenant_row):
 
 def _ink_on(color):
     r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
-    return "#1a1a1a" if (0.299 * r + 0.587 * g + 0.114 * b) > 160 else "#ffffff"
+    return "#1a1a1a" if (0.299 * r + 0.587 * g + 0.114 * b) > 160 else "#fdfaf6"
 
 
 def fill(text, values):
@@ -606,7 +606,7 @@ def render_email(template, *, tenant_row, restaurant, values, menu_items, site_u
         '<div style="max-width:600px;margin:0 auto;padding:24px 16px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a">'
         f'<div style="background:{color};border-radius:10px 10px 0 0;padding:18px 28px">{header}</div>'
-        f'<div style="background:#ffffff;border-radius:0 0 10px 10px;padding:28px">{"".join(parts_html)}</div>'
+        f'<div style="background:#fdfaf6;border-radius:0 0 10px 10px;padding:28px">{"".join(parts_html)}</div>'
         f'<p style="margin:16px 4px 0;color:{fine_print};font-size:12px">{e(footer)} '
         f'<a href="{e(unsubscribe_url, quote=True)}" style="color:{fine_print}">{unsub_label}</a></p>'
         '</div></body></html>'

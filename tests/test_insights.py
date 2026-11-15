@@ -48,6 +48,35 @@ def test_open_table_minutes_follow_hours_and_tables():
     assert "15" not in row["open"]
 
 
+def test_hours_past_midnight_count_on_both_dates():
+    location = {**LOCATION, "businessHours": {d: [{"opensAt": "20:00", "closesAt": "02:00"}] for d in ins.WEEKDAYS}}
+    assert ins.open_intervals(location, DAY) == [(0, 2 * 60), (20 * 60, 24 * 60)]
+    # closing at midnight adds nothing to the next date
+    midnight = {**LOCATION, "businessHours": {d: [{"opensAt": "20:00", "closesAt": "00:00"}] for d in ins.WEEKDAYS}}
+    assert ins.open_intervals(midnight, DAY) == [(20 * 60, 24 * 60)]
+
+
+def test_a_booking_after_midnight_has_open_minutes_on_its_date():
+    # Monday 18:00-02:00, a booking at 00:00 on Tuesday's date
+    hours = {d: [] for d in ins.WEEKDAYS}
+    hours["monday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    location = {**LOCATION, "businessHours": hours}
+    row = ins.build_day(location=location, day=DAY, snapshots=SNAPSHOTS, built_at="x",
+                        reservations=[booking("00:00", "01:30")])
+    assert row["open"]["0"]["t"] == 60 * 2
+    assert row["open"]["1"]["t"] == 60 * 2
+    assert "2" not in row["open"]
+    assert row["occ"]["0|online"]["t"] <= row["open"]["0"]["t"]
+
+
+def test_a_special_day_cuts_the_previous_evening_in_insights():
+    hours = {d: [] for d in ins.WEEKDAYS}
+    hours["monday"] = [{"opensAt": "18:00", "closesAt": "02:00"}]
+    location = {**LOCATION, "businessHours": hours,
+                "specialDays": [{"date": DAY, "kind": "hours", "intervals": [{"opensAt": "00:30", "closesAt": "03:00"}]}]}
+    assert ins.open_intervals(location, DAY) == [(0, 30), (30, 3 * 60)]
+
+
 def test_special_day_closed_has_no_open_minutes():
     location = {**LOCATION, "specialDays": [{"date": DAY, "kind": "closed"}]}
     row = ins.build_day(location=location, day=DAY, snapshots=SNAPSHOTS)
@@ -168,3 +197,61 @@ def test_lunch_until_default_and_setting():
     assert ins.lunch_until({}) == 15
     assert ins.lunch_until({"lunchUntil": "16:00"}) == 16
     assert ins.lunch_until({"lunchUntil": "nonsense"}) == 15
+
+
+# --- the colleague's test on dev (2026-11-13): 7 bookings for 17 guests in a week ------------
+
+WEEK = ["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25"]
+
+
+def _week_rows(extra=()):
+    kept = [  # (day, start, party): 7 bookings, 17 guests
+        (WEEK[0], "12:00", 2), (WEEK[1], "18:00", 4), (WEEK[2], "19:00", 2), (WEEK[3], "17:30", 3),
+        (WEEK[4], "20:00", 2), (WEEK[5], "21:30", 2), (WEEK[6], "21:30", 2),
+    ]
+    items = [{**booking(start, None, party=party), "date": day, "endTime": None} for day, start, party in kept]
+    items += [{**b, "date": b.get("date", WEEK[2])} for b in extra]
+    return [ins.build_day(location=LOCATION, day=day, reservations=[i for i in items if i["date"] == day],
+                          snapshots=SNAPSHOTS, built_at="x") for day in WEEK]
+
+
+def test_a_week_counts_only_the_bookings_that_are_still_on():
+    noise = [
+        booking("18:00", "20:00", status="held", party=3),          # tables held while the guest types
+        booking("18:00", "20:00", status="pending", party=3),       # card guarantee never finished
+        booking("18:00", "20:00", status="expired", party=3),
+        booking("18:00", "20:00", status="cancelled_no_charge", party=3, cancelledAt="2026-10-18T10:00:00Z"),
+        booking("18:00", "20:00", status="cancelled_by_restaurant", party=3, cancelledBy="restaurant"),
+        {**booking("23:30", "23:59", party=3), "date": "2026-10-26"},  # Monday after: another week
+    ]
+    s = ins.summarize(_week_rows(noise))
+    assert (s["bookings"], s["guests"]) == (7, 17)
+    assert s["cancelled"] == 2
+    assert [d["guests"] for d in s["byDay"]] == [2, 4, 2, 3, 2, 2, 2]
+
+
+def test_lead_time_leaves_walk_ins_out():
+    rows = [build(reservations=[
+        booking("12:00", "13:00", created="2026-10-20T08:00:00Z"),                   # same day, online
+        booking("13:00", "14:00", source="phone", created="2026-10-19T08:00:00Z"),   # day before
+        booking("18:00", "19:00", source="walk_in", created="2026-10-20T16:00:00Z"),  # standing there
+    ])]
+    s = ins.summarize(rows)
+    assert [x["bookings"] for x in s["lead"]] == [1, 1, 0, 0, 0]
+    assert s["bookings"] == 3 and s["sources"]["onsite"] == 1
+
+
+def test_weekdays_say_how_often_they_occur_and_closed_is_none():
+    closed_sunday = {**LOCATION, "businessHours": {**LOCATION["businessHours"], "sunday": []}}
+    rows = [ins.build_day(location=closed_sunday, day=d, snapshots=SNAPSHOTS) for d in
+            ["2026-10-19", "2026-10-25", "2026-10-26"]]  # Mon, Sun (closed), Mon
+    s = ins.summarize(rows)
+    by = {w["weekday"]: w for w in s["byWeekday"]}
+    assert by[0]["days"] == 2 and by[6]["days"] == 1 and by[2]["days"] == 0
+    assert by[0]["occupancy"] == 0.0
+    assert by[6]["occupancy"] is None and by[2]["occupancy"] is None
+
+
+def test_days_count_arrived_guests():
+    s = ins.summarize([build(reservations=[booking("12:00", "13:00", status="arrived"), booking("18:00", "19:00")])])
+    assert (s["byDay"][0]["bookings"], s["byDay"][0]["arrived"], s["arrived"]) == (2, 1, 1)

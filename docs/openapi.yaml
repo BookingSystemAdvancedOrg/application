@@ -64,12 +64,8 @@ tags:
     description: Cookieless visit statistics, email templates, campaigns and subscribers (plan feature "marketing").
   - name: Insights
     description: The restaurant's own figures for a period (Statistik in the admin app).
-  - name: Card payments
-    description: In-person card payments on the restaurant's Stripe Terminal readers (Ta betalt) - take, cancel, retry, refund, receipts.
   - name: Accounting
     description: The accounting export (Bokföring) - the location's BAS account mapping and one balanced verifikation per business day as SIE 4, CSV or JSON (docs/ACCOUNTING-EXPORT.md).
-  - name: Kassa
-    description: The till (feature "kassa", off by default) - bills, card payments, receipts with a control code, returns, one copy, training mode, X/Z reports and the journal export (SKVFS 2021:16). Test mode until a certified control system is connected (docs/KASSA-REQUIREMENTS.md).
   - name: Printing
     description: Kitchen printers (Star CloudPRNT) - settings, printers, reprint, and the printer's own poll/fetch/confirm.
   - name: Catering
@@ -660,6 +656,36 @@ paths:
         '503':
           $ref: '#/components/responses/UserServiceUnavailable'
 
+  /users/{cognitoSub}/avatar:
+    parameters:
+      - $ref: '#/components/parameters/CognitoSub'
+    delete:
+      tags:
+        - Users
+      summary: Remove a user's profile picture
+      operationId: deleteUserAvatar
+      description: |
+        An owner removes the optional profile picture of a user of their own
+        tenant (404 for anyone else). Nobody can upload for someone else.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '204':
+          description: Removed (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '503':
+          $ref: '#/components/responses/UserServiceUnavailable'
+
   /users/{cognitoSub}/deactivate:
     parameters:
       - $ref: '#/components/parameters/CognitoSub'
@@ -1114,6 +1140,9 @@ paths:
       operationId: getAvailability
       description: |
         Publicly returns future canonical slots for one local calendar date.
+        A new restaurant that has not accepted the DPA answers 404 here,
+        except to its own staff (a tenant-pool access token of the same
+        tenant in Authorization).
         Slot starts are bounded by exact elapsed UTC time:
         `now < slotStartUtc <= now + 21 days`. The local calendar date that
         contains the upper boundary remains valid, but any later slots on that
@@ -1397,8 +1426,85 @@ paths:
                     price: 125.50
                     category: starters
                     imageKey: menu-images/01aaaaaaaaaaaaaaaaaaaaaaaa/locations/central/menu/mushroom-toast.jpg
+                    allergens: [gluten, milk]
+                    options: []
+                categories:
+                  - categoryId: starters
+                    name: Förrätter
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+
+  /locations/{locationId}/menu/categories:
+    parameters:
+      - $ref: '#/components/parameters/MenuLocationId'
+    get:
+      tags:
+        - Menu
+      summary: The location's menu categories
+      operationId: getMenuCategories
+      description: The four defaults (version 0) until the owner saves their own.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Categories in display order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuCategoryList'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/MenuServiceUnavailable'
+    put:
+      tags:
+        - Menu
+      summary: Replace the location's menu categories
+      operationId: putMenuCategories
+      description: |
+        The whole list in display order: add (no categoryId), rename,
+        reorder, delete. Deleting a category that still has dishes is 409
+        `category_in_use` (with `categoryIds`); a version that is not the
+        stored one is 409 `stale_categories` (with the current list).
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MenuCategoryList'
+            example:
+              version: 0
+              categories:
+                - categoryId: starters
+                  name: Förrätter
+                - name: Pizzor
+      responses:
+        '200':
+          description: Saved; the new version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuCategoryList'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
         '503':
           $ref: '#/components/responses/MenuServiceUnavailable'
 
@@ -2111,8 +2217,11 @@ paths:
         elements. Optional table and cash-register display labels are returned
         for customer presentation, while `elementId` remains the stable
         identity for booking and blocking. A legacy flat layout has an empty
-        `floors` array and elements without `floorId`. This route is
-        intentionally public and does not inspect JWT claims.
+        `floors` array and elements without `floorId`. A location with no
+        active layout yet returns 200 with empty `floors` and `elements`.
+        This route is intentionally public; a tenant-pool access token is
+        only used to let a new restaurant's own staff past the DPA go-live
+        gate.
       security: []
       x-required-groups: []
       responses:
@@ -2785,6 +2894,377 @@ paths:
         '503':
           $ref: '#/components/responses/ImageUploadServiceUnavailable'
 
+  /me/backdrops:
+    get:
+      tags:
+        - Media
+      summary: The caller's background image library
+      operationId: listUserBackdrops
+      description: |
+        The signed-in user's images, newest first, with one-hour presigned
+        links to the full image and its ~400 px WebP thumbnail, the selected
+        image's id and the cap. The first call moves an image uploaded with
+        the first version (one image per user) into the library, selected.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The library.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBackdropLibrary'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/upload:
+    post:
+      tags:
+        - Media
+      summary: Start an upload to the caller's library
+      operationId: createUserBackdropUpload
+      description: |
+        An S3 presigned POST (valid 300 s) for a new image id: the policy
+        binds the key `admin/{tenantId}/{sub}/backdrops/{id}`, `Content-Type`
+        to the requested type and the size to 1 B to 10 MB. POST multipart
+        form data to `url` with every entry of `fields` and then the file
+        (field name `file`), then call complete with the `id`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserBackdropUploadRequest'
+            example:
+              contentType: image/webp
+              size: 482113
+              width: 2400
+              height: 1600
+      responses:
+        '200':
+          description: The presigned POST.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBackdropUpload'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/BackdropLimitReached'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/{id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/BackdropId'
+    post:
+      tags:
+        - Media
+      summary: Finish an upload
+      operationId: completeUserBackdropUpload
+      description: |
+        After the browser's S3 POST: checks the object (type, size), decodes
+        it, writes a ~400 px wide WebP thumbnail and stores the item. A
+        missing upload answers 400 `upload_missing`; anything that isn't a
+        JPEG, PNG or WebP image is deleted and answers 400 `not_an_image`.
+        Calling it again answers the same item.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The new library item.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - item
+                properties:
+                  item:
+                    $ref: '#/components/schemas/UserBackdropItem'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
+        '409':
+          $ref: '#/components/responses/BackdropLimitReached'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/selected:
+    put:
+      tags:
+        - Media
+      summary: Choose the caller's background image
+      operationId: selectUserBackdrop
+      description: Selects one of the caller's images, or none with `null`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - id
+              properties:
+                id:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: The selection.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - selectedId
+                properties:
+                  selectedId:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/backdrops/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BackdropId'
+    delete:
+      tags:
+        - Media
+      summary: Delete an image from the caller's library
+      operationId: deleteUserBackdrop
+      description: |
+        Deletes the image, its thumbnail and its item; a selected image
+        leaves no selection. Idempotent.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '204':
+          description: Deleted (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/BackdropNotFound'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar:
+    get:
+      tags:
+        - Media
+      summary: The caller's profile picture
+      operationId: getMyAvatar
+      description: |
+        A one-hour presigned link to the caller's optional profile picture
+        (256x256 WebP), or null. Nobody is asked for one; the UI shows
+        initials without.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The link, or null.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarLink'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+    delete:
+      tags:
+        - Media
+      summary: Remove the caller's profile picture
+      operationId: deleteMyAvatar
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '204':
+          description: Removed (or there was none).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar/upload:
+    post:
+      tags:
+        - Media
+      summary: Start a profile picture upload
+      operationId: createMyAvatarUpload
+      description: |
+        An S3 presigned POST (valid 300 s) to the staging key
+        `admin/{tenantId}/{sub}/avatar.upload`: `Content-Type` bound to the
+        requested type, 1 B to 5 MB. Post the (square) crop, then call
+        complete.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - contentType
+                - size
+              properties:
+                contentType:
+                  type: string
+                  enum:
+                    - image/jpeg
+                    - image/png
+                    - image/webp
+                size:
+                  type: integer
+                  minimum: 1
+                  maximum: 5242880
+      responses:
+        '200':
+          description: The presigned POST.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - url
+                  - fields
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                  fields:
+                    type: object
+                    additionalProperties:
+                      type: string
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
+  /me/avatar/complete:
+    post:
+      tags:
+        - Media
+      summary: Finish a profile picture upload
+      operationId: completeMyAvatar
+      description: |
+        Decodes the staged upload, centre-crops it to a square, writes a
+        256x256 WebP at `admin/{tenantId}/{sub}/avatar.webp` and deletes the
+        staging object. 400 `upload_missing` without an upload, 400
+        `not_an_image` (staging deleted) when it isn't a JPEG, PNG or WebP.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The new picture's link.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarLink'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/BackdropServiceUnavailable'
+
   /tenant:
     get:
       tags:
@@ -2938,6 +3418,15 @@ paths:
             type: string
             enum: [previous, year, none]
             default: previous
+        - name: ahead
+          in: query
+          required: false
+          description: Also the bookings still on for this many days after today (`upcoming`), live.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 14
+            default: 0
       responses:
         '200':
           description: The figures.
@@ -3032,6 +3521,158 @@ paths:
                 $ref: '#/components/schemas/Tenant'
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/terms/accept:
+    post:
+      tags:
+        - Account
+      summary: Accept the current Allmänna villkor för restauranger
+      operationId: acceptTenantTerms
+      description: |
+        Owner only. Like the DPA: records that the caller accepted `version`,
+        which must be the current terms version (409 `terms_version_outdated`
+        with `currentVersion` otherwise), as an append-only row; the response
+        is the tenant with an updated `terms`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version:
+                  type: string
+      responses:
+        '200':
+          description: Accepted; the tenant as GET /tenant returns it.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '409':
+          $ref: '#/components/responses/NoStoreConflict'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/billing:
+    get:
+      tags:
+        - Account
+      summary: Booqy's open invoices to the restaurant
+      operationId: getTenantBilling
+      description: |
+        Owner only. The restaurant as Booqy's customer (the platform Stripe
+        account, never the restaurant's own connected account): the billing
+        summary and the open invoices, oldest due first, each with its
+        Stripe payment page. 503 when Stripe cannot be reached.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: The summary and the open invoices.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [billing, invoices]
+                properties:
+                  billing:
+                    $ref: '#/components/schemas/TenantBillingSummary'
+                  invoices:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        number:
+                          type: string
+                          nullable: true
+                        amountDueSek:
+                          type: number
+                        dueDate:
+                          type: string
+                          format: date
+                          nullable: true
+                        overdue:
+                          type: boolean
+                        collection:
+                          type: string
+                          enum: [card, invoice]
+                        url:
+                          type: string
+                          nullable: true
+                        description:
+                          type: string
+                          nullable: true
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '503':
+          $ref: '#/components/responses/AccountServiceUnavailable'
+
+  /tenant/billing/card-session:
+    post:
+      tags:
+        - Account
+      summary: Add a card for Booqy's monthly fee (Stripe Checkout, setup mode)
+      operationId: createTenantCardSession
+      description: |
+        Owner only. A Stripe Checkout page in setup mode, in Swedish, for the
+        billing customer on the platform account. When the owner finishes,
+        platform-stripe-webhook makes the card the default and the monthly
+        invoice (on the 1st, in advance) is charged to it automatically.
+        Returns to `ADMIN_APP_URL/installningar?kort=klart` (or
+        `?kort=avbrutet`). 409 `no_billing_customer` before Booqy has started
+        the agreement.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: The Checkout page to open.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [url]
+                properties:
+                  url:
+                    type: string
         '401':
           $ref: '#/components/responses/GatewayUnauthorized'
         '403':
@@ -3659,7 +4300,9 @@ paths:
       description: |
         Public. The guest orders dishes from a location's menu (quantity 1-20
         per dish, at most 30 lines) for pickup, or at a table with the code
-        from the table's QR code. Prices and VAT are taken from the menu,
+        from the table's QR code. Each line may carry `note` ("ingen lök")
+        and `allergy` ("jordnötsallergi"), at most 140 characters each; they
+        follow the item onto its station's kitchen ticket. Prices and VAT are taken from the menu,
         never from the request. Alcohol can't be ordered for pickup.
 
         The order is created `pending_payment` and the answer carries a
@@ -3955,72 +4598,119 @@ paths:
   /locations/{locationId}/orders/table-codes:
     parameters:
       - $ref: '#/components/parameters/LocationId'
-    post:
+    get:
       tags:
         - Orders
-      summary: QR code values for tables
-      operationId: createTableCodes
+      summary: QR codes for the tables
+      operationId: listTableCodes
       description: |
-        Signed codes for the tables' QR codes - the guest site opens
-        `/bestall?bord=<code>`. The label is inside the code (it prints on
-        the order), so a renamed table needs a new QR code.
+        The QR code of every table in the location's ACTIVE published floor
+        plan (a draft never counts), in the plan's order, with the table's
+        current name. Each table has its own random code (no table id in
+        it), created on first use and stable across renaming and moving the
+        table; the guest site opens `/bestall?bord=<code>`. A table that
+        leaves the floor plan stops taking orders; a new table gets a new
+        code even when it reuses the old number.
       security:
         - bearerAuth: []
       x-required-groups:
         - staff_user
         - owner_user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-                - tables
-              properties:
-                tables:
-                  type: array
-                  minItems: 1
-                  maxItems: 200
-                  items:
-                    type: object
-                    additionalProperties: false
-                    required:
-                      - tableId
-                      - label
-                    properties:
-                      tableId:
-                        type: string
-                      label:
-                        type: string
-                        maxLength: 40
       responses:
         '200':
-          description: One code per table.
+          description: One code per table of the active floor plan (empty when none is published).
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tables:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        tableId:
-                          type: string
-                        label:
-                          type: string
-                        code:
-                          type: string
+                $ref: '#/components/schemas/TableCodeList'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+    post:
+      tags:
+        - Orders
+      summary: QR codes for the tables (older admin builds)
+      operationId: createTableCodes
+      description: |
+        Same answer as GET. A body (`{"tables": [...]}`, sent by older admin
+        builds) is accepted and ignored: the floor plan decides the tables.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                tables:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+      responses:
+        '200':
+          description: One code per table of the active floor plan.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableCodeList'
         '400':
           $ref: '#/components/responses/OrderBadRequest'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/table-codes/{tableId}/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - name: tableId
+        in: path
+        required: true
+        description: The table's element id in the active floor plan.
+        schema:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,128}$'
+    post:
+      tags:
+        - Orders
+      summary: New QR code for one table
+      operationId: regenerateTableCode
+      description: |
+        For a stolen or worn sticker. The table's old code (and a code
+        printed before per-table codes existed) stops working at once; a
+        guest who scans it is told the code is no longer valid.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The table's new code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableCode'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
 
   /t:
     post:
@@ -5561,217 +6251,6 @@ paths:
         '204':
           description: Deleted
 
-  # --- Card payments at the till (Stripe Terminal) ---------------------------
-  /locations/{locationId}/card-payments:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Card payments]
-      summary: 'The day''s in-person card payments, newest first'
-      operationId: listCardPayments
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payments.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPaymentList'}
-      parameters:
-        - {name: date, in: query, required: false, schema: {type: string, format: date}}
-    post:
-      tags: [Card payments]
-      summary: 'Take a card payment on a reader ("Ta betalt")'
-      operationId: createCardPayment
-      description: 'One PaymentIntent (card_present, automatic capture) per checkoutId on the restaurant''s connected account, sent to the reader. The same checkoutId again answers 200 with the same payment. An orderId takes the amount from that unpaid order. 409 terminal_not_enabled, order_not_payable, order_other_account, order_already_paid; 404 for a reader of another location.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [checkoutId, readerId]
-              properties:
-                checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                readerId: {type: string, pattern: '^tmr_'}
-                amount: {type: integer, minimum: 300, maximum: 5000000, description: Öre}
-                orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                note: {type: string, maxLength: 120}
-                vatRate: {type: integer, enum: [12, 25], description: 'Required with amount (a free amount): 12 food and drink, 25 alcohol'}
-      responses:
-        '201':
-          description: 'Sent to the reader (processing), or failed with reader_offline / reader_busy.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/readers:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Card payments]
-      summary: 'The location''s card readers (registered in Booqy Console)'
-      operationId: listCardReaders
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'Readers with online/offline status.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardReaderList'}
-  /locations/{locationId}/card-payments/{paymentId}:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    get:
-      tags: [Card payments]
-      summary: 'One payment (the till polls it; asks Stripe when the webhook is late)'
-      operationId: getCardPayment
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/cancel:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Cancel the payment on the reader ("Avbryt")'
-      operationId: cancelCardPayment
-      description: 'If the card went through meanwhile, the answer is the paid payment.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/retry:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Try the same PaymentIntent again ("Försök igen")'
-      operationId: retryCardPayment
-      description: 'From failed or canceled only. Never a second PaymentIntent.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                readerId: {type: string, pattern: '^tmr_'}
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/refund:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Refund the whole payment ("Återbetala")'
-      operationId: refundCardPayment
-      description: '409 refund_via_order: a payment for an order is refunded by cancelling the order.'
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-  /locations/{locationId}/card-payments/{paymentId}/simulate:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    post:
-      tags: [Card payments]
-      summary: 'Test mode: the simulated reader taps a card'
-      operationId: simulateCardPayment
-      description: 'Not in prod (404). Simulated readers only (409 not_simulated).'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [outcome]
-              properties:
-                outcome: {type: string, enum: [approve, decline]}
-      responses:
-        '202':
-          description: 'Accepted.'
-  /locations/{locationId}/card-payments/{paymentId}/receipt:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-      - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-    get:
-      tags: [Card payments]
-      summary: 'The Swedish receipt (Kvitto) of a payment'
-      operationId: getCardReceipt
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'The payment and its receipt.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardReceipt'}
-    post:
-      tags: [Card payments]
-      summary: 'E-mail the receipt ("Skicka kvitto")'
-      operationId: sendCardReceipt
-      description: 'Paid payments only (409 not_paid), at most 5 e-mails per payment (409 receipt_limit).'
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [email]
-              properties:
-                email: {type: string, format: email}
-      responses:
-        '200':
-          description: 'The payment.'
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CardPayment'}
-
   # --- Printing (issue 2) ------------------------------------------------------
   /locations/{locationId}/accounting:
     parameters:
@@ -5844,660 +6323,6 @@ paths:
           description: 'Stripe refused to list balance transactions (stripe_refused).'
         '503':
           description: 'Stripe or the database is unavailable.'
-  /locations/{locationId}/kassa:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'Kassa state: registers, open bills, test mode'
-      operationId: getKassa
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'The location''s registers'
-      operationId: listKassaRegisters
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-    post:
-      tags: [Kassa]
-      summary: 'A new register (name max 16 characters); with a real control system it is enrolled there and gets its kassabeteckning (503 control_system_unreachable / control_system_rejected)'
-      operationId: createKassaRegister
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [label]
-              properties:
-                label: {type: string, maxLength: 16}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'A register, its control system and day status'
-      operationId: getKassaRegister
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/open-day:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Register the float (växelkassa) at the start of the day, after the control system''s startup check (503 control_system_unreachable unless STATUS_OK)'
-      operationId: openKassaDay
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [float]
-              properties:
-                float: {type: integer, minimum: 0, description: Öre}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/training:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Training mode on or off (journalled)'
-      operationId: setKassaTraining
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: ['on']
-              properties:
-                'on': {type: boolean}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/x:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'X report (journalled, no number)'
-      operationId: kassaXReport
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                print: {type: boolean}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/z:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Z report (numbered, closes the period)'
-      operationId: kassaZReport
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                print: {type: boolean}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/receipts:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'A day''s receipts and reports from the journal'
-      operationId: listKassaReceipts
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: date, in: query, required: false, schema: {type: string, format: date}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'One receipt, returned lines, copy taken'
-      operationId: getKassaReceipt
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/copy:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'The one copy of a receipt (409 copy_exists)'
-      operationId: copyKassaReceipt
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [delivery]
-              properties:
-                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
-                email: {type: string, format: email}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/receipts/{seq}/return:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Return lines: refund to the card, then a return receipt'
-      operationId: returnKassaReceipt
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: seq, in: path, required: true, schema: {type: integer, minimum: 1}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [delivery, lines, reason]
-              properties:
-                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
-                email: {type: string, format: email}
-                reason: {type: string, maxLength: 72}
-                lines:
-                  type: array
-                  items:
-                    type: object
-                    additionalProperties: false
-                    required: [lineId, quantity]
-                    properties:
-                      lineId: {type: string}
-                      quantity: {type: integer, minimum: 1}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/export:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'Journal export in XML (SKVFS 2021:16)'
-      operationId: exportKassaJournal
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: from, in: query, required: true, schema: {type: string, format: date}}
-        - {name: to, in: query, required: true, schema: {type: string, format: date}}
-      responses:
-        '200':
-          description: 'The XML file.'
-          content:
-            application/xml:
-              schema: {type: string}
-  /locations/{locationId}/kassa/registers/{registerId}/simulate:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Test mode only (not prod): the simulated control system down or up'
-      operationId: simulateKassaControlSystem
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [down]
-              properties:
-                down: {type: boolean}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/registers/{registerId}/outage-notice:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Audit trail: the felanmälan banner was shown (once per outage) or dismissed'
-      operationId: kassaOutageNotice
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: registerId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [action]
-              properties:
-                action: {type: string, enum: [shown, dismissed]}
-      responses:
-        '200':
-          description: 'OK. 409 control_system_up when there is no outage.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/setup:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: '"Kom igång med kassan" checklist of the location'
-      operationId: getKassaSetup
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-    put:
-      tags: [Kassa]
-      summary: 'Tick or untick a checklist item (owner only, checked in the handler)'
-      operationId: setKassaSetup
-      security:
-        - bearerAuth: []
-      x-required-groups: [owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [item, done]
-              properties:
-                item: {type: string, enum: [anmalan, skylt, zrapport, journal, avbrott]}
-                done: {type: boolean}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/manual:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'The user manual (docs/kassa/BRUKSANVISNING.md) as Markdown'
-      operationId: getKassaManual
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'Open bills'
-      operationId: listKassaBills
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-    post:
-      tags: [Kassa]
-      summary: 'Open a bill for a table or a takeaway sale'
-      operationId: createKassaBill
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [registerId, kind]
-              properties:
-                registerId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                kind: {type: string, enum: [table, takeaway]}
-                tableLabel: {type: string, maxLength: 20}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    get:
-      tags: [Kassa]
-      summary: 'A bill with prices, VAT and card payments'
-      operationId: getKassaBill
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-    put:
-      tags: [Kassa]
-      summary: 'Lines and discount (409 changed_retry, bill_has_payments, line_sent)'
-      operationId: updateKassaBill
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [version, lines]
-              properties:
-                version: {type: integer}
-                lines:
-                  type: array
-                  maxItems: 60
-                  items:
-                    type: object
-                    additionalProperties: false
-                    required: [quantity]
-                    properties:
-                      lineId: {type: string}
-                      menuItemId: {type: string}
-                      quantity: {type: integer, minimum: 1, maximum: 99}
-                      note: {type: string, maxLength: 80, nullable: true}
-                discount:
-                  type: object
-                  nullable: true
-                  additionalProperties: false
-                  properties:
-                    kind: {type: string, enum: [percent, amount]}
-                    value: {type: integer, minimum: 1}
-                    label: {type: string, maxLength: 40}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}/send:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Kitchen ticket for the lines not sent yet'
-      operationId: sendKassaBillToKitchen
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}/void:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Throw away an unpaid bill (sent lines are journalled)'
-      operationId: voidKassaBill
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}/payments:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'Card payment for (part of) the bill on a reader; 503 control_system_unreachable before any charge'
-      operationId: startKassaPayment
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              oneOf:
-                - type: object
-                  additionalProperties: false
-                  required: [checkoutId, readerId, amount]
-                  properties:
-                    checkoutId: {type: string, pattern: '^[0-9a-f]{32}$'}
-                    readerId: {type: string, pattern: '^tmr_'}
-                    amount: {type: integer, minimum: 300, description: Öre}
-                - type: object
-                  description: |
-                    A gift card the gift-cards feature already redeemed for this
-                    bill (txId = paymentId). Needs giftCards (403
-                    feature_not_in_plan). A receipt with a gift card is 501
-                    gift_card_receipt_not_supported until the control system
-                    can report it.
-                  additionalProperties: false
-                  required: [kind, paymentId]
-                  properties:
-                    kind: {type: string, enum: [giftcard]}
-                    paymentId: {type: string, pattern: '^[0-9a-f]{32}$'}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}/payments/{paymentId}/undo:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'A paid part back to the card, before the receipt'
-      operationId: undoKassaPayment
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-        - {name: paymentId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      responses:
-        '200':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
-  /locations/{locationId}/kassa/bills/{billId}/finalize:
-    parameters:
-      - $ref: '#/components/parameters/LocationId'
-    post:
-      tags: [Kassa]
-      summary: 'The receipt: needs full payment and a control code (503 control_system_unreachable, or control_system_rejected when the control system refused the data); printed or e-mailed'
-      operationId: finalizeKassaBill
-      security:
-        - bearerAuth: []
-      x-required-groups: [staff_user, owner_user]
-      parameters:
-        - {name: billId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [delivery]
-              properties:
-                delivery: {type: string, enum: [print, email, screen], description: 'screen only in test mode'}
-                email: {type: string, format: email}
-      responses:
-        '201':
-          description: 'OK.'
-          content:
-            application/json:
-              schema: {type: object}
   /locations/{locationId}/print:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -6588,14 +6413,15 @@ paths:
               required: [name]
               properties:
                 name: {type: string, minLength: 1, maxLength: 40}
+                protocol: {type: string, enum: [star, epson], default: star, description: 'star = CloudPRNT, epson = Server Direct Print'}
       responses:
         '201':
-          description: The printer and its CloudPRNT credentials.
+          description: The printer and its CloudPRNT or Server Direct Print credentials.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrinterCredentials'}
         '409':
-          description: too_many_printers (5 per location)
+          description: too_many_printers (12 per location)
 
   /locations/{locationId}/print/devices/{deviceId}:
     parameters:
@@ -6672,16 +6498,159 @@ paths:
               required: [orderId]
               properties:
                 orderId: {type: string, pattern: '^[0-9a-f]{32}$'}
+                stationId: {type: string, description: 'only this station''s ticket'}
       responses:
         '202':
-          description: Queued.
+          description: Queued (jobIds, one per printer and ticket).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrintJobQueued'}
         '404':
-          description: Unknown order.
+          description: Unknown order or station.
         '409':
           description: no_printer, order_not_paid, order_cancelled
+
+  /locations/{locationId}/print/routing:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Stations, their printers, category routing and the allergy ticket
+      operationId: getTicketRouting
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: The routing (defaults Kök and Bar when never saved).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketRouting'}
+    put:
+      tags: [Printing]
+      summary: Save stations and routing
+      operationId: putTicketRouting
+      description: Conditional on `version` (409 `changed_retry`). A station without stationId is new.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketRouting'}
+      responses:
+        '200':
+          description: Saved with the new version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketRouting'}
+        '400':
+          description: Invalid routing.
+        '409':
+          description: changed_retry
+
+  /locations/{locationId}/print/tickets:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags: [Printing]
+      summary: Kitchen display, the last day's station tickets
+      operationId: listStationTickets
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Tickets, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tickets:
+                    type: array
+                    items: {$ref: '#/components/schemas/StationTicket'}
+
+  /locations/{locationId}/print/tickets/{sourceId}/{stationId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: sourceId, in: path, required: true, schema: {type: string}}
+      - {name: stationId, in: path, required: true, schema: {type: string}}
+    put:
+      tags: [Printing]
+      summary: Station status of a ticket (skickad, tillagas, klar)
+      operationId: putStationTicketStatus
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {type: string, enum: [sent, preparing, ready]}
+      responses:
+        '200':
+          description: The ticket.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StationTicket'}
+        '404':
+          description: Unknown or cancelled ticket.
+
+  /locations/{locationId}/print/tickets/{sourceId}/{stationId}/print:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: sourceId, in: path, required: true, schema: {type: string}}
+      - {name: stationId, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [Printing]
+      summary: Print a station ticket again on its printers
+      operationId: reprintStationTicket
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '202':
+          description: Queued.
+        '404':
+          description: Unknown or cancelled ticket.
+        '409':
+          description: no_printer
+
+  /print/epson/{deviceId}:
+    parameters:
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags: [Printing]
+      summary: Epson Server Direct Print (the printer polls)
+      operationId: epsonServerDirectPrint
+      description: HTTP Basic (device id, secret). Form field ConnectionType=GetRequest answers the next job as
+        PrintRequestInfo with ePOS-Print XML (empty body when none); SetResponse with ResponseFile confirms jobs.
+      security:
+        - printerBasic: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                ConnectionType: {type: string, enum: [GetRequest, SetResponse]}
+                ID: {type: string}
+                Name: {type: string}
+                ResponseFile: {type: string}
+      responses:
+        '200':
+          description: text/xml
+        '401':
+          description: Wrong device or secret.
 
   /print/cloudprnt/{deviceId}:
     parameters:
@@ -6779,6 +6748,16 @@ components:
       schema:
         type: string
         enum: [cookie]
+    BackdropId:
+      name: id
+      in: path
+      required: true
+      description: Id of an image in the caller's backdrop library.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{26}$'
+      example: 019a7f3c2b1e4d5a6b7c8d9e0f
+
     CognitoSub:
       name: cognitoSub
       in: path
@@ -6944,59 +6923,52 @@ components:
           type: object
           description: orderId -> PENDING | PRINTING | FAILED for orders not printed yet.
           additionalProperties: {type: string, enum: [PENDING, PRINTING, FAILED]}
-    CardPayment:
+    TicketRouting:
       type: object
+      required: [stations, categories, allergyTicket, version]
       properties:
-        paymentId: {type: string}
-        locationId: {type: string}
-        date: {type: string, format: date}
-        amount: {type: integer, description: Öre}
-        currency: {type: string, enum: [sek]}
-        orderId: {type: string}
-        orderNumber: {type: integer}
-        note: {type: string}
-        readerId: {type: string}
-        readerLabel: {type: string}
-        status: {type: string, enum: [processing, succeeded, failed, canceled, refunded]}
-        attempt: {type: integer}
-        failure:
-          type: object
-          properties:
-            code: {type: string}
-            message: {type: string}
-        card: {$ref: '#/components/schemas/LooseObject'}
-        refund: {$ref: '#/components/schemas/LooseObject'}
-        simulated: {type: boolean}
-        createdAt: {type: string, format: date-time}
-        paidAt: {type: string, format: date-time}
-        receiptsSent: {type: integer}
-    CardPaymentList:
-      type: object
-      properties:
-        date: {type: string, format: date}
-        enabled: {type: boolean}
-        payments:
+        stations:
           type: array
-          items: {$ref: '#/components/schemas/CardPayment'}
-    CardReaderList:
+          minItems: 1
+          maxItems: 12
+          items:
+            type: object
+            required: [name]
+            properties:
+              stationId: {type: string, pattern: '^[a-z0-9]{2,16}$'}
+              name: {type: string, minLength: 1, maxLength: 30}
+              printerIds: {type: array, items: {type: string}}
+        categories:
+          type: object
+          description: starters, mains, desserts, drinks -> stationId or "none" (no ticket)
+          additionalProperties: {type: string}
+        allergyTicket: {type: boolean}
+        version: {type: integer}
+    StationTicket:
       type: object
       properties:
-        enabled: {type: boolean}
-        readers:
+        sourceId: {type: string, description: orderId of the online or QR table order}
+        stationId: {type: string}
+        stationName: {type: string}
+        status: {type: string, enum: [sent, preparing, ready, cancelled]}
+        allergy: {type: boolean}
+        notes: {type: string}
+        orderId: {type: string}
+        number: {type: integer}
+        mode: {type: string, enum: [pickup, table]}
+        tableLabel: {type: string}
+        placedAt: {type: string, format: date-time}
+        entries:
           type: array
           items:
             type: object
             properties:
-              id: {type: string}
-              label: {type: string}
-              deviceType: {type: string}
-              status: {type: string, enum: [online, offline]}
-              simulated: {type: boolean}
-    CardReceipt:
-      type: object
-      properties:
-        payment: {$ref: '#/components/schemas/CardPayment'}
-        receipt: {$ref: '#/components/schemas/LooseObject'}
+              name: {type: string}
+              quantity: {type: integer}
+              course: {type: string, nullable: true, enum: [starters, mains, desserts, drinks, null]}
+              partOf: {type: string}
+              note: {type: string}
+              allergy: {type: string}
     PrintJobQueued:
       type: object
       properties:
@@ -7402,9 +7374,8 @@ components:
             features:
               type: object
               description: |
-                reservations, ordering, catering, terminal, marketing,
-                siteBuilder, giftCards, waitlist, events. Never kassa
-                (and never phoneAgent).
+                reservations, ordering, catering, marketing,
+                siteBuilder, giftCards, waitlist, events. Never phoneAgent.
               additionalProperties:
                 type: boolean
             site:
@@ -7944,6 +7915,35 @@ components:
         refundedAmount:
           type: integer
 
+    TenantBillingSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        customer:
+          type: boolean
+          description: Booqy has created the billing customer (the agreement has started).
+        hasCard:
+          type: boolean
+        cardBrand:
+          type: string
+          nullable: true
+        cardLast4:
+          type: string
+          nullable: true
+        collection:
+          type: string
+          enum: [card, invoice]
+          description: How the next monthly invoice (on the 1st, in advance) is collected.
+        preference:
+          type: string
+          enum: [card, invoice]
+          description: card = the saved card is charged automatically (default); invoice = Booqy agreed to invoice with 30 days to pay.
+        daysUntilDue:
+          type: integer
+          nullable: true
+          description: Days to pay an emailed invoice (10 without a card, 30 when invoicing was agreed); null when the card is charged.
+        pastDue:
+          type: boolean
     Tenant:
       type: object
       additionalProperties: false
@@ -7973,6 +7973,17 @@ components:
         planId:
           type: string
           nullable: true
+        free:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: The Free plan (planId "free"), no monthly charge; null on any other plan.
+          properties:
+            until:
+              type: string
+              format: date
+              nullable: true
+              description: The last free day (Europe/Stockholm); null = no end date.
         entitlements:
           type: object
           properties:
@@ -7983,7 +7994,7 @@ components:
               type: object
               additionalProperties:
                 type: boolean
-              description: e.g. reservations, ordering, catering, terminal.
+              description: e.g. reservations, ordering, catering, marketing.
         locationCount:
           type: integer
         stripe:
@@ -8052,6 +8063,27 @@ components:
               description: A new tenant - its public routes answer 404 until a version is accepted.
             upToDate:
               type: boolean
+        terms:
+          type: object
+          additionalProperties: false
+          description: Allmänna villkor för restauranger (Booqy's terms for the restaurant as a customer). Never a gate for the site.
+          properties:
+            currentVersion:
+              type: string
+            acceptedVersion:
+              type: string
+              nullable: true
+            acceptedAt:
+              type: string
+              format: date-time
+              nullable: true
+            upToDate:
+              type: boolean
+        billing:
+          nullable: true
+          description: Owners only (null for staff). Booqy's own subscription on the platform Stripe account.
+          allOf:
+            - $ref: '#/components/schemas/TenantBillingSummary'
         role:
           type: string
           enum: [owner_user, staff_user]
@@ -8130,6 +8162,19 @@ components:
           allOf:
             - $ref: '#/components/schemas/InsightsSummary'
           nullable: true
+        upcoming:
+          type: array
+          description: The `ahead` days after today, bookings still on (not cancelled, held or pending).
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              bookings:
+                type: integer
+              guests:
+                type: integer
 
     InsightsSummary:
       type: object
@@ -8140,7 +8185,7 @@ components:
         noShows, noShowPct, cancelled, cancelledPct, lateCancels,
         lateCancelPct, cardOnFilePct, occupancy, seatFill, sources {online,
         phone, onsite}, lead [{label, bookings}] (days ahead: 0, 1, 2-6,
-        7-13, 14+), party [{size, bookings}] (8 = 8+), bySize [{size,
+        7-13, 14+; online and phone bookings only), party [{size, bookings}] (8 = 8+), bySize [{size,
         occupancy}], feesCharged, feeCount, feesFailed, feesRefunded,
         orders, orderRevenue, tableRevenue, pickupRevenue, tableOrders,
         avgOrder, prepMinutes, latePct, cateringRevenue, revenue, catering
@@ -8148,7 +8193,9 @@ components:
         conversionPct, avgCatering}, web {visits, pageviews, bookings,
         orders, catering, conversionPct, channels[]}, dishes [{id, name,
         quantity, revenue, previousQuantity}], pairs [{a, b, orders}],
-        byHour, byWeekday (0 = Monday), byDay, heat [{weekday, hour,
+        byHour, byWeekday (0 = Monday; days = how many of that
+        weekday the period has; occupancy null when closed), byDay (with
+        arrived), heat [{weekday, hour,
         occupancy}].
 
         Margin per dish (owners only, when the restaurant has dishMargin):
@@ -8281,10 +8328,53 @@ components:
           format: date-time
         forTable:
           type: object
-          description: With ?table=<code> - the table the code belongs to.
+          description: |
+            With ?table=<code> - the table the code belongs to, named as in
+            the active floor plan now. 400 `table code is invalid` (not this
+            location's), `table code revoked` (regenerated) or `table
+            removed` (no longer in the floor plan).
           properties:
             label:
               type: string
+            title:
+              type: string
+              description: How to show it, e.g. "Bord 7" for "7".
+
+    TableCode:
+      type: object
+      required:
+        - tableId
+        - label
+        - title
+        - code
+        - url
+      properties:
+        tableId:
+          type: string
+        label:
+          type: string
+        title:
+          type: string
+          description: How to print it, e.g. "Bord 7" for "7".
+        seats:
+          type: integer
+        code:
+          type: string
+          description: Random 22-character code (the QR code's ?bord= value).
+        url:
+          type: string
+          nullable: true
+          description: The guest-site address to put in the QR code; null while the restaurant has no site address.
+
+    TableCodeList:
+      type: object
+      required:
+        - tables
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableCode'
 
     OrderCreateRequest:
       type: object
@@ -8325,6 +8415,27 @@ components:
                 type: integer
                 minimum: 1
                 maximum: 20
+              note:
+                type: string
+                maxLength: 140
+              allergy:
+                type: string
+                maxLength: 140
+              options:
+                type: array
+                maxItems: 30
+                description: |
+                  The guest's picks from the dish's option groups. Checked
+                  against the menu (400 `option_invalid`, or
+                  `option_required` when a required group has no pick); the
+                  choices' prices are added to the unit price by the server.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [group, choice]
+                  properties:
+                    group: {type: string, maxLength: 40}
+                    choice: {type: string, maxLength: 40}
         name:
           type: string
         phone:
@@ -8425,11 +8536,20 @@ components:
           type: string
         unitPrice:
           type: integer
-          description: Öre, including VAT.
+          description: Öre, including VAT and the chosen options.
         quantity:
           type: integer
         total:
           type: integer
+        options:
+          type: array
+          description: The guest's picks with their price (öre per unit).
+          items:
+            type: object
+            properties:
+              group: {type: string}
+              choice: {type: string}
+              price: {type: integer}
         vatRate:
           type: integer
           enum:
@@ -8955,6 +9075,14 @@ components:
         createdAt:
           type: string
           format: date-time
+        avatarUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: >-
+            One-hour presigned link to the user's optional profile picture
+            (256x256 WebP), or null (show initials). Only on GET /list-users
+            and GET /users/{cognitoSub}.
 
     UserList:
       type: object
@@ -8974,8 +9102,14 @@ components:
         - opensAt
         - closesAt
       description: |
-        Both times use local 24-hour `HH:MM`. `opensAt` must precede
-        `closesAt`; overnight intervals are not accepted.
+        Both times use local 24-hour `HH:MM` and must differ. In the
+        weekly `businessHours`, a `closesAt` earlier than `opensAt` (or
+        `00:00`) closes after midnight, on the next day: saturday
+        `18:00`-`02:00` is open until Sunday 02:00. Only a day's last
+        interval may do so, and it must end by the next day's first
+        opening. Bookings end on the date they start (by 23:59); the hours
+        after midnight are bookable from 00:00 on the next date. Special-day
+        intervals stay within their date (`opensAt` before `closesAt`).
       properties:
         opensAt:
           type: string
@@ -9754,11 +9888,83 @@ components:
 
     MenuCategory:
       type: string
-      enum:
-        - starters
-        - mains
-        - desserts
-        - drinks
+      pattern: '^[a-z0-9]{2,32}$'
+      description: |
+        A categoryId of the location's own categories (GET/PUT
+        /locations/{locationId}/menu/categories). Until the owner changes
+        them every location has starters, mains, desserts and drinks. A
+        dish's category must be one of the location's (400 otherwise).
+
+    MenuCategoryEntry:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        categoryId:
+          type: string
+          pattern: '^[a-z0-9]{2,32}$'
+          description: Omitted for a new category; the server assigns one.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+
+    MenuCategoryList:
+      type: object
+      additionalProperties: false
+      required: [categories, version]
+      properties:
+        categories:
+          type: array
+          minItems: 1
+          maxItems: 30
+          description: Display order.
+          items:
+            $ref: '#/components/schemas/MenuCategoryEntry'
+        version:
+          type: integer
+          minimum: 0
+          description: Optimistic lock; send the version you loaded (0 = the defaults).
+
+    MenuAllergens:
+      type: array
+      uniqueItems: true
+      description: EU 1169/2011 annex II allergens; returned in this enum's order. null or [] clears.
+      items:
+        type: string
+        enum: [gluten, crustaceans, eggs, fish, peanuts, soy, milk, nuts, celery, mustard, sesame, sulphites,
+               lupin, molluscs]
+
+    MenuOptionGroups:
+      type: array
+      maxItems: 10
+      description: |
+        Option groups the guest picks from when ordering (Storlek, Extra ...).
+        Group names are unique per dish and choice names per group. A
+        required group needs at least one pick; at most maxChoices picks
+        (default 1, at most the number of choices). Each choice's price (kr,
+        0 = free) is added to the dish price by the server when the order is
+        priced. null or [] clears.
+      items:
+        type: object
+        additionalProperties: false
+        required: [name, choices]
+        properties:
+          name: {type: string, minLength: 1, maxLength: 40}
+          required: {type: boolean, default: false}
+          maxChoices: {type: integer, minimum: 1, maximum: 20, default: 1}
+          choices:
+            type: array
+            minItems: 1
+            maxItems: 20
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, price]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 40}
+                price:
+                  $ref: '#/components/schemas/MenuPrice'
 
     MenuPrice:
       type: number
@@ -9790,12 +9996,15 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           minLength: 1
           pattern: '.*\S.*'
           description: |
-            For a new upload, use the complete S3 object key returned by the
-            upload-URL endpoint, including its `menu-images/` prefix. Legacy
-            keys remain accepted. Existence is not checked by this Lambda.
+            Optional: a dish needs no photo. For a new upload, use the
+            complete S3 object key returned by the upload-URL endpoint,
+            including its `menu-images/` prefix. Legacy keys remain accepted.
+            null in a PUT removes the photo. Existence is not checked by this
+            Lambda.
         active:
           type: boolean
         alcohol:
@@ -9805,6 +10014,58 @@ components:
           $ref: '#/components/schemas/MenuScheduleBound'
         availableUntil:
           $ref: '#/components/schemas/MenuScheduleBound'
+        station:
+          type: string
+          nullable: true
+          description: Kitchen ticket station (print/routing stationId), "none" for no ticket, null = the category's.
+        components:
+          type: array
+          maxItems: 8
+          description: A combo's parts, each to its own station (null station = the dish's).
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string, maxLength: 60}
+              station: {type: string, nullable: true}
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
+        expectedUpdatedAt:
+          type: string
+          description: |
+            PUT only: the updatedAt of the dish as the editor loaded it. When
+            the dish was saved by someone else since, the answer is 409 with
+            code `stale_item` and the current dish in `item`; nothing is
+            saved.
+
+    MenuImageFocus:
+      type: object
+      nullable: true
+      additionalProperties: false
+      required:
+        - x
+        - y
+      properties:
+        x:
+          type: integer
+          minimum: 0
+          maximum: 100
+        y:
+          type: integer
+          minimum: 0
+          maximum: 100
+      example:
+        x: 50
+        y: 30
+      description: |
+        Focal point of the dish photo in whole percent of its width (x) and
+        height (y), used as CSS `object-position` wherever the photo is
+        cropped. Omitted in responses and null in a request mean the centre
+        (50, 50); null in a PUT clears a stored value.
 
     MenuScheduleBound:
       type: string
@@ -9829,7 +10090,6 @@ components:
             - description
             - price
             - category
-            - imageKey
             - active
 
     MenuItemUpdateRequest:
@@ -9848,7 +10108,6 @@ components:
         - description
         - price
         - category
-        - imageKey
         - active
         - createdBy
         - createdAt
@@ -9867,17 +10126,39 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           description: |
-            Stored S3 object key. New uploads include the `menu-images/`
-            prefix; legacy values are returned unchanged.
+            Stored S3 object key, null when the dish has no photo. New
+            uploads include the `menu-images/` prefix; legacy values are
+            returned unchanged.
         active:
           type: boolean
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
         alcohol:
           type: boolean
         availableFrom:
           $ref: '#/components/schemas/MenuScheduleBound'
         availableUntil:
           $ref: '#/components/schemas/MenuScheduleBound'
+        station:
+          type: string
+          nullable: true
+          description: Kitchen ticket station (print/routing stationId), "none" for no ticket, null = the category's.
+        components:
+          type: array
+          maxItems: 8
+          description: A combo's parts, each to its own station (null station = the dish's).
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string, maxLength: 60}
+              station: {type: string, nullable: true}
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
         createdBy:
           type: string
         createdAt:
@@ -9912,22 +10193,36 @@ components:
           $ref: '#/components/schemas/MenuCategory'
         imageKey:
           type: string
+          nullable: true
           description: |
-            Stored S3 object key. New uploads include the `menu-images/`
-            prefix; legacy values are returned unchanged.
+            Stored S3 object key, null when the dish has no photo. New
+            uploads include the `menu-images/` prefix; legacy values are
+            returned unchanged.
+        allergens:
+          $ref: '#/components/schemas/MenuAllergens'
+        options:
+          $ref: '#/components/schemas/MenuOptionGroups'
         alcohol:
           type: boolean
+        imageFocus:
+          $ref: '#/components/schemas/MenuImageFocus'
 
     PublicMenuItemList:
       type: object
       additionalProperties: false
       required:
         - items
+        - categories
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/PublicMenuItem'
+        categories:
+          type: array
+          description: The location's categories in display order; group the dishes by them.
+          items:
+            $ref: '#/components/schemas/MenuCategoryEntry'
 
     MenuItemList:
       type: object
@@ -11402,6 +11697,124 @@ components:
         - image/png
         - image/webp
 
+    UserBackdropItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - url
+        - thumbUrl
+        - uploadedAt
+        - width
+        - height
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9a-f]{26}$'
+        url:
+          type: string
+          format: uri
+          description: One-hour presigned S3 GET of the full image.
+        thumbUrl:
+          type: string
+          format: uri
+          description: One-hour presigned S3 GET of the ~400 px wide WebP thumbnail.
+        uploadedAt:
+          type: string
+          format: date-time
+        width:
+          type: integer
+          description: Width as displayed (EXIF orientation applied).
+        height:
+          type: integer
+
+    AvatarLink:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: One-hour presigned S3 GET of the 256x256 WebP, or null.
+
+    UserBackdropLibrary:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - selectedId
+        - max
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          description: Newest first.
+          items:
+            $ref: '#/components/schemas/UserBackdropItem'
+        selectedId:
+          type: string
+          nullable: true
+        max:
+          type: integer
+          enum:
+            - 20
+
+    UserBackdropUploadRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - contentType
+        - size
+        - width
+        - height
+      properties:
+        contentType:
+          type: string
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+        size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+          description: File size in bytes.
+        width:
+          type: integer
+          minimum: 1
+          maximum: 20000
+        height:
+          type: integer
+          minimum: 1
+          maximum: 20000
+
+    UserBackdropUpload:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - url
+        - fields
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9a-f]{26}$'
+          description: The new image's id, for complete.
+        url:
+          type: string
+          format: uri
+          description: The bucket's regional endpoint to POST to.
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Form fields to send first, unchanged (key, Content-Type, policy,
+            signature fields).
+
     MenuImageUpload:
       type: object
       additionalProperties: false
@@ -11961,7 +12374,7 @@ components:
           example:
             error: pending layout activation not found
     ActiveLayoutNotFound:
-      description: The location has no active published layout.
+      description: Unknown location, an inactive tenant, or a new restaurant that has not accepted the DPA yet.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -11970,7 +12383,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: active layout not found
+            error: not found
     ActiveLayoutConflict:
       description: The active layout state or referenced snapshot is inconsistent.
       headers:
@@ -12135,6 +12548,54 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: layout version service unavailable
+    BackdropLimitReached:
+      description: The caller already has 20 images.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required:
+              - error
+              - max
+            properties:
+              error:
+                type: string
+                enum:
+                  - limit_reached
+              max:
+                type: integer
+          example:
+            error: limit_reached
+            max: 20
+
+    BackdropNotFound:
+      description: No such image of the caller.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: not_found
+
+    BackdropServiceUnavailable:
+      description: S3 did not answer; try again.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: service_unavailable
+
     ImageUploadServiceUnavailable:
       description: A temporary S3 upload capability could not be generated.
       headers:

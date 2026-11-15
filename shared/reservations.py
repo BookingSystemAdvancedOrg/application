@@ -193,8 +193,14 @@ def valid_reservation_id(value):
 
 # --- request validation ----------------------------------------------------------
 
+_SE_MOBILE_NO_ZERO = re.compile(r"7\d{8}")
+
+
 def normalize_phone(raw):
-    """E.164. Swedish national numbers (07x..., 08...) get +46."""
+    """E.164. Swedish national numbers (07x..., 08...) get +46, and so does a
+    Swedish mobile number typed without the 0 ("70 123 45 67"). Swedish
+    numbers need 7-9 digits after +46, mobile numbers (7...) exactly 9. Same
+    rules as normalizePhone in site-kit (src/shared/phone.ts)."""
     if not isinstance(raw, str):
         raise ValueError("phone must be a string")
     digits = re.sub(r"[\s\-.]", "", raw.strip())
@@ -204,9 +210,22 @@ def normalize_phone(raw):
         digits = "+" + digits[2:]
     elif digits.startswith("0"):
         digits = "+46" + digits[1:]
-    if not _E164.fullmatch(digits):
+    elif _SE_MOBILE_NO_ZERO.fullmatch(digits):
+        digits = "+46" + digits
+    if digits.startswith("+460"):
+        digits = "+46" + digits[4:]  # +46 070... -> +4670...
+    if not _E164.fullmatch(digits) or not _valid_swedish(digits):
         raise ValueError("phone must be a valid phone number, e.g. +46701234567")
     return digits
+
+
+def _valid_swedish(e164):
+    if not e164.startswith("+46"):
+        return True
+    national = e164[3:]
+    if not 7 <= len(national) <= 9:
+        return False
+    return not national.startswith("7") or len(national) == 9
 
 
 def _text(body, field, *, required, max_length):

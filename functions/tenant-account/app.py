@@ -6,6 +6,9 @@ TRIGGER:
     PATCH /tenant
     POST  /tenant/stripe/account-link
     POST  /tenant/dpa/accept
+    POST  /tenant/terms/accept
+    GET   /tenant/billing
+    POST  /tenant/billing/card-session
 
 PURPOSE:
     The signed-in restaurant's own account: name, plan and what it allows,
@@ -17,6 +20,16 @@ PURPOSE:
     POST /tenant/dpa/accept (owner): accepts the current personuppgifts-
     biträdesavtal (shared/dpa.py) - an append-only DPA#<tenant> row with version,
     time and the accepting user, plus the `dpa` summary on PROFILE.
+    POST /tenant/terms/accept (owner): the same for Allmänna villkor för
+    restauranger (shared/terms.py, TERMS#<tenant> rows, `terms` on PROFILE).
+    Booqy's own subscription (the restaurant as Booqy's customer, on the
+    PLATFORM Stripe account, never the restaurant's connected account):
+    GET /tenant carries a `billing` summary (card on file, how invoices are
+    collected); GET /tenant/billing (owner) lists the open invoices with
+    their Stripe payment links; POST /tenant/billing/card-session (owner)
+    opens a Stripe Checkout page in setup mode where the owner adds the card
+    that is then charged automatically (platform-stripe-webhook makes it the
+    default). Without a billing customer yet: 409 no_billing_customer.
     Everything else about the tenant is managed by operators in Booqy Console.
 
     Multi-tenant: the tenant is the token's tenant_id claim - there is no
@@ -32,6 +45,8 @@ ENV_VARS:
     STRIPE_SECRET_ARN -- platform Stripe key, Secrets Manager {"apiKey": ...}
     STRIPE_API_VERSION -- Stripe-Version header
     ADMIN_APP_URL -- admin app base URL (Stripe return/refresh links)
+    BILLING_DAYS_UNTIL_DUE / BILLING_DAYS_UNTIL_DUE_NO_CARD -- days to pay an
+        emailed invoice (invoice preference / no card yet), shown to the owner
 
 AWS RESOURCE ACCESS:
     Tenant table GetItem/Query; location table Query on the caller's own
@@ -40,7 +55,9 @@ AWS RESOURCE ACCESS:
     replyToEmail, branding, notifications, insights, updatedAt, updatedBy with ReturnValues
     NONE/UPDATED_*; GetSecretValue on the platform Stripe key. DPA accept:
     PutItem of a new DPA# row and UpdateItem of `dpa` on PROFILE, in one
-    transaction (infrastructure dpa-iam.tf).
+    transaction (infrastructure dpa-iam.tf); terms accept the same with
+    TERMS# and `terms` (terms-iam.tf). Billing: Stripe API calls only (the
+    platform key), no new table access.
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.2
 """
@@ -61,7 +78,8 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dpa, tenant
+from shared import dpa, tenant, terms
+from shared import stripe_client
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -74,6 +92,9 @@ _ROUTES = {
     ("PATCH", "/tenant"),
     ("POST", "/tenant/stripe/account-link"),
     ("POST", "/tenant/dpa/accept"),
+    ("POST", "/tenant/terms/accept"),
+    ("GET", "/tenant/billing"),
+    ("POST", "/tenant/billing/card-session"),
 }
 _EDITABLE = ("senderName", "replyToEmail", "branding", "notifications", "insights")
 # Guest/restaurant messages (functions/notification, reservation-reminders).
@@ -180,6 +201,15 @@ def _locations(ctx):
     return [_location_summary(row) for row in rows]
 
 
+def _free(row):
+    """The Free plan (Booqy Console): no monthly charge; `until` is the last
+    free day, None = no end date. None on any other plan."""
+    if row.get("planId") != "free":
+        return None
+    billing = row.get("billing") if isinstance(row.get("billing"), dict) else {}
+    return {"until": billing.get("freeUntil") or None}
+
+
 def _public_tenant(ctx, row):
     tenant_id, role = ctx.tenant_id, ctx.role
     stripe = row.get("stripe") or {}
@@ -190,6 +220,7 @@ def _public_tenant(ctx, row):
         "slug": row.get("slug"),
         "status": row.get("status"),
         "planId": row.get("planId"),
+        "free": _free(row),
         "entitlements": {
             "maxLocations": entitlements.get("maxLocations"),
             "features": entitlements.get("features") or {},
@@ -209,8 +240,43 @@ def _public_tenant(ctx, row):
         "notifications": _notifications(row.get("notifications")),
         "insights": _insights(row.get("insights")),
         "dpa": dpa.status(row),
+        "terms": terms.status(row),
+        "billing": _billing_summary(row) if role == "owner_user" else None,
         "role": role,
         "locations": _locations(ctx),
+    }
+
+
+def _days_until_due(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+def _billing_summary(row, invoices=None):
+    """Booqy's subscription as the owner sees it: is there a card that is
+    charged automatically, or do invoices come by email (the days to pay
+    from the config: BILLING_DAYS_UNTIL_DUE_NO_CARD without a card,
+    BILLING_DAYS_UNTIL_DUE when Booqy agreed to invoice). Past due: a failed
+    card payment, or (with `invoices`, GET /tenant/billing) an open invoice
+    past its due date. Never the card number."""
+    billing = row.get("billing") if isinstance(row.get("billing"), dict) else {}
+    pref = billing.get("collectionPreference")
+    if pref not in ("card", "invoice"):
+        pref = "invoice" if billing.get("collectionMethod") == "send_invoice" and billing.get("collectionMethodChosen") else "card"
+    has_card = bool(billing.get("defaultPaymentMethod"))
+    return {
+        "customer": bool(billing.get("customerId")),
+        "hasCard": has_card,
+        "cardBrand": billing.get("cardBrand") if has_card else None,
+        "cardLast4": billing.get("cardLast4") if has_card else None,
+        "collection": "card" if pref == "card" and has_card else "invoice",
+        "preference": pref,
+        "daysUntilDue": None if pref == "card" and has_card else (
+            _days_until_due("BILLING_DAYS_UNTIL_DUE", 30) if pref == "invoice"
+            else _days_until_due("BILLING_DAYS_UNTIL_DUE_NO_CARD", 10)),
+        "pastDue": bool(billing.get("pastDueSince")) or any(i.get("overdue") for i in invoices or []),
     }
 
 
@@ -458,6 +524,105 @@ def _accept_dpa(ctx, event):
     return _response(HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id)))
 
 
+# --- POST /tenant/terms/accept ---------------------------------------------------
+
+def _accept_terms(ctx, event):
+    body = _body(event)
+    if set(body) - {"version"}:
+        raise ValueError("only version may be sent")
+    if body.get("version") != terms.CURRENT_VERSION:
+        return _response(
+            HTTPStatus.CONFLICT.value,
+            {"error": "terms_version_outdated", "currentVersion": terms.CURRENT_VERSION},
+        )
+    accepted_at = _now()
+    record = {
+        **terms.record_key(ctx.tenant_id, accepted_at),
+        "tenantId": ctx.tenant_id,
+        "version": terms.CURRENT_VERSION,
+        "acceptedAt": accepted_at,
+        "acceptedBy": _accepting_user(ctx),
+    }
+    summary = {"version": terms.CURRENT_VERSION, "acceptedAt": accepted_at, "acceptedBySub": ctx.sub}
+    table(TENANT_TABLE_NAME).meta.client.transact_write_items(
+        TransactItems=[
+            {"Put": {"TableName": TENANT_TABLE_NAME, "Item": record,
+                     "ConditionExpression": "attribute_not_exists(SK)"}},
+            {"Update": {"TableName": TENANT_TABLE_NAME,
+                        "Key": {"PK": tenant.tenant_pk(ctx.tenant_id), "SK": "PROFILE"},
+                        "UpdateExpression": "SET #terms = :terms",
+                        "ConditionExpression": "attribute_exists(PK)",
+                        "ExpressionAttributeNames": {"#terms": "terms"},
+                        "ExpressionAttributeValues": {":terms": summary}}},
+        ]
+    )
+    tenant.invalidate(ctx.tenant_id)
+    return _response(HTTPStatus.OK.value, _public_tenant(ctx, _fresh_profile(ctx.tenant_id)))
+
+
+# --- Booqy's subscription: GET /tenant/billing, POST /tenant/billing/card-session --
+
+def _billing_customer(row):
+    billing = row.get("billing") if isinstance(row.get("billing"), dict) else {}
+    customer = billing.get("customerId")
+    return customer if isinstance(customer, str) and customer.startswith("cus_") else None
+
+
+def _stripe_v1(method, path, params=None, idempotency_key=None):
+    """The platform account (never the restaurant's connected account)."""
+    try:
+        return stripe_client.request(method, path, params, idempotency_key=idempotency_key)
+    except (stripe_client.StripeError, stripe_client.StripeUnavailable):
+        raise _ServiceFailure from None
+
+
+def _open_invoices(ctx, row):
+    customer = _billing_customer(row)
+    if not customer:
+        return _response(HTTPStatus.OK.value, {"billing": _billing_summary(row), "invoices": []})
+    page = _stripe_v1("GET", "/v1/invoices", {"customer": customer, "status": "open", "limit": 20})
+    now = datetime.now(timezone.utc).timestamp()
+    invoices = []
+    for inv in page.get("data") or []:
+        if not isinstance(inv, dict) or (inv.get("metadata") or {}).get("tenantId") not in (None, ctx.tenant_id):
+            continue
+        due = inv.get("due_date")
+        if not isinstance(due, int) and inv.get("collection_method") == "charge_automatically":
+            # A card invoice has no due date: due when it was charged.
+            due = (inv.get("status_transitions") or {}).get("finalized_at")
+        invoices.append({
+            "number": inv.get("number"),
+            "amountDueSek": round((inv.get("amount_remaining") or 0) / 100, 2),
+            "dueDate": datetime.fromtimestamp(due, timezone.utc).date().isoformat() if isinstance(due, int) else None,
+            "overdue": isinstance(due, int) and due < now,
+            "collection": "card" if inv.get("collection_method") == "charge_automatically" else "invoice",
+            "url": inv.get("hosted_invoice_url"),
+            "description": inv.get("description"),
+        })
+    invoices.sort(key=lambda i: i["dueDate"] or "")
+    return _response(HTTPStatus.OK.value, {"billing": _billing_summary(row, invoices), "invoices": invoices})
+
+
+def _card_session(ctx, row):
+    customer = _billing_customer(row)
+    if not customer:
+        # Booqy creates the billing customer when the agreement starts.
+        return _error(HTTPStatus.CONFLICT.value, "no_billing_customer")
+    base = os.environ["ADMIN_APP_URL"].rstrip("/")
+    minute = int(datetime.now(timezone.utc).timestamp() // 60)
+    session = _stripe_v1("POST", "/v1/checkout/sessions", {
+        "mode": "setup", "customer": customer, "currency": "sek", "locale": "sv",
+        "payment_method_types": ["card"],
+        "success_url": f"{base}/installningar?kort=klart",
+        "cancel_url": f"{base}/installningar?kort=avbrutet",
+        "metadata": {"tenantId": ctx.tenant_id},
+        "setup_intent_data": {"metadata": {"tenantId": ctx.tenant_id}},
+    }, idempotency_key=f"card-session-{ctx.tenant_id}-{minute}")
+    if not isinstance(session, dict) or not isinstance(session.get("url"), str):
+        raise _ServiceFailure
+    return _response(HTTPStatus.OK.value, {"url": session["url"]})
+
+
 # --- POST /tenant/stripe/account-link --------------------------------------------
 
 def _stripe_api_key():
@@ -530,6 +695,11 @@ def handler(event, context):
     try:
         # Reading is for everyone in the restaurant; changing is owner only.
         ctx = tenant.for_jwt(event, owner_only=method != "GET")
+        if path == "/tenant/billing" or path == "/tenant/billing/card-session":
+            if ctx.role != "owner_user":
+                return _error(HTTPStatus.FORBIDDEN.value, "owner only")
+            row = _fresh_profile(ctx.tenant_id)
+            return _open_invoices(ctx, row) if method == "GET" else _card_session(ctx, row)
         if method == "GET":
             # Fresh, not the per-container cache: the owner must see a change
             # (an edit, a new location, Stripe onboarding) immediately.
@@ -548,6 +718,8 @@ def handler(event, context):
             )
         if path == "/tenant/dpa/accept":
             return _accept_dpa(ctx, event)
+        if path == "/tenant/terms/accept":
+            return _accept_terms(ctx, event)
         return _account_link(
             tenant.TenantContext(ctx.tenant_id, _fresh_profile(ctx.tenant_id), ctx.role, ctx.sub)
         )

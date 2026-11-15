@@ -99,6 +99,20 @@ def test_get_returns_own_tenant_without_operator_fields(app):
         assert secret not in response["body"]
 
 
+def test_free_plan_shows_its_end_date(app):
+    module, _ = app
+    assert body_of(module.handler(make_event(), None))["free"] is None
+    tenants = boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE)
+    key = {"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}
+    tenants.update_item(Key=key, UpdateExpression="SET planId = :p, billing = :b",
+                        ExpressionAttributeValues={":p": "free", ":b": {"freeUntil": "2027-02-14", "priceSek": 500}})
+    body = body_of(module.handler(make_event(), None))
+    assert body["planId"] == "free" and body["free"] == {"until": "2027-02-14"}
+    assert "500" not in json.dumps(body["free"])
+    tenants.update_item(Key=key, UpdateExpression="REMOVE billing.freeUntil")
+    assert body_of(module.handler(make_event(), None))["free"] == {"until": None}
+
+
 def test_staff_can_read(app):
     module, _ = app
     assert body_of(module.handler(make_event(role="staff_user"), None))["role"] == "staff_user"

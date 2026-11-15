@@ -320,24 +320,23 @@ def _required_business_hours(source):
                 raise ValueError(
                     f"businessHours.{day} times must use 24-hour HH:MM"
                 )
-            if opens_at >= closes_at:
-                raise ValueError(
-                    f"businessHours.{day} opening time must precede closing time"
-                )
             normalized_intervals.append(
                 {"opensAt": opens_at, "closesAt": closes_at}
             )
 
         normalized_intervals.sort(key=lambda interval: interval["opensAt"])
-        for previous, current in zip(
-            normalized_intervals,
-            normalized_intervals[1:],
-        ):
-            if previous["closesAt"] > current["opensAt"]:
-                raise ValueError(
-                    f"businessHours.{day} entries must not overlap"
-                )
         normalized[day] = normalized_intervals
+
+    # A closing time earlier than the opening time runs past midnight
+    # (saturday 18:00-02:00 closes Sunday 02:00, shared/booking_rules.py).
+    problem = booking_rules.week_problem(normalized)
+    if problem:
+        day, kind = problem
+        raise ValueError({
+            "same": f"businessHours.{day} opening and closing time must differ",
+            "overlap": f"businessHours.{day} entries must not overlap",
+            "next_day": f"businessHours.{day} hours after midnight overlap the next day's opening",
+        }[kind])
     return normalized
 
 

@@ -104,7 +104,6 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MENU_ID_MAX = 128
 _TABLE_ID_MAX = 128
 _TABLE_LABEL_MAX = 40
-_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
 class NotFound(Exception):
@@ -262,7 +261,9 @@ def paused_until(location, now):
     return until if until > now else None
 
 
-def _intervals_today(location, local):
+def _spans_today(location, local):
+    """(opens, closes) minutes from today's midnight, yesterday's hours past
+    midnight included (shared/booking_rules.py date_spans)."""
     hours = (location or {}).get("businessHours")
     if not isinstance(hours, dict):
         return []
@@ -271,11 +272,9 @@ def _intervals_today(location, local):
             booking_rules.validate_special_days((location or {}).get("specialDays")))
     except ValueError:
         special_days = {}
-    special = special_days.get(local.date().isoformat())
-    weekday = _WEEKDAYS[local.weekday()]
     try:
-        return list(booking_rules.day_intervals(hours, weekday, special) or [])
-    except (KeyError, TypeError):
+        return booking_rules.date_spans(hours, special_days, local.date())
+    except (KeyError, TypeError, ValueError, IndexError):
         return []
 
 
@@ -295,22 +294,18 @@ def availability(location, tenant_row, now):
         return {**base, "open": False, "reason": "paused", "pausedUntil": iso(paused)}
     local = local_now(location, now)
     minute = local.hour * 60 + local.minute
-    for interval in _intervals_today(location, local):
-        try:
-            opens = _minutes(interval["opensAt"])
-            closes = _minutes(interval["closesAt"])
-        except (KeyError, TypeError, ValueError):
-            continue
+    for opens, closes in _spans_today(location, local):
         last = closes - policy["lastOrderMinutes"]
         if opens <= minute < last:
-            return {**base, "open": True, "closesAt": interval["closesAt"],
-                    "lastOrderAt": f"{last // 60:02d}:{last % 60:02d}"}
+            return {**base, "open": True, "closesAt": _clock(closes),
+                    "lastOrderAt": _clock(last)}
     return {**base, "open": False, "reason": "closed"}
 
 
-def _minutes(value):
-    hours, minutes = value.split(":")
-    return int(hours) * 60 + int(minutes)
+def _clock(minute):
+    """HH:MM of a minute from today's midnight (past midnight wraps: 1560 -> 02:00)."""
+    minute %= 1440
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def require_open(location, tenant_row, mode, now):
@@ -350,30 +345,82 @@ def vat_breakdown(lines):
 
 # --- request validation --------------------------------------------------------------------
 
+LINE_TEXT_MAX = 140
+
+
+def _line_text(value, field):
+    """A line's note ("ingen lök") or allergy ("jordnötsallergi"): one line
+    of text, no control characters; empty -> None."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    text = " ".join("".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in value).split())
+    if len(text) > LINE_TEXT_MAX:
+        raise ValueError(f"{field} must be at most {LINE_TEXT_MAX} characters")
+    return text or None
+
+
+MAX_OPTION_PICKS = 30
+
+
+def _line_options(raw):
+    """[{group, choice}] the guest picked -> a sorted list (checked against
+    the dish in price_lines)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_OPTION_PICKS:
+        raise ValueError(f"options must be a list of at most {MAX_OPTION_PICKS}")
+    out = []
+    for pick in raw:
+        if not isinstance(pick, dict) or set(pick) != {"group", "choice"} \
+                or not all(isinstance(pick[k], str) and 0 < len(pick[k]) <= menu.OPTION_NAME_MAX for k in pick):
+            raise ValueError("each option needs group and choice")
+        out.append({"group": pick["group"], "choice": pick["choice"]})
+    return sorted(out, key=lambda p: (p["group"], p["choice"]))
+
+
 def validate_lines(raw):
-    """[{menuItemId, quantity}] -> [(menuItemId, quantity)] with each item
-    once (repeats are summed, and the sum must still be 1-20)."""
+    """[{menuItemId, quantity, note?, allergy?, options?}] -> [(menuItemId,
+    quantity, {note?, allergy?, options?})]. Lines with the same dish, note,
+    allergy and options are summed; a dish may appear at most 20 times in all."""
     if not isinstance(raw, list) or not raw:
         raise ValueError("items must be a non-empty list")
     if len(raw) > MAX_LINES:
         raise ValueError(f"items may have at most {MAX_LINES} lines")
-    quantities = {}
+    quantities, extras, per_dish = {}, {}, {}
     order = []
     for entry in raw:
-        if not isinstance(entry, dict) or set(entry) - {"menuItemId", "quantity"}:
+        if not isinstance(entry, dict) or set(entry) - {"menuItemId", "quantity", "note", "allergy", "options"}:
             raise ValueError("each item needs menuItemId and quantity")
         item_id = entry.get("menuItemId")
         if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > _MENU_ID_MAX \
                 or "#" in item_id:
             raise ValueError("menuItemId is invalid")
         quantity = _whole(entry.get("quantity"), 1, MAX_QUANTITY, "quantity")
-        if item_id not in quantities:
-            order.append(item_id)
-            quantities[item_id] = 0
-        quantities[item_id] += quantity
-        if quantities[item_id] > MAX_QUANTITY:
+        extra = {k: v for k in ("note", "allergy") if (v := _line_text(entry.get(k), k))}
+        picks = _line_options(entry.get("options"))
+        if picks:
+            extra["options"] = picks
+        key = (item_id, extra.get("note"), extra.get("allergy"),
+               tuple((p["group"], p["choice"]) for p in picks))
+        if key not in quantities:
+            order.append(key)
+            quantities[key] = 0
+            extras[key] = extra
+        quantities[key] += quantity
+        per_dish[item_id] = per_dish.get(item_id, 0) + quantity
+        if per_dish[item_id] > MAX_QUANTITY:
             raise ValueError(f"quantity must be at most {MAX_QUANTITY} per dish")
-    return [(item_id, quantities[item_id]) for item_id in order]
+    return [(key[0], quantities[key], extras[key]) for key in order]
+
+
+def line_label(line):
+    """The line's name with the guest's options, for receipts and checkout:
+    "Pizza Margherita (Stor, Extra ost)"."""
+    picks = [p.get("choice") for p in line.get("options") or [] if isinstance(p, dict) and p.get("choice")]
+    name = str(line.get("name") or "")
+    return f"{name} ({', '.join(picks)})" if picks else name
 
 
 def _price_ore(value):
@@ -390,7 +437,7 @@ def price_lines(location_id, wanted, mode, on_date):
     inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable")."""
     menu_table = os.environ["MENU_TABLE_NAME"]
     keys = [{"PK": {"S": location_pk(location_id)}, "SK": {"S": f"MENU#{item_id}"}}
-            for item_id, _ in wanted]
+            for item_id in dict.fromkeys(w[0] for w in wanted)]
     found = {}
     request = {menu_table: {"Keys": keys, "ConsistentRead": True}}
     for _ in range(5):
@@ -406,7 +453,7 @@ def price_lines(location_id, wanted, mode, on_date):
                                      "Message": "menu read incomplete"}}, "BatchGetItem")
     now = now_utc()
     lines = []
-    for item_id, quantity in wanted:
+    for item_id, quantity, *rest in wanted:
         item = found.get(item_id)
         if not item or item.get("SK") != f"MENU#{item_id}":
             raise ValueError("menu_item_unavailable")
@@ -420,6 +467,10 @@ def price_lines(location_id, wanted, mode, on_date):
             unit = _price_ore(item.get("price"))
         except ValueError:
             raise ValueError("menu_item_unavailable") from None
+        extra = dict(rest[0]) if rest else {}
+        # Option prices come from the menu too, never from the browser.
+        option_ore, chosen = menu.choose_options(item, extra.pop("options", None))
+        unit += option_ore
         name = item.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("menu_item_unavailable")
@@ -435,6 +486,11 @@ def price_lines(location_id, wanted, mode, on_date):
             "total": unit * quantity,
             "vatRate": vat_rate(alcohol, mode, on_date),
             **({"alcohol": True} if alcohol else {}),
+            **extra,
+            **({"options": chosen} if chosen else {}),
+            # Kitchen ticket routing, as the dish was when ordered (shared/routing.py).
+            **({"category": item["category"]} if isinstance(item.get("category"), str) else {}),
+            **({k: item[k] for k in menu.ROUTING_FIELDS if item.get(k)}),
         })
     total = sum(line["total"] for line in lines)
     if total <= 0:
@@ -568,8 +624,8 @@ def next_number(location_id, date_str):
 # --- views -----------------------------------------------------------------------------
 
 def _lines_view(item):
-    return [{k: line[k] for k in ("menuItemId", "name", "unitPrice", "quantity", "total", "vatRate")
-             if k in line} for line in item.get("lines") or []]
+    return [{k: line[k] for k in ("menuItemId", "name", "unitPrice", "quantity", "total", "vatRate", "note",
+                                  "allergy", "options") if k in line} for line in item.get("lines") or []]
 
 
 def guest_view(item, location=None):
@@ -611,7 +667,6 @@ def staff_view(item):
         "cancelledAt": item.get("cancelledAt"),
         "refund": item.get("refund"),
         "paymentMethod": item.get("paymentMethod"),
-        "cardPaymentId": item.get("cardPaymentId"),
         "history": item.get("history") or [],
     })
     return {k: v for k, v in view.items() if v is not None}

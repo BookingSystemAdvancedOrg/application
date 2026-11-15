@@ -3,14 +3,12 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "8049da171e01"
+CONTRACTS_HASH = "2f7fab7165b7"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
  'catering',
- 'terminal',
  'marketing',
- 'kassa',
  'metaAds',
  'siteBuilder',
  'guestCrm',
@@ -35,13 +33,11 @@ NEW_FEATURE_KEYS = ('metaAds',
  'dishMargin',
  'events',
  'phoneAgent')
-FeatureKey = Literal["reservations", "ordering", "catering", "terminal", "marketing", "kassa", "metaAds", "siteBuilder", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin", "events", "phoneAgent"]
+FeatureKey = Literal["reservations", "ordering", "catering", "marketing", "metaAds", "siteBuilder", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin", "events", "phoneAgent"]
 FEATURE_IDS = {'reservations': 'reservations',
  'ordering': 'ordering',
  'catering': 'catering',
- 'terminal': 'terminal',
  'marketing': 'marketing',
- 'kassa': 'kassa',
  'metaAds': 'meta-ads',
  'siteBuilder': 'site-builder',
  'guestCrm': 'guest-crm',
@@ -57,7 +53,6 @@ FEATURE_IDS = {'reservations': 'reservations',
 SITE_CONFIG_FEATURES = ('reservations',
  'ordering',
  'catering',
- 'terminal',
  'marketing',
  'siteBuilder',
  'giftCards',
@@ -139,7 +134,7 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                          'locationId': 'string',
                                                          'amountOre': 'int',
                                                          'balanceAfterOre': 'int',
-                                                         'channel': 'enum[online,kassa]',
+                                                         'channel': 'enum[online]',
                                                          'txId': 'string'},
                                             'optional': {}},
                       'GiftCard.RedemptionReversed': {'required': {'cardId': 'string',
@@ -231,7 +226,8 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                         'billedMinutes': 'int',
                                                         'outcome': 'enum[booked,moved,cancelled,info,transferred,callback,abandoned,refused,error]'},
                                            'optional': {'reservationId': 'string',
-                                                        'callbackId': 'string'}},
+                                                        'callbackId': 'string',
+                                                        'counterOffer': 'enum[none,other_time,next_day,nearby_table]'}},
                        'PhoneCall.Refused': {'required': {'locationId': 'string',
                                                           'callId': 'string',
                                                           'reason': 'enum[cap,kill_switch,hours,paused,entitlement]'},
@@ -429,7 +425,7 @@ class GiftCardRedeemedDetail(TypedDict):
     locationId: str
     amountOre: int
     balanceAfterOre: int
-    channel: Literal["online", "kassa"]
+    channel: Literal["online"]
     txId: str
 
 
@@ -633,6 +629,7 @@ class PhoneCallEndedDetail(TypedDict):
     outcome: Literal["booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error"]
     reservationId: NotRequired[str]
     callbackId: NotRequired[str]
+    counterOffer: NotRequired[Literal["none", "other_time", "next_day", "nearby_table"]]
 
 
 class PhoneCallRefusedDetail(TypedDict):
@@ -810,7 +807,6 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
  'insights.events': {'caller': 'insights',
                      'targets': ['events-tickets'],
                      'gate': 'events on or ever on'},
- 'kassa.giftcard': {'caller': 'kassa', 'targets': ['gift-cards'], 'gate': 'giftCards and kassa on'},
  'marketing.segment': {'caller': 'marketing, marketing-send',
                        'targets': ['guest-crm'],
                        'gate': 'audience {type: segment, exportId}'},
@@ -871,6 +867,7 @@ CallOutcome = Literal["booked", "moved", "cancelled", "info", "transferred", "ca
 CallRefusedReason = Literal["cap", "kill_switch", "hours", "paused", "entitlement"]
 ClientMode = Literal["simulator", "real"]
 ConnectionStatus = Literal["connected", "needs_reauth", "disconnected"]
+CounterOffer = Literal["none", "other_time", "next_day", "nearby_table"]
 GuestChannel = Literal["email", "sms"]
 GuestSourceKind = Literal["booking", "order", "catering"]
 PhoneAgentMode = Literal["after_hours", "overflow", "always"]

@@ -13,7 +13,8 @@ acceptedBySub} so GET /tenant and the public gate need no extra read.
 
 Going live: only tenants created with `dpaRequired: true` (Booqy Console sets
 it on new tenants) are gated. Until the owner has accepted any version, their
-public routes answer 404 (tenant.for_public). Tenants created before this
+public routes answer 404 (tenant.for_public); only the restaurant's own staff
+still get availability in admin (shared/staff_token.py). Tenants created before this
 existed have no flag and are never gated; they get a reminder in admin. A
 newer DPA version never takes a live site offline either - it only shows the
 reminder again.

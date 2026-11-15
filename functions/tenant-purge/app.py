@@ -37,6 +37,9 @@ PURPOSE:
         registered through us, and the hosted zone is deleted once the
         domain no longer points at it (a zone still in use is kept and
         reported, so the restaurant's email doesn't stop working)
+      * the deployed website (sites/<tenantId>/ in the sites bucket,
+        SITES_BUCKET_NAME; the bucket's 30-day version expiry removes the
+        older versions)
       * the website repo site-<slug> on GitHub (site-repo "delete", when
         SITE_REPO_FUNCTION_ARN is set; prod also cleans up dev's side): a
         refusal (e.g. the GitHub App lacks Administration write) is
@@ -77,7 +80,7 @@ ENV_VARS:
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
     MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME and
-    USER_BACKDROPS_TABLE_NAME (empty: skipped),
+    USER_BACKDROPS_TABLE_NAME and SITES_BUCKET_NAME (empty: skipped),
     RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
     SITE_REPO_FUNCTION_ARN
@@ -89,7 +92,7 @@ AWS RESOURCE ACCESS:
     the catering history, marketing, location and user tables (user table
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
     pool, s3:ListBucket/DeleteObject under menu-images/ (menu image bucket)
-    and admin/ (user-backdrops bucket), Query (byTenant) and BatchWriteItem
+    and admin/ (user-backdrops bucket), sites/ (sites bucket), Query (byTenant) and BatchWriteItem
     on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
     DisableDomainAutoRenew, sns:Publish on the alert topic, and
@@ -295,6 +298,20 @@ def _purge_backdrops(tenant_id, budget, counts):
             counts["backdrops"] += len(objects)
 
 
+def _purge_site(tenant_id, budget, counts):
+    """The deployed website, sites/<tenantId>/ (site-repo's deploys)."""
+    bucket = os.environ.get("SITES_BUCKET_NAME")
+    if not bucket:
+        return
+    s3 = _client("s3")
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"sites/{tenant_id}/"):
+        budget.check()
+        objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+            counts["siteFiles"] += len(objects)
+
+
 def _purge_backdrop_items(tenant_id, budget):
     """The library items (images and selection) of the restaurant's users."""
     table_name = os.environ.get("USER_BACKDROPS_TABLE_NAME")
@@ -488,7 +505,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     if not profile or profile.get("status") != "offboarded" or not purge_at or purge_at > now:
         return None
     counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
-                             "backdrops")}
+                             "backdrops", "siteFiles")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
               "zonesDeleted": [], "zonesKept": [], "notes": [], "waitingOn": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
@@ -502,6 +519,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     _purge_images(tenant_id, budget, counts)
     _purge_backdrops(tenant_id, budget, counts)
     _purge_backdrop_items(tenant_id, budget)
+    _purge_site(tenant_id, budget, counts)
     repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)
     if repo:
@@ -574,7 +592,7 @@ def _notify(result):
         lines.append(f"Deleted: {r['name']} ({r['tenantId']}): {c['locations']} location(s), "
                      f"{c['locationRows']} booking/order/menu/layout/catering rows, {c['cateringHistory']} catering "
                      f"history rows, {c['marketing']} marketing rows, {c['users']} user(s), {c['images']} image(s), "
-                     f"{c.get('backdrops', 0)} backdrop image(s).")
+                     f"{c.get('backdrops', 0)} backdrop image(s), {c.get('siteFiles', 0)} website file(s).")
         for label, items in (("Auto-renew off", r["autoRenewOff"]), ("Hosted zones deleted", r["zonesDeleted"]),
                              ("Hosted zones kept", r["zonesKept"]), ("Check", r["notes"])):
             if items:

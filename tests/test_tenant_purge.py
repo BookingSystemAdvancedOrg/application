@@ -423,3 +423,25 @@ def test_users_backdrop_libraries_are_deleted_with_the_restaurant(env, monkeypat
     assert rows == {f"USER#{KEEP}#owner-sub", f"USER#{KEEP}#staff-sub", "OPERATOR#operator-sub"}
     stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
     assert stone["purgeSummary"]["backdrops"] == 4
+
+
+def test_the_deployed_website_folder_is_deleted_with_the_restaurant(env, monkeypatch):
+    bucket = "test-restaurant-sites"
+    monkeypatch.setenv("SITES_BUCKET_NAME", bucket)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for key in ("index.html", "assets/index.js", "favicon.svg"):
+            s3.put_object(Bucket=bucket, Key=f"sites/{tenant_id}/{key}", Body=b"x")
+    s3.put_object(Bucket=bucket, Key=f"sites/{GONE}x/index.html", Body=b"x")     # same prefix, other folder
+
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == [f"sites/{GONE}x/index.html", f"sites/{KEEP}/assets/index.js", f"sites/{KEEP}/favicon.svg",
+                    f"sites/{KEEP}/index.html"]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["siteFiles"] == 3

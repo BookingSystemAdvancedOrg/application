@@ -1731,7 +1731,9 @@
     "telefonnummer",
     "restaurangens namn",
     "e-post restaurang",
-    "grace period"
+    "grace period",
+    "väntetid",
+    "sen gäst"
    ],
    "answer": "Öppettider, adress och kontaktuppgifter ändrar ägaren under Inställningar, Verksamheten, Restaurang.",
    "steps": [
@@ -3336,14 +3338,14 @@
    "audience": "all"
   },
   {
-   "id": "features-bokningar-ReservationModal:intern-anteckning-valfritt-visas-inte-for-gasten:field",
+   "id": "features-bokningar-ReservationModal:intern-anteckning-valfri:field",
    "kind": "element",
    "route": "/bokningar",
-   "title": "Intern anteckning (valfritt, visas inte för gästen)",
+   "title": "Intern anteckning (valfri)",
    "where": "Bokningar",
    "text": "",
    "highlight": [
-    "text:Intern anteckning (valfritt, visas inte för gästen)"
+    "text:Intern anteckning (valfri)"
    ],
    "audience": "all"
   },
@@ -3406,19 +3408,6 @@
     "text:Förfrågningar och beställningar"
    ],
    "audience": "all",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringMenuCard:cateringmeny:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Cateringmeny",
-   "where": "Cateringinställningar",
-   "text": "Rätter och paket som gästen kan välja i kalkylen. Skild från den vanliga menyn.",
-   "highlight": [
-    "text:Cateringmeny"
-   ],
-   "audience": "owner",
    "feature": "catering"
   },
   {
@@ -3531,7 +3520,7 @@
    "route": "/cateringkalkyl",
    "title": "Cateringkalkyl",
    "where": "Cateringinställningar",
-   "text": "Regler, rabattnivåer och leveranspriser för catering",
+   "text": "Bara ägaren kan ändra",
    "highlight": [
     "text:Cateringkalkyl"
    ],
@@ -3544,22 +3533,9 @@
    "route": "/cateringkalkyl",
    "title": "Catering på webbplatsen",
    "where": "Cateringinställningar",
-   "text": "På - gästerna ser kalkylen och kan skicka förfrågningar. Spara efter ändringar.",
+   "text": "",
    "highlight": [
     "text:Catering på webbplatsen"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringkalkylPage:bestallningsregler:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Beställningsregler",
-   "where": "Cateringinställningar",
-   "text": "Minsta och högsta tillåtna beställning",
-   "highlight": [
-    "text:Beställningsregler"
    ],
    "audience": "owner",
    "feature": "catering"
@@ -3617,19 +3593,6 @@
    "feature": "catering"
   },
   {
-   "id": "features-cateringkalkyl-CateringkalkylPage:leveranspris-per-avstand:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Leveranspris per avstånd",
-   "where": "Cateringinställningar",
-   "text": "Avstånd från restaurangen till leveransadressen, längs vägen",
-   "highlight": [
-    "text:Leveranspris per avstånd"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
    "id": "features-cateringkalkyl-CateringkalkylPage:leveranser-utgar-fran:field",
    "kind": "element",
    "route": "/cateringkalkyl",
@@ -3651,45 +3614,6 @@
    "text": "",
    "highlight": [
     "text:Leveransområde (visas för gästen)"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringkalkylPage:forberedelsetid-per-antal-gaster:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Förberedelsetid per antal gäster",
-   "where": "Cateringinställningar",
-   "text": "Hur många dagar i förväg en beställning måste komma in, beroende på storleken",
-   "highlight": [
-    "text:Förberedelsetid per antal gäster"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringkalkylPage:moms-och-servering:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Moms och servering",
-   "where": "Cateringinställningar",
-   "text": "Vad en ny offert utgår från. Du kan ändra det per offert.",
-   "highlight": [
-    "text:Moms och servering"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringkalkylPage:paminnelser:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Påminnelser",
-   "where": "Cateringinställningar",
-   "text": "Automatiska påminnelser per e-post. 0 = ingen påminnelse.",
-   "highlight": [
-    "text:Påminnelser"
    ],
    "audience": "owner",
    "feature": "catering"
@@ -3721,19 +3645,6 @@
    "feature": "catering"
   },
   {
-   "id": "features-cateringkalkyl-CateringkalkylPage:retur-av-utrustning:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Retur av utrustning",
-   "where": "Cateringinställningar",
-   "text": "Gästen väljer om fat och utrustning lämnas tillbaka rengjorda (ingen extra kostnad) eller ej rengjorda",
-   "highlight": [
-    "text:Retur av utrustning"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
    "id": "features-cateringkalkyl-CateringkalkylPage:rengoringsavgift-ej-rengjord-utrustning-inkl-moms:field",
    "kind": "element",
    "route": "/cateringkalkyl",
@@ -3752,7 +3663,7 @@
    "route": "/cateringkalkyl",
    "title": "Offert, betalning och notiser",
    "where": "Cateringinställningar",
-   "text": "Hur förfrågningar blir offerter, hur länge de gäller och vart du får besked om nya förfrågningar",
+   "text": "",
    "highlight": [
     "text:Offert, betalning och notiser"
    ],
@@ -3833,19 +3744,6 @@
    "text": "Räknas på antal gäster. När nivån nås rabatteras alla rätter.",
    "highlight": [
     "text:Villkor (visas i offerten och signeras av kunden)"
-   ],
-   "audience": "owner",
-   "feature": "catering"
-  },
-  {
-   "id": "features-cateringkalkyl-CateringkalkylPage:rabattnivaer:heading",
-   "kind": "element",
-   "route": "/cateringkalkyl",
-   "title": "Rabattnivåer",
-   "where": "Cateringinställningar",
-   "text": "Räknas på antal gäster. När nivån nås rabatteras alla rätter.",
-   "highlight": [
-    "text:Rabattnivåer"
    ],
    "audience": "owner",
    "feature": "catering"
@@ -3958,7 +3856,7 @@
    "route": "/evenemang",
    "title": "Ingår inte i er plan",
    "where": "Evenemang",
-   "text": "Evenemang och biljetter ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "text": "Kontakta oss för att uppgradera.",
    "highlight": [
     "text:Ingår inte i er plan"
    ],
@@ -4023,7 +3921,7 @@
    "route": "/gaster",
    "title": "Ingår inte i er plan",
    "where": "Gäster",
-   "text": "Gästregistret ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "text": "Kontakta oss för att uppgradera.",
    "highlight": [
     "text:Ingår inte i er plan"
    ],
@@ -4073,7 +3971,7 @@
    "route": "/hjalp",
    "title": "Guiden",
    "where": "Hjälp",
-   "text": "En rundtur genom appen, sida för sida. Tar ett par minuter.",
+   "text": "",
    "highlight": [
     "text:Guiden"
    ],
@@ -4116,26 +4014,13 @@
    "audience": "all"
   },
   {
-   "id": "features-installningar-AppearanceCard:utseende-och-ljud:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "utseende",
-   "title": "Utseende och ljud",
-   "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Gäller den här webbläsaren. Ljust läge och klickljud är på från början.",
-   "highlight": [
-    "text:Utseende och ljud"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "features-installningar-AppearanceCard:ljust-eller-morkt:heading",
    "kind": "element",
    "route": "/installningar",
    "hash": "utseende",
    "title": "Ljust eller mörkt",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Tryck för att byta. Mörka ytor passar till exempel en mörk lokal på kvällen.",
+   "text": "Det som ligger bakom glaset: en färg eller en egen bild. Genomskinligt, där skrivbordet syns igenom, finns i skrivbordsappen.",
    "highlight": [
     "help:utseende:tema"
    ],
@@ -4148,7 +4033,7 @@
    "hash": "utseende",
    "title": "Bakgrund",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Genomskinligt visar det som ligger bakom fönstret. Färg lägger glaset över en färg du väljer, Egen bild över en bild du laddar upp.",
+   "text": "Det som ligger bakom glaset: en färg eller en egen bild. Genomskinligt, där skrivbordet syns igenom, finns i skrivbordsappen.",
    "highlight": [
     "help:utseende:bakgrund"
    ],
@@ -4161,7 +4046,7 @@
    "hash": "utseende",
    "title": "Klickljud",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Ett mjukt klick när du trycker på knappar och länkar.",
+   "text": "",
    "highlight": [
     "help:utseende:klickljud"
    ],
@@ -4174,7 +4059,7 @@
    "hash": "utseende",
    "title": "Volym",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Hur högt klicket låter. 40 % är standard, 0 % är tyst.",
+   "text": "",
    "highlight": [
     "help:utseende:volym"
    ],
@@ -4190,19 +4075,6 @@
    "text": "Välj en plats först.",
    "highlight": [
     "text:Bokföring"
-   ],
-   "audience": "owner"
-  },
-  {
-   "id": "features-installningar-BokforingCard:exportera-till-bokforingen:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bokforing",
-   "title": "Exportera till bokföringen",
-   "where": "Inställningar, Ekonomi, Bokföring",
-   "text": "En verifikation per dag med försäljning per momssats, betalningar, återbetalningar, Stripes avgifter och utbetalningar till banken. Läs in SIE-filen i Fortnox, Visma eller ett annat bokföringsprogram.",
-   "highlight": [
-    "text:Exportera till bokföringen"
    ],
    "audience": "owner"
   },
@@ -4259,19 +4131,6 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-BokforingCard:konton:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bokforing",
-   "title": "Konton",
-   "where": "Inställningar, Ekonomi, Bokföring",
-   "text": "Standardkonton enligt BAS-kontoplanen. Stäm av dem med er redovisningskonsult och ändra det som ska bokas på andra konton.",
-   "highlight": [
-    "text:Konton"
-   ],
-   "audience": "owner"
-  },
-  {
    "id": "features-installningar-BokforingCard:verifikationsserie:field",
    "kind": "element",
    "route": "/installningar",
@@ -4324,19 +4183,6 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-BookingTimeCard:bokningstid:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "profil",
-   "title": "Bokningstid",
-   "where": "Inställningar, Verksamheten, Restaurang",
-   "text": "Hur länge ett bord är bokat. Specialtider (t.ex. lunchbuffé) gäller bokningar som börjar inom dem. Varje bokning behåller tiden den fick, även om du ändrar här.",
-   "highlight": [
-    "text:Bokningstid"
-   ],
-   "audience": "owner"
-  },
-  {
    "id": "features-installningar-BookingTimeCard:standardlangd:field",
    "kind": "element",
    "route": "/installningar",
@@ -4369,7 +4215,7 @@
    "hash": "profil",
    "title": "Specialtider",
    "where": "Inställningar, Verksamheten, Restaurang",
-   "text": "Inga specialtider. Alla bokningar får standardlängden.",
+   "text": "Inga specialtider.",
    "highlight": [
     "text:Specialtider"
    ],
@@ -4493,19 +4339,6 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-CancellationPolicyCard:avbokningspolicy:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "avbokning",
-   "title": "Avbokningspolicy",
-   "where": "Inställningar, Gäster, Avbokning",
-   "text": "Med kortgaranti sparar gästen sitt kort när hen bokar online - inget dras då. Uteblir gästen eller avbokar för sent kan avgiften debiteras. Beloppen låses på bokningen.",
-   "highlight": [
-    "text:Avbokningspolicy"
-   ],
-   "audience": "owner"
-  },
-  {
    "id": "features-installningar-CancellationPolicyCard:kort-kravs-fran-antal-personer:field",
    "kind": "element",
    "route": "/installningar",
@@ -4551,7 +4384,7 @@
    "hash": "avbokning",
    "title": "Avgift sen avbokning (kr per person)",
    "where": "Inställningar, Gäster, Avbokning",
-   "text": "Nu: kortgaranti är avstängd - gästerna bokar utan kort. Slå på reglaget ovan och spara.",
+   "text": "Nu: avstängd.",
    "highlight": [
     "text:Avgift sen avbokning (kr per person)"
    ],
@@ -4564,7 +4397,7 @@
    "hash": "utseende",
    "title": "Appen på telefonen",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Lägg Booqy Admin på hemskärmen, så öppnas den som en egen app i helskärm. Samma inloggning och samma funktioner som här, och den visar alltid den senaste versionen.",
+   "text": "",
    "highlight": [
     "text:Appen på telefonen"
    ],
@@ -4577,7 +4410,7 @@
    "hash": "utseende",
    "title": "Skrivbordsappen",
    "where": "Inställningar, Den här enheten, Utseende och ljud",
-   "text": "Booqy Admin som app på datorn, i ett eget fönster. Samma inloggning och samma funktioner som här. Appen visar alltid den senaste versionen av Booqy och uppdaterar sig själv utan frågor.",
+   "text": "",
    "highlight": [
     "text:Skrivbordsappen"
    ],
@@ -4608,19 +4441,6 @@
     "text:Eller ladda ner filen"
    ],
    "audience": "all"
-  },
-  {
-   "id": "features-installningar-InsightsSettingsCard:statistik:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "statistik",
-   "title": "Statistik",
-   "where": "Inställningar, Data och integritet, Statistik",
-   "text": "Du ser alltid alla siffror. Här väljer du vad personalen ser och hur dagen delas i lunch och middag.",
-   "highlight": [
-    "text:Statistik"
-   ],
-   "audience": "owner"
   },
   {
    "id": "features-installningar-InsightsSettingsCard:lunchen-slutar:field",
@@ -4701,15 +4521,15 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-InstallningarPage:grace-period-minuter:field",
+   "id": "features-installningar-InstallningarPage:vantetid-for-sena-gaster-minuter:field",
    "kind": "element",
    "route": "/installningar",
    "hash": "profil",
-   "title": "Grace period (minuter)",
+   "title": "Väntetid för sena gäster (minuter)",
    "where": "Inställningar, Verksamheten, Restaurang",
    "text": "Hur länge bordet hålls om gästen är sen. Därefter blir bordet ledigt igen.",
    "highlight": [
-    "text:Grace period (minuter)"
+    "text:Väntetid för sena gäster (minuter)"
    ],
    "audience": "owner"
   },
@@ -4723,19 +4543,6 @@
    "text": "Har ni öppet efter midnatt? Ange stängningstiden som vanligt, t.ex. lördag 18:00-02:00. Passet räknas då in på natten till söndag.",
    "highlight": [
     "text:Öppettider"
-   ],
-   "audience": "owner"
-  },
-  {
-   "id": "features-installningar-NotificationsCard:notiser:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "notiser",
-   "title": "Notiser",
-   "where": "Inställningar, Gäster, Notiser",
-   "text": "Gäster får alltid bokningsbekräftelse per e-post med en länk för att se eller avboka, och besked om ni ändrar eller avbokar.",
-   "highlight": [
-    "text:Notiser"
    ],
    "audience": "owner"
   },
@@ -4759,25 +4566,11 @@
    "hash": "notiser",
    "title": "Påminnelse före besöket",
    "where": "Inställningar, Gäster, Notiser",
-   "text": "Vid ny onlinebokning och när en gäst avbokar.",
+   "text": "Ny bokning och avbokning",
    "highlight": [
     "text:Påminnelse före besöket"
    ],
    "audience": "owner"
-  },
-  {
-   "id": "features-installningar-OrderingCard:bestallning:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bestallning",
-   "title": "Beställning",
-   "where": "Inställningar, Gäster, Beställning",
-   "text": "Gästerna beställer och betalar online. Avhämtning: sms när maten är klar. Vid bordet: QR-koden på bordet, maten serveras där. Bara under öppettiderna.",
-   "highlight": [
-    "text:Beställning"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
   },
   {
    "id": "features-installningar-OrderingCard:tillagningstid-som-gasten-ser-min:field",
@@ -4786,7 +4579,7 @@
    "hash": "bestallning",
    "title": "Tillagningstid som gästen ser (min)",
    "where": "Inställningar, Gäster, Beställning",
-   "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
+   "text": "",
    "highlight": [
     "text:Tillagningstid som gästen ser (min)"
    ],
@@ -4800,7 +4593,7 @@
    "hash": "bestallning",
    "title": "Sista beställning (min före stängning)",
    "where": "Inställningar, Gäster, Beställning",
-   "text": "Alkohol kan bara beställas vid bordet (märk drycker med alkohol under Meny). Moms: 6 % på avhämtning (t.o.m. 2027), 12 % vid bordet, 25 % på alkohol.",
+   "text": "",
    "highlight": [
     "text:Sista beställning (min före stängning)"
    ],
@@ -4814,7 +4607,7 @@
    "hash": "bestallning",
    "title": "QR-koder för borden",
    "where": "Inställningar, Gäster, Beställning",
-   "text": "Publicera en planritning med bord först (Layout).",
+   "text": "Publicera en layout först.",
    "highlight": [
     "text:QR-koder för borden"
    ],
@@ -4841,25 +4634,11 @@
    "hash": "profil",
    "title": "Abonnemang",
    "where": "Inställningar, Verksamheten, Restaurang",
-   "text": "Inget att betala. SMS ingår.",
+   "text": "Gratis · SMS ingår",
    "highlight": [
     "text:Abonnemang"
    ],
    "audience": "owner"
-  },
-  {
-   "id": "features-installningar-PrinterCard:bongskrivare:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Bongskrivare",
-   "where": "Inställningar, Gäster, Skrivare",
-   "text": "Välj en plats först.",
-   "highlight": [
-    "text:Bongskrivare"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
   },
   {
    "id": "features-installningar-PrinterCard:skriv-in-detta-i-skrivaren-nu:heading",
@@ -4868,7 +4647,7 @@
    "hash": "skrivare",
    "title": "Skriv in detta i skrivaren nu",
    "where": "Inställningar, Gäster, Skrivare",
-   "text": "Lösenordet visas bara den här gången. Tappar du bort det: välj Ny nyckel och skriv in det nya.",
+   "text": "Lösenordet visas bara nu.",
    "highlight": [
     "text:Skriv in detta i skrivaren nu"
    ],
@@ -4910,7 +4689,7 @@
    "hash": "skrivare",
    "title": "Lägg till",
    "where": "Inställningar, Gäster, Skrivare",
-   "text": "När en gäst har betalat kommer varje stations bong ut direkt.",
+   "text": "",
    "highlight": [
     "text:Lägg till"
    ],
@@ -4941,20 +4720,6 @@
    "text": "",
    "highlight": [
     "text:Pappersbredd"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:sa-kopplar-du-skrivaren:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Så kopplar du skrivaren",
-   "where": "Inställningar, Gäster, Skrivare",
-   "text": "",
-   "highlight": [
-    "text:Så kopplar du skrivaren"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -5007,7 +4772,7 @@
    "hash": "integritet",
    "title": "Integritetspolicy för gäster",
    "where": "Inställningar, Data och integritet, Integritet",
-   "text": "",
+   "text": "Ni är personuppgiftsansvariga för era gästers uppgifter. Texten visas på sajtens sida Integritetspolicy och länkas från varje boknings-, beställnings- och cateringformulär. Tabellen över cookies och lagring läggs alltid till automatiskt.",
    "highlight": [
     "text:Integritetspolicy för gäster"
    ],
@@ -5046,7 +4811,7 @@
    "hash": "integritet",
    "title": "Gästens uppgifter och samtycken",
    "where": "Inställningar, Data och integritet, Integritet",
-   "text": "",
+   "text": "Om en gäst ber er sluta skicka erbjudanden: sök på e-post eller telefonnummer och återkalla samtycket här. Det gäller bara erbjudanden. Bekräftelser, påminnelser och kvitton skickas som vanligt. Vill gästen veta vad ni har sparat, eller bli raderad, exporterar eller raderar ni det också här.",
    "highlight": [
     "text:Gästens uppgifter och samtycken"
    ],
@@ -5075,19 +4840,6 @@
    "text": "",
    "highlight": [
     "text:Telefon"
-   ],
-   "audience": "owner"
-  },
-  {
-   "id": "features-installningar-SpecialDaysCard:avvikande-oppettider:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "dagar",
-   "title": "Avvikande öppettider",
-   "where": "Inställningar, Verksamheten, Avvikande dagar",
-   "text": "Välj en plats först.",
-   "highlight": [
-    "text:Avvikande öppettider"
    ],
    "audience": "owner"
   },
@@ -5248,7 +5000,7 @@
    "hash": "skrivare",
    "title": "Bongar och stationer",
    "where": "Inställningar, Gäster, Skrivare",
-   "text": "",
+   "text": "Varje station får sin egen bong: maten till köket, drycken till baren. Allergier och önskemål följer rätten och står i fetstil. En station utan skrivare syns bara på köksskärmen under Beställningar.",
    "highlight": [
     "text:Bongar och stationer"
    ],
@@ -5276,7 +5028,7 @@
    "hash": "skrivare",
    "title": "Lägg till station",
    "where": "Inställningar, Gäster, Skrivare",
-   "text": "",
+   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
    "highlight": [
     "text:Lägg till station"
    ],
@@ -5290,25 +5042,12 @@
    "hash": "skrivare",
    "title": "Vart går menyns kategorier?",
    "where": "Inställningar, Gäster, Skrivare",
-   "text": "",
+   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
    "highlight": [
     "text:Vart går menyns kategorier?"
    ],
    "audience": "owner",
    "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-TableRulesCard:bord-vid-onlinebokning:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bord",
-   "title": "Bord vid onlinebokning",
-   "where": "Inställningar, Verksamheten, Bord",
-   "text": "Gästerna väljer bord på planritningen, men bara bord som passar sällskapet. Personalen kan alltid boka och kombinera alla bord.",
-   "highlight": [
-    "text:Bord vid onlinebokning"
-   ],
-   "audience": "owner"
   },
   {
    "id": "features-installningar-TableRulesCard:kombinationer:heading",
@@ -5381,7 +5120,7 @@
    "route": "/layout",
    "title": "Ingen bordskarta än",
    "where": "Layout",
-   "text": "Rita borden under Layout på en dator och publicera layouten. Sedan går det att boka härifrån.",
+   "text": "Publicera en layout först.",
    "highlight": [
     "text:Ingen bordskarta än"
    ],
@@ -5501,7 +5240,7 @@
    "route": "/layout",
    "title": "Vrid 90° (Shift+R)",
    "where": "Layout",
-   "text": "",
+   "text": "Upprepa i rad",
    "highlight": [
     "text:Vrid 90° (Shift+R)"
    ],
@@ -5633,7 +5372,7 @@
    "route": "/marknadsforing",
    "title": "Kampanjer",
    "where": "/marknadsforing",
-   "text": "Inga kampanjer än. Skapa en, skicka ett test till dig själv och sedan till gästerna.",
+   "text": "Inga kampanjer än.",
    "highlight": [
     "text:Kampanjer"
    ],
@@ -5729,7 +5468,7 @@
    "route": "/marknadsforing",
    "title": "Välkomsterbjudande",
    "where": "/marknadsforing",
-   "text": "En rabattkupong i hörnet. Gäster lämnar e-post och får en kod som gäller en gång.",
+   "text": "",
    "highlight": [
     "text:Välkomsterbjudande"
    ],
@@ -5885,7 +5624,7 @@
    "route": "/marknadsforing",
    "title": "Från (valfritt)",
    "where": "/marknadsforing",
-   "text": "",
+   "text": "Stänger gästen kortet, eller tar erbjudandet, visas det inte igen under besöket. Ett nytt besök (ny flik) visar det igen, eftersom webbplatsen inte sparar något mellan besöken och därför inte behöver någon cookieruta. En person kan bara få en kod, och koden gäller bara med den e-postadressen.",
    "highlight": [
     "text:Från (valfritt)"
    ],
@@ -5897,7 +5636,7 @@
    "route": "/marknadsforing",
    "title": "Till (valfritt)",
    "where": "/marknadsforing",
-   "text": "",
+   "text": "Stänger gästen kortet, eller tar erbjudandet, visas det inte igen under besöket. Ett nytt besök (ny flik) visar det igen, eftersom webbplatsen inte sparar något mellan besöken och därför inte behöver någon cookieruta. En person kan bara få en kod, och koden gäller bara med den e-postadressen.",
    "highlight": [
     "text:Till (valfritt)"
    ],
@@ -5909,7 +5648,7 @@
    "route": "/marknadsforing",
    "title": "Så ser det ut",
    "where": "/marknadsforing",
-   "text": "",
+   "text": "Gästen kryssar själv i att hen vill ha erbjudanden. Koden skickas med e-post och dras av när gästen betalar. Gästen blir mottagare av era utskick först när hen bekräftat i mejlet eller använt koden (dubbel bekräftelse). Till dess står hen under Mottagare som \"Väntar på bekräftelse\".",
    "highlight": [
     "text:Så ser det ut"
    ],
@@ -5921,7 +5660,7 @@
    "route": "/marknadsforing",
    "title": "Besök per dag",
    "where": "/marknadsforing",
-   "text": "Inga besök registrerade under perioden. Besök räknas automatiskt på er webbplats, utan cookies.",
+   "text": "Inga besök.",
    "highlight": [
     "text:Besök per dag"
    ],
@@ -5945,7 +5684,7 @@
    "route": "/marknadsforing",
    "title": "Kampanjer och länkar",
    "where": "/marknadsforing",
-   "text": "Inga kampanjbesök än. Skicka ett utskick eller dela en spårbar länk, så syns resultatet här.",
+   "text": "Inga kampanjbesök än.",
    "highlight": [
     "text:Kampanjer och länkar"
    ],
@@ -6137,7 +5876,7 @@
    "route": "/marknadsforing",
    "title": "Era mallar",
    "where": "/marknadsforing",
-   "text": "Inga mallar än. Börja från en färdig mall nedan eller skapa en tom.",
+   "text": "Inga mallar än.",
    "highlight": [
     "text:Era mallar"
    ],
@@ -6161,7 +5900,7 @@
    "route": "/meny",
    "title": "Kategorier",
    "where": "Meny",
-   "text": "Ordningen här är ordningen på menyn för gästerna. En kategori med rätter kan inte tas bort.",
+   "text": "",
    "highlight": [
     "text:Kategorier"
    ],
@@ -6312,18 +6051,6 @@
    "audience": "all"
   },
   {
-   "id": "features-meny-DishModal:ladda-om-ratten:button",
-   "kind": "element",
-   "route": "/meny",
-   "title": "Ladda om rätten",
-   "where": "Meny",
-   "text": "",
-   "highlight": [
-    "text:Ladda om rätten"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "features-meny-MenyPage:lagg-till-ratt:button",
    "kind": "element",
    "route": "/meny",
@@ -6444,24 +6171,12 @@
    "audience": "owner"
   },
   {
-   "id": "features-personal-PersonalPage:medarbetare:heading",
-   "kind": "element",
-   "route": "/personal",
-   "title": "Medarbetare",
-   "where": "Personal",
-   "text": "",
-   "highlight": [
-    "text:Medarbetare"
-   ],
-   "audience": "owner"
-  },
-  {
    "id": "features-personalliggare-PersonalliggarePage:personalliggare-under-granskning:page",
    "kind": "page",
    "route": "/personalliggare",
    "title": "Personalliggare (under granskning)",
    "where": "Personalliggare",
-   "text": "Personalliggare ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "text": "Kontakta oss för att uppgradera.",
    "highlight": [
     "text:Personalliggare (under granskning)"
    ],
@@ -6474,7 +6189,7 @@
    "route": "/personalliggare",
    "title": "Ingår inte i er plan",
    "where": "Personalliggare",
-   "text": "Personalliggare ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "text": "Kontakta oss för att uppgradera.",
    "highlight": [
     "text:Ingår inte i er plan"
    ],
@@ -6500,12 +6215,25 @@
    "route": "/personalliggare",
    "title": "Hela dagen",
    "where": "Personalliggare",
-   "text": "Alla som arbetar ska finnas här, även du som ägare och de som hjälper till utan inloggning.",
+   "text": "",
    "highlight": [
     "text:Hela dagen"
    ],
    "audience": "all",
    "feature": "personalliggare"
+  },
+  {
+   "id": "features-phone-agent-AdvancedSettings:prova-att-skriva:heading",
+   "kind": "element",
+   "route": "/telefon",
+   "title": "Prova att skriva",
+   "where": "Telefon",
+   "text": "Skriv som om du ringde. Assistenten kollar riktiga lediga tider men bokar ingenting här.",
+   "highlight": [
+    "text:Prova att skriva"
+   ],
+   "audience": "all",
+   "feature": "phoneAgent"
   },
   {
    "id": "features-phone-agent-CallDetail:utskrift:heading",
@@ -6526,7 +6254,7 @@
    "route": "/telefon",
    "title": "Ingår inte i er plan",
    "where": "Telefon",
-   "text": "Telefonassistenten ingår inte i er plan. Kontakta oss för att uppgradera.",
+   "text": "Kontakta oss för att uppgradera.",
    "highlight": [
     "text:Ingår inte i er plan"
    ],
@@ -6539,7 +6267,7 @@
    "route": "/webbplats",
    "title": "Block på sidan",
    "where": "Webbplats",
-   "text": "Sidan har inga block än. Lägg till ett nedan.",
+   "text": "Inga block än.",
    "highlight": [
     "text:Block på sidan"
    ],
@@ -6638,14 +6366,14 @@
    "insights": true
   },
   {
-   "id": "features-statistik-StatistikPage:inte-oppen-for-personalen:heading",
+   "id": "features-statistik-StatistikPage:bara-for-agaren:heading",
    "kind": "element",
    "route": "/statistik",
-   "title": "Inte öppen för personalen",
+   "title": "Bara för ägaren",
    "where": "Statistik",
-   "text": "Restaurangens ägare har valt att bara ägaren ser statistiken.",
+   "text": "",
    "highlight": [
-    "text:Inte öppen för personalen"
+    "text:Bara för ägaren"
    ],
    "audience": "all",
    "insights": true
@@ -6656,7 +6384,7 @@
    "route": "/statistik",
    "title": "Ingen plats än",
    "where": "Statistik",
-   "text": "Lägg in restaurangens uppgifter under Inställningar, så finns det något att räkna på.",
+   "text": "",
    "highlight": [
     "text:Ingen plats än"
    ],
@@ -6768,14 +6496,14 @@
    "insights": true
   },
   {
-   "id": "features-statistik-StatistikPage:inget-att-rakna-pa-i-perioden:heading",
+   "id": "features-statistik-StatistikPage:inget-i-perioden:heading",
    "kind": "element",
    "route": "/statistik",
-   "title": "Inget att räkna på i perioden",
+   "title": "Inget i perioden",
    "where": "Statistik",
    "text": "",
    "highlight": [
-    "text:Inget att räkna på i perioden"
+    "text:Inget i perioden"
    ],
    "audience": "all",
    "insights": true
@@ -7007,9 +6735,21 @@
    "route": "/layout",
    "title": "QR-koder för borden",
    "where": "Layout",
-   "text": "Publicera en layout med bord först, så får varje bord en QR-kod.",
+   "text": "Publicera en layout först.",
    "highlight": [
     "text:QR-koder för borden"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "shared-ChangedNote:anvand:button",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Använd",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Använd"
    ],
    "audience": "all"
   },

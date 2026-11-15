@@ -242,7 +242,7 @@
   }
  },
  {
-  "question": "Var ändrar jag grace period?",
+  "question": "Var ändrar jag väntetiden för sena gäster?",
   "role": "owner_user",
   "features": [
    "reservations"
@@ -250,7 +250,7 @@
   "expect": {
    "hash": "profil",
    "highlight": [
-    "text:Grace period (minuter)"
+    "text:Väntetid för sena gäster (minuter)"
    ]
   }
  },

@@ -244,9 +244,11 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
   offboarding. In prod the step creates the repo and then, through dev's
   `booqy-sites-prod-link` role (lambda:InvokeFunction on dev
   `platform-tenants` only), a `siteTask` that creates or adopts the empty
-  dev tenant; that tenant's own dev onboarding runs the same step, which in
-  dev only sets up a repo prod already created (dev console test customers:
-  see D1.3).
+  dev tenant and has dev write the dev deploy role for the repo prod names
+  (AWS only); prod then writes the `DEV_*` variables and booqy.json's dev
+  section with its own key. Dev holds only the Test Sites key and never
+  calls GitHub for BooqyCustomers (key isolation, owner 2026-11-15; dev
+  console test customers: see D1.3).
 
 ## Decisions for the owner
 
@@ -273,7 +275,9 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
      public repo `site-<slug>` in the separate org **BooqyCustomersDev**
      (App "Booqy Test Sites"), generated from the public
      `BooqyCustomers/site-template`. Both branches deploy in the DEV account
-     to a sandbox (own bucket, own multi-tenant distribution, noindex):
+     to a sandbox (own bucket, ONE standard distribution whose CloudFront
+     Function maps the host to the customer's folder through a key value
+     store, no distribution tenants, noindex):
      `main` to `https://<slug>.test.booqy.se`, `dev` to
      `https://<slug>.test-dev.booqy.se`; one deploy role per branch under
      `/booqy-test-sites/`. "Add domain example.se" in the dev console maps it

@@ -8,7 +8,9 @@ TRIGGER:
       platform-tenants    status | provision (Retry) | invite {username} |
                           redeploy {branch} | archive | devDomain {op, host}
                           (Booqy Console, Website tab); delete (Danger
-                          zone, Delete customer)
+                          zone, Delete customer); dev only: linkProvision
+                          {repo} (a site task from prod, below) and
+                          testHost {op put|delete, label} (Domains tab)
 
 PURPOSE:
     Every restaurant has its own public website repo site-<slug>, created
@@ -19,8 +21,9 @@ PURPOSE:
     (BooqyCustomers, App "Booqy Customer Sites"); main deploys to the prod
     account (<slug>.booqy.se), dev to the dev account (<slug>.dev.booqy.se).
     application/docs/orchestrator/CUSTOMER-SITES-PLAN.md (D1),
-    infrastructure docs/CUSTOMER-SITE-RUNBOOK.md. provision in prod
-    (idempotent, resumable):
+    infrastructure docs/CUSTOMER-SITE-RUNBOOK.md. Only PROD holds the
+    Customer Sites key, so every GitHub write for these repos happens here
+    in prod: provision (idempotent, resumable):
       1. the repo: found, unarchived, or generated from the template
          (branches dev and main, default dev);
       2. the repo's OIDC subject: GitHub's default, the immutable one
@@ -29,27 +32,36 @@ PURPOSE:
          permissions boundary and tag tenantId, trusted only for main;
          checked with the IAM policy simulator: may write its own folder,
          not another tenant's;
-      4. repo variables PROD_AWS_ROLE_ARN, PROD_SITE_BUCKET, PROD_TENANT_ID,
-         PROD_API_BASE_URL (not secrets) and booqy.json's prod section (on
-         dev);
-      5. the first prod deploy of main (until one succeeds);
-      6. the dev side, through the dev account's booqy-sites-prod-link role
-         (it may only invoke dev platform-tenants with a site task): an
-         empty dev tenant with the same slug (or the existing one), whose
-         own onboarding runs provision in dev.
-    provision in dev for such a tenant (PROFILE siteKind "prod-link") sets
-    up the repo's dev side (role trusted only for the dev branch, DEV_*
-    variables, booqy.json's dev section, first deploy). The repo must exist:
-    dev never creates a repo in GITHUB_ORG.
+      4. the dev side's AWS part, through the dev account's
+         booqy-sites-prod-link role (it may only invoke dev platform-tenants
+         with a site task): an empty dev tenant with the same slug (or the
+         existing one) and its dev deploy role, trusted only for the dev
+         branch of the repo prod names (owner login and id, repo id); dev
+         answers with the role ARN, bucket and its booqy.json section;
+      5. repo variables PROD_* and DEV_* (AWS_ROLE_ARN, SITE_BUCKET,
+         TENANT_ID, API_BASE_URL; not secrets) and booqy.json's prod and dev
+         sections (on dev);
+      6. the first prod deploy of main (until one succeeds), and dev's.
+    In dev such a tenant (PROFILE siteKind "prod-link") only ever gets AWS
+    work: linkProvision from prod writes its role; provision, archive and
+    delete never call GitHub (archive and delete remove the dev role; prod
+    removes the DEV_* variables). Dev's GitHub client works only for
+    TEST_GITHUB_ORG: dev holds the Test Sites key and nothing else.
 
     TEST customers, created in the DEV console (PROFILE siteKind "test",
     dev only): repo in TEST_GITHUB_ORG (BooqyCustomersDev, App "Booqy Test
     Sites"), generated from SITE_TEMPLATE_OWNER/SITE_TEMPLATE_REPO (the
     public BooqyCustomers/site-template). Both branches deploy in the DEV
     account, to the sandbox bucket TEST_SITES_BUCKET behind the sandbox
-    distribution (noindex):
-      main -> main/sites/<tenantId>/, https://<slug>.<TEST_MAIN_DOMAIN>
-      dev  -> dev/sites/<tenantId>/,  https://<slug>.<TEST_DEV_DOMAIN>
+    distribution (one standard distribution, noindex):
+      main -> main/sites/<tenantId>/, https://<label>.<TEST_MAIN_DOMAIN>
+      dev  -> dev/sites/<tenantId>/,  https://<label>.<TEST_DEV_DOMAIN>
+    Its CloudFront Function maps the host's label to the tenant through the
+    key value store TEST_SITES_KVS_ARN (label -> tenantId): the slug, put at
+    provision, and each mapped own domain (example-se for example.se), put
+    and deleted by testHost; archive and delete remove them all. A label is
+    written only for the tenant that holds its DOMAIN#<label>.<main zone>
+    claim (or, removing, when nobody holds it).
     Two roles /booqy-test-sites/test-site-<slug>-main and -dev (boundary
     TEST_DEPLOY_BOUNDARY_ARN, tags tenantId and stage), each trusted for its
     own branch and able to write only its own stage folder; variables
@@ -60,19 +72,19 @@ PURPOSE:
     "legacy": nothing is set up; re-create it as a test customer.
 
     Owner guard: a trust is written only for a repo the expected org owns,
-    by login and by id: prod and dev's prod-linked tenants GITHUB_ORG
-    (GITHUB_ORG_ID), dev's test customers TEST_GITHUB_ORG
-    (TEST_GITHUB_ORG_ID). Prod refuses test customers and any TEST_*
-    setting.
+    by login and by id: prod GITHUB_ORG (GITHUB_ORG_ID); dev's test
+    customers TEST_GITHUB_ORG (TEST_GITHUB_ORG_ID), from GitHub's own
+    answer; dev's prod-linked tenants GITHUB_ORG (GITHUB_ORG_ID required),
+    only through linkProvision with the repo id prod supplies. Prod refuses
+    test customers and any TEST_* setting.
 
     archive: the roles and variables of this environment go (prod also asks
-    dev to remove its side); the repo is archived once no environment uses
-    it. delete (a deleted customer, or its data purged after the retention
-    period): archive first, then the repo is deleted for good once no
-    environment uses it. Only prod deletes a repo prod helped set up; dev
-    deletes its test customers' repos (and older site-test-* repos it made
-    alone). Needs the App's Administration: Read and write; a refusal is
-    raised with that hint (the callers record it and carry on).
+    dev to remove its role, and removes DEV_*); the repo is archived once no
+    environment uses it. delete (a deleted customer, or its data purged
+    after the retention period): archive first, then the repo is deleted
+    for good. Only prod deletes a real customer's repo; dev deletes its test
+    customers' repos. Needs the App's Administration: Read and write; a
+    refusal is raised with that hint (the callers record it and carry on).
     devDomain (prod only): the Website tab's dev row, through the same link:
     op "status" (dev's slug address and dev.<domain>'s state) or "mount"
     (dev's domain-attach for dev.<domain>).
@@ -81,28 +93,28 @@ PURPOSE:
     here).
 
 ENV_VARS:
-    ENVIRONMENT, TENANT_TABLE_NAME, GITHUB_ORG, GITHUB_ORG_ID (optional),
-    GITHUB_APP_SECRET_ID, SITE_TEMPLATE_REPO, SITE_TEMPLATE_OWNER (optional,
-    default the repo's own org), SITES_BUCKET, DEPLOY_ROLE_PATH,
-    DEPLOY_ROLE_PREFIX, DEPLOY_BOUNDARY_ARN, OIDC_PROVIDER_ARN, API_BASE_URL,
+    ENVIRONMENT, TENANT_TABLE_NAME, GITHUB_ORG, GITHUB_ORG_ID (prod
+    optional, dev required for prod-linked tenants), GITHUB_APP_SECRET_ID,
+    SITE_TEMPLATE_REPO, SITE_TEMPLATE_OWNER (optional, default the repo's
+    own org), SITES_BUCKET, DEPLOY_ROLE_PATH, DEPLOY_ROLE_PREFIX,
+    DEPLOY_BOUNDARY_ARN, OIDC_PROVIDER_ARN, API_BASE_URL,
     MENU_IMAGE_BASE_URL, PREVIEW_DOMAIN, STRIPE_PUBLISHABLE_KEY,
     TURNSTILE_SITE_KEY; prod only: DEV_LINK_ROLE_ARN,
     DEV_PLATFORM_TENANTS_FUNCTION_ARN; dev only (test customers):
     TEST_GITHUB_ORG, TEST_GITHUB_ORG_ID, TEST_SITES_BUCKET,
     TEST_DEPLOY_ROLE_PATH, TEST_DEPLOY_ROLE_PREFIX, TEST_DEPLOY_BOUNDARY_ARN,
-    TEST_MAIN_DOMAIN, TEST_DEV_DOMAIN.
+    TEST_MAIN_DOMAIN, TEST_DEV_DOMAIN, TEST_SITES_KVS_ARN.
 
-    The App key secret is JSON {"app_id", "private_key"}; in dev it may
-    also hold the test App's key as {"test": {"app_id", "private_key"}}
-    (same secret, so no IAM change). Without "test", test customers use the
-    top-level key.
+    The App key secret is JSON {"app_id", "private_key"}: prod the Customer
+    Sites App, dev the Test Sites App (booqy/dev/github-app-sites).
 
 AWS RESOURCE ACCESS:
-    Tenant table GetItem/PutItem/UpdateItem (PROFILE read, SITE row);
-    the GitHub App secret; IAM on role/booqy-sites/* (and, dev,
-    role/booqy-test-sites/*) only (create and put policy only with the
+    Tenant table GetItem/PutItem/UpdateItem (PROFILE and DOMAIN# claims
+    read, SITE row); the GitHub App secret; IAM on role/booqy-sites/* (and,
+    dev, role/booqy-test-sites/*) only (create and put policy only with the
     boundary; never remove the boundary); prod: sts:AssumeRole on the dev
-    account's booqy-sites-prod-link role.
+    account's booqy-sites-prod-link role; dev: cloudfront-keyvaluestore
+    DescribeKeyValueStore, PutKey, DeleteKey on TEST_SITES_KVS_ARN only.
 """
 
 import base64
@@ -200,6 +212,7 @@ class Mode:
             self.role_path = os.environ["TEST_DEPLOY_ROLE_PATH"]
             self.role_prefix = os.environ["TEST_DEPLOY_ROLE_PREFIX"]
             self.boundary = os.environ["TEST_DEPLOY_BOUNDARY_ARN"]
+            self.kvs = os.environ["TEST_SITES_KVS_ARN"]
             self.stages = (
                 Stage("dev", "DEV_", "dev/sites", "dev", os.environ["TEST_DEV_DOMAIN"], "dev"),
                 Stage("main", "SANDBOX_MAIN_", "main/sites", "test", os.environ["TEST_MAIN_DOMAIN"], "main"),
@@ -210,11 +223,18 @@ class Mode:
             self.role_path = os.environ["DEPLOY_ROLE_PATH"]
             self.role_prefix = os.environ["DEPLOY_ROLE_PREFIX"]
             self.boundary = os.environ["DEPLOY_BOUNDARY_ARN"]
+            self.kvs = ""
             self.stages = (Stage(_branch(), _var_prefix(), "sites", _env(), os.environ.get("PREVIEW_DOMAIN", ""), ""),)
 
     @property
     def kind(self):
         return "test" if self.test else "site"
+
+    @property
+    def aws_only(self):
+        """Dev, a real customer's repo: dev has no key for its org, so only
+        the AWS side is done here; prod writes everything on GitHub."""
+        return _env() != "prod" and not self.test
 
     def stage(self, branch):
         found = next((s for s in self.stages if s.branch == branch), None)
@@ -279,19 +299,31 @@ def _app_jwt(app_id, private_key, now):
                       algorithm="RS256")
 
 
+def _github_org():
+    """The one org this environment's App key is for: prod GITHUB_ORG
+    (Customer Sites), dev TEST_GITHUB_ORG (Test Sites). Dev never calls
+    GitHub for a real customer's repo."""
+    if _env() == "prod":
+        return os.environ["GITHUB_ORG"]
+    org = os.environ.get("TEST_GITHUB_ORG", "")
+    if not org:
+        raise SiteRepoError("refused: dev calls GitHub only for test customers (TEST_GITHUB_ORG is not set)")
+    return org
+
+
 def github(transport=None, mode=None):
-    """A client with an installation token of the org's App ("Booqy Customer
-    Sites", or "Booqy Test Sites" for test customers), cached per org until
-    five minutes before it expires. The key never leaves this function: it
-    is neither logged nor returned."""
-    org = mode.org if mode else os.environ["GITHUB_ORG"]
+    """A client with an installation token of this environment's App ("Booqy
+    Customer Sites" in prod, "Booqy Test Sites" in dev), cached until five
+    minutes before it expires. Refused for any other org. The key never
+    leaves this function: it is neither logged nor returned."""
+    org = mode.org if mode else _github_org()
+    if org.lower() != _github_org().lower():
+        raise SiteRepoError(f"refused: no GitHub calls for {org} in {_env()}")
     cached = _tokens.get(org.lower())
     now = time.time()
     if not cached or now > cached["expires"]:
         secret = json.loads(client("secretsmanager").get_secret_value(
             SecretId=os.environ["GITHUB_APP_SECRET_ID"])["SecretString"])
-        if mode and mode.test and isinstance(secret.get("test"), dict):
-            secret = secret["test"]
         app = GitHub(_app_jwt(secret["app_id"], secret["private_key"], now), transport)
         _, installation = app.call("GET", f"/orgs/{org}/installation")
         _, issued = app.call("POST", f"/app/installations/{installation['id']}/access_tokens")
@@ -337,11 +369,10 @@ def _save_site(tenant_id, fields, remove=()):
 # ---------------------------------------------------------------------- repo
 def _ensure_repo(gh, name, profile, mode):
     org = mode.org
+    if mode.aws_only:
+        raise SiteRepoError(f"refused: dev never calls GitHub for {org}/{name} (set up from the production console)")
     status, repo = gh.call("GET", _repo_path(name, org=org), ok=(200, 404))
     if status == 404:
-        if _env() != "prod" and not mode.test:
-            raise SiteRepoError(f"{org}/{name} does not exist: a real customer's repo is born in the production "
-                                "console")
         template_owner = os.environ.get("SITE_TEMPLATE_OWNER") or org
         template = os.environ["SITE_TEMPLATE_REPO"]
         gh.call("POST", f"/repos/{template_owner}/{template}/generate", {
@@ -605,13 +636,14 @@ def _sections(tenant_id, profile, mode):
     return {stage.section: environment_config(tenant_id, profile, mode, stage) for stage in mode.stages}
 
 
-def _write_booqy_json(gh, name, tenant_id, profile, mode=None, branch="dev"):
-    """Merges this mode's sections into booqy.json on the branch. True when
-    it committed (the push deploys that branch)."""
+def _write_booqy_json(gh, name, tenant_id, profile, mode=None, branch="dev", extra=None):
+    """Merges this mode's sections (and extra ones: prod writes dev's) into
+    booqy.json on the branch. True when it committed (the push deploys that
+    branch)."""
     mode = mode or _default_mode()
     path = _repo_path(name, "/contents/booqy.json", org=mode.org)
-    sections = _sections(tenant_id, profile, mode)
-    label = "test and dev" if mode.test else _env()
+    sections = {**_sections(tenant_id, profile, mode), **(extra or {})}
+    label = "test and dev" if mode.test else " and ".join(sections)
     for _ in range(3):                                  # another environment may write at the same moment
         status, current = gh.call("GET", f"{path}?ref={branch}", ok=(200, 404))
         doc = json.loads(base64.b64decode(current["content"])) if status == 200 else {}
@@ -636,6 +668,9 @@ def _dispatch(gh, name, branch, org=None):
 # ---------------------------------------------------------- dev side (prod)
 _MIRROR_FIELDS = ("name", "slug", "ownerEmail", "ownerName", "planId", "legalName", "orgNumber", "contactEmail",
                   "contactPhone", "address")
+# The dev side's repo variables, the only ones prod takes from dev's answer.
+DEV_VARIABLES = ("DEV_AWS_ROLE_ARN", "DEV_SITE_BUCKET", "DEV_TENANT_ID", "DEV_API_BASE_URL")
+_ARN = re.compile(r"arn:aws:iam::\d{12}:role/[\w+=,.@/-]{1,512}")
 
 
 def _dev_link(task):
@@ -657,28 +692,155 @@ def _linked():
     return _env() == "prod" and bool(os.environ.get("DEV_LINK_ROLE_ARN"))
 
 
+def _repo_ref(repo):
+    """What dev needs to write the dev role's trust, and nothing more."""
+    return {"name": repo["name"], "id": repo["id"], "html_url": repo.get("html_url"),
+            "owner": {"login": repo["owner"]["login"], "id": repo["owner"]["id"]}}
+
+
+def _dev_side(answer):
+    """Dev's answer to linkProvision -> (DEV_* variables, its booqy.json
+    section). Only the DEV_* names are taken, each a plain value."""
+    site = answer.get("site") if isinstance(answer.get("site"), dict) else {}
+    variables = site.get("variables") if isinstance(site.get("variables"), dict) else {}
+    out = {k: variables[k] for k in DEV_VARIABLES if isinstance(variables.get(k), str) and variables[k]}
+    config = site.get("config")
+    if set(out) != set(DEV_VARIABLES) or not _ARN.fullmatch(out["DEV_AWS_ROLE_ARN"]) or not isinstance(config, dict):
+        raise SiteRepoError("dev side: no deploy role in dev's answer")
+    return out, config
+
+
+# ------------------------------------------------------- sandbox host map (dev)
+_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _claim_holder(label):
+    """Who holds DOMAIN#<label>.<main zone> (the claim onboarding or the
+    Domains tab writes before a label is mapped), or None."""
+    item = _table().get_item(Key={"PK": f"DOMAIN#{label}.{os.environ['TEST_MAIN_DOMAIN']}", "SK": "TENANT"},
+                             ConsistentRead=True).get("Item")
+    return (item or {}).get("tenantId")
+
+
+def _kvs_write(mode, op, label, value=None):
+    """PutKey / DeleteKey with the store's current ETag, retried when another
+    writer got in between. A delete of a missing key is done already."""
+    kvs = client("cloudfront-keyvaluestore")
+    for _ in range(5):
+        etag = kvs.describe_key_value_store(KvsARN=mode.kvs)["ETag"]
+        try:
+            if op == "put":
+                kvs.put_key(KvsARN=mode.kvs, Key=label, Value=value, IfMatch=etag)
+            else:
+                kvs.delete_key(KvsARN=mode.kvs, Key=label, IfMatch=etag)
+            return True
+        except ClientError as exc:
+            code = exc.response["Error"].get("Code")
+            if op == "delete" and code == "ResourceNotFoundException":
+                return False
+            if code not in ("ConflictException", "PreconditionFailed"):
+                raise
+    raise SiteRepoError("the test sites host map kept changing, try again")
+
+
+def _map_label(tenant_id, mode, label):
+    if not isinstance(label, str) or not _LABEL.fullmatch(label):
+        raise SiteRepoError(f"refused: {label!r} is not a host label")
+    holder = _claim_holder(label)
+    if holder != tenant_id:
+        raise SiteRepoError(f"refused: {label}.{os.environ['TEST_MAIN_DOMAIN']} is not claimed by {tenant_id}")
+    _kvs_write(mode, "put", label, tenant_id)
+    _table().update_item(Key={"PK": f"TENANT#{tenant_id}", "SK": "SITE"}, UpdateExpression="ADD testHosts :l",
+                         ExpressionAttributeValues={":l": {label}})
+
+
+def _unmap_label(tenant_id, mode, label):
+    """Only a label this tenant holds, or one nobody holds any more
+    (offboarding released the claims first)."""
+    if not isinstance(label, str) or not _LABEL.fullmatch(label):
+        raise SiteRepoError(f"refused: {label!r} is not a host label")
+    holder = _claim_holder(label)
+    if holder not in (None, tenant_id):
+        log.info(json.dumps({"action": "unmap", "tenantId": tenant_id, "label": label, "skipped": "claimed by another"}))
+    else:
+        _kvs_write(mode, "delete", label)
+    _table().update_item(Key={"PK": f"TENANT#{tenant_id}", "SK": "SITE"}, UpdateExpression="DELETE testHosts :l",
+                         ExpressionAttributeValues={":l": {label}})
+
+
+def _unmap_all(tenant_id, mode, slug, row):
+    for label in sorted({slug, *(row.get("testHosts") or ())}):
+        _unmap_label(tenant_id, mode, label)
+
+
+def test_host(tenant_id, op, label):
+    """The Domains tab (dev): a test customer's mapped own domain, label
+    example-se for example.se, on both its sandbox hosts."""
+    profile = _profile(tenant_id)
+    mode = Mode(profile)
+    if not mode.test:
+        raise SiteRepoError("refused: only a test customer has sandbox hosts")
+    if op == "put":
+        if profile.get("status") in _FINISHED_TENANT:
+            raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
+        _map_label(tenant_id, mode, label)
+    elif op == "delete":
+        if label == profile.get("slug"):
+            raise SiteRepoError("refused: the slug's own host goes only with the customer")
+        _unmap_label(tenant_id, mode, label)
+    else:
+        raise SiteRepoError(f"unknown testHost op {op!r}")
+    log.info(json.dumps({"action": "testHost", "op": op, "tenantId": tenant_id, "label": label}))
+    return {"label": label, "op": op, "result": "done"}
+
+
 # ------------------------------------------------------------------- actions
+def _aws_only_provision(tenant_id, profile, name, row):
+    """Dev, a real customer's dev tenant, from its own onboarding or Retry:
+    nothing to do without prod (linkProvision writes the role)."""
+    if row.get("status") == "ready" and row.get("roleArn"):
+        return {"status": "ready", "repo": name, "repoUrl": row.get("repoUrl"), "managedBy": "prod"}
+    message = "Set up from the production console (Run setup again there)"
+    log.info(json.dumps({"action": "provision", "tenantId": tenant_id, "repo": name, "waitsFor": "prod"}))
+    return {"status": row.get("status") or "waiting", "repo": name, "managedBy": "prod", "message": message}
+
+
 def provision(tenant_id, gh=None):
     profile = _profile(tenant_id)
     if profile.get("status") in _FINISHED_TENANT:
         raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
     name = repo_name(profile.get("slug"))
-    if _legacy(profile, _site_row(tenant_id)):
+    row = _site_row(tenant_id)
+    if _legacy(profile, row):
         _save_site(tenant_id, {"status": "legacy", "repo": name, "lastError": LEGACY_MESSAGE}, remove=("dryRun",))
         log.info(json.dumps({"action": "provision", "tenantId": tenant_id, "repo": name, "legacy": True}))
         return {"status": "legacy", "repo": name, "message": LEGACY_MESSAGE}
     mode = Mode(profile)
+    if mode.aws_only:
+        return _aws_only_provision(tenant_id, profile, name, row)
     gh = gh or github(mode=mode)
     _save_site(tenant_id, {"status": "creating", "repo": name, "kind": mode.kind, "org": mode.org}, remove=("dryRun",))
     dev = None
     role_arns = {}
     try:
+        if mode.test:
+            _map_label(tenant_id, mode, profile["slug"])        # <slug>.test. and .test-dev. answer at once
         repo = _ensure_repo(gh, name, profile, mode)
         _ensure_oidc_subject(gh, name, mode.org)
         for stage in mode.stages:
             role_arns[stage.branch] = _ensure_role(tenant_id, profile["slug"], repo, mode, stage)
             _check_isolation(role_arns[stage.branch], tenant_id, mode, stage)
-        _set_variables(gh, name, site_variables(tenant_id, role_arns, mode), mode.org)
+        variables = site_variables(tenant_id, role_arns, mode)
+        dev_section = None
+        if _linked():
+            # Dev's AWS side first (its role trusts this repo's dev branch);
+            # its variables and booqy.json section are written here, with
+            # prod's key: dev has none for this org.
+            dev = _dev_link({"action": "mirror", "prodTenantId": tenant_id, "repo": _repo_ref(repo),
+                             **{k: profile[k] for k in _MIRROR_FIELDS if profile.get(k) not in (None, "")}})
+            dev_variables, dev_section = _dev_side(dev)
+            variables.update(dev_variables)
+        _set_variables(gh, name, variables, mode.org)
         if mode.test:
             # booqy.json on both branches (each commit deploys its branch),
             # so main's first build already has its section.
@@ -687,14 +849,12 @@ def provision(tenant_id, gh=None):
                 if not committed and (stage.branch == "dev" or _needs_first_deploy(gh, name, "main", mode.org)):
                     _dispatch(gh, name, stage.branch, mode.org)
         else:
-            committed = _write_booqy_json(gh, name, tenant_id, profile, mode)
-            if _env() != "prod" and not committed:
-                _dispatch(gh, name, "dev")
-            if _env() == "prod" and _needs_first_deploy(gh, name):
+            committed = _write_booqy_json(gh, name, tenant_id, profile, mode,
+                                          extra={"dev": dev_section} if dev_section else None)
+            if dev_section and not committed:
+                _dispatch(gh, name, "dev")              # the booqy.json commit deploys dev otherwise
+            if _needs_first_deploy(gh, name):
                 _dispatch(gh, name, "main")             # live on <slug>.booqy.se, no domain needed
-        if _linked():
-            dev = _dev_link({"action": "mirror", "prodTenantId": tenant_id,
-                             **{k: profile[k] for k in _MIRROR_FIELDS if profile.get(k) not in (None, "")}})
     except Exception as exc:
         _save_site(tenant_id, {"status": "failed", "lastError": str(exc)[:1000],
                                **({"roleArns": role_arns} if mode.test and role_arns else {})})
@@ -713,25 +873,70 @@ def provision(tenant_id, gh=None):
     return {"status": "ready", "repo": name, "repoUrl": repo["html_url"]}
 
 
+def link_provision(tenant_id, repo):
+    """Dev: the dev side of a real customer's repo, asked by prod through the
+    link (platform-tenants' site task). Prod names the repo (owner login and
+    id, repo id), since dev can't read BooqyCustomers. Writes the dev role
+    (trusted only for that repo's dev branch), checks it, and answers with
+    what prod writes on GitHub: DEV_* variables and booqy.json's dev
+    section. No GitHub call."""
+    if _env() == "prod":
+        raise SiteRepoError("refused: linkProvision is dev's side of a prod site")
+    profile = _profile(tenant_id)
+    if profile.get("status") in ("offboarding", "purged"):
+        raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
+    if not _linked_from_prod(profile):
+        raise SiteRepoError("refused: this dev customer is not linked from prod")
+    mode = Mode(profile)
+    if not mode.org_id:
+        raise SiteRepoError("refused: GITHUB_ORG_ID is not set (the owner id must be checked)")
+    name = repo_name(profile.get("slug"))
+    owner = (repo or {}).get("owner") if isinstance(repo, dict) else None
+    if not isinstance(owner, dict) or repo.get("name") != name or not isinstance(repo.get("id"), int) \
+            or not isinstance(owner.get("id"), int) or not isinstance(owner.get("login"), str):
+        raise SiteRepoError(f"refused: prod must name {name} with its repo id and owner")
+    repo = {"name": name, "id": repo["id"], "owner": {"login": owner["login"], "id": owner["id"]}}
+    stage = mode.stages[0]
+    role_arn = _ensure_role(tenant_id, profile["slug"], repo, mode, stage)   # _check_owner: GITHUB_ORG and its id
+    _check_isolation(role_arn, tenant_id, mode, stage)
+    fields = {"status": "ready", "repo": name, "kind": mode.kind, "org": mode.org, "repoId": repo["id"],
+              "roleArn": role_arn, "managedBy": "prod"}
+    fields["repoUrl"] = f"https://github.com/{owner['login']}/{name}"
+    if not _site_row(tenant_id).get("createdAt"):
+        fields["createdAt"] = _now()
+    _save_site(tenant_id, fields, remove=("lastError", "dryRun"))
+    log.info(json.dumps({"action": "linkProvision", "tenantId": tenant_id, "repo": name}))
+    return {"tenantId": tenant_id, "roleArn": role_arn, "variables": site_variables(tenant_id, role_arn, mode),
+            "config": environment_config(tenant_id, profile)}
+
+
 def archive(tenant_id, gh=None):
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
     mode = Mode(profile)
-    gh = gh or github(mode=mode)
     row = _site_row(tenant_id)
     if mode.test:
         for stage in mode.stages:
             if (row.get("roleArns") or {}).get(stage.branch):
                 _delete_role(profile["slug"], mode, stage)
+        _unmap_all(tenant_id, mode, profile["slug"], row)
     elif row.get("roleArn"):
         _delete_role(profile["slug"], mode)
+    if mode.aws_only:
+        # Dev, a real customer's repo: only the role goes here; prod removes
+        # the DEV_* variables (its own archive, or Run setup again).
+        _save_site(tenant_id, {"status": "archived", "repo": name}, remove=("lastError", "roleArn"))
+        log.info(json.dumps({"action": "archive", "tenantId": tenant_id, "repo": name, "awsOnly": True}))
+        return {"status": "archived", "repo": name, "repoArchived": False, "managedBy": "prod"}
+    gh = gh or github(mode=mode)
     status, repo = gh.call("GET", _repo_path(name, org=mode.org), ok=(200, 404))
     archived = False
     if status == 200 and not repo.get("archived"):
-        for key in site_variables(tenant_id, {}, mode).keys() & _variable_names(gh, name, mode.org):
-            gh.call("DELETE", _repo_path(name, f"/actions/variables/{key}", org=mode.org))
         if _linked():
             _dev_link({"action": "archive", "slug": profile["slug"]})
+        mine = set(site_variables(tenant_id, {}, mode)) | (set(DEV_VARIABLES) if _linked() else set())
+        for key in sorted(mine & _variable_names(gh, name, mode.org)):
+            gh.call("DELETE", _repo_path(name, f"/actions/variables/{key}", org=mode.org))
         if not any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name, mode.org)):
             gh.call("PATCH", _repo_path(name, org=mode.org), {"archived": True})
             archived = True
@@ -744,12 +949,14 @@ def delete(tenant_id, gh=None):
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
     mode = Mode(profile)
+    if mode.aws_only:
+        archive(tenant_id)
+        return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "prod owns this repo"}
+    if mode.test:
+        _unmap_all(tenant_id, mode, profile["slug"], _site_row(tenant_id))
     gh = gh or github(mode=mode)
     if gh.call("GET", _repo_path(name, org=mode.org), ok=(200, 404))[0] == 404:
         return {"status": "gone", "repo": name, "repoDeleted": False}
-    if _env() != "prod" and not mode.test and _prod_uses(gh, name):
-        archive(tenant_id, gh)
-        return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "prod owns this repo"}
     archive(tenant_id, gh)
     if any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name, mode.org)):
         return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "another environment still uses it"}
@@ -762,17 +969,6 @@ def delete(tenant_id, gh=None):
     _save_site(tenant_id, {"status": "deleted", "repo": name, "deletedAt": _now()}, remove=("repoUrl", "repoId"))
     log.info(json.dumps({"action": "delete", "tenantId": tenant_id, "repo": name}))
     return {"status": "deleted", "repo": name, "repoDeleted": status == 204}
-
-
-def _prod_uses(gh, name):
-    """Dev, real customers' org: True unless dev made this repo alone (an
-    older site-test-* repo, from before test customers had their own org,
-    that prod never wrote its booqy.json section to)."""
-    if not name.startswith(f"{REPO_PREFIX}test-"):
-        return True
-    status, current = gh.call("GET", _repo_path(name, "/contents/booqy.json?ref=dev"), ok=(200, 404))
-    doc = json.loads(base64.b64decode(current["content"])) if status == 200 else {}
-    return "prod" in doc.get("environments", {})
 
 
 def _last_run(gh, name, branch, org=None):
@@ -808,6 +1004,9 @@ def status(tenant_id, gh=None):
               "config": environment_config(tenant_id, profile, mode, mode.stages[0])}
     if mode.test:
         result["urls"] = {stage.branch: f"https://{profile['slug']}.{stage.domain}" for stage in mode.stages}
+    if mode.aws_only:
+        # Deploys and the repo's state are on the production console's tab.
+        return {**result, "managedBy": "prod", "repoUrl": row.get("repoUrl"), "hasRole": bool(row.get("roleArn"))}
     if row.get("status") in (None, "creating"):
         return result
     gh = gh or github(mode=mode)
@@ -819,6 +1018,13 @@ def status(tenant_id, gh=None):
             "deploys": {key: _last_run(gh, name, branch, mode.org) for key, branch in branches.items()}}
 
 
+def _github_mode(profile):
+    mode = Mode(profile)
+    if mode.aws_only:
+        raise SiteRepoError("This customer's repo is managed from the production console")
+    return mode
+
+
 def invite(tenant_id, username, gh=None):
     """A GitHub user gets write access to this one repo (an invitation they
     accept on GitHub). No tokens are shown or stored."""
@@ -827,7 +1033,7 @@ def invite(tenant_id, username, gh=None):
     username = username.strip().lstrip("@")
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
-    mode = Mode(profile)
+    mode = _github_mode(profile)
     gh = gh or github(mode=mode)
     code, _ = gh.call("PUT", _repo_path(name, f"/collaborators/{username}", org=mode.org), {"permission": "push"})
     log.info(json.dumps({"action": "invite", "tenantId": tenant_id, "repo": name, "username": username}))
@@ -835,10 +1041,11 @@ def invite(tenant_id, username, gh=None):
 
 
 def redeploy(tenant_id, gh=None, branch=None):
-    """This environment's branch; a test customer's dev or main (default dev)."""
+    """Prod: main; a test customer's dev or main (default dev). Dev refuses
+    a real customer's repo (managed from prod)."""
     profile = _profile(tenant_id)
     name = repo_name(profile.get("slug"))
-    mode = Mode(profile)
+    mode = _github_mode(profile)
     if mode.test:
         branch = mode.stage(branch or "dev").branch
     elif branch not in (None, _branch()):
@@ -877,6 +1084,10 @@ def handler(event, context):
     if action == "devDomain":
         return dev_domain(tenant_id, event.get("op"), event.get("host"))
     try:
+        if action == "linkProvision":
+            return link_provision(tenant_id, event.get("repo"))
+        if action == "testHost":
+            return test_host(tenant_id, event.get("op"), event.get("label"))
         if action == "redeploy":
             return redeploy(tenant_id, branch=event.get("branch"))
         if action not in ACTIONS:

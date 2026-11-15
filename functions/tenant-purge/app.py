@@ -387,6 +387,12 @@ def _purge_zones(tenant_id, zones, budget, report):
     for row in zones:
         budget.check()
         domain = row.get("domain") or str(row["SK"]).removeprefix("ZONE#")
+        if row.get("simulated"):
+            # A dev console simulation (test customer): nothing was registered
+            # and no hosted zone exists, so no Route 53 call; the order goes.
+            report["notes"].append(f"{domain}: simulated order, nothing registered")
+            _release_claim(tenant_id, domain)
+            continue
         handover = _registered_here(row)
         if handover:
             try:

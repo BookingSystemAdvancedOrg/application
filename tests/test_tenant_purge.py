@@ -290,6 +290,24 @@ def test_domains_auto_renew_off_and_unused_zone_deleted(env, monkeypatch):
     assert "www.stuck.se is still attached" in message
 
 
+def test_a_simulated_order_never_calls_route_53_and_goes(env, monkeypatch):
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(hours=1), slug="gone")
+    t = env["t"]
+    for domain, mode, status in (("sim-bought.se", "register", "live"), ("sim-moved.com", "transfer_in", "removed")):
+        t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": f"ZONE#{domain}", "domain": domain, "mode": mode,
+                                   "status": status, "simulated": True, "hostedZoneId": "sim",
+                                   "nameServers": ["ns-1.awsdns-sim.org"], "registeredAt": "2026-11-15T21:00:00Z"})
+        t["tenant"].put_item(Item={"PK": f"DOMAIN#{domain}", "SK": "TENANT", "tenantId": GONE})
+    monkeypatch.setattr(env["app"], "_ns_lookup", lambda d: set())
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    assert env["domains"].auto_renew_off == [] and env["domains"].unlocked == []
+    assert count(t["tenant"], "DOMAIN#sim-bought.se") == 0 and count(t["tenant"], "DOMAIN#sim-moved.com") == 0
+    rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
+                                               ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
+    assert rows == {"PROFILE"}
+    assert "sim-bought.se: simulated order, nothing registered" in env["sns"].calls[0]["Message"]
+
+
 def test_protected_zone_is_never_deleted(env, monkeypatch):
     seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(hours=1), slug="gone")
     z = env["r53"].create_hosted_zone(Name="booqy.se", CallerReference="p")["HostedZone"]["Id"].split("/")[-1]

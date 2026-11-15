@@ -176,7 +176,7 @@
   }
  },
  {
-  "question": "How do I run invoicing after a missed 25th?",
+  "question": "How do I run invoicing after a missed 1st?",
   "role": "operator",
   "features": "all",
   "expect": {

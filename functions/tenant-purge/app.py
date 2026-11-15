@@ -39,7 +39,8 @@ PURPOSE:
         reported, so the restaurant's email doesn't stop working)
       * the deployed website (sites/<tenantId>/ in the sites bucket,
         SITES_BUCKET_NAME; the bucket's 30-day version expiry removes the
-        older versions)
+        older versions), and in dev a test customer's main/sites/<tenantId>/
+        and dev/sites/<tenantId>/ in the sandbox bucket (TEST_SITES_BUCKET_NAME)
       * the website repo site-<slug> on GitHub (site-repo "delete", when
         SITE_REPO_FUNCTION_ARN is set; prod also cleans up dev's side): a
         refusal (e.g. the GitHub App lacks Administration write) is
@@ -80,7 +81,7 @@ ENV_VARS:
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
     MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME and
-    USER_BACKDROPS_TABLE_NAME and SITES_BUCKET_NAME (empty: skipped),
+    USER_BACKDROPS_TABLE_NAME, SITES_BUCKET_NAME and TEST_SITES_BUCKET_NAME (empty: skipped),
     RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
     SITE_REPO_FUNCTION_ARN
@@ -92,7 +93,8 @@ AWS RESOURCE ACCESS:
     the catering history, marketing, location and user tables (user table
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
     pool, s3:ListBucket/DeleteObject under menu-images/ (menu image bucket)
-    and admin/ (user-backdrops bucket), sites/ (sites bucket), Query (byTenant) and BatchWriteItem
+    and admin/ (user-backdrops bucket), sites/ (sites bucket), main/sites/ and
+    dev/sites/ (dev sandbox bucket), Query (byTenant) and BatchWriteItem
     on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
     DisableDomainAutoRenew, sns:Publish on the alert topic, and
@@ -299,17 +301,24 @@ def _purge_backdrops(tenant_id, budget, counts):
 
 
 def _purge_site(tenant_id, budget, counts):
-    """The deployed website, sites/<tenantId>/ (site-repo's deploys)."""
-    bucket = os.environ.get("SITES_BUCKET_NAME")
-    if not bucket:
+    """The deployed website: sites/<tenantId>/ (site-repo's deploys) and,
+    in dev, a test customer's two sandbox builds main/sites/<tenantId>/ and
+    dev/sites/<tenantId>/ (TEST_SITES_BUCKET_NAME)."""
+    folders = []
+    if os.environ.get("SITES_BUCKET_NAME"):
+        folders.append((os.environ["SITES_BUCKET_NAME"], f"sites/{tenant_id}/"))
+    if os.environ.get("TEST_SITES_BUCKET_NAME"):
+        folders += [(os.environ["TEST_SITES_BUCKET_NAME"], f"{stage}/sites/{tenant_id}/") for stage in ("main", "dev")]
+    if not folders:
         return
     s3 = _client("s3")
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"sites/{tenant_id}/"):
-        budget.check()
-        objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-        if objects:
-            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
-            counts["siteFiles"] += len(objects)
+    for bucket, prefix in folders:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+            budget.check()
+            objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objects:
+                s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+                counts["siteFiles"] += len(objects)
 
 
 def _purge_backdrop_items(tenant_id, budget):

@@ -15,7 +15,7 @@ TRIGGER:
 
     Lambda invoke (no requestContext): {"hook": ...} feature hooks
     (CONTRACTS.md 9): platform (D11 `google-business.tenant.get`),
-    tenant.purge, privacy.export, privacy.erase.
+    tenant.purge (revokes at Google first), privacy.export, privacy.erase.
 
 PURPOSE:
     Connect a restaurant's Google Business Profile, push Booqy's opening
@@ -160,18 +160,24 @@ def _remove_link(tenant_id, location_id):
     return True
 
 
-def disconnect(tenant_id, reason):
-    """Revoke at Google (best effort), delete the token, every link and
-    every pending review schedule; the connection row says disconnected."""
-    connection = gbp.get_connection(tenant_id)
-    if not connection or connection.get("status") == "disconnected":
-        return False
+def _revoke(tenant_id):
+    """Revoke the tenant's grant at Google, best effort: a failure is logged
+    and the token is still deleted (Google drops unused grants itself)."""
     refresh = gbp.get_refresh_token(tenant_id)
     if refresh:
         try:
             gbp.client().revoke(refresh)
         except GoogleBusinessError as exc:
             logger.warning(json.dumps({"revoke": "failed", "code": exc.code}))
+
+
+def disconnect(tenant_id, reason):
+    """Revoke at Google (best effort), delete the token, every link and
+    every pending review schedule; the connection row says disconnected."""
+    connection = gbp.get_connection(tenant_id)
+    if not connection or connection.get("status") == "disconnected":
+        return False
+    _revoke(tenant_id)
     gbp.delete_refresh_token(tenant_id)
     location_ids = [loc["locationId"] for loc in tenant.list_locations(tenant_id) if loc.get("locationId")]
     for location_id in location_ids:
@@ -360,7 +366,9 @@ def _platform(event):
 
 
 def purge(tenant_id, location_ids):
-    """Offboarding: token, pending schedules and every row."""
+    """Offboarding: the grant is revoked at Google, then token, pending
+    schedules and every row are deleted."""
+    _revoke(tenant_id)
     gbp.delete_refresh_token(tenant_id)
     location_ids = [lid for lid in location_ids if isinstance(lid, str) and lid]
     gbp.cancel_pending_jobs(tenant_id, location_ids, reason="disabled")
@@ -456,6 +464,7 @@ ROUTES = {
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:
+            google_port.start_run(context, default_seconds=LAMBDA_TIMEOUT_SECONDS)
             return _hook(event)
         return {"ok": False, "status": 400, "code": "unknown_event"}
     google_port.start_run(context, default_seconds=LAMBDA_TIMEOUT_SECONDS)

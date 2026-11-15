@@ -712,6 +712,15 @@ def test_tenant_purge_removes_rows_secret_and_schedules(env):
     assert rows and all(r.get("tenantId") == TENANT_B for r in rows)
     assert gbp.get_refresh_token(TENANT_A) is None and gbp.get_refresh_token(TENANT_B)
     assert boto3.client("scheduler").list_schedules(GroupName=GROUP)["Schedules"] == []
+    assert len([c for c in env.google.calls if c[0] == "revoke"]) == 1
+
+
+def test_tenant_purge_still_deletes_when_revoke_fails(env):
+    enable(env)
+    env.google._fail["revoke"] = 1
+    answer = env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A], "round": 1})
+    assert answer["ok"] and answer["done"]
+    assert gbp.get_refresh_token(TENANT_A) is None
 
 
 def test_unknown_hook_and_event(env):

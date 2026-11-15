@@ -11,7 +11,9 @@ In order:
      writes in the same step that creates the slug's CloudFront
      distribution tenant. Never built from the slug alone: a tenant set up
      before that row existed has no distribution tenant, so the host fails
-     the TLS handshake and every link to it leads nowhere;
+     the TLS handshake and every link to it leads nowhere. A dev test
+     customer has two (main <slug>.test.booqy.se, dev
+     <slug>.test-dev.booqy.se, stage on the row): main first;
   3. outside prod, CUSTOMER_SITE_URL with ?restaurang=<slug> (dev sites on
      *.cloudfront.net can't tell the restaurant from their host).
 Otherwise there is no site: (None, None).
@@ -36,12 +38,17 @@ def _active(tenant_id):
 
 
 def _own(active, tenant_row):
-    return sorted((r["domain"] for r in active if r.get("kind") != "platform"),
-                  key=lambda d: (d != tenant_row.get("primaryDomain"), d))
+    rows = sorted((r for r in active if r.get("kind") != "platform"),
+                  key=lambda r: (r["domain"] != tenant_row.get("primaryDomain"), r.get("stage") == "dev", r["domain"]))
+    return [r["domain"] for r in rows]
 
 
 def _slug_host(active):
-    return next(iter(sorted(r["domain"] for r in active if r.get("kind") == "platform")), None)
+    # A dev test customer has two: <slug>.test.booqy.se (stage main) and
+    # <slug>.test-dev.booqy.se (stage dev); links go to main.
+    rows = sorted((r for r in active if r.get("kind") == "platform"),
+                  key=lambda r: (r.get("stage") == "dev", r["domain"]))
+    return rows[0]["domain"] if rows else None
 
 
 def _dev_site(tenant_row):

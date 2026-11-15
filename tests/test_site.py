@@ -38,9 +38,9 @@ def env(monkeypatch, environment, *, zone=True):
         monkeypatch.setenv("SITE_DOMAIN", ZONES[environment])
 
 
-def domain(tenants, host, *, kind="custom", status="active"):
+def domain(tenants, host, *, kind="custom", status="active", stage=None):
     tenants.put_item(Item={"PK": f"TENANT#{TENANT_A}", "SK": f"DOMAIN#{host}",
-                           "domain": host, "kind": kind, "status": status})
+                           "domain": host, "kind": kind, "status": status, **({"stage": stage} if stage else {})})
 
 
 def slug_row(tenants, environment):
@@ -132,3 +132,17 @@ def test_scrive_return_url_with_a_domain(tenants, monkeypatch, environment):
     domain(tenants, "www.roma.se")
     url = catering_signing.customer_return_url(TENANT_A, tenant_row(TENANT_A, slug="roma"), ITEM)
     assert url == "https://www.roma.se/catering/loc-a-1/req-1?signering=klar"
+
+
+def test_a_dev_test_customer_links_to_its_main_sandbox_host_not_the_dev_one(tenants, monkeypatch):
+    # "roma.test-dev.booqy.se" sorts before "roma.test.booqy.se"; the stage decides.
+    env(monkeypatch, "dev")
+    domain(tenants, "roma.test-dev.booqy.se", kind="platform", stage="dev")
+    domain(tenants, "roma.test.booqy.se", kind="platform", stage="main")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="roma.test.booqy.se")
+    assert site.base(TENANT_A, row) == ("https://roma.test.booqy.se", None)
+    assert site.hosts(TENANT_A, row) == ["roma.test-dev.booqy.se", "roma.test.booqy.se"]
+    # A mapped own domain (example.se in the dev console): main again.
+    domain(tenants, "example-se.test-dev.booqy.se", stage="dev")
+    domain(tenants, "example-se.test.booqy.se", stage="main")
+    assert site.base(TENANT_A, tenant_row(TENANT_A, slug="roma")) == ("https://example-se.test.booqy.se", None)

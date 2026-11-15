@@ -445,3 +445,24 @@ def test_the_deployed_website_folder_is_deleted_with_the_restaurant(env, monkeyp
                     f"sites/{KEEP}/index.html"]
     stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
     assert stone["purgeSummary"]["siteFiles"] == 3
+
+
+def test_a_test_customers_two_sandbox_builds_are_deleted_too(env, monkeypatch):
+    bucket = "test-restaurant-sites-test"
+    monkeypatch.setenv("TEST_SITES_BUCKET_NAME", bucket)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for stage in ("main", "dev"):
+            s3.put_object(Bucket=bucket, Key=f"{stage}/sites/{tenant_id}/index.html", Body=b"x")
+    s3.put_object(Bucket=bucket, Key="_platform/robots.txt", Body=b"x")
+
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == ["_platform/robots.txt", f"dev/sites/{KEEP}/index.html", f"main/sites/{KEEP}/index.html"]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["siteFiles"] == 2

@@ -244,9 +244,11 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
   offboarding. In prod the step creates the repo and then, through dev's
   `booqy-sites-prod-link` role (lambda:InvokeFunction on dev
   `platform-tenants` only), a `siteTask` that creates or adopts the empty
-  dev tenant; that tenant's own dev onboarding runs the same step, which in
-  dev only sets up a repo prod already created (else a dry run, status
-  `simulated`; `test-` slugs excepted).
+  dev tenant and has dev write the dev deploy role for the repo prod names
+  (AWS only); prod then writes the `DEV_*` variables and booqy.json's dev
+  section with its own key. Dev holds only the Test Sites key and never
+  calls GitHub for BooqyCustomers (key isolation, owner 2026-11-15; dev
+  console test customers: see D1.3).
 
 ## Decisions for the owner
 
@@ -268,10 +270,21 @@ Operating it: infrastructure `docs/CUSTOMER-SITE-RUNBOOK.md`.
      may only invoke dev `platform-tenants` with a site task (create or
      adopt the dev tenant by slug, archive its dev site). Dev never gets
      rights in prod. Owner-approved 2026-10-27.
-  3. The **dev** console only simulates: the website step is a dry run that
-     shows what prod would create, and creates nothing; except slugs
-     starting with `test-` (repos `site-test-<slug>`) for testing the
-     automation. The dev console shows a prod-born repo read-only.
+  3. Changed 2026-11-15 (owner): every customer created in the **dev**
+     console is a test customer (PROFILE `siteKind: "test"`) with a real,
+     public repo `site-<slug>` in the separate org **BooqyCustomersDev**
+     (App "Booqy Test Sites"), generated from the public
+     `BooqyCustomers/site-template`. Both branches deploy in the DEV account
+     to a sandbox (own bucket, ONE standard distribution whose CloudFront
+     Function maps the host to the customer's folder through a key value
+     store, no distribution tenants, noindex):
+     `main` to `https://<slug>.test.booqy.se`, `dev` to
+     `https://<slug>.test-dev.booqy.se`; one deploy role per branch under
+     `/booqy-test-sites/`. "Add domain example.se" in the dev console maps it
+     to `example-se.test.booqy.se` and `example-se.test-dev.booqy.se` (no
+     domain is bought or connected outside prod). The dry run and the
+     `test-` slug rule are gone; dev tenants made before this are `legacy`
+     (re-create them). The dev console shows a prod-born repo read-only.
   4. Push to `dev` deploys to the dev account; merge `dev` -> `main` deploys
      to the prod account. Changed 2026-10-28 (owner): an own domain is no
      longer required; every site is live on `<slug>.booqy.se` /

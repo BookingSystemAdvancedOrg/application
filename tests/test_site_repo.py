@@ -47,8 +47,10 @@ class FakeGitHub:
 
     @staticmethod
     def _public(repo):
-        return {k: repo[k] for k in ("id", "name", "owner", "html_url", "archived", "default_branch",
-                                     "delete_branch_on_merge")}
+        out = {k: repo[k] for k in ("id", "name", "owner", "html_url", "archived", "default_branch",
+                                    "delete_branch_on_merge")}
+        out["private"] = repo.get("private", False)
+        return out
 
     def __call__(self, method, url, headers, body):
         path = url.removeprefix("https://api.github.com")
@@ -82,6 +84,8 @@ class FakeGitHub:
                 return 204, None
             if method == "PATCH":
                 repo.update(data)
+                if "visibility" in data:
+                    repo["private"] = data["visibility"] != "public"
             return 200, self._public(repo)
         if rest.startswith("branches/"):
             return (200, {}) if rest.split("/")[1] in repo["branches"] else (404, {"message": "Branch not found"})
@@ -221,13 +225,24 @@ def _simulated_isolation(fn):
     return check
 
 
+def test_a_private_site_repo_is_made_public_when_provisioned(world):
+    # Site repos are public (owner 2026-11-15); an older private one turns public on the next provision.
+    fn = world["use"]("dev")
+    gh = world["github"]
+    gh._repo("site-test-roma", private=True, default_branch="dev")
+    out = fn.handler({"action": "provision", "tenantId": TENANT}, None)
+    assert out["status"] == "ready"
+    assert gh.repos["site-test-roma"]["private"] is False
+    assert ("PATCH", f"/repos/{ORG}/site-test-roma") in gh.calls
+
+
 def test_dev_creates_the_repo_from_the_template_and_deploys(world):
     fn = world["use"]("dev")
     out = fn.handler({"action": "provision", "tenantId": TENANT}, None)
     gh = world["github"]
     repo = gh.repos["site-test-roma"]
     assert out == {"status": "ready", "repo": "site-test-roma", "repoUrl": f"https://github.com/{ORG}/site-test-roma"}
-    assert repo["private"] is True and repo["default_branch"] == "dev" and repo["branches"] == {"dev", "main"}
+    assert repo["private"] is False and repo["default_branch"] == "dev" and repo["branches"] == {"dev", "main"}
     assert repo["oidc"] == {"use_default": True}
     assert repo["variables"] == {
         "DEV_AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/booqy-sites/dev-site-test-roma",

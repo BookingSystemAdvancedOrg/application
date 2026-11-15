@@ -228,12 +228,14 @@ def _ensure_repo(gh, name, profile):
         org = os.environ["GITHUB_ORG"]
         template = os.environ["SITE_TEMPLATE_REPO"]
         gh.call("POST", f"/repos/{org}/{template}/generate", {
-            "owner": org, "name": name, "private": True, "include_all_branches": True,
+            "owner": org, "name": name, "private": False, "include_all_branches": True,
             "description": f"Webbplats för {profile.get('name') or profile['slug']} (Booqy)",
         })
         repo = _wait_for_branch(gh, name, "dev")
     elif repo.get("archived"):
         _, repo = gh.call("PATCH", _repo_path(name), {"archived": False})
+    if repo.get("private"):                 # site repos are public (owner 2026-11-15): no secrets, free Actions minutes
+        _, repo = gh.call("PATCH", _repo_path(name), {"visibility": "public"})
     if repo.get("default_branch") != "dev" or repo.get("delete_branch_on_merge"):
         _, repo = gh.call("PATCH", _repo_path(name), {"default_branch": "dev", "delete_branch_on_merge": False})
     return repo

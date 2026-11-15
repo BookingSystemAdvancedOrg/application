@@ -55,7 +55,7 @@ PURPOSE:
     op "status" (dev's slug address and dev.<domain>'s state) or "mount"
     (dev's domain-attach for dev.<domain>).
 
-    Only repos named site-* are ever touched (GitHub App "Booqy Sites" is
+    Only repos named site-* are ever touched (GitHub App "Booqy Customer Sites" is
     installed on those only, and every repo name is checked here).
 
 ENV_VARS:
@@ -171,7 +171,7 @@ def _app_jwt(app_id, private_key, now):
 
 
 def github(transport=None):
-    """A client with an installation token of the "Booqy Sites" App (cached
+    """A client with an installation token of the "Booqy Customer Sites" App (cached
     until five minutes before it expires). The key never leaves this
     function: it is neither logged nor returned."""
     now = time.time()
@@ -273,7 +273,19 @@ def role_name(slug):
     return name
 
 
+def _check_owner(repo):
+    """A trust is written only for a repo in GITHUB_ORG. GitHub follows a
+    transferred repo's old path, so a GET can answer with a repo another
+    organisation owns; its token must never get a deploy role. Logins are
+    case-insensitive; the subject keeps GitHub's exact casing."""
+    owner = (repo.get("owner") or {}).get("login") or ""
+    org = os.environ["GITHUB_ORG"]
+    if owner.lower() != org.lower():
+        raise SiteRepoError(f"refused: {repo.get('name')!r} owner is not {org} ({owner or 'unknown'})")
+
+
 def trust_policy(repo):
+    _check_owner(repo)
     return {
         "Version": "2012-10-17",
         "Statement": [{
@@ -544,7 +556,7 @@ def delete(tenant_id, gh=None):
     status, body = gh.call("DELETE", _repo_path(name), ok=(204, 403, 404))
     if status == 403:
         raise SiteRepoError(f"{name} NOT deleted: GitHub refused ({(body or {}).get('message', '403')}). The Booqy "
-                            "Sites App needs Repository permission Administration: Read and write; delete the "
+                            "Customer Sites App needs Repository permission Administration: Read and write; delete the "
                             "archived repo by hand on GitHub meanwhile")
     _save_site(tenant_id, {"status": "deleted", "repo": name, "deletedAt": _now()}, remove=("repoUrl", "repoId"))
     log.info(json.dumps({"action": "delete", "tenantId": tenant_id, "repo": name}))

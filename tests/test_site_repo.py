@@ -21,7 +21,8 @@ REGION = "eu-north-1"
 TENANT = "t-roma"
 OTHER = "t-other"
 PLAIN = "t-plain"
-ORG = "BookingSystemAdvancedOrg"
+ORG = "BooqyCustomers"
+ORG_ID = 356944191
 
 
 class FakeGitHub:
@@ -36,7 +37,7 @@ class FakeGitHub:
 
     def _repo(self, name, **extra):
         self.next_id += 1
-        repo = {"id": self.next_id, "name": name, "owner": {"id": 307760488, "login": ORG},
+        repo = {"id": self.next_id, "name": name, "owner": {"id": ORG_ID, "login": ORG},
                 "html_url": f"https://github.com/{ORG}/{name}", "archived": False, "default_branch": "main",
                 "delete_branch_on_merge": False, "branches": {"dev", "main"}, "variables": {}, "files": {},
                 "collaborators": set(), "oidc": {"use_default": True}, "runs": {}}
@@ -66,6 +67,8 @@ class FakeGitHub:
             self._repo(data["name"], private=data["private"])
             return 201, {"name": data["name"]}
         parts = path.split("/")
+        if parts[1] != "repos" or parts[2] != ORG:
+            return 404, {"message": "Not Found"}       # only repos in the site org exist
         name = parts[3]
         repo = self.repos.get(name)
         rest = "/".join(parts[4:])
@@ -253,7 +256,7 @@ def test_the_deploy_role_writes_only_its_own_folder_from_its_own_branch(world):
                       "Action": "sts:AssumeRoleWithWebIdentity", "Condition": {"StringEquals": {
                           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                           "token.actions.githubusercontent.com:sub":
-                              f"repo:{ORG}@307760488/site-test-roma@{repo_id}:ref:refs/heads/dev"}}}]
+                              f"repo:{ORG}@{ORG_ID}/site-test-roma@{repo_id}:ref:refs/heads/dev"}}}]
     policy = world["iam"].get_role_policy(RoleName="dev-site-test-roma", PolicyName="deploy-own-site")["PolicyDocument"]
     assert policy["Statement"][0]["Resource"] == f"arn:aws:s3:::dev-restaurant-sites-123456789012/sites/{TENANT}/*"
     assert policy["Statement"][1]["Condition"] == {"StringLike": {"s3:prefix": f"sites/{TENANT}/*"}}
@@ -507,3 +510,37 @@ def test_a_new_customer_with_a_deleted_slug_gets_a_fresh_repo(world):
     assert prod.handler({"action": "provision", "tenantId": "t-roma-2"}, None)["status"] == "ready"
     repo = world["github"].repos["site-roma"]
     assert repo["id"] != old_id and repo["variables"]["PROD_TENANT_ID"] == "t-roma-2"
+
+
+def test_a_repo_owned_by_another_org_gets_no_deploy_role(world):
+    # GitHub follows a transferred repo's old path: the answer can name another owner.
+    world["github"]._repo("site-test-roma", default_branch="dev", owner={"id": 1, "login": "SomeoneElse"})
+    fn = world["use"]("dev")
+    with pytest.raises(fn.SiteRepoError, match="owner is not BooqyCustomers"):
+        fn.handler({"action": "provision", "tenantId": TENANT}, None)
+    assert world["iam"].list_roles(PathPrefix="/booqy-sites/")["Roles"] == []
+    assert world["github"].repos["site-test-roma"]["variables"] == {}
+    site = world["table"].get_item(Key={"PK": f"TENANT#{TENANT}", "SK": "SITE"})["Item"]
+    assert site["status"] == "failed" and "owner is not" in site["lastError"]
+
+
+def test_the_owner_check_ignores_case_and_the_subject_keeps_githubs_casing(world):
+    world["github"]._repo("site-test-roma", default_branch="dev", owner={"id": ORG_ID, "login": "booqycustomers"})
+    fn = world["use"]("dev")
+    assert fn.handler({"action": "provision", "tenantId": TENANT}, None)["status"] == "ready"
+    trust = world["iam"].get_role(RoleName="dev-site-test-roma")["Role"]["AssumeRolePolicyDocument"]
+    sub = trust["Statement"][0]["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"]
+    assert sub.startswith(f"repo:booqycustomers@{ORG_ID}/site-test-roma@")
+
+
+def test_generate_and_delete_use_the_site_org(world):
+    prod = world["use"]("prod")
+    prod.handler({"action": "provision", "tenantId": PLAIN}, None)
+    gh = world["github"]
+    assert ("POST", f"/repos/{ORG}/site-template/generate") in gh.calls
+    assert ("GET", f"/orgs/{ORG}/installation") in gh.calls
+    assert ("PATCH", f"/repos/{ORG}/site-roma") in gh.calls
+    assert prod.handler({"action": "delete", "tenantId": PLAIN}, None)["repoDeleted"] is True
+    assert ("DELETE", f"/repos/{ORG}/site-roma") in gh.calls
+    assert "site-roma" not in gh.repos
+    assert all(not p.startswith("/repos/") or p.startswith(f"/repos/{ORG}/") for _, p in gh.calls)

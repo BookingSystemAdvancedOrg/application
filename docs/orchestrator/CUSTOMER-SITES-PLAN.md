@@ -29,7 +29,7 @@ API on the restaurant's domain.
 Figma (Booqy design system + one file per customer)
    │  Code Connect: Figma component  ->  <BookingForm />, <Menu />, ...
    ▼
-GitHub org BookingSystemAdvancedOrg (private repos, prefix site-)
+GitHub org BooqyCustomers since 2026-11-15 (private repos, prefix site-; site-kit stays in BookingSystemAdvancedOrg)
    ├── site-kit        shared package (@bookingsystemadvancedorg/site-kit, GitHub Packages)
    ├── site-template   starting point, today's customer site on site-kit
    └── site-<slug>     one per customer, created from the template
@@ -131,6 +131,8 @@ Extract everything that isn't "look" from customer-front-end into a package.
   real components, no hand-written booking logic.
 
 ### Phase 3: automatic repo per customer (infrastructure + application + console)
+- (2026-11-15: replaced by the App "Booqy Customer Sites", ID 5769537, in
+  `BooqyCustomers`, installed on all its repositories; runbook.)
 - **GitHub App** "Booqy Sites" in `BookingSystemAdvancedOrg`, installed
   on selected repositories only. It creates `site-<slug>` repos and
   manages only repos named `site-*`; the `site-repo` Lambda refuses any

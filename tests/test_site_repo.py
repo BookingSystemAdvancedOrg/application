@@ -1000,3 +1000,21 @@ def test_the_test_org_can_never_be_the_real_one(world, monkeypatch):
     monkeypatch.setenv("TEST_GITHUB_ORG", ORG.lower())
     with pytest.raises(fn.SiteRepoError, match="real customers' org"):
         fn.handler({"action": "provision", "tenantId": TEST}, None)
+
+
+def test_a_delete_racing_another_delete_ends_as_gone_not_as_an_error(world):
+    # Delete customer and the hourly purge sweep both delete the repo: the
+    # other one removes it while this one is half way (after its first GET).
+    fn = world["use"]("dev")
+    fn.handler({"action": "provision", "tenantId": TEST}, None)
+    tg = world["test_github"]
+    handle = tg.handle
+
+    def racing(method, path, full, data):
+        if method == "GET" and path.endswith("/actions/variables"):
+            tg.repos.pop("site-pasta", None)
+        return handle(method, path, full, data)
+
+    tg.handle = racing
+    assert fn.handler({"action": "delete", "tenantId": TEST}, None) == \
+        {"status": "gone", "repo": "site-pasta", "repoDeleted": False}

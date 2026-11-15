@@ -969,10 +969,18 @@ def delete(tenant_id, gh=None):
     gh = gh or github(mode=mode)
     if gh.call("GET", _repo_path(name, org=mode.org), ok=(200, 404))[0] == 404:
         return {"status": "gone", "repo": name, "repoDeleted": False}
-    archive(tenant_id, gh)
-    if any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name, mode.org)):
-        return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "another environment still uses it"}
-    status, body = gh.call("DELETE", _repo_path(name, org=mode.org), ok=(204, 403, 404))
+    try:
+        archive(tenant_id, gh)
+        if any(v.endswith("_TENANT_ID") for v in _variable_names(gh, name, mode.org)):
+            return {"status": "kept", "repo": name, "repoDeleted": False, "reason": "another environment still uses it"}
+        status, body = gh.call("DELETE", _repo_path(name, org=mode.org), ok=(204, 403, 404))
+    except SiteRepoError:
+        # Delete customer and the purge sweep can delete the same repo at
+        # once: a 404 half way means the other one finished it.
+        if gh.call("GET", _repo_path(name, org=mode.org), ok=(200, 404))[0] == 404:
+            log.info(json.dumps({"action": "delete", "tenantId": tenant_id, "repo": name, "alreadyGone": True}))
+            return {"status": "gone", "repo": name, "repoDeleted": False}
+        raise
     if status == 403:
         app = "Booqy Test Sites" if mode.test else "Booqy Customer Sites"
         raise SiteRepoError(f"{name} NOT deleted: GitHub refused ({(body or {}).get('message', '403')}). The {app} "

@@ -88,6 +88,15 @@ class FakeGitHub:
                 if "visibility" in data:
                     repo["private"] = data["visibility"] != "public"
             return 200, self._public(repo)
+        if rest == "git/ref/heads/dev":
+            return 200, {"object": {"sha": "devsha"}}
+        if rest == "git/refs" and method == "POST":
+            branch = data["ref"].removeprefix("refs/heads/")
+            if branch in repo["branches"]:
+                return 422, {"message": "Reference already exists"}
+            repo["branches"].add(branch)
+            repo.setdefault("refs", {})[branch] = data["sha"]
+            return 201, {}
         if rest.startswith("branches/"):
             return (200, {}) if rest.split("/")[1] in repo["branches"] else (404, {"message": "Branch not found"})
         if rest == "actions/oidc/customization/sub":
@@ -166,7 +175,9 @@ class FakeGitHubWorld:
             target = data["owner"]
             if auth != f"ghs_{target}":
                 return 403, json.dumps({"message": "Resource not accessible by integration"}).encode()
-            self.orgs[target]._repo(data["name"], private=data["private"])
+            self.orgs[target]._repo(data["name"], private=data["private"],
+                                    branches={"dev", "main"} if data["include_all_branches"] else {"dev"})
+            self.orgs[target].generated = data
             self.orgs[target].calls.append((method, path))
             return 201, json.dumps({"name": data["name"]}).encode()
         if org not in self.orgs or auth != f"ghs_{org}":
@@ -723,6 +734,7 @@ def test_generate_and_delete_use_the_site_org_with_prods_app(world):
     prod = world["use"]("prod")
     prod.handler({"action": "provision", "tenantId": PLAIN}, None)
     gh = world["github"]
+    assert gh.generated["include_all_branches"] is True and "refs" not in gh.repos["site-roma"]
     assert ("POST", f"/repos/{ORG}/site-template/generate") in gh.calls
     assert ("GET", f"/orgs/{ORG}/installation") in world["world"].calls
     assert prod.handler({"action": "delete", "tenantId": PLAIN}, None)["repoDeleted"] is True
@@ -741,6 +753,9 @@ def test_a_test_customer_gets_a_public_repo_in_the_test_org_from_the_shared_temp
     # Generated from the public BooqyCustomers/site-template, with the Test Sites App's own token.
     assert ("POST", f"/repos/{ORG}/site-template/generate") in tg.calls
     assert ("GET", f"/orgs/{TEST_ORG}/installation") in world["world"].calls
+    # Only the template's dev branch: main is made from it (the template's
+    # main has no sandbox deploy), never copied from the template's main.
+    assert tg.generated["include_all_branches"] is False and repo["refs"] == {"main": "devsha"}
     # Nothing else in the real customers' org.
     assert set(world["github"].repos) == {"site-template"}
     assert [c for c in _real_org_calls(world) if not c[1].endswith("/generate")] == []

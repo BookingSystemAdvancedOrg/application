@@ -375,14 +375,18 @@ def _ensure_repo(gh, name, profile, mode):
     if status == 404:
         template_owner = os.environ.get("SITE_TEMPLATE_OWNER") or org
         template = os.environ["SITE_TEMPLATE_REPO"]
+        # A test customer gets only the template's dev branch, and main is
+        # made from it: the template's main is what real customers run in
+        # prod, and its Deploy workflow knows nothing of the sandbox
+        # (SANDBOX_MAIN_*), so a main copied from it was never deployed.
         gh.call("POST", f"/repos/{template_owner}/{template}/generate", {
-            "owner": org, "name": name, "private": False, "include_all_branches": True,
+            "owner": org, "name": name, "private": False, "include_all_branches": not mode.test,
             "description": f"Webbplats för {profile.get('name') or profile['slug']} (Booqy"
                            f"{', testkund' if mode.test else ''})",
         })
         repo = _wait_for_branch(gh, name, "dev", org=org)
         if mode.test:
-            _wait_for_branch(gh, name, "main", org=org)
+            _main_from_dev(gh, name, org)
     elif repo.get("archived"):
         _, repo = gh.call("PATCH", _repo_path(name, org=org), {"archived": False})
     if repo.get("private"):                 # site repos are public (owner 2026-11-15): no secrets, free Actions minutes
@@ -390,6 +394,14 @@ def _ensure_repo(gh, name, profile, mode):
     if repo.get("default_branch") != "dev" or repo.get("delete_branch_on_merge"):
         _, repo = gh.call("PATCH", _repo_path(name, org=org), {"default_branch": "dev", "delete_branch_on_merge": False})
     return repo
+
+
+def _main_from_dev(gh, name, org):
+    """A new test repo's main branch, at dev's first commit."""
+    _, ref = gh.call("GET", _repo_path(name, "/git/ref/heads/dev", org=org))
+    gh.call("POST", _repo_path(name, "/git/refs", org=org),
+            {"ref": "refs/heads/main", "sha": ref["object"]["sha"]}, ok=(201, 422))
+    _wait_for_branch(gh, name, "main", org=org)
 
 
 def _wait_for_branch(gh, name, branch, attempts=20, delay=1.5, org=None):

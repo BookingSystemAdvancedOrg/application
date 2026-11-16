@@ -1,0 +1,349 @@
+# Help assistant (Ask Booqy / Fråga Booqy), functions/help-assistant. Not a plan feature;
+# its operator routes are here too because the same Lambda serves them.
+paths:
+  /tenant/help-assistant:
+    get:
+      tags:
+      - HelpAssistant
+      summary: Help assistant status (Booqy Admin, tenant token)
+      operationId: helpAssistantGetTenant
+      security:
+      - bearerAuth: []
+      x-required-groups: &id001
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: On (mode ai or kb) or off (enabled false, mode off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantStatus'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '403':
+          description: 'forbidden (console: not an operator), no_tenant or tenant_inactive.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+  /tenant/help-assistant/answers:
+    post:
+      tags:
+      - HelpAssistant
+      summary: Ask the help assistant (Booqy Admin, Swedish)
+      operationId: helpAssistantPostTenantAnswers
+      description: Grounded in the app's help corpus, filtered by role and plan. Only the earlier user questions
+        in history reach the model. Questions and answers are never stored.
+      security:
+      - bearerAuth: []
+      x-required-groups: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HelpAssistantQuestion'
+      responses:
+        '200':
+          description: The answer; mode ai (model) or kb (composed from the corpus).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantAnswerResponse'
+        '400':
+          description: 'Invalid body: question is required, question is too long, history must be a list, history
+            is invalid, unsupported fields.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '403':
+          description: 'help_assistant_off: switched off, the app closes the assistant and does not answer locally;
+            forbidden, no_tenant or tenant_inactive.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '429':
+          description: 'rate_limited: 6 questions a minute, 60 an hour per user.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+          headers:
+            Retry-After:
+              description: Seconds until the next question is allowed.
+              schema:
+                type: integer
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+  /platform/help-assistant:
+    get:
+      tags:
+      - HelpAssistant
+      summary: Help assistant status (Booqy Console, operator token (platform_admin))
+      operationId: helpAssistantGetPlatform
+      security:
+      - bearerAuth: []
+      x-required-groups: &id002
+      - platform_admin
+      responses:
+        '200':
+          description: On (mode ai or kb) or off (enabled false, mode off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantStatus'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '403':
+          description: 'forbidden (console: not an operator), no_tenant or tenant_inactive.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+  /platform/help-assistant/answers:
+    post:
+      tags:
+      - HelpAssistant
+      summary: Ask the help assistant (Booqy Console, English)
+      operationId: helpAssistantPostPlatformAnswers
+      description: Grounded in the app's help corpus, filtered by role and plan. Only the earlier user questions
+        in history reach the model. Questions and answers are never stored.
+      security:
+      - bearerAuth: []
+      x-required-groups: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HelpAssistantQuestion'
+      responses:
+        '200':
+          description: The answer; mode ai (model) or kb (composed from the corpus).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantAnswerResponse'
+        '400':
+          description: 'Invalid body: question is required, question is too long, history must be a list, history
+            is invalid, unsupported fields.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '403':
+          description: 'help_assistant_off: switched off, the app closes the assistant and does not answer locally;
+            forbidden, no_tenant or tenant_inactive.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+        '429':
+          description: 'rate_limited: 6 questions a minute, 60 an hour per user.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+          headers:
+            Retry-After:
+              description: Seconds until the next question is allowed.
+              schema:
+                type: integer
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelpAssistantError'
+components:
+  schemas:
+    HelpAssistantStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - mode
+      properties:
+        enabled:
+          type: boolean
+        mode:
+          type: string
+          enum:
+          - ai
+          - kb
+          - 'off'
+    HelpAssistantQuestion:
+      type: object
+      additionalProperties: false
+      required:
+      - question
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 500
+        history:
+          type: array
+          description: Earlier turns; only the last 4 are read, each text cut to 600 characters. Assistant turns
+            are accepted but never sent to the model.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - role
+            - text
+            properties:
+              role:
+                type: string
+                enum:
+                - user
+                - assistant
+              text:
+                type: string
+    HelpAssistantAction:
+      type: object
+      required:
+      - id
+      - label
+      - to
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        to:
+          type: string
+          description: App route.
+        hash:
+          type: string
+        query:
+          type: string
+        pageAction:
+          type: string
+        highlight:
+          type: array
+          items:
+            type: string
+    HelpAssistantLive:
+      type: object
+      required:
+      - metric
+      - text
+      description: A live number the app reads itself with the caller's own token; never a number from the server.
+      properties:
+        metric:
+          type: string
+        text:
+          type: string
+          description: Label with a {value} placeholder.
+        range:
+          type: object
+          required:
+          - from
+          - to
+          properties:
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+    HelpAssistantAnswer:
+      type: object
+      required:
+      - known
+      - text
+      - steps
+      - actions
+      - sources
+      properties:
+        known:
+          type: boolean
+        text:
+          type: string
+          maxLength: 900
+        steps:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 300
+        actions:
+          type: array
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/HelpAssistantAction'
+        sources:
+          type: array
+          items:
+            type: string
+        live:
+          $ref: '#/components/schemas/HelpAssistantLive'
+    HelpAssistantAnswerResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - answer
+      - mode
+      properties:
+        answer:
+          $ref: '#/components/schemas/HelpAssistantAnswer'
+        mode:
+          type: string
+          enum:
+          - ai
+          - kb
+    HelpAssistantError:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: A snake_case code, or a short English validation message (400).
+        code:
+          type: string
+        field:
+          type: string
+        requestId:
+          type: string
+          description: The Lambda request id, for a report to Booqy.

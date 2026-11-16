@@ -196,3 +196,44 @@ def test_real_bedrock_refuses_empty_model_and_bad_json(monkeypatch):
     monkeypatch.setattr(bedrock_real, "_client", _FakeConverse("inte json"))
     with pytest.raises(bedrock.TextModelError, match="bad_output"):
         bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"})
+
+
+@pytest.mark.parametrize("error", ["ReadTimeoutError", "ConnectTimeoutError"])
+def test_real_bedrock_timeouts_are_text_model_errors(monkeypatch, error):
+    from botocore import exceptions
+    from shared import bedrock_real
+
+    class Hangs:
+        def converse(self, **kwargs):
+            raise getattr(exceptions, error)(endpoint_url="https://bedrock-runtime")
+
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "m")
+    timeouts = {"connect_timeout": 3, "read_timeout": 10, "max_attempts": 2}
+    monkeypatch.setitem(bedrock_real._timed, (3.0, 10.0, 2), Hangs())
+    with pytest.raises(bedrock.TextModelError) as exc:
+        bedrock_real.RealTextModel(timeouts).complete("s", "p", max_tokens=5)
+    assert (exc.value.code, exc.value.retryable) == ("timeout", True)
+
+
+def test_real_bedrock_default_client_keeps_boto3_defaults(monkeypatch):
+    import boto3
+    from shared import bedrock_real
+    seen = []
+    monkeypatch.setattr(bedrock_real, "_client", None)
+    monkeypatch.setattr(boto3, "client", lambda name, **kw: seen.append(kw) or object())
+    bedrock_real._bedrock()
+    assert seen == [{}]
+    monkeypatch.setenv("BEDROCK_CLIENT", "real")
+    assert bedrock.client().timeouts is None
+
+
+def test_real_bedrock_json_instruction_follows_the_language(monkeypatch):
+    from shared import bedrock_real
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "m")
+    fake = _FakeConverse('{"ok": true}')
+    monkeypatch.setattr(bedrock_real, "_client", fake)
+    bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"}, language="en")
+    bedrock_real.RealTextModel().complete("s", "p", max_tokens=5, json_schema={"type": "object"})
+    english, swedish = (c["system"][0]["text"] for c in fake.calls)
+    assert "Answer with exactly one JSON object" in english and "Svara" not in english
+    assert "Svara med exakt ett JSON-objekt" in swedish

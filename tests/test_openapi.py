@@ -1849,6 +1849,8 @@ def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
 
 FRAGMENT_DIR = SPEC_PATH.parent / "openapi"
 FUNCTIONS_DIR = Path(__file__).parents[1] / "functions"
+# Fragments for Lambdas that are not plan features (same rules otherwise).
+NON_FEATURE_FRAGMENTS = frozenset({"help-assistant"})
 
 
 def handler_routes(feature_id, functions_dir=FUNCTIONS_DIR):
@@ -1872,7 +1874,8 @@ def merge_fragments(base, fragment_dir=FRAGMENT_DIR, functions_dir=FUNCTIONS_DIR
     schemas = merged.setdefault("components", {}).setdefault("schemas", {})
     for path in sorted(fragment_dir.glob("*.yaml")) if fragment_dir.is_dir() else []:
         feature_id = path.stem
-        assert feature_id in contracts.FEATURE_IDS.values(), f"{path.name}: unknown feature id"
+        assert feature_id in contracts.FEATURE_IDS.values() or feature_id in NON_FEATURE_FRAGMENTS, \
+            f"{path.name}: unknown feature id"
         fragment = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         assert set(fragment) <= {"paths", "components"}, f"{path.name}: only paths and components"
         assert set(fragment.get("components") or {}) <= {"schemas"}, f"{path.name}: only components.schemas"
@@ -1958,3 +1961,14 @@ def test_site_config_documents_the_events_flag(openapi_document):
     document, _ = openapi_document
     features = document["components"]["schemas"]["SiteConfig"]["properties"]["tenant"]["properties"]["features"]
     assert "giftCards, waitlist, events." in " ".join(features["description"].split())
+
+
+def test_help_assistant_fragment_documents_all_four_routes_and_the_request_id(openapi_document):
+    document, _ = openapi_document
+    merged = merge_fragments(document)
+    assert {("GET", "/tenant/help-assistant"), ("POST", "/tenant/help-assistant/answers"),
+            ("GET", "/platform/help-assistant"), ("POST", "/platform/help-assistant/answers")} == \
+        handler_routes("help-assistant")
+    assert "requestId" in merged["components"]["schemas"]["HelpAssistantError"]["properties"]
+    off = merged["paths"]["/tenant/help-assistant/answers"]["post"]["responses"]["403"]["description"]
+    assert "help_assistant_off" in off

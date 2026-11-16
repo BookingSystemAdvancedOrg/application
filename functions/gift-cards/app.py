@@ -636,8 +636,17 @@ def checkout_hook(event):
         card_id = gc.tx_card(tenant_id, f"order-{order_id}")
         if card_id and gc.get_tx(tenant_id, card_id, f"{other}-order-{order_id}"):
             return {"ok": True, "reversedOre": 0}
-        card, after = _reverse(tenant_id, f"order-{order_id}", f"{op}-order-{order_id}", event.get("locationId"),
-                               by="system")
+        try:
+            card, after = _reverse(tenant_id, f"order-{order_id}", f"{op}-order-{order_id}",
+                                   event.get("locationId"), by="system")
+        except gc.GiftCardError as exc:
+            if exc.code != "card_void":
+                raise
+            # The card was refunded or voided meanwhile: nothing to credit, and the order must still
+            # settle (a failure here makes Stripe retry for days and blocks the cancel).
+            logger.warning(json.dumps({"giftCard": "reverse_on_void_card", "tenantId": tenant_id,
+                                       "orderId": order_id, "op": op}))
+            return {"ok": True, "reversedOre": 0, "code": "card_void"}
         if not card:
             return {"ok": True, "reversedOre": 0}
         tx = gc.get_tx(tenant_id, card["cardId"], f"{op}-order-{order_id}")

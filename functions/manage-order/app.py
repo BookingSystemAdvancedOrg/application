@@ -151,21 +151,42 @@ def _refund_gift_card(item, now):
     return result["Attributes"]
 
 
+def _own_refund(record):
+    """A refund record written by a cancel (it carries refundId, None when
+    nothing was charged). The webhook's record of a Dashboard refund has only
+    amount and at."""
+    return record is not None and "refundId" in record
+
+
+def _stripe_refund(item, now, actor):
+    """The Stripe part of a cancel: (refund object, total refunded in öre).
+    What Stripe already refunded (Dashboard, or an earlier cancel whose status
+    write lost a race) is not refunded again; without an amount Stripe refunds
+    what is left. Nothing charged by card: no call."""
+    charged = order_payments.charged_amount(item)
+    prior = int((item.get("refund") or {}).get("amount") or 0)
+    if charged <= 0 or item.get("paymentStatus") == o.PAY_REFUNDED or (prior and prior >= charged):
+        return {}, prior if item.get("refund") else max(charged, 0)
+    refund = order_payments.refund(item, now, actor)
+    return refund, prior + int(refund.get("amount") or (charged - prior))
+
+
 def _cancel_gift_card_order(item, ctx, now, current):
     """Stripe first (only the charged part, nothing when the card covered it),
     recorded on the order; then the card's part back, once; then cancelled.
     A Stripe failure leaves the order as it was and the card not credited."""
     record = item.get("refund")
-    if record is None:
-        charged = order_payments.charged_amount(item)
-        refund = order_payments.refund(item, now, ctx.sub) if charged > 0 else {}
-        record = {"amount": int(refund.get("amount") or charged), "at": o.iso(now), "refundId": refund.get("id"),
+    if not _own_refund(record):
+        # None, or a Stripe Dashboard refund recorded by the webhook: refund what is left, if anything.
+        refund, amount = _stripe_refund(item, now, ctx.sub)
+        record = {"amount": amount, "at": o.iso(now), "refundId": refund.get("id"),
                   "status": refund.get("status")}
         try:
             dynamo.table(o.order_table()).update_item(
                 Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
-                UpdateExpression="SET #rf = :refund", ConditionExpression="attribute_exists(PK) AND "
-                                                                         "attribute_not_exists(#rf)",
+                UpdateExpression="SET #rf = :refund",
+                ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(#rf) OR "
+                                    "attribute_not_exists(#rf.refundId))",
                 ExpressionAttributeNames={"#rf": "refund"}, ExpressionAttributeValues={":refund": record})
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
@@ -202,8 +223,7 @@ def _set_status(event, location_id, ctx, order_id):
     if target == o.CANCELLED:
         if item.get("giftCard"):
             return http.respond(200, o.staff_view(_cancel_gift_card_order(item, ctx, now, current)))
-        refund = order_payments.refund(item, now, ctx.sub)
-        amount = int(refund.get("amount") or item["totalAmount"])
+        refund, amount = _stripe_refund(item, now, ctx.sub)
         updated = _update_status(
             item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
             extra_sets=["paymentStatus = :refunded", "refund = :refund"],

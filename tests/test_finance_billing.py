@@ -223,6 +223,25 @@ def test_note_written_first_by_the_console_is_booked_once(app):
     assert "creditedSek" not in day and day["refundedSek"] == Decimal("100.00")
 
 
+def test_note_row_says_what_it_took_back_from_the_payment(app):
+    """postPaymentSek: the console reads it to say what is left to refund. A
+    note on an open invoice (pre_payment) takes nothing back from a payment;
+    a row written without it gets it on the next delivery."""
+    from shared import billing as shared_billing
+    table = boto3.resource("dynamodb", region_name=REGION).Table(FINANCE_TABLE)
+    pre = {**_refund_note("cn_4"), "type": "pre_payment", "post_payment_amount": 0, "refunds": []}
+    evt = {"id": "evt_cn4", "type": "credit_note.created", "created": 1_800_300_000, "livemode": False,
+           "data": {"object": pre}}
+    _send(app, evt)
+    key = {"PK": f"TENANT#{TENANT_A}", "SK": "CREDIT#2027-01-18#cn_4"}
+    assert table.get_item(Key=key)["Item"]["postPaymentSek"] == Decimal("0.00")
+    table.update_item(Key=key, UpdateExpression="REMOVE postPaymentSek")
+    _send(app, {**evt, "id": "evt_cn4b"})
+    assert table.get_item(Key=key)["Item"]["postPaymentSek"] == Decimal("0.00")
+    assert shared_billing.post_payment_minor({"total": 12_500, "type": "post_payment"}) == 12_500
+    assert shared_billing.post_payment_minor({"total": 12_500, "post_payment_amount": 2_500}) == 2_500
+
+
 def test_refunded_part_of_a_note():
     from shared import billing as shared_billing
     assert shared_billing.refunded_minor({"total": 12_500}) == 0

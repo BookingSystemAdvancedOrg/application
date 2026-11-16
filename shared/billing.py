@@ -390,8 +390,20 @@ def credit_note_row(tenant_id, note, event_created):
             "creditNoteId": note["id"], "invoiceId": _id(note.get("invoice")), "number": note.get("number"),
             "reason": note.get("reason"), "amountSek": sek(ex or 0), "totalSek": sek(total),
             "refundedSek": sek(refunded), "refundedExSek": refunded_ex,
+            "postPaymentSek": sek(post_payment_minor(note)),
             "method": metadata.get("booqyMethod"), "memo": note.get("memo"),
             "createdAt": _iso(note.get("created")), "eventCreated": int(event_created), "updatedAt": now_iso()}
+
+
+def post_payment_minor(note):
+    """What a credit note took back from money already paid (öre, incl VAT);
+    the rest only lowered what was still owed. The console reads it to say
+    what is left to refund on the invoice."""
+    if isinstance(note.get("post_payment_amount"), int):
+        return note["post_payment_amount"]
+    if note.get("type") == "pre_payment":
+        return 0
+    return int(note.get("total") or 0)
 
 
 def record_credit_note(tenant_id, note, event_created):
@@ -413,6 +425,9 @@ def record_credit_note(tenant_id, note, event_created):
             raise
         fresh = False
     key = {"PK": row["PK"], "SK": row["SK"]}
+    if not fresh:   # a row written before postPaymentSek existed gets it now
+        _finance_table().update_item(Key=key, UpdateExpression="SET postPaymentSek = if_not_exists(postPaymentSek, :p)",
+                                     ExpressionAttributeValues={":p": row["postPaymentSek"]})
     booked = []
     if _book(key, "bookedCredited", tenant_id, day, "creditedSek", row["amountSek"]):
         booked.append("credited")

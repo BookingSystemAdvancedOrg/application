@@ -145,12 +145,16 @@ else
   # this function (an app pipeline's canary, or this repo's apply racing one)
   # may still be shifting traffic: wait for it instead of failing, then
   # release from whatever it left live.
+  # The CLI paginates list-deployments and prints the --query result once per
+  # page: a group with a long history answers "None" on several lines, which
+  # once read as a running deployment and blocked the release until the
+  # credentials expired. One page only, and only a real deployment ID counts.
   active_waited=0
   while :; do
     active=$(aws deploy list-deployments --application-name "$APP" --deployment-group-name "$FN" \
-      --include-only-statuses Created Queued InProgress Baking Ready \
-      --query 'deployments[0]' --output text 2>/dev/null) || active="None"
-    if [ -z "$active" ] || [ "$active" = "None" ]; then break; fi
+      --include-only-statuses Created Queued InProgress Baking Ready --no-paginate \
+      --query 'deployments[0]' --output text 2>/dev/null | grep -m1 '^d-' || true)
+    if [ -z "$active" ]; then break; fi
     if [ "$active_waited" -ge "$TIMEOUT_SECONDS" ]; then
       log "deployment $active is still running after ${TIMEOUT_SECONDS}s - trying anyway"
       break

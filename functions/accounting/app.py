@@ -20,7 +20,7 @@ TRIGGER:
 PURPOSE:
     The accounting export (shared/accounting.py, shared/accounting_export.py,
     docs/ACCOUNTING-EXPORT.md). Read only on the money: entries are built
-    from the stored orders, card payments, Kassa journal, card guarantee
+    from the stored orders, card guarantee
     fees, catering requests and the connected account's Stripe balance
     transactions every time, so exporting a day again gives the same entry.
     Features add their own postings through the accounting.events hook
@@ -31,13 +31,12 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, ORDER_TABLE_NAME, RESERVATION_TABLE_NAME,
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
-    KASSA_TABLE_NAME, KASSA_JOURNAL_TABLE_NAME, STRIPE_SECRET_ARN, STRIPE_API_VERSION
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION
 
 AWS RESOURCE ACCESS:
     Tenant-context read policy; location table UpdateItem (`accounting`
     only); Query on the order, reservation, catering-requests,
-    catering-request-history and kassa tables and the kassa-journal byDay
-    index; GetItem on catering-request-history (the signed offer);
+    catering-request-history tables; GetItem on catering-request-history (the signed offer);
     the platform Stripe secret (balance transactions, read only).
 """
 

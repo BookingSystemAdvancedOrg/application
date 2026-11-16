@@ -48,14 +48,25 @@ def test_unknown_value_refused(monkeypatch, name, env, module, sim, real_cls, er
         module.client()
 
 
+REAL_CALLS = {  # a port call that needs the account: refused as not configured, never a crash
+    "voice": lambda c: c.create_agent({"name": "dev-phone-agent-loc-1"}),
+    "telephony": lambda c: c.provision_number("SE", "x"),
+    "agent_model": lambda c: c.converse("s", [{"role": "user", "content": "hej"}], [], max_tokens=5),
+}
+
+
 @pytest.mark.parametrize("name, env, module, sim, real_cls, err, call", CLIENTS)
-def test_real_is_a_skeleton(monkeypatch, name, env, module, sim, real_cls, err, call):
+def test_real_client_without_its_account_is_not_configured(monkeypatch, name, env, module, sim, real_cls, err,
+                                                           call):
     monkeypatch.setenv("ENVIRONMENT", "prod")
     monkeypatch.setenv(env, "real")
+    for var in ("VOICE_SECRET_ARN", "TELEPHONY_SECRET_ARN", "PHONE_AGENT_MODEL_ID", "PHONE_AGENT_VOICE_ID"):
+        monkeypatch.delenv(var, raising=False)
     client = module.client()
     assert type(client).__name__ == real_cls
-    with pytest.raises(NotImplementedError):
-        call(client)
+    with pytest.raises(err) as raised:
+        REAL_CALLS[name](client)
+    assert raised.value.code == "not_configured"
 
 
 @pytest.mark.parametrize("name, env, module, sim, real_cls, err, call", CLIENTS)

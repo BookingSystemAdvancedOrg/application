@@ -278,10 +278,12 @@ def map_hours(location: dict, today: date) -> dict:
     and notes are never sent; only today .. today + 12 months."""
     business = location.get("businessHours") or {}
     periods = []
-    for day in _WEEKDAYS:
+    for index, day in enumerate(_WEEKDAYS):
         for interval in business.get(day) or []:
+            # closes before it opens: past midnight, on the next day
+            close_day = _WEEKDAYS[(index + 1) % 7] if interval["closesAt"] <= interval["opensAt"] else day
             periods.append({"openDay": day.upper(), "openTime": _time(interval["opensAt"]),
-                            "closeDay": day.upper(), "closeTime": _time(interval["closesAt"])})
+                            "closeDay": close_day.upper(), "closeTime": _time(interval["closesAt"])})
     last = add_months(today, SPECIAL_MONTHS)
     special = []
     for entry in sorted(location.get("specialDays") or [], key=lambda e: e.get("date") or ""):
@@ -365,6 +367,20 @@ def reset_client(instance=None) -> None:
     _CLIENT.clear()
     if instance is not None:
         _CLIENT["c"] = instance
+
+
+REAUTH_CODES = ("needs_reauth", "unauthorized", "invalid_grant")
+
+
+def mark_needs_reauth(tenant_id) -> None:
+    """Google refused the tenant's grant: the owner has to connect again."""
+    try:
+        table().update_item(Key=connection_key(tenant_id), UpdateExpression="SET #s = :r",
+                            ConditionExpression="#s = :c", ExpressionAttributeNames={"#s": "status"},
+                            ExpressionAttributeValues={":r": "needs_reauth", ":c": "connected"})
+    except ClientError as exc:
+        if not conditional_failed(exc):
+            raise
 
 
 def access_token(tenant_id) -> Optional[str]:

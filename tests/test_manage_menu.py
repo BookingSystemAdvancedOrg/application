@@ -166,6 +166,10 @@ def public_item(item):
     } | {"alcohol": item.get("alcohol") is True} | {
         "availableFrom": item.get("availableFrom"),
         "availableUntil": item.get("availableUntil"),
+        "station": item.get("station"),
+        "components": item.get("components") or [],
+        "allergens": [],
+        "options": [],
     }
 
 
@@ -442,7 +446,6 @@ def test_known_route_wrong_method_returns_405(
     [
         "",
         "unknown",
-        "categories",
         "items/one/two",
         f"categories/{ITEM_ID}",
     ],
@@ -555,7 +558,7 @@ def test_accepts_base64_encoded_create_body(app_and_table):
 
 @pytest.mark.parametrize(
     "field",
-    ["name", "description", "price", "category", "imageKey", "active"],
+    ["name", "description", "price", "category", "active"],
 )
 def test_create_requires_every_editable_field(app_and_table, field):
     app, menu_table = app_and_table
@@ -580,7 +583,6 @@ def test_create_requires_every_editable_field(app_and_table, field):
         ("name", 123),
         ("description", None),
         ("description", 123),
-        ("imageKey", None),
         ("imageKey", ""),
         ("imageKey", "   "),
         ("imageKey", 123),
@@ -1021,7 +1023,7 @@ def test_mutations_reject_corrupt_stored_item_without_changing_it(
     method,
 ):
     app, menu_table = app_and_table
-    corrupt = menu_item(category="snacks")
+    corrupt = menu_item(category="Snacks!")
     put_item(menu_table, corrupt)
     body = {"name": "Must not apply"} if method == "PUT" else NO_BODY
 
@@ -1709,3 +1711,72 @@ def test_clearing_an_absent_schedule_is_a_no_op(app_and_table):
     event = make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"availableFrom": None})
     assert app.handler(event, None)["statusCode"] == 200
     assert get_item(menu_table) == menu_item()
+
+
+# --- photo focal point (imageFocus) ---------------------------------------------------
+
+
+def test_image_focus_is_optional_and_absent_by_default(app_and_table):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body=valid_body()), None)
+    assert response["statusCode"] == 201
+    assert "imageFocus" not in response_body(response)
+    assert "imageFocus" not in get_item(menu_table)
+
+
+def test_image_focus_is_stored_and_returned(app_and_table):
+    app, menu_table = app_and_table
+    body = valid_body(imageFocus={"x": 0, "y": 100})
+    response = app.handler(make_event(method="POST", body=body), None)
+    assert response["statusCode"] == 201
+    assert response_body(response)["imageFocus"] == {"x": 0, "y": 100}
+    assert get_item(menu_table)["imageFocus"] == {"x": 0, "y": 100}
+
+
+def test_image_focus_can_be_changed_and_cleared(app_and_table):
+    app, menu_table = app_and_table
+    put_item(menu_table)
+    response = app.handler(
+        make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"imageFocus": {"x": 30, "y": 72.0}}), None
+    )
+    assert response["statusCode"] == 200
+    assert response_body(response)["imageFocus"] == {"x": 30, "y": 72}
+
+    response = app.handler(make_event(method="PUT", proxy=f"items/{ITEM_ID}", body={"imageFocus": None}), None)
+    assert response["statusCode"] == 200
+    assert "imageFocus" not in response_body(response)
+    assert "imageFocus" not in get_item(menu_table)
+
+
+@pytest.mark.parametrize(
+    "focus",
+    [
+        {"x": -1, "y": 50},
+        {"x": 50, "y": 101},
+        {"x": 12.5, "y": 50},
+        {"x": True, "y": 50},
+        {"x": "50", "y": 50},
+        {"x": 50},
+        {"x": 50, "y": 50, "z": 1},
+        [50, 50],
+        "center",
+    ],
+)
+def test_image_focus_rejects_values_outside_0_to_100(app_and_table, focus):
+    app, menu_table = app_and_table
+    response = app.handler(make_event(method="POST", body=valid_body(imageFocus=focus)), None)
+    assert_error(response, 400)
+    assert table_items(menu_table) == []
+
+
+def test_routing_fields_are_validated_and_stored(app_and_table):
+    app, menu_table = app_and_table
+    combo = {**valid_body(), "station": "kok", "components": [{"name": " Burgare "}, {"name": "Läsk", "station": "bar"}]}
+    response = app.handler(make_event(method="POST", body=combo), None)
+    assert response["statusCode"] == 201
+    body = response_body(response)
+    assert body["station"] == "kok" and body["components"] == [{"name": "Burgare"}, {"name": "Läsk", "station": "bar"}]
+    for bad in ({"station": "Kök!"}, {"components": [{"name": ""}]}, {"components": [{"name": "x", "price": 1}]},
+                {"components": [{"name": "x"}] * 9}):
+        assert app.handler(make_event(method="POST", body={**valid_body(), **bad}), None)["statusCode"] == 400
+    assert get_item(menu_table)["components"][1] == {"name": "Läsk", "station": "bar"}

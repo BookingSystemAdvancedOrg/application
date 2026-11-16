@@ -13,7 +13,15 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 from shared import dynamo as shared_dynamo
-from tenant_support import LOC_B, TENANT_A, TENANT_B, install_tenancy, tenant_claims
+from tenant_support import (
+    LOC_B,
+    TENANT_A,
+    TENANT_B,
+    TENANT_TABLE,
+    install_tenancy,
+    tenant_claims,
+    tenant_row,
+)
 
 
 APP_PATH = (
@@ -1011,7 +1019,7 @@ def test_public_active_invalid_location_returns_400_before_dynamodb(
     table_factory.assert_not_called()
 
 
-def test_public_active_missing_activation_state_returns_404(
+def test_public_active_missing_activation_state_returns_an_empty_plan(
     app_and_table,
     monkeypatch,
 ):
@@ -1020,7 +1028,7 @@ def test_public_active_missing_activation_state_returns_404(
 
     response = app.handler(make_public_event(), None)
 
-    assert_response(response, 404, err("active layout not found"))
+    assert_response(response, 200, {"floors": [], "elements": []})
 
 
 @pytest.mark.parametrize(
@@ -3096,3 +3104,52 @@ def test_other_tenants_versions_are_404(app_and_table, monkeypatch):
 
     assert response["statusCode"] == 404
     table_factory.assert_not_called()
+
+
+def test_public_active_offers_the_staff_token_to_the_dpa_gate(
+    app_and_table,
+    monkeypatch,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    seen = {}
+
+    def for_public(location_id, *, feature=None, staff_tenant=None):
+        seen["location"] = location_id
+        seen["tenant"] = staff_tenant()
+
+    monkeypatch.setattr(app.tenant, "for_public", for_public)
+    monkeypatch.setattr(
+        app.staff_token,
+        "tenant_of",
+        lambda event: event["headers"]["authorization"],
+    )
+    event = make_public_event()
+    event["headers"] = {"authorization": TENANT_A}
+
+    assert app.handler(event, None)["statusCode"] == 200
+    assert seen == {"location": LOCATION_ID, "tenant": TENANT_A}
+
+
+@pytest.mark.parametrize(
+    ("caller", "status"),
+    [(TENANT_A, 200), (TENANT_B, 404), (None, 404)],
+)
+def test_public_active_before_the_dpa_only_own_staff_see_the_plan(
+    app_and_table,
+    monkeypatch,
+    caller,
+    status,
+):
+    app, _ = app_and_table
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+    boto3.resource("dynamodb", region_name="eu-north-1").Table(
+        TENANT_TABLE
+    ).put_item(Item=tenant_row(TENANT_A, dpaRequired=True))
+    monkeypatch.setattr(app.staff_token, "tenant_of", lambda event: caller)
+
+    response = app.handler(make_public_event(), None)
+
+    assert response["statusCode"] == status
+    if status == 200:
+        assert response_body(response) == {"floors": [], "elements": []}

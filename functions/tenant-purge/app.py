@@ -30,15 +30,21 @@ PURPOSE:
         (CONSENT_TABLE_NAME)
       * users: the Cognito users of the tenant pool and their profiles
       * menu images (menu-images/<tenantId>/ in the menu image bucket)
-      * Kassa's fiskaly API key for the restaurant (the secret
-        FISKALY_UNIT_PREFIX + tenantId, 7-day recovery window). The fiskaly
-        UNIT itself, Kassa's journal and its receipts stay (bookkeeping,
-        Skatteverket audits); fiskaly has no API to disable the key, so
-        Booqy disables it in fiskaly HUB if wanted.
-      * domains we ran DNS for: auto-renew is switched off for domains
-        registered through us, and the hosted zone is deleted once the
-        domain no longer points at it (a zone still in use is kept and
-        reported, so the restaurant's email doesn't stop working)
+      * every user's background image library (admin/<tenantId>/ in the
+        user-backdrops bucket and the users' items in the user-backdrops
+        table, found through its byTenant index; user-backdrop)
+      * domains we ran DNS for: a domain registered through us (bought,
+        moved in, or its registration moved here) stays the restaurant's:
+        auto-renew and the transfer lock are switched off and its order row
+        and claim are KEPT, so Booqy Console can hand the restaurant the
+        transfer-out code (never deleted, never given to anyone else); the
+        hosted zone is deleted once the domain no longer points at it (a
+        zone still in use is kept and reported, so the restaurant's email
+        doesn't stop working)
+      * the deployed website (sites/<tenantId>/ in the sites bucket,
+        SITES_BUCKET_NAME; the bucket's 30-day version expiry removes the
+        older versions), and in dev a test customer's main/sites/<tenantId>/
+        and dev/sites/<tenantId>/ in the sandbox bucket (TEST_SITES_BUCKET_NAME)
       * the website repo site-<slug> on GitHub (site-repo "delete", when
         SITE_REPO_FUNCTION_ARN is set; prod also cleans up dev's side): a
         refusal (e.g. the GitHub App lacks Administration write) is
@@ -78,9 +84,11 @@ ENV_VARS:
     COGNITO_USER_POOL_ID, LOCATION_TABLE_NAMES (JSON list),
     CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     MARKETING_TABLE_NAME, CONSENT_TABLE_NAME, CONSENT_TENANT_INDEX_NAME,
-    MENU_IMAGES_BUCKET_NAME, RETENTION_DAYS,
+    MENU_IMAGES_BUCKET_NAME, USER_BACKDROPS_BUCKET_NAME and
+    USER_BACKDROPS_TABLE_NAME, SITES_BUCKET_NAME and TEST_SITES_BUCKET_NAME (empty: skipped),
+    RETENTION_DAYS,
     BACKFILL_GRACE_DAYS, ALERT_TOPIC_ARN, PROTECTED_ZONE_IDS (JSON list),
-    FISKALY_UNIT_PREFIX (booqy/<env>/fiskaly-unit/), SITE_REPO_FUNCTION_ARN
+    SITE_REPO_FUNCTION_ARN
     (empty: site repos are off)
 
 AWS RESOURCE ACCESS:
@@ -88,10 +96,13 @@ AWS RESOURCE ACCESS:
     table, Query + BatchWriteItem/DeleteItem on the location-keyed tables,
     the catering history, marketing, location and user tables (user table
     through its byTenant index), cognito-idp:AdminDeleteUser on the tenant
-    pool, s3:ListBucket/DeleteObject under menu-images/, Route 53 record and
+    pool, s3:ListBucket/DeleteObject under menu-images/ (menu image bucket)
+    and admin/ (user-backdrops bucket), sites/ (sites bucket), main/sites/ and
+    dev/sites/ (dev sandbox bucket), Query (byTenant) and BatchWriteItem
+    on the user-backdrops table, Route 53 record and
     zone deletion (never the platform's own zones), route53domains
-    DisableDomainAutoRenew, secretsmanager:DeleteSecret on
-    booqy/<env>/fiskaly-unit/*, sns:Publish on the alert topic, and
+    DisableDomainAutoRenew and DisableDomainTransferLock, sns:Publish on
+    the alert topic, and
     lambda:InvokeFunction on itself (continuation) and on site-repo.
 """
 
@@ -118,7 +129,16 @@ MARKETING_PARTS = ("STATS", "SUB", "SEEN", "TPL", "CMP", "USAGE", "OFFER", "CODE
 TOMBSTONE_FIELDS = ("PK", "SK", "GSI1PK", "GSI1SK", "tenantId", "name", "legalName", "orgNumber",
                     "vatNumber", "slug", "planId", "createdAt", "offboardingStartedAt",
                     "offboardingRequestedBy", "offboardedAt", "purgeAt", "entitlements")
-REGISTERED_MODES = ("register", "transfer")
+REGISTERED_MODES = ("register", "transfer_in", "transfer")
+
+
+def _registered_here(row):
+    """Bought, moved in, or a connected domain whose registration moved here."""
+    if row.get("transferStatus") == "transferred" or row.get("registeredAt"):
+        return True
+    return row.get("mode") in REGISTERED_MODES and row.get("status") not in (
+        "failed", "transfer_rejected", "transfer_expired", "awaiting_owner_approval", "awaiting_verification",
+        "registering", "creating_zone")
 DOH_URL = "https://dns.google/resolve"
 
 _clients = {}
@@ -279,18 +299,49 @@ def _purge_images(tenant_id, budget, counts):
             counts["images"] += len(objects)
 
 
-def _purge_fiskaly_key(tenant_id, counts):
-    """Kassa's fiskaly key of the restaurant. Gone or already scheduled for
-    deletion counts as done."""
-    prefix = os.environ.get("FISKALY_UNIT_PREFIX")
-    if not prefix:
+def _purge_backdrops(tenant_id, budget, counts):
+    """Each of the restaurant's users' own background image
+    (admin/<tenantId>/<sub>/backdrop, user-backdrop)."""
+    bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
+    if not bucket:
         return
-    try:
-        _client("secretsmanager").delete_secret(SecretId=prefix + tenant_id, RecoveryWindowInDays=7)
-        counts["fiskalyKey"] = 1
-    except ClientError as e:
-        if e.response["Error"]["Code"] not in ("ResourceNotFoundException", "InvalidRequestException"):
-            raise
+    s3 = _client("s3")
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"admin/{tenant_id}/"):
+        budget.check()
+        objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+            counts["backdrops"] += len(objects)
+
+
+def _purge_site(tenant_id, budget, counts):
+    """The deployed website: sites/<tenantId>/ (site-repo's deploys) and,
+    in dev, a test customer's two sandbox builds main/sites/<tenantId>/ and
+    dev/sites/<tenantId>/ (TEST_SITES_BUCKET_NAME)."""
+    folders = []
+    if os.environ.get("SITES_BUCKET_NAME"):
+        folders.append((os.environ["SITES_BUCKET_NAME"], f"sites/{tenant_id}/"))
+    if os.environ.get("TEST_SITES_BUCKET_NAME"):
+        folders += [(os.environ["TEST_SITES_BUCKET_NAME"], f"{stage}/sites/{tenant_id}/") for stage in ("main", "dev")]
+    if not folders:
+        return
+    s3 = _client("s3")
+    for bucket, prefix in folders:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+            budget.check()
+            objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objects:
+                s3.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+                counts["siteFiles"] += len(objects)
+
+
+def _purge_backdrop_items(tenant_id, budget):
+    """The library items (images and selection) of the restaurant's users."""
+    table_name = os.environ.get("USER_BACKDROPS_TABLE_NAME")
+    if not table_name:
+        return
+    keys = _query_keys(table_name, Key("tenantId").eq(tenant_id), index="byTenant")
+    _delete_keys(table_name, [{"PK": k["PK"], "SK": k["SK"]} for k in keys], budget)
 
 
 def _ns_lookup(domain):
@@ -336,12 +387,23 @@ def _purge_zones(tenant_id, zones, budget, report):
     for row in zones:
         budget.check()
         domain = row.get("domain") or str(row["SK"]).removeprefix("ZONE#")
-        if row.get("mode") in REGISTERED_MODES:
+        if row.get("simulated"):
+            # A dev console simulation (test customer): nothing was registered
+            # and no hosted zone exists, so no Route 53 call; the order goes.
+            report["notes"].append(f"{domain}: simulated order, nothing registered")
+            _release_claim(tenant_id, domain)
+            continue
+        handover = _registered_here(row)
+        if handover:
             try:
                 domains.disable_domain_auto_renew(DomainName=domain)
                 report["autoRenewOff"].append(domain)
             except ClientError as e:
                 report["notes"].append(f"{domain}: auto-renew not switched off ({e.response['Error']['Code']})")
+            try:
+                domains.disable_domain_transfer_lock(DomainName=domain)
+            except ClientError as e:
+                report["notes"].append(f"{domain}: transfer lock not switched off ({e.response['Error']['Code']})")
         zone_id = str(row.get("hostedZoneId") or "").split("/")[-1]
         if zone_id and zone_id in protected:
             report["notes"].append(f"{domain}: hosted zone {zone_id} is a platform zone, not deleted")
@@ -357,6 +419,13 @@ def _purge_zones(tenant_id, zones, budget, report):
                 continue
             _delete_zone(zone_id, budget)
             report["zonesDeleted"].append(domain)
+        if handover:
+            # The restaurant's domain: the order row stays for the transfer-out
+            # code in Booqy Console, the claim keeps it from another tenant.
+            report["notes"].append(f"{domain}: registered through Booqy, kept for the restaurant (transfer-out code "
+                                   "in Booqy Console)")
+            kept.append(row)
+            continue
         _release_claim(tenant_id, domain)
     return kept
 
@@ -477,7 +546,7 @@ def purge_tenant(tenant_id, budget, round_=0):
     if not profile or profile.get("status") != "offboarded" or not purge_at or purge_at > now:
         return None
     counts = {k: 0 for k in ("locations", "locationRows", "cateringHistory", "marketing", "users", "images",
-                             "fiskalyKey")}
+                             "backdrops", "siteFiles")}
     report = {"tenantId": tenant_id, "name": profile.get("name"), "counts": counts, "autoRenewOff": [],
               "zonesDeleted": [], "zonesKept": [], "notes": [], "waitingOn": []}
     logger.info(json.dumps({"purge": tenant_id, "purgeAt": profile.get("purgeAt")}))
@@ -489,7 +558,9 @@ def purge_tenant(tenant_id, budget, round_=0):
     _purge_marketing(tenant_id, budget, counts)
     _purge_users(tenant_id, budget, counts)
     _purge_images(tenant_id, budget, counts)
-    _purge_fiskaly_key(tenant_id, counts)
+    _purge_backdrops(tenant_id, budget, counts)
+    _purge_backdrop_items(tenant_id, budget)
+    _purge_site(tenant_id, budget, counts)
     repo = _delete_site_repo(tenant_id, report)        # before the rows: it reads PROFILE and SITE
     _purge_tenant_rows(tenant_id, budget, report)
     if repo:
@@ -561,7 +632,8 @@ def _notify(result):
         c = r["counts"]
         lines.append(f"Deleted: {r['name']} ({r['tenantId']}): {c['locations']} location(s), "
                      f"{c['locationRows']} booking/order/menu/layout/catering rows, {c['cateringHistory']} catering "
-                     f"history rows, {c['marketing']} marketing rows, {c['users']} user(s), {c['images']} image(s).")
+                     f"history rows, {c['marketing']} marketing rows, {c['users']} user(s), {c['images']} image(s), "
+                     f"{c.get('backdrops', 0)} backdrop image(s), {c.get('siteFiles', 0)} website file(s).")
         for label, items in (("Auto-renew off", r["autoRenewOff"]), ("Hosted zones deleted", r["zonesDeleted"]),
                              ("Hosted zones kept", r["zonesKept"]), ("Check", r["notes"])):
             if items:

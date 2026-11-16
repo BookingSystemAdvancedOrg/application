@@ -5,30 +5,33 @@ pages, QR codes, marketing mail).
 In order:
   1. the restaurant's own domain once it is attached and its certificate
      issued (an active DOMAIN# row that is not kind platform; primaryDomain
-     first), so links switch to it as soon as domain-attach finishes;
+     first), so links switch to it as soon as domain-attach finishes. An
+     own-domain order (Booqy Console, own_domains.py) makes its canonical
+     host the primary domain: example.se (www.example.se and the slug
+     address answer with a 301 to it), or www.example.se when the
+     restaurant keeps its DNS; in dev dev.example.se;
   2. its slug address <slug>.<platform domain> (<slug>.booqy.se in prod,
      <slug>.dev.booqy.se in dev): the active kind-platform row onboarding
-     writes, else built from SITE_DOMAIN for a tenant set up before that
-     row existed;
+     writes in the same step that creates the slug's CloudFront
+     distribution tenant. Never built from the slug alone: a tenant set up
+     before that row existed has no distribution tenant, so the host fails
+     the TLS handshake and every link to it leads nowhere. A dev test
+     customer has two (main <slug>.test.booqy.se, dev
+     <slug>.test-dev.booqy.se, stage on the row): main first;
   3. outside prod, CUSTOMER_SITE_URL with ?restaurang=<slug> (dev sites on
      *.cloudfront.net can't tell the restaurant from their host).
 Otherwise there is no site: (None, None).
 
 ENV_VARS:
-    TENANT_TABLE_NAME, ENVIRONMENT, SITE_DOMAIN (optional, the slug zone),
-    CUSTOMER_SITE_URL (optional)
+    TENANT_TABLE_NAME, ENVIRONMENT, CUSTOMER_SITE_URL (optional)
 """
 
 import os
-import re
 from urllib.parse import urlparse
 
 from boto3.dynamodb.conditions import Key
 
 from shared import dynamo, tenant
-
-_SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-
 
 def _active(tenant_id):
     rows = dynamo.table(os.environ["TENANT_TABLE_NAME"]).query(
@@ -39,19 +42,17 @@ def _active(tenant_id):
 
 
 def _own(active, tenant_row):
-    return sorted((r["domain"] for r in active if r.get("kind") != "platform"),
-                  key=lambda d: (d != tenant_row.get("primaryDomain"), d))
+    rows = sorted((r for r in active if r.get("kind") != "platform"),
+                  key=lambda r: (r["domain"] != tenant_row.get("primaryDomain"), r.get("stage") == "dev", r["domain"]))
+    return [r["domain"] for r in rows]
 
 
-def _slug_host(active, tenant_row):
-    platform = sorted(r["domain"] for r in active if r.get("kind") == "platform")
-    if platform:
-        return platform[0]
-    zone = os.environ.get("SITE_DOMAIN", "").strip().strip(".")
-    slug = tenant_row.get("slug")
-    if zone and isinstance(slug, str) and _SLUG.fullmatch(slug):
-        return f"{slug}.{zone}"
-    return None
+def _slug_host(active):
+    # A dev test customer has two: <slug>.test.booqy.se (stage main) and
+    # <slug>.test-dev.booqy.se (stage dev); links go to main.
+    rows = sorted((r for r in active if r.get("kind") == "platform"),
+                  key=lambda r: (r.get("stage") == "dev", r["domain"]))
+    return rows[0]["domain"] if rows else None
 
 
 def _dev_site(tenant_row):
@@ -64,7 +65,7 @@ def _dev_site(tenant_row):
 def base(tenant_id, tenant_row):
     """(base_url, slug) - slug only when the site needs ?restaurang=."""
     active = _active(tenant_id)
-    host = next(iter(_own(active, tenant_row)), None) or _slug_host(active, tenant_row)
+    host = next(iter(_own(active, tenant_row)), None) or _slug_host(active)
     if host:
         return f"https://{host}", None
     url = _dev_site(tenant_row)
@@ -73,13 +74,17 @@ def base(tenant_id, tenant_row):
     return None, None
 
 
+def canonical_host(tenant_id, tenant_row):
+    """The host guests are sent to (base() without the scheme), or None."""
+    url, slug = base(tenant_id, tenant_row)
+    return url.removeprefix("https://") if url and not slug else None
+
+
 def hosts(tenant_id, tenant_row):
     """Every host the tenant's site is served on: its own domains and its
     slug address, or outside prod the shared dev site's host."""
     active = _active(tenant_id)
     found = set(_own(active, tenant_row)) | {r["domain"] for r in active if r.get("kind") == "platform"}
-    if not found and (slug_host := _slug_host(active, tenant_row)):
-        found.add(slug_host)
     if found:
         return sorted(found)
     url = _dev_site(tenant_row)

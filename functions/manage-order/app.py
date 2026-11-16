@@ -18,11 +18,16 @@ TRIGGER:
          the charged part from Stripe (nothing when the card covered it).
     PUT  /locations/{locationId}/orders/pause   {"minutes": 0-240}
          Stop taking orders for a while (0 = take orders again).
-    POST /locations/{locationId}/orders/table-codes
-         {"tables": [{"tableId", "label"}]} -> the QR code value for each
-         table (signed, so a guest can't make up a table) and the guest-site
-         URL to print in the QR code (null while the restaurant has no site
-         address).
+    GET|POST /locations/{locationId}/orders/table-codes
+         The QR code of every table in the ACTIVE published floor plan
+         (shared/table_qr.py: a random key per table, created on first use),
+         with the table's current name and the guest-site URL to print in the
+         QR code (null while the restaurant has no site address). A body from
+         older admin builds ({"tables": [...]}) is accepted and ignored: the
+         floor plan decides which tables exist and what they are called.
+    POST /locations/{locationId}/orders/table-codes/{tableId}/regenerate
+         A new code for one table (sticker stolen or worn): the old printed
+         code stops working at once and shows the guest a clear message.
 
 PURPOSE:
     The restaurant's side of food orders. Status writes are conditional on
@@ -36,12 +41,14 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, ORDER_TABLE_NAME, RESERVATION_LINK_KEY_SECRET_ARN,
     SITE_DOMAIN, CUSTOMER_SITE_URL (dev: QR code URLs with ?restaurang=),
+    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (the tables behind the QR codes),
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (refunds)
 """
 
 import json
 import logging
 import os
+import re
 from datetime import timedelta
 from urllib.parse import quote
 
@@ -49,6 +56,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, feature_hooks, http, manage_link, order_payments, site, tenant
 from shared import orders as o
+from shared import table_qr
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -56,7 +64,7 @@ logger.setLevel(logging.INFO)
 
 _COLLECTION = "/locations/{locationId}/orders"
 _ITEM = "/locations/{locationId}/orders/{proxy+}"
-_MAX_TABLE_CODES = 200
+_TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _ctx(event):
@@ -241,23 +249,30 @@ def _pause(event, location_id, ctx):
     return http.respond(200, {"ordering": o.availability(location, ctx.tenant, now)})
 
 
+def _table_url(base, slug, code):
+    if not base:
+        return None
+    return site.page(base, slug, "/bestall") + ("&" if slug else "?") + "bord=" + quote(code, safe="")
+
+
+def _code_view(table, base, slug):
+    return {"tableId": table["tableId"], "label": table["label"], "title": table_qr.table_title(table["label"]),
+            "seats": table["seats"], "code": table["code"], "url": _table_url(base, slug, table["code"])}
+
+
 def _table_codes(event, location_id, ctx):
-    data = http.body(event, allowed={"tables"})
-    tables = data.get("tables")
-    if not isinstance(tables, list) or not tables or len(tables) > _MAX_TABLE_CODES:
-        raise ValueError(f"tables must be a list of 1-{_MAX_TABLE_CODES} tables")
+    if event.get("body"):
+        http.body(event, allowed={"tables"})  # older admin builds; the floor plan decides
     base, slug = site.base(ctx.tenant_id, ctx.tenant)
-    out = []
-    for entry in tables:
-        if not isinstance(entry, dict) or set(entry) - {"tableId", "label"}:
-            raise ValueError("each table needs tableId and label")
-        code = o.table_code(ctx.tenant_id, location_id, entry.get("tableId"), entry.get("label"))
-        url = None
-        if base:
-            url = site.page(base, slug, "/bestall") + ("&" if slug else "?") + "bord=" + quote(code, safe="")
-        out.append({"tableId": entry["tableId"], "label": o.clean_table_label(entry["label"]),
-                    "code": code, "url": url})
-    return http.respond(200, {"tables": out})
+    tables = table_qr.codes_for(ctx.tenant_id, location_id, ctx.sub, o.now_utc())
+    return http.respond(200, {"tables": [_code_view(t, base, slug) for t in tables]})
+
+
+def _regenerate(location_id, ctx, table_id):
+    table = table_qr.regenerate(ctx.tenant_id, location_id, table_id, ctx.sub, o.now_utc())
+    logger.info(json.dumps({"tableQr": "regenerated", "locationId": location_id, "tableId": table_id}))
+    base, slug = site.base(ctx.tenant_id, ctx.tenant)
+    return http.respond(200, _code_view(table, base, slug))
 
 
 def _item_route(event, method):
@@ -269,9 +284,13 @@ def _item_route(event, method):
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})
         return _pause(event, location_id, ctx)
     if parts == ["table-codes"]:
+        if method not in ("GET", "POST"):
+            return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET, POST"})
+        return _table_codes(event, location_id, ctx)
+    if len(parts) == 3 and parts[0] == "table-codes" and parts[2] == "regenerate" and _TABLE_ID.fullmatch(parts[1]):
         if method != "POST":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
-        return _table_codes(event, location_id, ctx)
+        return _regenerate(location_id, ctx, parts[1])
     if len(parts) == 2 and parts[1] == "status" and o.valid_order_id(parts[0]):
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})

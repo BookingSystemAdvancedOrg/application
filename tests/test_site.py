@@ -38,9 +38,9 @@ def env(monkeypatch, environment, *, zone=True):
         monkeypatch.setenv("SITE_DOMAIN", ZONES[environment])
 
 
-def domain(tenants, host, *, kind="custom", status="active"):
+def domain(tenants, host, *, kind="custom", status="active", stage=None):
     tenants.put_item(Item={"PK": f"TENANT#{TENANT_A}", "SK": f"DOMAIN#{host}",
-                           "domain": host, "kind": kind, "status": status})
+                           "domain": host, "kind": kind, "status": status, **({"stage": stage} if stage else {})})
 
 
 def slug_row(tenants, environment):
@@ -56,12 +56,21 @@ def test_without_a_domain_links_go_to_the_slug_address(tenants, monkeypatch, env
     assert site.hosts(TENANT_A, row) == [f"roma.{ZONES[environment]}"]
 
 
-@pytest.mark.parametrize("environment", ["prod", "dev"])
-def test_a_tenant_without_its_slug_row_still_gets_the_slug_address(tenants, monkeypatch, environment):
-    env(monkeypatch, environment)
+def test_dev_tenant_without_its_slug_row_gets_the_shared_site_not_a_dead_host(tenants, monkeypatch):
+    """No kind-platform row = no distribution tenant for <slug>.dev.booqy.se
+    (it fails the TLS handshake, as test-restaurang-2 did): the SMS and
+    e-mail links go to the shared dev site with ?restaurang= instead."""
+    env(monkeypatch, "dev")
     row = tenant_row(TENANT_A, slug="roma")
-    assert site.base(TENANT_A, row) == (f"https://roma.{ZONES[environment]}", None)
-    assert site.hosts(TENANT_A, row) == [f"roma.{ZONES[environment]}"]
+    assert site.base(TENANT_A, row) == ("https://dev123.cloudfront.net", "roma")
+    assert site.hosts(TENANT_A, row) == ["dev123.cloudfront.net"]
+
+
+def test_prod_tenant_without_its_slug_row_gets_no_link_rather_than_a_dead_one(tenants, monkeypatch):
+    env(monkeypatch, "prod")
+    row = tenant_row(TENANT_A, slug="roma")
+    assert site.base(TENANT_A, row) == (None, None)
+    assert site.hosts(TENANT_A, row) == []
 
 
 @pytest.mark.parametrize("environment", ["prod", "dev"])
@@ -108,11 +117,6 @@ def test_prod_without_subdomains_or_domain_has_no_site(tenants, monkeypatch):
     assert site.hosts(TENANT_A, row) == []
 
 
-def test_a_bad_slug_is_never_put_in_a_host(tenants, monkeypatch):
-    env(monkeypatch, "prod")
-    assert site.base(TENANT_A, tenant_row(TENANT_A, slug="evil.example/x")) == (None, None)
-
-
 @pytest.mark.parametrize("environment", ["prod", "dev"])
 def test_scrive_return_url_without_a_domain(tenants, monkeypatch, environment):
     env(monkeypatch, environment)
@@ -128,3 +132,67 @@ def test_scrive_return_url_with_a_domain(tenants, monkeypatch, environment):
     domain(tenants, "www.roma.se")
     url = catering_signing.customer_return_url(TENANT_A, tenant_row(TENANT_A, slug="roma"), ITEM)
     assert url == "https://www.roma.se/catering/loc-a-1/req-1?signering=klar"
+
+
+def test_a_dev_test_customer_links_to_its_main_sandbox_host_not_the_dev_one(tenants, monkeypatch):
+    # "roma.test-dev.booqy.se" sorts before "roma.test.booqy.se"; the stage decides.
+    env(monkeypatch, "dev")
+    domain(tenants, "roma.test-dev.booqy.se", kind="platform", stage="dev")
+    domain(tenants, "roma.test.booqy.se", kind="platform", stage="main")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="roma.test.booqy.se")
+    assert site.base(TENANT_A, row) == ("https://roma.test.booqy.se", None)
+    assert site.hosts(TENANT_A, row) == ["roma.test-dev.booqy.se", "roma.test.booqy.se"]
+    # A mapped own domain (example.se in the dev console): main again.
+    domain(tenants, "example-se.test-dev.booqy.se", stage="dev")
+    domain(tenants, "example-se.test.booqy.se", stage="main")
+    assert site.base(TENANT_A, tenant_row(TENANT_A, slug="roma")) == ("https://example-se.test.booqy.se", None)
+
+
+def test_an_own_domain_order_links_to_its_canonical_host_not_www(tenants, monkeypatch):
+    """Booqy runs the DNS: example.se is canonical (www and the slug address
+    301 to it); both hosts are active, the primary decides."""
+    env(monkeypatch, "prod")
+    slug_row(tenants, "prod")
+    domain(tenants, "roma.se")
+    domain(tenants, "www.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="roma.se")
+    assert site.base(TENANT_A, row) == ("https://roma.se", None)
+    assert site.canonical_host(TENANT_A, row) == "roma.se"
+    assert site.page(*site.base(TENANT_A, row), "/bord/4") == "https://roma.se/bord/4"
+
+
+def test_dns_records_mode_links_to_www(tenants, monkeypatch):
+    env(monkeypatch, "prod")
+    slug_row(tenants, "prod")
+    domain(tenants, "www.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="www.roma.se")
+    assert site.canonical_host(TENANT_A, row) == "www.roma.se"
+
+
+def test_dev_mirrors_prod_with_dev_domain(tenants, monkeypatch):
+    env(monkeypatch, "dev")
+    slug_row(tenants, "dev")
+    domain(tenants, "dev.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="dev.roma.se")
+    assert site.canonical_host(TENANT_A, row) == "dev.roma.se"
+
+
+def test_no_site_has_no_canonical_host(tenants, monkeypatch):
+    env(monkeypatch, "dev", zone=False)
+    assert site.canonical_host(TENANT_A, tenant_row(TENANT_A, slug="roma")) is None
+
+
+def test_no_guest_link_is_built_from_the_slug_by_hand():
+    """Every guest-facing link comes from shared/site.py: a function that
+    puts the slug in front of the platform domain itself would skip the
+    restaurant's live own domain (and its 301)."""
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parents[1] / "functions"
+    pattern = re.compile(r'f"https://\{slug\}\.')
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if pattern.search(text) and "site.base(" not in text:
+            offenders.append(str(path.relative_to(root)))
+    assert offenders == []

@@ -25,7 +25,7 @@ from shared import dynamo as shared_dynamo
 from shared import events
 from shared import tenant as shared_tenant
 from shared.features import personalliggare as pl
-from shared.kassa import entry_hash
+from shared.hash_chain import entry_hash
 from tenant_support import (LOC_A, LOC_A2, LOC_B, OWNER_A_SUB, REGION, STAFF_A_SUB, TENANT_A, TENANT_B,
                             TENANT_TABLE, USER_TABLE_DEFAULT, features_on, seed_tenancy, tenant_row,
                             with_tenant_claims)

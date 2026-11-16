@@ -8,20 +8,25 @@ TRIGGER:
     DELETE /tenant/google-business/connection                       D4 revoke, secret, links, schedules
     GET    /tenant/google-business/locations                        D5 Google locations + links
     GET    /locations/{locationId}/google-business                  D6 link, preview, settings, stats
-    PUT    /locations/{locationId}/google-business/link             D7 {googleLocation, version?}
-    DELETE /locations/{locationId}/google-business/link             D8
+    PUT    /locations/{locationId}/google-business/link             D7 {googleLocation, version?} | {skipped: true}
+    DELETE /locations/{locationId}/google-business/link             D8 unlink, also undoes a skip
     POST   /locations/{locationId}/google-business/sync             D9 "Synka nu"
     PUT    /locations/{locationId}/google-business/review-settings  D10
 
     Lambda invoke (no requestContext): {"hook": ...} feature hooks
     (CONTRACTS.md 9): platform (D11 `google-business.tenant.get`),
-    tenant.purge, privacy.export, privacy.erase.
+    tenant.purge (revokes at Google first), privacy.export, privacy.erase.
 
 PURPOSE:
     Connect a restaurant's Google Business Profile, push Booqy's opening
     hours one way (Booqy is the source) and configure post-visit review
     requests (ADR-D). Every Google call goes through shared/google_business
-    (simulator unless GOOGLE_BUSINESS_CLIENT=real, refused in prod).
+    (simulator unless GOOGLE_BUSINESS_CLIENT=real; prod only with the
+    Terraform release flag google_business_prod_released). Every Google
+    call of one run shares one deadline (google_business.start_run).
+    Google errors: retryable ones are 502 google_unavailable with
+    retryAfter; ones a retry cannot fix are 409 google_rejected (field: the
+    port's code) or, on the callback, 409 no_google_account.
 
 ENV_VARS:
     ENVIRONMENT, GOOGLE_BUSINESS_TABLE_NAME, TENANT_TABLE_NAME,
@@ -39,12 +44,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import events, http, tenant
 from shared.features import google_business as gbp
+from shared import google_business as google_port
 from shared.google_business import GoogleBusinessError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 RETRY_AFTER_SECONDS = 60
+LAMBDA_TIMEOUT_SECONDS = 28  # infrastructure/google-business/main.tf; the run deadline without a context
 
 
 def _err(status, code, field=None, extra=None):
@@ -129,6 +136,20 @@ def callback(event, ctx):
     return http.respond(200, _connection_view(item))
 
 
+def _skip_key(location_id):
+    # "Vi har ingen Google-profil": Google is optional, the location says so once (Kom igång counts it done).
+    return {"PK": gbp.location_pk(location_id), "SK": "SKIP"}
+
+
+def _skipped(tenant_id, location_id):
+    item = gbp.table().get_item(Key=_skip_key(location_id), ConsistentRead=True).get("Item")
+    return bool(item and item.get("tenantId") == tenant_id)
+
+
+def _clear_skip(location_id):
+    gbp.table().delete_item(Key=_skip_key(location_id))
+
+
 def _remove_link(tenant_id, location_id):
     link = gbp.get_link(tenant_id, location_id)
     if not link:
@@ -139,18 +160,24 @@ def _remove_link(tenant_id, location_id):
     return True
 
 
-def disconnect(tenant_id, reason):
-    """Revoke at Google (best effort), delete the token, every link and
-    every pending review schedule; the connection row says disconnected."""
-    connection = gbp.get_connection(tenant_id)
-    if not connection or connection.get("status") == "disconnected":
-        return False
+def _revoke(tenant_id):
+    """Revoke the tenant's grant at Google, best effort: a failure is logged
+    and the token is still deleted (Google drops unused grants itself)."""
     refresh = gbp.get_refresh_token(tenant_id)
     if refresh:
         try:
             gbp.client().revoke(refresh)
         except GoogleBusinessError as exc:
             logger.warning(json.dumps({"revoke": "failed", "code": exc.code}))
+
+
+def disconnect(tenant_id, reason):
+    """Revoke at Google (best effort), delete the token, every link and
+    every pending review schedule; the connection row says disconnected."""
+    connection = gbp.get_connection(tenant_id)
+    if not connection or connection.get("status") == "disconnected":
+        return False
+    _revoke(tenant_id)
     gbp.delete_refresh_token(tenant_id)
     location_ids = [loc["locationId"] for loc in tenant.list_locations(tenant_id) if loc.get("locationId")]
     for location_id in location_ids:
@@ -196,11 +223,26 @@ def get_location_view(event, ctx):
            "stats": gbp.stats(ctx.tenant_id, ctx.location_id)}
     if link:
         out["link"] = gbp.link_view(link)
+    elif _skipped(ctx.tenant_id, ctx.location_id):
+        out["skipped"] = True
     return http.respond(200, out)
 
 
+def _put_skip(ctx):
+    if gbp.get_link(ctx.tenant_id, ctx.location_id):
+        raise gbp.GbpError(409, "already_linked")
+    gbp.table().put_item(Item={**_skip_key(ctx.location_id), "tenantId": ctx.tenant_id,
+                               "locationId": ctx.location_id, "skippedAt": gbp.iso(gbp.now()),
+                               "skippedBy": ctx.sub})
+    return http.respond(200, {"skipped": True})
+
+
 def put_link(event, ctx):
-    body = http.body(event, allowed=("googleLocation", "version"))
+    body = http.body(event, allowed=("googleLocation", "version", "skipped"))
+    if "skipped" in body:
+        if body["skipped"] is not True or set(body) != {"skipped"}:
+            raise gbp.GbpError(400, "skipped is invalid", "skipped")
+        return _put_skip(ctx)
     google_location = body.get("googleLocation")
     if not gbp.valid_google_location(google_location):
         raise gbp.GbpError(400, "googleLocation is invalid", "googleLocation")
@@ -246,12 +288,14 @@ def put_link(event, ctx):
         if reasons and reasons[0] == "ConditionalCheckFailed":
             raise gbp.GbpError(409, "already_linked", "googleLocation")
         raise gbp.GbpError(409, "changed_retry")
+    _clear_skip(ctx.location_id)
     # First sync: the hourly job picks up the pending link (no hash yet).
     return http.respond(200, gbp.link_view(link))
 
 
 def delete_link(event, ctx):
     _remove_link(ctx.tenant_id, ctx.location_id)
+    _clear_skip(ctx.location_id)
     return _no_content()
 
 
@@ -306,18 +350,25 @@ def _platform(event):
     if not isinstance(tenant_id, str) or not tenant_id or not tenant.get_tenant(tenant_id, fresh=True):
         return {"ok": False, "status": 404, "code": "not_found"}
     connection = gbp.get_connection(tenant_id) or {}
+    # Linked locations come from this feature's own GLOC# rows (written with each LINK):
+    # this role has no Query on the location table, and a tenant that never connected
+    # simply has none (status disconnected), not an error.
+    location_ids = sorted({row.get("locationId") for row in gbp.query_all(gbp.tenant_pk(tenant_id), "GLOC#",
+                                                                          ConsistentRead=True)} - {None, ""})
     links = []
-    for loc in tenant.list_locations(tenant_id):
-        link = gbp.get_link(tenant_id, loc.get("locationId") or "")
+    for location_id in location_ids:
+        link = gbp.get_link(tenant_id, location_id)
         if link:
-            links.append({"locationId": loc["locationId"], "title": link.get("title") or "",
+            links.append({"locationId": location_id, "title": link.get("title") or "",
                           "syncStatus": link.get("syncStatus") or "pending", "lastSyncAt": link.get("lastSyncAt")})
     return {"ok": True, "status": 200, "body": {"status": connection.get("status") or "disconnected",
                                                 "links": links}}
 
 
 def purge(tenant_id, location_ids):
-    """Offboarding: token, pending schedules and every row."""
+    """Offboarding: the grant is revoked at Google, then token, pending
+    schedules and every row are deleted."""
+    _revoke(tenant_id)
     gbp.delete_refresh_token(tenant_id)
     location_ids = [lid for lid in location_ids if isinstance(lid, str) and lid]
     gbp.cancel_pending_jobs(tenant_id, location_ids, reason="disabled")
@@ -413,13 +464,16 @@ ROUTES = {
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:
+            google_port.start_run(context, default_seconds=LAMBDA_TIMEOUT_SECONDS)
             return _hook(event)
         return {"ok": False, "status": 400, "code": "unknown_event"}
+    google_port.start_run(context, default_seconds=LAMBDA_TIMEOUT_SECONDS)
     method, path = http.route(event)
     route = f"{method} {path}"
     fn = ROUTES.get(route)
     if fn is None:
         return _err(404, "not found")
+    ctx = None
     try:
         location_id = None
         if "{locationId}" in path:
@@ -439,9 +493,23 @@ def handler(event, context=None):
         logger.warning(json.dumps({"route": route, "google": exc.code}))
         if exc.code == "invalid_code":
             return _err(400, "invalid_state", "code")
+        if exc.code in gbp.REAUTH_CODES and fn is callback:  # no offline grant or the scope was unticked
+            return _err(400, "invalid_state", "code")
+        if exc.code in gbp.REAUTH_CODES and ctx is not None:
+            try:  # D1 then shows needs_reauth and the owner connects again
+                gbp.mark_needs_reauth(ctx.tenant_id)
+            except (BotoCoreError, ClientError):
+                pass
+            return _err(409, "not_connected")
         if exc.code == "not_connected":
             return _err(409, "not_connected")
-        return _err(502, "google_unavailable", extra={"retryAfter": RETRY_AFTER_SECONDS})
+        if exc.retryable:  # rate limit, 5xx, timeout: a later try may work
+            return _err(502, "google_unavailable", extra={"retryAfter": RETRY_AFTER_SECONDS})
+        if exc.code == "not_found" and fn is callback:  # the Google user has no Business Profile account
+            return _err(409, "no_google_account")
+        # quota_exceeded, api_disabled, misconfigured, permission_denied, not_found,
+        # invalid_request: retrying will not help, so no retryAfter
+        return _err(409, "google_rejected", exc.code)
     except ValueError as exc:
         return http.respond(400, {"error": str(exc)})
     except (BotoCoreError, ClientError) as exc:

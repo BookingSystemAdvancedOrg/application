@@ -418,3 +418,77 @@ def test_an_extension_may_not_run_into_a_window_without_extension():
     assert rules.blocking_window(value, SATURDAY, minute("11:00"), minute("11:30")) is None
     open_window = time_rules(window(extension={"allowed": True, "maxMinutes": 15}))
     assert rules.blocking_window(open_window, MONDAY, minute("11:00"), minute("11:15")) is None
+
+
+# --- opening hours past midnight -----------------------------------------------------
+
+def _week(**days):
+    return {d: days.get(d, []) for d in rules.WEEKDAYS}
+
+
+def test_week_problem_accepts_same_day_and_past_midnight_hours():
+    assert rules.week_problem(_week(monday=[{"opensAt": "11:00", "closesAt": "22:00"}])) is None
+    assert rules.week_problem(_week(
+        saturday=[{"opensAt": "11:00", "closesAt": "14:00"}, {"opensAt": "18:00", "closesAt": "02:00"}],
+        sunday=[{"opensAt": "02:00", "closesAt": "04:00"}],
+        friday=[{"opensAt": "18:00", "closesAt": "00:00"}],
+    )) is None
+
+
+@pytest.mark.parametrize("hours, problem", [
+    (_week(monday=[{"opensAt": "10:00", "closesAt": "10:00"}]), ("monday", "same")),
+    (_week(monday=[{"opensAt": "18:00", "closesAt": "02:00"}, {"opensAt": "22:00", "closesAt": "23:00"}]),
+     ("monday", "overlap")),
+    (_week(friday=[{"opensAt": "18:00", "closesAt": "00:00"}, {"opensAt": "23:00", "closesAt": "23:30"}]),
+     ("friday", "overlap")),
+    (_week(saturday=[{"opensAt": "18:00", "closesAt": "02:00"}], sunday=[{"opensAt": "01:30", "closesAt": "05:00"}]),
+     ("saturday", "next_day")),
+    (_week(sunday=[{"opensAt": "18:00", "closesAt": "02:00"}], monday=[{"opensAt": "01:00", "closesAt": "05:00"}]),
+     ("sunday", "next_day")),
+])
+def test_week_problem_names_the_day(hours, problem):
+    assert rules.week_problem(hours) == problem
+
+
+SAT, SUN, MON = date(2026, 11, 21), date(2026, 11, 22), date(2026, 11, 23)
+LATE = _week(saturday=[{"opensAt": "18:00", "closesAt": "02:00"}],
+             sunday=[{"opensAt": "12:00", "closesAt": "20:00"}])
+
+
+def test_date_spans_carry_the_hours_after_midnight_into_the_next_date():
+    assert rules.date_spans(LATE, {}, SAT) == [(18 * 60, 26 * 60)]
+    assert rules.date_spans(LATE, {}, SUN) == [(-6 * 60, 2 * 60), (12 * 60, 20 * 60)]
+    assert rules.date_spans(LATE, {}, MON) == []
+
+
+def test_date_intervals_cut_at_midnight_for_bookings():
+    assert rules.date_intervals(LATE, {}, SAT) == [{"opensAt": "18:00", "closesAt": "23:59"}]
+    assert rules.date_intervals(LATE, {}, SUN) == [
+        {"opensAt": "00:00", "closesAt": "02:00"}, {"opensAt": "12:00", "closesAt": "20:00"}]
+    # closing at midnight adds nothing to the next date
+    midnight = _week(friday=[{"opensAt": "17:00", "closesAt": "00:00"}])
+    assert rules.date_intervals(midnight, {}, date(2026, 11, 20)) == [{"opensAt": "17:00", "closesAt": "23:59"}]
+    assert rules.date_intervals(midnight, {}, SAT) == []
+
+
+def test_special_days_decide_whose_evening_runs_past_midnight():
+    closed_saturday = {SAT.isoformat(): {"date": SAT.isoformat(), "kind": "closed"}}
+    assert rules.date_intervals(LATE, closed_saturday, SUN) == [{"opensAt": "12:00", "closesAt": "20:00"}]
+    closed_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "closed"}}
+    assert rules.date_intervals(LATE, closed_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "02:00"}]
+
+
+def test_a_special_day_cuts_the_previous_evening_at_its_first_opening():
+    early_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                      "intervals": [{"opensAt": "00:30", "closesAt": "03:00"}]}}
+    # open straight through: one span, no start time twice
+    assert rules.date_spans(LATE, early_sunday, SUN) == [(-6 * 60, 3 * 60)]
+    assert rules.date_intervals(LATE, early_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "03:00"}]
+    later_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                      "intervals": [{"opensAt": "01:00", "closesAt": "01:30"},
+                                                    {"opensAt": "12:00", "closesAt": "14:00"}]}}
+    assert rules.date_intervals(LATE, later_sunday, SUN) == [
+        {"opensAt": "00:00", "closesAt": "01:30"}, {"opensAt": "12:00", "closesAt": "14:00"}]
+    midnight_sunday = {SUN.isoformat(): {"date": SUN.isoformat(), "kind": "hours",
+                                         "intervals": [{"opensAt": "00:00", "closesAt": "04:00"}]}}
+    assert rules.date_intervals(LATE, midnight_sunday, SUN) == [{"opensAt": "00:00", "closesAt": "04:00"}]

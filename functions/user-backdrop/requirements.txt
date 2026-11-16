@@ -1,0 +1,3 @@
+# boto3 is already present in the public.ecr.aws/lambda/python base image.
+# Pillow: decode uploads and write the WebP thumbnails.
+pillow==12.2.0

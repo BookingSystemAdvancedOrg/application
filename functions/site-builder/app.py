@@ -42,7 +42,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import events, http, request_guard, tenant
+from shared import events, http, request_guard, site, tenant
 from shared.features import site_builder as sb
 
 logger = logging.getLogger()
@@ -123,6 +123,11 @@ def put_draft(event, ctx):
 # --- B3, B8 previews ------------------------------------------------------------------
 
 def _host(ctx):
+    """Where the site answers for guests (shared/site.py: the live own
+    domain, else the slug address)."""
+    base_url, needs_slug = site.base(ctx.tenant_id, ctx.tenant)
+    if base_url and not needs_slug:
+        return base_url.removeprefix("https://")
     slug = ctx.tenant.get("slug")
     domain = os.environ.get("SITE_BASE_DOMAIN", "booqy.se")
     return f"{slug}.{domain}" if slug else domain

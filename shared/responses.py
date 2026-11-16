@@ -88,3 +88,4 @@ def json_response(status_code: int, body: Any, headers: Optional[dict] = None) -
 def error_response(status_code: int, message: str) -> dict:
     """Shorthand for the common case of returning a single error message."""
     return json_response(status_code, {"error": message})
+

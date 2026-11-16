@@ -14,19 +14,17 @@ TRIGGER:
     POST /tenant/gift-cards/{cardId}/adjust                        E8 owner: extend validity
     POST /tenant/gift-cards/{cardId}/refund                        E9 owner: Stripe refund of the unused part
     POST /tenant/gift-cards/{cardId}/resend                        E10 owner: a NEW code by email (old one stops)
-    POST /locations/{locationId}/gift-cards/lookup                 E11 owner, staff
-    POST /locations/{locationId}/gift-cards/redemptions            E12 owner, staff (and `kassa`)
-    POST /locations/{locationId}/gift-cards/redemptions/{txId}/reverse  E13 before Kassa took the payment
+    (E11-E13, the staff lookup and the Kassa redemptions, were removed with Kassa on 2026-11-14.)
 
     Lambda invoke (no requestContext): {"hook": ...} stripe.event,
-    checkout.giftcard, kassa.giftcard, accounting.events, privacy.export,
+    checkout.giftcard, accounting.events, privacy.export,
     privacy.erase, tenant.purge; EventBridge Scheduler {"job": "nightly"}
     (expiry at 02:30 Europe/Stockholm and the 24-month contact clean-up).
 
 PURPOSE:
     Presentkort (ADR-E): sold on the restaurant site, issued only from
     Stripe's payment_intent.succeeded on the purchase's own connected
-    account, redeemed partly online (order checkout) and in Kassa. Balance
+    account, redeemed online (order checkout). Balance
     changes are append-only TX rows written in one transaction with the
     card (txId idempotency). Codes exist only as HMAC + last4.
     Accounting: multi-purpose voucher, NEEDS ACCOUNTANT REVIEW.
@@ -457,87 +455,20 @@ def resend(event, ctx):
     return http.respond(202, {"last4": card["last4"]})
 
 
-# --- staff E11-E13 -----------------------------------------------------------------------------
-
-def lookup(event, ctx):
-    body = http.body(event, allowed=("code",))
-    if not isinstance(body.get("code"), str) or not body["code"].strip():
-        raise gc.GiftCardError(400, "code is required", "code")
-    card = gc.find_card_by_code(ctx.tenant_id, body["code"])
-    if not card:
-        raise gc.GiftCardError(404, "not found")
-    return http.respond(200, {"cardId": card["cardId"], "last4": card["last4"],
-                              "balanceSek": int(card["balanceOre"]) // 100, "balanceOre": int(card["balanceOre"]),
-                              "expiresAt": card["expiresAt"], "status": gc.shown_status(card)})
-
-
-def redeem(event, ctx):
-    tenant.require_feature(ctx.tenant, "kassa")
-    body = http.body(event, allowed=("txId", "code", "amountOre", "billId"))
-    tx_id = _tx_id(body)
-    amount = body.get("amountOre")
-    if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-        raise gc.GiftCardError(400, "amountOre must be a positive whole number", "amountOre")
-    bill_id = body.get("billId")
-    if not gc.valid_id(bill_id):
-        raise gc.GiftCardError(400, "billId is invalid", "billId")
-    card = gc.find_card_by_code(ctx.tenant_id, body.get("code"))
-    if not card:
-        raise gc.GiftCardError(404, "not found")
-    card, tx, created = gc.change_balance(ctx.tenant_id, card["cardId"], tx_id, -amount, "redeem", "kassa",
-                                         ctx.location_id, ref={"billId": bill_id, "paymentId": tx_id}, by=ctx.sub)
-    if created:
-        _publish("GiftCard.Redeemed", {"tenantId": ctx.tenant_id, "cardId": card["cardId"],
-                                       "locationId": ctx.location_id, "amountOre": amount,
-                                       "balanceAfterOre": int(tx["balanceAfterOre"]), "channel": "kassa",
-                                       "txId": tx_id})
-    return http.respond(200, {"txId": tx_id, "balanceAfterSek": int(tx["balanceAfterOre"]) // 100,
-                              "balanceAfterOre": int(tx["balanceAfterOre"]), "cardLast4": card["last4"]})
-
-
-def _reverse(tenant_id, tx_id, reverse_id, location_id, *, by, unverified=False):
-    """unverified=True: only while Kassa has not verified the payment
-    (ConditionCheck attribute_not_exists(verifiedAt) on TXREF#<txId> in the
-    same transaction as the credit)."""
+def _reverse(tenant_id, tx_id, reverse_id, location_id, *, by):
+    """A redemption back on the card (an online order cancelled or refunded)."""
     card_id = gc.tx_card(tenant_id, tx_id)
     tx = gc.get_tx(tenant_id, card_id, tx_id) if card_id else None
     if not tx or tx.get("kind") != "redeem":
         return None, 0
     amount = -int(tx["amountOre"])
-    checks = [gc.unverified_check(tenant_id, tx_id)] if unverified else None
     card, rev, created = gc.change_balance(tenant_id, card_id, reverse_id, amount, "reverse", tx["channel"],
                                            location_id or tx["locationId"], ref={**(tx.get("ref") or {})}, by=by,
-                                           allow_expired=True, checks=checks)
+                                           allow_expired=True)
     if created:
-        gc.clear_unverified(tenant_id, tx_id)
         _publish("GiftCard.RedemptionReversed", {"tenantId": tenant_id, "cardId": card_id,
                                                  "locationId": tx["locationId"], "amountOre": amount, "txId": tx_id})
     return card, int(rev["balanceAfterOre"])
-
-
-def reverse_redemption(event, ctx):
-    tenant.require_feature(ctx.tenant, "kassa")
-    http.body(event, allowed=(), required=False)
-    try:
-        tx_id = http.path_id(event, "txId")
-    except ValueError:
-        raise gc.GiftCardError(404, "not found")
-    ref = gc.table().get_item(Key=gc.txref_key(ctx.tenant_id, tx_id), ConsistentRead=True).get("Item")
-    tx = gc.get_tx(ctx.tenant_id, ref["cardId"], tx_id) if ref else None
-    if not tx or tx.get("locationId") != ctx.location_id or tx.get("channel") != "kassa":
-        raise gc.GiftCardError(404, "not found")
-    if ref.get("verifiedAt"):
-        raise gc.GiftCardError(409, "receipt_issued")  # Kassa holds it now: undo there (before the receipt)
-    try:
-        _, after = _reverse(ctx.tenant_id, tx_id, f"reverse-{tx_id}", ctx.location_id, by=ctx.sub,
-                            unverified=True)
-    except gc.GiftCardError as exc:
-        # Kassa verified between the read and the write: the conditional check refused the reverse.
-        again = gc.table().get_item(Key=gc.txref_key(ctx.tenant_id, tx_id), ConsistentRead=True).get("Item") or {}
-        if exc.code == "changed_retry" and again.get("verifiedAt"):
-            raise gc.GiftCardError(409, "receipt_issued")
-        raise
-    return http.respond(200, {"balanceAfterSek": after // 100, "balanceAfterOre": after})
 
 
 # --- Stripe: issue only from the purchase's own account -------------------------------------
@@ -714,27 +645,6 @@ def checkout_hook(event):
     return {"ok": False, "status": 400, "code": "unknown_op"}
 
 
-def kassa_hook(event):
-    tenant_id, op, payment_id = event["tenantId"], event.get("op"), event.get("paymentId")
-    ref = gc.table().get_item(Key=gc.txref_key(tenant_id, str(payment_id)), ConsistentRead=True).get("Item") \
-        if gc.valid_id(payment_id) else None
-    tx = gc.get_tx(tenant_id, ref["cardId"], payment_id) if ref else None
-    if not tx or tx.get("channel") != "kassa" or tx.get("locationId") != event.get("locationId") \
-            or (tx.get("ref") or {}).get("billId") != event.get("billId"):
-        return {"ok": False, "status": 404, "code": "not_found"}
-    card = gc.get_card(tenant_id, ref["cardId"])
-    if op == "verify":
-        if not gc.mark_verified(tenant_id, ref["cardId"], payment_id):
-            return {"ok": False, "status": 409, "code": "redemption_reversed"}
-        return {"ok": True, "amountOre": -int(tx["amountOre"]), "cardId": card["cardId"], "cardLast4": card["last4"],
-                "balanceAfterOre": int(tx["balanceAfterOre"])}
-    if op == "reverse":
-        _, after = _reverse(tenant_id, payment_id, f"reverse-{payment_id}", event.get("locationId"), by="kassa")
-        return {"ok": True, "amountOre": -int(tx["amountOre"]), "cardId": card["cardId"], "cardLast4": card["last4"],
-                "balanceAfterOre": after}
-    return {"ok": False, "status": 400, "code": "unknown_op"}
-
-
 T_SOLD = "Sålda presentkort"
 T_ONLINE_REDEEMED = "Presentkort i onlinebeställningar"
 T_EXPIRED = "Presentkort som gått ut"
@@ -743,9 +653,7 @@ T_ORDER_REFUND = "Presentkort tillbaka vid återbetald beställning"
 
 
 def accounting_hook(event):
-    """Postings per day from the TX rows (byLocationDay). Kassa redemptions
-    are booked by the Kassa receipt itself (payment method Presentkort);
-    online orders are booked in full to Stripe by the order export, so the
+    """Postings per day from the TX rows (byLocationDay). Online orders are booked in full to Stripe by the order export, so the
     card's part is moved from Stripe to 2421 here. NEEDS ACCOUNTANT REVIEW."""
     tenant_id, location_id, first, last = event["tenantId"], event.get("locationId"), event.get("first"), \
         event.get("last")
@@ -871,8 +779,6 @@ def _hook(event):
             return {"ok": True, "result": stripe_event(event)}
         if hook == "checkout.giftcard":
             return checkout_hook(event)
-        if hook == "kassa.giftcard":
-            return kassa_hook(event)
         if hook == "accounting.events":
             return {"ok": True, **accounting_hook(event)}
         if hook in ("privacy.export", "privacy.erase"):
@@ -898,42 +804,11 @@ def _nightly_row(prefix, row, counts):
         counts["cleaned"] += 1
 
 
-def _reverse_unverified(day, counts, cutoff):
-    """Kassa redemptions Kassa never verified (it refuses gift cards until the
-    voucher means is decided, or the bill was abandoned): credited back once,
-    only while still unverified (conditional), CONTRACTS.md 6.E."""
-    kwargs = {"IndexName": gc.GSI2, "KeyConditionExpression": Key("GSI2PK").eq(f"UNVERIFIED#{day}")}
-    while True:
-        page = gc.table().query(**kwargs)
-        for row in page.get("Items") or []:
-            tenant_id, _, tx_id = str(row.get("GSI2SK") or "").partition("#")
-            try:
-                ref = gc.table().get_item(Key=gc.txref_key(tenant_id, tx_id), ConsistentRead=True).get("Item")
-                if not ref or ref.get("verifiedAt"):
-                    if ref:
-                        gc.clear_unverified(tenant_id, tx_id)
-                    continue
-                if (gc.parse_iso(ref.get("at")) or gc.now()) > cutoff:
-                    continue  # younger than KASSA_VERIFY_MINUTES: Kassa may still take it
-                tx = gc.get_tx(tenant_id, ref["cardId"], tx_id)
-                if tx and tx.get("kind") == "redeem":
-                    card, _ = _reverse(tenant_id, tx_id, f"reverse-{tx_id}", None, by="system", unverified=True)
-                    counts["reversed"] += 1 if card else 0
-                gc.clear_unverified(tenant_id, tx_id)
-            except (ClientError, gc.GiftCardError) as exc:
-                counts["failed"] += 1
-                logger.warning(json.dumps({"nightly": "unverified_failed", "type": type(exc).__name__}))
-        if "LastEvaluatedKey" not in page:
-            break
-        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-
-
 def run_nightly():
     """Resumable: JOB/NIGHTLY keeps the last day that finished with no
     failure, and only a run of finished days moves it (failures are counted
     per day; a failed card is retried the next night, its TX id is
-    deterministic). Unverified Kassa redemptions older than
-    KASSA_VERIFY_MINUTES are reversed every run."""
+    deterministic)."""
     at = gc.now()
     today = gc.local_day(at)
     state_key = {"PK": "JOB", "SK": "NIGHTLY"}
@@ -941,7 +816,7 @@ def run_nightly():
     start = state.get("lastDay") or (gc.parse_iso(f"{today}T00:00:00Z") - timedelta(days=31)).date().isoformat()
     first = (gc.parse_iso(f"{start}T00:00:00Z") + timedelta(days=1)).date().isoformat()
     yesterday = (gc.parse_iso(f"{today}T00:00:00Z") - timedelta(days=1)).date().isoformat()
-    counts = {"expired": 0, "cleaned": 0, "reversed": 0, "failed": 0, "failedDays": []}
+    counts = {"expired": 0, "cleaned": 0, "failed": 0, "failedDays": []}
     advancing = True
     for day in (gc.days_between(first, yesterday) if first <= yesterday else []):
         day_failed = 0
@@ -965,10 +840,6 @@ def run_nightly():
             advancing = False  # this day is retried next night, so lastDay stays before it
         elif advancing:
             gc.table().put_item(Item={**state_key, "lastDay": day, "at": gc.iso(gc.now())})
-    cutoff = at - timedelta(minutes=gc.KASSA_VERIFY_MINUTES)
-    week_ago = (gc.parse_iso(f"{today}T00:00:00Z") - timedelta(days=7)).date().isoformat()
-    for day in gc.days_between(week_ago, today):
-        _reverse_unverified(day, counts, cutoff)
     logger.info(json.dumps({"job": "nightly", **counts}))
     return counts
 
@@ -998,9 +869,6 @@ ROUTES = {
     "POST /tenant/gift-cards/{cardId}/adjust": adjust,
     "POST /tenant/gift-cards/{cardId}/refund": refund,
     "POST /tenant/gift-cards/{cardId}/resend": resend,
-    "POST /locations/{locationId}/gift-cards/lookup": lookup,
-    "POST /locations/{locationId}/gift-cards/redemptions": redeem,
-    "POST /locations/{locationId}/gift-cards/redemptions/{txId}/reverse": reverse_redemption,
 }
 
 

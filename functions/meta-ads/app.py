@@ -44,7 +44,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, tenant
+from shared import dynamo, events, http, site, tenant
 from shared.bedrock import TextModelError
 from shared.features import meta_ads as ads
 from shared.meta_graph import MetaGraphError
@@ -354,6 +354,11 @@ def _start_execution(name, payload):
 
 
 def _site_url(ctx):
+    """The restaurant's site as guests see it (its live own domain, else the
+    slug address): shared/site.py, the same source as every other link."""
+    base_url, needs_slug = site.base(ctx.tenant_id, ctx.tenant)
+    if base_url and not needs_slug:
+        return base_url
     slug = ctx.tenant.get("slug")
     domain = os.environ.get("SITE_BASE_DOMAIN", "booqy.se")
     return f"https://{slug}.{domain}" if slug else f"https://{domain}"

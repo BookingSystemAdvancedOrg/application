@@ -13,7 +13,8 @@ PURPOSE:
     returns only customer-facing floor metadata and renderable elements,
     including floor areas, cash registers, optional table and cash-register
     ``label`` values, and an optional persisted door ``kind``, and
-    deliberately performs no JWT validation.
+    deliberately performs no JWT validation. A location without an active
+    layout gets an empty plan (200, no floors, no elements).
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -37,7 +38,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import staff_token, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
@@ -1227,12 +1228,19 @@ def _get_active_layout(event):
         location_id = _location_id(event)
         # Public: the location decides the tenant; unknown location or an
         # inactive tenant -> 404 (a suspended restaurant shows no layout).
-        tenant.for_public(location_id)
+        # Admin sends the staff token: before the DPA is accepted the
+        # restaurant's own staff still see their tables.
+        tenant.for_public(
+            location_id,
+            staff_tenant=lambda: staff_token.tenant_of(event),
+        )
         snapshot = _read_active_snapshot(location_id, _utc_now())
         if snapshot is None:
-            return _version_error(
-                HTTPStatus.NOT_FOUND.value,
-                "active layout not found",
+            # Nothing activated yet (a new restaurant): an empty plan, not a
+            # 404, so every page load does not log a failed request.
+            return _version_response(
+                HTTPStatus.OK.value,
+                {"floors": [], "elements": []},
             )
         return _version_response(
             HTTPStatus.OK.value,

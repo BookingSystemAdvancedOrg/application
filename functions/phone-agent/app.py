@@ -14,6 +14,7 @@ TRIGGER:
     GET    /locations/{locationId}/phone-agent/callbacks                     L10 owner, staff
     POST   /locations/{locationId}/phone-agent/callbacks/{callbackId}/close  L11 owner, staff
     GET    /locations/{locationId}/phone-agent/reservations/{reservationId}/call  L12 owner, staff
+    POST   /locations/{locationId}/phone-agent/setup                         L19 owner (setup checklist)
 
     Lambda invoke (no requestContext): {"hook": ...} platform (L15-L18, Booqy Console),
     privacy.export, privacy.erase, tenant.purge, billing.usage
@@ -36,6 +37,7 @@ import logging
 import os
 from datetime import date, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -138,9 +140,53 @@ def put_config(event, ctx):
 
 # --- L3, L4, L5 ----------------------------------------------------------------------------
 
+def _test_number(ctx):
+    """The dev test line of the location (never looked up in prod)."""
+    if os.environ.get("ENVIRONMENT") == "prod":
+        return None
+    return pa.test_line(ctx.tenant_id, ctx.location_id)
+
+
+def _full_view(ctx, loc, *, owner=True):
+    test_number = _test_number(ctx)
+    return {**pa.loc_view(loc, owner=owner, test_number=test_number), "forwarding": pa.forwarding(loc, test_number)}
+
+
 def get_location_view(event, ctx):
     loc = {**pa.get_loc(ctx.tenant_id, ctx.location_id), "locationId": ctx.location_id}
-    return http.respond(200, {**pa.loc_view(loc, owner=ctx.is_owner), "forwarding": pa.forwarding(loc)})
+    return http.respond(200, _full_view(ctx, loc, owner=ctx.is_owner))
+
+
+def post_setup(event, ctx):
+    """L19: the setup checklist's progress (operator, forwarded, tested). Never
+    provisions or calls a provider: recording a step can not fail on them."""
+    _owner(ctx)
+    body = http.body(event, allowed=("operator", "forwarded", "tested", "version"))
+    version = _version(body)
+    changes = pa.validate_setup(body)
+    loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
+    if int(loc.get("version") or 0) != version:
+        raise pa.PhoneAgentError(409, "changed_retry")
+    setup = {**pa.setup_view(loc), **changes}
+    if "operator" in changes and "forwarded" not in body and \
+            pa.forwarding({**loc, "setup": setup})["codes"] != pa.forwarding(loc)["codes"]:
+        # Another operator dials other codes: the checklist asks to forward again.
+        setup = {**setup, "forwardedAt": None, "testedAt": None}
+    setup = {k: v for k, v in setup.items() if v is not None}
+    try:
+        new = pa.table().update_item(
+            Key=pa.loc_key(ctx.tenant_id, ctx.location_id),
+            UpdateExpression="SET #s = :s, version = :nv, tenantId = :t, locationId = :l, updatedAt = :at",
+            ConditionExpression="attribute_not_exists(version) OR version = :v",
+            ExpressionAttributeNames={"#s": "setup"},
+            ExpressionAttributeValues={":s": setup, ":nv": version + 1, ":v": version, ":t": ctx.tenant_id,
+                                       ":l": ctx.location_id, ":at": pa.iso(pa.now())},
+            ReturnValues="ALL_NEW")["Attributes"]
+    except ClientError as exc:
+        if pa.conditional_failed(exc):
+            raise pa.PhoneAgentError(409, "changed_retry")
+        raise
+    return http.respond(200, _full_view(ctx, new))
 
 
 def _agent_user(tenant_id, location_id, *, present):
@@ -156,10 +202,59 @@ def _agent_user(tenant_id, location_id, *, present):
         users.delete_item(Key=key)
 
 
+def _share(ctx, clean):
+    """A second location answering on another location's number (one number,
+    several locations: the agent asks which location first). The number row
+    lists every location on it; nothing is provisioned."""
+    other_id = clean["shareNumberWith"]
+    if other_id == ctx.location_id:
+        raise pa.PhoneAgentError(400, "shareNumberWith must be another location", "shareNumberWith")
+    other = pa.get_loc(ctx.tenant_id, other_id)  # same tenant only: the key carries the tenant
+    number = pa.plain(other.get("number") or {})
+    if not other.get("enabled") or not number.get("e164") or number.get("shared"):
+        raise pa.PhoneAgentError(409, "share_unavailable", "shareNumberWith")
+    key = pa.number_key(ctx.tenant_id, number["e164"])
+    row = pa.table().get_item(Key=key, ConsistentRead=True).get("Item") or {}
+    ids = list(row.get("locationIds") or [other_id])
+    if ctx.location_id not in ids:
+        pa.table().update_item(Key=key, UpdateExpression="SET locationIds = :ids",
+                               ExpressionAttributeValues={":ids": ids + [ctx.location_id]})
+    return {"e164": number["e164"], "providerId": number.get("providerId"), "shared": True,
+            "ownerLocationId": other_id, "provisionedAt": pa.iso(pa.now())}, other.get("providerAgentId")
+
+
+def _unshare(tenant_id, location_id, number):
+    key = pa.number_key(tenant_id, number["e164"])
+    row = pa.table().get_item(Key=key, ConsistentRead=True).get("Item") or {}
+    ids = [x for x in row.get("locationIds") or [] if x != location_id]
+    if row:
+        pa.table().update_item(Key=key, UpdateExpression="SET locationIds = :ids",
+                               ExpressionAttributeValues={":ids": ids})
+
+
+def voice_config(ctx, config, clean):
+    """What the voice provider's agent for the location is made of (ADR-L 3):
+    the greeting with the disclosure, the languages, the tone, the length."""
+    return {"name": f"{_prefix()}phone-agent-{ctx.location_id}",
+            "greetingSv": copy.greeting("sv", config.get("agentName"), ctx.location.get("name"),
+                                        clean.get("greetingExtraSv")),
+            "greetingEn": copy.greeting("en", config.get("agentName"), ctx.location.get("name"),
+                                        clean.get("greetingExtraEn")),
+            "languages": list(config.get("languages") or pa.LANGUAGES),
+            "tone": config.get("tone") or "friendly",
+            "transferTo": clean.get("transferTo"),
+            "maxDurationSeconds": clean["maxCallSeconds"]}
+
+
 def _provision(ctx, loc, clean):
     """First enable: one Booqy number and one provider agent for the location
     (idempotent: an existing number is reused, the agent is idempotent by name)."""
-    number = loc.get("number") or {}
+    if clean.get("shareNumberWith"):
+        return _share(ctx, clean)
+    number = pa.plain(loc.get("number") or {})
+    if number.get("shared"):  # stops sharing: the location gets a number of its own
+        _unshare(ctx.tenant_id, ctx.location_id, number)
+        number = {}
     if not number:
         try:
             got = client("telephony").provision_number("SE", f"{_prefix()}phone-agent-{ctx.location_id}")
@@ -169,27 +264,25 @@ def _provision(ctx, loc, clean):
                                      else "telephony_unavailable")
         number = {"e164": got.e164, "providerId": got.provider_id, "provisionedAt": pa.iso(pa.now())}
         pa.table().put_item(Item={**pa.number_key(ctx.tenant_id, got.e164), "tenantId": ctx.tenant_id,
-                                  "locationId": ctx.location_id, "GSI1PK": f"NUMBER#{got.e164}",
-                                  "GSI1SK": f"{ctx.tenant_id}#{ctx.location_id}"})
+                                  "locationId": ctx.location_id, "locationIds": [ctx.location_id],
+                                  "GSI1PK": f"NUMBER#{got.e164}", "GSI1SK": f"{ctx.tenant_id}#{ctx.location_id}"})
         pa.table().update_item(Key=pa.loc_key(ctx.tenant_id, ctx.location_id), UpdateExpression="SET #n = :n",
                                ExpressionAttributeNames={"#n": "number"}, ExpressionAttributeValues={":n": number})
         calls.publish("PhoneNumber.Provisioned", {"tenantId": ctx.tenant_id, "locationId": ctx.location_id})
     config = pa.get_config(ctx.tenant_id)
-    voice_config = {"name": f"{_prefix()}phone-agent-{ctx.location_id}",
-                    "greetingSv": copy.greeting("sv", config.get("agentName"), ctx.location.get("name"),
-                                                clean.get("greetingExtraSv")),
-                    "greetingEn": copy.greeting("en", config.get("agentName"), ctx.location.get("name"),
-                                                clean.get("greetingExtraEn")),
-                    "languages": list(config.get("languages") or pa.LANGUAGES),
-                    "maxDurationSeconds": clean["maxCallSeconds"]}
+    wanted = voice_config(ctx, config, clean)
+    own_agent = loc.get("providerAgentId") if not pa.plain(loc.get("number") or {}).get("shared") else None
     try:
-        agent_id = loc.get("providerAgentId") or client("voice").create_agent(voice_config)
-        if loc.get("providerAgentId"):
-            client("voice").update_agent(agent_id, voice_config)
-        sip = client("voice").sip_target(agent_id)
+        agent_id = own_agent or client("voice").create_agent(wanted)
+        if own_agent:
+            client("voice").update_agent(agent_id, wanted)
+        sip = client("voice").sip_target(agent_id, number["e164"])
     except voice_provider.VoiceProviderError:
         raise pa.PhoneAgentError(502, "voice_provider_unavailable")
-    fallback = clean.get("transferTo") or ctx.location.get("phoneNumber")
+    # Never the restaurant's own number: it is forwarded to Booqy, so a call
+    # would go round in a loop. No transfer number: the provider hangs up.
+    transfer = clean.get("transferTo")
+    fallback = transfer if transfer and not pa.same_phone(transfer, ctx.location.get("phoneNumber")) else None
     try:
         client("telephony").set_inbound(number["providerId"], sip, fallback)
     except telephony.TelephonyError:
@@ -200,9 +293,10 @@ def _provision(ctx, loc, clean):
 def put_location(event, ctx):
     _owner(ctx)
     body = http.body(event, allowed=("enabled", "mode", "agentHours", "greetingExtraSv", "greetingExtraEn",
-                                     "transferTo", "maxCallSeconds", "counterOffers", "version"))
+                                     "transferTo", "maxCallSeconds", "counterOffers", "shareNumberWith",
+                                     "version"))
     version = _version(body)
-    clean = pa.validate_location(body)
+    clean = pa.validate_location(body, restaurant_phone=ctx.location.get("phoneNumber"))
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
     if int(loc.get("version") or 0) != version:
         raise pa.PhoneAgentError(409, "changed_retry")
@@ -211,16 +305,31 @@ def put_location(event, ctx):
         number, agent_id = _provision(ctx, loc, clean)
         extra = {"number": {**number, "releaseAfter": None}, "providerAgentId": agent_id}
         _agent_user(ctx.tenant_id, ctx.location_id, present=True)
-    elif loc.get("enabled") and loc.get("number"):
-        extra = {"number": {**pa.plain(loc["number"]),
-                            "releaseAfter": pa.iso(pa.now() + timedelta(days=pa.NUMBER_GRACE_DAYS))}}
+    elif loc.get("enabled") and pa.plain(loc.get("number") or {}).get("shared"):
+        _unshare(ctx.tenant_id, ctx.location_id, pa.plain(loc["number"]))  # the owner's number stays
+        extra = {"number": None}
         _agent_user(ctx.tenant_id, ctx.location_id, present=False)
+    elif loc.get("enabled") and loc.get("number"):
+        number = pa.plain(loc["number"])
+        sharing = pa.table().get_item(Key=pa.number_key(ctx.tenant_id, number["e164"]),
+                                      ConsistentRead=True).get("Item") or {}
+        others = [x for x in sharing.get("locationIds") or [] if x != ctx.location_id]
+        # A number other locations answer on is kept for them, never released.
+        extra = {"number": number if others else
+                 {**number, "releaseAfter": pa.iso(pa.now() + timedelta(days=pa.NUMBER_GRACE_DAYS))}}
+        _agent_user(ctx.tenant_id, ctx.location_id, present=False)
+    before = pa.forwarding(loc)["codes"]
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)  # the number written during provisioning
     item = {**loc, **pa.loc_key(ctx.tenant_id, ctx.location_id), "tenantId": ctx.tenant_id,
-            "locationId": ctx.location_id, **clean, **extra, "killSwitch": bool(loc.get("killSwitch")),
+            "locationId": ctx.location_id, **{k: v for k, v in clean.items() if k != "shareNumberWith"}, **extra,
+            "killSwitch": bool(loc.get("killSwitch")),
             "version": version + 1, "updatedAt": pa.iso(pa.now())}
     if item.get("number") and item["number"].get("releaseAfter") is None:
         item["number"] = {k: v for k, v in item["number"].items() if k != "releaseAfter"}
+    setup = pa.plain(item.get("setup") or {})
+    if setup.get("forwardedAt") and before and pa.forwarding(item)["codes"] != before:
+        # Another mode or number needs another code: the checklist asks again.
+        item["setup"] = {k: v for k, v in setup.items() if k not in ("forwardedAt", "testedAt")}
     cond = {"ConditionExpression": "attribute_not_exists(version) OR version = :v",
             "ExpressionAttributeValues": {":v": version}}
     try:
@@ -229,7 +338,7 @@ def put_location(event, ctx):
         if pa.conditional_failed(exc):
             raise pa.PhoneAgentError(409, "changed_retry")
         raise
-    return http.respond(200, {**pa.loc_view(item), "forwarding": pa.forwarding(item)})
+    return http.respond(200, _full_view(ctx, item))
 
 
 def kill_switch(event, ctx):
@@ -273,13 +382,13 @@ def simulate(event, ctx):
         raise pa.PhoneAgentError(400, "text_too_long", "text")
     language = body.get("language")
     if language is not None and language not in pa.LANGUAGES:
-        raise pa.PhoneAgentError(400, "language must be sv or en", "language")
+        raise pa.PhoneAgentError(400, "language must be one of " + ", ".join(pa.LANGUAGES), "language")
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
     try:
         out = session.sim_turn(tenant_id=ctx.tenant_id, tenant_row=ctx.tenant,
                                location={**ctx.location, "locationId": ctx.location_id}, loc=loc,
                                config=pa.get_config(ctx.tenant_id), session_id=session_id, text=" ".join(text.split()),
-                               language=language, model=client("model"), invoke=invoker())
+                               language_=language, model=client("model"), invoke=invoker())
     except agent_model.AgentModelError:
         raise pa.PhoneAgentError(502, "ai_unavailable")
     return http.respond(200, out)
@@ -299,7 +408,8 @@ def _cursor(value):
 
 def list_calls(event, ctx):
     query = http.query(event)
-    today = date.today()
+    # Stockholm's day from the feature clock (UTC on a Lambda, frozen in tests).
+    today = pa.now().astimezone(ZoneInfo("Europe/Stockholm")).date()
     try:
         first = date.fromisoformat(query.get("from") or (today - timedelta(days=6)).isoformat())
         last = date.fromisoformat(query.get("to") or today.isoformat())
@@ -456,10 +566,15 @@ def _platform(event):
     end = pa.period_end()
     use = pa.usage(tenant_id, end)
     per_loc = pa.plain(use.get("loc") or {})
+    # The locations set up for the agent, from its own table (LOC#<l>#CONFIG): this
+    # role has no Query on the location table, and a tenant that never set up the
+    # agent gets an empty list (not configured), not an error.
+    configs = {row["SK"].removeprefix("LOC#").removesuffix("#CONFIG"): row
+               for row in pa.query_all(pa.tenant_pk(tenant_id), "LOC#", ConsistentRead=True)
+               if row["SK"].endswith("#CONFIG")}
     locations = []
-    for loc_row in tenant.list_locations(tenant_id):
-        lid = loc_row.get("locationId")
-        loc = pa.get_loc(tenant_id, lid)
+    for lid in sorted(set(configs) | set(per_loc)):
+        loc = configs.get(lid) or {}
         locations.append({"locationId": lid, "enabled": bool(loc.get("enabled")),
                           "number": (loc.get("number") or {}).get("e164"), "minutesThisPeriod": int(per_loc.get(lid)
                                                                                                     or 0)})
@@ -610,6 +725,7 @@ ROUTES = {
     "GET /locations/{locationId}/phone-agent/callbacks": list_callbacks,
     "POST /locations/{locationId}/phone-agent/callbacks/{callbackId}/close": close_callback,
     "GET /locations/{locationId}/phone-agent/reservations/{reservationId}/call": reservation_call,
+    "POST /locations/{locationId}/phone-agent/setup": post_setup,
 }
 
 

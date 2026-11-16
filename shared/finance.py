@@ -35,7 +35,8 @@ from shared import dynamo
 
 logger = logging.getLogger(__name__)
 
-# sms = messages (the cost split), smsParts = what the invoice charges, by type:
+# sms = messages (the cost split), smsParts = the parts sent (SMS are included in the
+# monthly price, never invoiced: the Finance page shows them and their AWS cost), by type:
 # booking (confirmed, changed, cancelled, fee charged), reminder, order, catering.
 COUNTERS = ("emails", "sms", "marketingEmails", "smsParts", "smsBooking", "smsReminder", "smsOrder", "smsCatering")
 SMS_TYPES = ("booking", "reminder", "order", "catering")
@@ -53,7 +54,7 @@ def day_key(when=None):
 
 
 def billing_day(when=None):
-    """The Swedish calendar day: SMS parts are invoiced per period from the
+    """The Swedish calendar day: SMS parts are counted per period from the
     25th to the 24th, so an SMS at 00:30 on the 25th belongs to the new
     period, not to the 24th in UTC."""
     return day_key((when or datetime.now(timezone.utc)).astimezone(ZoneInfo("Europe/Stockholm")))

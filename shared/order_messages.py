@@ -18,6 +18,7 @@ import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from shared import orders as o
 from shared.messages import _brand_color, contact_line, money, restaurant_name
 
 _TEXT = {
@@ -135,10 +136,11 @@ def _local(item, value, fmt):
 
 
 def _table(item, lang):
+    # "bord 7" for a number; a named table ("Terrassen") as it is.
     label = item.get("tableLabel") or ""
-    if lang == "sv":
-        return label if label.lower().startswith("bord") else f"bord {label}"
-    return label if label.lower().startswith("table") else f"table {label}"
+    if label[:1].isdigit():
+        return f"bord {label}" if lang == "sv" else f"table {label}"
+    return label
 
 
 def _seller(tenant_row, location):
@@ -221,7 +223,7 @@ def email(kind, item, tenant_row, location, link):
     text = [hello, "", lead, ""]
     if show_receipt:
         text += [f"{_t(lang, 'receipt')} - {_t(lang, 'order')} #{number}", f"{_t(lang, 'date')}: {when}", ""]
-        text += [f"{line['quantity']} x {line['name']}  {money(line['total'])}" for line in lines]
+        text += [f"{line['quantity']} x {o.line_label(line)}  {money(line['total'])}" for line in lines]
         discount = item.get("discount") or {}
         if discount.get("code"):
             text += ["", f"{_t(lang, 'discount', percent=discount.get('percent'), code=discount['code'])}: "
@@ -247,7 +249,7 @@ def email(kind, item, tenant_row, location, link):
     receipt_html = ""
     if show_receipt:
         rows = "".join(
-            f'<tr><td style="padding:4px 12px 4px 0">{e(str(line["quantity"]))} &times; {e(line["name"])}</td>'
+            f'<tr><td style="padding:4px 12px 4px 0">{e(str(line["quantity"]))} &times; {e(o.line_label(line))}</td>'
             f'<td style="padding:4px 0;text-align:right;white-space:nowrap">{e(money(line["total"]))}</td></tr>'
             for line in lines)
         discount = item.get("discount") or {}
@@ -279,13 +281,13 @@ def email(kind, item, tenant_row, location, link):
         )
     button = (
         f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};'
-        f'color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
+        f'color:#fdfaf6;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
         f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind != "order_cancelled" else "")
     html_body = (
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:28px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:28px;border-top:4px solid {color}">'
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">{e(hello)}</p><p style="margin:0 0 8px">{e(lead)}</p>'
         f'{receipt_html}{button}'

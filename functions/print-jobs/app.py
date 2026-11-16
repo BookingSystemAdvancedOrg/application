@@ -12,12 +12,17 @@ TRIGGER:
       GET    /locations/{locationId}/print                     settings, printers, status
       GET    /locations/{locationId}/print/status              status only (orders screen)
       PUT    /locations/{locationId}/print/settings            owner: {autoPrint, printerId, paperWidth, version}
-      POST   /locations/{locationId}/print/devices             owner: {name} -> device + secret (shown once)
+      POST   /locations/{locationId}/print/devices             owner: {name, protocol?} -> device + secret (shown once)
       DELETE /locations/{locationId}/print/devices/{deviceId}  owner: revoke the printer
       POST   /locations/{locationId}/print/devices/{deviceId}/rotate  owner: new secret
       POST   /locations/{locationId}/print/devices/{deviceId}/test    test print
-      POST   /locations/{locationId}/print/jobs                {orderId}: "Skriv ut igen"
+      POST   /locations/{locationId}/print/jobs                {orderId, stationId?}: "Skriv ut igen"
                                                                (409 order_not_paid, order_cancelled, no_printer)
+      GET    /locations/{locationId}/print/routing             stations, category routing, allergy ticket
+      PUT    /locations/{locationId}/print/routing             owner: the same with version
+      GET    /locations/{locationId}/print/tickets             the kitchen display: last day's tickets
+      PUT    /locations/{locationId}/print/tickets/{src}/{station}        {status}: sent|preparing|ready
+      POST   /locations/{locationId}/print/tickets/{src}/{station}/print  the ticket again on its printers
 
 PURPOSE:
     Creates and manages kitchen print jobs (shared/printing.py); the printer
@@ -43,7 +48,7 @@ import os
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, printing as p, tenant
+from shared import http, printing as p, routing, tenant
 from shared import orders as o
 
 logger = logging.getLogger()
@@ -98,6 +103,15 @@ def _status(location_id, now):
     return p.summary(location_id, settings, p.list_devices(location_id), now)
 
 
+def _routing(location_id, settings, devices):
+    """The config as the screen edits it: only printers that still exist."""
+    config = routing.get_config(location_id, settings["printerId"])
+    ids = {d["deviceId"] for d in devices}
+    for station in config["stations"]:
+        station["printerIds"] = [d for d in station["printerIds"] if d in ids]
+    return config
+
+
 def _overview(location_id, now):
     settings = p.get_settings(location_id)
     devices = p.list_devices(location_id)
@@ -105,6 +119,7 @@ def _overview(location_id, now):
         "settings": settings,
         "devices": [p.device_view(d, now, _server_url()) for d in devices],
         "status": p.summary(location_id, settings, devices, now),
+        "routing": _routing(location_id, settings, devices),
     }
 
 
@@ -140,8 +155,9 @@ def _route(event, method, location_id, ctx):
     elif parts == ["devices"]:
         if method == "POST":
             _owner(ctx)
-            data = http.body(event, allowed={"name"})
-            device, secret = p.add_device(ctx.tenant_id, location_id, data.get("name"), ctx.sub, now)
+            data = http.body(event, allowed={"name", "protocol"})
+            device, secret = p.add_device(ctx.tenant_id, location_id, data.get("name"), ctx.sub, now,
+                                          data.get("protocol") or "star")
             logger.info(json.dumps({"print": "device_added", "deviceId": device["deviceId"]}))
             return http.respond(201, _credentials(device, secret))
         allow = "POST"
@@ -166,7 +182,7 @@ def _route(event, method, location_id, ctx):
         allow = "POST"
     elif parts == ["jobs"]:
         if method == "POST":
-            data = http.body(event, allowed={"orderId"})
+            data = http.body(event, allowed={"orderId", "stationId"})
             order = o.load(location_id, data.get("orderId"))
             if order.get("tenantId") != ctx.tenant_id:
                 raise o.NotFound
@@ -174,8 +190,41 @@ def _route(event, method, location_id, ctx):
                 raise p.Conflict("order_not_paid")
             if order.get("status") == o.CANCELLED:
                 raise p.Conflict("order_cancelled")
-            job = p.reprint(ctx.tenant_id, location_id, order["orderId"], now)
-            return http.respond(202, {"jobId": p.job_token(job["SK"]), "status": job["status"]})
+            jobs = p.reprint(ctx.tenant_id, location_id, order["orderId"], now, data.get("stationId"))
+            return http.respond(202, {"jobIds": [p.job_token(j["SK"]) for j in jobs], "jobId": p.job_token(jobs[0]["SK"]),
+                                      "status": jobs[0]["status"]})
+        allow = "POST"
+    elif parts == ["routing"]:
+        settings, devices = p.get_settings(location_id), p.list_devices(location_id)
+        if method == "GET":
+            return http.respond(200, _routing(location_id, settings, devices))
+        if method == "PUT":
+            _owner(ctx)
+            data = http.body(event, allowed={"stations", "categories", "allergyTicket", "version"})
+            config = routing.validate_config(data, {d["deviceId"] for d in devices})
+            return http.respond(200, routing.put_config(ctx.tenant_id, location_id, config, ctx.sub, now))
+        allow = "GET, PUT"
+    elif parts == ["tickets"]:
+        if method == "GET":
+            return http.respond(200, {"tickets": [routing.view(t) for t in routing.list_tickets(location_id, now)]})
+        allow = "GET"
+    elif len(parts) == 3 and parts[0] == "tickets":
+        if method == "PUT":
+            data = http.body(event, allowed={"status"})
+            ticket = routing.set_status(location_id, parts[1], parts[2], data.get("status"), ctx.sub, now)
+            return http.respond(200, routing.view(ticket))
+        allow = "PUT"
+    elif len(parts) == 4 and parts[0] == "tickets" and parts[3] == "print":
+        if method == "POST":
+            ticket = p.get_job(location_id, f"TICKET#{parts[1]}#{parts[2]}") if "#" not in parts[1] + parts[2] else None
+            if not ticket or ticket.get("status") == routing.CANCELLED:
+                raise p.NotFound
+            settings = p.get_settings(location_id)
+            config = routing.get_config(location_id, settings["printerId"])
+            jobs = p.ticket_jobs(ctx.tenant_id, location_id, ticket, config, now, copy=True)
+            if not jobs:
+                raise p.Conflict("no_printer")
+            return http.respond(202, {"jobIds": [p.job_token(j["SK"]) for j in jobs]})
         allow = "POST"
     else:
         return http.error(404, "not found")

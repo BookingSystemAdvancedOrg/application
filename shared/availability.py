@@ -244,12 +244,13 @@ def _validate_business_hours(value):
                 or _TIME_PATTERN.fullmatch(opens_at) is None
                 or not isinstance(closes_at, str)
                 or _TIME_PATTERN.fullmatch(closes_at) is None
-                or opens_at >= closes_at
+                or opens_at == closes_at
                 or previous_close is not None
                 and previous_close > opens_at
             ):
                 raise ValueError
-            previous_close = closes_at
+            # past midnight (closes before it opens) only as the last interval
+            previous_close = booking_rules.end_on_day(interval)
     return value
 
 
@@ -364,18 +365,23 @@ def _first_step(minute):
     return -(-minute // SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
 
 
+_DAY_END = 23 * 60 + 59  # a booking ends on the date it starts
+
+
 def _interval_starts(opens_at, closes_at, duration_at, last_seating, keep_start):
     """(start minute, booking minutes) inside one opening interval: the
     half-hour grid, each start with the length its rule gives it
     (``duration_at``), up to ``last_seating`` minutes (or that length, if
     longer) before closing, plus ``keep_start`` (an existing booking's own
     time, which may predate the grid or the rule) when the booking fits the
-    interval."""
+    interval. ``closes_at`` above 23:59 is a closing after midnight: last
+    seating counts from it, but the booking still ends by 23:59."""
     starts = []
-    for start in range(_first_step(opens_at), closes_at, SLOT_STEP_MINUTES):
-        if start != keep_start and start <= closes_at - max(duration_at(start), last_seating):
+    for start in range(_first_step(opens_at), min(closes_at, _DAY_END), SLOT_STEP_MINUTES):
+        if start != keep_start and start <= min(closes_at - max(duration_at(start), last_seating),
+                                                _DAY_END - duration_at(start)):
             starts.append((start, duration_at(start)))
-    if keep_start is not None and opens_at <= keep_start <= closes_at - duration_at(keep_start):
+    if keep_start is not None and opens_at <= keep_start <= min(closes_at, _DAY_END) - duration_at(keep_start):
         starts.append((keep_start, duration_at(keep_start)))
         starts.sort()
     return starts
@@ -419,11 +425,11 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None, 
 
     last_seating = booking_rules.last_seating_minutes(time_rules)
     slots = []
-    weekday = _WEEKDAYS[requested_date.weekday()]
-    special = (location.get("specialDays") or {}).get(details["date"])
-    for interval in booking_rules.day_intervals(location["businessHours"], weekday, special):
-        opens_at = _minute_of_day(interval["opensAt"])
-        closes_at = _minute_of_day(interval["closesAt"])
+    # Hours past midnight: from 00:00 until the previous evening's closing,
+    # and this evening's hours with bookings ending by 23:59 (shared/booking_rules.py).
+    for opens_at, closes_at in booking_rules.date_spans(
+            location["businessHours"], location.get("specialDays") or {}, requested_date):
+        opens_at = max(opens_at, 0)
         starts = _interval_starts(opens_at, closes_at, lambda m: rule_at(m)["durationMinutes"],
                                   last_seating, keep_start)
         for start_minute, duration in starts:
@@ -1390,9 +1396,8 @@ def closing_minute(location, date_str, start_minute):
     ``start_minute`` belongs to on ``date_str`` (special days included), or
     None when no interval contains it."""
     requested = date.fromisoformat(date_str)
-    special = (location.get("specialDays") or {}).get(date_str)
-    for interval in booking_rules.day_intervals(
-            location["businessHours"], _WEEKDAYS[requested.weekday()], special):
+    for interval in booking_rules.date_intervals(
+            location["businessHours"], location.get("specialDays") or {}, requested):
         if _minute_of_day(interval["opensAt"]) <= start_minute < _minute_of_day(interval["closesAt"]):
             return _minute_of_day(interval["closesAt"])
     return None

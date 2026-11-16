@@ -101,6 +101,8 @@ class FakeInvoker:
         self.taken = set()               # (date, time) the manual route refuses (taken since the proposal)
         self.listed = {}                 # date -> reservations list (get-reservation)
         self.menu = {"items": [{"name": "Vegetarisk lasagne", "price": 189}, {"name": "Entrecôte", "price": 295}]}
+        self.menus = {}                  # locationId -> menu (multi-location tests), else `menu`
+        self.site = {"locations": [{"locationId": LOC_A, "name": "Bistro A", "address": "Storgatan 1"}]}
 
     def __call__(self, fn, event):
         self.calls.append((fn, event["routeKey"], event))
@@ -126,9 +128,9 @@ class FakeInvoker:
         if fn == "mark-arrived":
             return 200, {"ok": True}
         if fn == "get-menu":
-            return 200, self.menu
+            return 200, self.menus.get((event.get("pathParameters") or {}).get("locationId"), self.menu)
         if fn == "tenant-site-config":
-            return 200, {"locations": [{"locationId": LOC_A, "name": "Bistro A", "address": "Storgatan 1"}]}
+            return 200, self.site
         return 404, {"error": "not found"}
 
 

@@ -27,16 +27,13 @@ Row (insights table, PK LOCATION#<loc>, SK DAY#<date>). No personal data:
                       prep (minutes confirmed -> ready), prepN, late}}
     d     {"<item id>": {n: name, q: {"<hour>": qty}, r: {"<hour>": öre}}}
     pairs {"<id>|<id>": orders with both}         top PAIRS_KEPT
-    k     {"<hour>": {n, rev, free, rfN, rf}}     in-person card payments
-          (shared/card_payments.py) by the hour paid: n/rev paid and kept,
-          free = öre of those not for an order (an order's are already in
-          o), rfN/rf refunded
     c     {req, offers, won, rev, replyH, replyN}  catering by local day
     m     {visits, pageviews, bookings, orders, catering,
            ch: {"<channel>": {visits, bookings, orders, catering}}}
 
 Hours are the location's local clock. Sources: online, phone, onsite
-(walk-in and staff). Table sizes: "2" (1-2 seats), "4" (3-4), "6" (5-6),
+(walk-in and staff). Lead time ("how far ahead") is summed for online and
+phone bookings only: a walk-in never booked ahead. Table sizes: "2" (1-2 seats), "4" (3-4), "6" (5-6),
 "8" (7+). Amounts are öre.
 
 Service: a booking or order before the location's `lunchUntil` hour
@@ -70,8 +67,7 @@ NOT_AN_ORDER = frozenset({"pending_payment", "failed", "cancelled"})
 CATERING_WON = frozenset({"signed", "confirmed", "delivered", "closed"})
 
 MONEY_FIELDS = ("revenue", "orderRevenue", "cateringRevenue", "tableRevenue", "pickupRevenue",
-                "avgOrder", "feesCharged", "feesRefunded", "avgCatering", "cardRevenue", "cardRefunded",
-                "inPersonRevenue",
+                "avgOrder", "feesCharged", "feesRefunded", "avgCatering",
                 # margin per dish (dishMargin, owner only): dishes and summary
                 "cost", "margin", "marginPct", "missingCost", "targetMarginPct")
 
@@ -203,9 +199,9 @@ def tables_of_snapshots(snapshots, day):
     return out
 
 
-def open_intervals(location, day):
-    """[(open minute, close minute)] on that date: a special day's hours,
-    none when closed, otherwise the weekday's."""
+def _raw_intervals(location, day):
+    """The intervals that apply on that date (YYYY-MM-DD): a special day's
+    hours, none when closed, otherwise the weekday's."""
     weekday = WEEKDAYS[date.fromisoformat(day).weekday()]
     special = None
     raw = (location or {}).get("specialDays")
@@ -216,17 +212,34 @@ def open_intervals(location, day):
     if isinstance(special, dict) and special.get("kind") == "closed":
         return []
     if isinstance(special, dict) and special.get("kind") == "hours":
-        intervals = special.get("intervals") or []
-    else:
-        intervals = ((location or {}).get("businessHours") or {}).get(weekday) or []
+        return special.get("intervals") or []
+    return ((location or {}).get("businessHours") or {}).get(weekday) or []
+
+
+def _spans(location, day):
     out = []
-    for iv in intervals:
+    for iv in _raw_intervals(location, day):
         if not isinstance(iv, dict):
             continue
         a, b = _minute(iv.get("opensAt")), _minute(iv.get("closesAt"))
-        if a is not None and b is not None and a < b:
-            out.append((a, b))
+        if a is None or b is None or a == b:
+            continue
+        out.append((a, b + 24 * 60 if b < a else b))
     return out
+
+
+def open_intervals(location, day):
+    """[(open minute, close minute)] within that date: its own hours until
+    midnight, and the previous evening's hours past midnight (00:00 until
+    it closes, at the latest this date's first opening), as bookings and
+    orders use them (shared/booking_rules.py date_spans)."""
+    own = _spans(location, day)
+    first = min((a for a, _ in own), default=24 * 60)
+    previous = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+    out = [(0, min(b - 24 * 60, first)) for _, b in _spans(location, previous)
+           if min(b - 24 * 60, first) > 0]
+    out += [(a, min(b, 24 * 60)) for a, b in own]
+    return sorted(out)
 
 
 # --- the day row ---------------------------------------------------------------------
@@ -333,25 +346,6 @@ def _order(row, item, tz):
             _add(row["pairs"], f"{a}|{b}", 1)
 
 
-def _card(row, item, tz):
-    status = item.get("status")
-    if status not in ("succeeded", "refunded"):
-        return
-    paid = _parse_iso(item.get("paidAt") or item.get("createdAt"))
-    if not paid:
-        return
-    cell = row["k"].setdefault(str(paid.astimezone(tz).hour), {"n": 0, "rev": 0, "free": 0, "rfN": 0, "rf": 0})
-    amount = _int(item.get("amount"))
-    if status == "refunded":
-        cell["rfN"] += 1
-        cell["rf"] += _int((item.get("refund") or {}).get("amount")) or amount
-        return
-    cell["n"] += 1
-    cell["rev"] += amount
-    if not item.get("orderId"):
-        cell["free"] += amount
-
-
 def _catering(row, item, day, tz):
     created = local_day(item.get("createdAt"), tz)
     sent = local_day(item.get("offerSentAt"), tz)
@@ -387,8 +381,7 @@ def _visits(row, items):
                 ch[field] += value
 
 
-def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=(), snapshots=(), card=(),
-              built_at=None):
+def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=(), snapshots=(), built_at=None):
     """One location's day as an insights row (see the module docstring)."""
     tz = _zone((location or {}).get("timezone"))
     tables = tables_of_snapshots(snapshots, day)
@@ -396,7 +389,7 @@ def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=
         "PK": f"LOCATION#{location['locationId']}", "SK": f"DAY#{day}",
         "locationId": location["locationId"], "date": day, "v": ROW_VERSION,
         "builtAt": built_at or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "b": {}, "occ": {}, "open": {}, "o": {}, "d": {}, "pairs": {}, "k": {},
+        "b": {}, "occ": {}, "open": {}, "o": {}, "d": {}, "pairs": {},
         "c": {"req": 0, "offers": 0, "won": 0, "rev": 0, "replyH": 0, "replyN": 0},
         "m": {"visits": 0, "pageviews": 0, "bookings": 0, "orders": 0, "catering": 0, "ch": {}},
         "tables": len(tables),
@@ -412,8 +405,6 @@ def build_day(*, location, day, reservations=(), orders=(), catering=(), visits=
             _booking(row, item, day, tz, tables)
     for item in orders:
         _order(row, item, tz)
-    for item in card:
-        _card(row, item, tz)
     for item in catering:
         _catering(row, item, day, tz)
     _visits(row, visits)
@@ -459,8 +450,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     t = {k: 0 for k in ("bookings", "guests", "arrived", "noShows", "cancelled", "lateCancels", "cardOnFile",
                         "seats", "feesCharged", "feeCount", "feesFailed", "feesRefunded", "bookedMin", "openMin",
                         "orders", "orderRevenue", "tableRevenue", "pickupRevenue", "tableOrders", "prepMin",
-                        "prepCount", "lateOrders", "cardPayments", "cardRevenue", "inPersonRevenue",
-                        "cardRefunds", "cardRefunded")}
+                        "prepCount", "lateOrders")}
     sources = {s: 0 for s in SOURCES}
     lead = [0] * len(LEAD_LABELS)
     party = {}
@@ -470,6 +460,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     heat = {}
     by_weekday = [{"weekday": i, "bookings": 0, "guests": 0, "bookedMin": 0, "openMin": 0, "orders": 0}
                   for i in range(7)]
+    weekday_dates = [set() for _ in range(7)]
     by_day = {}
     dishes = {}
     pairs = {}
@@ -481,8 +472,10 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         day = row.get("date") or str(row.get("SK", ""))[4:]
         split = splits.get(row.get("locationId"), DEFAULT_LUNCH_UNTIL)
         wd = date.fromisoformat(day).weekday()
-        point = by_day.setdefault(day, {"date": day, "bookings": 0, "guests": 0, "orders": 0, "orderRevenue": 0,
-                                        "cateringRevenue": 0, "inPersonRevenue": 0, "bookedMin": 0, "openMin": 0, "noShows": 0,
+        weekday_dates[wd].add(day)
+        point = by_day.setdefault(day, {"date": day, "bookings": 0, "guests": 0, "arrived": 0, "orders": 0,
+                                        "orderRevenue": 0,
+                                        "cateringRevenue": 0, "bookedMin": 0, "openMin": 0, "noShows": 0,
                                         "cancelled": 0, "visits": 0})
         for key, cell in (row.get("b") or {}).items():
             hour_s, _, source = key.partition("|")
@@ -505,7 +498,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
             if source in sources:
                 sources[source] += n
             for i, v in enumerate(cell.get("lead") or ()):
-                if i < len(lead):
+                if i < len(lead) and source != "onsite":
                     lead[i] += _int(v)
             for size, v in (cell.get("party") or {}).items():
                 _add(party, str(size), _int(v))
@@ -516,6 +509,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
             by_weekday[wd]["guests"] += g
             point["bookings"] += n
             point["guests"] += g
+            point["arrived"] += _int(cell.get("ar"))
             point["noShows"] += _int(cell.get("ns"))
             point["cancelled"] += _int(cell.get("cx"))
         for key, occ in (row.get("occ") or {}).items():
@@ -573,15 +567,6 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         if service == "all":
             for key, n in (row.get("pairs") or {}).items():
                 _add(pairs, key, _int(n))
-        for hour_s, cell in (row.get("k") or {}).items():
-            if not in_service(_int(hour_s), service, split):
-                continue
-            t["cardPayments"] += _int(cell.get("n"))
-            t["cardRevenue"] += _int(cell.get("rev"))
-            t["inPersonRevenue"] += _int(cell.get("free"))
-            t["cardRefunds"] += _int(cell.get("rfN"))
-            t["cardRefunded"] += _int(cell.get("rf"))
-            point["inPersonRevenue"] += _int(cell.get("free"))
         c = row.get("c") or {}
         catering["requests"] += _int(c.get("req"))
         catering["offers"] += _int(c.get("offers"))
@@ -621,10 +606,15 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     heat_cells.sort(key=lambda c: (c["weekday"], c["hour"]))
 
     for w in by_weekday:
+        # days: how many of that weekday the period has, so the page can show
+        # an average per day instead of a sum that favours a weekday that
+        # occurs once more; occupancy is None on a weekday with no opening
+        # hours in the period (closed, or not in the period at all).
+        w["days"] = len(weekday_dates[w["weekday"]])
         w["occupancy"] = _fill(w.pop("bookedMin"), w.pop("openMin"))
     days_out = []
     for d in sorted(by_day.values(), key=lambda p: p["date"]):
-        d["revenue"] = d["orderRevenue"] + d["cateringRevenue"] + d["inPersonRevenue"]
+        d["revenue"] = d["orderRevenue"] + d["cateringRevenue"]
         d["occupancy"] = _fill(d.pop("bookedMin"), d.pop("openMin"))
         days_out.append(d)
 
@@ -668,14 +658,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         "prepMinutes": round(t["prepMin"] / t["prepCount"], 1) if t["prepCount"] else None,
         "latePct": _pct(t["lateOrders"], t["prepCount"]),
         "cateringRevenue": catering["cateringRevenue"],
-        "revenue": order_revenue + catering["cateringRevenue"] + t["inPersonRevenue"],
-        # In-person card payments (Ta betalt): all of them, and the part
-        # that is not an order's (that part is in revenue above).
-        "cardPayments": t["cardPayments"],
-        "cardRevenue": t["cardRevenue"],
-        "inPersonRevenue": t["inPersonRevenue"],
-        "cardRefunds": t["cardRefunds"],
-        "cardRefunded": t["cardRefunded"],
+        "revenue": order_revenue + catering["cateringRevenue"],
         "catering": catering,
         "web": {**web, "channels": channels},
         "dishes": dish_list,

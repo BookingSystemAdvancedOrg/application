@@ -287,6 +287,95 @@ def test_sync_google_down_is_502_with_retry_after_and_recorded(env):
     assert call(env, "POST", SYNC, params={"locationId": LOC_A}, body={})[1]["changed"] is True
 
 
+def _raise(code):
+    def fail(*args, **kwargs):
+        raise port.GoogleBusinessError(code)
+    return fail
+
+
+def test_revoked_grant_marks_needs_reauth_and_is_409(env, monkeypatch):
+    connect(env)
+    monkeypatch.setattr(env.google, "refresh", _raise("needs_reauth"))
+    status, body = call(env, "GET", "/tenant/google-business/locations")
+    assert (status, body["code"]) == (409, "not_connected")
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "needs_reauth"
+    monkeypatch.delattr(env.google, "refresh")  # back to the class method
+    connect(env)  # connecting again restores it
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "connected"
+
+
+def test_callback_without_offline_grant_is_invalid_state(env, monkeypatch):
+    url = call(env, "POST", "/tenant/google-business/connection/start", body={})[1]["authorizeUrl"]
+    state = re.search(r"state=([^&]+)", url).group(1)
+    monkeypatch.setattr(env.google, "exchange_code", _raise("needs_reauth"))
+    status, body = call(env, "POST", "/tenant/google-business/connection/callback",
+                        body={"code": "simulated", "state": state})
+    assert (status, body["code"], body["field"]) == (400, "invalid_state", "code")
+    assert call(env, "GET", "/tenant/google-business/connection")[1]["status"] == "disconnected"
+
+
+def test_quota_zero_from_the_real_client_is_409_without_retry(env, monkeypatch):
+    # Google's likely first answer while the project has no API access: retrying will not help
+    import io
+    import urllib.error
+    from shared import google_business_real as real
+    port._RUN["deadline"] = None
+    body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded",
+                      "details": [{"reason": "RATE_LIMIT_EXCEEDED", "metadata": {"quota_limit_value": "0"}}]}}
+    requests = []
+
+    def urlopen(request, timeout=None):
+        requests.append(request)
+        raise urllib.error.HTTPError(request.full_url, 429, "x", {}, io.BytesIO(json.dumps(body).encode()))
+    monkeypatch.setattr(real.urllib.request, "urlopen", urlopen)
+    connect(env)
+    monkeypatch.setattr(env.google, "list_locations", real.RealGoogleBusiness().list_locations)
+    status, out = call(env, "GET", "/tenant/google-business/locations")
+    assert (status, out["code"], out["field"]) == (409, "google_rejected", "quota_exceeded")
+    assert "retryAfter" not in out and len(requests) == 1
+
+
+@pytest.mark.parametrize("code", ["api_disabled", "misconfigured", "permission_denied", "not_found",
+                                  "invalid_request", "quota_exceeded"])
+def test_google_errors_that_will_not_heal_offer_no_retry(env, monkeypatch, code):
+    connect(env)
+    link(env)
+    monkeypatch.setattr(env.google, "patch_hours", _raise(code))
+    status, body = call(env, "POST", SYNC, params={"locationId": LOC_A}, body={})
+    assert (status, body["code"], body["field"]) == (409, "google_rejected", code)
+    assert "retryAfter" not in body
+
+
+def test_callback_without_a_google_account_is_409(env, monkeypatch):
+    url = call(env, "POST", "/tenant/google-business/connection/start", body={})[1]["authorizeUrl"]
+    state = re.search(r"state=([^&]+)", url).group(1)
+    monkeypatch.setattr(env.google, "exchange_code", _raise("not_found"))
+    status, body = call(env, "POST", "/tenant/google-business/connection/callback",
+                        body={"code": "simulated", "state": state})
+    assert (status, body["code"]) == (409, "no_google_account") and "retryAfter" not in body
+
+
+def test_every_api_run_gets_its_own_google_deadline(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(port, "start_run", lambda context, **kw: seen.append((context, kw)))
+    ctx = SimpleNamespace(get_remaining_time_in_millis=lambda: 27000)
+    event = {"routeKey": "GET /tenant/google-business/connection", "pathParameters": {},
+             "queryStringParameters": None, "body": None}
+    with_tenant_claims(event, TENANT_A, "owner_user")
+    env.api.handler(event, ctx)
+    env.jobs.handler({"job": "sync"}, ctx)
+    assert seen == [(ctx, {"default_seconds": 28}), (ctx, {})]
+
+
+def test_hourly_sync_marks_needs_reauth_on_the_real_code(env, monkeypatch):
+    connect(env)
+    link(env)
+    monkeypatch.setattr(env.google, "refresh", _raise("needs_reauth"))
+    counts = env.jobs.run_sync()
+    assert counts["failed"] == 1
+    assert gbp.get_connection(TENANT_A)["status"] == "needs_reauth"
+
+
 # --- D10 -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("over,code", [({"delayMinutes": 10}, "invalid_delay"),
@@ -329,6 +418,18 @@ def test_mapping_closed_hours_no_online_and_twelve_month_cut():
         (12, 24, True), (12, 31, False), (11, 4, True)]
     assert "Julafton" not in json.dumps(mapped)
     assert gbp.hours_hash(mapped) == gbp.hours_hash(gbp.map_hours(location, today))
+
+
+def test_mapping_hours_past_midnight_close_on_the_next_day():
+    location = {"businessHours": {**HOURS, "saturday": [{"opensAt": "18:00", "closesAt": "02:00"}],
+                                  "sunday": [{"opensAt": "20:00", "closesAt": "00:00"}]}}
+    periods = gbp.map_hours(location, date(2026, 11, 4))["regularHours"]["periods"]
+    saturday = next(p for p in periods if p["openDay"] == "SATURDAY")
+    assert saturday["closeDay"] == "SUNDAY" and saturday["closeTime"] == {"hours": 2}
+    sunday = next(p for p in periods if p["openDay"] == "SUNDAY")
+    assert sunday["closeDay"] == "MONDAY"
+    friday = next(p for p in periods if p["openDay"] == "FRIDAY")
+    assert friday["closeDay"] == "FRIDAY"
 
 
 # --- hourly job ------------------------------------------------------------------------
@@ -572,6 +673,14 @@ def test_platform_hook_d11(env):
     assert env.api.handler({"hook": "platform", "op": "x", "tenantId": TENANT_A})["code"] == "unknown_op"
 
 
+def test_platform_hook_d11_never_connected(env, monkeypatch):
+    """Never connected: status disconnected, no links, and no location table
+    read (the role has no Query on it), so no FunctionError and no 503."""
+    monkeypatch.setattr(shared_tenant, "list_locations", lambda *_: pytest.fail("location table read"))
+    answer = env.api.handler({"hook": "platform", "op": "google-business.tenant.get", "tenantId": TENANT_A})
+    assert answer == {"ok": True, "status": 200, "body": {"status": "disconnected", "links": []}}
+
+
 def test_privacy_export_and_erase(env):
     enable(env)
     grant()
@@ -603,6 +712,15 @@ def test_tenant_purge_removes_rows_secret_and_schedules(env):
     assert rows and all(r.get("tenantId") == TENANT_B for r in rows)
     assert gbp.get_refresh_token(TENANT_A) is None and gbp.get_refresh_token(TENANT_B)
     assert boto3.client("scheduler").list_schedules(GroupName=GROUP)["Schedules"] == []
+    assert len([c for c in env.google.calls if c[0] == "revoke"]) == 1
+
+
+def test_tenant_purge_still_deletes_when_revoke_fails(env):
+    enable(env)
+    env.google._fail["revoke"] = 1
+    answer = env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A], "round": 1})
+    assert answer["ok"] and answer["done"]
+    assert gbp.get_refresh_token(TENANT_A) is None
 
 
 def test_unknown_hook_and_event(env):
@@ -645,3 +763,16 @@ def test_schedule_name_is_valid_for_long_ids():
     name = gbp.schedule_name("order", "x" * 80)
     assert len(name) <= 64 and re.fullmatch(r"[0-9A-Za-z_.-]+", name)
     assert gbp.schedule_name("booking", "res-1") == "gbp-review-booking-res-1"
+
+
+def test_simulated_authorize_url_keeps_the_redirect_query():
+    """The dev redirect URI already has ?google=1; the simulated Google must add
+    its code and state with & so the admin recognises the return (it used to
+    produce a second ? and Koppla Google did nothing)."""
+    from urllib.parse import parse_qs, urlsplit
+    from shared.google_business import SimulatedGoogleBusiness
+    url = SimulatedGoogleBusiness().authorize_url("st4te", "https://restaurang.dev.booqy.se/installningar?google=1")
+    q = parse_qs(urlsplit(url).query)
+    assert q == {"google": ["1"], "code": ["simulated"], "state": ["st4te"]}
+    plain = SimulatedGoogleBusiness().authorize_url("s", "https://x.test/cb")
+    assert parse_qs(urlsplit(plain).query) == {"code": ["simulated"], "state": ["s"]}

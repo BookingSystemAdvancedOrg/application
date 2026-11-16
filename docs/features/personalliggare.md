@@ -24,8 +24,8 @@ beside this repo). The admin page title is "Personalliggare (under granskning)".
   on check-out). A lost race on the head retries up to 3 times, then 409
   `changed_retry`. The code only Puts, Gets and Queries the ledger table
   (tested); the table's resource policy denies Update/Delete/BatchWrite.
-- **Hash chain.** `hash = shared.kassa.entry_hash(record)` (sha256 of the sorted
-  JSON without `hash`, imported read-only), `prevHash` = the previous record's
+- **Hash chain.** `hash = shared.hash_chain.entry_hash(record)` (sha256 of the sorted
+  JSON without `hash`), `prevHash` = the previous record's
   hash. The export verifies the whole chain of the location from seq 1 and
   against the HEAD: a changed record, a broken link, a gap or a cut tail sets
   `chainOk: false` and `firstBadSeq`.

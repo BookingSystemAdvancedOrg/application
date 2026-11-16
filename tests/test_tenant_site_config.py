@@ -83,7 +83,7 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     body = json.loads(response["body"])
     assert body["tenant"]["name"] == "Roma" and body["tenant"]["slug"] == "roma"
     assert body["tenant"]["features"] == {"reservations": True, "ordering": True,
-                                          "catering": True, "terminal": True, "marketing": False,
+                                          "catering": True, "marketing": False,
                                           "giftCards": False, "waitlist": False, "siteBuilder": False,
                                           "events": False}
     assert body["tenant"]["branding"] == {"primaryColor": "#aa3300",
@@ -257,3 +257,15 @@ def test_own_domain_only_once_attached_and_verified(site):
     tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "DOMAIN#www.roma.se"},
                         UpdateExpression="SET kind = :k", ExpressionAttributeValues={":k": "custom"})
     assert json.loads(call(module, {"tenantId": TENANT_A})["body"])["tenant"]["domain"] == "www.roma.se"
+
+
+@pytest.mark.parametrize("host", ["roma.test.booqy.se", "roma.test-dev.booqy.se"])
+def test_a_dev_test_customers_sandbox_hosts_resolve_like_any_other(site, host):
+    module, tenants = site
+    stage = "dev" if ".test-dev." in host else "main"
+    tenants.put_item(Item={"PK": f"DOMAIN#{host}", "SK": "TENANT", "tenantId": TENANT_A})
+    tenants.put_item(Item={"PK": f"TENANT#{TENANT_A}", "SK": f"DOMAIN#{host}", "domain": host, "kind": "platform",
+                           "stage": stage, "status": "active", "tenantId": TENANT_A})
+    response = call(module, {"host": host})
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"])["tenant"]["slug"] == "roma"

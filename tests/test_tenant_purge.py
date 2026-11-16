@@ -42,9 +42,13 @@ def _table(res, name, gsis=()):
 class FakeDomains:
     def __init__(self):
         self.auto_renew_off = []
+        self.unlocked = []
 
     def disable_domain_auto_renew(self, DomainName):
         self.auto_renew_off.append(DomainName)
+
+    def disable_domain_transfer_lock(self, DomainName):
+        self.unlocked.append(DomainName)
 
 
 class FakeClient:
@@ -271,16 +275,37 @@ def test_domains_auto_renew_off_and_unused_zone_deleted(env, monkeypatch):
 
     assert env["app"].handler({}, Context())["purged"] == [GONE]
 
-    assert env["domains"].auto_renew_off == ["bought.se"]
+    # bought.se stays the restaurant's: auto-renew and transfer lock off, its
+    # order and claim kept for the transfer-out code; its unused zone goes
+    assert env["domains"].auto_renew_off == ["bought.se"] and env["domains"].unlocked == ["bought.se"]
     remaining = {z["Name"].rstrip(".") for z in r53.list_hosted_zones()["HostedZones"]}
     assert remaining == {"connected.se"}
-    assert count(t["tenant"], "DOMAIN#bought.se") == 0
+    assert count(t["tenant"], "DOMAIN#bought.se") == 1
     rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
                                                ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
-    assert rows == {"PROFILE", "ZONE#connected.se", "DOMAIN#www.stuck.se"}
+    assert rows == {"PROFILE", "ZONE#bought.se", "ZONE#connected.se", "DOMAIN#www.stuck.se"}
     message = env["sns"].calls[0]["Message"]
+    assert "bought.se: registered through Booqy, kept for the restaurant" in message
     assert "Hosted zones kept: connected.se (still points at it)" in message
     assert "www.stuck.se is still attached" in message
+
+
+def test_a_simulated_order_never_calls_route_53_and_goes(env, monkeypatch):
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(hours=1), slug="gone")
+    t = env["t"]
+    for domain, mode, status in (("sim-bought.se", "register", "live"), ("sim-moved.com", "transfer_in", "removed")):
+        t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": f"ZONE#{domain}", "domain": domain, "mode": mode,
+                                   "status": status, "simulated": True, "hostedZoneId": "sim",
+                                   "nameServers": ["ns-1.awsdns-sim.org"], "registeredAt": "2026-11-15T21:00:00Z"})
+        t["tenant"].put_item(Item={"PK": f"DOMAIN#{domain}", "SK": "TENANT", "tenantId": GONE})
+    monkeypatch.setattr(env["app"], "_ns_lookup", lambda d: set())
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+    assert env["domains"].auto_renew_off == [] and env["domains"].unlocked == []
+    assert count(t["tenant"], "DOMAIN#sim-bought.se") == 0 and count(t["tenant"], "DOMAIN#sim-moved.com") == 0
+    rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
+                                               ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
+    assert rows == {"PROFILE"}
+    assert "sim-bought.se: simulated order, nothing registered" in env["sns"].calls[0]["Message"]
 
 
 def test_protected_zone_is_never_deleted(env, monkeypatch):
@@ -321,29 +346,6 @@ def test_one_failure_does_not_stop_the_others(env, monkeypatch):
     assert result["purged"] == [KEEP] and result["failed"] == [GONE]
     assert "FAILED" in env["sns"].calls[0]["Subject"]
     assert env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]["status"] == "offboarded"
-
-
-def test_kassa_fiskaly_key_is_deleted_and_the_neighbours_kept(env, monkeypatch):
-    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
-    sm = boto3.client("secretsmanager", region_name=REGION)
-    for tenant in (GONE, KEEP):
-        sm.create_secret(Name=f"booqy/dev/fiskaly-unit/{tenant}", SecretString='{"key": "k", "secret": "s"}')
-    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
-                offboarded_at=NOW - timedelta(days=90), slug="gone")
-    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
-    assert env["app"].handler({}, Context())["purged"] == [GONE]
-    assert "DeletedDate" in sm.describe_secret(SecretId=f"booqy/dev/fiskaly-unit/{GONE}")
-    assert "DeletedDate" not in sm.describe_secret(SecretId=f"booqy/dev/fiskaly-unit/{KEEP}")
-    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
-    assert stone["purgeSummary"]["fiskalyKey"] == 1
-
-
-def test_no_fiskaly_key_is_fine(env, monkeypatch):
-    monkeypatch.setenv("FISKALY_UNIT_PREFIX", "booqy/dev/fiskaly-unit/")
-    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
-                offboarded_at=NOW - timedelta(days=90), slug="gone")
-    result = env["app"].handler({}, Context())
-    assert result["purged"] == [GONE] and result["failed"] == []
 
 
 class FakeSiteRepo:
@@ -408,3 +410,101 @@ def test_no_query_filters_on_a_key_attribute(env):
         assert env["app"].handler({}, Context())["purged"] == [GONE]
     finally:
         events.unregister("before-call.dynamodb.Query", check)
+
+
+def test_users_backdrop_libraries_are_deleted_with_the_restaurant(env, monkeypatch):
+    bucket, table_name = "test-user-backdrops", "test-user-backdrops-table"
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", bucket)
+    monkeypatch.setenv("USER_BACKDROPS_TABLE_NAME", table_name)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    library = boto3.resource("dynamodb", region_name=REGION).create_table(
+        TableName=table_name, BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in ("PK", "SK", "tenantId")],
+        GlobalSecondaryIndexes=[{"IndexName": "byTenant", "Projection": {"ProjectionType": "KEYS_ONLY"},
+                                 "KeySchema": [{"AttributeName": "tenantId", "KeyType": "HASH"},
+                                               {"AttributeName": "PK", "KeyType": "RANGE"}]}])
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for sub in ("owner-sub", "staff-sub"):
+            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrops/1", Body=b"img")
+            s3.put_object(Bucket=bucket, Key=f"admin/{tenant_id}/{sub}/backdrops/1.thumb.webp", Body=b"img")
+            for sk in ("IMG#1", "SELECTED"):
+                library.put_item(Item={"PK": f"USER#{tenant_id}#{sub}", "SK": sk, "tenantId": tenant_id})
+    s3.put_object(Bucket=bucket, Key="console/operator-sub/backdrops/1", Body=b"img")
+    library.put_item(Item={"PK": "OPERATOR#operator-sub", "SK": "IMG#1"})
+
+    result = env["app"].handler({}, Context())
+
+    assert result["purged"] == [GONE]
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == ["admin/" + KEEP + "/owner-sub/backdrops/1", "admin/" + KEEP + "/owner-sub/backdrops/1.thumb.webp",
+                    "admin/" + KEEP + "/staff-sub/backdrops/1", "admin/" + KEEP + "/staff-sub/backdrops/1.thumb.webp",
+                    "console/operator-sub/backdrops/1"]
+    rows = {i["PK"] for i in library.scan()["Items"]}
+    assert rows == {f"USER#{KEEP}#owner-sub", f"USER#{KEEP}#staff-sub", "OPERATOR#operator-sub"}
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["backdrops"] == 4
+
+
+def test_the_deployed_website_folder_is_deleted_with_the_restaurant(env, monkeypatch):
+    bucket = "test-restaurant-sites"
+    monkeypatch.setenv("SITES_BUCKET_NAME", bucket)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for key in ("index.html", "assets/index.js", "favicon.svg"):
+            s3.put_object(Bucket=bucket, Key=f"sites/{tenant_id}/{key}", Body=b"x")
+    s3.put_object(Bucket=bucket, Key=f"sites/{GONE}x/index.html", Body=b"x")     # same prefix, other folder
+
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == [f"sites/{GONE}x/index.html", f"sites/{KEEP}/assets/index.js", f"sites/{KEEP}/favicon.svg",
+                    f"sites/{KEEP}/index.html"]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["siteFiles"] == 3
+
+
+def test_a_test_customers_two_sandbox_builds_are_deleted_too(env, monkeypatch):
+    bucket = "test-restaurant-sites-test"
+    monkeypatch.setenv("TEST_SITES_BUCKET_NAME", bucket)
+    s3 = env["s3"]
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(minutes=1),
+                offboarded_at=NOW - timedelta(days=90), slug="gone")
+    seed_tenant(env, KEEP, LOC_KEEP, slug="keep")
+    for tenant_id in (GONE, KEEP):
+        for stage in ("main", "dev"):
+            s3.put_object(Bucket=bucket, Key=f"{stage}/sites/{tenant_id}/index.html", Body=b"x")
+    s3.put_object(Bucket=bucket, Key="_platform/robots.txt", Body=b"x")
+
+    assert env["app"].handler({}, Context())["purged"] == [GONE]
+
+    left = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=bucket).get("Contents", []))
+    assert left == ["_platform/robots.txt", f"dev/sites/{KEEP}/index.html", f"main/sites/{KEEP}/index.html"]
+    stone = env["t"]["tenant"].get_item(Key={"PK": f"TENANT#{GONE}", "SK": "PROFILE"})["Item"]
+    assert stone["purgeSummary"]["siteFiles"] == 2
+
+
+def test_a_failed_transfer_in_is_not_handed_over(env, monkeypatch):
+    seed_tenant(env, GONE, LOC_GONE, status="offboarded", purge_at=NOW - timedelta(hours=1), slug="gone")
+    t = env["t"]
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#moved.se", "domain": "moved.se",
+                               "mode": "transfer_in", "status": "live", "registeredAt": "2026-11-01T00:00:00Z"})
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#rejected.se", "domain": "rejected.se",
+                               "mode": "transfer_in", "status": "transfer_rejected"})
+    t["tenant"].put_item(Item={"PK": f"TENANT#{GONE}", "SK": "ZONE#linked.se", "domain": "linked.se",
+                               "mode": "connect", "status": "live", "transferStatus": "transferred"})
+    monkeypatch.setattr(env["app"], "_ns_lookup", lambda d: {"ns1.other-registrar.se"})
+    env["app"].handler({}, Context())
+    assert sorted(env["domains"].auto_renew_off) == ["linked.se", "moved.se"]
+    rows = {i["SK"] for i in t["tenant"].query(KeyConditionExpression="PK = :p",
+                                               ExpressionAttributeValues={":p": f"TENANT#{GONE}"})["Items"]}
+    assert "ZONE#rejected.se" not in rows and {"ZONE#moved.se", "ZONE#linked.se"} <= rows

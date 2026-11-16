@@ -1,2 +1,2 @@
-boto3==1.43.66
+boto3[crt]==1.43.66
 PyJWT[crypto]==2.10.1

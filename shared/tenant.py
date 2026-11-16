@@ -31,7 +31,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from boto3.dynamodb.conditions import Key
 
@@ -322,11 +322,21 @@ def for_jwt(
     return TenantContext(tenant_id, tenant_row, role, sub, location, claims)
 
 
-def for_public(location_id: str, *, feature: Union[str, tuple, None] = None) -> TenantContext:
+def for_public(
+    location_id: str,
+    *,
+    feature: Union[str, tuple, None] = None,
+    staff_tenant: Optional[Callable[[], Optional[str]]] = None,
+) -> TenantContext:
     """Public (no-login) routes: the location decides the tenant. Unknown
     locations, inactive tenants and features outside the plan all look like
     nothing is there (404) - a suspended restaurant's site simply has no
-    menu or availability."""
+    menu or availability.
+
+    `staff_tenant` (optional) returns the verified tenant of a signed-in
+    caller (shared/staff_token.py). It is asked only when the DPA gate would
+    block, so the restaurant's own staff can work in admin before the owner
+    has accepted; guests still see nothing."""
     if not isinstance(location_id, str) or not location_id.strip():
         raise _not_found()
     tenant_id = tenant_of_location(location_id)
@@ -337,7 +347,7 @@ def for_public(location_id: str, *, feature: Union[str, tuple, None] = None) -> 
         raise _not_found()
     # A new restaurant goes live only once the owner has accepted the DPA
     # (shared/dpa.py); restaurants without the flag are never affected.
-    if dpa.blocks_public(tenant_row):
+    if dpa.blocks_public(tenant_row) and (staff_tenant is None or staff_tenant() != tenant_id):
         raise _not_found()
     try:
         require_feature(tenant_row, feature)

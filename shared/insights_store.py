@@ -60,7 +60,6 @@ def load_source(tenant_id, location_id, first, last):
     reservations = _query(os.environ["RESERVATION_TABLE_NAME"],
                           pk & Key("SK").between(f"RESERVATION#{first}#", f"RESERVATION#{last}#~"))
     orders = _query(os.environ["ORDER_TABLE_NAME"], pk & Key("SK").between(f"ORDER#{first}#", f"ORDER#{last}#~"))
-    card = _query(os.environ["ORDER_TABLE_NAME"], pk & Key("SK").between(f"CARD#{first}#", f"CARD#{last}#~"))
     catering = _query(os.environ["CATERING_REQUESTS_TABLE_NAME"], pk & Key("SK").begins_with("REQUEST#"))
     snapshots = _query(os.environ["PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME"], pk & Key("SK").begins_with("LAYOUT#v"))
     visits = {}
@@ -75,7 +74,6 @@ def load_source(tenant_id, location_id, first, last):
     return {
         "reservations": _by_day(reservations, "RESERVATION#"),
         "orders": _by_day(orders, "ORDER#"),
-        "card": _by_day(card, "CARD#"),
         "catering": catering,
         "snapshots": snapshots,
         "visits": visits,
@@ -89,11 +87,27 @@ def build_days(tenant_id, location, first, last, *, built_at=None):
         ins.build_day(location=location, day=day,
                       reservations=source["reservations"].get(day, ()),
                       orders=source["orders"].get(day, ()),
-                      card=source["card"].get(day, ()),
                       catering=source["catering"], visits=source["visits"].get(day, ()),
                       snapshots=source["snapshots"], built_at=built_at)
         for day in days_between(first, last)
     ]
+
+
+def upcoming(location_id, first, last):
+    """{day: {bookings, guests}} of the bookings still on for first..last
+    (days after today: nothing is rolled up for them). One Query."""
+    items = _query(os.environ["RESERVATION_TABLE_NAME"],
+                   Key("PK").eq(f"LOCATION#{location_id}")
+                   & Key("SK").between(f"RESERVATION#{first}#", f"RESERVATION#{last}#~"),
+                   ProjectionExpression="SK, #s, partySize", ExpressionAttributeNames={"#s": "status"})
+    out = {}
+    for item in items:
+        if item.get("status") in ins.NOT_A_BOOKING or item.get("status") in ins.CANCELLED:
+            continue
+        day = out.setdefault(str(item.get("SK", ""))[12:22], {"bookings": 0, "guests": 0})
+        day["bookings"] += 1
+        day["guests"] += max(1, ins._int(item.get("partySize"), 1))
+    return out
 
 
 def write_rows(rows):

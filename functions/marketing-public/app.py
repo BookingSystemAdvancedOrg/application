@@ -362,7 +362,7 @@ def _confirm(token, method):
         return _html(200, "Bekräfta prenumerationen",
                      f"<h1 style='font-size:20px;margin:0 0 8px'>Vill du få erbjudanden från {restaurant}?</h1>"
                      "<p style='margin:0 0 20px'>Nyheter och erbjudanden via e-post. Avsluta när du vill.</p>"
-                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fff;border:0;"
+                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fdfaf6;border:0;"
                      "border-radius:6px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer'>"
                      "Ja, bekräfta</button></form>")
     if m.confirm_subscriber(table, tenant_id, sid, via="email_link") and row.get("email"):
@@ -396,7 +396,7 @@ _PAGE = """<!doctype html><html lang="sv"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <meta name="robots" content="noindex"></head>
 <body style="margin:0;background:#f4f2ee;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a">
-<main style="max-width:460px;margin:12vh auto;padding:32px 28px;background:#fff;border-radius:10px;line-height:1.5">
+<main style="max-width:460px;margin:12vh auto;padding:32px 28px;background:#fdfaf6;border-radius:10px;line-height:1.5">
 {body}</main></body></html>"""
 
 
@@ -460,7 +460,7 @@ def _unsubscribe(event, token, method):
                      f"<h1 style='font-size:20px;margin:0 0 8px'>Avsluta prenumerationen?</h1>"
                      f"<p style='margin:0 0 20px'>Du slutar få erbjudanden och nyheter från {restaurant} via e-post. "
                      "Bokningsbekräftelser påverkas inte.</p>"
-                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fff;border:0;"
+                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fdfaf6;border:0;"
                      "border-radius:6px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer'>"
                      "Avsluta prenumerationen</button></form>")
     if row and row.get("status") == "subscribed":
@@ -533,7 +533,7 @@ def _withdraw_page(token, method):
                      f"<p style='margin:0 0 20px'>Du får i dag erbjudanden och nyheter från {restaurant} via "
                      f"{channels}. Om du återkallar ditt samtycke slutar vi skicka dem. Bekräftelser och kvitton "
                      "på bokningar och beställningar påverkas inte.</p>"
-                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fff;border:0;"
+                     "<form method='post'><button type='submit' style='background:#1a1a1a;color:#fdfaf6;border:0;"
                      "border-radius:6px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer'>"
                      "Återkalla samtycke</button></form>")
     for channel in granted:

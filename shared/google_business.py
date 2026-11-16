@@ -2,12 +2,42 @@
 picks the simulator or shared/google_business_real.py from
 GOOGLE_BUSINESS_CLIENT."""
 
+import time
 from dataclasses import dataclass
 
 from shared import external_client
 
+_RUN = {"deadline": None}
+
+
+def start_run(context, default_seconds=None, margin_seconds=2.0):
+    """One time budget for every Google call of this Lambda run: the time
+    the invocation has left minus a margin, so a run answers a mapped
+    `unavailable` instead of being killed by the Lambda timeout. Without a
+    context (tests, local) `default_seconds`, or no run deadline at all."""
+    remaining = None
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(getter):
+        try:
+            remaining = getter() / 1000.0 - margin_seconds
+        except Exception:
+            remaining = None
+    if remaining is None and default_seconds is not None:
+        remaining = default_seconds - margin_seconds
+    _RUN["deadline"] = None if remaining is None else time.monotonic() + max(0.0, remaining)
+
+
+def run_deadline():
+    """time.monotonic() value every Google call of this run ends by, or None."""
+    return _RUN["deadline"]
+
 
 class GoogleBusinessError(Exception):
+    """`code`: invalid_code, needs_reauth, permission_denied, api_disabled,
+    quota_exceeded, rate_limited, not_found, invalid_request, conflict,
+    unavailable, misconfigured, not_connected (shared/google_business_real.py
+    maps Google's answers to these); `retryable` when a later try may work."""
+
     def __init__(self, code, retryable=False):
         super().__init__(code)
         self.code = code
@@ -42,7 +72,8 @@ class SimulatedGoogleBusiness(external_client.Simulated, GoogleBusiness):
 
     def authorize_url(self, state, redirect_uri):
         self._call("authorize_url", state)
-        return f"{redirect_uri}?code=simulated&state={state}"
+        sep = "&" if "?" in redirect_uri else "?"
+        return f"{redirect_uri}{sep}code=simulated&state={state}"
 
     def exchange_code(self, code, redirect_uri):
         self._call("exchange_code", code)

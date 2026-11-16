@@ -299,7 +299,7 @@ def guest_email(kind, item, tenant_row, location, link):
     )
     button = (
         f'<p style="margin:28px 0 8px"><a href="{e(link, quote=True)}" '
-        f'style="background:{color};color:#ffffff;text-decoration:none;padding:12px 22px;'
+        f'style="background:{color};color:#fdfaf6;text-decoration:none;padding:12px 22px;'
         f'border-radius:6px;display:inline-block;font-weight:600">{e(manage_label)}</a></p>'
         if show_link else ""
     )
@@ -307,7 +307,7 @@ def guest_email(kind, item, tenant_row, location, link):
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'
         'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5">'
-        f'<div style="background:#ffffff;border-radius:10px;padding:28px;border-top:4px solid {color}">'
+        f'<div style="background:#fdfaf6;border-radius:10px;padding:28px;border-top:4px solid {color}">'
         f'<h1 style="margin:0 0 4px;font-size:20px;color:#1a1a1a">{e(name)}</h1>'
         f'<p style="margin:16px 0 4px">{e(hello)}</p><p style="margin:0 0 20px">{e(lead)}</p>'
         f'<table role="presentation" style="border-collapse:collapse">{table_rows}</table>'

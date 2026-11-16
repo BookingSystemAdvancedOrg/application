@@ -4,8 +4,8 @@ CONTRACTS.md 4 and 6.H): shared logic for the personalliggare Lambda.
 NEEDS LEGAL REVIEW. Nothing here may be described as compliant, approved or
 certified; the admin page says "Personalliggare (under granskning)".
 
-Two tables, the kassa journal pattern (a justified exception to one table
-per feature):
+Two tables, an append-only ledger and its state (a justified exception to
+one table per feature):
 
     <prefix>personalliggare (STATE_TABLE_NAME), mutable state
         TENANT#<t>   / PERSON#<personId>     name, personalIdentity, userSub?, locationIds[], active, version
@@ -21,9 +21,8 @@ per feature):
 The ledger table has a Deny resource policy on Update/Delete/BatchWrite
 (infrastructure/personalliggare), and this module only ever Puts, Gets and
 Queries it. Every record is one transaction: REQ marker + HEAD (condition on
-the previous seq) + ledger Put + the presence pointer. The hash is the kassa
-journal's `entry_hash` (sha256 of the sorted JSON without `hash`), imported
-read-only.
+the previous seq) + ledger Put + the presence pointer. The hash is
+`shared/hash_chain.entry_hash` (sha256 of the sorted JSON without `hash`).
 
 Time is server time: `recordedAt` is always the clock here. A late or offline
 registration is a correction with `eventTime` and a reason, never a
@@ -46,7 +45,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from shared import dynamo
-from shared.kassa import entry_hash
+from shared.hash_chain import entry_hash
 
 FEATURE_ID = "personalliggare"
 FEATURE_KEY = "personalliggare"

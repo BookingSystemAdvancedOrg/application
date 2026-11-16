@@ -504,7 +504,7 @@ def app(monkeypatch):
     spec.loader.exec_module(module)
 
     # Request-parsing tests run without AWS: LOCATION_ID belongs to tenant A.
-    def fake_for_public(location_id, *, feature=None):
+    def fake_for_public(location_id, *, feature=None, staff_tenant=None):
         if location_id != LOCATION_ID:
             raise module.tenant.TenantError(404, "not found")
         return module.tenant.TenantContext(TENANT_A, tenant_row(TENANT_A), location={
@@ -590,6 +590,24 @@ def test_public_request_reaches_handler_without_authorizer(app, monkeypatch):
         "locationId": LOCATION_ID,
         "date": "2026-09-20",
     }
+
+
+def test_staff_token_is_offered_to_the_dpa_gate(app, monkeypatch):
+    successful_boundary(app, monkeypatch)
+    seen = {}
+
+    def for_public(location_id, *, feature=None, staff_tenant=None):
+        seen["tenant"] = staff_tenant()
+        return app.tenant.TenantContext(TENANT_A, tenant_row(TENANT_A), location={
+            "locationId": LOCATION_ID})
+
+    monkeypatch.setattr(app.tenant, "for_public", for_public)
+    monkeypatch.setattr(app.staff_token, "tenant_of", lambda event: event["headers"]["authorization"])
+    event = make_event()
+    event["headers"] = {"authorization": TENANT_A}
+
+    assert app.handler(event, None)["statusCode"] == 200
+    assert seen == {"tenant": TENANT_A}
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "OPTIONS", ""])

@@ -149,6 +149,11 @@ def public_user(item):
     }
 
 
+def listed_user(item, avatar_url=None):
+    """A user as GET /list-users and GET /users/{sub} show it."""
+    return {**public_user(item), "avatarUrl": avatar_url}
+
+
 def set_create_response(cognito, sub=TARGET_SUB):
     cognito.admin_create_user.return_value = {
         "User": {
@@ -377,7 +382,7 @@ def test_owner_can_get_self_without_calling_cognito(app_state):
         None,
     )
 
-    assert_response(response, 200, public_user(stored))
+    assert_response(response, 200, listed_user(stored))
     assert cognito.mock_calls == []
 
 
@@ -391,7 +396,7 @@ def test_owner_can_get_staff_after_live_group_check(app_state):
         None,
     )
 
-    assert_response(response, 200, public_user(stored))
+    assert_response(response, 200, listed_user(stored))
     cognito.admin_list_groups_for_user.assert_called_once_with(
         UserPoolId=USER_POOL_ID,
         Username=TARGET_SUB,
@@ -471,7 +476,7 @@ def test_get_user_uses_the_exact_key_and_a_consistent_read(
         None,
     )
 
-    assert_response(response, 200, public_user(stored))
+    assert_response(response, 200, listed_user(stored))
     table_spy.get_item.assert_called_once_with(
         Key={"PK": f"USER#{CALLER_SUB}", "SK": "PROFILE"},
         ConsistentRead=True,
@@ -515,7 +520,7 @@ def test_owner_list_contains_staff_and_self_but_not_other_privileged_users(
     assert_response(
         response,
         200,
-        {"items": [public_user(caller), public_user(staff)]},
+        {"items": [listed_user(caller), listed_user(staff)]},
     )
     # Listing deliberately trusts the directory mirror and avoids one
     # AdminListGroupsForUser request for every returned staff member.
@@ -551,7 +556,7 @@ def test_owner_list_skips_system_principals(app_state):
     assert_response(
         response,
         200,
-        {"items": [public_user(caller), public_user(staff)]},
+        {"items": [listed_user(caller), listed_user(staff)]},
     )
     assert cognito.mock_calls == []
 
@@ -598,7 +603,7 @@ def test_list_users_reads_every_scan_page_consistently(
     assert_response(
         response,
         200,
-        {"items": [public_user(second), public_user(first)]},
+        {"items": [listed_user(second), listed_user(first)]},
     )
     # The tenant's own users via the byTenant index - never a Scan.
     first_call, second_call = scanning_table.query.call_args_list
@@ -2279,3 +2284,173 @@ def test_staff_still_cannot_use_the_owner_routes(app_state):
     app, _, _ = app_state
     response = app.handler(make_event(method="GET", proxy=TARGET_SUB, groups='["staff_user"]'), None)
     assert response["statusCode"] == 403
+
+
+BACKDROPS_BUCKET = "test-user-backdrops"
+BACKDROPS_TABLE = "test-user-backdrops-table"
+
+
+def _backdrops(monkeypatch):
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    monkeypatch.setenv("USER_BACKDROPS_TABLE_NAME", BACKDROPS_TABLE)
+    s3 = boto3.client("s3", region_name="eu-north-1")
+    s3.create_bucket(
+        Bucket=BACKDROPS_BUCKET,
+        CreateBucketConfiguration={"LocationConstraint": "eu-north-1"},
+    )
+    library = boto3.resource("dynamodb", region_name="eu-north-1").create_table(
+        TableName=BACKDROPS_TABLE,
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+    )
+    return s3, library
+
+
+def test_delete_also_deletes_the_users_backdrop_library(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    s3, library = _backdrops(monkeypatch)
+    put_user(user_table)
+    target = f"admin/{TENANT_A}/{TARGET_SUB}/"
+    other = f"admin/{TENANT_A}/{CALLER_SUB}/backdrops/1"
+    for key in (target + "backdrop", target + "backdrops/1", target + "backdrops/1.thumb.webp", other):
+        s3.put_object(Bucket=BACKDROPS_BUCKET, Key=key, Body=b"img")
+    for pk, sk in ((f"USER#{TENANT_A}#{TARGET_SUB}", "IMG#1"), (f"USER#{TENANT_A}#{TARGET_SUB}", "SELECTED"),
+                   (f"USER#{TENANT_A}#{CALLER_SUB}", "IMG#1")):
+        library.put_item(Item={"PK": pk, "SK": sk})
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BACKDROPS_BUCKET).get("Contents", [])]
+    assert keys == [other]
+    assert [i["PK"] for i in library.scan()["Items"]] == [f"USER#{TENANT_A}#{CALLER_SUB}"]
+    cognito.admin_delete_user.assert_called_once()
+
+
+def test_delete_without_a_backdrop_library_still_succeeds(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    _backdrops(monkeypatch)
+    put_user(user_table)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 204, None)
+    assert get_user(user_table) is None
+
+
+def test_backdrop_delete_failure_keeps_the_user_for_a_retry(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    s3 = Mock()
+    s3.get_paginator.return_value.paginate.side_effect = client_error("AccessDenied", "ListObjectsV2")
+    monkeypatch.setattr(app, "_s3_client", s3)
+    original = user_item()
+    put_user(user_table, original)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=TARGET_SUB),
+        None,
+    )
+
+    assert_response(response, 503, err("user service unavailable"))
+    assert get_user(user_table) == original
+    cognito.admin_delete_user.assert_not_called()
+
+
+def _avatar(s3, sub=TARGET_SUB, tenant_id=TENANT_A):
+    s3.put_object(Bucket=BACKDROPS_BUCKET, Key=f"admin/{tenant_id}/{sub}/avatar.webp", Body=b"img")
+
+
+def test_list_and_get_carry_avatar_urls(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    s3, _ = _backdrops(monkeypatch)
+    caller = user_item(sub=CALLER_SUB, role="owner_user", location_id="")
+    put_user(user_table, caller)
+    put_user(user_table)
+    _avatar(s3)
+    s3.put_object(Bucket=BACKDROPS_BUCKET, Key=f"admin/{TENANT_A}/{CALLER_SUB}/backdrops/1", Body=b"img")
+    _avatar(s3, CALLER_SUB, TENANT_B)   # same sub in another tenant: not theirs
+
+    response = app.handler(make_event(method="GET", proxy=""), None)
+    items = {u["cognitoSub"]: u["avatarUrl"] for u in response_body(response)["items"]}
+    assert items[CALLER_SUB] is None
+    assert f"/admin/{TENANT_A}/{TARGET_SUB}/avatar.webp" in items[TARGET_SUB]
+    assert "X-Amz-Expires=3600" in items[TARGET_SUB]
+
+    one = response_body(app.handler(make_event(method="GET", proxy=TARGET_SUB), None))
+    assert f"/admin/{TENANT_A}/{TARGET_SUB}/avatar.webp" in one["avatarUrl"]
+
+
+def test_avatar_lookup_failure_shows_no_pictures(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    monkeypatch.setenv("USER_BACKDROPS_BUCKET_NAME", BACKDROPS_BUCKET)
+    s3 = Mock()
+    s3.get_paginator.return_value.paginate.side_effect = client_error("AccessDenied", "ListObjectsV2")
+    monkeypatch.setattr(app, "_s3_client", s3)
+    put_user(user_table, user_item(sub=CALLER_SUB, role="owner_user", location_id=""))
+
+    response = app.handler(make_event(method="GET", proxy=""), None)
+
+    assert response["statusCode"] == 200
+    assert [u["avatarUrl"] for u in response_body(response)["items"]] == [None]
+
+
+def test_owner_removes_a_staff_members_picture(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    s3, _ = _backdrops(monkeypatch)
+    put_user(user_table)
+    _avatar(s3)
+    s3.put_object(Bucket=BACKDROPS_BUCKET, Key=f"admin/{TENANT_A}/{TARGET_SUB}/avatar.upload", Body=b"x")
+    s3.put_object(Bucket=BACKDROPS_BUCKET, Key=f"admin/{TENANT_A}/{TARGET_SUB}/backdrops/1", Body=b"x")
+
+    response = app.handler(make_event(method="DELETE", proxy=f"{TARGET_SUB}/avatar"), None)
+
+    assert_response(response, 204, None)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BACKDROPS_BUCKET).get("Contents", [])]
+    assert keys == [f"admin/{TENANT_A}/{TARGET_SUB}/backdrops/1"]
+    assert get_user(user_table) is not None
+    assert cognito.mock_calls == []
+
+
+def test_picture_of_another_tenants_user_is_404(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    s3, _ = _backdrops(monkeypatch)
+    put_user(user_table, user_item(tenant_id=TENANT_B))
+    _avatar(s3, tenant_id=TENANT_B)
+
+    response = app.handler(make_event(method="DELETE", proxy=f"{TARGET_SUB}/avatar"), None)
+
+    assert_response(response, 404, err("user not found"))
+    assert len(s3.list_objects_v2(Bucket=BACKDROPS_BUCKET).get("Contents", [])) == 1
+
+
+def test_staff_cannot_remove_pictures(app_state, monkeypatch):
+    app, user_table, cognito = app_state
+    _backdrops(monkeypatch)
+    put_user(user_table)
+
+    response = app.handler(
+        make_event(method="DELETE", proxy=f"{TARGET_SUB}/avatar", groups='["staff_user"]'),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+
+
+def test_avatar_route_only_takes_delete(app_state):
+    app, _, _ = app_state
+    response = app.handler(make_event(method="PUT", proxy=f"{TARGET_SUB}/avatar"), None)
+    assert response["statusCode"] == 405

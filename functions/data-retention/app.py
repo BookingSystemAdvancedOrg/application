@@ -17,7 +17,8 @@ PURPOSE:
         its guest fields are removed after the booking period
       * orders: paid or refunded = receipt, guest fields removed after the
         guest period, deleted when the accounting period ends; never paid =
-        deleted after the cancelled period. In-person card payments (CARD#)
+        deleted after the cancelled period. Card payment records (CARD#)
+        left from before the till card payments were removed (2026-11-13)
         the same way; their only guest field is a receipt e-mail address
       * catering requests (+ their history): like orders when paid or
         invoiced; declined, rejected, expired or cancelled ones deleted after
@@ -211,7 +212,7 @@ def _orders(location_id, policy, today, now, counts, budget):
                 _delete(name, {"PK": pk, "SK": item["SK"]}, budget)
                 if item.get("orderId"):
                     _delete(name, {"PK": pk, "SK": f"OID#{item['orderId']}"}, budget)
-    # In-person card payments (shared/card_payments.py), same table.
+    # Card payment records from before 2026-11-13 (none are written any more), same table.
     for item in _query(name, Key("PK").eq(pk) & Key("SK").begins_with("CARD#")):
         action = retention.card_action(item, today, policy)
         if action == "anonymise":

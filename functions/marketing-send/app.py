@@ -31,7 +31,11 @@ PURPOSE:
     same subscribed, consent and claim checks. A failing feature pauses the
     campaign until the next run; a tenant that has (and never had) guestCrm
     gets the campaign stopped as "paused" with pausedReason
-    "segment_unavailable" instead of retrying forever.
+    "segment_unavailable" instead of retrying forever; so does an export
+    the feature no longer has (400/404, e.g. expired after 90 days).
+    A tenant that is not active, or whose plan no longer has marketing,
+    gets its due campaign stopped as "paused" with pausedReason
+    "tenant_inactive" before anything is sent.
     The content was frozen when the campaign was sent (template, dishes,
     links, sender), so editing a template afterwards changes nothing.
 
@@ -261,7 +265,8 @@ def _still_sending(table, campaign):
 
 
 class SegmentUnavailable(Exception):
-    """No guest-crm target for this tenant (guestCrm off and never on)."""
+    """No guest-crm target for this tenant (guestCrm off and never on), or
+    the export is gone (expired after EXPORT_TTL_DAYS or never existed)."""
 
 
 def _segment_page(table, tenant_id, audience, cursor):
@@ -274,7 +279,11 @@ def _segment_page(table, tenant_id, audience, cursor):
     if not targets:
         raise SegmentUnavailable()
     answer = feature_hooks.call("marketing.segment", payload, targets=targets).get("guest-crm")
-    if answer is None or not answer["ok"]:
+    if answer is None:
+        raise feature_hooks.HookFailed("guest-crm")
+    if not answer["ok"]:
+        if answer.get("status") in (400, 404):
+            raise SegmentUnavailable()  # export expired (TTL) or gone: retrying never helps
         raise feature_hooks.HookFailed("guest-crm")
     rows = []
     for sid in answer.get("subscriberIds") or []:
@@ -347,6 +356,17 @@ def _run_campaign(table, campaign, schedule_sk, deadline):
         m.bump_campaign(table, tenant_id, campaign_id, **counts)
 
 
+def _tenant_can_send(tenant_id):
+    """Only an active tenant whose plan still has marketing sends: a
+    suspended or offboarded restaurant, or one whose plan lost marketing,
+    never mails guests in its name."""
+    from shared import tenant
+    row = tenant.get_tenant(tenant_id)
+    if not row or row.get("status") != "active":
+        return False
+    return bool(((row.get("entitlements") or {}).get("features") or {}).get("marketing"))
+
+
 def handler(event, context):
     table = _table()
     now = datetime.now(timezone.utc)
@@ -364,6 +384,20 @@ def handler(event, context):
             current = table.get_item(Key={"PK": m.cmp_pk(tenant_id), "SK": f"CMP#{campaign_id}"}).get("Item")
             if not current or current.get("status") not in ("scheduled", "sending"):
                 table.delete_item(Key={"PK": "SCHEDULE", "SK": entry["SK"]})  # cancelled or gone
+            continue
+        try:
+            sendable = _tenant_can_send(tenant_id)
+        except (BotoCoreError, ClientError):
+            logger.exception("tenant read failed; next run retries")
+            table.update_item(Key={"PK": m.cmp_pk(tenant_id), "SK": f"CMP#{campaign_id}"},
+                              UpdateExpression="REMOVE leaseUntil")
+            continue
+        if not sendable:
+            logger.warning(json.dumps({"marketing": "tenant_inactive", "tenantId": tenant_id,
+                                       "campaignId": campaign_id}))
+            _finish(table, campaign, "paused", entry["SK"], cursor=campaign.get("cursor"),
+                    pausedReason="tenant_inactive")
+            handled += 1
             continue
         try:
             outcome, cursor = _run_campaign(table, campaign, entry["SK"], deadline)

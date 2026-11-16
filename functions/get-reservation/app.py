@@ -38,7 +38,7 @@ _GUEST = "/locations/{locationId}/reservations/{reservationId}/guest"
 
 def _list(event):
     location_id = http.path_id(event, "locationId")
-    tenant.for_jwt(event, location_id=location_id, feature="reservations")
+    tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
     params = http.query(event)
     unknown = sorted(set(params) - {"date"})
     if unknown:
@@ -51,7 +51,7 @@ def _list(event):
 
 def _one(event):
     location_id = http.path_id(event, "locationId")
-    tenant.for_jwt(event, location_id=location_id, feature="reservations")
+    tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
     item = r.load(location_id, http.path_id(event, "reservationId"))
     return http.respond(200, r.staff_view(item))
 

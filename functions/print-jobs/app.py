@@ -235,7 +235,10 @@ def _api(event):
     method, path = http.route(event)
     try:
         location_id = http.path_id(event, "locationId")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature="ordering")
+        proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
+        # Meny shows each dish's station (GET routing); the rest is Beställningar.
+        area = ("bestallningar", "meny") if method == "GET" and proxy == "routing" else "bestallningar"
+        ctx = tenant.for_jwt(event, location_id=location_id, feature="ordering", area=area)
         if path == _ROOT:
             if method != "GET":
                 return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET"})

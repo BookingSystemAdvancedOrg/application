@@ -3365,8 +3365,8 @@ paths:
         be one of its locations (another tenant's answers 404) and `all` is
         its own locations. Owners see everything. Staff see only their
         assigned location and never an amount (every revenue, fee and price
-        field is left out, `money` is false); with the owner's setting
-        `insights.staffAccess` = `none` they get 403 `staff_no_access`.
+        field is left out, `money` is false); without the `statistik` area
+        (StaffAccess) they get 403 `no_access`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -8077,6 +8077,21 @@ components:
           $ref: '#/components/schemas/TenantNotifications'
         insights:
           $ref: '#/components/schemas/TenantInsightsSettings'
+        access:
+          type: object
+          additionalProperties: false
+          description: The admin areas the caller may open (owner every area). Older backends omit it.
+          required: [areas]
+          properties:
+            areas:
+              type: array
+              items:
+                $ref: '#/components/schemas/StaffArea'
+        staffAccess:
+          allOf:
+            - $ref: '#/components/schemas/StaffAccess'
+          nullable: true
+          description: Owner only (null for staff). Which areas staff may open.
         dpa:
           type: object
           additionalProperties: false
@@ -8266,6 +8281,78 @@ components:
               enum: [0, 2, 3, 6, 12, 24, 48]
         insights:
           $ref: '#/components/schemas/TenantInsightsSettings'
+        staffAccess:
+          $ref: '#/components/schemas/StaffAccessEdit'
+
+    StaffArea:
+      type: string
+      description: An admin area (page) the owner grants staff (application shared/staff_access.py).
+      enum: [statistik, bokningar, bestallningar, catering, personalliggare, telefon, meny, layout,
+             personal, gaster, presentkort, webbplats, evenemang, marknadsforing]
+
+    StaffAccessPerson:
+      type: object
+      additionalProperties: false
+      properties:
+        add:
+          type: array
+          description: Areas this person has on top of the group.
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        remove:
+          type: array
+          description: Group areas this person does not have.
+          items:
+            $ref: '#/components/schemas/StaffArea'
+
+    StaffAccess:
+      type: object
+      additionalProperties: false
+      description: |
+        Staff permissions per admin area. A staff user's areas = (defaults
+        + users[sub].add) - users[sub].remove. The owner always has every
+        area. Never saved: what staff had before (every area except
+        personal, presentkort, webbplats and marknadsforing; statistik off
+        when insights.staffAccess was none). API routes of an area answer
+        staff without it 403 `no_access`.
+      required: [areas, defaults, users, version]
+      properties:
+        areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        defaults:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        users:
+          type: object
+          description: Per staff user (Cognito sub).
+          additionalProperties:
+            $ref: '#/components/schemas/StaffAccessPerson'
+        version:
+          type: integer
+
+    StaffAccessEdit:
+      type: object
+      additionalProperties: false
+      description: |
+        Owner only. `version` must be the one read (else 409 changed_retry).
+        `users` replaces the listed people's own changes; null clears them.
+      required: [version]
+      properties:
+        version:
+          type: integer
+        defaults:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        users:
+          type: object
+          additionalProperties:
+            allOf:
+              - $ref: '#/components/schemas/StaffAccessPerson'
+            nullable: true
 
     TenantInsightsSettings:
       type: object

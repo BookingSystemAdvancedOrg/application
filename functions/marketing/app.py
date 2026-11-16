@@ -700,7 +700,7 @@ def handler(event, context):
     method = ((event.get("requestContext") or {}).get("http") or {}).get("method", method).upper()
     parts = _path(event)
     try:
-        ctx = tenant.for_jwt(event, feature="marketing", owner_only=True)
+        ctx = tenant.for_jwt(event, feature="marketing", area="marknadsforing")
         if not parts:
             return http.error(404, "not found")
         head, rest = parts[0], parts[1:]

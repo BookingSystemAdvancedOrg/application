@@ -215,7 +215,7 @@ def test_a6_disconnect_pauses_deletes_secret_and_is_idempotent(env):
     ("GET", "/tenant/meta-ads/assets"), ("PUT", "/tenant/meta-ads/connection"),
     ("DELETE", "/tenant/meta-ads/connection"), ("POST", "/tenant/meta-ads/connection/callback")])
 def test_connection_routes_staff_403_and_off_403_but_social_posting_is_enough(env, method, path):
-    assert call(env, method, path, role="staff_user", body={})[1]["error"] == "owner_only"
+    assert call(env, method, path, role="staff_user", body={})[1]["error"] == "no_access"
     ads_off(env)
     assert call(env, method, path, body={})[1]["error"] == "feature_not_in_plan"
     ads_off(env, TENANT_A, "socialPosting")

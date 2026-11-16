@@ -159,7 +159,7 @@ def _max_online_party(location):
 def _create(event, *, staff):
     location_id = http.path_id(event, "locationId")
     if staff:
-        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations")
+        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
     else:
         ctx = tenant.for_public(location_id, feature="reservations")
     data = http.body(event, allowed=_MANUAL_FIELDS if staff else _ONLINE_FIELDS)

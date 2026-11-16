@@ -481,7 +481,7 @@ def handler(event, context=None):
                 location_id = http.path_id(event, "locationId")
             except ValueError:
                 return _err(404, "not found")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature=gbp.FEATURE_KEY, owner_only=True)
+        ctx = tenant.for_jwt(event, location_id=location_id, feature=gbp.FEATURE_KEY, area="marknadsforing")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

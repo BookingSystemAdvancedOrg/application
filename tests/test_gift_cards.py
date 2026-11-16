@@ -173,7 +173,7 @@ def test_settings_owner_only_validation_and_version(env):
     assert status == 200 and body["enabled"] is False and body["validityMonths"] == 24
     assert enable(env, validityMonths=6)[1]["code"] == "invalid_validity"
     assert enable(env, amountsSek=[50])[1]["code"] == "invalid_amount"
-    assert enable(env, claims=STAFF_A)[1]["error"] == "owner_only"
+    assert enable(env, claims=STAFF_A)[1]["error"] == "no_access"
     assert enable(env)[1]["version"] == 1
     assert enable(env)[1]["code"] == "changed_retry"
 
@@ -347,7 +347,7 @@ def test_list_detail_and_liability(env):
     status, body = http_call(env, "GET", "/tenant/gift-cards", claims=OWNER_A)
     assert status == 200 and body["liabilitySek"] == 750 and len(body["cards"]) == 2
     assert http_call(env, "GET", "/tenant/gift-cards", query={"status": "nope"}, claims=OWNER_A)[0] == 400
-    assert http_call(env, "GET", "/tenant/gift-cards", claims=STAFF_A)[1]["error"] == "owner_only"
+    assert http_call(env, "GET", "/tenant/gift-cards", claims=STAFF_A)[1]["error"] == "no_access"
     card_id = gc.card_id_for(P1)
     status, card = http_call(env, "GET", "/tenant/gift-cards/{cardId}", params={"cardId": card_id}, claims=OWNER_A)
     assert status == 200 and [t["kind"] for t in card["transactions"]] == ["issue"]

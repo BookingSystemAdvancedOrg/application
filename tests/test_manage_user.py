@@ -312,7 +312,7 @@ def test_missing_subject_returns_401_without_aws(app_state):
 
 @pytest.mark.parametrize(
     ("groups", "error"),
-    [('["staff_user"]', "owner_only"), ('["unknown"]', "no_tenant"), ("", "no_tenant"), (None, "no_tenant")],
+    [('["staff_user"]', "no_access"), ('["unknown"]', "no_tenant"), ("", "no_tenant"), (None, "no_tenant")],
 )
 def test_wrong_caller_group_returns_403_before_body_or_aws(
     app_state,

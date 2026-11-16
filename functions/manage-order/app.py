@@ -67,9 +67,9 @@ _ITEM = "/locations/{locationId}/orders/{proxy+}"
 _TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
-def _ctx(event):
+def _ctx(event, area="bestallningar"):
     location_id = http.path_id(event, "locationId")
-    return location_id, tenant.for_jwt(event, location_id=location_id, feature="ordering")
+    return location_id, tenant.for_jwt(event, location_id=location_id, feature="ordering", area=area)
 
 
 def _list(event):
@@ -296,9 +296,11 @@ def _regenerate(location_id, ctx, table_id):
 
 
 def _item_route(event, method):
-    location_id, ctx = _ctx(event)
     proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
     parts = proxy.split("/") if proxy else []
+    # The table QR codes are shown on Layout too (the floor plan's tables).
+    table_codes = bool(parts) and parts[0] == "table-codes"
+    location_id, ctx = _ctx(event, ("bestallningar", "layout") if table_codes else "bestallningar")
     if parts == ["pause"]:
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})

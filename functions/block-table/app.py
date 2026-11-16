@@ -1131,7 +1131,7 @@ def _caller_identity(event):
     if len(caller_sub) > _MAX_IDENTIFIER_LENGTH or "#" in caller_sub:
         raise Unauthorized("JWT subject is invalid")
 
-    ctx = tenant.for_jwt(event, feature="reservations")
+    ctx = tenant.for_jwt(event, feature="reservations", area=("bokningar", "layout"))
     _TENANT_ID.set(ctx.tenant_id)
     return caller_sub, ctx.role
 

@@ -774,7 +774,7 @@ def handler(event, context):
     try:
         location_id = _path_value(event, "locationId")
         # The location must be one of the caller's tenant's (else 404).
-        tenant.for_jwt(event, location_id=location_id)
+        tenant.for_jwt(event, location_id=location_id, area="layout")
     except tenant.TenantError as exc:
         return exc.response()
     except ValueError as exc:

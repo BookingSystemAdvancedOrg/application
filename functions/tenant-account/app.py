@@ -78,7 +78,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dpa, tenant, terms
+from shared import dpa, staff_access, tenant, terms
 from shared import stripe_client
 from shared.dynamo import table
 from shared.responses import json_response
@@ -96,7 +96,7 @@ _ROUTES = {
     ("GET", "/tenant/billing"),
     ("POST", "/tenant/billing/card-session"),
 }
-_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications", "insights")
+_EDITABLE = ("senderName", "replyToEmail", "branding", "notifications", "insights", "staffAccess")
 # Guest/restaurant messages (functions/notification, reservation-reminders).
 _REMINDER_HOURS = (0, 2, 3, 6, 12, 24, 48)
 NOTIFICATION_DEFAULTS = {"sms": False, "staffEmails": True, "reminderHours": 24}
@@ -243,6 +243,10 @@ def _public_tenant(ctx, row):
         "terms": terms.status(row),
         "billing": _billing_summary(row) if role == "owner_user" else None,
         "role": role,
+        # The admin areas the caller may open (shared/staff_access.py).
+        "access": {"areas": staff_access.areas_for(row, role, ctx.sub)},
+        # Only the owner sees and edits who may open what.
+        "staffAccess": staff_access.owner_view(row) if role == "owner_user" else None,
         "locations": _locations(ctx),
     }
 
@@ -380,7 +384,7 @@ def _validated_insights(value):
     return {**INSIGHTS_DEFAULTS, **value}
 
 
-def _validated_edit(body, current=None):
+def _validated_edit(body, current=None, by=None):
     """None or "" removes a field (falls back to the platform default)."""
     unknown = sorted(set(body) - set(_EDITABLE))
     if unknown:
@@ -425,6 +429,8 @@ def _validated_edit(body, current=None):
             body["notifications"], (current or {}).get("notifications"))
     if "insights" in body:
         fields["insights"] = _validated_insights(body["insights"])
+    if "staffAccess" in body:
+        fields["staffAccess"] = staff_access.apply_edit(current, body["staffAccess"], _now(), by)
     return fields
 
 
@@ -433,6 +439,14 @@ def _apply_edit(ctx, fields):
     removes = []
     names = {}
     values = {":now": _now(), ":by": ctx.sub}
+    condition = "attribute_exists(PK)"
+    if "staffAccess" in fields:
+        # Two owners saving at once: the second gets 409 changed_retry.
+        names["#sa"] = "staffAccess"
+        names["#sav"] = "version"
+        values[":sav"] = fields["staffAccess"]["version"] - 1
+        values[":zero"] = 0
+        condition += " AND (#sa.#sav = :sav OR (attribute_not_exists(#sa.#sav) AND :sav = :zero))"
     for index, (field, value) in enumerate(fields.items()):
         names[f"#f{index}"] = field
         if value is None:
@@ -446,7 +460,7 @@ def _apply_edit(ctx, fields):
     table(TENANT_TABLE_NAME).update_item(
         Key={"PK": tenant.tenant_pk(ctx.tenant_id), "SK": "PROFILE"},
         UpdateExpression=expression,
-        ConditionExpression="attribute_exists(PK)",
+        ConditionExpression=condition,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
         # IAM refuses ALL_OLD/ALL_NEW: they would return the whole row.
@@ -709,8 +723,16 @@ def handler(event, context):
         if method == "PATCH":
             try:
                 body = _body(event)
-                current = _fresh_profile(ctx.tenant_id) if "notifications" in body else None
-                _apply_edit(ctx, _validated_edit(body, current))
+                current = (_fresh_profile(ctx.tenant_id)
+                           if "notifications" in body or "staffAccess" in body else None)
+                fields = _validated_edit(body, current, ctx.sub)
+                try:
+                    _apply_edit(ctx, fields)
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code")
+                    if code == "ConditionalCheckFailedException" and "staffAccess" in fields:
+                        raise staff_access.Conflict() from None
+                    raise
             finally:
                 tenant.invalidate(ctx.tenant_id)
             return _response(
@@ -725,6 +747,8 @@ def handler(event, context):
         )
     except tenant.TenantError as exc:
         return exc.response()
+    except staff_access.Conflict:
+        return _error(HTTPStatus.CONFLICT.value, "changed_retry")
     except ValueError as exc:
         return _error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except (BotoCoreError, ClientError, _ServiceFailure, KeyError):

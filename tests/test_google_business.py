@@ -152,7 +152,7 @@ def test_connection_flow_and_roles(env):
                          ("POST", "/tenant/google-business/connection/start"),
                          ("DELETE", "/tenant/google-business/connection")):
         status, body = call(env, method, path, role="staff_user", body={} if method == "POST" else None)
-        assert (status, body["error"]) == (403, "owner_only")
+        assert (status, body["error"]) == (403, "no_access")
     secret = boto3.client("secretsmanager").get_secret_value(SecretId=gbp.secret_name(TENANT_A))["SecretString"]
     assert "sim-refresh" in secret
 

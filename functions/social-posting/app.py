@@ -584,7 +584,7 @@ def handler(event, context=None):
     if fn is None:
         return _err(404, "not found")
     try:
-        ctx = tenant.for_jwt(event, feature=sp.FEATURE_KEY, owner_only=True)
+        ctx = tenant.for_jwt(event, feature=sp.FEATURE_KEY, area="marknadsforing")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

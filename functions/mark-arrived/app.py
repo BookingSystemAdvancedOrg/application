@@ -512,7 +512,7 @@ def handler(event, context):
         return http.respond(405, {"error": "method not allowed"}, {"Allow": allowed})
     try:
         location_id = http.path_id(event, "locationId")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations")
+        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
         item = r.load(location_id, http.path_id(event, "reservationId"))
         if path == _STATUS:
             return http.respond(200, r.staff_view(_set_status(event, ctx, item)))

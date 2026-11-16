@@ -109,7 +109,7 @@ def _unit_price(value):
 
 def _ctx(event, *, owner):
     location_id = http.path_id(event, "locationId")
-    ctx = tenant.for_jwt(event, location_id=location_id, feature="catering", owner_only=owner)
+    ctx = tenant.for_jwt(event, location_id=location_id, feature="catering", owner_only=owner, area="catering")
     return location_id, ctx
 
 

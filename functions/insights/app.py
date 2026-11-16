@@ -63,17 +63,11 @@ LIVE_DAYS = 31
 SERVICES = ("all", "lunch", "dinner")
 CHANNELS = ("all", "online", "phone", "onsite")
 COMPARES = ("previous", "year", "none")
-STAFF_ACCESS = ("operations", "none")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def now_utc():
     return datetime.now(timezone.utc)
-
-
-def staff_access(tenant_row):
-    raw = ((tenant_row or {}).get("insights") or {}).get("staffAccess")
-    return raw if raw in STAFF_ACCESS else "operations"
 
 
 def _day(value, name):
@@ -177,12 +171,11 @@ def get_insights(event):
     location_param = params.get("locationId") or "all"
     if location_param != "all" and (len(location_param) > 128 or "#" in location_param):
         return http.error(400, "locationId is invalid")
-    ctx = tenant.for_jwt(event, location_id=None if location_param == "all" else location_param)
+    ctx = tenant.for_jwt(event, location_id=None if location_param == "all" else location_param,
+                         area="statistik")
 
     money = ctx.is_owner
     if not ctx.is_owner:
-        if staff_access(ctx.tenant) == "none":
-            return http.error(403, "staff_no_access")
         if ctx.location is None:
             assigned = tenant.staff_location(ctx.sub, ctx.tenant_id)
             location = tenant.get_location(ctx.tenant_id, assigned) if assigned else None

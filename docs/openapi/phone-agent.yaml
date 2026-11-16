@@ -402,6 +402,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: session_full (40 texts in this sessionId; start a new sessionId).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: quota_exceeded (the tenant's simulator turns for this month are used up).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: ai_unavailable.
           content:

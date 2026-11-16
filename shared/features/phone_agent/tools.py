@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, timedelta
 
 from shared import agent_model, guarantee
@@ -45,7 +46,7 @@ TOOLS = [
      "input_schema": {"type": "object", "required": ["reservationId"],
                       "properties": {"reservationId": {"type": "string"}}}},
     {"name": "find_reservations", "description": "The caller's upcoming bookings (by their number).",
-     "input_schema": {"type": "object", "properties": {"phone": {"type": "string"}, "fromDate": {"type": "string"}}}},
+     "input_schema": {"type": "object", "properties": {"fromDate": {"type": "string"}}}},
     {"name": "move_reservation", "description": "Move a booking found by find_reservations.",
      "input_schema": {"type": "object", "required": ["reservationId", "date", "time"], "properties": {
          "reservationId": {"type": "string"}, "date": {"type": "string"}, "time": {"type": "string"},
@@ -68,6 +69,7 @@ TOOLS = [
 ]
 TOOL_NAMES = tuple(t["name"] for t in TOOLS)
 FIND_DAYS = 14
+_E164 = re.compile(r"\+[1-9]\d{7,14}")
 # The existing Lambdas the tools invoke (`<env>-<name>:live`). A cancel goes
 # through the staff status route on mark-arrived, never cancel-reservation
 # (a guest route that needs the manage-link token).
@@ -371,8 +373,11 @@ class Executor:
         return {"ok": False, "code": "guarantee_not_available"}
 
     def find_reservations(self, args):
-        phone = self.caller_phone or args.get("phone")
-        if not phone:
+        # Only the number the network gave us: a number the caller says could
+        # be anyone's (audit #24). A hidden or malformed number finds nothing,
+        # so the agent offers transfer_to_staff or request_callback.
+        phone = self.caller_phone if isinstance(self.caller_phone, str) else ""
+        if not _E164.fullmatch(phone):
             return {"reservations": []}
         start = date.fromisoformat(args["fromDate"]) if args.get("fromDate") else self.today
         found = []

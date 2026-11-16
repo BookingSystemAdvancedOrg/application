@@ -28,7 +28,14 @@ beside this repo). The admin page title is "Personalliggare (under granskning)".
   JSON without `hash`), `prevHash` = the previous record's
   hash. The export verifies the whole chain of the location from seq 1 and
   against the HEAD: a changed record, a broken link, a gap or a cut tail sets
-  `chainOk: false` and `firstBadSeq`.
+  `chainOk: false` and `firstBadSeq`. Rows past their `ttl` count as expired
+  (DynamoDB deletes them lazily, in no set order); the check then starts at the
+  first record still kept and the export reports `expiredThroughSeq`. `ttl` never
+  goes below the previous record's, and the HEAD keeps `ttlStarts` (the first seq
+  of each ttl) and `lastTtl`, so a missing prefix is accepted only when it can
+  have expired: rows deleted before their ttl still give `chainOk: false`. HEADs
+  from before `ttlStarts` accept an expired prefix only from 2027-01-01.
+  An export too large for one response is 400 `export_too_large`.
 - **Server time.** `recordedAt` is always the server clock; check-in/out take no
   time from the client. A late or offline registration is a correction
   without `correctsSeq` (it moves the presence pointer like the registration it

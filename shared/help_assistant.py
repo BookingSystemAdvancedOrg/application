@@ -563,19 +563,26 @@ def _grounded_numbers(found: list, app: str) -> set:
     return out
 
 
-_ORDINALS = {str(n) for n in range(1, 11)}
+# A small ordinal is allowed only as a step marker ("Steg 1", "2 steg", "Step 3", a "1." list
+# item), never as a bare count: "Du har 10 bokningar" is still an invented number.
+_STEP_MARKER = re.compile(
+    r"(?i)\b(?:steg|step)\s+(?:[1-9]|10)\b|\b(?:[1-9]|10)\s+(?:steg|steps?)\b|^\s*(?:[1-9]|10)[.)]\s",
+    re.MULTILINE,
+)
 
 
 def _invents(texts: list, found: list, app: str, live: Optional[dict], question: str = "") -> bool:
     """A number in the model's text or steps it was not given, or a prompt key. Given are the
-    candidates' numbers, the question's own and small ordinals 1 to 10 ("Steg 1", "2 steg").
+    candidates' numbers, the question's own and step markers 1 to 10 ("Steg 1", "2 steg").
     With a live number only the day ("15 november") may carry digits: the model never knows
     the count, so neither the question's numbers nor ordinals are allowed then."""
     if live:
         allowed = _numbers((live.get("text") or "").split("{value}")[0])
     else:
-        allowed = _grounded_numbers(found, app) | _numbers(question) | _ORDINALS
+        allowed = _grounded_numbers(found, app) | _numbers(question)
     joined = "\n".join(texts)
+    if not live:
+        joined = _STEP_MARKER.sub(" ", joined)
     return bool(_numbers(joined) - allowed) or bool(_PROMPT_KEYS.search(joined))
 
 

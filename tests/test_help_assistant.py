@@ -561,8 +561,7 @@ def test_model_text_or_steps_with_made_up_numbers_or_prompt_keys_fall_back(text,
 
 
 @pytest.mark.parametrize("text, steps", [
-    ("Steg 1: öppna Bord.", ["Gör 2 steg.", "Klart i 10 sekunder."]),   # small ordinals 1 to 10
-    ("Ja, 3 bord går bra.", ["Välj 1 bord."]),
+    ("Steg 1: öppna Bord.", ["Gör 2 steg.", "1. Tryck Spara.", "Step 10: done."]),   # step markers 1 to 10
 ])
 def test_model_small_ordinals_are_kept(text, steps):
     answer = help.from_model(_model_raw(text, steps), [(GUIDE, 10)])
@@ -579,6 +578,9 @@ def test_model_numbers_from_the_question_are_kept():
 @pytest.mark.parametrize("text, steps", [
     ("Ja, 25 gäster går bra.", []),                       # 25 is not in this question
     ("Steg 11: öppna Bord.", []),                         # 11 is not a small ordinal
+    ("Du har 10 bokningar idag.", []),                    # a bare small count is invented
+    ("Klart i 3 sekunder.", []),                          # so is a small duration
+    ("Ja, 3 bord går bra.", ["Välj 1 bord."]),            # and a small table count
     ("Enligt FRÅGA 1 gör du så här.", ["Steg 2."]),       # ordinals never excuse a prompt key
 ])
 def test_numbers_outside_question_and_ordinals_still_fall_back(text, steps):

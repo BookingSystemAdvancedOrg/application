@@ -6,11 +6,12 @@ TRIGGER:
       tenant-offboarding  archive
       tenant-purge        delete
       platform-tenants    status | provision (Retry) | invite {username} |
-                          redeploy {branch} | archive | devDomain {op, host}
+                          redeploy {branch} | archive | devDomain {op, host} |
+                          domainLive (an own domain went live)
                           (Booqy Console, Website tab); delete (Danger
                           zone, Delete customer); dev only: linkProvision
                           {repo} (a site task from prod, below) and
-                          testHost {op put|delete, label} (Domains tab)
+                          testHost {op put|delete|redirect, label} (Domains tab)
 
 PURPOSE:
     Every restaurant has its own public website repo site-<slug>, created
@@ -61,7 +62,10 @@ PURPOSE:
     provision, and each mapped own domain (example-se for example.se), put
     and deleted by testHost; archive and delete remove them all. A label is
     written only for the tenant that holds its DOMAIN#<label>.<main zone>
-    claim (or, removing, when nobody holds it).
+    claim (or, removing, when nobody holds it). Once a mapped domain is the
+    site's primary, guests only see it: testHost redirect {label} sets the
+    slug's value to ">example-se" (the function answers <slug>.<zone> with
+    a 301 to example-se.<same zone>); an empty label sets it back.
     Two roles /booqy-test-sites/test-site-<slug>-main and -dev (boundary
     TEST_DEPLOY_BOUNDARY_ARN, tags tenantId and stage), each trusted for its
     own branch and able to write only its own stage folder; variables
@@ -85,9 +89,14 @@ PURPOSE:
     for good. Only prod deletes a real customer's repo; dev deletes its test
     customers' repos. Needs the App's Administration: Read and write; a
     refusal is raised with that hint (the callers record it and carry on).
-    devDomain (prod only): the Website tab's dev row, through the same link:
-    op "status" (dev's slug address and dev.<domain>'s state) or "mount"
-    (dev's domain-attach for dev.<domain>).
+    devDomain (prod only): dev.<domain> of a prod own domain, through the
+    same link (domain-provision's dev step, the Website tab's dev row): op
+    "status" (dev's slug address and dev.<domain>'s state), "mount" (dev's
+    domain-attach for dev.<domain>), "setCanonical" (once live: dev's
+    primary domain and dev's 301 from <slug>.dev.booqy.se) or "unmount".
+    domainLive (prod, a real customer): booqy.json with the live domains,
+    prod's section and dev's (from dev, through the link), on BOTH
+    branches, so both sites deploy with their canonical domain at once.
 
     Only repos named site-* are ever touched (every repo name is checked
     here).
@@ -785,9 +794,25 @@ def _unmap_all(tenant_id, mode, slug, row):
         _unmap_label(tenant_id, mode, label)
 
 
+def _redirect_slug(tenant_id, mode, slug, target):
+    """<slug>.<zone> -> 301 to <target>.<zone> (both stages), or, target
+    empty, back to serving the site. Only labels this tenant holds."""
+    if _claim_holder(slug) != tenant_id:
+        raise SiteRepoError(f"refused: {slug}.{os.environ['TEST_MAIN_DOMAIN']} is not claimed by {tenant_id}")
+    if not target:
+        _kvs_write(mode, "put", slug, tenant_id)
+        return
+    if not isinstance(target, str) or not _LABEL.fullmatch(target) or target == slug:
+        raise SiteRepoError(f"refused: {target!r} is not a host label")
+    if _claim_holder(target) != tenant_id:
+        raise SiteRepoError(f"refused: {target}.{os.environ['TEST_MAIN_DOMAIN']} is not claimed by {tenant_id}")
+    _kvs_write(mode, "put", slug, ">" + target)
+
+
 def test_host(tenant_id, op, label):
     """The Domains tab (dev): a test customer's mapped own domain, label
-    example-se for example.se, on both its sandbox hosts."""
+    example-se for example.se, on both its sandbox hosts; redirect: the
+    slug's hosts answer with a 301 to it (empty label: they serve again)."""
     profile = _profile(tenant_id)
     mode = Mode(profile)
     if not mode.test:
@@ -800,6 +825,10 @@ def test_host(tenant_id, op, label):
         if label == profile.get("slug"):
             raise SiteRepoError("refused: the slug's own host goes only with the customer")
         _unmap_label(tenant_id, mode, label)
+    elif op == "redirect":
+        if profile.get("status") in _FINISHED_TENANT and label:
+            raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
+        _redirect_slug(tenant_id, mode, profile.get("slug"), label)
     else:
         raise SiteRepoError(f"unknown testHost op {op!r}")
     log.info(json.dumps({"action": "testHost", "op": op, "tenantId": tenant_id, "label": label}))
@@ -1082,7 +1111,7 @@ def dev_domain(tenant_id, op, host=None):
     tenant with this slug (status, or mount = its domain-attach for host)."""
     if not _linked():
         raise SiteRepoError("no dev link in this environment")
-    if op not in ("status", "mount"):
+    if op not in ("status", "mount", "setCanonical", "unmount"):
         raise SiteRepoError(f"unknown devDomain op {op!r}")
     profile = _profile(tenant_id)
     task = {"action": "domain", "op": op, "slug": profile["slug"]}
@@ -1091,7 +1120,38 @@ def dev_domain(tenant_id, op, host=None):
     return _dev_link(task)
 
 
-ACTIONS = {"provision": provision, "archive": archive, "delete": delete, "status": status}
+def domain_live(tenant_id, gh=None):
+    """An own domain went live (domain-provision's UpdateSite): booqy.json's
+    prod section (its domain from this environment's primary domain) and
+    dev's (asked through the link) on dev and main; each commit deploys its
+    branch. Idempotent: an unchanged file is not committed again."""
+    profile = _profile(tenant_id)
+    if profile.get("status") in _FINISHED_TENANT:
+        raise SiteRepoError(f"tenant {tenant_id} is {profile.get('status')}")
+    mode = _github_mode(profile)
+    if mode.test:
+        raise SiteRepoError("refused: a test customer's own domain is a sandbox mapping")
+    gh = gh or github(mode=mode)
+    name = repo_name(profile.get("slug"))
+    row = _site_row(tenant_id)
+    if row.get("status") != "ready":
+        return {"repo": name, "result": "skipped", "reason": f"site is {row.get('status') or 'not set up'}"}
+    dev_section = None
+    if _linked():
+        code, repo = gh.call("GET", _repo_path(name, org=mode.org), ok=(200, 404))
+        if code == 200:
+            dev = _dev_link({"action": "mirror", "prodTenantId": tenant_id, "repo": _repo_ref(repo),
+                             **{k: profile[k] for k in _MIRROR_FIELDS if profile.get(k) not in (None, "")}})
+            _, dev_section = _dev_side(dev)
+    committed = {}
+    for branch in ("dev", "main"):
+        committed[branch] = _write_booqy_json(gh, name, tenant_id, profile, mode, branch,
+                                              extra={"dev": dev_section} if dev_section else None)
+    log.info(json.dumps({"action": "domainLive", "tenantId": tenant_id, "repo": name, "committed": committed}))
+    return {"repo": name, "result": "done", "committed": committed}
+
+
+ACTIONS = {"provision": provision, "archive": archive, "delete": delete, "status": status, "domainLive": domain_live}
 
 
 def handler(event, context):

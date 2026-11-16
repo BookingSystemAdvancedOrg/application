@@ -146,3 +146,53 @@ def test_a_dev_test_customer_links_to_its_main_sandbox_host_not_the_dev_one(tena
     domain(tenants, "example-se.test-dev.booqy.se", stage="dev")
     domain(tenants, "example-se.test.booqy.se", stage="main")
     assert site.base(TENANT_A, tenant_row(TENANT_A, slug="roma")) == ("https://example-se.test.booqy.se", None)
+
+
+def test_an_own_domain_order_links_to_its_canonical_host_not_www(tenants, monkeypatch):
+    """Booqy runs the DNS: example.se is canonical (www and the slug address
+    301 to it); both hosts are active, the primary decides."""
+    env(monkeypatch, "prod")
+    slug_row(tenants, "prod")
+    domain(tenants, "roma.se")
+    domain(tenants, "www.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="roma.se")
+    assert site.base(TENANT_A, row) == ("https://roma.se", None)
+    assert site.canonical_host(TENANT_A, row) == "roma.se"
+    assert site.page(*site.base(TENANT_A, row), "/bord/4") == "https://roma.se/bord/4"
+
+
+def test_dns_records_mode_links_to_www(tenants, monkeypatch):
+    env(monkeypatch, "prod")
+    slug_row(tenants, "prod")
+    domain(tenants, "www.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="www.roma.se")
+    assert site.canonical_host(TENANT_A, row) == "www.roma.se"
+
+
+def test_dev_mirrors_prod_with_dev_domain(tenants, monkeypatch):
+    env(monkeypatch, "dev")
+    slug_row(tenants, "dev")
+    domain(tenants, "dev.roma.se")
+    row = tenant_row(TENANT_A, slug="roma", primaryDomain="dev.roma.se")
+    assert site.canonical_host(TENANT_A, row) == "dev.roma.se"
+
+
+def test_no_site_has_no_canonical_host(tenants, monkeypatch):
+    env(monkeypatch, "dev", zone=False)
+    assert site.canonical_host(TENANT_A, tenant_row(TENANT_A, slug="roma")) is None
+
+
+def test_no_guest_link_is_built_from_the_slug_by_hand():
+    """Every guest-facing link comes from shared/site.py: a function that
+    puts the slug in front of the platform domain itself would skip the
+    restaurant's live own domain (and its 301)."""
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parents[1] / "functions"
+    pattern = re.compile(r'f"https://\{slug\}\.')
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if pattern.search(text) and "site.base(" not in text:
+            offenders.append(str(path.relative_to(root)))
+    assert offenders == []

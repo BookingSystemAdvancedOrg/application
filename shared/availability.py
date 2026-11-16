@@ -51,6 +51,11 @@ _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULE_GROUP = "default"
 _SCHEDULING = "scheduling"
+# A 'scheduling' intent still unstaged this long after its cutover is
+# abandoned: expire-layout-version stops recovering it 10 minutes after the
+# cutover, so nothing activates it until the owner resumes it with a new
+# cutover. The current layout keeps serving instead of every request failing.
+_ABANDONED_SCHEDULING_AFTER = timedelta(minutes=15)
 _SCHEDULED = "scheduled"
 _PENDING_TARGET_PREVIOUS_LIFECYCLE = (
     "pendingTargetPreviousLifecycle"
@@ -988,7 +993,10 @@ def _layout_slots(location_id, slots, now):
 
         if pending is not None and pending["status"] == _SCHEDULING:
             cutover = pending["parsedCutover"]
-            if any(slot["endUtc"] > cutover for slot in slots):
+            abandoned = cutover + _ABANDONED_SCHEDULING_AFTER <= now
+            if not abandoned and any(
+                slot["endUtc"] > cutover for slot in slots
+            ):
                 raise _AvailabilityConflict(
                     "layout activation is still being scheduled; retry request"
                 )

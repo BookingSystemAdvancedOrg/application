@@ -3067,9 +3067,10 @@ def test_empty_optional_body_uses_publication_delay(
             "2026-09-07T10:31:00Z",
         ),
         (
+            # prod: next local midnight (audit #25), 00:00 CEST
             "prod",
             "2026-08-10T10:31:15Z",
-            "2026-09-07T10:32:00Z",
+            "2026-09-07T22:00:00Z",
         ),
     ],
 )
@@ -4330,46 +4331,8 @@ def test_scheduling_backup_must_match_unstaged_target_lifecycle(
     scheduler_factory.assert_not_called()
 
 
-def test_overdue_scheduling_intent_returns_409_without_changes(
-    app_and_table,
-    monkeypatch,
-):
-    app, snapshot_table = app_and_table
-    stale_cutover = "2026-09-01T01:00:00Z"
-    current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
-    stale_state = pending_activation_state(
-        app,
-        status="scheduling",
-        cutover_at=stale_cutover,
-    )
-    for item in (current, target, stale_state):
-        snapshot_table.put_item(Item=item)
-    scheduler = Mock()
-    transaction_factory = Mock(
-        side_effect=AssertionError("must not write")
-    )
-    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
-    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
-
-    response = app.handler(make_event(version_id="2"), None)
-
-    assert_response(
-        response,
-        409,
-        err("layout activation cutover is overdue"),
-    )
-    scheduler.get_schedule.assert_not_called()
-    scheduler.delete_schedule.assert_not_called()
-    scheduler.create_schedule.assert_not_called()
-    transaction_factory.assert_not_called()
-    assert snapshot_table.get_item(Key=state_key())["Item"] == stale_state
-    assert snapshot_table.get_item(
-        Key={"PK": current["PK"], "SK": current["SK"]}
-    )["Item"] == current
-    assert snapshot_table.get_item(
-        Key={"PK": target["PK"], "SK": target["SK"]}
-    )["Item"] == target
+# An overdue 'scheduling' intent is renewed, not refused (audit #19):
+# see tests/test_audit_layout_activation.py.
 
 
 def test_overdue_scheduled_activation_returns_409_without_changes(
@@ -4392,47 +4355,6 @@ def test_overdue_scheduled_activation_returns_409_without_changes(
     stale_state = pending_activation_state(
         app,
         cutover_at=stale_cutover,
-    )
-    for item in (current, target, stale_state):
-        snapshot_table.put_item(Item=item)
-    scheduler = Mock()
-    transaction_factory = Mock(
-        side_effect=AssertionError("must not write")
-    )
-    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
-    monkeypatch.setattr(app, "dynamodb_client", transaction_factory)
-
-    response = app.handler(make_event(version_id="2"), None)
-
-    assert_response(
-        response,
-        409,
-        err("layout activation cutover is overdue"),
-    )
-    scheduler.get_schedule.assert_not_called()
-    scheduler.delete_schedule.assert_not_called()
-    scheduler.create_schedule.assert_not_called()
-    transaction_factory.assert_not_called()
-    assert snapshot_table.get_item(Key=state_key())["Item"] == stale_state
-    assert snapshot_table.get_item(
-        Key={"PK": current["PK"], "SK": current["SK"]}
-    )["Item"] == current
-    assert snapshot_table.get_item(
-        Key={"PK": target["PK"], "SK": target["SK"]}
-    )["Item"] == target
-
-
-def test_overdue_pending_does_not_attempt_schedule_recovery(
-    app_and_table,
-    monkeypatch,
-):
-    app, snapshot_table = app_and_table
-    current = snapshot_item(1, is_current=True)
-    target = snapshot_item(2)
-    stale_state = pending_activation_state(
-        app,
-        status="scheduling",
-        cutover_at="2026-09-01T01:00:00Z",
     )
     for item in (current, target, stale_state):
         snapshot_table.put_item(Item=item)

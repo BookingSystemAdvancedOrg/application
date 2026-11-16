@@ -105,11 +105,20 @@ def render_html(doc, restaurant):
     if int(doc.get("cleaningFee") or 0):
         extra += (f"<tr><td colspan='4'>Rengöring av utrustning</td>"
                   f"<td class='num'>{money(doc['cleaningFee'])}</td></tr>")
+    equipment = ""
+    if doc.get("equipmentReturn") == "cleaned":
+        equipment = "Disk och utrustning lämnas tillbaka rengjord."
+    elif doc.get("equipmentReturn") == "not_cleaned":
+        equipment = ("Disk och utrustning lämnas tillbaka utan rengöring"
+                     + (" (rengöringsavgift enligt nedan)." if int(doc.get("cleaningFee") or 0) else "."))
     vat_text = f"varav moms {rate} %" if rate is not None else "varav moms"
     service = ""
     if doc.get("serviceIncluded") is not None:
         service = ("Servering ingår." if doc["serviceIncluded"] else "Mat utan servering.")
-    payment = (f"Faktura, {int(doc['paymentTermsDays'])} dagar netto." if doc.get("paymentTermsDays")
+    # Companies always get an invoice; 0 days is sent due in 1 (Stripe's minimum, shared/catering_stripe.py).
+    terms_days = max(1, int(doc.get("paymentTermsDays") or 0))
+    payment = (f"Faktura, {terms_days} {'dag' if terms_days == 1 else 'dagar'} netto."
+               if customer.get("type") == "company" or doc.get("paymentTermsDays")
                else "Betalas med kort eller Swish efter signering.")
     message = f"<div class='box'>{_e(doc.get('message'))}</div>" if doc.get("message") else ""
     terms = (f"<h2>Villkor</h2><p>{_e(doc.get('terms')).replace(chr(10), '<br>')}</p>" if doc.get("terms") else "")
@@ -125,9 +134,9 @@ def render_html(doc, restaurant):
 </div>
 <h2>Leverans</h2>
 <p>{day(delivery.get('date'))} kl {_e(delivery.get('time'))}. {where}.
-{f"Antal gäster: {int(doc['guests'])}." if doc.get('guests') else ''} {service}</p>
+{f"Antal gäster: {int(doc['guests'])}." if doc.get('guests') else ''} {service} {equipment}</p>
 <h2>Innehåll</h2>
-<table><thead><tr><th>Beskrivning</th><th class="num">Antal</th><th class="num">Á-pris</th>
+<table><thead><tr><th>Beskrivning</th><th class="num">Antal</th><th class="num">À-pris</th>
 <th class="num">Moms</th><th class="num">Summa</th></tr></thead>
 <tbody>{rows}{extra}
 <tr class="total"><td colspan="4">Totalt inkl. moms</td><td class="num">{money(totals.get('total') or 0)}</td></tr>

@@ -72,6 +72,20 @@ def _first(item):
     return name.split()[0] if name else ""
 
 
+# The cancellation text per refund outcome (refundNote, set by the cancel
+# action); "none" or a missing note says nothing about money.
+_REFUND_EMAIL = {
+    "refunded": " Betalningen återbetalas till samma betalsätt.",
+    "invoice_voided": " Fakturan är makulerad och ska inte betalas.",
+    "refund_manually": " Restaurangen betalar tillbaka det du har betalat.",
+}
+_REFUND_SMS = {
+    "refunded": "Betalningen återbetalas. ",
+    "invoice_voided": "Fakturan är makulerad. ",
+    "refund_manually": "Restaurangen betalar tillbaka. ",
+}
+
+
 def guest_email(kind, item, tenant_row, location, link):
     name = restaurant_name(tenant_row, location)
     when, total = _when(item), _total(item)
@@ -122,7 +136,7 @@ def guest_email(kind, item, tenant_row, location, link):
             f"Din catering är avbokad - {name}",
             "Tyvärr har restaurangen behövt avboka din cateringbeställning."
             + (f" Meddelande: {item.get('cancelReason')}" if item.get("cancelReason") else "")
-            + " Det du har betalat betalas tillbaka. Kontakta restaurangen om du har frågor.",
+            + _REFUND_EMAIL.get(item.get("refundNote"), "") + " Kontakta restaurangen om du har frågor.",
             None),
         "catering_expired": (
             f"Din cateringförfrågan har gått ut - {name}",
@@ -146,7 +160,7 @@ def guest_sms(kind, item, tenant_row, location, link):
         "catering_declined": f"{name}: Tyvärr kan vi inte ta emot din cateringbeställning {_when(item)}. "
                              "Se mejlet för mer information.",
         "catering_cancelled": f"{name}: Tyvärr har vi behövt avboka din catering {_when(item)}. "
-                              "Betalningen återbetalas. Se mejlet.",
+                              + _REFUND_SMS.get(item.get("refundNote"), "") + "Se mejlet.",
     }
     return texts[kind]
 

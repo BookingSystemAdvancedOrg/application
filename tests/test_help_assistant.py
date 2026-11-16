@@ -478,8 +478,8 @@ def test_ai_mode_where_question_finds_the_settings_section(app, monkeypatch, pre
     answer = body["answer"]
     assert code == 200 and answer["known"] is True and "live" not in answer
     assert answer["sources"] == ["inst-oppettider"]
-    assert "Inställningar, Verksamheten, Restaurang" in answer["text"]
-    assert answer["actions"][0]["to"] == "/installningar" and answer["actions"][0]["hash"] == "profil"
+    assert "Inställningar, Restaurangen, Öppettider och avvikande dagar" in answer["text"]
+    assert answer["actions"][0]["to"] == "/installningar" and answer["actions"][0]["hash"] == "dagar"
     assert spy.prompts[0]["KUNSKAP"][0]["id"] == "inst-oppettider" and "SIFFRA" not in spy.prompts[0]
 
 

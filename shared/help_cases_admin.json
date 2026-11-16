@@ -62,7 +62,7 @@
   "expect": {
    "source": "inst-oppettider",
    "route": "/installningar",
-   "hash": "profil"
+   "hash": "dagar"
   }
  },
  {
@@ -329,9 +329,9 @@
   ],
   "expect": {
    "source": "inst-bokningstid",
-   "hash": "profil",
+   "hash": "bord",
    "highlight": [
-    "help:settings:profil:BookingTimeCard"
+    "help:settings:bord:BookingTimeCard"
    ]
   }
  },

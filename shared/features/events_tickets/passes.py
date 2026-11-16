@@ -45,7 +45,9 @@ import time
 import zipfile
 import zlib
 from dataclasses import dataclass
+from datetime import datetime, time as dtime
 from typing import Optional, Protocol
+from zoneinfo import ZoneInfo
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -61,6 +63,7 @@ GOOGLE_FIELDS = ("issuerId", "client_email", "private_key")
 SECRET_CACHE_SECONDS = 300
 GOOGLE_SAVE_URL = "https://pay.google.com/gp/v/save/"
 PKPASS = "application/vnd.apple.pkpass"
+PASS_TZ = ZoneInfo("Europe/Stockholm")
 
 
 @dataclass(frozen=True)
@@ -103,11 +106,28 @@ class OffWallet:
         raise LookupError(kind)
 
 
+def pass_end(data: PassData) -> str:
+    """When the pass stops being valid: the occurrence's end, else the end of its start day in
+    Stockholm, else "" (the caller then leaves the field out; never an empty date)."""
+    if data.end_at:
+        return data.end_at
+    try:
+        start = datetime.fromisoformat(data.start_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return ""
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=PASS_TZ)
+    day = start.astimezone(PASS_TZ).date()
+    return datetime.combine(day, dtime(23, 59, 59), tzinfo=PASS_TZ).isoformat()
+
+
 def _pass_json(data: PassData, *, pass_type: str, team: str) -> dict:
+    end = pass_end(data)
     return {
         "formatVersion": 1, "passTypeIdentifier": pass_type, "teamIdentifier": team,
         "serialNumber": data.ticket_id, "organizationName": data.location_name or "Booqy",
-        "description": f"Biljett: {data.title}", "relevantDate": data.start_at, "expirationDate": data.end_at,
+        "description": f"Biljett: {data.title}", **({"relevantDate": data.start_at} if data.start_at else {}),
+        **({"expirationDate": end} if end else {}),
         "eventTicket": {
             "primaryFields": [{"key": "event", "label": "Evenemang", "value": data.title}],
             "secondaryFields": [{"key": "start", "label": "Tid", "value": data.start_at,
@@ -164,6 +184,15 @@ class _CompactJSONEncoder(json.JSONEncoder):
         super().__init__(**kwargs)
 
 
+def _valid_interval(data: PassData) -> dict:
+    """Google's validTimeInterval with no empty date: the end falls back as in pass_end, and with no
+    start at all the interval is left out."""
+    if not data.start_at:
+        return {}
+    end = pass_end(data)
+    return {"validTimeInterval": {"start": {"date": data.start_at}, **({"end": {"date": end}} if end else {})}}
+
+
 def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin: str, class_name: str = "",
                    scale: float = 1.0, text_modules: bool = True) -> dict:
     """Object only, by reference to the class (see google_class_id). Event facts ride on the object's
@@ -182,7 +211,7 @@ def _google_claims(data: PassData, *, issuer_id: str, client_email: str, origin:
                 "ticketType": {"defaultValue": {"language": "sv", "value": cap(data.type_name, TYPE_CAP)}},
                 **({"textModulesData": modules} if text_modules else {}),
                 "barcode": {"type": "QR_CODE", "value": data.qr, "alternateText": data.ticket_id[-8:]},
-                "validTimeInterval": {"start": {"date": data.start_at}, "end": {"date": data.end_at}},
+                **_valid_interval(data),
             }],
         },
     }

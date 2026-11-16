@@ -137,7 +137,7 @@ def test_pass_refused_for_tickets_outside_the_link(env, monkeypatch):
     assert get_pass(env, ids[0], "apple", token=token_of(env) + "x")["statusCode"] == 404
     forged = qr.token("o", TENANT_B, "01ORDERAAAAAAAAAAAAAAAAAAA")
     assert get_pass(env, ids[0], "apple", token=forged)["statusCode"] == 404
-    assert get_pass(env, ids[0], "samsung")["statusCode"] == 404
+    assert get_pass(env, ids[0], "samsung")["statusCode"] == 400
     assert get_pass(env, ids[0], "apple", extra="1")["statusCode"] == 400
 
 
@@ -405,3 +405,28 @@ def test_secret_reads_are_cached(env, monkeypatch, keys):
     for _ in range(3):
         assert passes.provider().available()["google"] is True
     assert len(reads) == 1
+
+
+def _data(start_at, end_at):
+    return passes.PassData(tenant_id=TENANT_A, event_id="01" + "E" * 24, ticket_id="01" + "T" * 24, title="Vinmiddag",
+                           start_at=start_at, end_at=end_at, location_name="Krogen", type_name="Vuxen",
+                           holder_name="Anna", qr="x")
+
+
+def test_pass_never_has_an_empty_end():
+    # no endAt: end of the start day in Stockholm (a UTC start late in the evening is the next local day)
+    data = _data("2026-12-31T23:30:00Z", "")
+    assert passes.pass_end(data) == "2027-01-01T23:59:59+01:00"
+    apple = passes._pass_json(data, pass_type="p", team="t")
+    assert apple["expirationDate"] == "2027-01-01T23:59:59+01:00"
+    google = passes._google_claims(data, issuer_id="1", client_email="a@b", origin="")
+    interval = google["payload"]["eventTicketObjects"][0]["validTimeInterval"]
+    assert interval == {"start": {"date": "2026-12-31T23:30:00Z"}, "end": {"date": "2027-01-01T23:59:59+01:00"}}
+    # endAt present: used as is
+    assert passes.pass_end(_data("2026-07-01T18:00:00+02:00", "2026-07-01T22:00:00+02:00")) == "2026-07-01T22:00:00+02:00"
+    # nothing usable: the fields are left out, never empty
+    for start in ("", "not a date"):
+        bad = _data(start, "")
+        assert "expirationDate" not in passes._pass_json(bad, pass_type="p", team="t")
+        obj = passes._google_claims(bad, issuer_id="1", client_email="a@b", origin="")["payload"]["eventTicketObjects"][0]
+        assert "end" not in obj.get("validTimeInterval", {})

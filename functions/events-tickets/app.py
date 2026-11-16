@@ -417,7 +417,7 @@ def update_event(event, ctx):
         values.update({":ik": image["imageKey"], ":ia": image["imageAlt"]})
     else:
         removes += ["imageKey", "imageAlt"]
-    expr = "SET " + ", ".join(sets) + " REMOVE " + ", ".join(removes)
+    expr = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
     try:
         et.table().update_item(Key=et.event_key(ctx.tenant_id, ev["eventId"]), UpdateExpression=expr,
                                ConditionExpression="version = :v", ExpressionAttributeValues=values)
@@ -1799,7 +1799,7 @@ def ticket_page(event):
 
 def ticket_pass(event):
     """K19: one valid ticket of this link as an Apple or Google Wallet pass (shared/features/
-    events_tickets/passes.py). Wallet off, the kind's secret missing, or a ticket that is not this
+    events_tickets/passes.py). A kind other than apple or google: 400. Wallet off, the kind's secret missing, or a ticket that is not this
     link's or no longer valid: 404."""
     tenant_id, tickets, _, _, _ = _token_scope(event)
     params = http.query(event)
@@ -1810,8 +1810,10 @@ def ticket_pass(event):
         raise et.EventsError(400, "ticketId is required", "ticketId")
     if not kind:
         raise et.EventsError(400, "kind is required", "kind")
+    if kind not in passes.KINDS:
+        raise et.EventsError(400, "kind is invalid", "kind")
     wallet = passes.provider()
-    if kind not in passes.KINDS or not wallet.available().get(kind):
+    if not wallet.available().get(kind):
         raise et.EventsError(404, "not found")
     ticket = next((t for t in tickets if t["ticketId"] == params.get("ticketId") and t["status"] == "valid"), None)
     if not ticket:

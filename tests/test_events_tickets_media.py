@@ -125,3 +125,12 @@ def test_clean_image_unit():
     assert media.clean_image({"imageKey": KEY, "imageAlt": "a"}, TENANT_A, LOC_A) == {"imageKey": KEY, "imageAlt": "a"}
     assert media.image_view({}) == {}
     assert media.image_view({"imageKey": KEY}) == {"imageKey": KEY, "imageAlt": ""}
+
+
+def test_update_draft_series_with_image(env, no_s3):
+    """A series and an image leave nothing to REMOVE: the update must not send an empty REMOVE clause."""
+    series = {"freq": "weekly", "until": "2027-01-01"}
+    assert create(env, series=series)[0] == 201
+    status, body = put(env, 1, series=series, imageKey=KEY, imageAlt=ALT)
+    assert status == 200, body
+    assert body["imageKey"] == KEY and body["imageAlt"] == ALT and body["series"]["freq"] == "weekly"

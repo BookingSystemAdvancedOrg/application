@@ -318,7 +318,8 @@ def test_transient_email_failure_retries_only_that_record_and_sends_nothing(env)
     result = run(module, first, second)
 
     assert result == {"batchItemFailures": [{"itemIdentifier": "11"}]}
-    assert len(sns.calls) == 1  # only the second record's SMS
+    # Lambda redelivers from the failed record on, so the second one waits too.
+    assert sns.calls == []
 
 
 def test_sms_failure_after_the_email_is_not_retried(env):

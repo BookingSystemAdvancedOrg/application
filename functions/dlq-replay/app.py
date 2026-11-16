@@ -32,8 +32,9 @@ PURPOSE:
                                REPLAYABLE_FUNCTION_ARNS
 
     It never does business work itself; the owning Lambdas are idempotent
-    (conditional writes, deterministic schedule names), which is what makes
-    redelivery safe.
+    (conditional writes, deterministic schedule names; notification skips
+    a notice whose sent marker is already in the request-guard table),
+    which is what makes redelivering a whole failed range safe.
 
     Outcomes per message:
       success                        -> deleted
@@ -41,8 +42,10 @@ PURPOSE:
       ApproximateReceiveCount > MAX  -> escalated once to SNS, then parked
                                         (hidden 12h at a time) until it
                                         expires (14 days) or is handled
-      stream records expired         -> lifecycle_stream: catering-lifecycle
-                                        reconciles from the table, deleted;
+      stream records expired         -> lifecycle_stream: escalated, and
+                                        catering-lifecycle is asked to
+                                        reconcile (it only logs today),
+                                        deleted;
                                         notification/print_stream:
                                         escalated, deleted
       unknown or not allow-listed    -> escalated, deleted
@@ -215,9 +218,16 @@ def unqualified(arn):
 def handle_expired(name, info):
     window = {k: info.get(k) for k in ("streamArn", "approximateArrivalOfFirstRecord", "approximateArrivalOfLastRecord", "batchSize")}
     if name == "lifecycle_stream":
-        # catering-lifecycle re-checks every open request from the table:
-        # timers present, invoice issued, expiries applied.
-        invoke(LIFECYCLE_ARN, {"action": "reconcile", "source": "dlq-replay", "window": window})
+        # The lost records may have been a company invoice ("signed") or an
+        # expiry timer ("requested"). catering-lifecycle's reconcile only
+        # logs the window today, so a person is always told: the alert is
+        # what makes deleting the message safe.
+        alert("lifecycle_stream: records expired before replay - check catering invoices and expiry timers in this window", window)
+        try:
+            invoke(LIFECYCLE_ARN, {"action": "reconcile", "source": "dlq-replay", "window": window})
+        except Exception:  # noqa: BLE001 - already escalated; don't alert again next run
+            log.warning("reconcile of an expired lifecycle window failed", exc_info=True)
+            return "escalated"
         return "reconciled"
     # A notification or print record can't be rebuilt once the stream dropped it.
     if name == "print_stream":

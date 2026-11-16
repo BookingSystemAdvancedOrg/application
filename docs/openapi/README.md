@@ -27,6 +27,9 @@ fails on:
   templates as in API Gateway, `{proxy+}` written `{proxy}` here).
 
 Operator routes (`/platform/...`) are documented in Booqy Console, not here.
+Exception: `help-assistant.yaml` (not a plan feature, listed in
+`NON_FEATURE_FRAGMENTS` in `tests/test_openapi.py`) also documents
+`/platform/help-assistant[/answers]`, since the same Lambda serves them.
 
 Run 0 addendum: `events-tickets.yaml` (feature K, ADR-K) and
 `phone-agent.yaml` (feature L, ADR-L) are expected as soon as

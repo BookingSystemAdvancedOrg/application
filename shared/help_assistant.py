@@ -90,8 +90,8 @@ TEXTS = {
         "unknown": ("I'm not sure about that, so I'd rather not guess. Try asking another way, for example "
                     "with the name of the page."),
         "owner": "That is not available to you.",
-        "refuse": ("I can't show or look up passwords, keys, tokens or secrets. Ask me how something in the "
-                   "console works instead."),
+        "refuse": ("I can't show or look up passwords, keys, tokens, secrets or other customers' data. Ask me how "
+                   "something in the console works instead."),
         "help": None,
         "open": "Open", "show": "Show", "under": "is under", "fallback_where": "the console",
     },
@@ -234,7 +234,10 @@ def is_secret_question(question: str) -> bool:
                        r"secret\w*|pin ?kod\w*|kortnummer\w*|personnummer\w*|api key\w*|credential\w*) ", q)
     show = re.search(r" (vad ar|vilket ar|vilken ar|visa|ge mig|skicka|beratta|lista|kopiera|what is|what s|"
                      r"show|give me|send|tell me|list|copy|reveal) ", q)
-    others = re.search(r" andra (restauranger|restaurangers|kunder|kunders|foretag) ", q)
+    others = re.search(r" andra (restauranger|restaurangers|kunder|kunders|foretag|foretags) ", q) or \
+        re.search(r" other (restaurants?|tenants?|customers?|compan(y|ies)|business(es)?|organi[sz]ations?)( s)? ", q) or \
+        re.search(r" another (restaurant|tenant|customer|company|business|organi[sz]ation) s ", q) or \
+        re.search(r" (someone|somebody|anyone|anybody) else s ", q)
     return bool((secret and show) or others)
 
 
@@ -518,8 +521,11 @@ def prompt(question: str, history: list, found: list, app: str = "admin", live: 
             "steps": doc.get("steps") or [],
             "actionIds": [{"id": a["id"], "button": a["label"]} for a in doc_actions(doc, app)],
         })
+    # Only the caller's own earlier questions: assistant turns come back from the client
+    # unchecked, so they never reach the model.
+    asked = [t["text"] for t in history if t.get("role") == "user"]
     keys = ("FRÅGA", "HISTORIK", "KUNSKAP") if app == "admin" else ("QUESTION", "HISTORY", "KNOWLEDGE")
-    message = dict(zip(keys, (question, history, knowledge)))
+    message = dict(zip(keys, (question, asked, knowledge)))
     if live:
         day = (live.get("text") or "").split(":")[0] if live.get("range") else ("idag" if app == "admin" else "")
         message["SIFFRA" if app == "admin" else "LIVE"] = (
@@ -532,11 +538,32 @@ def _clean(text, limit: int) -> str:
     return _DASHES.sub("-", str(text)).strip()[:limit]
 
 
-def _invents(text: str, live: dict) -> bool:
-    """A number in the model's text that is not in the day ("15 november"), or a prompt key."""
-    day = (live.get("text") or "").split("{value}")[0]
-    return bool(set(re.findall(r"\d+", text)) - set(re.findall(r"\d+", day))) or \
-        bool(re.search(r"SIFFRA|KUNSKAP|LIVE|KNOWLEDGE", text))
+_PROMPT_KEYS = re.compile(r"FRÅGA|HISTORIK|KUNSKAP|SIFFRA|QUESTION|HISTORY|KNOWLEDGE|LIVE|actionIds|sourceIds")
+
+
+def _numbers(text) -> set:
+    return set(re.findall(r"\d+", str(text or "")))
+
+
+def _grounded_numbers(found: list, app: str) -> set:
+    """Every number the model was shown: the candidates' titles, pages, texts, steps and buttons."""
+    out: set = set()
+    for doc, _ in found:
+        for field in (doc.get("title"), doc.get("where"), doc.get("route"), doc.get("text"), doc.get("answer")):
+            out |= _numbers(field)
+        for step in doc.get("steps") or ():
+            out |= _numbers(step)
+        for action in doc_actions(doc, app):
+            out |= _numbers(action.get("label"))
+    return out
+
+
+def _invents(texts: list, found: list, app: str, live: Optional[dict]) -> bool:
+    """A number in the model's text or steps it was not given, or a prompt key. With a live
+    number only the day ("15 november") may carry digits: the model never knows the count."""
+    allowed = _numbers((live.get("text") or "").split("{value}")[0]) if live else _grounded_numbers(found, app)
+    joined = "\n".join(texts)
+    return bool(_numbers(joined) - allowed) or bool(_PROMPT_KEYS.search(joined))
 
 
 def from_model(raw: str, found: list, question: str = "", app: str = "admin", today=None) -> Optional[dict]:
@@ -572,8 +599,8 @@ def from_model(raw: str, found: list, question: str = "", app: str = "admin", to
         # A button to the same place as the best match lights up the same things.
         picked = [{**a, "highlight": list(dict.fromkeys([*(a.get("highlight") or ()), *lead["highlight"]]))}
                   if a["to"] == lead["to"] and (a.get("hash") or "") == (lead.get("hash") or "") else a for a in picked]
-    if base.get("live") and _invents(text, base["live"]):
-        # The model never knows the number; one it writes anyway is made up.
+    if _invents([text, *(x for x in steps if isinstance(x, str))], found, app, base.get("live")):
+        # A number or prompt key the model was not given is made up: the composed answer instead.
         return base
     sources = [i for i in parsed.get("sourceIds") or () if isinstance(i, str) and i in docs]
     answer = {"known": True, "text": _clean(text, MAX_TEXT),

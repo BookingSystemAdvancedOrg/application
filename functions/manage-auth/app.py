@@ -18,7 +18,9 @@ PURPOSE:
           trigger), otherwise it shows the code.
       POST /auth/reset-password {username, code, newPassword} -> 200
     Both are limited per IP address (shared/request_guard.py, 429) on top of
-    Cognito's own per-user limits.
+    Cognito's own per-user limits. So is POST /auth/login (failed sign-ins
+    only, LOGIN_LIMITS), which keeps one address from using up the pool's
+    sign-in quota for every restaurant.
 
     Cookie sessions (the admin app, served with the API under /api on the
     same address):
@@ -157,6 +159,15 @@ _DEFAULT_COGNITO_ERROR = (
 # Forgot password: (max attempts, window seconds) per IP address.
 FORGOT_LIMIT = (5, 15 * 60)
 RESET_LIMIT = (10, 15 * 60)
+# Sign-in per IP address: (kind, max attempts, window seconds). Only failed
+# attempts are kept (a sign-in that works is given back), so many staff
+# behind one restaurant's NAT address never use it up; a few typos are far
+# from it. It stops a flood from one address before it reaches Cognito's
+# account-wide sign-in quota (about 6 failures a minute, 100 an hour).
+LOGIN_LIMITS = (
+    ("auth-login-ip", 30, 5 * 60),
+    ("auth-login-ip-hour", 100, 60 * 60),
+)
 _EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _EMAIL_MAX = 254
 _CODE_PATTERN = re.compile(r"[0-9]{6}")
@@ -455,7 +466,7 @@ def handler(event, context):
         cookie_mode = _cookie_mode(event)
 
         if proxy_path == "login":
-            return handle_login(body, cookie_mode)
+            return handle_login(body, cookie_mode, source_ip(event))
 
         if proxy_path == "challenge":
             return handle_challenge(body, cookie_mode)
@@ -593,9 +604,12 @@ def _get_cognito_client():
     return _cognito_client
 
 
-def handle_login(body, cookie_mode=False):
+def handle_login(body, cookie_mode=False, ip=None):
     username = _required_string(body, "username")
     password = _required_string(body, "password")
+    counted = request_guard.check(
+        [(kind, ip, limit, window) for kind, limit, window in LOGIN_LIMITS], _now()
+    )
 
     try:
         response = _get_cognito_client().initiate_auth(
@@ -615,7 +629,10 @@ def handle_login(body, cookie_mode=False):
             "authentication service unavailable",
         )
 
-    return _cognito_auth_response(response, username, cookie_mode)
+    result = _cognito_auth_response(response, username, cookie_mode)
+    if result["statusCode"] == HTTPStatus.OK.value:
+        request_guard.refund(counted)
+    return result
 
 
 def _email(body, field):

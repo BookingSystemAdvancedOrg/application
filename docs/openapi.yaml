@@ -104,7 +104,7 @@ paths:
         '403':
           $ref: '#/components/responses/AuthForbidden'
         '429':
-          $ref: '#/components/responses/AuthTooManyRequests'
+          $ref: '#/components/responses/LoginTooManyRequests'
         '502':
           $ref: '#/components/responses/AuthBadGateway'
 
@@ -12174,6 +12174,29 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: too many authentication attempts
+    LoginTooManyRequests:
+      description: |
+        Too many failed sign-ins from this IP address (30 per 5 minutes, 100
+        per hour; a sign-in that works is not counted), or Cognito throttled
+        the attempt.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        Retry-After:
+          description: Seconds until the IP address limit's window ends (only for that limit).
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            ipLimit:
+              value:
+                error: too many attempts
+            cognito:
+              value:
+                error: too many authentication attempts
     PasswordResetTooManyRequests:
       description: |
         Too many reset requests from this IP address, or Cognito's limit for

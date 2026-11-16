@@ -92,8 +92,8 @@ MAX_RANGE_DAYS = 92
 HANDOVER_MS = 90_000            # re-invoke when less than this remains
 LOGS_CHUNK = 20                 # log groups per Logs Insights query
 LOGS_WAIT_SECONDS = 90
-REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=*" as tenant, loc | filter ispresent(tenant) '
-                  '| stats count(*) as n by tenant, loc')
+REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=* kind=*" as tenant, loc, kind '
+                  '| filter ispresent(tenant) | stats count(*) as n by tenant, loc')
 NOT_A_BOOKING = ("held", "pending", "expired")
 NOT_AN_ORDER = ("pending_payment", "failed", "cancelled")
 CENTS = Decimal("0.01")

@@ -1107,6 +1107,14 @@ def _update_profile(event, caller_sub, caller_groups, target_sub):
     }
     if not changed_fields:
         return _user_response(HTTPStatus.OK.value, _public_user(target))
+    if "email" in changed_fields and target_sub == caller_sub:
+        # The login address is set verified here, so a stolen access token
+        # could move the account to a new address and reset the password
+        # there. An owner changes a staff user's email; an owner's own email
+        # is changed by Booqy (_authorize_target lets no owner edit another).
+        # `reason` lets the admin say who acts; `error` stays "forbidden".
+        return _user_response(HTTPStatus.FORBIDDEN.value,
+                              {"error": "forbidden", "field": "email", "reason": "own_email_locked"})
 
     cognito_fields = changed_fields & {"name", "email", "phone"}
     rollback_attributes = None

@@ -97,6 +97,9 @@ TICKETS_SEND_GRACE_SECONDS = 120
 JOB_BATCH = 200
 INLINE_REFUNDS = 10  # K9 refunds this many tickets before answering 202; the sweep does the rest
 RESALE_PER_ORDER = 4  # listed tickets one checkout may buy (4 transaction items each, 25 per transaction)
+REFUND_MAX_REFUSED = 6  # Stripe answered with an error this often: the refund is retried once a day from then on
+REFUND_MAX_ATTEMPTS = 288  # about a day of sweeps when Stripe cannot be reached (or the account lacks balance)
+REFUND_SLOW_RETRY_HOURS = 24  # retry interval of a refund past those limits; it stays owed and visible
 JOB_MARGIN_MS = 15_000  # the sweep stops starting new refunds this close to the Lambda timeout
 _clients = {}
 _invocation = {"time_left": None}  # this invocation's remaining-time getter (set by the handler)
@@ -715,7 +718,9 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
     """One step of a mass refund: tickets are refunded in our books one by
     one (`counts.refunded` written per ticket, so K14 shows live progress),
     then the owed Stripe refunds are sent; `counts.failed` is how many
-    Stripe still owes. Stops at `limit` tickets or when `time_left` (ms)
+    Stripe still owes (a refund past the attempt limits included: it is
+    retried daily and keeps the job from being done). Buyers are e-mailed as
+    soon as every ticket is refunded in the books. Stops at `limit` tickets or when `time_left` (ms)
     gets short, and the next sweep continues. Done when every ticket is
     refunded, Stripe has every refund and every buyer is emailed."""
     job = et.get(et.job_key(tenant_id, job_id))
@@ -740,6 +745,8 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
         if not _in_time(time_left):
             stopped = True
             break
+        if not _refund_due(tx):
+            continue  # past the attempt limits: retried once a day, still owed and counted below
         try:
             _stripe_refund(tenant_id, tx)
         except et.EventsError:
@@ -747,7 +754,7 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
     remaining = len(_paid_tickets(tenant_id, job["occurrenceId"]))
     unfinished = len(_owed_refunds(tenant_id, job["occurrenceId"]))
     notified = 0
-    if not remaining and not unfinished and not stopped:
+    if not remaining and not stopped:  # refunded in our books: buyers hear now, whatever Stripe still owes
         notified = _notify_cancelled(tenant_id, job)
     done = not remaining and not unfinished and not stopped and not _unnotified(tenant_id, job)
     expr = "SET counts.failed = :f, counts.notified = counts.notified + :n, done = :d"
@@ -779,14 +786,24 @@ def _notify_cancelled(tenant_id, job):
     for order in _unnotified(tenant_id, job):
         # what this cancellation gave back: the order's tickets refunded by the job (a ticket the owner refunded
         # or a resale paid back earlier is not counted again)
-        refunded_now = sum(int(t.get("priceOre") or 0) for t in et.tickets_of_order(tenant_id, order)
-                           if t.get("status") == "refunded" and (t.get("refundTxId") or "").startswith("cancel-"))
+        # split into what Stripe has paid back and what it still owes (the e-mail never claims an owed refund)
+        refunded_now = owed_now = 0
+        for t in et.tickets_of_order(tenant_id, order):
+            if t.get("status") != "refunded" or not (t.get("refundTxId") or "").startswith("cancel-"):
+                continue
+            tx = et.get(et.tx_key(tenant_id, t["refundTxId"])) or {}
+            if tx.get("GSI1PK") == "REFUNDS":
+                owed_now += int(t.get("priceOre") or 0)
+            else:
+                refunded_now += int(t.get("priceOre") or 0)
         text = (f"Hej {order.get('buyerName') or ''}!\n\n{ev.get('title', 'Evenemanget')} på "
                 f"{(location.get('name') or 'restaurangen').strip()} "
                 f"{_when(et.iso(occ_start), location) if occ_start else ''} är tyvärr inställt.\n\n"
                 + (f"{job['message']}\n\n" if job.get("message") else "")
                 + (f"Vi har återbetalat {_kr(refunded_now)} till kortet du betalade med. Det kan ta "
-                   "några bankdagar innan pengarna syns.\n" if refunded_now else ""))
+                   "några bankdagar innan pengarna syns.\n" if refunded_now else "")
+                + (f"Återbetalningen på {_kr(owed_now)} till kortet du betalade med är på väg men inte klar än. "
+                   "Syns pengarna inte inom en vecka, kontakta restaurangen.\n" if owed_now else ""))
         try:
             _notify(tenant_id, order["locationId"], "events-tickets.cancelled", order["buyerEmail"],
                     f"Inställt: {ev.get('title', 'evenemang')}", text)
@@ -943,12 +960,52 @@ def _stripe_refund(tenant_id, tx):
                 # a resale refund is keyed by its listing (ADR-K 8): the same ticket may be refunded
                 # once by the owner and once by a resale, never twice for the same reason
                 idempotency_key=tx.get("stripeKey") or f"ticket-refund-{ticket_id}")
-    except (stripe.StripeError, stripe.StripeUnavailable):
+    except (stripe.StripeError, stripe.StripeUnavailable) as exc:
         logger.warning(json.dumps({"event": "ticket.refund", "stripe": "failed", "txId": tx["txId"]}))
+        # 402 (e.g. balance_insufficient on the connected account) can succeed later, like an outage
+        _refund_attempt_failed(tenant_id, tx,
+                               refused=isinstance(exc, stripe.StripeError) and getattr(exc, "status", None) != 402)
         raise et.EventsError(502, "stripe_unavailable")
     et.table().update_item(Key=et.tx_key(tenant_id, tx["txId"]),
-                           UpdateExpression="SET stripeRefundId = :r REMOVE GSI1PK, GSI1SK",
+                           UpdateExpression="SET stripeRefundId = :r REMOVE GSI1PK, GSI1SK, refundRetryAt",
                            ExpressionAttributeValues={":r": (result or {}).get("id") or "unknown"})
+
+
+def _refund_due(tx):
+    """False while a refund past the attempt limits waits for its daily retry."""
+    retry_at = et.parse_iso(tx.get("refundRetryAt"))
+    return retry_at is None or retry_at <= et.now()
+
+
+def _refund_attempt_failed(tenant_id, tx, *, refused):
+    """Counts a failed Stripe refund on the TX. After REFUND_MAX_REFUSED
+    answers from Stripe (or REFUND_MAX_ATTEMPTS tries in all) the refund is
+    retried only once every REFUND_SLOW_RETRY_HOURS (`refundRetryAt`). It is
+    never dropped: the TX keeps its REFUNDS row, so it stays in the job's
+    `counts.failed`, the job is not done, and `stripeRefundFailedAt` plus an
+    error log line ({"stripe": "stuck"}, alarmed) tell Booqy to act."""
+    key = et.tx_key(tenant_id, tx["txId"])
+    try:
+        row = et.table().update_item(
+            Key=key, UpdateExpression="SET refundAttempts = if_not_exists(refundAttempts, :z) + :one",
+            ConditionExpression="attribute_exists(PK) AND attribute_not_exists(stripeRefundId)",
+            ExpressionAttributeValues={":z": 0, ":one": 1}, ReturnValues="ALL_NEW")["Attributes"]
+        attempts = int(row["refundAttempts"])
+        if attempts < (REFUND_MAX_REFUSED if refused else REFUND_MAX_ATTEMPTS):
+            return
+        first = "stripeRefundFailedAt" not in row
+        at = et.now()
+        et.table().update_item(
+            Key=key, UpdateExpression="SET refundRetryAt = :r, stripeRefundFailedAt = if_not_exists(stripeRefundFailedAt, :at)",
+            ConditionExpression="attribute_not_exists(stripeRefundId)",
+            ExpressionAttributeValues={":r": et.iso(at + timedelta(hours=REFUND_SLOW_RETRY_HOURS)), ":at": et.iso(at)})
+    except (ClientError, BotoCoreError) as exc:  # the count is best effort: the refund stays owed
+        logger.warning(json.dumps({"event": "ticket.refund", "attempts": "not_counted", "txId": tx["txId"],
+                                   "type": type(exc).__name__}))
+        return
+    line = json.dumps({"event": "ticket.refund", "stripe": "stuck" if first else "still_stuck",
+                       "tenantId": tenant_id, "txId": tx["txId"], "attempts": attempts, "refused": refused})
+    (logger.error if first else logger.warning)(line)
 
 
 def refund_ticket(event, ctx):
@@ -2251,6 +2308,8 @@ def run_sweep(context=None):
         if not _in_time(time_left):
             counts["stopped"] = True
             break
+        if not _refund_due(tx):
+            continue
         try:
             _stripe_refund(tx["tenantId"], tx)
             counts["refunds"] += 1

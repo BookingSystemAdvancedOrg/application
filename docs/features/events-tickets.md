@@ -58,7 +58,18 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   Stripe may have forgotten the idempotency key by then. K9 refunds at
   most 10 tickets inline (API Gateway's 30 s), writes `counts.refunded` per
   ticket, and the sweep finishes the rest; `counts.failed` is how many
-  Stripe refunds are still owed. The admin polls K14 when K9 times out.
+  Stripe refunds are still owed, and the job is done only when none is.
+  The admin polls K14 when K9 times out. Buyers get the "Inställt" e-mail
+  as soon as every ticket is refunded in the books; an order whose refund
+  Stripe still owes is told it is on its way, not that it is paid. Each
+  failed Stripe call adds to the TX's `refundAttempts`. After 6 error
+  answers from Stripe (a 402 such as `balance_insufficient` counts as an
+  outage instead) or 288 tries in all (about a day of sweeps), the TX gets
+  `stripeRefundFailedAt` and `refundRetryAt`: it is retried once every
+  24 h from then on, never dropped, so it stays in `counts.failed`. The
+  first time, an error log line `{"event": "ticket.refund", "stripe":
+  "stuck"}` is written for the alarm (Booqy acts). Attempt counts are
+  approximate: K9 inline and the sweep may count the same try twice.
 - Checkout: the hold is conditional on `seatsLeft` and the price at
   checkout, never on the type's `version`, so an owner's rename during a
   checkout is harmless (a price change gives 409 `changed_retry`).

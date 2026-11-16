@@ -1193,7 +1193,8 @@ def test_cancel_occurrence_mass_refund_resumable(env):
     jp = {"locationId": LOC_A, "jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA"}
     assert call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)[1]["done"] is False
     _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)
-    assert job["counts"] == {"refunded": 3, "failed": 3, "notified": 0}  # in our books; Stripe still owes 3
+    # in our books; Stripe still owes 3, and the buyers hear at once (audit #31)
+    assert job["counts"] == {"refunded": 3, "failed": 3, "notified": 2}
     env.stripe.fail = False
     env.api.handler({"job": "sweep"})
     _, job = call(env, "GET", L + "/jobs/{jobId}", params=jp, claims=OWNER_A)

@@ -135,7 +135,7 @@ ANSWER_SCHEMA = {
     },
 }
 
-_DASHES = re.compile("[–—]")
+_DASHES = re.compile("[\u2013\u2014]")
 _cache: dict = {}
 
 

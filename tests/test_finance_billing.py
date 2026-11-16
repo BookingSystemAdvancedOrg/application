@@ -262,7 +262,7 @@ def test_a_failed_card_payment_alerts_the_operators_once_per_attempt(app, sns):
     assert f"https://ops.example.se/tenants/{TENANT_A}?tab=billing" in msg["Message"]
     assert "Invoice: F-0001" in msg["Message"] and "Amount due: 1 237,50 kr incl. VAT" in msg["Message"]
     assert "next retry by Stripe" in msg["Message"]
-    assert "–" not in msg["Message"] and "—" not in msg["Message"]
+    assert "\u2013" not in msg["Message"] and "\u2014" not in msg["Message"]
     # redelivered: no second email; the next attempt: one more
     assert _send(app, failed) == "applied"
     failed["data"]["object"]["attempt_count"] = 2

@@ -214,7 +214,7 @@ def test_bundled_corpora_are_safe_and_well_formed():
     for app_name in help.APPS:
         data = help.bundled(app_name)
         text = json.dumps(data, ensure_ascii=False)
-        assert not re.search("[–—]|&[nm]dash;", text)
+        assert not re.search("[\u2013\u2014]|&[nm]dash;", text)
         assert not re.search(r"AKIA|arn:aws|sk_live|sk_test|pk_live|pk_test|whsec_|\b\d{12}\b|amazonaws|"
                              r"dynamodb|cognito|tenant_id", text, re.IGNORECASE)
         ids = [d["id"] for d in data["docs"]]
@@ -347,14 +347,14 @@ def test_monthly_cap_falls_back_to_the_corpus(app, monkeypatch):
 
 def test_model_answer_is_grounded_in_the_candidates(app, monkeypatch):
     model = use_model(monkeypatch, app, json.dumps({
-        "known": True, "text": "Gör så här — enkelt.", "steps": ["Öppna Meny.", "Tryck Lägg till rätt."],
+        "known": True, "text": "Gör så här \u2014 enkelt.", "steps": ["Öppna Meny.", "Tryck Lägg till rätt."],
         "actionIds": ["evil", "meny-ny-ratt-open", "inst-betalningar-open"], "sourceIds": ["meny-ny-ratt", "x"]}))
     code, body = ask(app, "Var skapar jag en ny rätt i menyn och hur gör jag?")
     assert code == 200 and body["mode"] == "ai"
     answer = body["answer"]
     assert [a["id"] for a in answer["actions"]] == ["meny-ny-ratt-open"]
     assert answer["sources"] == ["meny-ny-ratt"]
-    assert "—" not in answer["text"]
+    assert "\u2014" not in answer["text"]
     assert len(model.calls) == 1
 
 

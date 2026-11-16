@@ -1,0 +1,308 @@
+# Support reports ("Rapportera till Booqy"), functions/support-reports. Not a plan feature;
+# its operator routes are here too because the same Lambda serves them.
+paths:
+  /tenant/support/reports:
+    post:
+      tags:
+      - SupportReports
+      summary: Report a Booqy error (Booqy Admin, tenant token)
+      operationId: supportReportsCreate
+      description: |
+        The one-click report behind an error that is Booqy's fault (5xx,
+        `*_unavailable`, `internal_error`, unknown codes). The body holds only
+        what helps find the error, never tokens, form contents or free text;
+        any other field is a 400. The page path is stored without query or
+        fragment, and segments that are not plain ids become `:x`. The same
+        report (tenant, user, code, status, path) within 10 minutes is stored
+        once: the second call answers 200 with `duplicate: true` and the first
+        report's id. At most 10 new reports an hour per user.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportReportsCreate'
+      responses:
+        '201':
+          description: Report stored; the operators are notified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsCreated'
+        '200':
+          description: The same report within 10 minutes; nothing new stored (`duplicate` true).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsCreated'
+        '400':
+          description: 'Invalid body: code is invalid, status is invalid, path is invalid, requestId is invalid,
+            appVersion is invalid, unsupported fields, request body must be valid JSON.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '403':
+          description: no_tenant or tenant_inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '429':
+          description: 'too_many_requests: more than 10 reports an hour for this user.'
+          headers:
+            Retry-After:
+              description: Seconds until the next report is allowed.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+  /platform/support/reports:
+    get:
+      tags:
+      - SupportReports
+      summary: List support reports (Booqy Console, operator token (platform_admin))
+      operationId: supportReportsList
+      description: Newest first, 50 a page.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - platform_admin
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - all
+          - open
+          - handled
+          default: all
+      - name: cursor
+        in: query
+        required: false
+        description: The `cursor` of the previous page.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: One page of reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsPage'
+        '400':
+          description: 'status must be all, open or handled; cursor is invalid.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '403':
+          description: 'forbidden: not an operator.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+  /platform/support/reports/{reportId}/handled:
+    parameters:
+    - name: reportId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^\d{8}T\d{9}Z-[0-9a-f]{8}$
+    post:
+      tags:
+      - SupportReports
+      summary: Mark a support report handled or open again (Booqy Console, operator token (platform_admin))
+      operationId: supportReportsMarkHandled
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - platform_admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                handled:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: The report as it is now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReport'
+        '400':
+          description: 'handled must be true or false, unsupported fields, request body must be valid JSON.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '403':
+          description: 'forbidden: not an operator.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '404':
+          description: 'not_found: no such report.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportReportsError'
+components:
+  schemas:
+    SupportReportsCreate:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - path
+      properties:
+        code:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+          description: The error code the app showed.
+        status:
+          type: integer
+          minimum: 0
+          maximum: 599
+          default: 0
+          description: HTTP status of the failed call (0 for a network error).
+        path:
+          type: string
+          pattern: ^/
+          description: The admin page path; query and fragment are dropped.
+        requestId:
+          type: string
+          pattern: ^[A-Za-z0-9=_.:-]{1,100}$
+          description: The API request id from the error answer.
+        appVersion:
+          type: string
+          pattern: ^[A-Za-z0-9._+-]{1,40}$
+    SupportReportsCreated:
+      type: object
+      required:
+      - reportId
+      - duplicate
+      properties:
+        reportId:
+          type: string
+          nullable: true
+          description: The new report, or for a duplicate the earlier one (null if it is gone).
+        duplicate:
+          type: boolean
+    SupportReport:
+      type: object
+      properties:
+        reportId:
+          type: string
+        tenantId:
+          type: string
+        tenantName:
+          type: string
+          nullable: true
+        userSub:
+          type: string
+        role:
+          type: string
+          nullable: true
+        code:
+          type: string
+        status:
+          type: integer
+        path:
+          type: string
+        requestId:
+          type: string
+          nullable: true
+        appVersion:
+          type: string
+          nullable: true
+        userAgent:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        handled:
+          type: boolean
+        handledAt:
+          type: string
+          format: date-time
+          nullable: true
+        handledBy:
+          type: string
+          nullable: true
+    SupportReportsPage:
+      type: object
+      required:
+      - items
+      - cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupportReport'
+        cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page; null on the last page.
+    SupportReportsError:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: A snake_case code, or a short English validation message (400).

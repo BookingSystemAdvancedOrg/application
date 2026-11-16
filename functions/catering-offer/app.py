@@ -165,14 +165,7 @@ def _offer_from(data, item, settings, location, now):
     if totals["total"] > c.MAX_TOTAL_ORE:
         raise ValueError(f"offer total may be at most {c.MAX_TOTAL_ORE // 100} kr")
     valid = data.get("validUntil") or default_valid_until(today, settings["offerValidDays"], item.get("deliveryDate"))
-    try:
-        valid_day = date.fromisoformat(valid)
-    except (TypeError, ValueError):
-        raise ValueError("validUntil must be YYYY-MM-DD") from None
-    if valid_day < today:
-        raise ValueError("validUntil must not be in the past")
-    if item.get("deliveryDate") and valid > item["deliveryDate"]:
-        raise ValueError("validUntil must not be after the delivery date")
+    _check_valid_until(valid, item, location, now)
     return {
         "lines": lines,
         "totals": totals,
@@ -182,6 +175,21 @@ def _offer_from(data, item, settings, location, now):
         "message": c.text(data.get("message"), "message", max_length=c.MESSAGE_MAX) or "",
         "validUntil": valid,
     }
+
+
+def _check_valid_until(valid, item, location, now):
+    """validUntil is a day from today up to the delivery day; also checked
+    when a saved draft is sent later, so a stale draft is never sent
+    already expired."""
+    today = now.astimezone(ZoneInfo(location.get("timezone") or "Europe/Stockholm")).date()
+    try:
+        valid_day = date.fromisoformat(valid)
+    except (TypeError, ValueError):
+        raise ValueError("validUntil must be YYYY-MM-DD") from None
+    if valid_day < today:
+        raise ValueError("validUntil must not be in the past")
+    if item.get("deliveryDate") and valid > item["deliveryDate"]:
+        raise ValueError("validUntil must not be after the delivery date")
 
 
 def _view(event):
@@ -228,6 +236,7 @@ def _send(event):
         offer = _offer_from(body, item, settings, ctx.location, now)
     elif item.get("draft"):
         offer = item["draft"]
+        _check_valid_until(offer.get("validUntil"), item, ctx.location, now)
     else:
         raise ValueError("send an offer (lines, ...) or save a draft first")
     version = int(item.get("currentOfferVersion") or 0) + 1
@@ -367,6 +376,10 @@ def _cancel(event):
     now = c.now_utc()
     account = item.get("stripeAccountId") or o.stripe_account(ctx.tenant, ctx.location)
     refund_note = None
+    if item.get("customerType") == c.PRIVATE and not item.get("paid"):
+        # An open Checkout must not take money for a cancelled request; a
+        # payment that still lands is refunded by catering-stripe-webhook.
+        cs.expire_checkout(item.get("stripeAccountId"), item.get("checkoutSessionId"))
     if item.get("customerType") == c.PRIVATE and item.get("paid") and item.get("paymentIntentId"):
         cs.refund_payment(account, item["paymentIntentId"], item["requestId"])
         refund_note = "refunded"

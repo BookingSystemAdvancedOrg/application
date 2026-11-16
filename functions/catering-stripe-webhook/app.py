@@ -9,7 +9,9 @@ PURPOSE:
 
       checkout.session.completed (paid) /
       checkout.session.async_payment_succeeded   private guest paid:
-                                                 signed -> confirmed (notice)
+                                                 signed -> confirmed (notice);
+                                                 paid after the request was
+                                                 cancelled / expired: refunded
       checkout.session.async_payment_failed /
       checkout.session.expired                   nothing changes - the
                                                  signature is kept, the guest
@@ -42,6 +44,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
+from shared import catering_stripe as cs
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -114,16 +117,38 @@ def _session(kind, session, account, stripe_event, now):
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         if session.get("payment_status") != "paid":
             return _audit(item, stripe_event, now, "waiting")
-        if item["status"] != c.SIGNED:
-            return _audit(item, stripe_event, now, "already_settled")
-        ok = _update(item, to_status=c.CONFIRMED, sets=[
-            "paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
-            "receiptInvoiceId = :inv"],
-            values={":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
-                    ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"})
-        return _audit(item, stripe_event, now, "confirmed" if ok else "superseded")
+        for _ in range(3):
+            if item["status"] != c.SIGNED:
+                return _audit(item, stripe_event, now, _settled_or_refund(item, session, account))
+            if _update(item, to_status=c.CONFIRMED, sets=[
+                    "paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
+                    "receiptInvoiceId = :inv"],
+                    values={":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
+                            ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"}):
+                return _audit(item, stripe_event, now, "confirmed")
+            item = c.load(item["locationId"], item["requestId"])  # lost a race: settle against the new state
+        raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
     # expired / failed: the signature stays, the guest pays again from the link
     return _audit(item, stripe_event, now, "payment_not_completed")
+
+
+def _settled_or_refund(item, session, account):
+    """The session was paid but the request is no longer signed. Either
+    this very payment already confirmed it (a redelivery, or
+    async_payment_succeeded after completed), or the request was
+    cancelled / expired while Checkout was open: then the money goes back
+    to the guest at once, nobody would deliver for it."""
+    intent = session.get("payment_intent")
+    if item.get("paid") and item.get("paymentIntentId") in (intent, "-"):
+        return "already_settled"
+    if not intent:
+        logger.error(json.dumps({"lateCateringPayment": "no_payment_intent", "requestId": item["requestId"],
+                                 "session": session.get("id")}))
+        return "late_payment_unrefunded"
+    cs.refund_late_payment(account, intent, item["requestId"])
+    logger.warning(json.dumps({"lateCateringPayment": "refunded", "requestId": item["requestId"],
+                               "status": item["status"]}))
+    return "refunded_late_payment"
 
 
 def _invoice(kind, invoice, account, stripe_event, now):
@@ -195,7 +220,7 @@ def handler(event, context):
             result = _refund(obj, account, stripe_event, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, stripe.StripeError, stripe.StripeUnavailable):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

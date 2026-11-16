@@ -101,6 +101,17 @@ def checkout(item, offer, account, success_url, cancel_url, now, attempt, *, emb
                           idempotency_key=f"checkout-{item['requestId']}-{attempt}")
 
 
+def _days_until_due(offer, settings):
+    """The terms the company signed (the offer document), not the
+    location's settings today; older offers without them fall back to the
+    settings. 0 days (due on receipt) becomes 1: Stripe's send_invoice
+    needs at least one day."""
+    days = (offer.get("document") or {}).get("paymentTermsDays")
+    if days is None:
+        days = settings.get("paymentTermsDays")
+    return max(1, int(30 if days is None else days))
+
+
 def invoice(item, offer, account, settings):
     """Creates, finalizes and sends the company's invoice. Returns the
     finalized invoice object."""
@@ -119,7 +130,7 @@ def invoice(item, offer, account, settings):
     draft = stripe.request("POST", "/v1/invoices", {
         "customer": customer["id"],
         "collection_method": "send_invoice",
-        "days_until_due": int(settings.get("paymentTermsDays") or 30),
+        "days_until_due": _days_until_due(offer, settings),
         "auto_advance": False,
         "currency": c.CURRENCY,
         "pending_invoice_items_behavior": "exclude",
@@ -147,11 +158,32 @@ def invoice(item, offer, account, settings):
     return final
 
 
-def refund_payment(account, payment_intent, request_id):
+def refund_payment(account, payment_intent, request_id, *, idempotency_key=None):
     return stripe.request("POST", "/v1/refunds", {
         "payment_intent": payment_intent, "reason": "requested_by_customer",
         "metadata": {"requestId": request_id},
-    }, account=account, idempotency_key=f"cat-refund-{request_id}")
+    }, account=account, idempotency_key=idempotency_key or f"cat-refund-{request_id}")
+
+
+def refund_late_payment(account, payment_intent, request_id):
+    """A Checkout payment that completed after the request was cancelled
+    or expired: refunded in full (one key per payment intent)."""
+    return refund_payment(account, payment_intent, request_id,
+                          idempotency_key=f"cat-refund-late-{payment_intent}")
+
+
+def expire_checkout(account, session_id):
+    """Closes an open Checkout session so it can no longer take money.
+    Best effort: a session that is already complete or expired, or a
+    Stripe error, is left alone; the webhook refunds a payment that still
+    lands on a request that is no longer signed. True when it expired."""
+    if not account or not session_id:
+        return False
+    try:
+        stripe.request("POST", f"/v1/checkout/sessions/{session_id}/expire", account=account)
+        return True
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        return False
 
 
 def void_invoice(account, invoice_id):

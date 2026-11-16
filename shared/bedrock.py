@@ -17,7 +17,7 @@ class TextModelError(Exception):
 
 
 class TextModel:
-    def complete(self, system, prompt, *, max_tokens, json_schema=None) -> str:
+    def complete(self, system, prompt, *, max_tokens, json_schema=None, language="sv") -> str:
         raise NotImplementedError
 
 
@@ -51,7 +51,7 @@ class SimulatedTextModel(external_client.Simulated, TextModel):
         super().__init__(fail)
         self.responses = list(responses)
 
-    def complete(self, system, prompt, *, max_tokens, json_schema=None):
+    def complete(self, system, prompt, *, max_tokens, json_schema=None, language="sv"):
         self._call("complete", prompt[:40])
         if self.responses:
             return self.responses.pop(0)
@@ -60,8 +60,10 @@ class SimulatedTextModel(external_client.Simulated, TextModel):
         return f"{SIM_TEXT}: {prompt[:40]}"
 
 
-def client(**kwargs) -> TextModel:
+def client(timeouts=None, **kwargs) -> TextModel:
+    """`timeouts` ({connect_timeout, read_timeout, max_attempts}) only applies
+    to the real client; without it boto3's defaults stay."""
     if external_client.mode("bedrock") == external_client.REAL:
         from shared.bedrock_real import RealTextModel
-        return RealTextModel()
+        return RealTextModel(timeouts)
     return SimulatedTextModel(**kwargs)

@@ -19,6 +19,13 @@ carries `live: {metric, text}` and the app reads the number from the
 existing authenticated APIs with the caller's own token, so tenant,
 location and role scoping stay with those APIs. Read only.
 
+Bedrock gets short timeouts (MODEL_TIMEOUTS): a slow model becomes the
+composed answer well inside the Lambda timeout. Only the caller's earlier
+questions from `history` reach the model, never the assistant turns the
+client sends back. Every error body carries `requestId` (the Lambda request
+id) so a report to Booqy can be traced; 403 help_assistant_off tells the app
+to close the assistant.
+
 Privacy: questions and answers are never stored or logged; the log line has
 only the outcome. The conversation lives in the app tab's memory.
 """
@@ -44,6 +51,11 @@ MAX_TOKENS = 700
 KILL_SWITCH_KEY = {"PK": "PLATFORM#HELP_ASSISTANT", "SK": "SETTINGS"}
 KILL_SWITCH_SECONDS = 60
 OPERATOR_GROUP = "platform_admin"
+# A hang becomes TextModelError("timeout") and the composed answer: 2 attempts,
+# each failing after 3 s without a connection or 10 s without a byte, plus a
+# short backoff, inside the 28 s Lambda timeout.
+MODEL_TIMEOUTS = {"connect_timeout": 3, "read_timeout": 10, "max_attempts": 2}
+LANGUAGE = {"admin": "sv", "console": "en"}
 
 _switch = {"at": 0.0, "on": True}
 _model = None
@@ -79,7 +91,7 @@ def _text_model():
     global _model
     if _model is None:
         from shared import bedrock
-        _model = bedrock.client()
+        _model = bedrock.client(timeouts=MODEL_TIMEOUTS)
     return _model
 
 
@@ -142,7 +154,8 @@ def answers(event, caller):
         else:
             try:
                 raw = _text_model().complete(help.SYSTEM[app], help.prompt(question, history, found, app, answer.get("live")),
-                                             max_tokens=MAX_TOKENS, json_schema=help.ANSWER_SCHEMA)
+                                             max_tokens=MAX_TOKENS, json_schema=help.ANSWER_SCHEMA,
+                                             language=LANGUAGE[app])
                 model_answer = help.from_model(raw, found, question, app)
                 if model_answer is None:
                     outcome = "model_bad_output"
@@ -163,7 +176,25 @@ ROUTES = {
 }
 
 
+def _with_request_id(res: dict, context) -> dict:
+    """Adds requestId to an error body (the shared help-assistant contract)."""
+    request_id = getattr(context, "aws_request_id", None)
+    if not request_id or res.get("statusCode", 200) < 400:
+        return res
+    try:
+        body = json.loads(res.get("body") or "{}")
+    except ValueError:
+        return res
+    if not isinstance(body, dict):
+        return res
+    return {**res, "body": json.dumps({**body, "requestId": request_id})}
+
+
 def handler(event, context=None):
+    return _with_request_id(_handle(event), context)
+
+
+def _handle(event):
     method, path = http.route(event)
     fn = ROUTES.get(f"{method} {path}")
     if fn is None:

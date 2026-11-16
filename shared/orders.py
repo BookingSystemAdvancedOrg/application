@@ -51,7 +51,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
-from shared import booking_rules, dynamo, manage_link, menu
+from shared import booking_rules, dynamo, manage_link, menu, safe_compare
 
 _deserializer = TypeDeserializer()
 
@@ -543,7 +543,7 @@ def read_table_code(tenant_id, location_id, code):
         raise ValueError("table code is invalid")
     payload, signature = code.split(".")
     expected = _sign("table-qr", "v1", tenant_id, location_id, payload)
-    if not hmac.compare_digest(expected, signature):
+    if not safe_compare.equal(expected, signature):
         raise ValueError("table code is invalid")
     try:
         data = json.loads(_unb64(payload))
@@ -559,7 +559,7 @@ def status_token(item):
 def token_matches(item, token):
     if not isinstance(token, str) or not token or len(token) > 256 or not item.get("tenantId"):
         return False
-    return hmac.compare_digest(status_token(item), token)
+    return safe_compare.equal(status_token(item), token)
 
 
 def status_url(site_base, item, *, slug=None):

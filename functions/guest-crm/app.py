@@ -3,7 +3,7 @@
 TRIGGER:
     API Gateway -- Auth: JWT (tenant pool), feature `guestCrm`
     GET    /tenant/guests?cursor=&locationId=          C1 list, newest first
-    POST   /tenant/guests/search                       C2 {email} | {phone} | {name}
+    POST   /tenant/guests/search                       C2 {email} | {phone} | {name}, optional locationId
     GET    /tenant/guests/{guestId}                    C3 profile + history + contact + consent
     PATCH  /tenant/guests/{guestId}                    C4 note, tags, birthday, segmentsExcluded (owner)
     POST   /locations/{locationId}/guests/lookup       C5 new vs returning for up to 100 contacts
@@ -155,12 +155,18 @@ def list_guests(event, ctx):
 # --- C2 -------------------------------------------------------------------------------
 
 def search(event, ctx):
-    body = http.body(event, allowed=("email", "phone", "name"))
+    body = http.body(event, allowed=("email", "phone", "name", "locationId"))
     given = [k for k in ("email", "phone", "name") if body.get(k) not in (None, "")]
     if len(given) != 1 or not isinstance(body[given[0]], str):
         raise crm.CrmError(400, "give exactly one of email, phone or name")
     key, value = given[0], body[given[0]].strip()
+    location_id = body.get("locationId") or None
+    if location_id is not None and not isinstance(location_id, str):
+        raise crm.CrmError(400, "locationId must be a string", "locationId")
     scope = _staff_scope(ctx)
+    if location_id and (not tenant.get_location(ctx.tenant_id, location_id)
+                        or (scope is not None and scope != location_id)):
+        raise crm.CrmError(404, "not found")
     found = []
     if key in ("email", "phone"):
         channel = consent.EMAIL if key == "email" else consent.SMS
@@ -172,11 +178,16 @@ def search(event, ctx):
             raise crm.CrmError(400, "name must be 2 to 120 characters", "name")
         needle = value.casefold()
         for profile in crm.profiles(ctx.tenant_id):
+            if location_id and location_id not in (profile.get("locations") or []):
+                continue
             if needle in (profile.get("name") or "").casefold():
                 found.append(profile)
                 if len(found) >= MAX_NAME_RESULTS * 5:
                     break
-    found = [p for p in found if _visible(p, scope)][:MAX_NAME_RESULTS]
+    found = [p for p in found if _visible(p, scope)]
+    if location_id:
+        found = [p for p in found if location_id in (p.get("locations") or [])]
+    found = found[:MAX_NAME_RESULTS]
     found.sort(key=lambda p: p.get("lastSeenAt") or "", reverse=True)
     return http.respond(200, {"guests": [crm.summary(p) for p in found]})
 

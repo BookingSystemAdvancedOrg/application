@@ -17,7 +17,8 @@ statistics access) are matched, quoted to the model or returned. The model
 picks among the candidates' own steps and action ids; it can't add a route.
 Without a model (simulator, cap reached, model error) the answer is composed
 from the best matches, so the assistant is fully usable and testable
-without Bedrock. Questions about secrets or other tenants are refused.
+without Bedrock. Questions about secrets are refused; in admin also questions
+about other tenants' data (operators in the console may see every tenant).
 
 Retrieval mirrors the apps' src/.../help/retrieve.ts exactly (same folding,
 tokens, BM25, inflection and compound rules, same composed answer); both
@@ -90,7 +91,7 @@ TEXTS = {
         "unknown": ("I'm not sure about that, so I'd rather not guess. Try asking another way, for example "
                     "with the name of the page."),
         "owner": "That is not available to you.",
-        "refuse": ("I can't show or look up passwords, keys, tokens, secrets or other customers' data. Ask me how "
+        "refuse": ("I can't show or look up passwords, keys, tokens or other secrets. Ask me how "
                    "something in the console works instead."),
         "help": None,
         "open": "Open", "show": "Show", "under": "is under", "fallback_where": "the console",
@@ -228,12 +229,16 @@ def match_weight(q: str, d: str) -> float:
     return 0
 
 
-def is_secret_question(question: str) -> bool:
+def is_secret_question(question: str, app: str = "admin") -> bool:
+    """A question for a secret, in any app; in admin also one about other tenants' data.
+    Operators (console) may see every tenant, so there only secrets are refused."""
     q = f" {fold(question)} "
     secret = re.search(r" (losenord\w*|password\w*|api ?nyckel\w*|nyckel\w*|nycklar\w*|token\w*|hemlig\w*|"
                        r"secret\w*|pin ?kod\w*|kortnummer\w*|personnummer\w*|api key\w*|credential\w*) ", q)
     show = re.search(r" (vad ar|vilket ar|vilken ar|visa|ge mig|skicka|beratta|lista|kopiera|what is|what s|"
                      r"show|give me|send|tell me|list|copy|reveal) ", q)
+    if app != "admin":
+        return bool(secret and show)
     others = re.search(r" andra (restauranger|restaurangers|kunder|kunders|foretag|foretags) ", q) or \
         re.search(r" other (restaurants?|tenants?|customers?|compan(y|ies)|business(es)?|organi[sz]ations?)( s)? ", q) or \
         re.search(r" another (restaurant|tenant|customer|company|business|organi[sz]ation) s ", q) or \
@@ -482,7 +487,7 @@ def _stands_alone(data: dict, asked: str, view: dict, app: str) -> bool:
 def answer_locally(data: dict, question: str, view: dict, previous: str = "", app: str = "admin",
                    today=None) -> tuple:
     """(answer, candidates) without a model."""
-    if is_secret_question(question):
+    if is_secret_question(question, app):
         return refusal(app), []
     # Another day ("imorgon", "på fredag") is looked up as today when that finds a live
     # number (compose then sets the day); other questions are read as asked.
@@ -558,10 +563,18 @@ def _grounded_numbers(found: list, app: str) -> set:
     return out
 
 
-def _invents(texts: list, found: list, app: str, live: Optional[dict]) -> bool:
-    """A number in the model's text or steps it was not given, or a prompt key. With a live
-    number only the day ("15 november") may carry digits: the model never knows the count."""
-    allowed = _numbers((live.get("text") or "").split("{value}")[0]) if live else _grounded_numbers(found, app)
+_ORDINALS = {str(n) for n in range(1, 11)}
+
+
+def _invents(texts: list, found: list, app: str, live: Optional[dict], question: str = "") -> bool:
+    """A number in the model's text or steps it was not given, or a prompt key. Given are the
+    candidates' numbers, the question's own and small ordinals 1 to 10 ("Steg 1", "2 steg").
+    With a live number only the day ("15 november") may carry digits: the model never knows
+    the count, so neither the question's numbers nor ordinals are allowed then."""
+    if live:
+        allowed = _numbers((live.get("text") or "").split("{value}")[0])
+    else:
+        allowed = _grounded_numbers(found, app) | _numbers(question) | _ORDINALS
     joined = "\n".join(texts)
     return bool(_numbers(joined) - allowed) or bool(_PROMPT_KEYS.search(joined))
 
@@ -599,7 +612,7 @@ def from_model(raw: str, found: list, question: str = "", app: str = "admin", to
         # A button to the same place as the best match lights up the same things.
         picked = [{**a, "highlight": list(dict.fromkeys([*(a.get("highlight") or ()), *lead["highlight"]]))}
                   if a["to"] == lead["to"] and (a.get("hash") or "") == (lead.get("hash") or "") else a for a in picked]
-    if _invents([text, *(x for x in steps if isinstance(x, str))], found, app, base.get("live")):
+    if _invents([text, *(x for x in steps if isinstance(x, str))], found, app, base.get("live"), question):
         # A number or prompt key the model was not given is made up: the composed answer instead.
         return base
     sources = [i for i in parsed.get("sourceIds") or () if isinstance(i, str) and i in docs]

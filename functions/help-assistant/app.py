@@ -51,10 +51,11 @@ MAX_TOKENS = 700
 KILL_SWITCH_KEY = {"PK": "PLATFORM#HELP_ASSISTANT", "SK": "SETTINGS"}
 KILL_SWITCH_SECONDS = 60
 OPERATOR_GROUP = "platform_admin"
-# A hang becomes TextModelError("timeout") and the composed answer: 2 attempts,
-# each failing after 3 s without a connection or 10 s without a byte, plus a
-# short backoff, inside the 28 s Lambda timeout.
-MODEL_TIMEOUTS = {"connect_timeout": 3, "read_timeout": 10, "max_attempts": 2}
+# A hang becomes TextModelError("timeout") and the composed answer: one attempt
+# (no retry), failing after 3 s without a connection or 12 s without a byte, so
+# the worst case (15 s plus DynamoDB and the corpus fetch) stays well inside the
+# 28 s Lambda timeout.
+MODEL_TIMEOUTS = {"connect_timeout": 3, "read_timeout": 12, "max_attempts": 1}
 LANGUAGE = {"admin": "sv", "console": "en"}
 
 _switch = {"at": 0.0, "on": True}

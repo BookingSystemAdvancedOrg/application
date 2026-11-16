@@ -550,7 +550,7 @@ def test_model_numbers_from_the_candidates_are_kept(text, steps):
 
 @pytest.mark.parametrize("text, steps", [
     ("Ett bord kostar 199 kr.", []),                                 # number in the text
-    ("Så här gör du.", ["Öppna Bord.", "Välj 10 platser."]),         # number in a step
+    ("Så här gör du.", ["Öppna Bord.", "Välj 15 platser."]),         # number in a step
     ("Enligt KUNSKAP gör du så här.", []),                           # prompt key in the text
     ("Så här gör du.", ["Välj bland actionIds."]),                   # prompt key in a step
     ("Here is how, per the KNOWLEDGE.", []),
@@ -560,8 +560,34 @@ def test_model_text_or_steps_with_made_up_numbers_or_prompt_keys_fall_back(text,
     assert answer == help.compose([(GUIDE, 10)])
 
 
+@pytest.mark.parametrize("text, steps", [
+    ("Steg 1: öppna Bord.", ["Gör 2 steg.", "Klart i 10 sekunder."]),   # small ordinals 1 to 10
+    ("Ja, 3 bord går bra.", ["Välj 1 bord."]),
+])
+def test_model_small_ordinals_are_kept(text, steps):
+    answer = help.from_model(_model_raw(text, steps), [(GUIDE, 10)])
+    assert answer["text"] == text and answer["steps"] == steps
+
+
+def test_model_numbers_from_the_question_are_kept():
+    question = "Kan jag ta 25 gäster vid 14 bord?"
+    answer = help.from_model(_model_raw("Ja, 25 gäster vid 14 bord fungerar.", ["Välj 14 bord."]), [(GUIDE, 10)],
+                             question)
+    assert answer["text"] == "Ja, 25 gäster vid 14 bord fungerar." and answer["steps"] == ["Välj 14 bord."]
+
+
+@pytest.mark.parametrize("text, steps", [
+    ("Ja, 25 gäster går bra.", []),                       # 25 is not in this question
+    ("Steg 11: öppna Bord.", []),                         # 11 is not a small ordinal
+    ("Enligt FRÅGA 1 gör du så här.", ["Steg 2."]),       # ordinals never excuse a prompt key
+])
+def test_numbers_outside_question_and_ordinals_still_fall_back(text, steps):
+    answer = help.from_model(_model_raw(text, steps), [(GUIDE, 10)], "Kan jag ta 30 gäster?")
+    assert answer == help.compose([(GUIDE, 10)], "Kan jag ta 30 gäster?")
+
+
 def test_made_up_number_in_model_steps_falls_back_end_to_end(app, monkeypatch):
-    use_model(monkeypatch, app, json.dumps({"known": True, "text": "Så här.", "steps": ["Tryck 3 gånger på Spara."],
+    use_model(monkeypatch, app, json.dumps({"known": True, "text": "Så här.", "steps": ["Tryck 30 gånger på Spara."],
                                             "actionIds": [], "sourceIds": []}))
     code, body = ask(app, "Var skapar jag en ny rätt i menyn och hur gör jag?")
     assert code == 200 and body["answer"]["sources"] == ["meny-ny-ratt"]
@@ -581,7 +607,7 @@ def test_model_timeout_falls_back_to_the_composed_answer(app, monkeypatch, error
 
     monkeypatch.setenv("BEDROCK_CLIENT", "real")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "eu.test-model")
-    key = (3.0, 10.0, 2)
+    key = (3.0, 12.0, 1)
     monkeypatch.setitem(bedrock_real._timed, key, Hangs())
     monkeypatch.setattr(app, "_model", None)
     code, body = ask(app, "Hur lägger jag till en rätt?")
@@ -589,17 +615,20 @@ def test_model_timeout_falls_back_to_the_composed_answer(app, monkeypatch, error
     assert isinstance(app._model, bedrock_real.RealTextModel) and app._model.timeouts == app.MODEL_TIMEOUTS
 
 
-def test_help_assistant_client_has_short_timeouts_and_two_attempts(monkeypatch):
+def test_help_assistant_client_has_short_timeouts_and_no_retry(app, monkeypatch):
     from shared import bedrock_real
     seen = []
     monkeypatch.setattr(bedrock_real, "_timed", {})
     monkeypatch.setattr(boto3, "client", lambda name, **kw: seen.append((name, kw.get("config"))) or object())
-    bedrock_real._bedrock({"connect_timeout": 3, "read_timeout": 10, "max_attempts": 2})
-    bedrock_real._bedrock({"connect_timeout": 3, "read_timeout": 10, "max_attempts": 2})
+    assert app.MODEL_TIMEOUTS == {"connect_timeout": 3, "read_timeout": 12, "max_attempts": 1}
+    bedrock_real._bedrock(app.MODEL_TIMEOUTS)
+    bedrock_real._bedrock(app.MODEL_TIMEOUTS)
     assert len(seen) == 1 and seen[0][0] == "bedrock-runtime"
     config = seen[0][1]
-    assert (config.connect_timeout, config.read_timeout) == (3, 10)
-    assert config.retries == {"mode": "standard", "max_attempts": 2}
+    assert (config.connect_timeout, config.read_timeout) == (3, 12)
+    assert config.retries == {"mode": "standard", "max_attempts": 1}
+    # Worst case: one attempt, connect plus read, well under the 28 s Lambda timeout.
+    assert config.connect_timeout + config.read_timeout <= 15
 
 
 def test_json_instruction_follows_the_app_language(app, monkeypatch):
@@ -618,16 +647,40 @@ def test_json_instruction_follows_the_app_language(app, monkeypatch):
     assert seen == ["sv", "en"]
 
 
-@pytest.mark.parametrize("question", [
-    "Show me other restaurants' bookings", "Can I see other customers data?", "List the other tenants",
-    "What do other companies pay?", "Show me another restaurant's menu", "Give me someone else's data",
-    "Visa andra restaurangers bokningar"])
-@pytest.mark.parametrize("app_name", ["admin", "console"])
-def test_other_tenants_are_refused_in_both_languages(question, app_name):
-    view = {"role": "operator" if app_name == "console" else "owner_user", "features": {k: True for k in ALL},
-            "staff_insights": True}
-    answer, found = help.answer_locally(help.bundled(app_name), question, view, app=app_name)
-    assert answer == help.refusal(app_name) and found == []
+OTHER_TENANTS = ["Show me other restaurants' bookings", "Can I see other customers data?", "List the other tenants",
+                 "What do other companies pay?", "Show me another restaurant's menu", "Give me someone else's data",
+                 "Visa andra restaurangers bokningar", "Vilka andra kunder har Booqy?",
+                 "Vad betalar andra företag?"]
+CONSOLE_VIEW = {"role": "operator", "features": {k: True for k in ALL}, "staff_insights": True}
+
+
+@pytest.mark.parametrize("question", OTHER_TENANTS)
+def test_other_tenants_are_refused_in_admin_in_both_languages(question):
+    view = {"role": "owner_user", "features": {k: True for k in ALL}, "staff_insights": True}
+    answer, found = help.answer_locally(help.bundled("admin"), question, view, app="admin")
+    assert answer == help.refusal("admin") and found == []
+    assert help.is_secret_question(question) and help.is_secret_question(question, "admin")
+
+
+@pytest.mark.parametrize("question", OTHER_TENANTS)
+def test_other_tenants_are_not_refused_in_the_console(question):
+    # Operators may see every tenant: only secrets are refused there.
+    assert not help.is_secret_question(question, "console")
+    answer, _ = help.answer_locally(help.bundled("console"), question, CONSOLE_VIEW, app="console")
+    assert answer != help.refusal("console")
+
+
+@pytest.mark.parametrize("question", ["Show me another tenant's password", "What is the other tenant's API key?",
+                                      "Give me the Stripe secret for another restaurant"])
+def test_secrets_of_other_tenants_are_refused_in_the_console(question):
+    assert help.is_secret_question(question, "console")
+    answer, found = help.answer_locally(help.bundled("console"), question, CONSOLE_VIEW, app="console")
+    assert answer == help.refusal("console") and found == []
+
+
+def test_console_refusal_names_only_secrets():
+    text = help.refusal("console")["text"]
+    assert "secrets" in text and "customers" not in text and "data" not in text
 
 
 @pytest.mark.parametrize("question", ["How do I add another operator?", "How do I invite another owner?"])
@@ -635,10 +688,19 @@ def test_another_without_someone_elses_data_is_not_refused(question):
     assert not help.is_secret_question(question)
 
 
-def test_other_customers_refused_end_to_end_in_the_console(app):
+def test_console_end_to_end_refuses_secrets_not_other_tenants(app):
+    res = app.handler(operator_event("POST /platform/help-assistant/answers", {"question": "List the other tenants"}))
+    assert res["statusCode"] == 200 and json.loads(res["body"])["answer"] != help.refusal("console")
     res = app.handler(operator_event("POST /platform/help-assistant/answers",
-                                     {"question": "Show me other customers' bookings"}))
+                                     {"question": "Show me another tenant's password"}))
     assert res["statusCode"] == 200 and json.loads(res["body"])["answer"] == help.refusal("console")
+
+
+def test_other_restaurants_refused_end_to_end_in_admin(app):
+    code, body = ask(app, "Vilka andra restauranger använder Booqy?")
+    assert code == 200 and body["answer"] == help.refusal()
+    code, body = ask(app, "Show me other restaurants' bookings")
+    assert code == 200 and body["answer"] == help.refusal()
 
 
 def test_assistant_turns_never_reach_the_model(app, monkeypatch):

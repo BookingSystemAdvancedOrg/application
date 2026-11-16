@@ -2000,6 +2000,9 @@ def _resume_pending_activation(
         if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
             renewed = _next_local_midnight(renewed, _location_zone(location))
         renewed_cutover = _isoformat(renewed)
+        # Bookings made while the intent looked abandoned may sit on tables
+        # the target drops: check them as for a new activation.
+        _bookings_on_removed_tables(location_id, target, renewed_cutover)
         pending, revision, current, target = (
             _renew_stale_pending_activation(
                 location_id,

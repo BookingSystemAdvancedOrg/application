@@ -185,6 +185,52 @@ def test_credit_note_reduces_revenue_once(app):
     assert _day(TENANT_A, "2027-01-18")["creditedSek"] == Decimal("500.00")
 
 
+def _refund_note(note_id="cn_2"):
+    return {"id": note_id, "object": "credit_note", "customer": CUS_A, "invoice": "in_1", "number": "F-0001-CN-02",
+            "reason": "requested_by_customer", "created": 1_800_300_000, "subtotal": 10_000, "total": 12_500,
+            "total_excluding_tax": 10_000, "metadata": {"booqyMethod": "refund"},
+            "refunds": [{"refund": "re_1", "amount_refunded": 12_500}]}
+
+
+def test_refund_note_reduces_collected_once(app):
+    evt = {"id": "evt_cn2", "type": "credit_note.created", "created": 1_800_300_000, "livemode": False,
+           "data": {"object": _refund_note()}}
+    assert _send(app, evt) == "applied:credited+refunded"
+    day = _day(TENANT_A, "2027-01-18")
+    assert day["creditedSek"] == Decimal("100.00") and day["refundedSek"] == Decimal("100.00")
+    assert _send(app, evt) == "stale"
+    day = _day(TENANT_A, "2027-01-18")
+    assert day["creditedSek"] == Decimal("100.00") and day["refundedSek"] == Decimal("100.00")
+    row = boto3.resource("dynamodb", region_name=REGION).Table(FINANCE_TABLE).get_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "CREDIT#2027-01-18#cn_2"})["Item"]
+    assert row["refundedSek"] == Decimal("125.00") and row["totalSek"] == Decimal("125.00")
+    assert row["method"] == "refund"
+
+
+def test_note_written_first_by_the_console_is_booked_once(app):
+    """The console writes the CREDIT# row when the operator issues the note;
+    the webhook then only books what is not booked yet."""
+    from shared import billing as shared_billing
+    note = _refund_note("cn_3")
+    row = shared_billing.credit_note_row(TENANT_A, note, 1_800_300_000)
+    row.pop("day")
+    boto3.resource("dynamodb", region_name=REGION).Table(FINANCE_TABLE).put_item(
+        Item={**{k: v for k, v in row.items() if v is not None}, "bookedCredited": "2027-01-18"})
+    evt = {"id": "evt_cn3", "type": "credit_note.created", "created": 1_800_300_000, "livemode": False,
+           "data": {"object": note}}
+    assert _send(app, evt) == "stale:refunded"
+    day = _day(TENANT_A, "2027-01-18")
+    assert "creditedSek" not in day and day["refundedSek"] == Decimal("100.00")
+
+
+def test_refunded_part_of_a_note():
+    from shared import billing as shared_billing
+    assert shared_billing.refunded_minor({"total": 12_500}) == 0
+    assert shared_billing.refunded_minor({"total": 12_500, "refund": "re_1"}) == 12_500
+    assert shared_billing.refunded_minor({"total": 12_500, "refund": "re_1", "out_of_band_amount": 2_500}) == 10_000
+    assert shared_billing.refunded_minor({"total": 12_500, "refunds": [{"amount_refunded": 99_999}]}) == 12_500
+
+
 def test_live_event_in_dev_is_ignored(app):
     evt = _invoice()
     evt["livemode"] = True

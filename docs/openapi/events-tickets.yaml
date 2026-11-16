@@ -1003,7 +1003,9 @@ paths:
     get:
       tags:
       - Events and tickets
-      summary: 'K19 Wallet pass (not built yet: always 404)'
+      summary: K19 Wallet pass of one valid ticket of the link (off by default -> 404)
+      description: Apple -> the .pkpass file; Google -> 302 to the signed save link. With EVENTS_WALLET_MODE=simulator
+        (never in prod) both kinds answer 200 JSON (`simulated`, a pass.json-like `pass` or a stub `saveUrl`).
       operationId: eventsTicketsGetPublicTicketsTokenPass
       security: []
       x-required-groups: []
@@ -1014,13 +1016,29 @@ paths:
         schema: *id001
       - name: ticketId
         in: query
-        required: false
+        required: true
         schema: *id001
       - name: kind
         in: query
-        required: false
-        schema: *id001
+        required: true
+        schema:
+          type: string
+          enum:
+          - apple
+          - google
       responses:
+        '200':
+          description: The Apple pass (application/vnd.apple.pkpass) or, in the simulator, its JSON stand-in.
+          content:
+            application/vnd.apple.pkpass:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+        '302':
+          description: Redirect to the signed "Save to Google Wallet" link.
         '400':
           description: Validation error (unsupported fields, bad values).
           content:
@@ -1206,6 +1224,7 @@ components:
         title: *id001
         description: *id001
         imageKey: *id001
+        imageAlt: *id001
         occurrences:
           type: array
           items:
@@ -1284,6 +1303,7 @@ components:
         title: *id001
         description: *id001
         imageKey: *id001
+        imageAlt: *id001
         series: *id007
         settings: *id008
         version: *id005
@@ -1303,6 +1323,8 @@ components:
         locationId: *id001
         title: *id001
         description: *id001
+        imageKey: *id001
+        imageAlt: *id001
         status:
           type: string
           enum:
@@ -1593,6 +1615,8 @@ components:
             properties:
               eventId: *id001
               title: *id001
+              imageKey: *id001
+              imageAlt: *id001
               nextOccurrence: *id001
               fromPriceSek:
                 type: number
@@ -1605,6 +1629,8 @@ components:
         eventId: *id001
         title: *id001
         description: *id001
+        imageKey: *id001
+        imageAlt: *id001
         refundPolicy:
           type: string
           nullable: true

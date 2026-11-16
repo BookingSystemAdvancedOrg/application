@@ -27,19 +27,22 @@ ENV_VARS:
     SCHEDULER_INVOKE_ROLE_ARN, SCHEDULER_DLQ_ARN (optional), JOBS_FUNCTION_ARN,
     NO_REPLY_EMAIL_ADDRESS, MARKETING_CONFIGURATION_SET, MARKETING_LINK_BASE,
     MARKETING_LINK_KEY_SECRET_ARN, MAIL_OUTBOX_BUCKET_NAME (dev only),
-    NOTIFICATION_FUNCTION_NAME (SMS via notification:live), SMS_ALLOWED_PREFIXES (optional)
+    NOTIFICATION_FUNCTION_NAME (SMS via notification:live), SMS_ALLOWED_PREFIXES (optional),
+    MARKETING_TABLE_NAME (optional: the MSG#<id> SES lookup for bounces and
+    complaints, read by marketing-sync; skipped when unset)
 """
 
 import html
 import json
 import logging
 import os
+import time
 from datetime import timedelta
 
 import boto3
 from botocore.exceptions import ClientError
 
-from shared import consent, dynamo, events, marketing_mail, tenant
+from shared import consent, dynamo, events, marketing, marketing_mail, tenant
 from shared.features import google_business as gbp
 from shared.features import guest_crm as crm
 from shared import google_business as google_port
@@ -52,6 +55,7 @@ SOURCE_TABLES = {"reservation": "RESERVATION_TABLE_NAME", "order": "ORDER_TABLE_
 KIND_TABLE = {"booking": "reservation", "order": "order"}
 SMS_ALLOWED_PREFIXES = ("+46", "+45", "+47", "+358", "+354")
 MIN_LEAD_SECONDS = 60
+MSG_TTL_DAYS = 45  # as marketing-send: SES events arrive within days
 _clients = {}
 
 
@@ -289,9 +293,10 @@ def _deliver(channel, to, tenant_id, location_id, tenant_row, restaurant, subjec
         if identity:
             text += f"\n{identity}\n"
             html_body += f"<p style=\"font-size:12px\">{html.escape(identity)}</p>"
-        marketing_mail.send(to=to, subject=subject, text=text, html_body=html_body,
-                            sender=marketing_mail.from_address(restaurant), unsubscribe_url=withdraw or None,
-                            kind="google-business.review-request")
+        message_id = marketing_mail.send(to=to, subject=subject, text=text, html_body=html_body,
+                                         sender=marketing_mail.from_address(restaurant),
+                                         unsubscribe_url=withdraw or None, kind="google-business.review-request")
+        _remember_message(message_id, tenant_id, to)
     else:
         # SMS only through notification:live (CONTRACTS.md 9.4): tenant sender, prefixes, part counting.
         notice = {"version": 1, "kind": "google-business.review-request", "tenantId": tenant_id,
@@ -300,6 +305,26 @@ def _deliver(channel, to, tenant_id, location_id, tenant_row, restaurant, subjec
                                 Payload=json.dumps({"notice": notice}).encode("utf-8"))
         if (resp or {}).get("StatusCode") != 202:
             raise RuntimeError(f"notification invoke returned {(resp or {}).get('StatusCode')}")
+
+
+def _remember_message(message_id, tenant_id, to):
+    """The SES event lookup marketing-sync reads (MSG#<id>, as marketing-send
+    writes it): a complaint withdraws the consent, a permanent bounce marks a
+    subscriber row. No address in the row, only hashes. Skipped while
+    MARKETING_TABLE_NAME is not set; a failed write is logged and never
+    fails the send (the email already went out, a retry would send it twice)."""
+    name = os.environ.get("MARKETING_TABLE_NAME")
+    if not name or not message_id:
+        return
+    try:
+        ttl = int(time.time()) + MSG_TTL_DAYS * 86400
+        dynamo.table(name).put_item(Item={
+            "PK": f"MSG#{message_id}", "SK": "MSG", "tenantId": tenant_id,
+            "subscriberId": marketing.subscriber_id(tenant_id, to),
+            "consentSubject": consent.subject(tenant_id, consent.EMAIL, to), "ttl": ttl})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(json.dumps({"event": "review_msg_lookup", "write": "failed", "tenantId": tenant_id,
+                                   "type": type(exc).__name__}))
 
 
 # --- dispatch --------------------------------------------------------------------------

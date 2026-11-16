@@ -211,6 +211,44 @@ def withdraw(table, *, tenant_id, channel, identifier=None, subject_id=None, sou
                                subject_id=subject_id))
 
 
+def suppress_now(table, *, tenant_id, withdrawal, ttl):
+    """Collapse one subject's history straight away into a bare suppression
+    record, as data-retention does after the grace period (an erasure must not
+    wait for the nightly job). `withdrawal` is the record just written by
+    `withdraw` (no identifier). Order keeps the guest withdrawn at every step:
+    the full records go first, then the suppression is written, then the
+    withdrawal goes. Returns False, leaving the withdrawal for data-retention,
+    when the role may not delete (AccessDenied)."""
+    pk_value, keep = withdrawal["PK"], withdrawal["SK"]
+    kwargs = {"KeyConditionExpression": Key("PK").eq(pk_value), "ConsistentRead": True}
+    records = []
+    while True:
+        out = table.query(**kwargs)
+        records.extend(out.get("Items") or [])
+        if not out.get("LastEvaluatedKey"):
+            break
+        kwargs["ExclusiveStartKey"] = out["LastEvaluatedKey"]
+    sk = f"{withdrawal['at']}#S"
+    try:
+        for r in records:
+            if r["SK"] not in (keep, sk):
+                table.delete_item(Key={"PK": r["PK"], "SK": r["SK"]})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("AccessDeniedException", "AccessDenied"):
+            return False
+        raise
+    try:
+        table.put_item(Item={"PK": pk_value, "SK": sk, "tenantId": tenant_id, "at": withdrawal["at"],
+                             "subject": withdrawal["subject"], "channel": withdrawal.get("channel"),
+                             "action": SUPPRESSED, "source": withdrawal.get("source"), "ttl": ttl},
+                       ConditionExpression="attribute_not_exists(SK)")
+    except ClientError as exc:
+        if not conditional_failed(exc):
+            raise
+    table.delete_item(Key={"PK": pk_value, "SK": keep})
+    return True
+
+
 def history(table, tenant_id, subject_id, limit=50):
     """Records for one subject, newest first."""
     out = table.query(KeyConditionExpression=Key("PK").eq(pk(tenant_id, subject_id)), ScanIndexForward=False,

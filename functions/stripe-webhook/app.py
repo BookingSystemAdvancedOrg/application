@@ -16,8 +16,12 @@ PURPOSE:
       payment_intent.succeeded       a fee whose result was unknown
       payment_intent.payment_failed  (Stripe unreachable / processing) ->
                                      *_charged / *_charge_failed
-      charge.refunded                refund made in the Stripe Dashboard ->
-                                     payment.refundedAmount
+      charge.refunded                payment.refundedAmount brought up to
+                                     Stripe's amount_refunded: completes an
+                                     owner refund whose answer was lost (with
+                                     its guest notice) and records Dashboard
+                                     refunds; never counts one twice
+                                     (shared/refunds.py)
 
     Every event is matched to its reservation by metadata (reservationId,
     locationId) AND the event's connected account must be the booking's
@@ -56,7 +60,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import feature_hooks, guarantee, tenant
+from shared import feature_hooks, guarantee, refunds, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -156,12 +160,7 @@ def _charge_refunded(obj, account, now):
     payment = (item or {}).get("payment") or {}
     if not item or payment.get("paymentIntentId") != obj.get("payment_intent"):
         return "ignored"
-    refunded = int(obj.get("amount_refunded") or 0)
-    already = int(payment.get("refundedAmount") or 0)
-    if refunded <= already:
-        return "already_recorded"
-    guarantee.record_refund(item, {"amount": refunded - already}, now, "stripe")
-    return "recorded"
+    return guarantee.record_stripe_refund(item, obj.get("amount_refunded"), now)
 
 
 def _with_intent_metadata(obj, account):
@@ -237,7 +236,8 @@ def handler(event, context):
             result = _charge_refunded(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict, feature_hooks.HookFailed):
+    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict, feature_hooks.HookFailed,
+            refunds.Changed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

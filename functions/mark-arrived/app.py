@@ -12,8 +12,11 @@ TRIGGER:
           (extend / shorten, docs/RESERVATIONS.md "Booking length")
     POST  /locations/{locationId}/reservations/{reservationId}/payment
           {"action": "charge"}                 charge / retry the fee
-          {"action": "refund", "amount": öre}  refund (owner only; amount
-                                               optional = the rest)
+          {"action": "refund", "amount": öre,  refund (owner only; amount
+           "reason", "notifyGuest"}            optional = the rest; reason shown
+                                               to the guest; notifyGuest default
+                                               true = fee_refunded email + SMS;
+                                               rules in shared/refunds.py)
 
 PURPOSE:
     Everything the restaurant does with a booking after it exists:
@@ -61,7 +64,7 @@ from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, booking_rules, guarantee, http, tenant
+from shared import availability, booking_rules, guarantee, http, refunds, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -211,7 +214,7 @@ def _set_status(event, ctx, item):
 
 
 def _payment(event, ctx, item):
-    data = http.body(event, allowed={"action", "amount"})
+    data = http.body(event, allowed={"action", "amount", "reason", "notifyGuest"})
     action = data.get("action")
     now = r.now_utc()
     status = item["status"]
@@ -234,14 +237,9 @@ def _payment(event, ctx, item):
     if action == "refund":
         if not ctx.is_owner:
             raise tenant.TenantError(403, "owner_only")
-        if status not in (r.NO_SHOW_CHARGED, r.CANCELLED_CHARGED) or payment.get("status") != guarantee.PAY_SUCCEEDED:
-            raise r.InvalidState("not_refundable")
-        remaining = int(payment["amount"]) - int(payment.get("refundedAmount") or 0)
-        amount = data.get("amount", remaining)
-        if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= remaining:
-            raise ValueError(f"amount must be a whole number of öre between 1 and {remaining}")
-        refund_obj = guarantee.refund(item, amount)
-        return guarantee.record_refund(item, refund_obj, now, ctx.sub)
+        return guarantee.refund(item, data.get("amount"), now, ctx.sub,
+                                reason=refunds.parse_reason(data.get("reason")),
+                                notify=refunds.parse_notify(data.get("notifyGuest")))
     raise ValueError("action must be charge or refund")
 
 
@@ -524,6 +522,8 @@ def handler(event, context):
     except r.NotFound:
         return http.error(404, "not found")
     except r.InvalidState as exc:
+        return http.error(409, exc.code)
+    except refunds.Conflict as exc:
         return http.error(409, exc.code)
     except r.Conflict as exc:
         return http.error(409, exc.code)

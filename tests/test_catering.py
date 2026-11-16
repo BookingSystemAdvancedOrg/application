@@ -84,6 +84,7 @@ class FakeStripe:
         self.calls = []
         self.invoice_status = "open"
         self.session_status = "open"
+        self.out_of_band = False
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -116,9 +117,11 @@ class FakeStripe:
         if path.endswith("/send") or path.endswith("/void") or path.endswith("/pay"):
             return {"id": "in_1"}
         if path.startswith("/v1/invoices/"):
+            if self.out_of_band:
+                return {"id": "in_1", "status": self.invoice_status, "paid_out_of_band": True}
             return {"id": "in_1", "status": self.invoice_status, "payment_intent": "pi_inv"}
         if path == "/v1/refunds":
-            return {"id": "re_1"}
+            return {"id": "re_1", "amount": (params or {}).get("amount")}
         if path == "/v1/payment_method_domains":
             return {"data": []} if method == "GET" else {"id": "pmd_1"}
         raise AssertionError(path)

@@ -165,6 +165,25 @@ def refund_payment(account, payment_intent, request_id, *, idempotency_key=None)
     }, account=account, idempotency_key=idempotency_key or f"cat-refund-{request_id}")
 
 
+def invoice_payment_intent(account, invoice):
+    """The PaymentIntent that paid a company invoice by card, or None (open,
+    or paid out of band = Bankgiro). Newer API versions list it under the
+    invoice's payments instead of invoice.payment_intent."""
+    if invoice.get("status") != "paid" or invoice.get("paid_out_of_band"):
+        return None
+    if invoice.get("payment_intent"):
+        pi = invoice["payment_intent"]
+        return pi.get("id") if isinstance(pi, dict) else pi
+    found = stripe.request("GET", "/v1/invoice_payments", {"invoice": invoice["id"], "status": "paid"},
+                           account=account)
+    for row in (found or {}).get("data") or []:
+        payment = row.get("payment") or {}
+        pi = payment.get("payment_intent")
+        if pi:
+            return pi.get("id") if isinstance(pi, dict) else pi
+    return None
+
+
 def refund_late_payment(account, payment_intent, request_id):
     """A Checkout payment that completed after the request was cancelled
     or expired: refunded in full (one key per payment intent)."""

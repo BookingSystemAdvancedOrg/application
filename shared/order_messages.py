@@ -8,6 +8,8 @@ guests who ordered in English.
     order_ready      SMS "ready to collect" (pickup orders only); e-mail when
                      no SMS can be sent
     order_cancelled  SMS + e-mail: cancelled by the restaurant, refunded
+    order_refunded   e-mail: the restaurant refunded (part of) the order
+                     without cancelling it (amount, its message)
 
 The receipt shows the seller (legal name, organisation number, address),
 each line, VAT per rate and the total. Pure functions; nothing here sends.
@@ -47,6 +49,10 @@ _TEXT = {
         "cancelled.lead.split": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet betalas "
                                  "tillbaka: {card} till ditt kort inom några bankdagar och {gift} till ditt "
                                  "presentkort ****{last4}."),
+        "refunded.subject": "Återbetalning för beställning #{number} - {restaurant}",
+        "refunded.lead": ("{restaurant} har betalat tillbaka {amount} för din beställning #{number}. "
+                          "Pengarna syns på ditt kort inom 5-10 bankdagar."),
+        "refunded.reason": "Meddelande från restaurangen: {reason}",
         "hello": "Hej {name}!",
         "receipt": "Kvitto",
         "order": "Beställning",
@@ -93,6 +99,10 @@ _TEXT = {
         "cancelled.lead.split": ("Unfortunately the restaurant has had to cancel your order. The full amount is "
                                  "refunded: {card} to your card within a few business days and {gift} to your "
                                  "gift card ****{last4}."),
+        "refunded.subject": "Refund for order #{number} - {restaurant}",
+        "refunded.lead": ("{restaurant} has refunded {amount} for your order #{number}. "
+                          "It shows on your card within 5-10 business days."),
+        "refunded.reason": "Message from the restaurant: {reason}",
         "hello": "Hi {name},",
         "receipt": "Receipt",
         "order": "Order",
@@ -258,6 +268,12 @@ def email(kind, item, tenant_row, location, link):
         subject = _t(lang, "ready.subject", number=number, restaurant=name)
         lead = _t(lang, "ready.lead") + (_t(lang, "pickup.at", address=location["address"])
                                          if (location or {}).get("address") else "")
+    elif kind == "order_refunded":
+        notice = (item.get("refund") or {}).get("notice") or {}
+        subject = _t(lang, "refunded.subject", number=number, restaurant=name)
+        lead = _t(lang, "refunded.lead", restaurant=name, amount=money(notice.get("amount") or 0), number=number)
+        if notice.get("reason"):
+            lead += " " + _t(lang, "refunded.reason", reason=_clip(notice["reason"], 200))
     else:
         subject = _t(lang, "cancelled.subject", number=number, restaurant=name)
         lead = _cancelled_lead(item, lang)
@@ -294,7 +310,7 @@ def email(kind, item, tenant_row, location, link):
             text.append(f"{_t(lang, 'org')}: {seller['org']}")
         if seller["address"]:
             text.append(seller["address"])
-    if link and kind != "order_cancelled":
+    if link and kind not in ("order_cancelled", "order_refunded"):
         text += ["", f"{_t(lang, 'follow')}:", link]
     if contact_text:
         text += ["", contact_text]
@@ -339,7 +355,8 @@ def email(kind, item, tenant_row, location, link):
     button = (
         f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};'
         f'color:#fdfaf6;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
-        f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind != "order_cancelled" else "")
+        f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind not in ("order_cancelled", "order_refunded")
+        else "")
     html_body = (
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'

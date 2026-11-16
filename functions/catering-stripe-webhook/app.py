@@ -20,7 +20,11 @@ PURPOSE:
       overdue / voided                           invoiceStatus mirrored
       invoice.paid                               company paid: paid = true,
                                                  delivered -> closed
-      charge.refunded / credit_note.created      refund recorded
+      charge.refunded                            refundedAmount up to Stripe's
+                                                 amount_refunded (refunds list;
+                                                 never counted twice)
+      credit_note.created                        noted only (its card refund
+                                                 arrives as charge.refunded)
 
     Matched by metadata (locationId, requestId) and the event's connected
     account = the request's stripeAccountId. Every event is written first
@@ -44,7 +48,9 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
+from shared import catering_refunds as cr
 from shared import catering_stripe as cs
+from shared import refunds
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -182,13 +188,23 @@ def _invoice(kind, invoice, account, stripe_event, now):
     raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
 
 
-def _refund(obj, account, stripe_event, now):
+def _refund(kind, obj, account, stripe_event, now):
+    """charge.refunded: refundedAmount brought up to Stripe's cumulative
+    amount_refunded (shared/refunds.py: completes an owner refund whose
+    answer was lost, records Dashboard refunds, never twice). A credit
+    note is only noted: when it refunds a card payment its charge.refunded
+    carries the money, so counting it too would count it twice."""
     item = _request(obj.get("metadata"), account)
     if not item:
         return "ignored"
-    amount = int(obj.get("amount_refunded") or obj.get("amount") or 0)
-    _update(item, sets=["refundedAmount = :a", "updatedAt = :now"], values={":a": amount, ":now": c.iso(now)})
-    return _audit(item, stripe_event, now, "recorded")
+    if kind == "credit_note.created":
+        return _audit(item, stripe_event, now, "credit_note_noted")
+    if not item.get("paid"):
+        return _audit(item, stripe_event, now, "not_paid")  # e.g. a late Checkout payment refunded at once
+    if item.get("customerType") == c.PRIVATE and obj.get("payment_intent") != item.get("paymentIntentId"):
+        return _audit(item, stripe_event, now, "other_payment")
+    _, result = cr.record_stripe_refund(item, obj.get("amount_refunded"), now)
+    return _audit(item, stripe_event, now, result)
 
 
 def handler(event, context):
@@ -217,10 +233,10 @@ def handler(event, context):
         elif kind.startswith("invoice."):
             result = _invoice(kind, obj, account, stripe_event, now)
         elif kind in ("charge.refunded", "credit_note.created"):
-            result = _refund(obj, account, stripe_event, now)
+            result = _refund(kind, obj, account, stripe_event, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, stripe.StripeError, stripe.StripeUnavailable):
+    except (BotoCoreError, ClientError, stripe.StripeError, stripe.StripeUnavailable, refunds.Changed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

@@ -41,6 +41,11 @@ _TEXT = {
         "fee_charged.subject": "Kvitto: {fee_label} - {restaurant}",
         "fee_charged.lead": ("Enligt villkoren du godkände vid bokningen har vi debiterat ditt kort "
                              "{amount} ({fee_label_lower}). Kontakta restaurangen om du har frågor."),
+        "fee_refunded.subject": "Återbetalning: {fee_label} - {restaurant}",
+        "fee_refunded.lead": "{restaurant} har betalat tillbaka {refund} av {fee_label_lower} till ditt kort.",
+        "fee_refunded.when": "Pengarna syns på kortet inom 5-10 bankdagar.",
+        "refund.reason": "Meddelande från restaurangen",
+        "refunded": "Återbetalt",
         "fee.no_show": "Avgift för utebliven gäst",
         "fee.late_cancel": "Avgift för sen avbokning",
         "amount": "Belopp",
@@ -62,6 +67,7 @@ _TEXT = {
         "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Tyvärr har vi behövt avboka din bokning {when}. Kontakta oss: {contact}",
         "sms.reminder": "{restaurant}: {greeting}Påminnelse om ditt bord {when}, {guests}.",
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} har debiterats för bokningen {when}.",
+        "sms.fee_refunded": "{restaurant}: {greeting}Vi har betalat tillbaka {refund} av avgiften för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
         "sms.greeting": "Hej {first}! ",
         "when": "{weekday} {day} {month} kl {time}",
@@ -92,6 +98,11 @@ _TEXT = {
         "fee_charged.subject": "Receipt: {fee_label} - {restaurant}",
         "fee_charged.lead": ("As agreed in the terms you accepted when booking, your card has been "
                              "charged {amount} ({fee_label_lower}). Contact the restaurant with any questions."),
+        "fee_refunded.subject": "Refund: {fee_label} - {restaurant}",
+        "fee_refunded.lead": "{restaurant} has refunded {refund} of the {fee_label_lower} to your card.",
+        "fee_refunded.when": "It shows on your card within 5-10 business days.",
+        "refund.reason": "Message from the restaurant",
+        "refunded": "Refunded",
         "fee.no_show": "No-show fee",
         "fee.late_cancel": "Late cancellation fee",
         "amount": "Amount",
@@ -113,6 +124,7 @@ _TEXT = {
         "sms.cancelled_by_restaurant": "{restaurant}: {greeting}Unfortunately we had to cancel your booking {when}. Contact us: {contact}",
         "sms.reminder": "{restaurant}: {greeting}Reminder of your table {when}, {guests}.",
         "sms.fee_charged": "{restaurant}: {greeting}{fee_label} {amount} has been charged for your booking {when}.",
+        "sms.fee_refunded": "{restaurant}: {greeting}We have refunded {refund} of the fee for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
         "sms.greeting": "Hi {first}! ",
         "when": "{weekday} {day} {month} at {time}",
@@ -130,7 +142,7 @@ _TEXT = {
 }
 
 GUEST_NOTICES = ("confirmed", "changed", "cancelled_by_guest", "cancelled_by_restaurant", "reminder",
-                 "fee_charged")
+                 "fee_charged", "fee_refunded")
 STAFF_ONLY_NOTICES = ("fee_failed",)
 
 
@@ -144,6 +156,12 @@ def _fee(item, lang):
     payment = item.get("payment") or {}
     label = _t(lang, f"fee.{payment.get('kind', 'no_show')}")
     return label, money(payment.get("amount") or 0)
+
+
+def _refund(item):
+    """(amount text, reason) of the refund the guest is told about."""
+    notice = (item.get("payment") or {}).get("refundNotice") or {}
+    return money(notice.get("amount") or 0), notice.get("reason")
 _WITH_LINK = ("confirmed", "changed", "reminder")
 
 
@@ -265,10 +283,18 @@ def guest_email(kind, item, tenant_row, location, link):
     if (location or {}).get("address"):
         rows.append((_t(lang, "address"), location["address"]))
     fee_label, amount = _fee(item, lang)
+    refund_text, refund_reason = _refund(item)
     subject = _t(lang, f"{kind}.subject", restaurant=name, when=when(item, lang), fee_label=fee_label)
-    lead = _t(lang, f"{kind}.lead", amount=amount, fee_label_lower=fee_label.lower())
+    lead = _t(lang, f"{kind}.lead", amount=amount, fee_label_lower=fee_label.lower(), restaurant=name,
+              refund=refund_text)
     if kind == "fee_charged":
         rows.append((_t(lang, "amount"), amount))
+    if kind == "fee_refunded":
+        lead += " " + _t(lang, "fee_refunded.when")
+        rows.append((_t(lang, "amount"), amount))
+        rows.append((_t(lang, "refunded"), refund_text))
+        if refund_reason:
+            rows.append((_t(lang, "refund.reason"), refund_reason))
     hello = _t(lang, "hello", name=first_name).replace(" !", "!").replace(" ,", ",")
     manage_label = _t(lang, "manage.reminder" if kind == "reminder" else "manage")
     show_link = bool(link) and kind in _WITH_LINK
@@ -340,7 +366,8 @@ def guest_sms(kind, item, tenant_row, location, link):
     greeting = _t(lang, "sms.greeting", first=first) if first else ""
     text = _t(lang, f"sms.{kind}", restaurant=name, greeting=greeting, when=when(item, lang),
               guests=_guests(item, lang),
-              contact=contact_line(tenant_row, location) or name, fee_label=fee_label, amount=amount)
+              contact=contact_line(tenant_row, location) or name, fee_label=fee_label, amount=amount,
+              refund=_refund(item)[0])
     if link and kind in _WITH_LINK:
         text += " " + _t(lang, "sms.manage", link=link)
     return text

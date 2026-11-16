@@ -464,16 +464,16 @@ def order_events(orders, first, last, tz):
     out = []
     for item in orders:
         rows = item.get("vat") or []
-        if item.get("paymentStatus") not in (o.PAY_PAID, o.PAY_REFUNDED) or not rows:
+        if item.get("paymentStatus") not in (o.PAY_PAID, o.PAY_PARTLY_REFUNDED, o.PAY_REFUNDED) or not rows:
             continue
         role_text = T_ONLINE
         paid_day = local_day(item.get("confirmedAt"), tz)
         if _in(paid_day, first, last):
             out.append(sale(paid_day, rows, "stripe", role_text, item.get("totalAmount")))
         refund = item.get("refund") or {}
-        refund_day = local_day(refund.get("at"), tz)
-        if refund.get("amount") and _in(refund_day, first, last):
-            amount = int(refund["amount"])
+        for refund_day, amount in refund_days(refund.get("items"), refund.get("amount"), refund.get("at"), tz):
+            if not _in(refund_day, first, last):
+                continue
             event = sale(refund_day, scaled_rows(rows, amount), "stripe", role_text, amount, refund=True)
             if amount < int(item.get("totalAmount") or 0):
                 event.warnings.append("Delvis återbetald beställning: momsen fördelad efter belopp.")
@@ -495,12 +495,34 @@ def guarantee_events(reservations, first, last, tz):
         charged = local_day(payment.get("settledAt"), tz)
         if amount and _in(charged, first, last):
             out.append(sale(charged, rows, "stripe", T_GUARANTEE, label=T_FEE_SALES))
-        refunded = int(payment.get("refundedAmount") or 0)
-        refund_day = local_day(payment.get("refundedAt"), tz)
-        if refunded and _in(refund_day, first, last):
-            out.append(sale(refund_day, scaled_rows(rows, refunded), "stripe", T_GUARANTEE, refunded, refund=True,
-                            label=T_FEE_SALES))
+        for day, refunded in refund_days(payment.get("refundItems"), payment.get("refundedAmount"),
+                                         payment.get("refundedAt"), tz):
+            if _in(day, first, last):
+                out.append(sale(day, scaled_rows(rows, refunded), "stripe", T_GUARANTEE, refunded, refund=True,
+                                label=T_FEE_SALES))
     return out
+
+
+def refund_days(items, total, last_at, tz):
+    """[(day, öre)] refunded per local day: from the refund list
+    (shared/refunds.py) when there is one, else the whole total on the last
+    refund's day (records from before the list)."""
+    total = int(total or 0)
+    if not total:
+        return []
+    by_day = {}
+    listed = 0
+    for entry in items or []:
+        amount = int(entry.get("amount") or 0)
+        day = local_day(entry.get("at"), tz)
+        if amount and day:
+            by_day[day] = by_day.get(day, 0) + amount
+            listed += amount
+    if listed < total:
+        day = local_day(last_at, tz)
+        if day:
+            by_day[day] = by_day.get(day, 0) + total - listed
+    return sorted(by_day.items())
 
 
 def offer_rows(offer):
@@ -554,9 +576,29 @@ def catering_events(requests, first, last, tz):
                 out.append(_advance_to_sales(delivery, rows))
         elif _in(paid_day, first, last):
             out.append(sale(paid_day, rows, "stripe", T_ONLINE, label=T_CATERING))
+        listed = "refundCount" in item  # refunds recorded one by one (shared/catering_refunds.py)
+        if listed and item.get("paid"):
+            for entry in item.get("refunds") or []:
+                day, amount = local_day(entry.get("at"), tz), int(entry.get("amount") or 0)
+                if not amount or not _in(day, first, last):
+                    continue
+                net_role = "advances" if advance and day < delivery else None
+                label = T_ADVANCE if net_role else T_CATERING
+                part = scaled_rows(rows, amount)
+                if entry.get("manual"):
+                    event = sale(day, part, "refundsOwed", T_REFUNDS_OWED, amount, refund=True, label=T_CATERING)
+                    event.warnings.append("Catering betald via bankgiro: betala tillbaka för hand och boka mot "
+                                          "skuldkontot.")
+                else:
+                    event = sale(day, part, "stripe", T_ONLINE, amount, refund=True, net_role=net_role, label=label)
+                if amount < total:
+                    event.warnings.append("Delvis återbetald catering: momsen fördelad efter belopp.")
+                out.append(event)
         for day, how in cancels:
             if not _in(day, first, last):
                 continue
+            if listed and how in ("refunded", "refund_manually"):
+                continue  # the money is in the refund rows above
             # an advance not yet delivered is reversed from 2420, else from sales
             net_role = "advances" if advance and day < delivery else None
             label = T_ADVANCE if net_role else T_CATERING

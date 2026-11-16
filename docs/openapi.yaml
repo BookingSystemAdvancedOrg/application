@@ -4228,7 +4228,10 @@ paths:
         `charge` - charge or retry the no-show / late-cancellation fee the
         guest accepted (an interrupted attempt is re-sent with the same
         Stripe idempotency key, so it never charges twice). `refund` -
-        owner only; `amount` in öre, default the rest.
+        owner only; `amount` in öre, default the rest; `reason` is shown
+        to the guest; `notifyGuest` (default true) sends the fee_refunded
+        e-mail and SMS. One refund at a time: 409 `refund_in_progress`,
+        `changed_retry` (reload), `nothing_to_refund`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -4249,6 +4252,11 @@ paths:
                 amount:
                   type: integer
                   minimum: 1
+                reason:
+                  type: string
+                  maxLength: 200
+                notifyGuest:
+                  type: boolean
       responses:
         '200':
           description: The booking with its payment.
@@ -4533,6 +4541,68 @@ paths:
                 $ref: '#/components/schemas/Order'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/{orderId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags:
+        - Orders
+      summary: Refund (part of) a paid order without cancelling it
+      operationId: refundOrder
+      description: |
+        Owner only. The card part of a confirmed, preparing, ready or
+        completed paid order, capped at what is left (`refundable` on the
+        order); a gift card's part comes back only on cancel. Stripe
+        refund with an explicit amount and its own idempotency key per
+        refund; `paymentStatus` becomes `partly_refunded` or `refunded`;
+        the guest gets an e-mail unless `notifyGuest` is false. 409
+        `not_paid`, `not_refundable`, `refund_in_progress`,
+        `changed_retry`, `nothing_to_refund`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                amount:
+                  type: integer
+                  minimum: 1
+                  description: öre; default what is left
+                reason:
+                  type: string
+                  maxLength: 200
+                notifyGuest:
+                  type: boolean
+      responses:
+        '200':
+          description: The updated order.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          description: Not the owner (owner_only).
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '502':
+          description: Stripe refused the refund (refund_failed); nothing changed.
+        '503':
+          description: Stripe unreachable (payment_unavailable); the refund is completed by the webhook or a later retry.
 
   /locations/{locationId}/orders/{orderId}/status:
     parameters:
@@ -5893,6 +5963,52 @@ paths:
         '404':
           description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
         '409': {description: not_cancellable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Refund (part of) a paid order without cancelling it
+      operationId: refundCateringOrder
+      description: |
+        Owner only, confirmed / delivered / closed paid requests, capped at
+        the signed total less earlier refunds (`refundable` on the request).
+        Private Checkout and card-paid invoices: Stripe refund with an
+        explicit amount; a Bankgiro invoice: recorded as a manual refund
+        owed (no Stripe call). 409 `not_paid`, `not_refundable`,
+        `refund_in_progress`, `changed_retry`, `nothing_to_refund`.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                amount: {type: integer, minimum: 1, description: öre; default what is left}
+                reason: {type: string, maxLength: 200}
+                notifyGuest: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan or unknown request.
+        '409': {description: 'not_paid, not_refundable, refund_in_progress, changed_retry or nothing_to_refund.'}
+        '502': {description: Stripe refused the refund (payment_provider_rejected).}
         '503':
           description: The catering service (or a provider it needs) is unavailable.
 
@@ -8718,6 +8834,7 @@ components:
             - processing
             - paid
             - failed
+            - partly_refunded
             - refunded
         mode:
           type: string
@@ -8797,6 +8914,19 @@ components:
                   format: date-time
                 refundId:
                   type: string
+                count:
+                  type: integer
+                items:
+                  type: array
+                  items:
+                    type: object
+                pending:
+                  type: object
+            refundable:
+              type: integer
+              description: What an owner refund can still give back (card part, öre).
+            giftCard:
+              type: object
             history:
               type: array
               items:

@@ -44,6 +44,8 @@ ordered 1-20 times; an order has at most 30 lines.
      SMS can be sent)
    - `order_cancelled` - e-mail only, with the refund amount. Never an
      SMS: cancellation SMS are for table bookings.
+   - `order_refunded` - e-mail only: the owner refunded (part of) the
+     order without cancelling it, with the amount and the owner's message.
 
    Order SMS are short and plain, always one SMS part (max 160
    characters, no link - the link is in the receipt e-mail):
@@ -54,8 +56,12 @@ ordered 1-20 times; an order has at most 30 lines.
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
    orders. Two clicks: "Påbörja - skicka sms" (`preparing`, the
    confirmation SMS) and "Klar - skicka sms" (`ready`, pickup) / "Klar att
-   servera" (table), then `completed`; or `cancelled` (refunds the whole
-   order with Stripe).
+   servera" (table), then `completed`; or `cancelled` (refunds what is left
+   of the order with Stripe). The owner can also refund part or all of the
+   card payment without cancelling ("Återbetala", POST
+   `.../orders/{orderId}/refund`, also on completed orders): paymentStatus
+   `partly_refunded` / `refunded`, one Stripe key per refund, rules in
+   `shared/refunds.py`.
 
 6. **Kitchen printer** (optional, Star CloudPRNT, e.g. mC-Print3 on
    Ethernet): the order table's stream runs `print-jobs`, which puts one

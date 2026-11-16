@@ -68,7 +68,7 @@ CATERING_GUEST_FIELDS = ("customerEmail", "customerPhone", "notes", "marketingOp
 CATERING_PRIVATE_FIELDS = ("deliveryAddress",)
 
 CATERING_UNSUCCESSFUL = ("declined", "rejected", "expired", "cancelled")
-ORDER_RECEIPT_STATUSES = ("paid", "refunded", "partially_refunded")
+ORDER_RECEIPT_STATUSES = ("paid", "refunded", "partly_refunded", "partially_refunded")
 BOOKING_CHARGE_STATUSES = ("succeeded", "refunded", "processing", "pending")
 
 

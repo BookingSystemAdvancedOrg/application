@@ -21,14 +21,16 @@ def _refund_calls(env):
 def test_gift_order_after_a_partial_dashboard_refund_refunds_the_rest(env, monkeypatch):
     oid, calls = _paid_gift_order(env, monkeypatch, 10000)
     _dashboard_refund(env, oid, 5000)
-    assert stored(env, oid)["paymentStatus"] == "paid"
+    assert stored(env, oid)["paymentStatus"] == "partly_refunded"
     env["stripe"].calls.clear()
     result = body_of(set_status(env, oid, "cancelled"))
     assert result["status"] == "cancelled" and result["paymentStatus"] == "refunded"
     (refund,) = _refund_calls(env)
-    assert refund["key"] == f"refund-{oid}" and "amount" not in refund["params"]
+    charged = TOTAL - 10000
+    assert refund["key"] == f"refund-{oid}-1" and refund["params"]["amount"] == charged - 5000
     item = stored(env, oid)
-    assert item["refund"]["refundId"] == "re_1" and item["refund"]["amount"] == 5000 + 25000
+    assert item["refund"]["amount"] == charged
+    assert [e["amount"] for e in item["refund"]["items"]] == [5000, charged - 5000]
     assert [c["op"] for c in calls] == ["reserve", "refund"]
 
 
@@ -65,4 +67,6 @@ def test_order_partly_refunded_in_the_dashboard_records_the_whole_refund(env, mo
     env["stripe"].calls.clear()
     result = body_of(set_status(env, oid, "cancelled"))
     assert result["status"] == "cancelled" and len(_refund_calls(env)) == 1
-    assert stored(env, oid)["refund"]["amount"] == 1000 + 25000
+    (call,) = _refund_calls(env)
+    assert call["params"]["amount"] == TOTAL - 1000
+    assert stored(env, oid)["refund"]["amount"] == TOTAL

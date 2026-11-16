@@ -359,7 +359,7 @@ def classify(kind: str, item: dict) -> Optional[str]:
     if kind == "order":
         if status in ("cancelled", "failed", "pending_payment"):
             return None
-        if status == "completed" or item.get("paymentStatus") == "paid":
+        if status == "completed" or item.get("paymentStatus") in ("paid", "partly_refunded"):
             return "order"
         return None
     if kind == "catering":

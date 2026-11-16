@@ -21,6 +21,8 @@ PURPOSE:
       cancelled_by_restaurant   cancellation notice       -
       reminder                  reminder + cancel link    -
       fee_charged               fee receipt               -
+      fee_refunded              refund receipt (amount,   -
+                                restaurant's reason)
       fee_failed                -                         charge failed (any source)
 
     * SMS only when the tenant enabled it (tenant.notifications.sms) and
@@ -65,6 +67,8 @@ PURPOSE:
                          staff press "Påbörja"; e-mail when no SMS can be sent
       order_ready        SMS "ready to collect" - pickup orders; e-mail when
                          no SMS can be sent
+      order_refunded     e-mail only (owner refund without cancelling: amount,
+                         the restaurant's message)
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
 
@@ -486,7 +490,7 @@ def _order(record):
         wants_sms = kind == orders.NOTICE_STARTED or new.get("mode") == orders.PICKUP
         wants_email = not phone  # e-mail only when no SMS can be sent
     else:
-        # Cancelled by the restaurant: the e-mail with the refund - no SMS
+        # Cancelled or refunded by the restaurant: the e-mail with the refund - no SMS
         # (cancellation SMS are for table bookings only).
         wants_sms, wants_email = False, True
     steps = []

@@ -15,9 +15,13 @@ PURPOSE:
       checkout.session.async_payment_succeeded order confirmed
       checkout.session.async_payment_failed    order failed
       checkout.session.expired                 order failed (abandoned)
-      charge.refunded                          paymentStatus refunded
-                                               (also refunds made in the
-                                               Stripe Dashboard)
+      charge.refunded                          refund.amount brought up to
+                                               Stripe's amount_refunded,
+                                               paymentStatus partly_refunded /
+                                               refunded: completes an owner
+                                               refund whose answer was lost and
+                                               records Dashboard refunds, never
+                                               twice (shared/refunds.py)
 
     Confirming writes the order_confirmed notice: the Order table's stream
     sends the guest's SMS and receipt e-mail (notification).
@@ -52,7 +56,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, order_payments
+from shared import dynamo, feature_hooks, order_payments, refunds
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -159,31 +163,8 @@ def _charge_refunded(charge, account, now):
     item = _order(charge.get("metadata"), account)
     if not item or item.get("paymentIntentId") != charge.get("payment_intent"):
         return "ignored"
-    refunded = int(charge.get("amount_refunded") or 0)
-    if refunded <= int((item.get("refund") or {}).get("amount") or 0):
-        return "already_recorded"
-    full = refunded >= order_payments.charged_amount(item)
-    updates = ["#rf = :refund", "updatedAt = :now",
-               "history = list_append(if_not_exists(history, :empty), :entry)"]
-    values = {":refund": {"amount": refunded, "at": o.iso(now)}, ":now": o.iso(now),
-              ":empty": [], ":entry": [o.history_entry("refunded", "stripe", now, amount=refunded)],
-              ":amount": refunded}
-    if full:
-        updates.append("paymentStatus = :refunded")
-        values[":refunded"] = o.PAY_REFUNDED
-    try:
-        dynamo.table(o.order_table()).update_item(
-            Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
-            UpdateExpression="SET " + ", ".join(updates),
-            ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(#rf) OR #rf.amount < :amount)",
-            ExpressionAttributeNames={"#rf": "refund"},
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return "already_recorded"
-        raise
-    return "recorded"
+    _, result = order_payments.record_stripe_refund(item, charge.get("amount_refunded"), now)
+    return result
 
 
 _SESSION_EVENTS = ("checkout.session.completed", "checkout.session.async_payment_succeeded",
@@ -219,7 +200,7 @@ def handler(event, context):
             result = _charge_refunded(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, feature_hooks.HookFailed):
+    except (BotoCoreError, ClientError, feature_hooks.HookFailed, refunds.Changed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

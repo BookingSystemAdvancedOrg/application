@@ -37,6 +37,7 @@ ROUTING = {
     "catering_owner_reminder": (False, False, True, True),
     "catering_sign_reminder": (True, True, False, False),
     "catering_day_before": (True, False, False, False),
+    "catering_refunded": (True, True, False, False),
 }
 
 
@@ -84,6 +85,19 @@ _REFUND_SMS = {
     "invoice_voided": "Fakturan är makulerad. ",
     "refund_manually": "Restaurangen betalar tillbaka. ",
 }
+
+
+def _refunded_lead(item, name):
+    notice = item.get("notice") or {}
+    amount = money(notice.get("amount") or 0)
+    if notice.get("manual"):
+        lead = f"{name} betalar tillbaka {amount} för din catering {_when(item)} till samma konto som du betalade från."
+    else:
+        lead = (f"{name} har betalat tillbaka {amount} för din catering {_when(item)}. Pengarna syns på "
+                "samma betalsätt inom 5-10 bankdagar.")
+    if notice.get("reason"):
+        lead += f" Meddelande från restaurangen: {notice['reason']}"
+    return lead + " Kontakta restaurangen om du har frågor."
 
 
 def guest_email(kind, item, tenant_row, location, link):
@@ -138,6 +152,10 @@ def guest_email(kind, item, tenant_row, location, link):
             + (f" Meddelande: {item.get('cancelReason')}" if item.get("cancelReason") else "")
             + _REFUND_EMAIL.get(item.get("refundNote"), "") + " Kontakta restaurangen om du har frågor.",
             None),
+        "catering_refunded": (
+            f"Återbetalning för din catering - {name}",
+            _refunded_lead(item, name),
+            "Visa beställningen"),
         "catering_expired": (
             f"Din cateringförfrågan har gått ut - {name}",
             "Förfrågan eller offerten gick ut innan den blev klar. Skicka gärna en ny förfrågan om du "
@@ -161,6 +179,8 @@ def guest_sms(kind, item, tenant_row, location, link):
                              "Se mejlet för mer information.",
         "catering_cancelled": f"{name}: Tyvärr har vi behövt avboka din catering {_when(item)}. "
                               + _REFUND_SMS.get(item.get("refundNote"), "") + "Se mejlet.",
+        "catering_refunded": f"{name}: Vi har betalat tillbaka {money((item.get('notice') or {}).get('amount') or 0)} "
+                             f"för din catering {_when(item)}. Se mejlet.",
     }
     return texts[kind]
 

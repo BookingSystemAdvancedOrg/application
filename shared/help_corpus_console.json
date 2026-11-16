@@ -1181,16 +1181,17 @@
     "appearance",
     "colours"
    ],
-   "answer": "Light or dark is under Settings, Appearance and sound. Press to switch; light is the default. It is kept in this browser.",
+   "answer": "Light or dark is under Settings, You, Appearance and sound. Press to switch; light is the default. It is kept in this browser.",
    "steps": [
-    "Open Settings.",
-    "Under Appearance and sound, press Light or dark."
+    "Open Settings and press Appearance and sound under You.",
+    "Press Light or dark."
    ],
    "actions": [
     {
      "id": "theme-open",
-     "label": "Open Settings",
+     "label": "Open Appearance and sound",
      "to": "/settings",
+     "hash": "appearance",
      "highlight": [
       "help:settings:theme"
      ]
@@ -1216,17 +1217,18 @@
     "background colour",
     "picture behind the glass"
    ],
-   "answer": "Background under Settings sets what sits behind the glass: Colour (the Booqy backdrop, the swatches Wine, Walnut, Sand, Sage, Slate and Plum, or your own colour with +) or Your image, a picture you upload. In the desktop app there is also See-through, the default, with your desktop showing through.",
+   "answer": "Background under Settings, You, Appearance and sound sets what sits behind the glass: Colour (the Booqy backdrop, the swatches Wine, Walnut, Sand, Sage, Slate and Plum, or your own colour with +) or Your image, a picture you upload. In the desktop app there is also See-through, the default, with your desktop showing through.",
    "steps": [
-    "Open Settings.",
+    "Open Settings and press Appearance and sound under You.",
     "Under Background, press Colour, Your image (or See-through in the desktop app).",
     "Pick a swatch or + for your own colour, or press Choose picture and pick a JPG, PNG, WebP or HEIC image."
    ],
    "actions": [
     {
      "id": "background-open",
-     "label": "Open Settings",
+     "label": "Open Appearance and sound",
      "to": "/settings",
+     "hash": "appearance",
      "highlight": [
       "help:settings:background"
      ]
@@ -1249,16 +1251,17 @@
     "noise",
     "turn off sound"
    ],
-   "answer": "Click sound and Volume are under Settings, Appearance and sound. The click is on by default; 40 % is the standard volume and 0 % is silent.",
+   "answer": "Click sound and Volume are under Settings, You, Appearance and sound. The click is on by default; 40 % is the standard volume and 0 % is silent.",
    "steps": [
-    "Open Settings.",
+    "Open Settings and press Appearance and sound under You.",
     "Press Click sound to turn it off or on, or move Volume."
    ],
    "actions": [
     {
      "id": "sound-open",
-     "label": "Open Settings",
+     "label": "Open Appearance and sound",
      "to": "/settings",
+     "hash": "appearance",
      "highlight": [
       "help:settings:sound",
       "help:settings:volume"
@@ -1285,9 +1288,9 @@
     "appimage",
     "app"
    ],
-   "answer": "Booqy Console is also an app in its own window, with the same sign-in and features. Settings, Desktop app (Download app in the menu) suggests the file for your computer and lists the rest for Mac, Windows and Linux. It isn't signed yet, so the computer warns once: Opening it the first time explains what to press.",
+   "answer": "Booqy Console is also an app in its own window, with the same sign-in and features. Settings, You, App (Download app in the menu) suggests the file for your computer and lists the rest for Mac, Windows and Linux. It isn't signed yet, so the computer warns once: Opening it the first time explains what to press.",
    "steps": [
-    "Press Download app in the menu, or open Settings and go to Desktop app.",
+    "Press Download app in the menu, or open Settings and press App under You.",
     "Press the recommended download, or pick the file for your computer from the list.",
     "Open it; on a Mac, use Open Anyway in System Settings, Privacy & Security the first time."
    ],
@@ -1297,14 +1300,6 @@
      "label": "Open Desktop app",
      "to": "/settings",
      "hash": "desktop-app",
-     "highlight": [
-      "help:settings:desktop-app"
-     ]
-    },
-    {
-     "id": "desktop-app-settings",
-     "label": "Open Settings",
-     "to": "/settings",
      "highlight": [
       "help:settings:desktop-app"
      ]
@@ -1657,6 +1652,84 @@
    "audience": "all"
   },
   {
+   "id": "settings-branch:profile",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "profile",
+   "title": "Profile",
+   "where": "Settings, You",
+   "text": "Profile is under Settings, You.",
+   "highlight": [
+    "help:settings-branch:profile"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings-branch:appearance",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "appearance",
+   "title": "Appearance and sound",
+   "where": "Settings, You",
+   "text": "Appearance and sound is under Settings, You.",
+   "highlight": [
+    "help:settings-branch:appearance"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings-branch:desktop-app",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "desktop-app",
+   "title": "App",
+   "where": "Settings, You",
+   "text": "App is under Settings, You.",
+   "highlight": [
+    "help:settings-branch:desktop-app"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings-branch:meta-ads",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "meta-ads",
+   "title": "Meta ads limits",
+   "where": "Settings, Platform",
+   "text": "Meta ads limits is under Settings, Platform.",
+   "highlight": [
+    "help:settings-branch:meta-ads"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings-branch:phone-agent",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "phone-agent",
+   "title": "Phone agent limits",
+   "where": "Settings, Platform",
+   "text": "Phone agent limits is under Settings, Platform.",
+   "highlight": [
+    "help:settings-branch:phone-agent"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "settings-branch:mail-brand",
+   "kind": "page",
+   "route": "/settings",
+   "hash": "mail-brand",
+   "title": "Email brand template",
+   "where": "Settings, Platform",
+   "text": "Email brand template is under Settings, Platform.",
+   "highlight": [
+    "help:settings-branch:mail-brand"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "components-AvatarSetting:profile-picture:heading",
    "kind": "element",
    "route": "/profile",
@@ -1758,7 +1831,7 @@
    "route": "/tenants/:tenantId",
    "title": "Cancel",
    "where": "a customer's page, Billing tab",
-   "text": "No invoices yet.",
+   "text": "",
    "highlight": [
     "text:Cancel"
    ],
@@ -1782,7 +1855,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "App on your phone",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:App on your phone"
@@ -1795,7 +1868,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "The app is installed. Open Booqy Console from your home screen.",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:The app is installed. Open Booqy Console from your home screen."
@@ -1808,7 +1881,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Share",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Share"
@@ -1821,7 +1894,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Add to Home Screen",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Add to Home Screen"
@@ -1834,7 +1907,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Add",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Add"
@@ -1847,7 +1920,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Install app",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Install app"
@@ -1860,7 +1933,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Desktop app",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "help:settings:desktop-app"
@@ -1873,7 +1946,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Install with one command (recommended)",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "help:settings:desktop-app"
@@ -1886,7 +1959,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Or download the file",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "Pick the file for your computer from the list.",
    "highlight": [
     "text:Or download the file"
@@ -1899,7 +1972,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Opening it the first time",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "The app is not signed with Apple or Microsoft yet, so the computer warns once.",
    "highlight": [
     "text:Opening it the first time"
@@ -1912,7 +1985,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Mac:",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Mac:"
@@ -1925,7 +1998,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Windows:",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Windows:"
@@ -1938,7 +2011,7 @@
    "route": "/settings",
    "hash": "desktop-app",
    "title": "Linux:",
-   "where": "Settings, Desktop app",
+   "where": "Settings, You, App",
    "text": "",
    "highlight": [
     "text:Linux:"
@@ -1951,7 +2024,7 @@
    "route": "/tenants/:tenantId",
    "title": "Add domain",
    "where": "a customer's page, Domains tab",
-   "text": "Search .se / .com / .eu, see the price, register it in the restaurant's name. .se needs the registreringsbevis.",
+   "text": "Simulated",
    "highlight": [
     "text:Add domain"
    ],
@@ -2131,33 +2204,33 @@
    "route": "/tenants/:tenantId",
    "title": "Their domain",
    "where": "a customer's page, Domains tab",
-   "text": "The domain itself, e.g. restaurang.se",
+   "text": "e.g. restaurang.se",
    "highlight": [
     "text:Their domain"
    ],
    "audience": "all"
   },
   {
-   "id": "components-DomainWizard:domains:hostname:field",
+   "id": "components-DomainWizard:domains:transfer-code:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
-   "title": "Hostname",
+   "title": "Transfer code",
    "where": "a customer's page, Domains tab",
-   "text": "e.g. www.restaurang.se - the bare domain can't be a CNAME",
+   "text": "From their registrar (one.com: Domain, Transfer / EPP code)",
    "highlight": [
-    "text:Hostname"
+    "text:Transfer code"
    ],
    "audience": "all"
   },
   {
-   "id": "components-DomainWizard:domains:add:button",
+   "id": "components-DomainWizard:domains:domain:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
-   "title": "Add",
+   "title": "Domain",
    "where": "a customer's page, Domains tab",
    "text": "",
    "highlight": [
-    "text:Add"
+    "text:Domain"
    ],
    "audience": "all"
   },
@@ -2222,6 +2295,18 @@
    "audience": "all"
   },
   {
+   "id": "components-SettingsTree:settings:button",
+   "kind": "element",
+   "route": "/settings",
+   "title": "Settings",
+   "where": "Settings",
+   "text": "",
+   "highlight": [
+    "text:Settings"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "components-WebsiteTab:website:website-repo:heading",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -2275,7 +2360,7 @@
    "route": "/tenants/:tenantId",
    "title": "Give access",
    "where": "a customer's page, Website tab",
-   "text": "A developer gets write access to",
+   "text": "",
    "highlight": [
     "help:card:give-access"
    ],
@@ -2333,8 +2418,9 @@
    "id": "features-meta-ads-MetaAdsSettingsCard:meta-ads:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "meta-ads",
    "title": "Meta ads",
-   "where": "Settings",
+   "where": "Settings, Platform, Meta ads limits",
    "text": "",
    "highlight": [
     "help:card:meta-ads"
@@ -2345,9 +2431,10 @@
    "id": "features-meta-ads-MetaAdsSettingsCard:max-monthly-cap-per-restaurant-sek:field",
    "kind": "element",
    "route": "/settings",
+   "hash": "meta-ads",
    "title": "Max monthly cap per restaurant (SEK)",
-   "where": "Settings",
-   "text": "Owners can set their own cap up to this ceiling.",
+   "where": "Settings, Platform, Meta ads limits",
+   "text": "",
    "highlight": [
     "text:Max monthly cap per restaurant (SEK)"
    ],
@@ -2429,8 +2516,9 @@
    "id": "features-phone-agent-PhoneAgentSettingsCard:phone-agent:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "phone-agent",
    "title": "Phone agent",
-   "where": "Settings",
+   "where": "Settings, Platform, Phone agent limits",
    "text": "",
    "highlight": [
     "help:card:phone-agent"
@@ -2441,9 +2529,10 @@
    "id": "features-phone-agent-PhoneAgentSettingsCard:max-minutes-per-restaurant-per-month:field",
    "kind": "element",
    "route": "/settings",
+   "hash": "phone-agent",
    "title": "Max minutes per restaurant per month",
-   "where": "Settings",
-   "text": "Owners can set their own cap up to this ceiling (0-100000).",
+   "where": "Settings, Platform, Phone agent limits",
+   "text": "",
    "highlight": [
     "text:Max minutes per restaurant per month"
    ],
@@ -3413,8 +3502,9 @@
    "id": "pages-SettingsPage:your-profile:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "profile",
    "title": "Your profile",
-   "where": "Settings",
+   "where": "Settings, You, Profile",
    "text": "",
    "highlight": [
     "text:Your profile"
@@ -3422,11 +3512,25 @@
    "audience": "all"
   },
   {
+   "id": "pages-SettingsPage:open-my-profile:button",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "profile",
+   "title": "Open my profile",
+   "where": "Settings, You, Profile",
+   "text": "",
+   "highlight": [
+    "help:settings:profile"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "pages-SettingsPage:appearance-and-sound:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "appearance",
    "title": "Appearance and sound",
-   "where": "Settings",
+   "where": "Settings, You, Appearance and sound",
    "text": "",
    "highlight": [
     "text:Appearance and sound"
@@ -3437,8 +3541,9 @@
    "id": "pages-SettingsPage:light-or-dark:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "appearance",
    "title": "Light or dark",
-   "where": "Settings",
+   "where": "Settings, You, Appearance and sound",
    "text": "",
    "highlight": [
     "help:settings:theme"
@@ -3449,8 +3554,9 @@
    "id": "pages-SettingsPage:click-sound:heading",
    "kind": "element",
    "route": "/settings",
+   "hash": "appearance",
    "title": "Click sound",
-   "where": "Settings",
+   "where": "Settings, You, Appearance and sound",
    "text": "40 % standard",
    "highlight": [
     "help:settings:sound"
@@ -3461,11 +3567,51 @@
    "id": "pages-SettingsPage:volume:field",
    "kind": "element",
    "route": "/settings",
+   "hash": "appearance",
    "title": "Volume",
-   "where": "Settings",
+   "where": "Settings, You, Appearance and sound",
    "text": "40 % standard",
    "highlight": [
     "help:settings:volume"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:email-brand-template:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "mail-brand",
+   "title": "Email brand template",
+   "where": "Settings, Platform, Email brand template",
+   "text": "",
+   "highlight": [
+    "text:Email brand template"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:brand-template:heading",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "mail-brand",
+   "title": "Brand template",
+   "where": "Settings, Platform, Email brand template",
+   "text": "",
+   "highlight": [
+    "help:settings:mail-brand"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-SettingsPage:open-in-mail:button",
+   "kind": "element",
+   "route": "/settings",
+   "hash": "mail-brand",
+   "title": "Open in Mail",
+   "where": "Settings, Platform, Email brand template",
+   "text": "",
+   "highlight": [
+    "help:settings:mail-brand"
    ],
    "audience": "all"
   },
@@ -3854,14 +4000,14 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:domains:domains-we-run-dns-for:heading",
+   "id": "pages-TenantPage:domains:own-domains:heading",
    "kind": "element",
    "route": "/tenants/:tenantId",
-   "title": "Domains we run DNS for",
+   "title": "Own domains",
    "where": "a customer's page, Domains tab",
    "text": "",
    "highlight": [
-    "help:card:domains-we-run-dns-for"
+    "help:card:own-domains"
    ],
    "audience": "all"
   },
@@ -3874,6 +4020,54 @@
    "text": "",
    "highlight": [
     "help:card:website-hostnames"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:check-now:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Check now",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Check now"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:move-again:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Move again",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Move again"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:e-mail-steps:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "E-mail steps",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:E-mail steps"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-TenantPage:domains:transfer-to-booqy:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Transfer to Booqy",
+   "where": "a customer's page, Domains tab",
+   "text": "",
+   "highlight": [
+    "text:Transfer to Booqy"
    ],
    "audience": "all"
   },

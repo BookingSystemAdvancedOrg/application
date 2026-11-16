@@ -70,6 +70,20 @@ def test_a_refund_in_flight_blocks_a_second_one(g, monkeypatch):
     assert stored(g, rid)["payment"]["refundedAmount"] == 20000 and len(refund_calls(g)) == 1
 
 
+def test_a_refund_stripe_refuses_is_502_refund_failed_not_a_card_decline(g, monkeypatch):
+    rid = charged(g)
+    fake = g["stripe"]
+
+    def refused(method, path, params=None, **kw):
+        if path == "/v1/refunds":
+            raise stripe_client.StripeError(400, {"code": "balance_insufficient", "message": "no balance"})
+        return fake(method, path, params, **kw)
+    monkeypatch.setattr(stripe_client, "request", refused)
+    res = staff_payment(g, rid, action="refund", amount=100)
+    assert res["statusCode"] == 502 and body_of(res)["error"] == "refund_failed"
+    assert "refundPending" not in stored(g, rid)["payment"]
+
+
 def test_stripe_down_keeps_it_pending_and_the_webhook_completes_it_once(g, hook, monkeypatch):
     rid = charged(g)
     fake = g["stripe"]

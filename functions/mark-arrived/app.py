@@ -237,10 +237,18 @@ def _payment(event, ctx, item):
     if action == "refund":
         if not ctx.is_owner:
             raise tenant.TenantError(403, "owner_only")
-        return guarantee.refund(item, data.get("amount"), now, ctx.sub,
-                                reason=refunds.parse_reason(data.get("reason")),
-                                notify=refunds.parse_notify(data.get("notifyGuest")))
+        try:
+            return guarantee.refund(item, data.get("amount"), now, ctx.sub,
+                                    reason=refunds.parse_reason(data.get("reason")),
+                                    notify=refunds.parse_notify(data.get("notifyGuest")))
+        except stripe.StripeError as exc:
+            raise _RefundRefused(exc.code) from exc
     raise ValueError("action must be charge or refund")
+
+
+class _RefundRefused(Exception):
+    """Stripe refused an owner refund: not a card decline (no card to change),
+    502 refund_failed as for orders, so the screen says to check Stripe."""
 
 
 def _own_minutes(item):
@@ -531,6 +539,8 @@ def handler(event, context):
         return http.error(400, str(exc))
     except availability.AvailabilityConflict:
         return http.error(409, "availability_changed")
+    except _RefundRefused:
+        return http.error(502, "refund_failed")
     except stripe.StripeError as exc:
         return http.error(402, exc.code or "payment_error")
     except stripe.StripeUnavailable:

@@ -4277,6 +4277,10 @@ paths:
           $ref: '#/components/responses/ReservationNotFound'
         '409':
           $ref: '#/components/responses/ReservationConflict'
+        '402':
+          description: The card was declined on `charge` (the Stripe code, or payment_error).
+        '502':
+          description: Stripe refused a `refund` (refund_failed); nothing changed.
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 

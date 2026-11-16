@@ -154,16 +154,46 @@ def test_dashboard_refund_is_recorded_as_external_and_counted_once():
     assert rest["amount"] == 7500
 
 
-def test_webhook_smaller_than_the_pending_refund_waits():
+def test_webhook_smaller_than_the_pending_refund_is_external_and_keeps_ours_pending():
     d = Memory()
     d.st = refunds.normal(0, 1, 1, {"n": 1, "amount": 800, "key": "refund-x-1", "at": "2026-11-16T12:00:00Z",
                                     "by": "owner", "notify": True})
-    assert refunds.from_stripe(d, {}, 300, NOW)[1] == "pending"
+    _, result = refunds.from_stripe(d, {}, 300, NOW)
+    assert result == "recorded" and d.st["total"] == 300 and d.st["pending"]["n"] == 1
+    assert d.writes[-1] == [{"amount": 300, "at": "2026-11-16T12:00:00Z", "by": "stripe", "external": True}]
     _, result = refunds.from_stripe(d, {}, 1100, NOW)
     assert result == "recorded" and d.st["total"] == 1100 and d.st["pending"] is None
-    ours, external = d.writes[-1]
+    [ours] = d.writes[-1]
     assert ours["amount"] == 800 and ours["notify"] and ours["by"] == "owner"
-    assert external["amount"] == 300 and external["external"]
+
+
+def test_dashboard_refund_seen_while_ours_is_pending_survives_ours_being_refused():
+    """charge.refunded for a Dashboard refund arrives while our POST is in
+    flight (200, never resent), then Stripe refuses ours: Booqy still ends at
+    Stripe's total."""
+    d = Memory()
+    seen = []
+
+    def create(item, pending, *, replay=False):
+        seen.append(refunds.from_stripe(d, {}, 5000, NOW)[1])
+        raise stripe.StripeError(400, {"code": "amount_too_large"})
+
+    d.create = create
+    with pytest.raises(stripe.StripeError):
+        run(d, 8000)
+    assert seen == ["recorded"]
+    assert d.st["total"] == 5000 and d.st["pending"] is None
+    assert [e.get("external") for e in d.st["items"]] == [True]
+
+
+def test_dashboard_refund_seen_while_ours_is_pending_then_ours_succeeds():
+    d = Memory()
+    d.before_record = lambda: refunds.from_stripe(d, {}, 2000, NOW)
+    _, entry = run(d, 3000)
+    assert entry["amount"] == 3000 and d.st["total"] == 5000 and d.st["pending"] is None
+    assert refunds.from_stripe(d, {}, 5000, NOW)[1] == "already_recorded"
+    _, rest = run(d)
+    assert rest["amount"] == 5000
 
 
 def test_manual_refund_has_no_stripe_id():

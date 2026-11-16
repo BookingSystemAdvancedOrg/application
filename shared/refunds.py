@@ -27,9 +27,12 @@ RULES
     * charge.refunded (Stripe's cumulative amount_refunded T, our total R):
       T <= R is already recorded. A pending refund of amount a with T - R >= a
       is ours: completed (with its notice) and anything beyond it is recorded
-      as an external refund (Stripe Dashboard). T - R < a: not ours yet, wait
-      for the event that includes it. No pending: the difference is external.
-      Totals always end at Stripe's amount_refunded and nothing counts twice.
+      as an external refund (Stripe Dashboard). T - R < a: one Stripe refund
+      is all or nothing, so none of it is ours: the difference is recorded as
+      external right away and the pending refund stays (its own completion or
+      a later event records it; if Stripe refuses it, the external part is
+      already kept). No pending: the difference is external. Totals always
+      end at Stripe's amount_refunded and nothing counts twice.
 
 STATE (normalised; each domain maps it onto its own attributes)
     {"total": int, "count": int, "rev": int, "pending": dict | None, "items": list}
@@ -220,15 +223,16 @@ def from_stripe(domain, item, stripe_total, now, refund_id=None):
         extra = stripe_total - st["total"]
         entries = []
         pending = st["pending"]
-        if pending:
-            if extra < int(pending["amount"]):
-                return item, "pending"
+        keep = None
+        if pending and extra < int(pending["amount"]):
+            keep = pending  # not ours (a Stripe refund is never partial): all of it is external
+        elif pending:
             entries.append(entry_of(pending, None, now))
             extra -= int(pending["amount"])
         if extra:
             entries.append({"amount": extra, "at": _iso(now), "by": "stripe", "external": True,
                             **({"refundId": refund_id} if refund_id else {})})
-        new = {**st, "total": stripe_total, "items": st["items"] + entries, "pending": None,
+        new = {**st, "total": stripe_total, "items": st["items"] + entries, "pending": keep,
                "rev": st["rev"] + 1}
         try:
             return domain.write(item, st, new, entries, now), "recorded"

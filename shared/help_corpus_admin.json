@@ -2250,7 +2250,7 @@
     "beställa online",
     "beställa via qr"
    ],
-   "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. Avhämtning betalas i förväg. Vid bordet betalar gästen innan hen går.",
+   "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. De betalar i förväg.",
    "steps": [
     "Gästen öppnar Beställ på hemsidan eller scannar QR-koden på bordet.",
     "Gästen väljer rätter och betalar.",
@@ -3200,118 +3200,6 @@
    "area": "bestallningar"
   },
   {
-   "id": "features-bestallningar-TableTabs:kontrollerad:button",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Kontrollerad",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Kontrollerad"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:betala-med-mobilen:button",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Betala med mobilen",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Betala med mobilen"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:markera-som-betald:button",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Markera som betald",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Markera som betald"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:skriv-av:button",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Skriv av",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Skriv av"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:hur-betalade-gasten:field",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Hur betalade gästen?",
-   "where": "Beställningar",
-   "text": "Booqy ger inget kvitto för det här. Kvittot kommer från ert eget system.",
-   "highlight": [
-    "text:Hur betalade gästen?"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:anteckning-valfri:field",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Anteckning (valfri)",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Anteckning (valfri)"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:avbryt:button",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Avbryt",
-   "where": "Beställningar",
-   "text": "",
-   "highlight": [
-    "text:Avbryt"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
-   "id": "features-bestallningar-TableTabs:varfor:field",
-   "kind": "element",
-   "route": "/bestallningar",
-   "title": "Varför?",
-   "where": "Beställningar",
-   "text": "Notan stängs utan betalning. Den räknas inte som försäljning.",
-   "highlight": [
-    "text:Varför?"
-   ],
-   "audience": "all",
-   "feature": "ordering",
-   "area": "bestallningar"
-  },
-  {
    "id": "features-bokningar-BokningarPage:ny-bokning:button",
    "kind": "element",
    "route": "/bokningar",
@@ -3424,6 +3312,19 @@
    "text": "Borden släpps. Gästen debiteras inte.",
    "highlight": [
     "text:Avboka bokningen"
+   ],
+   "audience": "all",
+   "area": "bokningar"
+  },
+  {
+   "id": "features-bokningar-ReservationModal:aterbetala-avgiften:heading",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Återbetala avgiften",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Återbetala avgiften"
    ],
    "audience": "all",
    "area": "bokningar"
@@ -6953,32 +6854,6 @@
    "audience": "all",
    "feature": "personalliggare",
    "area": "personalliggare"
-  },
-  {
-   "id": "shared-RefundDialog:belopp-kr:field",
-   "kind": "element",
-   "route": "/bokningar",
-   "title": "Belopp (kr)",
-   "where": "Bokningar",
-   "text": "",
-   "highlight": [
-    "text:Belopp (kr)"
-   ],
-   "audience": "all",
-   "area": "bokningar"
-  },
-  {
-   "id": "shared-RefundDialog:anledning-valfri:field",
-   "kind": "element",
-   "route": "/bokningar",
-   "title": "Anledning (valfri)",
-   "where": "Bokningar",
-   "text": "",
-   "highlight": [
-    "text:Anledning (valfri)"
-   ],
-   "audience": "all",
-   "area": "bokningar"
   }
  ]
 }

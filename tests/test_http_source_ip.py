@@ -29,3 +29,12 @@ def test_edge_header_needs_the_secret(monkeypatch):
     bad = ev({"x-booqy-viewer-host": "restaurant.booqy.se", "x-booqy-edge": "nope"})
     assert http.edge_header(good, "x-booqy-viewer-host") == "restaurant.booqy.se"
     assert http.edge_header(bad, "x-booqy-viewer-host") is None
+
+
+def test_viewer_ip_from_a_restaurant_site_with_the_waf_secret(monkeypatch):
+    monkeypatch.delenv("CLOUDFRONT_EDGE_SECRET", raising=False)
+    monkeypatch.setenv("SITE_WAF_SECRET", "w4f")
+    assert http.source_ip(ev({"x-booqy-viewer-ip": "1.2.3.4", "x-booqy-waf": "w4f"})) == "1.2.3.4"
+    assert http.source_ip(ev({"x-booqy-viewer-ip": "1.2.3.4", "x-booqy-waf": "guess"})) == "10.0.0.1"
+    # The admin app's secret header does not stand in for the sites' one.
+    assert http.source_ip(ev({"x-booqy-viewer-ip": "1.2.3.4", "x-booqy-edge": "w4f"})) == "10.0.0.1"

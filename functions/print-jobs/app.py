@@ -13,10 +13,11 @@ TRIGGER:
                                                                simulatorAllowed (not in prod)
       GET    /locations/{locationId}/print/status              status only (orders screen)
       PUT    /locations/{locationId}/print/settings            owner: {autoPrint, printerId, paperWidth, version}
-      POST   /locations/{locationId}/print/devices             owner: {name, kind?, protocol?} -> device + secret
-                                                               (shown once); protocol "sim" outside prod: no secret
-      PUT    /locations/{locationId}/print/devices/{deviceId}  owner: {name?, kind?} (kind kok|dryck|annat
-                                                               moves its tickets)
+      POST   /locations/{locationId}/print/devices             owner or Beställningar staff: {name, kind?, protocol?}
+                                                               -> device + secret (shown once); protocol "sim"
+                                                               outside prod: no secret
+      PUT    /locations/{locationId}/print/devices/{deviceId}  owner or Beställningar staff: {name?, kind?}
+                                                               (kind kok|dryck|annat moves its tickets)
       DELETE /locations/{locationId}/print/devices/{deviceId}  owner: revoke the printer
       GET    /locations/{locationId}/print/devices/{deviceId}/simulated  a simulated printer's last tickets,
                                                                rendered now (never stored with personal data)
@@ -24,7 +25,7 @@ TRIGGER:
       PUT    /locations/{locationId}/print/routing/categories  owner or Meny staff: {categories:
                                                                {categoryId: stationId|"none"|null}}
       POST   /locations/{locationId}/print/devices/{deviceId}/rotate  owner: new secret
-      POST   /locations/{locationId}/print/devices/{deviceId}/test    test print
+      POST   /locations/{locationId}/print/devices/{deviceId}/test    owner or Beställningar staff: test print
       POST   /locations/{locationId}/print/jobs                {orderId, stationId?}: "Skriv ut igen"
                                                                (409 order_not_paid, order_cancelled, no_printer)
       GET    /locations/{locationId}/print/routing             stations, category routing, allergy ticket
@@ -39,6 +40,10 @@ PURPOSE:
     print problem can't fail or slow an order.
     Multi-tenant: the token's tenant must own the location (else 404) and
     have the "ordering" feature; staff are limited to their own location.
+    Staff with Beställningar may add printers, rename them, change their
+    kind and test print; removing a printer, a new secret, the settings
+    and "Inga skrivare än" stay the owner's. Booqy Console reads and
+    changes the same rows (booqy-console api, app/printers.py).
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
@@ -211,22 +216,21 @@ def _route(event, method, location_id, ctx):
         allow = "PUT"
     elif parts == ["devices"]:
         if method == "POST":
-            _owner(ctx)
             data = http.body(event, allowed={"name", "protocol", "kind"})
             device, secret = p.add_device(ctx.tenant_id, location_id, data.get("name"), ctx.sub, now,
                                           data.get("protocol") or "star", data.get("kind"))
             logger.info(json.dumps({"print": "device_added", "deviceId": device["deviceId"],
-                                    "protocol": device["protocol"], "kind": device.get("kind")}))
+                                    "protocol": device["protocol"], "kind": device.get("kind"), "role": ctx.role}))
             return http.respond(201, _credentials(device, secret))
         allow = "POST"
     elif len(parts) == 2 and parts[0] == "devices":
         if method == "PUT":
-            _owner(ctx)
             data = http.body(event, allowed={"name", "kind"})
             if not data:
                 raise ValueError("name or kind is required")
             p.update_device(ctx.tenant_id, location_id, parts[1], data, ctx.sub, now)
-            logger.info(json.dumps({"print": "device_changed", "deviceId": parts[1], "fields": sorted(data)}))
+            logger.info(json.dumps({"print": "device_changed", "deviceId": parts[1], "fields": sorted(data),
+                                    "role": ctx.role}))
             return http.respond(200, _overview(location_id, now))
         if method == "DELETE":
             _owner(ctx)

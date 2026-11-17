@@ -1080,9 +1080,10 @@ Full details: `docs/ORDERS.md`.
 **Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; the old table-codes routes answer 410 `table_ordering_off`.
 
 ### 25a. `print-jobs`
-**Trigger:** order table stream (paid, cancelled; DLQ `print-stream`), Scheduler every 5 minutes (`{"source": "sweep"}`), API Gateway `GET /locations/{locationId}/print`, `GET|POST|PUT|DELETE /locations/{locationId}/print/{proxy+}` - Auth: `JWT` (owner; staff for status, test print and reprint)
+**Trigger:** order table stream (paid, cancelled; DLQ `print-stream`), Scheduler every 5 minutes (`{"source": "sweep"}`), API Gateway `GET /locations/{locationId}/print`, `GET|POST|PUT|DELETE /locations/{locationId}/print/{proxy+}` - Auth: `JWT` (owner; staff with Beställningar for status, adding a printer, renaming it, its kind, test print and reprint; removing a printer, a new secret and the settings stay the owner's)
 **Purpose:** Kitchen printing (see `docs/ORDERS.md`, Kitchen printer): one auto job per paid order, "MAKULERAD" slip for a printed order that is cancelled, printer settings and printers (secret shown once), "Skriv ut igen", sweep metrics `PrintStuckJobs` / `PrintFailedJobs`.
 **AWS resource access:** print table (read/write, Scan of the `queue` index), order table GetItem, order stream read, tenant-context reads.
+Booqy Console (platform-tenants, booqy-console `api/src/app/printers.py`) reads the same printer and settings rows and adds, renames, test prints and removes printers; it sets `syncRouting` on SETTINGS and the next read here (`printing.get_settings`) makes the stations follow.
 
 ### 25b. `print-device`
 **Trigger:** API Gateway `POST|GET|DELETE /print/cloudprnt/{deviceId}` - Auth: `NONE` at the gateway, HTTP Basic with the device secret in the handler

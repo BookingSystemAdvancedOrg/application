@@ -6474,9 +6474,11 @@ paths:
       tags: [Printing]
       summary: Add a printer (the secret is returned once)
       operationId: addPrinter
+      description: Owner, or staff with Beställningar. Removing a printer and a new secret stay the owner's.
       security:
         - bearerAuth: []
-      x-required-groups: [owner_user]
+      x-required-groups: [staff_user, owner_user]
+      x-staff-area: bestallningar
       requestBody:
         required: true
         content:
@@ -6506,9 +6508,11 @@ paths:
       tags: [Printing]
       summary: Rename a printer or change its kind (Kök, Dryck or Annat)
       operationId: updatePrinter
+      description: Owner, or staff with Beställningar.
       security:
         - bearerAuth: []
-      x-required-groups: [owner_user]
+      x-required-groups: [staff_user, owner_user]
+      x-staff-area: bestallningar
       requestBody:
         required: true
         content:
@@ -6609,7 +6613,7 @@ paths:
       tags: [Printing]
       summary: Where whole menu categories go ("Skickas till")
       operationId: setCategoryRouting
-      description: Merged into the stored routing, so the menu and an open settings screen never undo each other. null goes back to the default (Dryck for drinks, Kök for the rest; an alcohol item in a category with no choice goes to Dryck).
+      description: Merged into the stored routing, so the menu and an open settings screen never undo each other. null goes back to the default (Dryck for the drinks category, a category whose name sounds like drinks such as "Öl" or "Te & kaffe" and alcohol items, Kök for the rest).
       security:
         - bearerAuth: []
       x-required-groups: [staff_user, owner_user]
@@ -6679,6 +6683,7 @@ paths:
       security:
         - bearerAuth: []
       x-required-groups: [staff_user, owner_user]
+      x-staff-area: bestallningar
       responses:
         '202':
           description: Queued.

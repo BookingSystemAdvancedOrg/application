@@ -25,9 +25,14 @@ its category's station; "none" means no ticket (a can from the fridge). A
 combo (``components``) splits: each part goes to its own station or the
 dish's. Notes and allergies follow the item to every part. A station id no
 longer in the config falls back to the category's station, then to Dryck
-for drinks and alcohol or Kök for everything else: food is never dropped
-because a station was removed, and drinks never fall onto the kitchen
-ticket.
+for drinks, alcohol and a category whose name sounds like drinks
+(``categoryName`` on the order line, sounds_like_drinks: "Öl", "Rödvin",
+"Te & kaffe", never "Salladsbar" or "Pölsa"), or Kök for everything else:
+food is never dropped because a station was removed, and drinks never fall
+onto the kitchen ticket, even at a location where nobody has opened the
+menu since categories got stations. Booqy Admin uses the same rule and the
+same word list (tests/fixtures/drink_names.json, admin
+src/features/printers/drinkNames.json).
 
 Tickets (print table, SK TICKET#<sourceId>#<stationId>, expire after 2 days)
 are what the kitchen display shows and what a station's printers print:
@@ -60,6 +65,25 @@ TICKET_TTL_DAYS = 2
 # A note that mentions an allergy makes the whole order an allergy order.
 _ALLERGY = re.compile(r"allerg|celiaki|glutenfri|laktosfri|mjölkprotein|jordnöt|nötter|nötfri|skaldjur|"
                       r"anafylax|epipen", re.IGNORECASE)
+
+
+# Hela ord eller ordets början/slut (Fatöl, Rödvin), aldrig mitt i ett
+# matord (Pölsa, Salladsbar, Vinäger). Same pattern as admin's kinds.ts.
+_L = "a-zåäöéü"
+_START = f"(?:^|[^{_L}])"
+_END = f"(?:$|[^{_L}])"
+_DRINKISH = re.compile("|".join([
+    "dryck", "drink", "cocktail", "läsk", "kaffe", "coffee", "juice", "alkohol", "sprit", "cider", "dricka",
+    "mocktail", "lemonad", "beer", "wine", "viner",
+    f"{_START}(?:bar|baren|te|tea|soda|shots?){_END}",
+    f"{_START}öl", f"öl{_END}", f"vin{_END}", f"{_START}vin(?:er|erna|lista|kort|meny){_END}",
+]), re.IGNORECASE)
+
+
+def sounds_like_drinks(name):
+    """A menu category's name that means drinks ("Öl", "Vinlista", "Te &
+    kaffe"); never a food word that only contains one ("Salladsbar")."""
+    return isinstance(name, str) and _DRINKISH.search(name) is not None
 
 
 def default_config(printer_id=None):
@@ -165,18 +189,18 @@ def put_config(tenant_id, location_id, config, actor, now):
 
 # --- routing ---------------------------------------------------------------------
 
-def _resolve(wanted, category, config, alcohol=False):
+def _resolve(wanted, category, config, alcohol=False, drinkish=False):
     """A station id, or None for "no ticket". A category with no choice of
-    its own goes to Dryck when it is drinks or the item is alcohol, else to
-    Kök: a beer in the owner's own category "Öl" never lands on the kitchen
-    ticket by accident."""
+    its own goes to Dryck when it is drinks, its name sounds like drinks
+    (`drinkish`) or the item is alcohol, else to Kök: a beer in the owner's
+    own category "Öl" never lands on the kitchen ticket by accident."""
     ids = [s["stationId"] for s in config["stations"]]
     for candidate in (wanted, config["categories"].get(category)):
         if candidate == NONE:
             return None
         if candidate in ids:
             return candidate
-    fallback = DRINK if alcohol or category == "drinks" else FOOD
+    fallback = DRINK if alcohol or drinkish or category == "drinks" else FOOD
     if fallback in ids:
         return fallback
     return ids[0] if ids else None
@@ -191,7 +215,8 @@ def split(lines, config):
         category = line.get("category")
         course = category if category in COURSES else None
         alcohol = line.get("alcohol") is True
-        own = _resolve(line.get("station"), category, config, alcohol)
+        drinkish = sounds_like_drinks(line.get("categoryName"))
+        own = _resolve(line.get("station"), category, config, alcohol, drinkish)
         extra = {k: line[k] for k in ("note", "allergy") if line.get(k)}
         picks = [f"{p.get('group')}: {p.get('choice')}" for p in line.get("options") or [] if isinstance(p, dict)]
         if picks:
@@ -205,7 +230,7 @@ def split(lines, config):
             continue
         for part in parts:
             wanted = part.get("station") or line.get("station")
-            station = own if not part.get("station") else _resolve(wanted, category, config, alcohol)
+            station = own if not part.get("station") else _resolve(wanted, category, config, alcohol, drinkish)
             if station:
                 out.setdefault(station, []).append({"name": part.get("name") or "?", "quantity": quantity,
                                                     "course": course, "partOf": line.get("name"), **extra})
@@ -442,12 +467,23 @@ def set_categories(tenant_id, location_id, changes, printer_id, actor, now):
 def drop_printer(location_id, device_id, now):
     """A removed printer leaves every station (the version moves on, so an
     open settings screen reloads before it saves)."""
-    from shared import printing
     item = _table().get_item(Key={"PK": f"LOCATION#{location_id}", "SK": "ROUTING"}, ConsistentRead=True).get("Item")
-    if not item or not any(device_id in (s.get("printerIds") or []) for s in item.get("stations") or []):
+    _drop(item, lambda d: d != device_id, now)
+
+
+def drop_printers(location_id, keep, now):
+    """Every printer not in `keep` leaves every station (printers removed
+    from Booqy Console)."""
+    item = _table().get_item(Key={"PK": f"LOCATION#{location_id}", "SK": "ROUTING"}, ConsistentRead=True).get("Item")
+    _drop(item, lambda d: d in keep, now)
+
+
+def _drop(item, kept, now):
+    from shared import printing
+    if not item or all(kept(d) for s in item.get("stations") or [] for d in s.get("printerIds") or []):
         return
     for station in item["stations"]:
-        station["printerIds"] = [d for d in station.get("printerIds") or [] if d != device_id]
+        station["printerIds"] = [d for d in station.get("printerIds") or [] if kept(d)]
     version = int(item.get("version") or 0)
     try:
         _table().put_item(Item={**item, "version": version + 1, "updatedAt": printing.iso(now)},

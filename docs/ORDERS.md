@@ -95,7 +95,16 @@ restaurant's own till; a guest with a booking arrives and pays there too.
    DUBBLETT". A printed order that is cancelled prints "MAKULERAD #N". The
    admin's Beställningar screen shows "Skrivaren svarar inte" / "N
    outskrivna" and "Skriv ut igen"; settings are under Inställningar,
-   Skrivare. Printing never runs in the order request path.
+   Skrivare. Printing never runs in the order request path. Who may do
+   what: staff with Beställningar add printers, rename them, change their
+   kind (Kök, Dryck, Annat) and test print; removing a printer, a new
+   secret, the print settings and "Inga skrivare än" are the owner's.
+   Booqy operators see each location's printers in Booqy Console
+   (customer, Locations) and can add, rename, test print and remove one
+   there (audited). A menu category with no "Skickas till" choice goes to
+   Dryck when it is the drinks category, its name sounds like drinks
+   ("Öl", "Te & kaffe", never "Salladsbar") or the dish is alcohol, else
+   to Kök (shared/routing.py; each order line keeps its `categoryName`).
 
 Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 `failed`; the TTL (60 min) removes an order whose webhook never came.
@@ -112,7 +121,7 @@ Abandoned checkouts: `checkout.session.expired` (30 min) marks the order
 
 Order attributes: `orderId, tenantId, locationId, date, timezone, mode,
 tableId, tableLabel, lines[{menuItemId, name, unitPrice, quantity, total,
-vatRate}], totalAmount, vat[{rate, gross, net, vat}], currency,
+vatRate, category, categoryName}], totalAmount, vat[{rate, gross, net, vat}], currency,
 customerName, customerPhone, customerEmail, notes, language, prepMinutes,
 status, paymentStatus, number, stripeAccountId, checkoutSessionId,
 paymentIntentId, refund, readyEstimate, confirmedAt, readyAt, completedAt,

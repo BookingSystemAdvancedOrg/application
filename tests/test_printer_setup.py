@@ -147,7 +147,44 @@ def test_changing_the_kind_moves_the_tickets(env):
     assert view["kind"] == "dryck" and view["name"] == "Bar"
     assert api(env, "PUT", f"devices/{two}", {"kind": "kassa"})[0] == 400
     assert api(env, "PUT", f"devices/{two}", {})[0] == 400
-    assert api(env, "PUT", f"devices/{two}", {"kind": "kok"}, role="staff_user")[0] == 403
+    assert api(env, "PUT", f"devices/{two}", {"kind": "kok"}, role="staff_user")[0] == 200
+    assert sorted(stations(env)["bar"][1]) == sorted([one, two])
+
+
+def test_bestallningar_staff_add_rename_and_test_but_never_remove_or_rotate(env):
+    """Staff with Beställningar set printers up; removing one and a new
+    secret stay the owner's (test_staff_access covers the area check)."""
+    status, body = api(env, "POST", "devices", {"name": "Baren", "kind": "dryck"}, role="staff_user")
+    assert status == 201 and body["secret"] and body["username"] == body["device"]["deviceId"]
+    device = body["device"]["deviceId"]
+    status, overview = api(env, "PUT", f"devices/{device}", {"name": "Bar 1", "kind": "kok"}, role="staff_user")
+    assert status == 200 and next(d for d in overview["devices"] if d["deviceId"] == device)["name"] == "Bar 1"
+    assert api(env, "POST", f"devices/{device}/test", role="staff_user")[0] == 202
+    status, body = api(env, "DELETE", f"devices/{device}", role="staff_user")
+    assert status == 403 and body["error"] == "owner_only"
+    assert api(env, "POST", f"devices/{device}/rotate", role="staff_user")[0] == 403
+    assert api(env, "PUT", "settings", {**p.get_settings(LOC_A), "autoPrint": False}, role="staff_user")[0] == 403
+    assert [d["deviceId"] for d in p.list_devices(LOC_A)] == [device]
+
+
+def test_printers_changed_from_booqy_console_move_the_stations(env):
+    """Booqy Console writes printer rows and a syncRouting token; the next
+    read here makes the stations follow (the console holds no routing)."""
+    kok = add(env, "Köket", "kok")["device"]["deviceId"]
+    table = p._table()
+    table.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "DEVICE#" + "d" * 32, "deviceId": "d" * 32,
+                         "deviceKey": "d" * 32, "tenantId": "t", "locationId": LOC_A, "name": "Baren",
+                         "kind": "dryck", "protocol": "star", "createdAt": "2099-01-01T00:00:00Z"})
+    table.update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"}, UpdateExpression="SET syncRouting = :t",
+                      ExpressionAttributeValues={":t": "tok1"})
+    assert stations(env) == {"kok": ("Kök", [kok]), "bar": ("Dryck", ["d" * 32])}
+    item = table.get_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"})["Item"]
+    assert "syncRouting" not in item
+    # the console removes the Kök printer: it leaves every station
+    table.delete_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"DEVICE#{kok}"})
+    table.update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"}, UpdateExpression="SET syncRouting = :t",
+                      ExpressionAttributeValues={":t": "tok2"})
+    assert stations(env) == {"kok": ("Kök", ["d" * 32]), "bar": ("Dryck", ["d" * 32])}
 
 
 def test_removing_the_last_dryck_printer_sends_drinks_to_kok(env):

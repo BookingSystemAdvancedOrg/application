@@ -1139,3 +1139,28 @@ def test_custom_category_goes_to_the_first_station():
     from shared import routing
     entries = routing.split([{"name": "IPA", "quantity": 1, "category": "c0a1b2c3d4"}], routing.default_config())
     assert list(entries) == ["kok"] and entries["kok"][0]["course"] is None
+
+
+def test_lines_keep_their_categorys_name_for_the_kitchen(env):
+    """The order keeps each dish's category name (one read with the dishes),
+    so a category that sounds like drinks goes to Dryck with no routing
+    choice saved (shared/routing.py)."""
+    from shared import routing
+    menu = env["res"].Table(MENU_TABLE)
+    menu.put_item(Item=menu_item(LOC_A, "ipa", "IPA", "79", category="c0a1b2c3d4"))
+    menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "CATEGORIES", "version": 1,
+                        "categories": [{"categoryId": "mains", "name": "Varmrätter"},
+                                       {"categoryId": "c0a1b2c3d4", "name": "Öl"}]})
+    response = post_order(env, mode="pickup", items=[{"menuItemId": "pizza", "quantity": 1},
+                                                     {"menuItemId": "ipa", "quantity": 1}])
+    assert response["statusCode"] == 201, response
+    lines = stored(env, body_of(response)["orderId"])["lines"]
+    assert [(line["name"], line.get("categoryName")) for line in lines] == [("Margherita", "Varmrätter"), ("IPA", "Öl")]
+    assert {k: [e["name"] for e in v] for k, v in routing.split(lines, routing.default_config()).items()} == {
+        "kok": ["Margherita"], "bar": ["IPA"]}
+
+
+def test_lines_without_a_categories_row_get_the_default_names(env):
+    lines = stored(env, body_of(post_order(env))["orderId"])["lines"]
+    assert [line.get("categoryName") for line in lines] == ["Varmrätter", "Drycker"]
+

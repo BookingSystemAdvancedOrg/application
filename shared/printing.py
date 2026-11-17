@@ -2,7 +2,9 @@
 
 Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK SETTINGS               autoPrint, printerId, paperWidth, version,
-                                               printerSetup ("skipped": "Inga skrivare än")
+                                               printerSetup ("skipped": "Inga skrivare än"),
+                                               syncRouting (a token: Booqy Console changed the
+                                               printers, the stations follow on the next read)
     PK LOCATION#<l>  SK DEVICE#<deviceId>      name, kind (kok|dryck|annat), protocol, secretHash,
                                                mac, lastSeenAt, statusCode
     PK LOCATION#<l>  SK SIM#<deviceId>#<ms>#<job>  a ticket a simulated printer "printed"
@@ -181,11 +183,33 @@ def simulator_allowed():
 def get_settings(location_id, *, setup=False):
     """The settings the owner edits; `setup` adds setupSkipped (Kom igång)."""
     item = _table().get_item(Key=_key(location_id, "SETTINGS"), ConsistentRead=True).get("Item") or {}
+    if item.get("syncRouting"):
+        sync_routing(location_id, item, now_utc())
     out = {"autoPrint": bool(item.get("autoPrint", False)), "printerId": item.get("printerId"),
            "paperWidth": int(item.get("paperWidth") or 80), "version": int(item.get("version") or 0)}
     if setup:
         out["setupSkipped"] = item.get("printerSetup") == "skipped"
     return out
+
+
+def sync_routing(location_id, settings_item, now):
+    """Booqy Console adds, renames and removes printers in this table but
+    holds no routing code: it marks SETTINGS with a syncRouting token, and
+    the next read here makes the stations follow the printers (as after a
+    change in admin: removed printers leave every station, the kinds give
+    Kök, Dryck and the Annat stations). The token is removed only if it is
+    still the same, so a second console change in between is not lost."""
+    token = settings_item["syncRouting"]
+    devices = list_devices(location_id)
+    ids = {d["deviceId"] for d in devices}
+    routing.drop_printers(location_id, ids, now)
+    routing.apply_kinds(settings_item.get("tenantId"), location_id, devices, settings_item.get("printerId"), now)
+    try:
+        _table().update_item(Key=_key(location_id, "SETTINGS"), UpdateExpression="REMOVE syncRouting",
+                             ConditionExpression="syncRouting = :t", ExpressionAttributeValues={":t": token})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
 
 
 def set_setup_skipped(tenant_id, location_id, skipped, actor, now):
@@ -373,7 +397,8 @@ def update_device(tenant_id, location_id, device_id, changes, actor, now):
         sets.append("kind = :kind")
         values[":kind"] = clean_kind(changes["kind"])
     item = _table().update_item(Key=_key(location_id, f"DEVICE#{device_id}"), UpdateExpression="SET " + ", ".join(sets),
-                                ConditionExpression="attribute_exists(PK)", ExpressionAttributeNames={"#n": "name"},
+                                ConditionExpression="attribute_exists(PK)",
+                                **({"ExpressionAttributeNames": {"#n": "name"}} if "name" in changes else {}),
                                 ExpressionAttributeValues=values, ReturnValues="ALL_NEW")["Attributes"]
     new_kind = "kind" in changes and changes["kind"] != device.get("kind")
     if new_kind or ("name" in changes and item.get("kind") == "annat"):

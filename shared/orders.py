@@ -454,16 +454,23 @@ def _price_ore(value):
 
 def price_lines(location_id, wanted, mode, on_date):
     """Reads the dishes from the menu and prices the order. Unknown,
-    inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable")."""
+    inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable").
+    The location's categories row comes in the same read: each line keeps
+    its category's name, so the kitchen routing can send a category that
+    sounds like drinks ("Öl") to Dryck (shared/routing.py)."""
     menu_table = os.environ["MENU_TABLE_NAME"]
     keys = [{"PK": {"S": location_pk(location_id)}, "SK": {"S": f"MENU#{item_id}"}}
             for item_id in dict.fromkeys(w[0] for w in wanted)]
-    found = {}
+    keys.append({"PK": {"S": location_pk(location_id)}, "SK": {"S": menu.CATEGORIES_SK}})
+    found, categories_row = {}, None
     request = {menu_table: {"Keys": keys, "ConsistentRead": True}}
     for _ in range(5):
         response = dynamo.client().batch_get_item(RequestItems=request)
         for raw in (response.get("Responses") or {}).get(menu_table, []):
             item = {k: _deserializer.deserialize(v) for k, v in raw.items()}
+            if item.get("SK") == menu.CATEGORIES_SK:
+                categories_row = item
+                continue
             found[item.get("menuItemId")] = item
         request = response.get("UnprocessedKeys") or {}
         if not request:
@@ -471,6 +478,7 @@ def price_lines(location_id, wanted, mode, on_date):
     else:
         raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException",
                                      "Message": "menu read incomplete"}}, "BatchGetItem")
+    category_names = {c["categoryId"]: c["name"] for c in menu.categories_view(categories_row)["categories"]}
     now = now_utc()
     lines = []
     for item_id, quantity, *rest in wanted:
@@ -510,6 +518,8 @@ def price_lines(location_id, wanted, mode, on_date):
             **({"options": chosen} if chosen else {}),
             # Kitchen ticket routing, as the dish was when ordered (shared/routing.py).
             **({"category": item["category"]} if isinstance(item.get("category"), str) else {}),
+            **({"categoryName": category_names[item["category"]]} 
+               if isinstance(item.get("category"), str) and item["category"] in category_names else {}),
             **({k: item[k] for k in menu.ROUTING_FIELDS if item.get(k)}),
         })
     total = sum(line["total"] for line in lines)

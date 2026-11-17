@@ -276,6 +276,8 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/orders/pause", "put"),
         ("/locations/{locationId}/print", "get"),
         ("/locations/{locationId}/print/status", "get"),
+        ("/locations/{locationId}/print/devices", "post"),
+        ("/locations/{locationId}/print/devices/{deviceId}", "put"),
         ("/locations/{locationId}/print/devices/{deviceId}/test", "post"),
         ("/locations/{locationId}/print/jobs", "post"),
         ("/locations/{locationId}/print/routing", "get"),

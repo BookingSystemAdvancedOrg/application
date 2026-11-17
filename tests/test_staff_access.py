@@ -252,6 +252,9 @@ GUARDED = [
     ("print-jobs", "GET /locations/{locationId}/print", L, "bestallningar"),
     ("print-jobs", "GET /locations/{locationId}/print/{proxy+}", {**L, "proxy": "routing"}, "meny"),
     ("print-jobs", "POST /locations/{locationId}/print/{proxy+}", {**L, "proxy": "jobs"}, "bestallningar"),
+    ("print-jobs", "POST /locations/{locationId}/print/{proxy+}", {**L, "proxy": "devices"}, "bestallningar"),
+    ("print-jobs", "PUT /locations/{locationId}/print/{proxy+}", {**L, "proxy": "devices/" + "a" * 32},
+     "bestallningar"),
     ("catering-requests", "GET /locations/{locationId}/catering/requests", L, "catering"),
     ("catering-offer", "GET /locations/{locationId}/catering/requests/{requestId}",
      {**L, "requestId": "q1"}, "catering"),
@@ -381,3 +384,15 @@ def test_help_assistant_follows_the_areas():
     assert not help.visible(doc, **staff)
     assert help.visible(owner_page, **staff) and not help.visible(owner_page, **other)
     assert help.visible(doc, **help.caller_view(row, "owner_user", OWNER_A_SUB))
+
+
+def test_staff_with_bestallningar_never_remove_a_printer_or_rotate_its_key(routes):
+    """Beställningar opens adding, renaming, the kind and test prints;
+    removing a printer and a new secret stay the owner's."""
+    _set_access(defaults=["bestallningar"])
+    device = "a" * 32
+    for route_key, proxy in (("DELETE /locations/{locationId}/print/{proxy+}", f"devices/{device}"),
+                             ("POST /locations/{locationId}/print/{proxy+}", f"devices/{device}/rotate")):
+        status, body = _invoke(routes, "print-jobs", route_key, {**L, "proxy": proxy})
+        assert (status, body.get("error")) == (403, "owner_only"), (route_key, body)
+

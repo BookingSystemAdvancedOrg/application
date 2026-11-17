@@ -370,7 +370,23 @@ def kinds_config(config, devices):
                              "printerIds": [device_id]})
     ids = {s["stationId"] for s in stations}
     categories = {c: t for c, t in categories.items() if t == NONE or t in ids}
-    return {**config, "stations": stations, "categories": categories}
+    return {**config, "stations": _unique_names(stations), "categories": categories}
+
+
+def _unique_names(stations):
+    """Station names stay unique (validate_config needs it, or the next save
+    in settings fails): an Annat printer called "Dryck", or two called
+    "Pizza", become "Dryck 2", "Pizza 2"."""
+    taken, out = set(), []
+    for s in stations:
+        name, n = s["name"], 1
+        while name.lower() in taken:
+            n += 1
+            suffix = f" {n}"
+            name = s["name"][:STATION_NAME_MAX - len(suffix)].rstrip() + suffix
+        taken.add(name.lower())
+        out.append({**s, "name": name})
+    return out
 
 
 def apply_kinds(tenant_id, location_id, devices, printer_id, now):

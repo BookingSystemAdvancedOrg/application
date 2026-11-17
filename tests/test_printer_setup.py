@@ -295,3 +295,16 @@ def test_category_routing_from_the_menu(env):
     assert api(env, "PUT", "routing/categories", {"categories": {"c0a1b2c3d4": "nope"}})[0] == 400
     assert api(env, "PUT", "routing/categories", {"categories": {}})[0] == 400
     assert api(env, "PUT", "routing", config, role="staff_user")[0] == 403
+
+
+def test_annat_printer_named_like_a_station_keeps_names_unique(env):
+    add(env, "Baren", "dryck")
+    add(env, "Dryck", "annat")
+    add(env, "Pizza", "annat")
+    add(env, "Pizza", "annat")
+    names = [n.lower() for n, _ in stations(env).values()]
+    assert len(names) == len(set(names))
+    status, config = api(env, "GET", "routing")
+    config["allergyTicket"] = not config["allergyTicket"]
+    status, body = api(env, "PUT", "routing", config)
+    assert status == 200, body

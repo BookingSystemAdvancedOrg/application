@@ -325,7 +325,7 @@ def _tab_action(event, location_id, ctx, service_date, table_id, action):
     if action in ("write-off", "mismatch-checked") and not ctx.is_owner:
         raise tenant.TenantError(403, "owner_only")
     if action == "mismatch-checked":
-        table_bills.clear_mismatch(ctx, location_id, service_date, table_id)
+        table_bills.clear_mismatch(ctx, location_id, service_date, table_id, now)
         return http.respond(200, {"ok": True})
     if action == "paid-outside":
         data = http.body(event, allowed={"method", "note", "orderIds", "expectedAmount"})

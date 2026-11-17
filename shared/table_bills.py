@@ -401,14 +401,20 @@ def pay(ctx, location_id, service_date, table_id, data, *, base, slug, now, ensu
     bill = _new_bill(ctx, location_id, tab, orders, amount, account, email, now)
     lock = {"billId": bill["billId"], "orderIds": [i["orderId"] for i in orders], "amount": amount,
             "at": o.iso(now), "expiresAt": bill["expiresAt"]}
+    # The lock holds only if the table's bill is exactly what was read: the
+    # version (every add, removal and lock change bumps it), not just count
+    # and total - one order cancelled and another of the same price placed
+    # meanwhile would otherwise charge the cancelled one and leave the new one.
     try:
         dynamo.client().transact_write_items(TransactItems=[
             _update(tab_key(location_id, service_date, table_id),
                     "SET #p = :lock, #u = :now ADD #v :one REMOVE #ttl",
-                    "attribute_exists(PK) AND attribute_not_exists(#p) AND #t = :amount AND #n = :count",
+                    "attribute_exists(PK) AND attribute_not_exists(#p) AND #t = :amount AND #n = :count "
+                    "AND #v = :version",
                     {"#p": "paying", "#u": "updatedAt", "#v": "version", "#ttl": "ttl", "#t": "openTotal",
                      "#n": "openCount"},
-                    {":lock": lock, ":now": o.iso(now), ":one": 1, ":amount": amount, ":count": count}),
+                    {":lock": lock, ":now": o.iso(now), ":one": 1, ":amount": amount, ":count": count,
+                     ":version": int(tab.get("version") or 0)}),
             {"Put": {"TableName": o.order_table(), "Item": _avs(bill),
                      "ConditionExpression": "attribute_not_exists(PK)"}},
         ])
@@ -577,7 +583,9 @@ def _tidy_tab(location_id, service_date, table_id, now):
         _table().update_item(
             Key=tab_key(location_id, service_date, table_id),
             UpdateExpression="SET #ttl = :ttl",
-            ConditionExpression="attribute_exists(PK) AND #n <= :zero AND attribute_not_exists(paying)",
+            # A flag for the owner (mismatch) keeps the record until it is checked.
+            ConditionExpression="attribute_exists(PK) AND #n <= :zero AND attribute_not_exists(paying) "
+                                "AND attribute_not_exists(mismatch)",
             ExpressionAttributeNames={"#ttl": "ttl", "#n": "openCount"},
             ExpressionAttributeValues={":ttl": _epoch(now + timedelta(days=TAB_TTL_DAYS)), ":zero": 0})
     except ClientError as exc:
@@ -1092,8 +1100,9 @@ def cancel_unpaid(item, ctx, now, expected_status):
     return o.load(location_id, order_id)
 
 
-def clear_mismatch(ctx, location_id, service_date, table_id):
-    """Owner: the flagged bill payment has been checked (and refunded in Stripe)."""
+def clear_mismatch(ctx, location_id, service_date, table_id, now=None):
+    """Owner: the flagged bill payment has been checked (and refunded in Stripe).
+    An empty bill then expires like any other."""
     try:
         _table().update_item(Key=tab_key(location_id, service_date, table_id), UpdateExpression="REMOVE mismatch",
                              ConditionExpression="attribute_exists(PK) AND tenantId = :t",
@@ -1102,3 +1111,4 @@ def clear_mismatch(ctx, location_id, service_date, table_id):
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             raise o.NotFound from None
         raise
+    _tidy_tab(location_id, service_date, table_id, now or o.now_utc())

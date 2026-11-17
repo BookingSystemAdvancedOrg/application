@@ -405,11 +405,17 @@ def restart_stranded(tenant_id) -> dict:
 
 def run_sweep(job):
     """Every 15 minutes: pause every active campaign of every blocked tenant
-    (kill switch) and restart publishes whose workflow never started."""
+    (kill switch) and restart publishes whose workflow never started.
+    `failed` counts failed kill-switch pauses and failed restarts."""
     paused = started = failed = 0
     for tenant_id in connected_tenants():
-        if ads.blocked_by(tenant_id):
-            paused += ads.pause_all(tenant_id, "kill_switch")
+        try:
+            if ads.blocked_by(tenant_id):
+                paused += ads.pause_all(tenant_id, "kill_switch")
+        except Exception as exc:  # one tenant's Meta error must not leave the rest running
+            failed += 1  # counted, so the sweep result shows a kill switch that did not hold
+            logger.error(json.dumps({"sweep": "pause_failed", "tenantId": tenant_id,
+                                     "type": type(exc).__name__}))
         try:
             stranded = restart_stranded(tenant_id)
         except Exception as exc:  # one tenant must not stop the kill-switch pause of the rest

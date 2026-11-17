@@ -16,6 +16,13 @@ TRIGGER:
          gift card gets the card's part back through the gift-cards feature
          (checkout.giftcard op refund, once: giftCard.refundedAt) and only
          the charged part from Stripe (nothing when the card covered it).
+    POST /locations/{locationId}/orders/{orderId}/refund
+         {"amount": öre (optional = what is left), "reason", "notifyGuest"}
+         Owner only: (part of) the card payment back without cancelling, on
+         confirmed / preparing / ready / completed paid orders. A gift
+         card's part comes back only on cancel. paymentStatus becomes
+         partly_refunded or refunded; the guest gets order_refunded (e-mail)
+         unless notifyGuest is false. Rules: shared/refunds.py.
     PUT  /locations/{locationId}/orders/pause   {"minutes": 0-240}
          Stop taking orders for a while (0 = take orders again).
     GET|POST /locations/{locationId}/orders/table-codes
@@ -54,7 +61,7 @@ from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, http, manage_link, order_payments, site, tenant
+from shared import dynamo, feature_hooks, http, manage_link, order_payments, refunds, site, tenant
 from shared import orders as o
 from shared import table_qr
 from shared import stripe_client as stripe
@@ -67,9 +74,9 @@ _ITEM = "/locations/{locationId}/orders/{proxy+}"
 _TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
-def _ctx(event):
+def _ctx(event, area="bestallningar"):
     location_id = http.path_id(event, "locationId")
-    return location_id, tenant.for_jwt(event, location_id=location_id, feature="ordering")
+    return location_id, tenant.for_jwt(event, location_id=location_id, feature="ordering", area=area)
 
 
 def _list(event):
@@ -151,36 +158,42 @@ def _refund_gift_card(item, now):
     return result["Attributes"]
 
 
-def _cancel_gift_card_order(item, ctx, now, current):
-    """Stripe first (only the charged part, nothing when the card covered it),
-    recorded on the order; then the card's part back, once; then cancelled.
+def _cancel(item, ctx, now, current):
+    """Stripe first (what is left of the card part, nothing when a gift card
+    covered it or it is already refunded), recorded on the order
+    (shared/refunds.py); then a gift card's part back, once; then cancelled.
     A Stripe failure leaves the order as it was and the card not credited."""
-    record = item.get("refund")
-    if record is None:
-        charged = order_payments.charged_amount(item)
-        refund = order_payments.refund(item, now, ctx.sub) if charged > 0 else {}
-        record = {"amount": int(refund.get("amount") or charged), "at": o.iso(now), "refundId": refund.get("id"),
-                  "status": refund.get("status")}
-        try:
-            dynamo.table(o.order_table()).update_item(
-                Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
-                UpdateExpression="SET #rf = :refund", ConditionExpression="attribute_exists(PK) AND "
-                                                                         "attribute_not_exists(#rf)",
-                ExpressionAttributeNames={"#rf": "refund"}, ExpressionAttributeValues={":refund": record})
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
-        item = o.load(item["locationId"], item["orderId"])
-        record = item["refund"]
-    item = _refund_gift_card(item, now)
-    amount = int(record.get("amount") or 0)
+    if order_payments.charged_amount(item) > 0 and o.refundable_amount(item) > 0:
+        item = order_payments.refund(item, None, now, ctx.sub, notify=False, notice_kind=None,
+                                     statuses=o.OPEN_STATUSES)
+    if item.get("giftCard"):
+        item = _refund_gift_card(item, now)
+    amount = int((item.get("refund") or {}).get("amount") or 0)
+    gift = {"giftCardRefunded": int(item["giftCard"].get("refundedOre") or 0)} if item.get("giftCard") else {}
     updated = _update_status(
         item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
         extra_sets=["paymentStatus = :refunded"], extra_values={":refunded": o.PAY_REFUNDED},
-        history_extra={"refunded": amount, "giftCardRefunded": int(item["giftCard"].get("refundedOre") or 0)})
-    logger.info(json.dumps({"order": "cancelled", "orderId": item["orderId"], "refund": record.get("refundId"),
-                            "giftCard": True}))
+        history_extra={"refunded": amount, **gift})
+    logger.info(json.dumps({"order": "cancelled", "orderId": item["orderId"], "refunded": amount,
+                            "giftCard": bool(item.get("giftCard"))}))
     return updated
+
+
+def _refund(event, location_id, ctx, order_id):
+    """POST .../orders/{orderId}/refund {amount?, reason?, notifyGuest?}:
+    owner only, (part of) the card payment back without cancelling."""
+    if not ctx.is_owner:
+        raise tenant.TenantError(403, "owner_only")
+    data = http.body(event, allowed={"amount", "reason", "notifyGuest"})
+    item = o.load(location_id, order_id)
+    if item.get("tenantId") != ctx.tenant_id:
+        raise o.NotFound
+    updated = order_payments.refund(item, data.get("amount"), o.now_utc(), ctx.sub,
+                                    reason=refunds.parse_reason(data.get("reason")),
+                                    notify=refunds.parse_notify(data.get("notifyGuest")))
+    logger.info(json.dumps({"order": "refunded", "orderId": order_id,
+                            "total": int((updated.get("refund") or {}).get("amount") or 0)}))
+    return http.respond(200, o.staff_view(updated))
 
 
 def _set_status(event, location_id, ctx, order_id):
@@ -200,19 +213,7 @@ def _set_status(event, location_id, ctx, order_id):
     now = o.now_utc()
 
     if target == o.CANCELLED:
-        if item.get("giftCard"):
-            return http.respond(200, o.staff_view(_cancel_gift_card_order(item, ctx, now, current)))
-        refund = order_payments.refund(item, now, ctx.sub)
-        amount = int(refund.get("amount") or item["totalAmount"])
-        updated = _update_status(
-            item, o.CANCELLED, ctx, now, expected=current, notice_kind=o.NOTICE_CANCELLED,
-            extra_sets=["paymentStatus = :refunded", "refund = :refund"],
-            extra_values={":refunded": o.PAY_REFUNDED,
-                          ":refund": {"amount": amount, "at": o.iso(now), "refundId": refund.get("id"),
-                                      "status": refund.get("status")}},
-            history_extra={"refunded": amount})
-        logger.info(json.dumps({"order": "cancelled", "orderId": order_id, "refund": refund.get("id")}))
-        return http.respond(200, o.staff_view(updated))
+        return http.respond(200, o.staff_view(_cancel(item, ctx, now, current)))
 
     if target == o.PREPARING:
         # The kitchen started: the guest's confirmation SMS, with a ready
@@ -276,9 +277,11 @@ def _regenerate(location_id, ctx, table_id):
 
 
 def _item_route(event, method):
-    location_id, ctx = _ctx(event)
     proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
     parts = proxy.split("/") if proxy else []
+    # The table QR codes are shown on Layout too (the floor plan's tables).
+    table_codes = bool(parts) and parts[0] == "table-codes"
+    location_id, ctx = _ctx(event, ("bestallningar", "layout") if table_codes else "bestallningar")
     if parts == ["pause"]:
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})
@@ -295,6 +298,10 @@ def _item_route(event, method):
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})
         return _set_status(event, location_id, ctx, parts[0])
+    if len(parts) == 2 and parts[1] == "refund" and o.valid_order_id(parts[0]):
+        if method != "POST":
+            return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
+        return _refund(event, location_id, ctx, parts[0])
     if len(parts) == 1 and o.valid_order_id(parts[0]):
         if method != "GET":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET"})
@@ -320,6 +327,8 @@ def handler(event, context):
     except o.NotFound:
         return http.error(404, "not found")
     except o.InvalidState as exc:
+        return http.error(409, exc.code)
+    except refunds.Conflict as exc:
         return http.error(409, exc.code)
     except stripe.StripeError as exc:
         logger.error(json.dumps({"refund": "rejected", "code": exc.code, "message": str(exc)}))

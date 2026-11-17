@@ -1,1 +1,3 @@
 # boto3 is already present in the public.ecr.aws/lambda/python base image.
+# tzdata: ZoneInfo for each location's specialDays; the base image may have no system zone database.
+tzdata

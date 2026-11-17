@@ -92,8 +92,8 @@ MAX_RANGE_DAYS = 92
 HANDOVER_MS = 90_000            # re-invoke when less than this remains
 LOGS_CHUNK = 20                 # log groups per Logs Insights query
 LOGS_WAIT_SECONDS = 90
-REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=*" as tenant, loc | filter ispresent(tenant) '
-                  '| stats count(*) as n by tenant, loc')
+REQUESTS_QUERY = ('parse @message "TENANT_REQUEST tenant=* loc=* kind=*" as tenant, loc, kind '
+                  '| filter ispresent(tenant) | stats count(*) as n by tenant, loc')
 NOT_A_BOOKING = ("held", "pending", "expired")
 NOT_AN_ORDER = ("pending_payment", "failed", "cancelled")
 CENTS = Decimal("0.01")
@@ -580,7 +580,8 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
                 "costSplitSek": {k: _q(v) for k, v in totals.items()},
                 "unallocatedSek": Decimal(0),
                 "requests": 0, "bookings": 0, "orders": 0, "emails": 0, "sms": 0, "smsParts": 0, "marketingEmails": 0,
-                "invoicedSek": Decimal(0), "paidSek": Decimal(0), "creditedSek": Decimal(0)}
+                "invoicedSek": Decimal(0), "paidSek": Decimal(0), "creditedSek": Decimal(0),
+                "refundedSek": Decimal(0)}
     if not active:
         platform["unallocatedSek"] = platform["costSek"]
     for t in active:
@@ -594,7 +595,7 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
         for k in ("requests", "bookings", "orders", "emails", "sms", "smsParts", "marketingEmails"):
             platform[k] += usage[tenant_id][k]
         row = rows.get(tenant_id) or {}
-        for k in ("invoicedSek", "paidSek", "creditedSek"):
+        for k in ("invoicedSek", "paidSek", "creditedSek", "refundedSek"):
             platform[k] += Decimal(row.get(k) or 0)
     write_platform_day(day, platform)
     return platform

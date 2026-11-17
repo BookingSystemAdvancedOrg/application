@@ -24,7 +24,8 @@ TRIGGER:
     POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard;
                                                                                 `lines` or `resaleTransferIds`
     GET    /public/tickets/{token}                                              K18
-    GET    /public/tickets/{token}/pass                                         K19 404 (Wallet not built yet)
+    GET    /public/tickets/{token}/pass                                         K19 Wallet pass (EVENTS_WALLET_MODE,
+                                                                                off by default -> 404)
     POST   /public/tickets/{token}/transfers                                    K20 gift (request guard per
                                                                                 ticket and IP) or resale listing
     POST   /public/ticket-transfers/{transferToken}/accept                      K21
@@ -55,15 +56,22 @@ PURPOSE:
     refused at the door (status void).
 
     Not built in this run (refused, never silently accepted): table pick
-    (ADR-K 3), Wallet passes (6, K19 answers 404 as when the secrets are
-    missing), event images (`imageKey` -> 400 unknown_image).
+    (ADR-K 3).
+
+    Event images (ADR-K 1, media.py): the menu image upload's key for this
+    tenant and location plus required alt text; no S3 access here. Wallet
+    passes (ADR-K 6, passes.py): off unless EVENTS_WALLET_MODE says
+    `simulator` (never in prod) or `live` (secrets by ARN, a missing one hides
+    that kind).
 
 ENV_VARS:
     ENVIRONMENT, EVENTS_TICKETS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, EVENTS_TICKETS_PEPPER_SECRET_ARN,
     STRIPE_SECRET_ARN, STRIPE_API_VERSION, TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN,
     REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME, EVENT_BUS_NAME,
-    CLOUDFRONT_EDGE_SECRET, SITE_DOMAIN, CUSTOMER_SITE_URL
+    CLOUDFRONT_EDGE_SECRET, SITE_DOMAIN, CUSTOMER_SITE_URL;
+    optional EVENTS_WALLET_MODE (off | simulator | live), EVENTS_TICKETS_APPLE_PASS_SECRET_ARN,
+    EVENTS_TICKETS_GOOGLE_WALLET_SECRET_ARN
 """
 
 import json
@@ -78,7 +86,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import dynamo, events, http, orders, request_guard, site, tenant, turnstile
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
-from shared.features.events_tickets import qr, series
+from shared.features.events_tickets import media, passes, qr, series
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -89,6 +97,9 @@ TICKETS_SEND_GRACE_SECONDS = 120
 JOB_BATCH = 200
 INLINE_REFUNDS = 10  # K9 refunds this many tickets before answering 202; the sweep does the rest
 RESALE_PER_ORDER = 4  # listed tickets one checkout may buy (4 transaction items each, 25 per transaction)
+REFUND_MAX_REFUSED = 6  # Stripe answered with an error this often: the refund is retried once a day from then on
+REFUND_MAX_ATTEMPTS = 288  # about a day of sweeps when Stripe cannot be reached (or the account lacks balance)
+REFUND_SLOW_RETRY_HOURS = 24  # retry interval of a refund past those limits; it stays owed and visible
 JOB_MARGIN_MS = 15_000  # the sweep stops starting new refunds this close to the Lambda timeout
 _clients = {}
 _invocation = {"time_left": None}  # this invocation's remaining-time getter (set by the handler)
@@ -281,8 +292,6 @@ def _event_fields(body, *, at, first_start=None):
         description = et.text(body.get("description"), et.DESCRIPTION_MAX) or ""
     except ValueError:
         raise et.EventsError(400, "description is at most 4000 characters", "description")
-    if body.get("imageKey") not in (None, ""):
-        raise et.EventsError(400, "unknown_image", "imageKey")  # images are not built in this run
     out = {"title": title, "description": description, "settings": et.validate_settings(body.get("settings"))}
     if first_start is not None:
         out["series"] = et.validate_series(body.get("series"), first_start)
@@ -321,8 +330,8 @@ def _new_occ(tenant_id, event_id, location_id, occ, at):
 
 def create_event(event, ctx):
     _owner(ctx)
-    body = http.body(event, allowed=("eventId", "title", "description", "imageKey", "occurrences", "series",
-                                     "ticketTypes", "settings"))
+    body = http.body(event, allowed=("eventId", "title", "description", "imageKey", "imageAlt", "occurrences",
+                                     "series", "ticketTypes", "settings"))
     event_id = body.get("eventId")
     if not et.valid_id(event_id):
         raise et.EventsError(400, "eventId is invalid", "eventId")
@@ -340,6 +349,7 @@ def create_event(event, ctx):
     if len({o["startAt"] for o in occs}) != len(occs):
         raise et.EventsError(400, "invalid_window", "occurrences")
     fields = _event_fields(body, at=at, first_start=et.parse_iso(min(o["startAt"] for o in occs)))
+    fields.update(media.clean_image(body, ctx.tenant_id, ctx.location_id) or {})
     if fields["series"] and len(occs) != 1:
         raise et.EventsError(400, "invalid_series", "series")
     raw_types = body.get("ticketTypes") or []
@@ -382,7 +392,7 @@ def get_event(event, ctx):
 
 def update_event(event, ctx):
     _owner(ctx)
-    body = http.body(event, allowed=("title", "description", "imageKey", "series", "settings", "version"))
+    body = http.body(event, allowed=("title", "description", "imageKey", "imageAlt", "series", "settings", "version"))
     ev = _event_or_404(ctx, event)
     version = _version(body)
     if ev["status"] == "cancelled":
@@ -390,6 +400,7 @@ def update_event(event, ctx):
     occs, types = et.event_parts(ctx.tenant_id, ev["eventId"])
     first = et.parse_iso(occs[0]["startAt"]) if occs else et.now()
     fields = _event_fields(body, at=et.now(), first_start=first)
+    image = media.clean_image(body, ctx.tenant_id, ctx.location_id)  # PUT: no imageKey removes the image
     if ev["status"] != "draft" and fields["series"] != ev.get("series"):
         raise et.EventsError(400, "invalid_series", "series")  # a published series is edited per occurrence
     if fields["series"] and len(occs) != 1:
@@ -398,12 +409,18 @@ def update_event(event, ctx):
             "updatedBy = :by"]
     values = {":t": fields["title"], ":d": fields["description"], ":s": fields["settings"], ":one": 1,
               ":at": et.iso(et.now()), ":by": ctx.sub, ":v": version}
-    expr = "SET " + ", ".join(sets)
+    removes = []
     if fields["series"]:
-        expr = expr.replace("SET ", "SET series = :series, ", 1)
+        sets.insert(0, "series = :series")
         values[":series"] = fields["series"]
     else:
-        expr += " REMOVE series"
+        removes.append("series")
+    if image:
+        sets += ["imageKey = :ik", "imageAlt = :ia"]
+        values.update({":ik": image["imageKey"], ":ia": image["imageAlt"]})
+    else:
+        removes += ["imageKey", "imageAlt"]
+    expr = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
     try:
         et.table().update_item(Key=et.event_key(ctx.tenant_id, ev["eventId"]), UpdateExpression=expr,
                                ConditionExpression="version = :v", ExpressionAttributeValues=values)
@@ -701,7 +718,9 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
     """One step of a mass refund: tickets are refunded in our books one by
     one (`counts.refunded` written per ticket, so K14 shows live progress),
     then the owed Stripe refunds are sent; `counts.failed` is how many
-    Stripe still owes. Stops at `limit` tickets or when `time_left` (ms)
+    Stripe still owes (a refund past the attempt limits included: it is
+    retried daily and keeps the job from being done). Buyers are e-mailed as
+    soon as every ticket is refunded in the books. Stops at `limit` tickets or when `time_left` (ms)
     gets short, and the next sweep continues. Done when every ticket is
     refunded, Stripe has every refund and every buyer is emailed."""
     job = et.get(et.job_key(tenant_id, job_id))
@@ -726,6 +745,8 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
         if not _in_time(time_left):
             stopped = True
             break
+        if not _refund_due(tx):
+            continue  # past the attempt limits: retried once a day, still owed and counted below
         try:
             _stripe_refund(tenant_id, tx)
         except et.EventsError:
@@ -733,7 +754,7 @@ def _run_job(tenant_id, job_id, *, limit=JOB_BATCH, time_left=None):
     remaining = len(_paid_tickets(tenant_id, job["occurrenceId"]))
     unfinished = len(_owed_refunds(tenant_id, job["occurrenceId"]))
     notified = 0
-    if not remaining and not unfinished and not stopped:
+    if not remaining and not stopped:  # refunded in our books: buyers hear now, whatever Stripe still owes
         notified = _notify_cancelled(tenant_id, job)
     done = not remaining and not unfinished and not stopped and not _unnotified(tenant_id, job)
     expr = "SET counts.failed = :f, counts.notified = counts.notified + :n, done = :d"
@@ -765,14 +786,24 @@ def _notify_cancelled(tenant_id, job):
     for order in _unnotified(tenant_id, job):
         # what this cancellation gave back: the order's tickets refunded by the job (a ticket the owner refunded
         # or a resale paid back earlier is not counted again)
-        refunded_now = sum(int(t.get("priceOre") or 0) for t in et.tickets_of_order(tenant_id, order)
-                           if t.get("status") == "refunded" and (t.get("refundTxId") or "").startswith("cancel-"))
+        # split into what Stripe has paid back and what it still owes (the e-mail never claims an owed refund)
+        refunded_now = owed_now = 0
+        for t in et.tickets_of_order(tenant_id, order):
+            if t.get("status") != "refunded" or not (t.get("refundTxId") or "").startswith("cancel-"):
+                continue
+            tx = et.get(et.tx_key(tenant_id, t["refundTxId"])) or {}
+            if tx.get("GSI1PK") == "REFUNDS":
+                owed_now += int(t.get("priceOre") or 0)
+            else:
+                refunded_now += int(t.get("priceOre") or 0)
         text = (f"Hej {order.get('buyerName') or ''}!\n\n{ev.get('title', 'Evenemanget')} på "
                 f"{(location.get('name') or 'restaurangen').strip()} "
                 f"{_when(et.iso(occ_start), location) if occ_start else ''} är tyvärr inställt.\n\n"
                 + (f"{job['message']}\n\n" if job.get("message") else "")
                 + (f"Vi har återbetalat {_kr(refunded_now)} till kortet du betalade med. Det kan ta "
-                   "några bankdagar innan pengarna syns.\n" if refunded_now else ""))
+                   "några bankdagar innan pengarna syns.\n" if refunded_now else "")
+                + (f"Återbetalningen på {_kr(owed_now)} till kortet du betalade med är på väg men inte klar än. "
+                   "Syns pengarna inte inom en vecka, kontakta restaurangen.\n" if owed_now else ""))
         try:
             _notify(tenant_id, order["locationId"], "events-tickets.cancelled", order["buyerEmail"],
                     f"Inställt: {ev.get('title', 'evenemang')}", text)
@@ -929,12 +960,52 @@ def _stripe_refund(tenant_id, tx):
                 # a resale refund is keyed by its listing (ADR-K 8): the same ticket may be refunded
                 # once by the owner and once by a resale, never twice for the same reason
                 idempotency_key=tx.get("stripeKey") or f"ticket-refund-{ticket_id}")
-    except (stripe.StripeError, stripe.StripeUnavailable):
+    except (stripe.StripeError, stripe.StripeUnavailable) as exc:
         logger.warning(json.dumps({"event": "ticket.refund", "stripe": "failed", "txId": tx["txId"]}))
+        # 402 (e.g. balance_insufficient on the connected account) can succeed later, like an outage
+        _refund_attempt_failed(tenant_id, tx,
+                               refused=isinstance(exc, stripe.StripeError) and getattr(exc, "status", None) != 402)
         raise et.EventsError(502, "stripe_unavailable")
     et.table().update_item(Key=et.tx_key(tenant_id, tx["txId"]),
-                           UpdateExpression="SET stripeRefundId = :r REMOVE GSI1PK, GSI1SK",
+                           UpdateExpression="SET stripeRefundId = :r REMOVE GSI1PK, GSI1SK, refundRetryAt",
                            ExpressionAttributeValues={":r": (result or {}).get("id") or "unknown"})
+
+
+def _refund_due(tx):
+    """False while a refund past the attempt limits waits for its daily retry."""
+    retry_at = et.parse_iso(tx.get("refundRetryAt"))
+    return retry_at is None or retry_at <= et.now()
+
+
+def _refund_attempt_failed(tenant_id, tx, *, refused):
+    """Counts a failed Stripe refund on the TX. After REFUND_MAX_REFUSED
+    answers from Stripe (or REFUND_MAX_ATTEMPTS tries in all) the refund is
+    retried only once every REFUND_SLOW_RETRY_HOURS (`refundRetryAt`). It is
+    never dropped: the TX keeps its REFUNDS row, so it stays in the job's
+    `counts.failed`, the job is not done, and `stripeRefundFailedAt` plus an
+    error log line ({"stripe": "stuck"}, alarmed) tell Booqy to act."""
+    key = et.tx_key(tenant_id, tx["txId"])
+    try:
+        row = et.table().update_item(
+            Key=key, UpdateExpression="SET refundAttempts = if_not_exists(refundAttempts, :z) + :one",
+            ConditionExpression="attribute_exists(PK) AND attribute_not_exists(stripeRefundId)",
+            ExpressionAttributeValues={":z": 0, ":one": 1}, ReturnValues="ALL_NEW")["Attributes"]
+        attempts = int(row["refundAttempts"])
+        if attempts < (REFUND_MAX_REFUSED if refused else REFUND_MAX_ATTEMPTS):
+            return
+        first = "stripeRefundFailedAt" not in row
+        at = et.now()
+        et.table().update_item(
+            Key=key, UpdateExpression="SET refundRetryAt = :r, stripeRefundFailedAt = if_not_exists(stripeRefundFailedAt, :at)",
+            ConditionExpression="attribute_not_exists(stripeRefundId)",
+            ExpressionAttributeValues={":r": et.iso(at + timedelta(hours=REFUND_SLOW_RETRY_HOURS)), ":at": et.iso(at)})
+    except (ClientError, BotoCoreError) as exc:  # the count is best effort: the refund stays owed
+        logger.warning(json.dumps({"event": "ticket.refund", "attempts": "not_counted", "txId": tx["txId"],
+                                   "type": type(exc).__name__}))
+        return
+    line = json.dumps({"event": "ticket.refund", "stripe": "stuck" if first else "still_stuck",
+                       "tenantId": tenant_id, "txId": tx["txId"], "attempts": attempts, "refused": refused})
+    (logger.error if first else logger.warning)(line)
 
 
 def refund_ticket(event, ctx):
@@ -1109,7 +1180,8 @@ def public_list(event):
         upcoming = [o for o in occs if o["status"] == "scheduled" and o["startAt"] > at]
         if not upcoming or not types:
             continue
-        out.append({"eventId": ev["eventId"], "title": ev["title"], "nextOccurrence": upcoming[0]["startAt"],
+        out.append({"eventId": ev["eventId"], "title": ev["title"], **media.image_view(ev),
+                    "nextOccurrence": upcoming[0]["startAt"],
                     "fromPriceSek": min(int(t["priceOre"]) for t in types) / 100,
                     "soldOut": all(et.left(o) == 0 for o in upcoming)})
     out.sort(key=lambda e: e["nextOccurrence"])
@@ -1131,6 +1203,7 @@ def public_detail(event):
         resale += [_listing_view(t) for t in listed[o["occurrenceId"]] if t["status"] == "pending"]
     return http.respond(200, {
         "eventId": ev["eventId"], "title": ev["title"], "description": ev.get("description") or "",
+        **media.image_view(ev),
         "refundPolicy": settings.get("refundPolicy"), "perOrderMax": int(settings.get("perOrderMax") or 10),
         "occurrences": [{"occurrenceId": o["occurrenceId"], "startAt": o["startAt"], "endAt": o["endAt"],
                          "left": et.left(o), "soldOut": et.left(o) == 0, "salesOpen": _sales_open(o, at)}
@@ -1777,14 +1850,45 @@ def ticket_page(event):
         "occurrence": {"occurrenceId": occ.get("occurrenceId"), "startAt": occ.get("startAt"),
                        "endAt": occ.get("endAt"), "doorsAt": occ.get("doorsAt"), "status": occ.get("status")},
         "location": {"locationId": first["locationId"], "name": location.get("name")},
-        "tickets": out, "wallet": {"apple": False, "google": False},
+        "tickets": out, "wallet": passes.provider().available(),
         "transferAllowed": _transfer_open(ev, occ), "resaleAllowed": _resale_open(ev, occ)})
 
 
 def ticket_pass(event):
-    _token_scope(event)
-    # Wallet passes are not built in this run: the same answer as a missing Wallet secret (CONTRACTS.md K19).
-    raise et.EventsError(404, "not found")
+    """K19: one valid ticket of this link as an Apple or Google Wallet pass (shared/features/
+    events_tickets/passes.py). A kind other than apple or google: 400. Wallet off, the kind's secret missing, or a ticket that is not this
+    link's or no longer valid: 404."""
+    tenant_id, tickets, _, _, _ = _token_scope(event)
+    params = http.query(event)
+    if set(params) - {"ticketId", "kind"}:
+        raise et.EventsError(400, "unsupported query parameters")
+    kind = params.get("kind")
+    if not params.get("ticketId"):
+        raise et.EventsError(400, "ticketId is required", "ticketId")
+    if not kind:
+        raise et.EventsError(400, "kind is required", "kind")
+    if kind not in passes.KINDS:
+        raise et.EventsError(400, "kind is invalid", "kind")
+    wallet = passes.provider()
+    if not wallet.available().get(kind):
+        raise et.EventsError(404, "not found")
+    ticket = next((t for t in tickets if t["ticketId"] == params.get("ticketId") and t["status"] == "valid"), None)
+    if not ticket:
+        raise et.EventsError(404, "not found")
+    ev = et.get(et.event_key(tenant_id, ticket["eventId"])) or {}
+    occ = et.get(et.occ_key(tenant_id, ticket["eventId"],
+                            et.split_occurrence(ticket["eventId"], ticket["occurrenceId"]))) or {}
+    location = tenant.get_location(tenant_id, ticket["locationId"]) or {}
+    data = passes.PassData(
+        tenant_id=tenant_id, event_id=ticket["eventId"], ticket_id=ticket["ticketId"], title=ev.get("title") or "",
+        start_at=occ.get("startAt") or "", end_at=occ.get("endAt") or "", location_name=location.get("name") or "",
+        type_name=ticket.get("typeName") or "", holder_name=ticket.get("holderName") or "",
+        qr=qr.payload(tenant_id, ticket["occurrenceId"], ticket["ticketId"]))
+    try:
+        return passes.response(wallet.issue(kind, data))
+    except Exception as exc:  # bad key material, a secret that expired from the cache: no detail leaves the Lambda
+        logger.error(json.dumps({"wallet": kind, "issue_failed": type(exc).__name__}))
+        raise et.EventsError(404, "not found")
 
 
 def create_transfer(event):
@@ -2204,6 +2308,8 @@ def run_sweep(context=None):
         if not _in_time(time_left):
             counts["stopped"] = True
             break
+        if not _refund_due(tx):
+            continue
         try:
             _stripe_refund(tx["tenantId"], tx)
             counts["refunds"] += 1
@@ -2302,7 +2408,7 @@ def handler(event, context=None):
             location_id = http.path_id(event, "locationId")
         except ValueError:
             return _err(404, "not found")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature=et.FEATURE_KEY)
+        ctx = tenant.for_jwt(event, location_id=location_id, feature=et.FEATURE_KEY, area="evenemang")
         _invocation["time_left"] = _time_left(context)
         return ROUTES[route](event, ctx)
     except tenant.TenantError as exc:

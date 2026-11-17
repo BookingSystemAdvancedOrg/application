@@ -282,7 +282,7 @@ def _marketing(ctx, item, opt_in):
 
 def _list(event):
     location_id = http.path_id(event, "locationId")
-    tenant.for_jwt(event, location_id=location_id, feature="catering")
+    tenant.for_jwt(event, location_id=location_id, feature="catering", area="catering")
     params = http.query(event)
     status = params.get("status")
     items = c.list_requests(location_id)

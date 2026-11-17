@@ -267,8 +267,16 @@ def _owner(ctx):
         raise gc.GiftCardError(403, "owner_only")
 
 
+def _staff_ok(ctx):
+    """Presentkort is the owner's unless the owner granted it to the caller
+    (the handler already checked the area); refunds and settings stay the
+    owner's."""
+    if not ctx.allows("presentkort"):
+        raise gc.GiftCardError(403, "no_access")
+
+
 def get_settings(event, ctx):
-    _owner(ctx)
+    _staff_ok(ctx)
     return http.respond(200, gc.settings_view(gc.get_settings(ctx.tenant_id)))
 
 
@@ -292,7 +300,7 @@ def put_settings(event, ctx):
 
 
 def list_cards(event, ctx):
-    _owner(ctx)
+    _staff_ok(ctx)
     params = http.query(event)
     unknown = set(params) - {"status", "cursor"}
     if unknown:
@@ -327,7 +335,7 @@ def _card_or_404(ctx, event):
 
 
 def get_card(event, ctx):
-    _owner(ctx)
+    _staff_ok(ctx)
     card = _card_or_404(ctx, event)
     return http.respond(200, {**gc.card_detail(card),
                               "transactions": [gc.tx_view(t) for t in gc.transactions(ctx.tenant_id, card["cardId"])]})
@@ -348,7 +356,7 @@ def _reason(body):
 
 
 def adjust(event, ctx):
-    _owner(ctx)
+    _staff_ok(ctx)
     body = http.body(event, allowed=("txId", "expiresAt", "reason"))
     card = _card_or_404(ctx, event)
     tx_id, reason = _tx_id(body), _reason(body)
@@ -433,7 +441,7 @@ def _stripe_refund(tenant_id, card, tx):
 def resend(event, ctx):
     """The code is not stored, so "send again" rotates it: a new code by
     email, the old one stops working at once."""
-    _owner(ctx)
+    _staff_ok(ctx)
     body = http.body(event, allowed=("to",))
     card = _card_or_404(ctx, event)
     to = body.get("to")
@@ -636,8 +644,17 @@ def checkout_hook(event):
         card_id = gc.tx_card(tenant_id, f"order-{order_id}")
         if card_id and gc.get_tx(tenant_id, card_id, f"{other}-order-{order_id}"):
             return {"ok": True, "reversedOre": 0}
-        card, after = _reverse(tenant_id, f"order-{order_id}", f"{op}-order-{order_id}", event.get("locationId"),
-                               by="system")
+        try:
+            card, after = _reverse(tenant_id, f"order-{order_id}", f"{op}-order-{order_id}",
+                                   event.get("locationId"), by="system")
+        except gc.GiftCardError as exc:
+            if exc.code != "card_void":
+                raise
+            # The card was refunded or voided meanwhile: nothing to credit, and the order must still
+            # settle (a failure here makes Stripe retry for days and blocks the cancel).
+            logger.warning(json.dumps({"giftCard": "reverse_on_void_card", "tenantId": tenant_id,
+                                       "orderId": order_id, "op": op}))
+            return {"ok": True, "reversedOre": 0, "code": "card_void"}
         if not card:
             return {"ok": True, "reversedOre": 0}
         tx = gc.get_tx(tenant_id, card["cardId"], f"{op}-order-{order_id}")
@@ -892,7 +909,7 @@ def handler(event, context=None):
                 location_id = http.path_id(event, "locationId")
             except ValueError:
                 return _err(404, "not found")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature=gc.FEATURE_KEY)
+        ctx = tenant.for_jwt(event, location_id=location_id, feature=gc.FEATURE_KEY, area="presentkort")
         return ROUTES[route](event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

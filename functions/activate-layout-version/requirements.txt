@@ -1,2 +1,4 @@
 # boto3 is already present in the public.ecr.aws/lambda/python base image.
 # Add this function's third-party dependencies here.
+# tzdata: ZoneInfo for the location timezone of the default cutover; the base image may have no system zone database.
+tzdata

@@ -447,7 +447,9 @@ def _publish_channel(post, channel, connection, token):
     graph = ads.graph()
     try:
         if channel == "facebook":
-            if before == "needs_check":
+            # needs_check: an earlier call failed with an unknown outcome. publishing: an
+            # earlier run died mid-call and its lease expired. Either may have posted.
+            if before in ("needs_check", "publishing"):
                 since = sp.parse_iso(state.get("firstAttemptAt"))
                 found = next((p for p in graph.recent_page_posts(token, connection["pageId"], sp.RECENT_POSTS)
                               if (p.get("message") or "") == post["caption"] and _created_since(p, since)), None)
@@ -582,7 +584,7 @@ def handler(event, context=None):
     if fn is None:
         return _err(404, "not found")
     try:
-        ctx = tenant.for_jwt(event, feature=sp.FEATURE_KEY, owner_only=True)
+        ctx = tenant.for_jwt(event, feature=sp.FEATURE_KEY, area="marknadsforing")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

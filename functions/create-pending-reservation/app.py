@@ -159,7 +159,7 @@ def _max_online_party(location):
 def _create(event, *, staff):
     location_id = http.path_id(event, "locationId")
     if staff:
-        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations")
+        ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
     else:
         ctx = tenant.for_public(location_id, feature="reservations")
     data = http.body(event, allowed=_MANUAL_FIELDS if staff else _ONLINE_FIELDS)
@@ -201,9 +201,11 @@ def _create(event, *, staff):
         return _book(ctx, location_id, now, staff=True, **booking)
     if data.get("holdId") is not None:
         # The tables are already the guest's (held); the bot check was done
-        # when they were held - only the per-guest limits apply here.
+        # when they were held - only the per-guest limits apply here. As in
+        # _guard_online the IP address keeps its attempt; only the phone
+        # and e-mail counters are given back when nothing is booked.
+        request_guard.check([("ip", http.source_ip(event), *IP_LIMIT)], now)
         counted = request_guard.check([
-            ("ip", http.source_ip(event), *IP_LIMIT),
             ("phone", guest.get("customerPhone"), *CONTACT_LIMIT),
             ("email", guest.get("customerEmail"), *CONTACT_LIMIT),
         ], now)

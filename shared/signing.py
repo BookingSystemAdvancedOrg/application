@@ -44,12 +44,11 @@ re-reads the state with status() and never trusts the callback body.
 
 import base64
 import hashlib
-import hmac
 import json
 import secrets
 import time
 
-from shared import bankid
+from shared import bankid, safe_compare
 from shared import signing_scrive as scrive
 from shared.bankid import SigningRejected, SigningUnavailable  # noqa: F401 - re-exported
 from shared.signing_scrive import EvidenceNotReady  # noqa: F401 - re-exported
@@ -210,7 +209,7 @@ def verify_webhook(order, headers, raw_body, query):
     webhook path. The body is never trusted, only used to name the event."""
     token = (query or {}).get("t")
     expected = (order or {}).get("callbackToken")
-    if not isinstance(token, str) or not expected or not hmac.compare_digest(token, expected):
+    if not isinstance(token, str) or not expected or not safe_compare.equal(expected, token):
         return None
     if order.get("provider") == "scrive":
         event_id = scrive.callback_event_id(order, raw_body)

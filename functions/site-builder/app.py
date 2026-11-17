@@ -562,7 +562,7 @@ def handler(event, context=None):
     try:
         if ROUTES[route] is None:
             return public_preview(event)
-        ctx = tenant.for_jwt(event, feature=FEATURE, owner_only=True)
+        ctx = tenant.for_jwt(event, feature=FEATURE, area="webbplats")
         return ROUTES[route](event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

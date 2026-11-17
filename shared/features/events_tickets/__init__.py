@@ -2,7 +2,8 @@
 
 Table `<prefix>events-tickets` (EVENTS_TICKETS_TABLE_NAME), partition `TENANT#<t>`:
 
-    EVENT#<e>                       title, description, status, settings, series?, version
+    EVENT#<e>                       title, description, imageKey?, imageAlt?, status, settings, series?,
+                                    version
     EVENT#<e>#OCC#<start>           one dated occurrence: capacity, sold, held, checkedIn, revenueOre, sales window
     EVENT#<e>#TYPE#<typeId>         ticket type: priceOre (incl. VAT), vatRate, capacity?, sold, held, tier?
     ORDER#<orderId>                 checkout; pending (ttl 15 min, GSI1 HOLD row) -> paid (GSI1 row per event)
@@ -584,8 +585,8 @@ def ended(occs, at: datetime) -> bool:
 
 
 def event_view(ev, occs=None, types=None, *, money=True) -> dict:
-    out = {k: plain(ev[k]) for k in ("eventId", "locationId", "title", "description", "status", "settings", "series",
-                                     "createdAt", "updatedAt") if ev.get(k) is not None}
+    out = {k: plain(ev[k]) for k in ("eventId", "locationId", "title", "description", "imageKey", "imageAlt",
+                                     "status", "settings", "series", "createdAt", "updatedAt") if ev.get(k) is not None}
     out["version"] = int(ev.get("version") or 1)
     if occs is not None:
         out["occurrences"] = [occurrence_view(o, money=money) for o in occs]

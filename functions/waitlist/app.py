@@ -40,13 +40,14 @@ ENV_VARS:
 import json
 import logging
 import os
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, events, guarantee, http, manage_link, request_guard, site, tenant, turnstile
+from shared import availability, booking_rules, events, guarantee, http, manage_link, request_guard, site, tenant
+from shared import turnstile
 from shared import reservations as r
 from shared.features import waitlist as wl
 
@@ -214,11 +215,11 @@ def _checked(ctx, location_id, day, start_time, table_ids, party, now):
     return versions, context, slot, seats
 
 
-def _reservation(ctx, entry, context, slot, seats, table_ids, now, *, status, by, hold_expires=None):
+def _reservation(ctx, entry, context, slot, seats, table_ids, now, *, day, status, by, hold_expires=None):
     rid = r.new_id()
     item = {
-        **r.reservation_key(entry["locationId"], entry["date"], rid),
-        "reservationId": rid, "tenantId": ctx.tenant_id, "locationId": entry["locationId"], "date": entry["date"],
+        **r.reservation_key(entry["locationId"], day, rid),
+        "reservationId": rid, "tenantId": ctx.tenant_id, "locationId": entry["locationId"], "date": day,
         "startTime": slot["startTime"], "endTime": slot["endTime"], "bookedFor": r.iso(slot["startUtc"]),
         "endsAt": r.iso(slot["endUtc"]), "timezone": context["timezone"], "tableIds": table_ids, "seats": seats,
         "partySize": int(entry["partySize"]), "layoutVersion": slot["layoutVersion"], "bookingRule": slot["rule"],
@@ -234,7 +235,7 @@ def _reservation(ctx, entry, context, slot, seats, table_ids, now, *, status, by
                      "ttl": int(hold_expires.timestamp()) + 2 * 86400})
     else:
         item.update({"arrivedAt": r.iso(now), "ttl": r.retention_ttl(slot["endUtc"])})
-    pointer = {**r.pointer_key(entry["locationId"], rid), "reservationId": rid, "date": entry["date"],
+    pointer = {**r.pointer_key(entry["locationId"], rid), "reservationId": rid, "date": day,
                "tenantId": ctx.tenant_id, "ttl": r.retention_ttl(slot["endUtc"])}
     puts = [{"Put": {"TableName": r.reservation_table(), "Item": r.serialize(item),
                      "ConditionExpression": "attribute_not_exists(PK)"}},
@@ -356,13 +357,42 @@ def _convert(ctx, entry, now, *, how, by):
 
 # --- JWT routes ------------------------------------------------------------------------------------
 
+def _previous_day(day):
+    return (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+
+
+def _evening_still_open(location, today):
+    """True while the previous date's opening hours run past midnight into
+    ``today`` (saturday 18:00-02:00 at 00:10 on Sunday)."""
+    try:
+        tz = ZoneInfo(location.get("timezone") or "Europe/Stockholm")
+        spans = booking_rules.date_spans(location["businessHours"],
+                                         booking_rules.special_days_by_date(location.get("specialDays")),
+                                         date.fromisoformat(today))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+    local = wl.now().astimezone(tz)
+    minute = local.hour * 60 + local.minute
+    return any(opens < 0 and minute < closes for opens, closes in spans)
+
+
+def _slot_day(ctx, entry):
+    """The date whose slots an offer or seating uses: an entry from before
+    midnight is served from today's slots (the hours after midnight belong
+    to the new date in the availability engine)."""
+    return max(entry["date"], wl.local_today(ctx.location))
+
+
 def _entry_or_404(ctx, event, day=None):
     try:
         entry_id = http.path_id(event, "entryId")
     except ValueError:
         raise wl.WaitlistError(404, "not found")
-    day = day or wl.local_today(ctx.location)
-    entry = wl.get_entry(ctx.tenant_id, ctx.location_id, day, entry_id)
+    today = wl.local_today(ctx.location)
+    entry = wl.get_entry(ctx.tenant_id, ctx.location_id, day or today, entry_id)
+    if not entry and not day:
+        # Joined before midnight at a restaurant open past it.
+        entry = wl.get_entry(ctx.tenant_id, ctx.location_id, _previous_day(today), entry_id)
     if not entry:
         raise wl.WaitlistError(404, "not found")
     return entry
@@ -385,6 +415,10 @@ def list_queue(event, ctx):
         raise wl.WaitlistError(400, "bad date", "date")
     now = wl.now()
     entries = wl.day_entries(ctx.location_id, day)
+    if not params.get("date") and _evening_still_open(ctx.location, day):
+        # Still yesterday's evening: its open entries stay in the queue.
+        carried = [e for e in wl.day_entries(ctx.location_id, _previous_day(day)) if e.get("status") in wl.OPEN]
+        entries = carried + entries
     return http.respond(200, {"settings": wl.settings_view(wl.get_settings(ctx.tenant_id, ctx.location_id)),
                               "entries": [wl.staff_view(e, entries, now) for e in entries],
                               "suggestions": suggestions(ctx, ctx.location_id, day, entries, now)})
@@ -452,7 +486,12 @@ def offer(event, ctx):
     current = entry.get("offer") or {}
     if entry["status"] == "offered" and not wl.offer_expired(entry, now) \
             and list(current.get("tableIds") or []) == table_ids and current.get("startTime") == start_time:
-        return http.respond(200, wl.staff_view(entry))  # retry after success: one hold
+        # Retry after success: one hold. The guest's SMS is sent now if the
+        # first try never got that far (or the invoke failed).
+        notice = entry.get("notice") or {}
+        if notice.get("kind") != "offered" or not notice.get("sentAt"):
+            entry = _notify(ctx.tenant, entry, ctx.location, "offered")
+        return http.respond(200, wl.staff_view(entry))
     if wl.offer_expired(entry, now):
         entry, _ = expire_offer(entry, by=ctx.sub)
     if entry["status"] not in ("waiting", "expired"):
@@ -460,24 +499,32 @@ def offer(event, ctx):
     if version != int(entry["version"]) and not (entry["status"] == "expired" and version == int(entry["version"]) - 1):
         raise wl.WaitlistError(409, "changed_retry")
     settings = wl.get_settings(ctx.tenant_id, ctx.location_id)
-    versions, context, slot, seats = _checked(ctx, ctx.location_id, entry["date"], start_time, table_ids,
+    day = _slot_day(ctx, entry)
+    versions, context, slot, seats = _checked(ctx, ctx.location_id, day, start_time, table_ids,
                                               int(entry["partySize"]), now)
     expires = now + timedelta(minutes=int(settings["holdMinutes"]))
-    held, puts = _reservation(ctx, entry, context, slot, seats, table_ids, now, status=r.HELD, by=ctx.sub,
-                              hold_expires=expires)
+    held, puts = _reservation(ctx, entry, context, slot, seats, table_ids, now, day=day, status=r.HELD,
+                              by=ctx.sub, hold_expires=expires)
     offer_row = {"reservationId": held["reservationId"], "tableIds": table_ids, "startTime": slot["startTime"],
                  "endTime": slot["endTime"], "expiresAt": wl.iso(expires), "offeredBy": ctx.sub}
-    _transact(r.lock_updates(ctx.location_id, entry["date"], versions)
-              + r.hold_items(ctx.location_id, entry["date"], slot["startTime"], slot["endTime"], table_ids,
+    _transact(r.lock_updates(ctx.location_id, day, versions)
+              + r.hold_items(ctx.location_id, day, slot["startTime"], slot["endTime"], table_ids,
                              held["reservationId"], slot["endUtc"], now=now, hold_expires=expires)
               + puts
               + [_entry_update(entry, status="offered", sets={"offer": offer_row},
                                history=wl.history_entry("offered", ctx.sub, now, tableIds=table_ids))])
     entry = _reload(entry)
-    _schedule_expiry(entry)
+    # The offer is committed: the guest's SMS goes first, and a Scheduler
+    # failure is only logged (expiry is time based; expire_offer also runs
+    # on the next offer or read).
+    entry = _notify(ctx.tenant, entry, ctx.location, "offered")
+    try:
+        _schedule_expiry(entry)
+    except (BotoCoreError, ClientError, KeyError) as exc:
+        logger.error(json.dumps({"schedule": "not_created", "entryId": entry["entryId"],
+                                 "type": type(exc).__name__}))
     _publish("Waitlist.TableOffered", entry, reservationId=held["reservationId"], tableIds=table_ids,
              expiresAt=wl.iso(expires))
-    entry = _notify(ctx.tenant, entry, ctx.location, "offered")
     return http.respond(200, wl.staff_view(entry))
 
 
@@ -496,15 +543,17 @@ def seat(event, ctx):
     if entry["status"] not in ("waiting", "expired"):
         raise wl.WaitlistError(409, "invalid_state")
     table_ids = r.validate_table_ids(body.get("tableIds"))
-    context, _ = _day_free(ctx, ctx.location_id, entry["date"], now)
+    day = _slot_day(ctx, entry)
+    context, _ = _day_free(ctx, ctx.location_id, day, now)
     slot = _current_slot(context, now)
     if not slot:
         raise wl.WaitlistError(409, "table_taken", "tableIds")
-    versions, context, slot, seats = _checked(ctx, ctx.location_id, entry["date"], slot["startTime"], table_ids,
+    versions, context, slot, seats = _checked(ctx, ctx.location_id, day, slot["startTime"], table_ids,
                                               int(entry["partySize"]), now)
-    booked, puts = _reservation(ctx, entry, context, slot, seats, table_ids, now, status=r.ARRIVED, by=ctx.sub)
-    _transact(r.lock_updates(ctx.location_id, entry["date"], versions)
-              + r.hold_items(ctx.location_id, entry["date"], slot["startTime"], slot["endTime"], table_ids,
+    booked, puts = _reservation(ctx, entry, context, slot, seats, table_ids, now, day=day, status=r.ARRIVED,
+                                by=ctx.sub)
+    _transact(r.lock_updates(ctx.location_id, day, versions)
+              + r.hold_items(ctx.location_id, day, slot["startTime"], slot["endTime"], table_ids,
                              booked["reservationId"], slot["endUtc"], now=now)
               + puts
               + [_entry_update(entry, status="seated", sets={"reservationId": booked["reservationId"]},
@@ -779,7 +828,7 @@ def handler(event, context=None):
             location_id = http.path_id(event, "locationId")
         except ValueError:
             return _err(404, "not found")
-        ctx = tenant.for_jwt(event, location_id=location_id, feature=wl.FEATURE_KEY)
+        ctx = tenant.for_jwt(event, location_id=location_id, feature=wl.FEATURE_KEY, area="bokningar")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

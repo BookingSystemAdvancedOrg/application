@@ -9,6 +9,8 @@ import json
 import time
 from datetime import date, datetime, timedelta
 
+from botocore.exceptions import ClientError
+
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import agent, calls, copy, language
 from shared.features.phone_agent import locations as locations_mod
@@ -122,6 +124,10 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
         raise pa.PhoneAgentError(404, "not found")
     if row.get("lastText") == text and row.get("lastReply") is not None:
         return json.loads(row["lastReply"])
+    turns = int(row.get("turns") or 0)
+    if turns >= pa.SIM_TURNS_MAX:   # the UI starts a new sessionId (audit #61)
+        raise pa.PhoneAgentError(409, "session_full")
+    _count_sim_turn(tenant_id)
     lang = start_lang = language_ or row.get("language") or "sv"
     switched = None
     if not language_:
@@ -151,6 +157,26 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
         "disclosure": first}
     item = {**key, "tenantId": tenant_id, "language": lang, "messages": agent.dumps(messages),
             "toolState": json.dumps(state, default=str), "lastText": text, "lastReply": json.dumps(out),
+            "turns": turns + 1,
             "ttl": int((datetime.now() + timedelta(seconds=pa.SIM_TTL_SECONDS)).timestamp())}
     pa.table().put_item(Item=item)
     return out
+
+
+def _count_sim_turn(tenant_id):
+    """One model turn of the simulator against the tenant's monthly quota
+    (a conditional ADD on SIMUSE#<yyyy-mm>, like meta-ads COPYUSE)."""
+    at = pa.now()
+    month = at.strftime("%Y-%m")
+    try:
+        pa.table().update_item(
+            Key=pa.simuse_key(tenant_id, month),
+            UpdateExpression="ADD #c :one SET #ttl = if_not_exists(#ttl, :ttl), tenantId = :t",
+            ConditionExpression="attribute_not_exists(#c) OR #c < :max",
+            ExpressionAttributeNames={"#c": "count", "#ttl": "ttl"},
+            ExpressionAttributeValues={":one": 1, ":max": pa.SIM_QUOTA_PER_MONTH, ":t": tenant_id,
+                                       ":ttl": int((at + timedelta(days=pa.SIMUSE_TTL_DAYS)).timestamp())})
+    except ClientError as exc:
+        if pa.conditional_failed(exc):
+            raise pa.PhoneAgentError(429, "quota_exceeded")
+        raise

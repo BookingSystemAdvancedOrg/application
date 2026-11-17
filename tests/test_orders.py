@@ -78,6 +78,7 @@ class FakeStripe:
         self.session = {}
         self.fail = None
         self.domains = []
+        self.refunds = []
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -96,8 +97,13 @@ class FakeStripe:
             return dict(self.session)
         if path.startswith("/v1/checkout/sessions/"):
             return dict(self.session)
+        if path == "/v1/refunds" and method == "GET":
+            return {"data": list(self.refunds)}
         if path == "/v1/refunds":
-            return {"id": "re_1", "amount": 25000, "status": "succeeded"}
+            refund = {"id": f"re_{len(self.refunds) + 1}", "amount": (params or {}).get("amount", 25000),
+                      "status": "succeeded", "metadata": (params or {}).get("metadata") or {}}
+            self.refunds.append(refund)
+            return refund
         if path == "/v1/payment_method_domains":
             if self.domains is None:
                 raise stripe_client.StripeUnavailable("down")
@@ -700,7 +706,8 @@ def test_cancel_refunds_and_tells_the_guest(env):
     assert body["status"] == "cancelled" and body["paymentStatus"] == "refunded"
     (call,) = env["stripe"].calls
     assert call["path"] == "/v1/refunds" and call["params"]["payment_intent"] == "pi_1"
-    assert call["account"] == ACCOUNT and call["key"] == f"refund-{created['orderId']}"
+    assert call["account"] == ACCOUNT and call["key"] == f"refund-{created['orderId']}-1"
+    assert call["params"]["amount"] == 28550
     assert stored(env, created["orderId"])["notice"]["type"] == "order_cancelled"
 
 
@@ -979,7 +986,7 @@ def test_cancelled_order_is_an_email_with_the_refund_never_an_sms(env, notify):
     set_status(env, created["orderId"], "cancelled")
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
     (mail,) = ses.calls
-    assert "250 kr" in mail["Message"]["Body"]["Text"]["Data"]
+    assert "285,50 kr" in mail["Message"]["Body"]["Text"]["Data"]
     assert sns.calls == []  # cancellation SMS are for table bookings only
 
 

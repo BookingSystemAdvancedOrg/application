@@ -661,7 +661,7 @@ def handler(event, context=None):
             except ValueError:
                 return _err(404, "not found")
         feature = ads.CONNECT_KEYS if route in _CONNECT else ads.FEATURE_KEY
-        ctx = tenant.for_jwt(event, location_id=location_id, feature=feature, owner_only=True)
+        ctx = tenant.for_jwt(event, location_id=location_id, feature=feature, area="marknadsforing")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

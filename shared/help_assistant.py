@@ -38,7 +38,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from shared import help_dates
+from shared import help_dates, staff_access
 
 HERE = Path(__file__).parent
 APPS = ("admin", "console")
@@ -135,7 +135,7 @@ ANSWER_SCHEMA = {
     },
 }
 
-_DASHES = re.compile("[–—]")
+_DASHES = re.compile("[\u2013\u2014]")
 _cache: dict = {}
 
 
@@ -347,10 +347,18 @@ def _rank(ix: dict, question: str, keep) -> list:
     return [(doc, s) for s, _, doc in out]
 
 
-def visible(doc: dict, *, role: str, features: dict, staff_insights: bool = True) -> bool:
+def visible(doc: dict, *, role: str, features: dict, staff_insights: bool = True, areas=None) -> bool:
     if role == "operator":
         return True
-    if doc.get("audience") == "owner" and role != "owner_user":
+    # A page of an area (shared/staff_access.py): staff see it only with that
+    # area; without the caller's areas the audience decides, as before.
+    area = doc.get("area")
+    if area and areas is not None:
+        if role != "owner_user" and area not in areas:
+            return False
+    elif doc.get("audience") == "owner" and role != "owner_user":
+        return False
+    elif area == "statistik" and role != "owner_user" and not staff_insights:
         return False
     feature = doc.get("feature")
     if feature:
@@ -362,12 +370,12 @@ def visible(doc: dict, *, role: str, features: dict, staff_insights: bool = True
     return True
 
 
-def caller_view(tenant_row: Optional[dict], role: str) -> dict:
+def caller_view(tenant_row: Optional[dict], role: str, sub: Optional[str] = None) -> dict:
     if role == "operator":
         return {"role": "operator", "features": {}, "staff_insights": True}
     features = ((tenant_row.get("entitlements") or {}).get("features")) or {}
-    staff_insights = ((tenant_row.get("insights") or {}).get("staffAccess") or "operations") != "none"
-    return {"role": role, "features": features, "staff_insights": staff_insights}
+    areas = staff_access.areas_for(tenant_row, role, sub)
+    return {"role": role, "features": features, "staff_insights": "statistik" in areas, "areas": areas}
 
 
 def candidates(data: dict, question: str, view: dict, app: str = "admin") -> tuple:
@@ -377,8 +385,11 @@ def candidates(data: dict, question: str, view: dict, app: str = "admin") -> tup
     found = [(d, s) for d, s in every if visible(d, **view)][:CANDIDATES]
     if every and not visible(every[0][0], **view) and (not found or every[0][1] >= found[0][1] * HIDDEN_LEAD):
         top = every[0][0]
-        owner_hit = (view["role"] not in ("owner_user", "operator") and top.get("audience") == "owner"
-                     and visible({**top, "audience": "all"}, **view))
+        blocked_area = bool(top.get("area")) and view.get("areas") is not None \
+            and top.get("area") not in view["areas"]
+        owner_hit = (view["role"] not in ("owner_user", "operator")
+                     and (top.get("audience") == "owner" or blocked_area)
+                     and visible({**top, "audience": "all", "area": None, "insights": False}, **view))
         return [], owner_hit
     return found, False
 

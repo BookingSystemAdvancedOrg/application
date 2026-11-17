@@ -37,6 +37,7 @@ ROUTING = {
     "catering_owner_reminder": (False, False, True, True),
     "catering_sign_reminder": (True, True, False, False),
     "catering_day_before": (True, False, False, False),
+    "catering_refunded": (True, True, False, False),
 }
 
 
@@ -70,6 +71,33 @@ def _total(item):
 def _first(item):
     name = (item.get("customerName") or "").strip()
     return name.split()[0] if name else ""
+
+
+# The cancellation text per refund outcome (refundNote, set by the cancel
+# action); "none" or a missing note says nothing about money.
+_REFUND_EMAIL = {
+    "refunded": " Betalningen återbetalas till samma betalsätt.",
+    "invoice_voided": " Fakturan är makulerad och ska inte betalas.",
+    "refund_manually": " Restaurangen betalar tillbaka det du har betalat.",
+}
+_REFUND_SMS = {
+    "refunded": "Betalningen återbetalas. ",
+    "invoice_voided": "Fakturan är makulerad. ",
+    "refund_manually": "Restaurangen betalar tillbaka. ",
+}
+
+
+def _refunded_lead(item, name):
+    notice = item.get("notice") or {}
+    amount = money(notice.get("amount") or 0)
+    if notice.get("manual"):
+        lead = f"{name} betalar tillbaka {amount} för din catering {_when(item)} till samma konto som du betalade från."
+    else:
+        lead = (f"{name} har betalat tillbaka {amount} för din catering {_when(item)}. Pengarna syns på "
+                "samma betalsätt inom 5-10 bankdagar.")
+    if notice.get("reason"):
+        lead += f" Meddelande från restaurangen: {notice['reason']}"
+    return lead + " Kontakta restaurangen om du har frågor."
 
 
 def guest_email(kind, item, tenant_row, location, link):
@@ -122,8 +150,12 @@ def guest_email(kind, item, tenant_row, location, link):
             f"Din catering är avbokad - {name}",
             "Tyvärr har restaurangen behövt avboka din cateringbeställning."
             + (f" Meddelande: {item.get('cancelReason')}" if item.get("cancelReason") else "")
-            + " Det du har betalat betalas tillbaka. Kontakta restaurangen om du har frågor.",
+            + _REFUND_EMAIL.get(item.get("refundNote"), "") + " Kontakta restaurangen om du har frågor.",
             None),
+        "catering_refunded": (
+            f"Återbetalning för din catering - {name}",
+            _refunded_lead(item, name),
+            "Visa beställningen"),
         "catering_expired": (
             f"Din cateringförfrågan har gått ut - {name}",
             "Förfrågan eller offerten gick ut innan den blev klar. Skicka gärna en ny förfrågan om du "
@@ -146,9 +178,16 @@ def guest_sms(kind, item, tenant_row, location, link):
         "catering_declined": f"{name}: Tyvärr kan vi inte ta emot din cateringbeställning {_when(item)}. "
                              "Se mejlet för mer information.",
         "catering_cancelled": f"{name}: Tyvärr har vi behövt avboka din catering {_when(item)}. "
-                              "Betalningen återbetalas. Se mejlet.",
+                              + _REFUND_SMS.get(item.get("refundNote"), "") + "Se mejlet.",
+        "catering_refunded": _refunded_sms(item, name),
     }
     return texts[kind]
+
+
+def _refunded_sms(item, name):
+    notice = item.get("notice") or {}
+    verb = "betalar" if notice.get("manual") else "har betalat"
+    return f"{name}: Vi {verb} tillbaka {money(notice.get('amount') or 0)} för din catering {_when(item)}. Se mejlet."
 
 
 def owner_email(kind, item, tenant_row, location, admin_link):

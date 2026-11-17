@@ -207,7 +207,7 @@ def test_owner_can_switch_staff_access_off(api, env):
                                         UpdateExpression="SET insights = :i",
                                         ExpressionAttributeValues={":i": {"staffAccess": "none"}})
     response = api.handler(event({"from": "2026-10-19", "to": "2026-10-21"}, role="staff_user"), None)
-    assert response["statusCode"] == 403 and body(response)["error"] == "staff_no_access"
+    assert response["statusCode"] == 403 and body(response)["error"] == "no_access"
 
 
 def test_not_rolled_up_yet_is_computed_live_and_flagged(api):

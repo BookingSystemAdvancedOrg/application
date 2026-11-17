@@ -308,14 +308,15 @@ def _booking(row, item, day, tz, tables):
 
 
 def _order(row, item, tz):
-    if item.get("paymentStatus") != "paid" or item.get("status") in NOT_AN_ORDER:
+    # partly_refunded (owner refund of part of a kept order): still an order, revenue less the refund
+    if item.get("paymentStatus") not in ("paid", "partly_refunded") or item.get("status") in NOT_AN_ORDER:
         return
     created = _parse_iso(item.get("createdAt"))
     if not created:
         return
     hour = str(created.astimezone(tz).hour)
     cell = row["o"].setdefault(hour, {"n": 0, "rev": 0, "tbl": 0, "pk": 0, "tn": 0, "prep": 0, "prepN": 0, "late": 0})
-    total = _int(item.get("totalAmount"))
+    total = _int(item.get("totalAmount")) - _int((item.get("refund") or {}).get("amount"))
     cell["n"] += 1
     cell["rev"] += total
     if item.get("mode") == "table":

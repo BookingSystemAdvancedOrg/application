@@ -16,7 +16,9 @@ Lifecycle:
     status         pending_payment -> confirmed -> preparing -> ready -> completed
                    pending_payment -> failed       (checkout expired / payment failed)
                    confirmed|preparing|ready -> cancelled   (staff; refunded)
-    paymentStatus  processing -> paid -> refunded | processing -> failed
+    paymentStatus  processing -> paid -> [partly_refunded ->] refunded | processing -> failed
+                   (partly_refunded / refunded follow the card part: owner
+                   refunds, cancel, Stripe Dashboard)
 
 Prices are always read from the menu here - what the browser sent is never
 trusted. Amounts are öre (Stripe's minor unit for SEK).
@@ -51,7 +53,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
-from shared import booking_rules, dynamo, manage_link, menu
+from shared import booking_rules, dynamo, manage_link, menu, safe_compare
 
 _deserializer = TypeDeserializer()
 
@@ -85,13 +87,15 @@ TRANSITIONS = {
 PAY_PROCESSING = "processing"
 PAY_PAID = "paid"
 PAY_FAILED = "failed"
+PAY_PARTLY_REFUNDED = "partly_refunded"  # part of the card payment refunded (owner refund)
 PAY_REFUNDED = "refunded"
 
 NOTICE_CONFIRMED = "order_confirmed"   # paid: receipt email (no SMS - the kitchen hasn't seen it yet)
 NOTICE_STARTED = "order_started"       # staff pressed "Påbörja": the confirmation SMS (email if no SMS possible)
 NOTICE_READY = "order_ready"           # SMS (email if no SMS possible) - pickup only
 NOTICE_CANCELLED = "order_cancelled"   # SMS + email, refund
-NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_STARTED, NOTICE_READY, NOTICE_CANCELLED)
+NOTICE_REFUNDED = "order_refunded"     # email: the restaurant refunded (part of) the order
+NOTICE_TYPES = (NOTICE_CONFIRMED, NOTICE_STARTED, NOTICE_READY, NOTICE_CANCELLED, NOTICE_REFUNDED)
 
 VAT_ALCOHOL = 25
 VAT_RESTAURANT = 12
@@ -543,7 +547,7 @@ def read_table_code(tenant_id, location_id, code):
         raise ValueError("table code is invalid")
     payload, signature = code.split(".")
     expected = _sign("table-qr", "v1", tenant_id, location_id, payload)
-    if not hmac.compare_digest(expected, signature):
+    if not safe_compare.equal(expected, signature):
         raise ValueError("table code is invalid")
     try:
         data = json.loads(_unb64(payload))
@@ -559,7 +563,7 @@ def status_token(item):
 def token_matches(item, token):
     if not isinstance(token, str) or not token or len(token) > 256 or not item.get("tenantId"):
         return False
-    return hmac.compare_digest(status_token(item), token)
+    return safe_compare.equal(status_token(item), token)
 
 
 def status_url(site_base, item, *, slug=None):
@@ -655,6 +659,23 @@ def guest_view(item, location=None):
     return {k: v for k, v in view.items() if v is not None}
 
 
+def _refund_view(record):
+    if not isinstance(record, dict):
+        return None
+    view = {k: record[k] for k in ("amount", "at", "refundId", "status", "count") if k in record}
+    view["items"] = [{k: e[k] for k in ("amount", "at", "by", "reason", "external") if k in e}
+                     for e in record.get("items") or []]
+    if record.get("pending"):
+        view["pending"] = {k: record["pending"][k] for k in ("amount", "at") if k in record["pending"]}
+    return view
+
+
+def _gift_view(gift):
+    if not isinstance(gift, dict):
+        return None
+    return {k: gift[k] for k in ("last4", "debitedOre", "refundedOre", "refundedAt") if k in gift}
+
+
 def staff_view(item):
     view = guest_view(item)
     view.update({
@@ -665,8 +686,19 @@ def staff_view(item):
         "tableId": item.get("tableId"),
         "completedAt": item.get("completedAt"),
         "cancelledAt": item.get("cancelledAt"),
-        "refund": item.get("refund"),
+        "refund": _refund_view(item.get("refund")),
+        "giftCard": _gift_view(item.get("giftCard")),
         "paymentMethod": item.get("paymentMethod"),
         "history": item.get("history") or [],
+        # What an owner refund can still give back (card part, öre).
+        "refundable": refundable_amount(item),
     })
     return {k: v for k, v in view.items() if v is not None}
+
+
+def refundable_amount(item):
+    if item.get("status") not in (CONFIRMED, PREPARING, READY, COMPLETED) or item.get("paymentStatus") not in (
+            PAY_PAID, PAY_PARTLY_REFUNDED) or item.get("paymentIntentId") in (None, "-"):
+        return 0
+    charged = int(item.get("totalAmount") or 0) - int((item.get("giftCard") or {}).get("debitedOre") or 0)
+    return max(charged - int((item.get("refund") or {}).get("amount") or 0), 0)

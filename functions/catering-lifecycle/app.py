@@ -181,6 +181,10 @@ def _expire(payload):
         return "moved_on"
     if item["status"] == c.SIGNED and item.get("paid"):
         return "paid"
+    if item["status"] == c.SIGNED:
+        # An open Checkout must not take money for an expired request; a
+        # payment that still lands is refunded by catering-stripe-webhook.
+        cs.expire_checkout(item.get("stripeAccountId"), item.get("checkoutSessionId"))
     _, location = _context(item)
     now = c.now_utc()
     try:

@@ -55,7 +55,11 @@ _CONTENT_TYPE_EXTENSIONS = {
 _EXPIRES_IN_SECONDS = 300
 _OBJECT_KEY_PREFIX = "menu-images"
 _LOCATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-_QUERY_FIELDS = frozenset({"locationId", "contentType"})
+_QUERY_FIELDS = frozenset({"locationId", "contentType", "size"})
+# Largest menu image accepted. When the client sends `size` (the file's
+# byte count) it is checked against this cap and signed into the URL as
+# Content-Length, so S3 rejects any PUT whose body is a different size.
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _s3 = None
 
 
@@ -133,6 +137,25 @@ def _content_type(query):
     return value
 
 
+def _size(query):
+    """Optional byte count of the file to upload, 1..MAX_IMAGE_BYTES.
+
+    None when the client did not send it (older admin builds); the URL is
+    then signed without a Content-Length, as before.
+    """
+    value = query.get("size")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip().isdigit():
+        raise ValueError("size must be a whole number of bytes")
+    size = int(value.strip())
+    if not 1 <= size <= MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"size must be between 1 and {MAX_IMAGE_BYTES} bytes"
+        )
+    return size
+
+
 def _new_image_id():
     return str(uuid.uuid4())
 
@@ -158,14 +181,17 @@ def _s3_client():
     return _s3
 
 
-def _presigned_put_url(image_key, content_type):
+def _presigned_put_url(image_key, content_type, size=None):
+    params = {
+        "Bucket": MENU_IMAGES_BUCKET_NAME,
+        "Key": image_key,
+        "ContentType": content_type,
+    }
+    if size is not None:
+        params["ContentLength"] = size
     upload_url = _s3_client().generate_presigned_url(
         ClientMethod="put_object",
-        Params={
-            "Bucket": MENU_IMAGES_BUCKET_NAME,
-            "Key": image_key,
-            "ContentType": content_type,
-        },
+        Params=params,
         ExpiresIn=_EXPIRES_IN_SECONDS,
         HttpMethod="PUT",
     )
@@ -202,6 +228,7 @@ def handler(event, context):
         query = _query_parameters(event)
         location_id = _location_id(query)
         content_type = _content_type(query)
+        size = _size(query)
     except ValueError as exc:
         return _upload_error(HTTPStatus.BAD_REQUEST.value, str(exc))
 
@@ -217,7 +244,7 @@ def handler(event, context):
 
     image_key = _object_key(ctx.tenant_id, location_id, content_type)
     try:
-        upload_url = _presigned_put_url(image_key, content_type)
+        upload_url = _presigned_put_url(image_key, content_type, size)
     except (BotoCoreError, ClientError, _ImageUploadServiceFailure):
         return _upload_error(
             HTTPStatus.SERVICE_UNAVAILABLE.value,

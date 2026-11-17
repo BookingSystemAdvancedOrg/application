@@ -172,7 +172,7 @@ def test_foreign_location_and_menu_item_404(env):
 
 
 def test_staff_and_entitlement_off_refused(env):
-    assert call(env, "GET", BASE, role="staff_user")[1]["error"] == "owner_only"
+    assert call(env, "GET", BASE, role="staff_user")[1]["error"] == "no_access"
     boto3.resource("dynamodb").Table(TENANT_TABLE).put_item(
         Item=tenant_row(TENANT_A, features=features_on("metaAds")))
     shared_tenant.reset_caches()

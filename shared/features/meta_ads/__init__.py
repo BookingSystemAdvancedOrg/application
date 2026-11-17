@@ -397,9 +397,18 @@ def pause_campaign(tenant_id, item, by: str, token=None) -> Optional[dict]:
 
 
 def pause_all(tenant_id, by: str) -> int:
+    """Pauses every active campaign. One campaign whose pause fails does not
+    stop the others; the first error is raised after all were tried."""
     token = get_token(tenant_id)
-    count = 0
+    count, first_error = 0, None
     for item in campaigns(tenant_id):
-        if item.get("status") == "active" and pause_campaign(tenant_id, item, by, token):
-            count += 1
+        if item.get("status") != "active":
+            continue
+        try:
+            if pause_campaign(tenant_id, item, by, token):
+                count += 1
+        except Exception as exc:
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
     return count

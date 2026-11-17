@@ -35,7 +35,7 @@ from typing import Callable, Optional, Union
 
 from boto3.dynamodb.conditions import Key
 
-from shared import contracts, dpa, dynamo
+from shared import contracts, dpa, dynamo, staff_access
 from shared.responses import json_response
 
 # One line per request that resolved to a tenant. finance-rollup counts
@@ -93,6 +93,11 @@ class TenantContext:
     @property
     def is_owner(self) -> bool:
         return self.role == "owner_user"
+
+    def allows(self, area) -> bool:
+        """May the caller open this admin area (shared/staff_access.py)?
+        The owner always may; a tuple means any of them."""
+        return staff_access.allows(self.tenant, self.role, self.sub, area)
 
     @property
     def location_id(self) -> Optional[str]:
@@ -291,8 +296,13 @@ def for_jwt(
     location_id: Optional[str] = None,
     feature: Union[str, tuple, None] = None,
     owner_only: bool = False,
+    area: Union[str, tuple, None] = None,
 ) -> TenantContext:
-    """Tenant-pool JWT routes. Raises TenantError (401/403/404)."""
+    """Tenant-pool JWT routes. Raises TenantError (401/403/404).
+
+    `area` (shared/staff_access.py): staff must have been granted that admin
+    area by the owner (a tuple = any of them), else 403 no_access. The owner
+    always passes."""
     claims = _claims(event)
     tenant_id = claims.get("tenant_id")
     role = claims.get("role")
@@ -308,6 +318,14 @@ def for_jwt(
     if not tenant_row or tenant_row.get("status") != "active":
         raise TenantError(403, "tenant_inactive")
     require_feature(tenant_row, feature)
+    if area is not None and not staff_access.allows(tenant_row, role, sub, area):
+        # The cached row may predate a grant the owner just made: ask once
+        # more, strongly consistent, before refusing.
+        tenant_row = get_tenant(tenant_id, fresh=True) or tenant_row
+        if tenant_row.get("status") != "active":
+            raise TenantError(403, "tenant_inactive")
+        if not staff_access.allows(tenant_row, role, sub, area):
+            raise TenantError(403, staff_access.ERROR)
 
     location = None
     if location_id is not None:

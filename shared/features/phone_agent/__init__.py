@@ -65,6 +65,9 @@ TURN_TTL_DAYS = 730          # 24 months [NEEDS YOUR OK]
 CALL_TTL_DAYS = 7 * 365      # billing record
 CALLBACK_TTL_DAYS = 90
 SIM_TTL_SECONDS = 3600
+SIM_TURNS_MAX = 40            # caller texts per simulator session (then a new sessionId)
+SIM_QUOTA_PER_MONTH = 300     # simulator model turns per tenant and month
+SIMUSE_TTL_DAYS = 62
 NUMBER_GRACE_DAYS = 30
 TRANSFER_TIMEOUT_S = 25
 # CONTRACTS.md 4: the agent's system user is `USER#agent:<l>` with status
@@ -190,6 +193,10 @@ def usage_key(tenant_id, period_end) -> dict:
 
 def sim_key(tenant_id, session_id) -> dict:
     return {"PK": tenant_pk(tenant_id), "SK": f"SIM#{session_id}"}
+
+
+def simuse_key(tenant_id, month) -> dict:
+    return {"PK": tenant_pk(tenant_id), "SK": f"SIMUSE#{month}"}
 
 
 def valid_id(value) -> bool:

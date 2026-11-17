@@ -92,6 +92,9 @@ UPLOAD_EXPIRES_SECONDS = 300
 VIEW_EXPIRES_SECONDS = 3600
 # Pillow refuses images above twice this (decompression bombs).
 Image.MAX_IMAGE_PIXELS = 60_000_000
+# Checked from the header before any decode: a small, highly compressed
+# file can still expand to hundreds of MB once decoded and converted.
+MAX_DECODE_PIXELS = 40_000_000
 
 _UPLOAD_FIELDS = ("contentType", "size", "width", "height")
 # Cognito subs and tenant ids: never a "/" or anything else that could
@@ -182,6 +185,13 @@ def _now():
 
 # ----------------------------------------------------------------- thumbnails
 
+def _check_dimensions(img):
+    """ValueError before decoding when the header announces an image too
+    large to decode safely in the Lambda's memory."""
+    if img.width > MAX_SIDE or img.height > MAX_SIDE or img.width * img.height > MAX_DECODE_PIXELS:
+        raise ValueError("not_an_image")
+
+
 def make_thumbnail(data):
     """(width, height, WebP thumbnail bytes) of a JPEG, PNG or WebP image,
     width/height as displayed (EXIF orientation applied). ValueError when it
@@ -190,6 +200,7 @@ def make_thumbnail(data):
         with Image.open(io.BytesIO(data)) as img:
             if img.format not in _FORMATS:
                 raise ValueError("not_an_image")
+            _check_dimensions(img)
             width, height = img.size
             if img.getexif().get(0x0112, 1) in (5, 6, 7, 8):
                 width, height = height, width
@@ -219,6 +230,7 @@ def make_avatar(data):
         with Image.open(io.BytesIO(data)) as img:
             if img.format not in _FORMATS:
                 raise ValueError("not_an_image")
+            _check_dimensions(img)
             img.draft("RGB", (AVATAR_SIDE * 2, AVATAR_SIDE * 2))
             shown = ImageOps.exif_transpose(img)
             shown = shown.convert("RGBA" if "A" in shown.getbands() else "RGB")

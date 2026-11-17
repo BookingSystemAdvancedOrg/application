@@ -207,6 +207,9 @@ paths:
       tags:
       - Personalliggare
       summary: Correction as a new record with a reason (owner)
+      description: Without correctsSeq it is a late registration. correctsSeq may name a check-in,
+        a check-out or a late registration (a correction of a correction is 404). A correction that
+        changes the kind moves presence like the registration would have.
       operationId: personalliggarePostLocationsLocationidPersonalliggareCorrections
       security:
       - bearerAuth: []
@@ -372,7 +375,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/PersonalliggareExport'
         '400':
-          description: invalid_range or bad format.
+          description: invalid_range, bad format, or export_too_large (field from; the period
+            does not fit in one response, choose a shorter one).
           content:
             application/json:
               schema:
@@ -716,6 +720,10 @@ components:
           type: boolean
         firstBadSeq:
           type: integer
+        expiredThroughSeq:
+          type: integer
+          description: Set when chainOk is true and records 1 up to this seq have expired by TTL
+            (retention passed); the chain is checked from the first record still kept.
         content:
           type: string
           description: CSV text (format=csv)

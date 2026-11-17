@@ -198,10 +198,12 @@ def accept(item, signer, ip, user_agent):
         "text": "Jag godkänner offerten och villkoren och att detta är ett bindande avtal.",
     }, ensure_ascii=False).encode("utf-8")}
     signing.cancel(s["order"])  # the provider's customer step is no longer needed
-    record(item, CUSTOMER, {**signer, "method": "simple_acceptance"}, evidence, ip, s["order"])
+    # The provider's document is now canceled: it never seals, so nothing to wait for.
+    record(item, CUSTOMER, {**signer, "method": "simple_acceptance"}, evidence, ip, s["order"],
+           provider_seal=False)
 
 
-def record(item, role, signer, evidence, ip, order):
+def record(item, role, signer, evidence, ip, order, provider_seal=True):
     """Stores one party's signature: evidence first (locked), then the head
     item conditionally on status + version. The customer's completes it."""
     s = item["signing"]
@@ -230,7 +232,7 @@ def record(item, role, signer, evidence, ip, order):
         values[":n"] = c.notice(c.N_OFFER_SENT, now, version=version)
         c.transact([c.head_update(item, sets=sets, values=values, names=names), audit])
         return
-    signed_key, signed_version, signatures, sealed = _finalize(item, s, signatures, prefix, pdf)
+    signed_key, signed_version, signatures, sealed = _finalize(item, s, signatures, prefix, pdf, provider_seal)
     signature = {**{k: entry.get(k) for k in ("name", "personalNumberMasked", "role", "method", "evidenceKey")},
                  "signedAt": entry["signedAt"], "documentHash": (item.get("offer") or {}).get("documentHash"),
                  "pdfSha256": s["pdfSha256"], "provider": order.get("provider"), "signedPdfKey": signed_key}
@@ -248,7 +250,7 @@ def record(item, role, signer, evidence, ip, order):
     c.transact([c.head_update(item, to_status=c.SIGNED, sets=sets, values=values, names=names), audit])
 
 
-def _finalize(item, s, signatures, prefix, pdf):
+def _finalize(item, s, signatures, prefix, pdf, provider_seal=True):
     """The evidence package once the contract is binding: the signed PDF (a
     locked copy of the version the parties signed), the restaurant's
     evidence moved in from offers/, the provider's own evidence, and a
@@ -257,7 +259,7 @@ def _finalize(item, s, signatures, prefix, pdf):
     files = {"offer.pdf": pdf}
     sealed = None
     try:
-        provider_files = signing.fetch_evidence(s["order"])
+        provider_files = signing.fetch_evidence(s["order"]) if provider_seal else {}
     except signing.EvidenceNotReady:
         provider_files, sealed = {}, "pending"
     files.update(provider_files)
@@ -314,12 +316,27 @@ def store_sealed(item):
                             sealedPdfKey=sealed[0] if sealed else None)])
 
 
+def _clear_seal_pending(item):
+    try:
+        c.dynamo.table(c.requests_table()).update_item(
+            Key=c.request_key(item["locationId"], item["requestId"]),
+            UpdateExpression="SET updatedAt = :now REMOVE signing.sealPending",
+            ConditionExpression="signing.sealPending = :true",
+            ExpressionAttributeValues={":now": c.iso(c.now_utc()), ":true": True})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
 def apply_status(item):
     """Webhook: re-reads the order from the provider and records each party
     that has signed there but not here, in signing order; then stores the
     provider's sealed PDF if it was not ready when the contract became
     binding (raises EvidenceNotReady while it still is not)."""
     if (item.get("signing") or {}).get("sealPending"):
+        if (item.get("signature") or {}).get("method") == "simple_acceptance":
+            _clear_seal_pending(item)  # set before simple acceptance skipped the seal: none will come
+            return []
         store_sealed(item)
         return ["sealed"]
     s = _current(item)

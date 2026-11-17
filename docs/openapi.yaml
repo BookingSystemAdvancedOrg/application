@@ -104,7 +104,7 @@ paths:
         '403':
           $ref: '#/components/responses/AuthForbidden'
         '429':
-          $ref: '#/components/responses/AuthTooManyRequests'
+          $ref: '#/components/responses/LoginTooManyRequests'
         '502':
           $ref: '#/components/responses/AuthBadGateway'
 
@@ -520,7 +520,10 @@ paths:
         Performs a partial profile update despite using `PUT` because the
         deployed CORS policy does not permit `PATCH`. An owner may update a
         staff target or their own profile; other owners are managed from the
-        operator console. The resulting location must remain non-empty for
+        operator console. A caller cannot change their own email: that
+        answers 403 `{"error": "forbidden", "field": "email", "reason":
+        "own_email_locked"}` (an owner changes a staff user's email, Booqy
+        changes an owner's). The resulting location must remain non-empty for
         staff (and one of the tenant's locations) and empty for owners.
       security:
         - bearerAuth: []
@@ -1005,39 +1008,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Location'
-        '400':
-          $ref: '#/components/responses/NoStoreBadRequest'
-        '401':
-          $ref: '#/components/responses/GatewayUnauthorized'
-        '403':
-          $ref: '#/components/responses/NoStoreForbidden'
-        '404':
-          $ref: '#/components/responses/LocationNotFound'
-        '409':
-          $ref: '#/components/responses/NoStoreConflict'
-        '503':
-          $ref: '#/components/responses/LocationServiceUnavailable'
-    delete:
-      tags:
-        - Locations
-      summary: Delete a restaurant location
-      operationId: deleteLocation
-      description: |
-        Deletes only the Location-table directory record. This is a hard,
-        non-cascading delete: related users, menus, layouts, reservations, and
-        other location-scoped records are not inspected or removed. Those
-        records may therefore remain accessible through Lambdas that do not
-        verify the Location table.
-      security:
-        - bearerAuth: []
-      x-required-groups:
-        - owner_user
-      responses:
-        '204':
-          description: Location directory record deleted; the body is empty.
-          headers:
-            Cache-Control:
-              $ref: '#/components/headers/CacheControlNoStore'
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -2503,13 +2473,25 @@ paths:
         only when its normalized timestamp exactly matches the pending cutoff.
         An immediate request, a different timestamp, or another target while a
         cutover is pending returns `409`; an overdue pending cutoff also returns
-        `409`. These pending-retry rules do not recompute or move the stored
+        `409` once `scheduled`. These pending-retry rules do not recompute or move the stored
         cutoff. Use the dedicated pending-activation PUT to move the same
         target's cutoff, or DELETE followed by a new activation POST to choose
         another target. At execution time, the scheduled worker revalidates the
         target's publication time and environment-specific replacement delay
         before committing the cutover. Archived versions cannot be activated
-        and also return `409`.
+        and also return `409`. A `scheduling` intent whose cutoff passed
+        before it was staged is re-reserved by a matching retry (earliest
+        safe minute in dev, next local midnight in prod) and can always be
+        cancelled or moved; any schedule it created becomes a no-op because
+        the token rotates, and the worker stops recovering it 10 minutes
+        after its cutoff. In prod the default cutoff is the next local
+        midnight after eligibility, so no booking slot spans it. When
+        bookings ending after the cutoff hold tables the new layout lacks,
+        activation returns `409` with code `bookings_on_removed_tables` and
+        a `reservations` list (`reservationId`, `date`, `startTime`, missing
+        `tableIds`, at most 50). This check is best effort: it runs before
+        the transition is reserved, so a booking made in between is not
+        caught.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2658,8 +2640,11 @@ paths:
         the authoritative token, so an obsolete schedule that cannot be
         deleted cannot perform a cutover. A legacy staged transition that does
         not contain its target's original lifecycle fails closed with `409`.
-        A missing pending activation returns `404`, and an existing cutoff at
-        or before server time returns `409` rather than being moved.
+        A missing pending activation returns `404`, and an existing
+        `scheduled` cutoff at or before server time returns `409` rather than
+        being moved; an overdue `scheduling` intent (never staged) can still
+        be moved. A moved cutoff is refused with `409`
+        `bookings_on_removed_tables` like a new activation.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2775,8 +2760,8 @@ paths:
         token prevents it from mutating state if deletion fails.
 
         The operation is idempotent: a location with no activation state or no
-        pending transition also returns `204`. An at-or-past-due transition,
-        corrupt or changing state, or a legacy scheduled transition without
+        pending transition also returns `204`. An at-or-past-due `scheduled`
+        transition, corrupt or changing state, or a legacy scheduled transition without
         the saved original lifecycle returns `409` and is not cancelled.
       security:
         - bearerAuth: []
@@ -2852,6 +2837,18 @@ paths:
           schema:
             $ref: '#/components/schemas/MenuImageContentType'
           example: image/webp
+        - name: size
+          in: query
+          required: false
+          description: >-
+            Byte size of the file to upload (at most 10 MiB). When sent, it is
+            signed into the URL as Content-Length and S3 refuses a PUT body of
+            any other size. Clients should always send it.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10485760
+          example: 245760
       responses:
         '200':
           description: A short-lived S3 upload capability was created.
@@ -3368,8 +3365,8 @@ paths:
         be one of its locations (another tenant's answers 404) and `all` is
         its own locations. Owners see everything. Staff see only their
         assigned location and never an amount (every revenue, fee and price
-        field is left out, `money` is false); with the owner's setting
-        `insights.staffAccess` = `none` they get 403 `staff_no_access`.
+        field is left out, `money` is false); without the `statistik` area
+        (StaffAccess) they get 403 `no_access`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -4029,7 +4026,8 @@ paths:
         (409 `already_started` after); frees the tables. Cancelling again
         answers 200 with the booking as it is. Inside a guaranteed booking's
         cutoff the late-cancellation fee applies: without `acceptFee: true`
-        the answer is 409 `{"error": "fee_applies", "fee": <öre>}`; with it
+        the answer is 409 `{"error": "fee_applies", "fee": <öre>,
+        "currency": "sek"}`; with it
         the booking is cancelled and the fee charged (`fee` in the answer).
       security: []
       x-required-groups: []
@@ -4056,7 +4054,42 @@ paths:
         '404':
           $ref: '#/components/responses/ReservationNotFound'
         '409':
-          $ref: '#/components/responses/ReservationConflict'
+          description: |
+            `fee_applies` (inside the late-cancellation cutoff, sent without
+            `acceptFee: true`; `fee` in öre and `currency` let the guest site
+            show the charge before asking again), or a status-transition code
+            (`not_cancellable`, `already_started`, ...) as ErrorResponse.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    additionalProperties: false
+                    required:
+                      - error
+                      - fee
+                      - currency
+                    properties:
+                      error:
+                        type: string
+                        enum:
+                          - fee_applies
+                      fee:
+                        type: integer
+                        minimum: 1
+                        description: Late-cancellation fee in öre.
+                      currency:
+                        type: string
+                        pattern: '^[a-z]{3}$'
+                        example: sek
+              example:
+                error: fee_applies
+                fee: 15000
+                currency: sek
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
@@ -4195,7 +4228,10 @@ paths:
         `charge` - charge or retry the no-show / late-cancellation fee the
         guest accepted (an interrupted attempt is re-sent with the same
         Stripe idempotency key, so it never charges twice). `refund` -
-        owner only; `amount` in öre, default the rest.
+        owner only; `amount` in öre, default the rest; `reason` is shown
+        to the guest; `notifyGuest` (default true) sends the fee_refunded
+        e-mail and SMS. One refund at a time: 409 `refund_in_progress`,
+        `changed_retry` (reload), `nothing_to_refund`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -4216,6 +4252,11 @@ paths:
                 amount:
                   type: integer
                   minimum: 1
+                reason:
+                  type: string
+                  maxLength: 200
+                notifyGuest:
+                  type: boolean
       responses:
         '200':
           description: The booking with its payment.
@@ -4236,6 +4277,10 @@ paths:
           $ref: '#/components/responses/ReservationNotFound'
         '409':
           $ref: '#/components/responses/ReservationConflict'
+        '402':
+          description: The card was declined on `charge` (the Stripe code, or payment_error).
+        '502':
+          description: Stripe refused a `refund` (refund_failed); nothing changed.
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
@@ -4500,6 +4545,68 @@ paths:
                 $ref: '#/components/schemas/Order'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/{orderId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags:
+        - Orders
+      summary: Refund (part of) a paid order without cancelling it
+      operationId: refundOrder
+      description: |
+        Owner only. The card part of a confirmed, preparing, ready or
+        completed paid order, capped at what is left (`refundable` on the
+        order); a gift card's part comes back only on cancel. Stripe
+        refund with an explicit amount and its own idempotency key per
+        refund; `paymentStatus` becomes `partly_refunded` or `refunded`;
+        the guest gets an e-mail unless `notifyGuest` is false. 409
+        `not_paid`, `not_refundable`, `refund_in_progress`,
+        `changed_retry`, `nothing_to_refund`.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                amount:
+                  type: integer
+                  minimum: 1
+                  description: öre; default what is left
+                reason:
+                  type: string
+                  maxLength: 200
+                notifyGuest:
+                  type: boolean
+      responses:
+        '200':
+          description: The updated order.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          description: Not the owner (owner_only).
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '502':
+          description: Stripe refused the refund (refund_failed); nothing changed.
+        '503':
+          description: Stripe unreachable (payment_unavailable); the refund is completed by the webhook or a later retry.
 
   /locations/{locationId}/orders/{orderId}/status:
     parameters:
@@ -5860,6 +5967,52 @@ paths:
         '404':
           description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
         '409': {description: not_cancellable or changed_retry.}
+        '503':
+          description: The catering service (or a provider it needs) is unavailable.
+
+  /locations/{locationId}/catering/requests/{requestId}/refund:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Refund (part of) a paid order without cancelling it
+      operationId: refundCateringOrder
+      description: |
+        Owner only, confirmed / delivered / closed paid requests, capped at
+        the signed total less earlier refunds (`refundable` on the request).
+        Private Checkout and card-paid invoices: Stripe refund with an
+        explicit amount; a Bankgiro invoice: recorded as a manual refund
+        owed (no Stripe call). 409 `not_paid`, `not_refundable`,
+        `refund_in_progress`, `changed_retry`, `nothing_to_refund`.
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                amount: {type: integer, minimum: 1, description: öre; default what is left}
+                reason: {type: string, maxLength: 200}
+                notifyGuest: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan or unknown request.
+        '409': {description: 'not_paid, not_refundable, refund_in_progress, changed_retry or nothing_to_refund.'}
+        '502': {description: Stripe refused the refund (payment_provider_rejected).}
         '503':
           description: The catering service (or a provider it needs) is unavailable.
 
@@ -8044,6 +8197,21 @@ components:
           $ref: '#/components/schemas/TenantNotifications'
         insights:
           $ref: '#/components/schemas/TenantInsightsSettings'
+        access:
+          type: object
+          additionalProperties: false
+          description: The admin areas the caller may open (owner every area). Older backends omit it.
+          required: [areas]
+          properties:
+            areas:
+              type: array
+              items:
+                $ref: '#/components/schemas/StaffArea'
+        staffAccess:
+          allOf:
+            - $ref: '#/components/schemas/StaffAccess'
+          nullable: true
+          description: Owner only (null for staff). Which areas staff may open.
         dpa:
           type: object
           additionalProperties: false
@@ -8233,6 +8401,78 @@ components:
               enum: [0, 2, 3, 6, 12, 24, 48]
         insights:
           $ref: '#/components/schemas/TenantInsightsSettings'
+        staffAccess:
+          $ref: '#/components/schemas/StaffAccessEdit'
+
+    StaffArea:
+      type: string
+      description: An admin area (page) the owner grants staff (application shared/staff_access.py).
+      enum: [statistik, bokningar, bestallningar, catering, personalliggare, telefon, meny, layout,
+             personal, gaster, presentkort, webbplats, evenemang, marknadsforing]
+
+    StaffAccessPerson:
+      type: object
+      additionalProperties: false
+      properties:
+        add:
+          type: array
+          description: Areas this person has on top of the group.
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        remove:
+          type: array
+          description: Group areas this person does not have.
+          items:
+            $ref: '#/components/schemas/StaffArea'
+
+    StaffAccess:
+      type: object
+      additionalProperties: false
+      description: |
+        Staff permissions per admin area. A staff user's areas = (defaults
+        + users[sub].add) - users[sub].remove. The owner always has every
+        area. Never saved: what staff had before (every area except
+        personal, presentkort, webbplats and marknadsforing; statistik off
+        when insights.staffAccess was none). API routes of an area answer
+        staff without it 403 `no_access`.
+      required: [areas, defaults, users, version]
+      properties:
+        areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        defaults:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        users:
+          type: object
+          description: Per staff user (Cognito sub).
+          additionalProperties:
+            $ref: '#/components/schemas/StaffAccessPerson'
+        version:
+          type: integer
+
+    StaffAccessEdit:
+      type: object
+      additionalProperties: false
+      description: |
+        Owner only. `version` must be the one read (else 409 changed_retry).
+        `users` replaces the listed people's own changes; null clears them.
+      required: [version]
+      properties:
+        version:
+          type: integer
+        defaults:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaffArea'
+        users:
+          type: object
+          additionalProperties:
+            allOf:
+              - $ref: '#/components/schemas/StaffAccessPerson'
+            nullable: true
 
     TenantInsightsSettings:
       type: object
@@ -8598,6 +8838,7 @@ components:
             - processing
             - paid
             - failed
+            - partly_refunded
             - refunded
         mode:
           type: string
@@ -8677,6 +8918,19 @@ components:
                   format: date-time
                 refundId:
                   type: string
+                count:
+                  type: integer
+                items:
+                  type: array
+                  items:
+                    type: object
+                pending:
+                  type: object
+            refundable:
+              type: integer
+              description: What an owner refund can still give back (card part, öre).
+            giftCard:
+              type: object
             history:
               type: array
               items:
@@ -8736,6 +8990,49 @@ components:
         field:
           type: string
           description: The request field a validation error is about, when it names one (e.g. `partySize`, `notifications.reminderHours`).
+
+    LayoutActivationBookingsConflict:
+      type: object
+      additionalProperties: false
+      description: >-
+        Bookings ending after the cutoff hold tables the target layout lacks.
+        `error` is Swedish copy for the owner; clients map `code`.
+      required:
+        - error
+        - code
+        - reservations
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - bookings_on_removed_tables
+        reservations:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - reservationId
+              - date
+              - startTime
+              - tableIds
+            properties:
+              reservationId:
+                type: string
+              date:
+                type: string
+                format: date
+              startTime:
+                type: string
+                example: '18:00'
+              tableIds:
+                type: array
+                description: Booked tables missing from the target layout.
+                items:
+                  type: string
 
     GatewayUnauthorizedResponse:
       type: object
@@ -12011,6 +12308,29 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: too many authentication attempts
+    LoginTooManyRequests:
+      description: |
+        Too many failed sign-ins from this IP address (30 per 5 minutes, 100
+        per hour; a sign-in that works is not counted), or Cognito throttled
+        the attempt.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        Retry-After:
+          description: Seconds until the IP address limit's window ends (only for that limit).
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            ipLimit:
+              value:
+                error: too many attempts
+            cognito:
+              value:
+                error: too many authentication attempts
     PasswordResetTooManyRequests:
       description: |
         Too many reset requests from this IP address, or Cognito's limit for
@@ -12447,15 +12767,17 @@ components:
     LayoutActivationConflict:
       description: |
         The activation is too early or conflicts with an archived version,
-        missing current version, pending transition, inconsistent state, or
-        concurrent change.
+        missing current version, pending transition, bookings on removed
+        tables, inconsistent state, or concurrent change.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            oneOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - $ref: '#/components/schemas/LayoutActivationBookingsConflict'
           examples:
             archived:
               summary: The requested version was archived.
@@ -12489,18 +12811,36 @@ components:
               summary: A concurrent request won the conditional write.
               value:
                 error: layout activation changed; retry request
+            bookingsOnRemovedTables:
+              summary: Bookings after the cutoff sit on tables the new layout removes.
+              value:
+                error: >-
+                  Det finns bokningar efter bytet på bord som inte finns i den
+                  nya planlösningen. Flytta bokningarna till andra bord (eller
+                  lägg tillbaka borden) och aktivera sedan igen.
+                code: bookings_on_removed_tables
+                reservations:
+                  - reservationId: 0f8fad5bd9cb469fa16570867728950e
+                    date: '2026-09-20'
+                    startTime: '18:00'
+                    tableIds:
+                      - T7
+
     PendingLayoutActivationConflict:
       description: |
-        The pending transition is overdue, cannot be safely restored or moved,
-        violates replacement eligibility, or changed concurrently. The
-        eligibility example applies only to PUT.
+        The pending `scheduled` transition is overdue, cannot be safely
+        restored or moved, violates replacement eligibility, would strand
+        bookings on removed tables, or changed concurrently. The eligibility
+        and bookings examples apply only to PUT.
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            oneOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - $ref: '#/components/schemas/LayoutActivationBookingsConflict'
           examples:
             overdue:
               summary: The pending transition reached or passed its cutoff.
@@ -12522,6 +12862,21 @@ components:
               summary: Another activation operation won the conditional write.
               value:
                 error: layout activation changed; retry request
+            bookingsOnRemovedTables:
+              summary: Bookings after the cutoff sit on tables the new layout removes.
+              value:
+                error: >-
+                  Det finns bokningar efter bytet på bord som inte finns i den
+                  nya planlösningen. Flytta bokningarna till andra bord (eller
+                  lägg tillbaka borden) och aktivera sedan igen.
+                code: bookings_on_removed_tables
+                reservations:
+                  - reservationId: 0f8fad5bd9cb469fa16570867728950e
+                    date: '2026-09-20'
+                    startTime: '18:00'
+                    tableIds:
+                      - T7
+
     LayoutActivationServiceUnavailable:
       description: >-
         Configuration, DynamoDB, or EventBridge Scheduler could not complete

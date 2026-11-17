@@ -400,6 +400,21 @@ def _check_grace_range(fields):
         raise ValueError("gracePeriodHours must be between 15 and 60 minutes")
 
 
+def _check_booking_duration(fields):
+    """On save: the availability engine needs whole minutes below a day;
+    the admin offers quarter hours from 15 minutes to 8 hours. Anything
+    else would make every availability read of the location fail."""
+    minutes = fields["bookingDurationHours"] * 60
+    if (
+        minutes != minutes.to_integral_value()
+        or int(minutes) % booking_rules.TIME_STEP
+        or not booking_rules.MIN_MINUTES <= minutes <= booking_rules.MAX_MINUTES
+    ):
+        raise ValueError(
+            "bookingDurationHours must be whole quarter hours between 15 minutes and 8 hours"
+        )
+
+
 def _validated_location_fields(source, *, require_contacts=False):
     timezone_name = _required_timezone(source)
     return {
@@ -815,6 +830,7 @@ def _create_location(event, ctx):
         _request_body(event, partial=False),
         require_contacts=True,
     )
+    _check_booking_duration(fields)
     _check_grace_range(fields)
     _check_grace_period(fields)
     location_id = _new_location_id()
@@ -852,6 +868,8 @@ def _update_location(event, ctx):
     }
     candidate.update(updates)
     fields = _validated_location_fields(candidate)
+    if "bookingDurationHours" in updates:
+        _check_booking_duration(fields)
     if "gracePeriodHours" in updates:
         _check_grace_range(fields)
     if {"gracePeriodHours", "bookingDurationHours", "bookingTimeRules"} & set(updates):

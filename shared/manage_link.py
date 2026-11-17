@@ -25,6 +25,8 @@ import time
 
 import boto3
 
+from shared import safe_compare
+
 _CACHE_SECONDS = 300
 
 
@@ -77,7 +79,7 @@ def matches(item, token):
         return hmac.compare_digest(legacy, hashlib.sha256(token.encode("utf-8")).hexdigest())
     if not item.get("tenantId"):
         return False
-    return hmac.compare_digest(token_for(item), token)
+    return safe_compare.equal(token_for(item), token)
 
 
 def url(site_base, item, *, slug=None):

@@ -261,7 +261,8 @@ def validate_event_time(value, at: datetime) -> datetime:
 
 
 def ttl_for(event_time: datetime) -> int:
-    """End of the 2nd calendar year after the record's year (ADR-H 7)."""
+    """End of the 2nd calendar year after the record's year (ADR-H 7).
+    append() passes the later of eventTime and recordedAt."""
     year = event_time.astimezone(TZ).year
     return int(datetime(year + 3, 1, 1, tzinfo=TZ).timestamp())
 
@@ -345,16 +346,112 @@ def chain(location_id) -> list:
                   key=lambda r: int(r["seq"]))
 
 
+def after(location_id, seq: int) -> list:
+    """Every record after `seq` in seq order (strongly consistent)."""
+    tbl, items = ledger_table(), []
+    args = {"KeyConditionExpression": Key("PK").eq(location_pk(location_id)) & Key("SK").gt(seq_sk(seq)),
+            "ConsistentRead": True}
+    while True:
+        page = tbl.query(**args)
+        items.extend(page.get("Items") or [])
+        if "LastEvaluatedKey" not in page:
+            return sorted(items, key=lambda r: int(r["seq"]))
+        args["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 def present(location_id) -> list:
     return query_all(state_table(), location_pk(location_id), "PRESENT#", ConsistentRead=True)
 
 
-def verify(records: list, head: Optional[dict] = None) -> Optional[int]:
+def get_present(location_id, person_id) -> Optional[dict]:
+    return state_table().get_item(Key=present_key(location_id, person_id), ConsistentRead=True).get("Item")
+
+
+def is_late(record: dict) -> bool:
+    """A late registration: a correction that stands in for a check-in/out."""
+    return record.get("kind") == "correction" and not record.get("correctsSeq")
+
+
+def correctable(record: dict) -> bool:
+    """A check-in, a check-out or a late registration (not a fix of one)."""
+    return record.get("kind") in CORRECTABLE or is_late(record)
+
+
+def registered_kind(record: dict) -> Optional[str]:
+    """check_in/check_out a registration stands for, before any fix."""
+    if record.get("kind") in CORRECTABLE:
+        return record["kind"]
+    return (record.get("corrected") or {}).get("kind") if is_late(record) else None
+
+
+# HEADs written before ttlStarts was kept: their seq 1 can be a late
+# registration backdated to the start of the retention window of the
+# feature's launch (November 2026), so nothing can have expired before
+# ttl_for(this).
+_OLDEST_POSSIBLE_RECORD = datetime(2024, 1, 1, tzinfo=TZ)
+
+
+def expiry_possible(head: Optional[dict], at: datetime) -> bool:
+    """Whether the oldest rows of a HEAD without ttlStarts can have expired."""
+    return at.timestamp() >= ttl_for(_OLDEST_POSSIBLE_RECORD)
+
+
+def unexpired(records: list, at: datetime) -> list:
+    """The records whose ttl has not passed. DynamoDB deletes expired rows
+    lazily and in no set order, so rows past their ttl count as gone."""
+    cutoff = at.timestamp()
+    return [r for r in records if not r.get("ttl") or int(r["ttl"]) > cutoff]
+
+
+def _ttl_starts(head: dict) -> list:
+    """[(firstSeq, ttl)] of each ttl the chain has used, in seq order."""
+    return sorted((int(seq), int(ttl)) for ttl, seq in head.get("ttlStarts") or [])
+
+
+def _expired_before(head: dict, anchor: Optional[int], at: datetime) -> Optional[int]:
+    """None when every record before `anchor` (None: every record) can have
+    expired by TTL at `at`, else the first seq that cannot have. The HEAD
+    keeps where each ttl starts (append): rows before the start of an
+    unexpired ttl share an expired one, and a row inside a ttl run has a
+    predecessor with the same, unexpired, ttl."""
+    cutoff, starts = at.timestamp(), _ttl_starts(head)
+    if anchor is None:
+        last_ttl = head.get("lastTtl")
+        if last_ttl is not None:
+            return None if int(last_ttl) <= cutoff else (starts[-1][0] if starts else 1)
+        return None if expiry_possible(head, at) else 1
+    before = [(seq, ttl) for seq, ttl in starts if seq <= anchor]
+    if not before:  # older than what this HEAD knows
+        return None if expiry_possible(head, at) else 1
+    seq, _ = before[-1]
+    if seq != anchor:
+        return seq
+    if len(before) > 1:
+        return None if before[-2][1] <= cutoff else before[-2][0]
+    return None if expiry_possible(head, at) else 1
+
+
+def verify(records: list, head: Optional[dict] = None, *, expired_prefix: bool = False,
+           at: Optional[datetime] = None) -> Optional[int]:
     """The first seq whose hash, link or position is wrong, else None.
     `records` must be the whole chain from seq 1; a gap (a missing record),
     a broken link, a changed record or a chain shorter than the HEAD all
-    count."""
+    count. With `expired_prefix` (pass unexpired() records), the chain may
+    start later or be empty: the oldest rows expire by TTL (ttl_for), so the
+    first record still present is the anchor and its prevHash is taken as
+    given (the caller reports the expired prefix). That is accepted only
+    when the missing rows can have expired by `at` (_expired_before);
+    otherwise they were deleted."""
     previous, expected = "", 1
+    if expired_prefix and head and int(head.get("seq") or 0) > 0:
+        if not records:
+            return _expired_before(head, None, at or now())
+        anchor = int(records[0].get("seq") or 0)
+        if anchor > 1 and records[0].get("prevHash"):
+            bad = _expired_before(head, anchor, at or now())
+            if bad is not None:
+                return bad
+            expected, previous = anchor, records[0]["prevHash"]
     for record in records:
         seq = int(record.get("seq") or 0)
         if seq != expected or (record.get("prevHash") or "") != previous or entry_hash(record) != record.get("hash"):
@@ -410,9 +507,15 @@ def corrected_view(records: list, day: str, *, with_identity: bool = False) -> l
                             "original": _row(record, with_identity=with_identity)})
             else:
                 row = _row(record, with_identity=with_identity)
-        elif kind == "correction" and not record.get("correctsSeq"):
-            row = _row(record, with_identity=with_identity)
-            row.update({"kind": record["corrected"]["kind"], "late": True, "reason": record.get("reason")})
+        elif is_late(record):
+            fix = corrections.get(int(record["seq"]))
+            row = _row(fix or record, with_identity=with_identity)
+            row.update({"seq": int(record["seq"]), "kind": (fix or record)["corrected"]["kind"], "late": True,
+                        "reason": (fix or record).get("reason")})
+            if fix:
+                row.update({"eventTime": fix["corrected"]["eventTime"],
+                            "localTime": local_time(parse_iso(fix["corrected"]["eventTime"])),
+                            "correctedBySeq": int(fix["seq"]), "original": _row(record, with_identity=with_identity)})
         else:
             continue
         effective = parse_iso(row["eventTime"])
@@ -469,10 +572,11 @@ def stored_for(location_id, record_id) -> Optional[dict]:
 
 def append(*, tenant_id: str, location_id: str, record_id: str, kind: str, person: Optional[dict],
            tenant_row: dict, location: dict, recorded_by: dict, event_time: Optional[datetime] = None,
-           presence: Optional[str] = None, extra: Optional[dict] = None):
+           presence: Optional[str] = None, extra: Optional[dict] = None, close_seq: Optional[int] = None):
     """Appends one record. Returns (record, created). `presence` is "open"
     (the person must not be present: 409 already_checked_in), "close" (must
-    be present: 409 not_checked_in) or None. A retry with the same recordId
+    be present: 409 not_checked_in; with `close_seq`, present by that
+    check-in, so a shift opened since the caller read it stays open) or None. A retry with the same recordId
     returns the stored record with created=False."""
     stored = stored_for(location_id, record_id)
     if stored:
@@ -485,6 +589,7 @@ def append(*, tenant_id: str, location_id: str, record_id: str, kind: str, perso
             raise LedgerError(404, "not found")
         prev_seq = int(head.get("seq") or 0)
         seq = prev_seq + 1
+        last_ttl = int(head.get("lastTtl") or 0)
         record = {
             "PK": location_pk(location_id), "SK": seq_sk(seq),
             "GSI1PK": day_pk(location_id, local_day(when)), "GSI1SK": seq_sk(seq),
@@ -493,21 +598,29 @@ def append(*, tenant_id: str, location_id: str, record_id: str, kind: str, perso
             "personalIdentity": (person or {}).get("personalIdentity") or "",
             "employer": employer(tenant_row), "premises": premises(location),
             "eventTime": iso(when), "recordedAt": iso(at), "localTime": local_time(when),
-            "recordedBy": recorded_by, "prevHash": head.get("lastHash") or "", "ttl": ttl_for(when),
+            "recordedBy": recorded_by, "prevHash": head.get("lastHash") or "",
+            # By the later of event and record time, never below the previous record's: rows
+            # then expire in seq order, so TTL only ever removes a prefix of the chain
+            # (verify(expired_prefix=True)), never a hole.
+            "ttl": max(ttl_for(max(when, at)), last_ttl),
             **(extra or {}),
         }
         record["hash"] = entry_hash(record)
         if prev_seq == 0:
             head_op = {"Put": {"TableName": os.environ["STATE_TABLE_NAME"], "Item": _typed({
                 **head_key(location_id), "tenantId": tenant_id, "seq": seq, "lastHash": record["hash"],
-                "updatedAt": iso(at)}), "ConditionExpression": "attribute_not_exists(PK)"}}
+                "lastTtl": record["ttl"], "ttlStarts": [[record["ttl"], seq]], "updatedAt": iso(at)}),
+                "ConditionExpression": "attribute_not_exists(PK)"}}
         else:
+            update, values = "SET seq = :s, lastHash = :h, updatedAt = :u", {
+                ":s": seq, ":h": record["hash"], ":u": iso(at), ":p": prev_seq, ":t": tenant_id}
+            if record["ttl"] > last_ttl:  # where each ttl starts, for verify(expired_prefix=True)
+                update += ", lastTtl = :lt, ttlStarts = list_append(if_not_exists(ttlStarts, :none), :start)"
+                values.update({":lt": record["ttl"], ":none": [], ":start": [[record["ttl"], seq]]})
             head_op = {"Update": {"TableName": os.environ["STATE_TABLE_NAME"], "Key": _typed(head_key(location_id)),
-                                  "UpdateExpression": "SET seq = :s, lastHash = :h, updatedAt = :u",
+                                  "UpdateExpression": update,
                                   "ConditionExpression": "seq = :p AND tenantId = :t",
-                                  "ExpressionAttributeValues": _typed({":s": seq, ":h": record["hash"],
-                                                                       ":u": iso(at), ":p": prev_seq,
-                                                                       ":t": tenant_id})}}
+                                  "ExpressionAttributeValues": _typed(values)}}
         items = [
             {"Put": {"TableName": os.environ["STATE_TABLE_NAME"], "Item": _typed({
                 **req_key(location_id, record_id), "tenantId": tenant_id, "seq": seq,
@@ -522,10 +635,13 @@ def append(*, tenant_id: str, location_id: str, record_id: str, kind: str, perso
                 **present_key(location_id, person["personId"]), "tenantId": tenant_id, "personId": person["personId"],
                 "checkInSeq": seq, "since": iso(when)}), "ConditionExpression": "attribute_not_exists(PK)"}})
         elif presence == "close":
+            condition, values = "attribute_exists(PK) AND tenantId = :t", {":t": tenant_id}
+            if close_seq is not None:
+                condition, values = condition + " AND checkInSeq = :c", {**values, ":c": int(close_seq)}
             items.append({"Delete": {"TableName": os.environ["STATE_TABLE_NAME"],
                                      "Key": _typed(present_key(location_id, person["personId"])),
-                                     "ConditionExpression": "attribute_exists(PK) AND tenantId = :t",
-                                     "ExpressionAttributeValues": _typed({":t": tenant_id})}})
+                                     "ConditionExpression": condition,
+                                     "ExpressionAttributeValues": _typed(values)}})
         try:
             _transact(items)
             return plain(record), True

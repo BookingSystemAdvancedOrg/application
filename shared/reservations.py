@@ -139,9 +139,10 @@ NOTICE_CANCELLED_BY_RESTAURANT = "cancelled_by_restaurant"
 NOTICE_REMINDER = "reminder"
 NOTICE_FEE_CHARGED = "fee_charged"   # guest receipt for a no-show / late-cancel fee
 NOTICE_FEE_FAILED = "fee_failed"     # restaurant only: the fee could not be charged
+NOTICE_FEE_REFUNDED = "fee_refunded"  # guest: the restaurant refunded (part of) the fee
 NOTICE_TYPES = frozenset({NOTICE_CONFIRMED, NOTICE_CHANGED, NOTICE_CANCELLED_BY_GUEST,
                           NOTICE_CANCELLED_BY_RESTAURANT, NOTICE_REMINDER,
-                          NOTICE_FEE_CHARGED, NOTICE_FEE_FAILED})
+                          NOTICE_FEE_CHARGED, NOTICE_FEE_FAILED, NOTICE_FEE_REFUNDED})
 
 
 def notice(kind, at):

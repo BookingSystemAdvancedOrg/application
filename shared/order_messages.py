@@ -8,6 +8,8 @@ guests who ordered in English.
     order_ready      SMS "ready to collect" (pickup orders only); e-mail when
                      no SMS can be sent
     order_cancelled  SMS + e-mail: cancelled by the restaurant, refunded
+    order_refunded   e-mail: the restaurant refunded (part of) the order
+                     without cancelling it (amount, its message)
 
 The receipt shows the seller (legal name, organisation number, address),
 each line, VAT per rate and the total. Pure functions; nothing here sends.
@@ -42,6 +44,15 @@ _TEXT = {
         "cancelled.subject": "Din beställning #{number} är avbruten - {restaurant}",
         "cancelled.lead": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet, {amount}, "
                            "betalas tillbaka till ditt kort inom några bankdagar."),
+        "cancelled.lead.gift": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet, {amount}, "
+                                "förs tillbaka till ditt presentkort ****{last4}."),
+        "cancelled.lead.split": ("Tyvärr har restaurangen behövt avbryta din beställning. Hela beloppet betalas "
+                                 "tillbaka: {card} till ditt kort inom några bankdagar och {gift} till ditt "
+                                 "presentkort ****{last4}."),
+        "refunded.subject": "Återbetalning för beställning #{number} - {restaurant}",
+        "refunded.lead": ("{restaurant} har betalat tillbaka {amount} för din beställning #{number}. "
+                          "Pengarna syns på ditt kort inom 5-10 bankdagar."),
+        "refunded.reason": "Meddelande från restaurangen: {reason}",
         "hello": "Hej {name}!",
         "receipt": "Kvitto",
         "order": "Beställning",
@@ -55,6 +66,7 @@ _TEXT = {
         "net": "Netto",
         "payment": "Betalning",
         "payment.card": "Kort (Stripe)",
+        "payment.gift": "Presentkort ****{last4}",
         "reference": "Referens",
         "seller": "Säljare",
         "org": "Org.nr",
@@ -82,6 +94,15 @@ _TEXT = {
         "cancelled.subject": "Your order #{number} is cancelled - {restaurant}",
         "cancelled.lead": ("Unfortunately the restaurant has had to cancel your order. The full amount, {amount}, "
                            "will be refunded to your card within a few business days."),
+        "cancelled.lead.gift": ("Unfortunately the restaurant has had to cancel your order. The full amount, "
+                                "{amount}, goes back to your gift card ****{last4}."),
+        "cancelled.lead.split": ("Unfortunately the restaurant has had to cancel your order. The full amount is "
+                                 "refunded: {card} to your card within a few business days and {gift} to your "
+                                 "gift card ****{last4}."),
+        "refunded.subject": "Refund for order #{number} - {restaurant}",
+        "refunded.lead": ("{restaurant} has refunded {amount} for your order #{number}. "
+                          "It shows on your card within 5-10 business days."),
+        "refunded.reason": "Message from the restaurant: {reason}",
         "hello": "Hi {name},",
         "receipt": "Receipt",
         "order": "Order",
@@ -95,6 +116,7 @@ _TEXT = {
         "net": "Net",
         "payment": "Payment",
         "payment.card": "Card (Stripe)",
+        "payment.gift": "Gift card ****{last4}",
         "reference": "Reference",
         "seller": "Seller",
         "org": "Org. no.",
@@ -162,6 +184,47 @@ def _clip(value, limit):
     return value if len(value) <= limit else value[:limit - 1].rstrip() + "."
 
 
+def _parts(item):
+    """(gift card dict or None, gift card part, card part) in öre. The card
+    part of a cancelled order is what was refunded (0 when the gift card
+    covered it all), never the total."""
+    gift = item.get("giftCard") if isinstance(item.get("giftCard"), dict) else None
+    total = int(item.get("totalAmount") or 0)
+    gift_ore = 0
+    if gift:
+        gift_ore = int(gift["refundedOre"] if gift.get("refundedOre") else gift.get("debitedOre") or 0)
+    refund = item.get("refund") if isinstance(item.get("refund"), dict) else {}
+    if "amount" in refund:
+        card_ore = int(refund.get("amount") or 0)
+    else:
+        card_ore = total - int((gift or {}).get("debitedOre") or 0)
+    return gift, gift_ore, max(card_ore, 0)
+
+
+def _cancelled_lead(item, lang):
+    gift, gift_ore, card_ore = _parts(item)
+    if not gift or gift_ore <= 0:
+        return _t(lang, "cancelled.lead", amount=money(card_ore))
+    last4 = str(gift.get("last4") or "")
+    if card_ore <= 0:
+        return _t(lang, "cancelled.lead.gift", amount=money(gift_ore), last4=last4)
+    return _t(lang, "cancelled.lead.split", card=money(card_ore), gift=money(gift_ore), last4=last4)
+
+
+def _payment_rows(item, lang):
+    """[(label, amount text or None)]: the card alone, or the gift card's
+    part (as a deduction) and the card's part when one was used."""
+    gift, _, _ = _parts(item)
+    debited = int((gift or {}).get("debitedOre") or 0)
+    if not gift or debited <= 0:
+        return [(_t(lang, "payment.card"), None)]
+    rows = [(_t(lang, "payment.gift", last4=str(gift.get("last4") or "")), f"-{money(debited)}")]
+    card = int(item.get("totalAmount") or 0) - debited
+    if card > 0:
+        rows.append((_t(lang, "payment.card"), money(card)))
+    return rows
+
+
 def sms(kind, item, tenant_row, location, link=None):
     """The order SMS: confirmation (kitchen started) or ready to collect.
     Short and plain, one SMS part: restaurant, order number, ready time /
@@ -195,7 +258,6 @@ def email(kind, item, tenant_row, location, link):
     name = restaurant_name(tenant_row, location)
     number = item.get("number") or ""
     ready = _local(item, item.get("readyEstimate"), "%H:%M")
-    amount = money((item.get("refund") or {}).get("amount") or item.get("totalAmount") or 0)
     if kind == "order_confirmed":
         subject = _t(lang, "receipt.subject", number=number, restaurant=name)
         lead = _t(lang, f"receipt.lead.{item.get('mode', 'pickup')}", ready=ready, table=_table(item, lang))
@@ -206,9 +268,15 @@ def email(kind, item, tenant_row, location, link):
         subject = _t(lang, "ready.subject", number=number, restaurant=name)
         lead = _t(lang, "ready.lead") + (_t(lang, "pickup.at", address=location["address"])
                                          if (location or {}).get("address") else "")
+    elif kind == "order_refunded":
+        notice = (item.get("refund") or {}).get("notice") or {}
+        subject = _t(lang, "refunded.subject", number=number, restaurant=name)
+        lead = _t(lang, "refunded.lead", restaurant=name, amount=money(notice.get("amount") or 0), number=number)
+        if notice.get("reason"):
+            lead += " " + _t(lang, "refunded.reason", reason=_clip(notice["reason"], 200))
     else:
         subject = _t(lang, "cancelled.subject", number=number, restaurant=name)
-        lead = _t(lang, "cancelled.lead", amount=amount)
+        lead = _cancelled_lead(item, lang)
     first = _first(item)
     hello = _t(lang, "hello", name=first).replace(" !", "!").replace(" ,", ",")
     contact = contact_line(tenant_row, location)
@@ -231,14 +299,18 @@ def email(kind, item, tenant_row, location, link):
         text += ["", f"{_t(lang, 'total')}: {money(item.get('totalAmount') or 0)}"]
         text += [f"{_t(lang, 'vat', rate=v['rate'])}: {money(v['vat'])} ({_t(lang, 'net')} {money(v['net'])})"
                  for v in vat]
-        text += [f"{_t(lang, 'payment')}: {_t(lang, 'payment.card')}",
-                 f"{_t(lang, 'reference')}: {item.get('orderId')}", "",
+        payment_rows = _payment_rows(item, lang)
+        if len(payment_rows) == 1 and payment_rows[0][1] is None:
+            text.append(f"{_t(lang, 'payment')}: {payment_rows[0][0]}")
+        else:
+            text += [f"{_t(lang, 'payment')}:"] + [f"{label}: {value}" for label, value in payment_rows]
+        text += [f"{_t(lang, 'reference')}: {item.get('orderId')}", "",
                  f"{_t(lang, 'seller')}: {seller['name']}"]
         if seller["org"]:
             text.append(f"{_t(lang, 'org')}: {seller['org']}")
         if seller["address"]:
             text.append(seller["address"])
-    if link and kind != "order_cancelled":
+    if link and kind not in ("order_cancelled", "order_refunded"):
         text += ["", f"{_t(lang, 'follow')}:", link]
     if contact_text:
         text += ["", contact_text]
@@ -275,14 +347,16 @@ def email(kind, item, tenant_row, location, link):
             f'text-align:right;font-weight:600">{e(money(item.get("totalAmount") or 0))}</td></tr>'
             f'{vat_rows}</table>'
             f'<p style="margin:12px 0 0;color:#6b6b6b;font-size:13px">{e(_t(lang, "payment"))}: '
-            f'{e(_t(lang, "payment.card"))} &middot; {e(_t(lang, "reference"))}: {e(item.get("orderId") or "")}</p>'
+            + " &middot; ".join(e(label + (f" {value}" if value else "")) for label, value in _payment_rows(item, lang))
+            + f' &middot; {e(_t(lang, "reference"))}: {e(item.get("orderId") or "")}</p>'
             f'<p style="margin:12px 0 0;color:#6b6b6b;font-size:13px">{e(_t(lang, "seller"))}: '
             f'{"<br>".join(e(s) for s in seller_lines)}</p>'
         )
     button = (
         f'<p style="margin:24px 0 8px"><a href="{e(link, quote=True)}" style="background:{color};'
         f'color:#fdfaf6;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block;'
-        f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind != "order_cancelled" else "")
+        f'font-weight:600">{e(_t(lang, "follow"))}</a></p>' if link and kind not in ("order_cancelled", "order_refunded")
+        else "")
     html_body = (
         '<!doctype html><html><body style="margin:0;background:#f4f2ee">'
         '<div style="max-width:560px;margin:0 auto;padding:32px 20px;'

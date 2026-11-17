@@ -102,6 +102,9 @@ COGNITO_USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 # The tenant of the request being handled (set by handler() from the token;
 # a Lambda container handles one request at a time).
 _TENANT_ID = contextvars.ContextVar("tenant_id")
+# Staff the owner granted Personal (shared/staff_access.py) work only with
+# the staff of their own location: that location's id; None for the owner.
+_CALLER_LOCATION = contextvars.ContextVar("caller_location", default=None)
 
 _GROUP_TO_ROLE = {
     "staff_user": "staff",
@@ -302,6 +305,8 @@ def _delete_avatar(caller_sub, caller_groups, target_sub):
     target = _load_user(target_sub)
     if target is None:
         return _user_error(HTTPStatus.NOT_FOUND.value, "user not found")
+    if _CALLER_LOCATION.get() is not None:
+        _authorize_target(caller_sub, caller_groups, target, action="profile")
     tenant_id = _TENANT_ID.get()
     bucket = os.environ.get("USER_BACKDROPS_BUCKET_NAME")
     if bucket and "/" not in tenant_id and "/" not in target_sub:
@@ -634,10 +639,10 @@ def _list_users(caller_sub, caller_groups):
             if _is_system_user(item):
                 continue
             public_user = _validated_stored_user(item)
-            if (
-                is_super_user
-                or _ROLE_TO_GROUP[public_user["role"]] == "staff_user"
-                or public_user["cognitoSub"] == caller_sub
+            own_location = _CALLER_LOCATION.get()
+            if public_user["cognitoSub"] == caller_sub or is_super_user or (
+                _ROLE_TO_GROUP[public_user["role"]] == "staff_user"
+                and (own_location is None or public_user.get("locationId") == own_location)
             ):
                 users.append(public_user)
 
@@ -900,8 +905,11 @@ def _is_super_user(caller_groups):
     return False
 
 
-def _authorize_invite(caller_groups, group):
+def _authorize_invite(caller_groups, group, location_id=None):
     if group != "staff_user" and not _is_super_user(caller_groups):
+        raise _ForbiddenAction
+    own_location = _CALLER_LOCATION.get()
+    if own_location is not None and location_id != own_location:
         raise _ForbiddenAction
 
 
@@ -924,6 +932,10 @@ def _authorize_target(
         return
 
     if _ROLE_TO_GROUP.get(target.get("role")) != "staff_user":
+        raise _ForbiddenAction
+
+    own_location = _CALLER_LOCATION.get()
+    if own_location is not None and target_sub != caller_sub and target.get("locationId") != own_location:
         raise _ForbiddenAction
 
     # Cognito is the privilege source of truth. The User-table role is only a
@@ -960,6 +972,9 @@ def _validate_profile_location(target, updates):
         raise ValueError("locationId must be empty for privileged users")
 
     updates["locationId"] = location_id
+    if _CALLER_LOCATION.get() is not None and location_id != target.get("locationId"):
+        # Staff never move anyone (themselves included) to another location.
+        raise _ForbiddenAction
     _require_tenant_location(location_id)
 
 
@@ -983,7 +998,7 @@ def _cognito_attributes(profile, fields):
 
 def _invite_user(event, caller_sub, caller_groups):
     requested = _invite_body(event)
-    _authorize_invite(caller_groups, requested["group"])
+    _authorize_invite(caller_groups, requested["group"], requested.get("locationId"))
     _require_tenant_location(requested["locationId"])
     tenant_id = _TENANT_ID.get()
 
@@ -1107,6 +1122,14 @@ def _update_profile(event, caller_sub, caller_groups, target_sub):
     }
     if not changed_fields:
         return _user_response(HTTPStatus.OK.value, _public_user(target))
+    if "email" in changed_fields and target_sub == caller_sub:
+        # The login address is set verified here, so a stolen access token
+        # could move the account to a new address and reset the password
+        # there. An owner changes a staff user's email; an owner's own email
+        # is changed by Booqy (_authorize_target lets no owner edit another).
+        # `reason` lets the admin say who acts; `error` stays "forbidden".
+        return _user_response(HTTPStatus.FORBIDDEN.value,
+                              {"error": "forbidden", "field": "email", "reason": "own_email_locked"})
 
     cognito_fields = changed_fields & {"name", "email", "phone"}
     rollback_attributes = None
@@ -1427,7 +1450,11 @@ def handler(event, context):
         return _guide(event, caller_sub, early_method)
 
     try:
-        ctx = tenant.for_jwt(event, owner_only=True)
+        # The owner, or staff the owner granted Personal (narrower: below).
+        ctx = tenant.for_jwt(event, area="personal")
+        own_location = None
+        if ctx.role != "owner_user":
+            own_location = tenant.staff_location(ctx.sub, ctx.tenant_id) or ""
     except tenant.TenantError as exc:
         return exc.response({"Cache-Control": "no-store"})
     except (BotoCoreError, ClientError):
@@ -1436,6 +1463,7 @@ def handler(event, context):
             "user service unavailable",
         )
     _TENANT_ID.set(ctx.tenant_id)
+    _CALLER_LOCATION.set(own_location)
     caller_groups = {ctx.role}
     request_context = event.get("requestContext") or {}
     if not isinstance(request_context, dict):
@@ -1461,6 +1489,10 @@ def handler(event, context):
             {"error": "method not allowed"},
             headers={"Allow": ", ".join(allowed_methods)},
         )
+
+    # Roles and deleting accounts stay the owner's, whatever is granted.
+    if own_location is not None and (route_name == "group" or (route_name == "user" and method == "DELETE")):
+        return _user_error(HTTPStatus.FORBIDDEN.value, "owner_only")
 
     try:
         target_sub = (

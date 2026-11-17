@@ -11,7 +11,8 @@ PURPOSE:
     and removes its pending fields. Before writing, it revalidates that the
     target's publication time satisfies the five-minute dev or 28-day prod
     replacement delay. It also recovers a due ``scheduling`` intent left after
-    Scheduler creation but before lifecycle staging. Missing state and stale
+    Scheduler creation but before lifecycle staging, but only within 10
+    minutes of its cutover (later it is abandoned: a no-op). Missing state and stale
     or completed schedule tokens are idempotent no-ops; matching early,
     corrupt, or failed transitions raise for async retry.
 
@@ -50,6 +51,11 @@ _ACTIVATION_STATE_TYPE = "layoutActivationState"
 _SCHEDULE_NAME_PREFIX = "expire-layout-version-"
 _SCHEDULING = "scheduling"
 _SCHEDULED = "scheduled"
+# A due 'scheduling' intent is recovered only this soon after its cutover.
+# Later, availability and block-table (15 minutes) already treat it as
+# abandoned and book on the current layout, so flipping it then would move
+# the layout under those bookings. The owner resumes it with a new cutover.
+_SCHEDULING_RECOVERY_WINDOW = timedelta(minutes=10)
 _PENDING_TARGET_PREVIOUS_LIFECYCLE = (
     "pendingTargetPreviousLifecycle"
 )
@@ -833,6 +839,15 @@ def handler(event, context):
     now = now.astimezone(timezone.utc)
     if now < pending["parsedCutover"]:
         raise _CutoverConflict("layout cutover time has not arrived")
+    if (
+        pending["status"] == _SCHEDULING
+        and now >= pending["parsedCutover"] + _SCHEDULING_RECOVERY_WINDOW
+    ):
+        print(
+            "layout cutover skipped: scheduling intent abandoned "
+            f"(location {details['locationId']}, cutover {pending['cutoverAt']})"
+        )
+        return None
 
     try:
         outgoing = _validate_snapshot(

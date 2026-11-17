@@ -55,7 +55,9 @@ PURPOSE:
                                         -> the invoice no longer keeps the
                                            customer past due on the profile
       payment_method.attached           -> the default card when there is none
-      credit_note.created               -> finance table: creditedSek
+      credit_note.created               -> finance table: creditedSek, and
+                                           refundedSek for the part paid
+                                           back to the card
 
     The customer resolves to its tenant through STRIPE_CUSTOMER#<cus> /
     TENANT (written by the console), and every PROFILE write is conditional

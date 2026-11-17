@@ -18,10 +18,14 @@ PURPOSE:
           -> the subscriber's last visit (for "visited within / not since")
       order payment turns paid
           -> +1 order and its total for its channel and campaign
-          -> its welcome-offer code is used up (offer results)
+          -> its welcome-offer code is used up (offer results); a pending
+             sign-up behind the code is confirmed and its grant goes into
+             the consent log
           -> guest ticked "offers" when ordering: subscribed
       SES bounce (permanent) or complaint for a marketing email
-          -> the address is suppressed for good; campaign counters
+          -> the address is suppressed for good; campaign counters (also
+             for Google review requests: their MSG# row carries the
+             consent subject, so a complaint withdraws without a subscriber)
     Only tenants whose plan has "marketing" get statistics and subscribers.
     A ticked box on a later booking subscribes a guest again after they
     unsubscribed (that is a new consent); bounced and complained addresses
@@ -29,11 +33,13 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    MARKETING_TABLE_NAME, RESERVATION_TABLE_NAME, ORDER_TABLE_NAME
+    MARKETING_TABLE_NAME, RESERVATION_TABLE_NAME, ORDER_TABLE_NAME,
+    CONSENT_TABLE_NAME (optional)
 
 AWS RESOURCE ACCESS:
     Stream read on the reservation and order tables; GetItem/PutItem/
-    UpdateItem on the marketing table; tenant-context read policy.
+    UpdateItem on the marketing table; Query/PutItem on the consent table;
+    tenant-context read policy.
 """
 
 import json
@@ -143,7 +149,29 @@ def _redeem(table, tenant_id, order, discount, total):
     code_item = table.get_item(Key=offer.code_key(tenant_id, discount["code"])).get("Item") or {}
     if code_item.get("subscriberId"):
         # Using the code proves the address is theirs: a pending sign-up counts as confirmed.
-        m.confirm_subscriber(table, tenant_id, code_item["subscriberId"], via="code_used")
+        if m.confirm_subscriber(table, tenant_id, code_item["subscriberId"], via="code_used"):
+            _grant_welcome_offer(table, tenant_id, code_item["subscriberId"], order)
+
+
+def _grant_welcome_offer(table, tenant_id, sid, order):
+    """The confirmed sign-up's grant in the consent log, as the email-link
+    confirmation writes it (marketing-public). Without it marketing-send skips
+    the guest while the lists count them. Never fails the stream record: the
+    subscriber row is already updated; the failure is logged without the address."""
+    name = consent.table_name()
+    if not name:
+        return
+    try:
+        row = table.get_item(Key=m.sub_key(tenant_id, sid)).get("Item") or {}
+        if not row.get("email"):
+            return
+        version = row.get("consentVersion")
+        consent.grant(dynamo.table(name), tenant_id=tenant_id, restaurant=row.get("restaurantName"),
+                      version=version if version in consent.TEXTS else "welcome_offer_v1",
+                      channels=[consent.EMAIL], email=row["email"], location_id=order.get("locationId"),
+                      source="welcome_offer", ref=order.get("orderId"))
+    except Exception:  # noqa: BLE001
+        logger.exception("consent grant failed (welcome offer code used)")
 
 
 # --- SES events -------------------------------------------------------------------------
@@ -179,9 +207,11 @@ def _ses(detail):
     if kind == "Complaint" and consent.table_name():
         # "This is spam" is a withdrawal: the consent log records it too.
         email = (table.get_item(Key=m.sub_key(tenant_id, sid)).get("Item") or {}).get("email")
-        if email:
+        subject_id = ref.get("consentSubject")  # review requests: the guest may have no subscriber row
+        if email or subject_id:
             consent.withdraw(dynamo.table(consent.table_name()), tenant_id=tenant_id, channel=consent.EMAIL,
-                             identifier=email, source="complaint", actor="ses")
+                             identifier=email, subject_id=None if email else subject_id, source="complaint",
+                             actor="ses")
 
 
 def handler(event, context):

@@ -47,7 +47,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
-from shared import dynamo, geo, orders
+from shared import dynamo, geo, orders, safe_compare
 from shared import menu as menu_rules
 
 CURRENCY = "sek"
@@ -94,8 +94,10 @@ N_EXPIRED = "catering_expired"
 N_OWNER_REMINDER = "catering_owner_reminder"  # issue 5 M5: lifecycle reminders
 N_SIGN_REMINDER = "catering_sign_reminder"
 N_DAY_BEFORE = "catering_day_before"
+N_REFUNDED = "catering_refunded"  # the restaurant refunded (part of) a paid request without cancelling
 NOTICE_TYPES = (N_REQUEST_RECEIVED, N_OFFER_SENT, N_CHANGE_REQUESTED, N_REJECTED, N_DECLINED,
-                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED, N_OWNER_REMINDER, N_SIGN_REMINDER, N_DAY_BEFORE)
+                N_SIGNED, N_CONFIRMED, N_CANCELLED, N_EXPIRED, N_OWNER_REMINDER, N_SIGN_REMINDER, N_DAY_BEFORE,
+                N_REFUNDED)
 
 _ID = re.compile(r"[0-9a-f]{32}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -878,6 +880,9 @@ def history(request_id, limit=200):
         KeyConditionExpression=Key("PK").eq(f"REQUEST#{request_id}") & Key("SK").begins_with("AUDIT#"),
         ScanIndexForward=False, Limit=limit,
     ).get("Items") or []
+    # Webhook entries (AUDIT#STRIPE#..., AUDIT#SIGNING#...) sort after the dated
+    # keys, so order by time; the sort is stable, keeping the key order for ties.
+    items = sorted(items, key=lambda i: str(i.get("at") or ""), reverse=True)
     return [{k: v for k, v in i.items() if k not in ("PK", "SK")} for i in items]
 
 
@@ -957,7 +962,7 @@ def token_for(item):
 def token_matches(item, token):
     if not isinstance(token, str) or not token or len(token) > 256:
         return False
-    return hmac.compare_digest(token_for(item), token)
+    return safe_compare.equal(token_for(item), token)
 
 
 def guest_url(site_base, item, *, slug=None):

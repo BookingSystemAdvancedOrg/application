@@ -29,6 +29,7 @@ import hashlib
 import hmac
 from typing import Optional
 
+from shared import safe_compare
 from shared.features import events_tickets as et
 
 KINDS = ("o", "t", "x")
@@ -49,7 +50,7 @@ def payload(tenant_id, occ_id, ticket_id) -> str:
 def verify(tenant_id, occ_id, ticket_id, given_sig) -> bool:
     if not isinstance(given_sig, str) or len(given_sig) != 16 or not et.valid_id(ticket_id):
         return False
-    return hmac.compare_digest(sig(scan_key(tenant_id, occ_id), ticket_id), given_sig.lower())
+    return safe_compare.equal(sig(scan_key(tenant_id, occ_id), ticket_id), given_sig.lower())
 
 
 def _b64(raw: bytes) -> str:
@@ -74,6 +75,6 @@ def read_token(raw) -> Optional[tuple]:
     parts = decoded.split(":")
     if len(parts) != 3 or parts[0] not in KINDS or not parts[1] or not et.valid_id(parts[2]):
         return None
-    if not hmac.compare_digest(token(*parts), raw):
+    if not safe_compare.equal(token(*parts), raw):
         return None
     return parts[0], parts[1], parts[2]

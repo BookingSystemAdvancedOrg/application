@@ -9,7 +9,9 @@ PURPOSE:
 
       checkout.session.completed (paid) /
       checkout.session.async_payment_succeeded   private guest paid:
-                                                 signed -> confirmed (notice)
+                                                 signed -> confirmed (notice);
+                                                 paid after the request was
+                                                 cancelled / expired: refunded
       checkout.session.async_payment_failed /
       checkout.session.expired                   nothing changes - the
                                                  signature is kept, the guest
@@ -18,7 +20,11 @@ PURPOSE:
       overdue / voided                           invoiceStatus mirrored
       invoice.paid                               company paid: paid = true,
                                                  delivered -> closed
-      charge.refunded / credit_note.created      refund recorded
+      charge.refunded                            refundedAmount up to Stripe's
+                                                 amount_refunded (refunds list;
+                                                 never counted twice)
+      credit_note.created                        noted only (its card refund
+                                                 arrives as charge.refunded)
 
     Matched by metadata (locationId, requestId) and the event's connected
     account = the request's stripeAccountId. Every event is written first
@@ -42,6 +48,9 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
+from shared import catering_refunds as cr
+from shared import catering_stripe as cs
+from shared import refunds
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -114,16 +123,38 @@ def _session(kind, session, account, stripe_event, now):
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         if session.get("payment_status") != "paid":
             return _audit(item, stripe_event, now, "waiting")
-        if item["status"] != c.SIGNED:
-            return _audit(item, stripe_event, now, "already_settled")
-        ok = _update(item, to_status=c.CONFIRMED, sets=[
-            "paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
-            "receiptInvoiceId = :inv"],
-            values={":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
-                    ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"})
-        return _audit(item, stripe_event, now, "confirmed" if ok else "superseded")
+        for _ in range(3):
+            if item["status"] != c.SIGNED:
+                return _audit(item, stripe_event, now, _settled_or_refund(item, session, account))
+            if _update(item, to_status=c.CONFIRMED, sets=[
+                    "paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
+                    "receiptInvoiceId = :inv"],
+                    values={":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
+                            ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"}):
+                return _audit(item, stripe_event, now, "confirmed")
+            item = c.load(item["locationId"], item["requestId"])  # lost a race: settle against the new state
+        raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
     # expired / failed: the signature stays, the guest pays again from the link
     return _audit(item, stripe_event, now, "payment_not_completed")
+
+
+def _settled_or_refund(item, session, account):
+    """The session was paid but the request is no longer signed. Either
+    this very payment already confirmed it (a redelivery, or
+    async_payment_succeeded after completed), or the request was
+    cancelled / expired while Checkout was open: then the money goes back
+    to the guest at once, nobody would deliver for it."""
+    intent = session.get("payment_intent")
+    if item.get("paid") and item.get("paymentIntentId") in (intent, "-"):
+        return "already_settled"
+    if not intent:
+        logger.error(json.dumps({"lateCateringPayment": "no_payment_intent", "requestId": item["requestId"],
+                                 "session": session.get("id")}))
+        return "late_payment_unrefunded"
+    cs.refund_late_payment(account, intent, item["requestId"])
+    logger.warning(json.dumps({"lateCateringPayment": "refunded", "requestId": item["requestId"],
+                               "status": item["status"]}))
+    return "refunded_late_payment"
 
 
 def _invoice(kind, invoice, account, stripe_event, now):
@@ -157,13 +188,23 @@ def _invoice(kind, invoice, account, stripe_event, now):
     raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
 
 
-def _refund(obj, account, stripe_event, now):
+def _refund(kind, obj, account, stripe_event, now):
+    """charge.refunded: refundedAmount brought up to Stripe's cumulative
+    amount_refunded (shared/refunds.py: completes an owner refund whose
+    answer was lost, records Dashboard refunds, never twice). A credit
+    note is only noted: when it refunds a card payment its charge.refunded
+    carries the money, so counting it too would count it twice."""
     item = _request(obj.get("metadata"), account)
     if not item:
         return "ignored"
-    amount = int(obj.get("amount_refunded") or obj.get("amount") or 0)
-    _update(item, sets=["refundedAmount = :a", "updatedAt = :now"], values={":a": amount, ":now": c.iso(now)})
-    return _audit(item, stripe_event, now, "recorded")
+    if kind == "credit_note.created":
+        return _audit(item, stripe_event, now, "credit_note_noted")
+    if not item.get("paid"):
+        return _audit(item, stripe_event, now, "not_paid")  # e.g. a late Checkout payment refunded at once
+    if item.get("customerType") == c.PRIVATE and obj.get("payment_intent") != item.get("paymentIntentId"):
+        return _audit(item, stripe_event, now, "other_payment")
+    _, result = cr.record_stripe_refund(item, obj.get("amount_refunded"), now)
+    return _audit(item, stripe_event, now, result)
 
 
 def handler(event, context):
@@ -192,10 +233,10 @@ def handler(event, context):
         elif kind.startswith("invoice."):
             result = _invoice(kind, obj, account, stripe_event, now)
         elif kind in ("charge.refunded", "credit_note.created"):
-            result = _refund(obj, account, stripe_event, now)
+            result = _refund(kind, obj, account, stripe_event, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError):
+    except (BotoCoreError, ClientError, stripe.StripeError, stripe.StripeUnavailable, refunds.Changed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

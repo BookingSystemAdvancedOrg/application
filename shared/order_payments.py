@@ -16,7 +16,9 @@
              Every write is conditional on status pending_payment, so the
              webhook, the guest's status page and Stripe's retries can all
              try - the first wins and the rest are no-ops.
-    refund   staff cancel -> Refund of the PaymentIntent (key refund-<orderId>)
+    refund   owner refund (part of the card payment) or staff cancel (what is
+             left): Refund with an explicit amount, key refund-<orderId>-<n>
+             (shared/refunds.py: reserved, capped, recorded once)
 
 Only payment_status == "paid" confirms: Swish/Klarna complete the session
 first and settle later (checkout.session.async_payment_*).
@@ -26,7 +28,7 @@ from datetime import timedelta
 
 from botocore.exceptions import ClientError
 
-from shared import dynamo, orders as o
+from shared import dynamo, refunds, orders as o
 from shared import stripe_client as stripe
 
 _LOCALES = {"sv": "sv", "en": "en"}
@@ -173,13 +175,103 @@ def sync_from_stripe(item, now, actor):
     return item
 
 
-def refund(item, now, actor):
-    """Refunds the whole order on the restaurant's account. Idempotent per
-    order. Returns the refund object."""
-    if item.get("paymentStatus") != o.PAY_PAID or not item.get("paymentIntentId"):
+# --- refunds (shared/refunds.py rules) ---------------------------------------------------
+#
+# order.refund = {amount (card part refunded, öre), at (last), count (refunds
+# Booqy started: key refund-<orderId>-<n>), rev, pending?, items [{n?, amount,
+# at, by, reason?, refundId?, external?}], notice? {amount, reason?} (what
+# the guest's order_refunded e-mail says)}. Older records carry only
+# {amount, at[, refundId, status]}. paymentStatus follows the card part:
+# paid -> partly_refunded -> refunded.
+
+REFUNDABLE_STATUSES = (o.CONFIRMED, o.PREPARING, o.READY, o.COMPLETED)
+PAID_STATUSES = (o.PAY_PAID, o.PAY_PARTLY_REFUNDED, o.PAY_REFUNDED)
+
+
+class _CardRefunds(refunds.Domain):
+    def __init__(self, item, notice_kind=o.NOTICE_REFUNDED):
+        self.prefix = f"refund-{item['orderId']}"
+        self.notice_kind = notice_kind
+
+    def state(self, item):
+        record = item.get("refund") or {}
+        total = int(record.get("amount") or 0)
+        items = list(record.get("items") or [])
+        if total and not items:  # recorded before the list existed (cancel or Stripe Dashboard)
+            items = [{"amount": total, "at": record.get("at"), "by": "stripe" if "refundId" not in record else "cancel",
+                      **({"refundId": record["refundId"]} if record.get("refundId") else {})}]
+        return refunds.normal(total, record.get("count"), record.get("rev"), record.get("pending"), items)
+
+    def reload(self, item):
+        return o.load(item["locationId"], item["orderId"])
+
+    def create(self, item, pending, *, replay=False):
+        return refunds.stripe_create(item["stripeAccountId"], item["paymentIntentId"], pending,
+                                     {"orderId": item["orderId"], "locationId": item["locationId"],
+                                      "by": pending.get("by") or ""}, replay=replay)
+
+    def write(self, item, old, new, completed, now):
+        record = {k: v for k, v in (item.get("refund") or {}).items() if k not in ("pending",)}
+        record.update({"amount": new["total"], "count": new["count"], "rev": new["rev"], "items": new["items"]})
+        if new["pending"]:
+            record["pending"] = new["pending"]
+        if completed:
+            record["at"] = o.iso(now)
+        sets = ["#rf = :refund", "updatedAt = :now"]
+        values = {":refund": record, ":now": o.iso(now)}
+        names = {"#rf": "refund"}
+        charged = charged_amount(item)
+        pay = item.get("paymentStatus")
+        if pay in PAID_STATUSES and new["total"] > 0:
+            pay = o.PAY_REFUNDED if new["total"] >= charged else o.PAY_PARTLY_REFUNDED
+            sets.append("paymentStatus = :pay")
+            values[":pay"] = pay
+        if completed:
+            sets.append("history = list_append(if_not_exists(history, :empty), :entries)")
+            values[":empty"] = []
+            values[":entries"] = [o.history_entry("refunded", e.get("by") or "stripe", now, amount=e["amount"],
+                                                  reason=e.get("reason")) for e in completed]
+            told = [e for e in completed if e.get("notify")]
+            if told and self.notice_kind and (item.get("customerEmail") or item.get("customerPhone")):
+                record["notice"] = {k: v for k, v in {"amount": told[-1]["amount"],
+                                                      "reason": told[-1].get("reason")}.items() if v}
+                sets.append("notice = :notice")
+                values[":notice"] = o.notice(self.notice_kind, now)
+        if old["rev"]:
+            condition = "#rf.rev = :rev"
+            values[":rev"] = old["rev"]
+        elif old["total"]:
+            condition = "attribute_not_exists(#rf.rev) AND #rf.amount = :total"
+            values[":total"] = old["total"]
+        else:
+            condition = "attribute_exists(PK) AND attribute_not_exists(#rf)"
+        try:
+            result = dynamo.table(o.order_table()).update_item(
+                Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+                UpdateExpression="SET " + ", ".join(sets), ConditionExpression=condition,
+                ExpressionAttributeNames=names, ExpressionAttributeValues=values, ReturnValues="ALL_NEW")
+        except ClientError as exc:
+            if _conditional_failed(exc):
+                raise refunds.Changed() from None
+            raise
+        return result["Attributes"]
+
+
+def refund(item, amount, now, actor, *, reason=None, notify=True, notice_kind=o.NOTICE_REFUNDED,
+           statuses=REFUNDABLE_STATUSES):
+    """(Part of) the card payment back. amount None = what is left. Raises
+    o.InvalidState not_paid / not_refundable, refunds.Conflict, ValueError,
+    Stripe errors. Returns the updated order."""
+    if item.get("paymentStatus") not in PAID_STATUSES or not item.get("paymentIntentId") \
+            or item.get("paymentIntentId") == "-":
         raise o.InvalidState("not_paid")
-    return stripe.request("POST", "/v1/refunds", {
-        "payment_intent": item["paymentIntentId"],
-        "reason": "requested_by_customer",
-        "metadata": {"orderId": item["orderId"], "locationId": item["locationId"], "by": actor},
-    }, account=item["stripeAccountId"], idempotency_key=f"refund-{item['orderId']}")
+    if item.get("status") not in statuses:
+        raise o.InvalidState("not_refundable")
+    item, _ = refunds.start(_CardRefunds(item, notice_kind), item, amount=amount, cap=charged_amount(item),
+                            actor=actor, now=now, reason=reason, notify=notify)
+    return item
+
+
+def record_stripe_refund(item, amount_refunded, now):
+    """charge.refunded on the order's PaymentIntent: (item, result)."""
+    return refunds.from_stripe(_CardRefunds(item), item, amount_refunded, now)

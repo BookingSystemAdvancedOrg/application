@@ -181,7 +181,7 @@ def test_b1_starter_draft_then_saved_draft(env):
 
 
 def test_b1_b2_role_and_off(env):
-    assert call(env, "GET", "/tenant/site-builder", role="staff_user")[1]["error"] == "owner_only"
+    assert call(env, "GET", "/tenant/site-builder", role="staff_user")[1]["error"] == "no_access"
     assert call(env, "PUT", "/tenant/site-builder/draft", role="staff_user", body={})[0] == 403
     off(env)
     assert call(env, "GET", "/tenant/site-builder")[1]["error"] == "feature_not_in_plan"

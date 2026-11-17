@@ -30,8 +30,11 @@ PURPOSE:
     requests and card receipts left from before 2026-11-13 in every location
     of the restaurant. Erasure:
       * consent: a withdrawal (source "erasure", by subject: the address is
-        not written again) on every channel with records; data-retention turns it into a bare suppression record at
-        its next run (this function stays append-only on the log)
+        not written again) on every channel with records, then at once
+        what data-retention does after a withdrawal: the records holding
+        the address are deleted and a bare suppression record (no address,
+        TTL) is kept. Without DeleteItem on the log the withdrawal stays and
+        data-retention collapses it at its next run
       * subscriber row and the welcome-offer address/code rows: deleted
         (a code reserved by a checkout or redeemed stays: it holds no address);
         a bounced/complained subscriber row loses the address but keeps the
@@ -59,8 +62,8 @@ ENV_VARS:
     CATERING_REQUEST_HISTORY_TABLE_NAME (export: the guest's signing events)
 
 AWS RESOURCE ACCESS:
-    GetItem/UpdateItem on the tenant table (PROFILE); Query/PutItem on the
-    consent table; GetItem/UpdateItem/DeleteItem/Query on the marketing
+    GetItem/UpdateItem on the tenant table (PROFILE); Query/PutItem/
+    DeleteItem on the consent table (DeleteItem: erasure only); GetItem/UpdateItem/DeleteItem/Query on the marketing
     table; Query on the location table (own partition); Query/UpdateItem on
     the reservation, order and catering-requests tables; Query on the
     catering-request-history table (export only).
@@ -380,13 +383,21 @@ def _erase(ctx, email, phone):
     if name:
         table = dynamo.table(name)
         for channel, identifier in ((consent.EMAIL, email), (consent.SMS, phone)):
-            if identifier and consent.history(table, ctx.tenant_id, consent.subject(ctx.tenant_id, channel,
-                                                                                    identifier), limit=1):
-                # By subject only: the erasure itself must not write the address again.
-                consent.withdraw(table, tenant_id=ctx.tenant_id, channel=channel,
-                                 subject_id=consent.subject(ctx.tenant_id, channel, identifier),
-                                 source="erasure", actor=ctx.sub)
-                result["consentWithdrawn"].append(channel)
+            sid = consent.subject(ctx.tenant_id, channel, identifier) if identifier else None
+            latest = consent.history(table, ctx.tenant_id, sid, limit=1) if sid else []
+            if not latest:
+                continue
+            result["consentWithdrawn"].append(channel)
+            if latest[0].get("action") == consent.SUPPRESSED:
+                continue  # already erased: only the bare suppression record is left
+            # By subject only: the erasure itself must not write the address again.
+            withdrawal = consent.withdraw(table, tenant_id=ctx.tenant_id, channel=channel, subject_id=sid,
+                                          source="erasure", actor=ctx.sub)
+            # Then the records that hold the address go now, not at data-retention's next run.
+            if not consent.suppress_now(table, tenant_id=ctx.tenant_id, withdrawal=withdrawal,
+                                        ttl=retention.suppression_ttl(withdrawal["at"], retention.policy())):
+                logger.warning(json.dumps({"guestData": "consentKeptForRetention", "tenantId": ctx.tenant_id,
+                                           "channel": channel}))
     if email and os.environ.get("MARKETING_TABLE_NAME"):
         result["marketingRowsDeleted"] = _delete_marketing(ctx.tenant_id, email)
     for kind, table_name, item in _guest_rows(ctx, email, phone):

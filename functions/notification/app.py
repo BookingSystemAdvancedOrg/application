@@ -21,6 +21,8 @@ PURPOSE:
       cancelled_by_restaurant   cancellation notice       -
       reminder                  reminder + cancel link    -
       fee_charged               fee receipt               -
+      fee_refunded              refund receipt (amount,   -
+                                restaurant's reason)
       fee_failed                -                         charge failed (any source)
 
     * SMS only when the tenant enabled it (tenant.notifications.sms) and
@@ -33,6 +35,16 @@ PURPOSE:
     A record is sent once per notice id: when OldImage carries the same
     notice id the write was about something else and is skipped. Notices
     older than 24 h (e.g. a replayed DLQ batch) are dropped, not sent late.
+    With REQUEST_GUARD_TABLE_NAME set, a sent marker (sent#<sha256 of
+    table, item key and notice id>, TTL 2 days) is claimed with a
+    conditional put before sending; a record whose marker exists already
+    went out (stream retry, dlq-replay of a whole failed range) and is
+    skipped. A record that raises gives its marker back. Table unset or
+    unreachable: sent without the check.
+
+    A failing record ends the batch: Lambda redelivers from the first
+    reported sequence number, so later records are left for that
+    redelivery instead of being sent twice.
 
     Delivery: the guest email is sent first; a retryable failure there
     fails just that record (batchItemFailures) so it is retried without
@@ -55,6 +67,8 @@ PURPOSE:
                          staff press "Påbörja"; e-mail when no SMS can be sent
       order_ready        SMS "ready to collect" - pickup orders; e-mail when
                          no SMS can be sent
+      order_refunded     e-mail only (owner refund without cancelling: amount,
+                         the restaurant's message)
       order_cancelled    e-mail only (cancelled by the restaurant, refund amount) -
                          cancellation SMS are for table bookings, never food orders
 
@@ -79,7 +93,8 @@ ENV_VARS:
     RESERVATION_LINK_KEY_SECRET_ARN,
     SMS_ALLOWED_PREFIXES (optional, comma-separated, default the Nordic codes),
     MAIL_OUTBOX_BUCKET_NAME (dev only, optional - see "Dev mail outbox"),
-    SES_CONFIGURATION_SET (optional, the transactional SES configuration set)
+    SES_CONFIGURATION_SET (optional, the transactional SES configuration set),
+    REQUEST_GUARD_TABLE_NAME (optional, sent markers; unset: no marker)
 
 DEV MAIL OUTBOX:
     When MAIL_OUTBOX_BUCKET_NAME is set (infrastructure var.mail_outbox,
@@ -101,9 +116,11 @@ AWS RESOURCE ACCESS:
     no-reply identity (also SES v2 SendEmail with raw content: the booking
     confirmation carries its .ics, same IAM action); sns:Publish (SMS,
     Resource "*" by AWS design); GetSecretValue on the link signing key;
-    UpdateItem on the finance table (counters); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
+    UpdateItem on the finance table (counters); PutItem/DeleteItem on the
+    request-guard table (sent markers); dev only: s3:PutObject on the mail outbox's outbox/* prefix.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -120,7 +137,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering, catering_messages, finance, manage_link, messages
 from shared import contracts, marketing, order_messages, orders, site, sms, tenant
-from shared import calendar_invite
+from shared import calendar_invite, dynamo
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -473,7 +490,7 @@ def _order(record):
         wants_sms = kind == orders.NOTICE_STARTED or new.get("mode") == orders.PICKUP
         wants_email = not phone  # e-mail only when no SMS can be sent
     else:
-        # Cancelled by the restaurant: the e-mail with the refund - no SMS
+        # Cancelled or refunded by the restaurant: the e-mail with the refund - no SMS
         # (cancellation SMS are for table bookings only).
         wants_sms, wants_email = False, True
     steps = []
@@ -579,6 +596,62 @@ def _catering(record):
     return "sent"
 
 
+# --- once per notice (sent markers) -------------------------------------------------------
+
+_SENT_MARKER_TTL = timedelta(days=2)
+
+
+def _marker_key(table_name, record):
+    """``sent#<hash>`` of the table, the item's key and its notice id, or
+    None when the record carries no notice id. Only a hash: no guest or
+    tenant data in the guard table."""
+    data = record.get("dynamodb") or {}
+    new = _image(data.get("NewImage"))
+    notice = new.get("notice")
+    notice_id = notice.get("id") if isinstance(notice, dict) else None
+    if not notice_id:
+        return None
+    keys = _image(data.get("Keys")) or {k: new[k] for k in ("PK", "SK") if k in new}
+    raw = json.dumps([table_name, sorted((k, str(v)) for k, v in keys.items()), str(notice_id)])
+    return "sent#" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _claim(table_name, record):
+    """Claims the record's notice before anything is sent: the key when
+    claimed, False when it was already sent (a stream retry or a DLQ replay
+    of a range that partly went out), None when there is nothing to guard
+    with (no REQUEST_GUARD_TABLE_NAME, no notice id, or the table can't be
+    reached: then it is sent, as before the markers)."""
+    name = os.environ.get("REQUEST_GUARD_TABLE_NAME")
+    key = _marker_key(table_name, record) if name else None
+    if not key:
+        return None
+    try:
+        dynamo.table(name).put_item(
+            Item={"PK": key, "ttl": int((_now() + _SENT_MARKER_TTL).timestamp())},
+            ConditionExpression="attribute_not_exists(PK)",
+        )
+        return key
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        logger.error(json.dumps({"sentMarker": "unavailable", "code": exc.response.get("Error", {}).get("Code")}))
+    except BotoCoreError:
+        logger.error(json.dumps({"sentMarker": "unavailable"}))
+    return None
+
+
+def _release(key):
+    """Gives back a claim whose record sent nothing, so its retry can send."""
+    if not key:
+        return
+    try:
+        dynamo.table(os.environ["REQUEST_GUARD_TABLE_NAME"]).delete_item(Key={"PK": key})
+    except (BotoCoreError, ClientError):
+        # The retry will skip this notice as sent: say so loudly.
+        logger.error(json.dumps({"sentMarker": "release_failed"}))
+
+
 # --- feature notices (direct invoke) ----------------------------------------------------
 
 _NOTICE_KIND = re.compile(r"([a-z][a-z-]*)\.([a-z][a-z-]*)")
@@ -647,25 +720,35 @@ def handler(event, context):
     reservation_table = os.environ.get("RESERVATION_TABLE_NAME")
     catering_table = os.environ.get("CATERING_REQUESTS_TABLE_NAME")
     order_table = os.environ.get("ORDER_TABLE_NAME")
-    failures = []
     for record in event.get("Records") or []:
         sequence = (record.get("dynamodb") or {}).get("SequenceNumber")
+        table_name = _table_name_of(record.get("eventSourceARN"))
+        if record.get("eventName") not in ("INSERT", "MODIFY"):
+            continue
+        if table_name == reservation_table:
+            send = _reservation
+        elif order_table and table_name == order_table:
+            send = _order
+        elif catering_table and table_name == catering_table:
+            send = _catering
+        else:
+            continue
+        marker = _claim(table_name, record)
+        if marker is False:
+            logger.info(json.dumps({"skip": "already_sent", "sequence": sequence}))
+            continue
         try:
-            if _table_name_of(record.get("eventSourceARN")) == reservation_table and \
-                    record.get("eventName") in ("INSERT", "MODIFY"):
-                _reservation(record)
-            elif order_table and _table_name_of(record.get("eventSourceARN")) == order_table and \
-                    record.get("eventName") in ("INSERT", "MODIFY"):
-                _order(record)
-            elif catering_table and _table_name_of(record.get("eventSourceARN")) == catering_table and \
-                    record.get("eventName") in ("INSERT", "MODIFY"):
-                _catering(record)
-        except Retry:
-            logger.warning(json.dumps({"retry": sequence}))
-            if sequence:
-                failures.append({"itemIdentifier": sequence})
-        except Exception:  # noqa: BLE001 - one bad record must not block the shard
-            logger.exception("notification failed for record %s", sequence)
-            if sequence:
-                failures.append({"itemIdentifier": sequence})
-    return {"batchItemFailures": failures}
+            send(record)
+        except Exception as exc:  # noqa: BLE001 - Retry or a bug: nothing went out for this record
+            # Every path that raises does so before anything was sent, so the
+            # marker is given back and the redelivery can send it.
+            _release(marker)
+            if isinstance(exc, Retry):
+                logger.warning(json.dumps({"retry": sequence}))
+            else:
+                logger.exception("notification failed for record %s", sequence)
+            # Stop here: Lambda redelivers the batch from the first reported
+            # sequence number, so every later record comes again. Sending them
+            # now would send them twice.
+            return {"batchItemFailures": [{"itemIdentifier": sequence}] if sequence else []}
+    return {"batchItemFailures": []}

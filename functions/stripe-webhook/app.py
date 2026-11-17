@@ -16,8 +16,12 @@ PURPOSE:
       payment_intent.succeeded       a fee whose result was unknown
       payment_intent.payment_failed  (Stripe unreachable / processing) ->
                                      *_charged / *_charge_failed
-      charge.refunded                refund made in the Stripe Dashboard ->
-                                     payment.refundedAmount
+      charge.refunded                payment.refundedAmount brought up to
+                                     Stripe's amount_refunded: completes an
+                                     owner refund whose answer was lost (with
+                                     its guest notice) and records Dashboard
+                                     refunds; never counts one twice
+                                     (shared/refunds.py)
 
     Every event is matched to its reservation by metadata (reservationId,
     locationId) AND the event's connected account must be the booking's
@@ -32,26 +36,31 @@ PURPOSE:
     (stripe.event hook, shared/feature_hooks.py) with type, account and
     object, and its result is answered; a failing feature answers 500 so
     Stripe retries. Any other kind is handled as before. Nothing else
-    changes.
+    changes. A Dispute has no metadata of its own: for charge.dispute.closed
+    the PaymentIntent is read on the event's account (STRIPE_SECRET_ARN) and
+    its metadata routes the event and travels on the object; without that
+    key the dispute is ignored as before.
 
     Answers 200 for anything handled or deliberately ignored, 400 for a bad
     signature, 500 for a transient failure (Stripe retries).
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    RESERVATION_TABLE_NAME, STRIPE_WEBHOOK_SECRET_ARN (whsec_..., plain string)
+    RESERVATION_TABLE_NAME, STRIPE_WEBHOOK_SECRET_ARN (whsec_..., plain string),
+    STRIPE_SECRET_ARN (optional: platform key, to read a disputed PaymentIntent)
 """
 
 import base64
 import json
 import logging
 import os
+import re
 import time
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import feature_hooks, guarantee, tenant
+from shared import feature_hooks, guarantee, refunds, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -64,6 +73,7 @@ _GIFT_CARD_TYPES = ("payment_intent.succeeded", "payment_intent.payment_failed",
 # metadata.kind -> the stripe.event target that owns those payments (CONTRACTS.md 9.2)
 _FEATURE_KINDS = {"giftcard": "gift-cards", "ticket": "events-tickets"}
 _secret = {"value": None, "at": 0.0}
+_INTENT_ID = re.compile(r"^pi_[A-Za-z0-9]{1,64}$")
 
 
 def _signing_secret():
@@ -150,12 +160,26 @@ def _charge_refunded(obj, account, now):
     payment = (item or {}).get("payment") or {}
     if not item or payment.get("paymentIntentId") != obj.get("payment_intent"):
         return "ignored"
-    refunded = int(obj.get("amount_refunded") or 0)
-    already = int(payment.get("refundedAmount") or 0)
-    if refunded <= already:
-        return "already_recorded"
-    guarantee.record_refund(item, {"amount": refunded - already}, now, "stripe")
-    return "recorded"
+    return guarantee.record_stripe_refund(item, obj.get("amount_refunded"), now)
+
+
+def _with_intent_metadata(obj, account):
+    """A Dispute carries no metadata of its own (Stripe does not copy the
+    PaymentIntent's), so the PaymentIntent is read on the event's account and
+    its metadata (kind, tenantId, purchaseId/orderId) put on the object. The
+    object as it is when the platform key is not configured or the dispute
+    names no PaymentIntent; StripeUnavailable propagates (Stripe retries)."""
+    intent_id = obj.get("payment_intent")
+    if isinstance(intent_id, dict):
+        intent_id = intent_id.get("id")
+    if not isinstance(intent_id, str) or not _INTENT_ID.match(intent_id) or not os.environ.get("STRIPE_SECRET_ARN"):
+        return obj
+    try:
+        intent = stripe.request("GET", f"/v1/payment_intents/{intent_id}", account=account)
+    except stripe.StripeError:
+        logger.warning(json.dumps({"ignored": "dispute_intent_unreadable", "dispute": obj.get("id")}))
+        return obj
+    return {**obj, "metadata": {**(obj.get("metadata") or {}), **((intent or {}).get("metadata") or {})}}
 
 
 def _feature_payment(feature_id, kind, account, obj):
@@ -195,6 +219,9 @@ def handler(event, context):
     kind = stripe_event.get("type")
     now = r.now_utc()
     try:
+        if account and kind == "charge.dispute.closed" and \
+                (obj.get("metadata") or {}).get("kind") not in _FEATURE_KINDS:
+            obj = _with_intent_metadata(obj, account)
         if not account:
             result = "ignored:no_account"
         elif kind in _GIFT_CARD_TYPES and (obj.get("metadata") or {}).get("kind") in _FEATURE_KINDS:
@@ -209,7 +236,8 @@ def handler(event, context):
             result = _charge_refunded(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict, feature_hooks.HookFailed):
+    except (BotoCoreError, ClientError, stripe.StripeUnavailable, r.Conflict, feature_hooks.HookFailed,
+            refunds.Changed):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

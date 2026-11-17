@@ -43,6 +43,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+# The synchronous Lambda response (API Gateway and the console's invoke) is
+# capped at 6 MB, and the export body is JSON-escaped once more by whoever
+# wraps it. Measured on the double-encoded body, with headroom.
+EXPORT_MAX_BYTES = 5_000_000
+
+
 def _err(status, code, field=None):
     body = {"error": code, "code": code}
     if field:
@@ -198,15 +204,17 @@ def correct(event, ctx):
     if not person:
         raise pl.LedgerError(404, "not found")
     corrects = body.get("correctsSeq")
-    presence = None
+    presence, close_seq = None, None
     if corrects is not None:
         corrects = _whole(corrects, "correctsSeq")
         target = pl.get_record(ctx.location_id, corrects) if corrects > 0 else None
-        if not target or target.get("tenantId") != ctx.tenant_id or target.get("kind") not in pl.CORRECTABLE:
+        # A check-in, a check-out or a late registration; never a fix of a fix.
+        if not target or target.get("tenantId") != ctx.tenant_id or not pl.correctable(target):
             raise pl.LedgerError(404, "not found")
         # A correction stands beside the record it corrects: same person.
         if target.get("personId") != person.get("personId"):
             raise pl.LedgerError(400, "wrong_person", "correctsSeq")
+        presence, close_seq = _presence_after_fix(ctx, target, person["personId"], kind)
     else:
         # A late registration (the app was down, someone forgot): it moves the
         # presence like the registration it stands in for would have.
@@ -219,11 +227,37 @@ def correct(event, ctx):
     record, created = pl.append(
         tenant_id=ctx.tenant_id, location_id=ctx.location_id, record_id=record_id, kind="correction",
         person=person, tenant_row=ctx.tenant, location=ctx.location, recorded_by=_recorded_by(ctx),
-        event_time=event_time, presence=presence, extra=extra)
+        event_time=event_time, presence=presence, extra=extra, close_seq=close_seq)
     if created:
         # correctsSeq 0 = a late registration (the contract field is a required int).
         _publish("Personalliggare.Corrected", record, correctsSeq=int(corrects or 0), kind=kind)
     return http.respond(201 if created else 200, _record_view(record))
+
+
+def _presence_after_fix(ctx, target, person_id, kind):
+    """A fix that changes the kind of a registration moves presence like the
+    registration would have: a check-in turned into a check-out closes the
+    shift it opened, a check-out turned into a check-in opens one again when
+    nothing later of the person's has moved presence since. Returns
+    (presence, close_seq): a close only deletes the PRESENT row of that very
+    check-in, so a shift opened after this read stays open."""
+    seq = int(target["seq"])
+    later = [r for r in pl.after(ctx.location_id, seq) if r.get("tenantId") == ctx.tenant_id]
+    fixes = [r for r in later if r.get("kind") == "correction" and int(r.get("correctsSeq") or 0) == seq]
+    current = fixes[-1]["corrected"]["kind"] if fixes else pl.registered_kind(target)
+    if current == kind:
+        return None, None
+    row = pl.get_present(ctx.location_id, person_id)
+    if row and row.get("tenantId") != ctx.tenant_id:
+        row = None
+    if kind == "check_out":
+        opened_by = {seq} | {int(f["seq"]) for f in fixes}
+        if row and int(row.get("checkInSeq") or 0) in opened_by:
+            return "close", int(row["checkInSeq"])
+        return None, None
+    if row or any(r.get("personId") == person_id and pl.registered_kind(r) for r in later):
+        return None, None
+    return "open", None
 
 
 # --- H5 ------------------------------------------------------------------------------------
@@ -250,19 +284,31 @@ def _note_id():
 # --- H6 ------------------------------------------------------------------------------------
 
 def _export(location_id, tenant_id, first, last, fmt):
+    at, head = pl.now(), pl.get_head(location_id)
     records = pl.chain(location_id)
-    if any(r.get("tenantId") != tenant_id for r in records):
+    if any(r.get("tenantId") != tenant_id for r in records) or (head and head.get("tenantId") != tenant_id):
         raise pl.LedgerError(404, "not found")
-    bad = pl.verify(records, pl.get_head(location_id))
+    # The oldest rows expire by TTL (ADR-H 7), a whole year at once, and
+    # DynamoDB deletes them lazily in no set order: rows past their ttl
+    # count as gone, the chain is checked from the first record still kept,
+    # and the expired prefix is reported.
+    records = pl.unexpired(records, at)
+    bad = pl.verify(records, head, expired_prefix=True, at=at)
     rows = [pl.export_record(r) for r in pl.export_rows(records, first, last)]
     out = {"locationId": location_id, "from": first, "to": last, "format": fmt, "chainOk": bad is None,
            "filename": f"personalliggare-{location_id}-{first}-{last}.{fmt}", "count": len(rows)}
     if bad is not None:
         out["firstBadSeq"] = bad
+    else:
+        expired = int(records[0]["seq"]) - 1 if records else int((head or {}).get("seq") or 0)
+        if expired > 0:
+            out["expiredThroughSeq"] = expired
     if fmt == "csv":
         out["content"] = pl.to_csv(rows)
     else:
         out["records"] = rows
+    if len(json.dumps(json.dumps(out)).encode("utf-8")) > EXPORT_MAX_BYTES:
+        raise pl.LedgerError(400, "export_too_large", "from")
     return out
 
 
@@ -374,14 +420,18 @@ def _platform(event):
         first, last = pl.validate_range(query.get("from"), query.get("to"))
     except pl.LedgerError as exc:
         return {"ok": False, "status": exc.status, "code": exc.code, "field": exc.field}
-    records = pl.chain(location_id)
-    # Works for offboarded tenants: the ledger rows carry their own tenantId.
-    if not records or any(r.get("tenantId") != tenant_id for r in records):
+    # Works for offboarded tenants: the HEAD (kept by purge) and the ledger
+    # rows carry their own tenantId; the chain itself may have expired.
+    head = pl.get_head(location_id)
+    if not head or head.get("tenantId") != tenant_id:
         return {"ok": False, "status": 404, "code": "not_found"}
     try:
         body = _export(location_id, tenant_id, first, last, "csv")
     except pl.LedgerError as exc:
-        return {"ok": False, "status": exc.status, "code": exc.code.replace(" ", "_")}
+        out = {"ok": False, "status": exc.status, "code": exc.code.replace(" ", "_")}
+        if exc.field:
+            out["field"] = exc.field
+        return out
     return {"ok": True, "status": 200, "body": body}
 
 
@@ -456,7 +506,7 @@ def handler(event, context=None):
                 location_id = http.path_id(event, "locationId")
             except ValueError:
                 return _err(404, "not found")
-            ctx = tenant.for_jwt(event, location_id=location_id, feature=feature)
+            ctx = tenant.for_jwt(event, location_id=location_id, feature=feature, area="personalliggare")
         return fn(event, ctx)
     except tenant.TenantError as exc:
         return exc.response()

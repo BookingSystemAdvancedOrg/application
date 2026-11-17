@@ -20,10 +20,15 @@ ENV_VARS:
     PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME -- DynamoDB table to read/update
     SCHEDULER_INVOKE_ROLE_ARN -- Scheduler target role
     EXPIRE_LAYOUT_VERSION_FUNCTION_ARN -- Scheduled Lambda target
+    RESERVATION_TABLE_NAME -- optional; when set, an activation is refused
+        (409 bookings_on_removed_tables) while bookings after the cutover
+        sit on tables the new layout removes
 
 AWS RESOURCE ACCESS:
     Full DynamoDB access on Published Layout Snapshot, EventBridge Scheduler
     create/get/delete access, and iam:PassRole on the scheduler invoke role.
+    dynamodb:Query on the Reservation table when RESERVATION_TABLE_NAME is
+    set.
 
 Full details: docs/LAMBDA_REFERENCE.md #14.
 """
@@ -37,6 +42,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http import HTTPStatus
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -83,6 +89,12 @@ _LIFECYCLE_FIELDS = frozenset(
 )
 _ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom"})
 _MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
+# A default (no effectiveFrom) cutover in prod moves to the next local
+# midnight: a booking always ends on the date it starts (shared/availability
+# _DAY_END), so no slot spans it and none is dropped on the cutover day.
+# Short delays (dev) keep the whole-minute cutover so changes are testable.
+_CLOSED_CUTOVER_MIN_DELAY = timedelta(days=1)
+_DEFAULT_LOCATION_TIMEZONE = "Europe/Stockholm"
 _REPLACEMENT_DELAYS = {
     "dev": timedelta(minutes=5),
     "prod": timedelta(days=28),
@@ -132,6 +144,14 @@ class _ActivationRequestError(Exception):
     """A valid request body cannot start the requested transition."""
 
 
+class _BookingsOnRemovedTables(Exception):
+    """Bookings after the cutover sit on tables the target layout drops."""
+
+    def __init__(self, reservations):
+        super().__init__("bookings_on_removed_tables")
+        self.reservations = reservations
+
+
 class _PendingActivationNotFound(Exception):
     """The location has no pending activation to update."""
 
@@ -158,6 +178,17 @@ def _activation_response(status_code, body, *, headers=None):
 
 def _activation_error(status_code, message):
     return _activation_response(status_code, {"error": message})
+
+
+def _removed_tables_response(exc):
+    return _activation_response(
+        HTTPStatus.CONFLICT.value,
+        {
+            "error": _REMOVED_TABLES_MESSAGE,
+            "code": "bookings_on_removed_tables",
+            "reservations": exc.reservations,
+        },
+    )
 
 
 def _empty_response(status_code):
@@ -1066,13 +1097,16 @@ def _renew_stale_pending_activation(
     target,
     caller_sub,
     now,
+    *,
+    cutover_at=None,
 ):
     previous = state_details["pending"]
     _delete_schedule_for_recovery(previous)
 
     next_revision = state_details["revision"] + 1
     timestamp = _isoformat(now)
-    cutover_at = previous["cutoverAt"]
+    if cutover_at is None:
+        cutover_at = previous["cutoverAt"]
     activation_token = _activation_token(
         location_id,
         state_details["currentVersion"],
@@ -1913,6 +1947,8 @@ def _resume_pending_activation(
     caller_sub,
     timing,
     now,
+    *,
+    location=None,
 ):
     pending = state_details["pending"]
     target = by_version.get(pending["version"])
@@ -1944,9 +1980,46 @@ def _resume_pending_activation(
         pending["cutoverAt"].replace("Z", "+00:00")
     )
     if cutover <= now.astimezone(timezone.utc):
-        raise _ActivationConflict("layout activation cutover is overdue")
-
-    if pending["status"] == _SCHEDULED:
+        if pending["status"] != _SCHEDULING:
+            raise _ActivationConflict(
+                "layout activation cutover is overdue"
+            )
+        # A 'scheduling' intent whose cutover passed never completed
+        # (Scheduler failed or the Lambda stopped before staging): reserve
+        # it again with the earliest safe cutover instead of leaving the
+        # location stuck. A schedule it may have created is deleted by the
+        # renewal, and the rotated token turns any survivor into a no-op.
+        # In prod the new cutover is the next local midnight, as for a new
+        # default activation, so no booking slot spans it.
+        try:
+            renewed = _ceil_to_whole_minute(
+                now.astimezone(timezone.utc) + _MINIMUM_SCHEDULE_LEAD
+            )
+        except OverflowError:
+            raise _ActivationServiceFailure from None
+        if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
+            renewed = _next_local_midnight(renewed, _location_zone(location))
+        renewed_cutover = _isoformat(renewed)
+        # Bookings made while the intent looked abandoned may sit on tables
+        # the target drops: check them as for a new activation.
+        _bookings_on_removed_tables(location_id, target, renewed_cutover)
+        pending, revision, current, target = (
+            _renew_stale_pending_activation(
+                location_id,
+                state_details,
+                current,
+                target,
+                caller_sub,
+                now,
+                cutover_at=renewed_cutover,
+            )
+        )
+        state_details = {
+            "currentVersion": state_details["currentVersion"],
+            "revision": revision,
+            "pending": pending,
+        }
+    elif pending["status"] == _SCHEDULED:
         schedule_arn = _get_existing_cutover_schedule(
             current,
             target,
@@ -2223,7 +2296,13 @@ def _cancel_pending_activation(location_id, caller_sub, now):
     cutover = datetime.fromisoformat(
         pending["cutoverAt"].replace("Z", "+00:00")
     )
-    if cutover <= now.astimezone(timezone.utc):
+    # An overdue 'scheduling' intent never finished staging. A schedule it
+    # may have created is a no-op once the token rotates, so it can always
+    # be cleared.
+    if (
+        cutover <= now.astimezone(timezone.utc)
+        and pending["status"] != _SCHEDULING
+    ):
         raise _ActivationConflict(
             "layout activation cutover is overdue"
         )
@@ -2754,7 +2833,10 @@ def _reschedule_pending_activation(
     previous_cutover = datetime.fromisoformat(
         previous["cutoverAt"].replace("Z", "+00:00")
     )
-    if previous_cutover <= now.astimezone(timezone.utc):
+    if (
+        previous_cutover <= now.astimezone(timezone.utc)
+        and previous["status"] != _SCHEDULING
+    ):
         raise _ActivationConflict(
             "layout activation cutover is overdue"
         )
@@ -2780,6 +2862,7 @@ def _reschedule_pending_activation(
 
     if not same_cutover:
         _replacement_transition(timing, target, now)
+        _bookings_on_removed_tables(location_id, target, requested_cutover)
     else:
         earliest = _ceil_to_whole_minute(
             _replacement_eligibility(target)
@@ -2847,7 +2930,130 @@ def _reschedule_pending_activation(
     return _pending_response(reserved_state["currentVersion"], pending)
 
 
-def _replacement_transition(timing, target, now):
+def _location_zone(location):
+    name = (location or {}).get("timezone")
+    try:
+        if not isinstance(name, str) or not name:
+            name = _DEFAULT_LOCATION_TIMEZONE
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(_DEFAULT_LOCATION_TIMEZONE)
+
+
+def _next_local_midnight(value, zone):
+    """The first local midnight at or after ``value`` (UTC result)."""
+    try:
+        local = value.astimezone(zone)
+        day = local.date()
+        midnight = datetime(day.year, day.month, day.day, tzinfo=zone)
+        if midnight < local:
+            day = day + timedelta(days=1)
+            midnight = datetime(day.year, day.month, day.day, tzinfo=zone)
+        return midnight.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        raise _ActivationServiceFailure from None
+
+
+# Booking statuses that occupy a table (shared/reservations.HOLDS_TABLES
+# without 'held': a 15-minute form hold expires on its own).
+_BOOKING_STATUSES_ON_TABLES = frozenset({"pending", "reserved", "arrived"})
+_MAX_REPORTED_BOOKINGS = 50
+_REMOVED_TABLES_MESSAGE = (
+    "Det finns bokningar efter bytet på bord som inte finns i den nya "
+    "planlösningen. Flytta bokningarna till andra bord (eller lägg "
+    "tillbaka borden) och aktivera sedan igen."
+)
+
+
+def _target_table_ids(target):
+    elements = target.get("elements")
+    if not isinstance(elements, list):
+        raise _ActivationConflict("published layout record is inconsistent")
+    return {
+        element.get("elementId")
+        for element in elements
+        if isinstance(element, dict) and element.get("type") == "table"
+    }
+
+
+def _bookings_on_removed_tables(location_id, target, cutover):
+    """Bookings ending after ``cutover`` whose tables the target layout
+    lacks. Raises _BookingsOnRemovedTables. Skipped when the function has no
+    RESERVATION_TABLE_NAME (no read access to the Reservation table)."""
+    table_name = os.environ.get("RESERVATION_TABLE_NAME")
+    if not table_name:
+        return
+    if isinstance(cutover, str):
+        cutover = datetime.fromisoformat(cutover.replace("Z", "+00:00"))
+    cutover = cutover.astimezone(timezone.utc)
+    table_ids = _target_table_ids(target)
+    # Reservation SKs carry the local date; start one day early so a
+    # booking whose local date is before the UTC date is not missed.
+    first_date = (cutover - timedelta(days=1)).date().isoformat()
+    request = {
+        "KeyConditionExpression": (
+            Key("PK").eq(f"LOCATION#{location_id}")
+            & Key("SK").between(
+                f"RESERVATION#{first_date}",
+                "RESERVATION#~",
+            )
+        ),
+        "ProjectionExpression": (
+            "reservationId, #date, startTime, endsAt, tableIds, "
+            "#status, holdOnly"
+        ),
+        "ExpressionAttributeNames": {"#date": "date", "#status": "status"},
+        "ConsistentRead": True,
+    }
+    reservation_table = table(table_name)
+    affected = []
+    while True:
+        page = reservation_table.query(**request)
+        for item in page.get("Items") or []:
+            if (
+                item.get("status") not in _BOOKING_STATUSES_ON_TABLES
+                or item.get("holdOnly")
+            ):
+                continue
+            ends_at = item.get("endsAt")
+            try:
+                ends = datetime.fromisoformat(
+                    ends_at.replace("Z", "+00:00")
+                ).astimezone(timezone.utc)
+            except (AttributeError, TypeError, ValueError):
+                ends = None
+            if ends is not None and ends <= cutover:
+                continue
+            booked = item.get("tableIds") or []
+            if not isinstance(booked, list):
+                booked = []
+            missing = sorted(
+                str(table_id)
+                for table_id in booked
+                if table_id not in table_ids
+            )
+            if not missing:
+                continue
+            affected.append(
+                {
+                    "reservationId": item.get("reservationId"),
+                    "date": item.get("date"),
+                    "startTime": item.get("startTime"),
+                    "tableIds": missing,
+                }
+            )
+        last_key = page.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        request["ExclusiveStartKey"] = last_key
+    if affected:
+        affected.sort(
+            key=lambda b: (str(b["date"]), str(b["startTime"]))
+        )
+        raise _BookingsOnRemovedTables(affected[:_MAX_REPORTED_BOOKINGS])
+
+
+def _replacement_transition(timing, target, now, *, location=None):
     eligible_at = _replacement_eligibility(target)
     now = now.astimezone(timezone.utc)
 
@@ -2861,11 +3067,12 @@ def _replacement_transition(timing, target, now):
             )
         except OverflowError:
             raise _ActivationServiceFailure from None
+        cutover = _ceil_to_whole_minute(earliest_safe_cutover)
+        if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
+            cutover = _next_local_midnight(cutover, _location_zone(location))
         return {
             "mode": "future",
-            "effectiveFrom": _isoformat(
-                _ceil_to_whole_minute(earliest_safe_cutover)
-            ),
+            "effectiveFrom": _isoformat(cutover),
         }
 
     if timing["mode"] == "immediate":
@@ -2895,7 +3102,15 @@ def _replacement_transition(timing, target, now):
     return timing
 
 
-def _activate_version(location_id, version, caller_sub, timing, now):
+def _activate_version(
+    location_id,
+    version,
+    caller_sub,
+    timing,
+    now,
+    *,
+    location=None,
+):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     snapshots = _query_snapshots(snapshot_table, location_id)
     by_version = {
@@ -2926,6 +3141,7 @@ def _activate_version(location_id, version, caller_sub, timing, now):
                 caller_sub,
                 timing,
                 now,
+                location=location,
             )
 
         _validate_steady_current(current[0])
@@ -2942,7 +3158,16 @@ def _activate_version(location_id, version, caller_sub, timing, now):
             )
         if state_details["currentVersion"] == version:
             return _active_response(version, target["effectiveFrom"])
-        transition = _replacement_transition(timing, target, now)
+        transition = _replacement_transition(
+            timing, target, now, location=location
+        )
+        _bookings_on_removed_tables(
+            location_id,
+            target,
+            now
+            if transition["mode"] == "immediate"
+            else transition["effectiveFrom"],
+        )
         if transition["mode"] == "immediate":
             effective_from = _replace_current_immediately(
                 location_id,
@@ -2978,7 +3203,16 @@ def _activate_version(location_id, version, caller_sub, timing, now):
         current_version = _snapshot_version(current[0], location_id)
         transition = None
         if current_version != version:
-            transition = _replacement_transition(timing, target, now)
+            transition = _replacement_transition(
+                timing, target, now, location=location
+            )
+            _bookings_on_removed_tables(
+                location_id,
+                target,
+                now
+                if transition["mode"] == "immediate"
+                else transition["effectiveFrom"],
+            )
         if transition is not None and transition["mode"] == "immediate":
             effective_from = _replace_current_immediately(
                 location_id,
@@ -3122,7 +3356,9 @@ def handler(event, context):
 
     try:
         # The location must be one of the caller's tenant's (else 404).
-        tenant.for_jwt(event, location_id=location_id, owner_only=True)
+        location_context = tenant.for_jwt(
+            event, location_id=location_id, owner_only=True
+        )
     except tenant.TenantError as exc:
         return exc.response()
     except (BotoCoreError, ClientError):
@@ -3180,6 +3416,8 @@ def handler(event, context):
                 completed.version,
                 completed.effective_from,
             )
+        except _BookingsOnRemovedTables as exc:
+            return _removed_tables_response(exc)
         except _PendingActivationNotFound:
             return _activation_error(
                 HTTPStatus.NOT_FOUND.value,
@@ -3222,12 +3460,15 @@ def handler(event, context):
             caller_sub,
             timing,
             now,
+            location=getattr(location_context, "location", None),
         )
     except _ActivationCompleted as completed:
         return _active_response(
             completed.version,
             completed.effective_from,
         )
+    except _BookingsOnRemovedTables as exc:
+        return _removed_tables_response(exc)
     except _ActivationRequestError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _ActivationConflict as exc:

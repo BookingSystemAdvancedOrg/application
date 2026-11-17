@@ -144,7 +144,7 @@ def answers(event, caller):
         return http.respond(429, {"error": "rate_limited"}, headers={"Retry-After": str(exc.retry_after)})
 
     app = caller.app
-    view = help.caller_view(caller.tenant_row, caller.role)
+    view = help.caller_view(caller.tenant_row, caller.role, caller.sub)
     data = help.corpus(app)
     previous = next((t["text"] for t in reversed(history) if t["role"] == "user"), "")
     answer, found = help.answer_locally(data, question, view, previous, app)

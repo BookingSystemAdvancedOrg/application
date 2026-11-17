@@ -23,7 +23,10 @@ Finance table (shared/finance.py has the day rows):
                                                   every newer event about it
     TENANT#<id> / CREDIT#<yyyy-mm-dd>#<cn_...>    one credit note
     TENANT#<id> / DAY#<yyyy-mm-dd>                invoicedSek / paidSek /
-                                                  creditedSek (ADD, ex VAT)
+                                                  creditedSek / refundedSek
+                                                  (ADD, ex VAT; refundedSek =
+                                                  paid back to the card, so
+                                                  collected = paid - refunded)
 
 Every amount is in SEK excluding VAT: the Finance page compares revenue
 with AWS cost, and VAT is not revenue. Revenue is booked once per invoice
@@ -355,26 +358,79 @@ def record_invoice(tenant_id, invoice, event_created):
     return ("applied" if fresh else "stale") + (":" + "+".join(booked) if booked else "")
 
 
-def record_credit_note(tenant_id, note, event_created):
-    """A credit note reduces revenue on the day it was issued."""
-    if not isinstance(note.get("id"), str) or not note["id"].startswith("cn_"):
-        return "ignored:no_credit_note"
+def refunded_minor(note):
+    """The part of a credit note paid back to the card (öre, incl VAT): the
+    rest of it was credited (reduced the invoice, or went to the customer's
+    balance for the next one). Booqy Console reads it the same way."""
+    total = int(note.get("total") or 0)
+    refunds = note.get("refunds")
+    if isinstance(refunds, list) and refunds:
+        amount = sum(int(r.get("amount_refunded") or 0) for r in refunds if isinstance(r, dict))
+    elif note.get("refund"):
+        amount = total - int(note.get("out_of_band_amount") or 0)
+    else:
+        amount = 0
+    return max(0, min(amount, total))
+
+
+def credit_note_row(tenant_id, note, event_created):
+    """The CREDIT# ledger row of a credit note (without the booking flags).
+    Booqy Console (booqy-console/api billing.py) writes the same row when an
+    operator issues the note, so whichever of the two comes first books."""
     day = _day(note.get("created")) or finance.day_key()
     ex = note.get("total_excluding_tax")
     if ex is None:
         ex = note.get("subtotal")
-    amount = sek(ex or 0)
-    row = {"PK": finance.tenant_pk(tenant_id), "SK": f"CREDIT#{day}#{note['id']}",
-           "creditNoteId": note["id"], "invoiceId": _id(note.get("invoice")), "number": note.get("number"),
-           "reason": note.get("reason"), "amountSek": amount, "totalSek": sek(note.get("total") or 0),
-           "createdAt": _iso(note.get("created")), "eventCreated": int(event_created), "updatedAt": now_iso()}
+    total = int(note.get("total") or 0)
+    refunded = refunded_minor(note)
+    refunded_ex = (Decimal(refunded) * Decimal(int(ex or 0)) / Decimal(total) / Decimal(100)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP) if total > 0 else Decimal("0.00")
+    metadata = note.get("metadata") or {}
+    return {"PK": finance.tenant_pk(tenant_id), "SK": f"CREDIT#{day}#{note['id']}", "day": day,
+            "creditNoteId": note["id"], "invoiceId": _id(note.get("invoice")), "number": note.get("number"),
+            "reason": note.get("reason"), "amountSek": sek(ex or 0), "totalSek": sek(total),
+            "refundedSek": sek(refunded), "refundedExSek": refunded_ex,
+            "postPaymentSek": sek(post_payment_minor(note)),
+            "method": metadata.get("booqyMethod"), "memo": note.get("memo"),
+            "createdAt": _iso(note.get("created")), "eventCreated": int(event_created), "updatedAt": now_iso()}
+
+
+def post_payment_minor(note):
+    """What a credit note took back from money already paid (öre, incl VAT);
+    the rest only lowered what was still owed. The console reads it to say
+    what is left to refund on the invoice."""
+    if isinstance(note.get("post_payment_amount"), int):
+        return note["post_payment_amount"]
+    if note.get("type") == "pre_payment":
+        return 0
+    return int(note.get("total") or 0)
+
+
+def record_credit_note(tenant_id, note, event_created):
+    """A credit note reduces revenue on the day it was issued (creditedSek),
+    and the part refunded to the card reduces what was collected
+    (refundedSek). The row is written once; each booking is fenced by its
+    own flag, so a redelivery (or the console having written the row first)
+    never counts twice, and a booking interrupted after the put is retried."""
+    if not isinstance(note.get("id"), str) or not note["id"].startswith("cn_"):
+        return "ignored:no_credit_note"
+    row = credit_note_row(tenant_id, note, event_created)
+    day = row.pop("day")
+    fresh = True
     try:
         _finance_table().put_item(Item={k: v for k, v in row.items() if v is not None},
                                   ConditionExpression="attribute_not_exists(PK)")
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return "stale"
-        raise
-    if _book({"PK": row["PK"], "SK": row["SK"]}, "bookedCredited", tenant_id, day, "creditedSek", amount):
-        return "applied:credited"
-    return "applied"
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        fresh = False
+    key = {"PK": row["PK"], "SK": row["SK"]}
+    if not fresh:   # a row written before postPaymentSek existed gets it now
+        _finance_table().update_item(Key=key, UpdateExpression="SET postPaymentSek = if_not_exists(postPaymentSek, :p)",
+                                     ExpressionAttributeValues={":p": row["postPaymentSek"]})
+    booked = []
+    if _book(key, "bookedCredited", tenant_id, day, "creditedSek", row["amountSek"]):
+        booked.append("credited")
+    if _book(key, "bookedRefunded", tenant_id, day, "refundedSek", row["refundedExSek"]):
+        booked.append("refunded")
+    return ("applied" if fresh else "stale") + (":" + "+".join(booked) if booked else "")

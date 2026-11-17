@@ -24,7 +24,9 @@ Stripe (Connect, direct charges on the restaurant's account):
               <kind>-<reservationId>-<attempt>: a retried request never
               charges twice; a deliberate retry after a decline is a new
               attempt
-    refund    Refund of the fee's PaymentIntent (staff)
+    refund    Owner refund of (part of) the fee's PaymentIntent, key
+              refund-<reservationId>-<n> (shared/refunds.py: reserved,
+              capped, recorded once, agrees with charge.refunded)
 
 Reservation attributes: guarantee (snapshot), stripeAccountId,
 stripeCustomerId, setupIntentId, stripePaymentMethodId, payment = {kind,
@@ -34,7 +36,9 @@ status, amount, attempt, paymentIntentId, error, chargedAt, refundedAmount}.
 from datetime import timedelta
 from decimal import Decimal
 
-from shared import dynamo
+from botocore.exceptions import ClientError
+
+from shared import dynamo, refunds
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -379,16 +383,6 @@ def charge(item, kind):
     return status, intent.get("id"), error
 
 
-def refund(item, amount=None):
-    payment = item["payment"]
-    n = int(payment.get("refunds") or 0) + 1
-    params = {"payment_intent": payment["paymentIntentId"], "reason": "requested_by_customer"}
-    if amount:
-        params["amount"] = int(amount)
-    return stripe.request("POST", "/v1/refunds", params, account=item["stripeAccountId"],
-                          idempotency_key=f"refund-{item['reservationId']}-{n}")
-
-
 # --- DynamoDB: recording fee outcomes -----------------------------------------------------------
 
 def _key(item):
@@ -470,21 +464,101 @@ def run_charge(item, kind, now, actor, amount=None):
     return record_outcome(item, kind, pay_status, intent_id, error, now, actor)
 
 
-def record_refund(item, refund_obj, now, actor):
-    payment = dict(item["payment"])
-    refunded = int(payment.get("refundedAmount") or 0) + int(refund_obj.get("amount") or 0)
-    payment.update({"refundedAmount": refunded, "refunds": int(payment.get("refunds") or 0) + 1,
-                    "refundedAt": r.iso(now)})
-    if refunded >= int(payment["amount"]):
-        payment["status"] = PAY_REFUNDED
-    entry = r.history_entry("refund", actor, now, amount=int(refund_obj.get("amount") or 0))
-    dynamo.table(r.reservation_table()).update_item(
-        Key=_key(item),
-        UpdateExpression=("SET payment = :p, updatedAt = :now, updatedBy = :by, "
-                          "history = list_append(if_not_exists(history, :empty), :entry)"),
-        ConditionExpression="payment.#pa = :attempt",
-        ExpressionAttributeNames={"#pa": "attempt"},
-        ExpressionAttributeValues={":p": payment, ":now": r.iso(now), ":by": actor,
-                                   ":attempt": payment["attempt"], ":entry": [entry], ":empty": []},
-    )
-    return {**item, "payment": payment}
+# --- refunds (shared/refunds.py rules) -------------------------------------------------------
+#
+# payment.refundedAmount (total), payment.refunds (count of refunds Booqy
+# started, n in the key refund-<reservationId>-<n>), payment.refundRev,
+# payment.refundPending, payment.refundItems [{n?, amount, at, by, reason?,
+# refundId?, external?}], payment.refundNotice {amount, reason?} (what the
+# guest's fee_refunded message says), refundedAt (last refund).
+
+class _Fees(refunds.Domain):
+    def __init__(self, item):
+        self.prefix = f"refund-{item['reservationId']}"
+
+    def state(self, item):
+        payment = item.get("payment") or {}
+        total = int(payment.get("refundedAmount") or 0)
+        items = list(payment.get("refundItems") or [])
+        if total and not items:  # recorded before refundItems existed
+            items = [{"amount": total, "at": payment.get("refundedAt") or payment.get("settledAt"), "by": "stripe"}]
+        return refunds.normal(total, payment.get("refunds"), payment.get("refundRev"),
+                              payment.get("refundPending"), items)
+
+    def reload(self, item):
+        return r.load(item["locationId"], item["reservationId"])
+
+    def create(self, item, pending, *, replay=False):
+        return refunds.stripe_create(item["stripeAccountId"], item["payment"]["paymentIntentId"], pending,
+                                     {"reservationId": item["reservationId"], "locationId": item["locationId"],
+                                      "kind": "fee_refund"}, replay=replay)
+
+    def write(self, item, old, new, completed, now):
+        payment = dict(item["payment"])
+        payment.update({"refundedAmount": new["total"], "refunds": new["count"], "refundRev": new["rev"],
+                        "refundItems": new["items"]})
+        payment.pop("refundPending", None)
+        if new["pending"]:
+            payment["refundPending"] = new["pending"]
+        if completed:
+            payment["refundedAt"] = r.iso(now)
+        if new["total"] >= int(payment["amount"]):
+            payment["status"] = PAY_REFUNDED
+        sets = ["payment = :p", "updatedAt = :now", "updatedBy = :by"]
+        values = {":p": payment, ":now": r.iso(now), ":attempt": payment["attempt"],
+                  ":by": ((completed[-1] if completed else None) or new["pending"] or old["pending"]
+                          or {}).get("by") or "stripe"}
+        if completed:
+            sets.append("history = list_append(if_not_exists(history, :empty), :entries)")
+            values[":empty"] = []
+            values[":entries"] = [r.history_entry("refund", e.get("by") or "stripe", now, amount=e["amount"],
+                                                  reason=e.get("reason")) for e in completed]
+            told = [e for e in completed if e.get("notify")]
+            if told and r.can_be_notified(item):
+                payment["refundNotice"] = {k: v for k, v in {"amount": told[-1]["amount"],
+                                                             "reason": told[-1].get("reason")}.items() if v}
+                sets.append("notice = :notice")
+                values[":notice"] = r.notice(r.NOTICE_FEE_REFUNDED, now)
+        condition = "payment.#pa = :attempt AND "
+        if old["rev"]:
+            condition += "payment.#rr = :rev"
+            values[":rev"] = old["rev"]
+        else:
+            condition += "attribute_not_exists(payment.#rr)"
+        try:
+            dynamo.table(r.reservation_table()).update_item(
+                Key=_key(item), UpdateExpression="SET " + ", ".join(sets), ConditionExpression=condition,
+                ExpressionAttributeNames={"#pa": "attempt", "#rr": "refundRev"}, ExpressionAttributeValues=values)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise refunds.Changed() from None
+            raise
+        return {**item, "payment": payment}
+
+
+def refundable(item):
+    """What is left to refund of a charged fee (öre); 0 when nothing can be."""
+    payment = item.get("payment") or {}
+    if item.get("status") not in (r.NO_SHOW_CHARGED, r.CANCELLED_CHARGED) or payment.get("status") not in (
+            PAY_SUCCEEDED, PAY_REFUNDED):
+        return 0
+    return max(int(payment.get("amount") or 0) - int(payment.get("refundedAmount") or 0), 0)
+
+
+def refund(item, amount, now, actor, *, reason=None, notify=True):
+    """Owner refund of (part of) a charged fee. Raises refunds.Conflict /
+    ValueError / stripe errors; returns the updated item."""
+    payment = item.get("payment") or {}
+    if item.get("status") not in (r.NO_SHOW_CHARGED, r.CANCELLED_CHARGED) or payment.get("status") not in (
+            PAY_SUCCEEDED, PAY_REFUNDED) or not payment.get("paymentIntentId"):
+        raise r.InvalidState("not_refundable")
+    domain = _Fees(item)
+    item, _ = refunds.start(domain, item, amount=amount, cap=int(payment["amount"]), actor=actor, now=now,
+                            reason=reason, notify=notify)
+    return item
+
+
+def record_stripe_refund(item, amount_refunded, now):
+    """charge.refunded on the fee's PaymentIntent. Returns the result string."""
+    _, result = refunds.from_stripe(_Fees(item), item, amount_refunded, now)
+    return result

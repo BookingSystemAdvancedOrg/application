@@ -58,7 +58,18 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   Stripe may have forgotten the idempotency key by then. K9 refunds at
   most 10 tickets inline (API Gateway's 30 s), writes `counts.refunded` per
   ticket, and the sweep finishes the rest; `counts.failed` is how many
-  Stripe refunds are still owed. The admin polls K14 when K9 times out.
+  Stripe refunds are still owed, and the job is done only when none is.
+  The admin polls K14 when K9 times out. Buyers get the "Inställt" e-mail
+  as soon as every ticket is refunded in the books; an order whose refund
+  Stripe still owes is told it is on its way, not that it is paid. Each
+  failed Stripe call adds to the TX's `refundAttempts`. After 6 error
+  answers from Stripe (a 402 such as `balance_insufficient` counts as an
+  outage instead) or 288 tries in all (about a day of sweeps), the TX gets
+  `stripeRefundFailedAt` and `refundRetryAt`: it is retried once every
+  24 h from then on, never dropped, so it stays in `counts.failed`. The
+  first time, an error log line `{"event": "ticket.refund", "stripe":
+  "stuck"}` is written for the alarm (Booqy acts). Attempt counts are
+  approximate: K9 inline and the sweep may count the same try twice.
 - Checkout: the hold is conditional on `seatsLeft` and the price at
   checkout, never on the type's `version`, so an owner's rename during a
   checkout is harmless (a price change gives 409 `changed_retry`).
@@ -92,12 +103,47 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   (VAT rate list 25/12/6 and the BAS accounts; the dedicated `ticketSales*`
   roles of ADR-K 10 are a hotspot change not made here).
 
+## Event images (ADR-K 1)
+
+The owner uploads with the existing menu image upload (`GET
+/menu-images/presigned-url`, pre-signed-url Lambda: owner only, own
+location, AVIF/JPEG/PNG/WebP, 5-minute PUT URL; the admin also refuses files
+over 5 MB) and sends `imageKey` + `imageAlt` (required with an image, at most
+200 characters) in K2/K4. `shared/features/events_tickets/media.py` accepts
+only the exact key shape pre-signed-url hands out for the token's tenant and
+the route's location (`menu-images/<tenant>/locations/<location>/menu/<uuid>.<ext>`);
+anything else is 400 `unknown_image`, whether the object exists or not. K4 is
+a PUT: no `imageKey` removes the image. K3, K15 and K16 return `imageKey` and
+`imageAlt`; the guest site builds the URL from its image CDN base, as for menu
+dishes. No new bucket, CloudFront path or IAM: this Lambda never calls S3.
+Metadata is not stripped (the menu pattern does not either; a follow-up for the
+upload Lambda, not for this feature).
+
+## Wallet passes (ADR-K 6)
+
+`shared/features/events_tickets/passes.py` is the provider port, picked by
+`EVENTS_WALLET_MODE` (unset = `off`):
+
+| Mode | K18 `wallet` | K19 |
+|---|---|---|
+| `off` (default) | both false | 404 |
+| `simulator` (dev only; `prod` treats it as off) | both true | 200 JSON `{simulated: true, kind, pass}` (Apple, `pass.json`-like) or `{simulated: true, kind, saveUrl, claims}` (Google stub link); same ticket -> same bytes |
+| `live` | per kind: true only when its secret is set and complete | Apple: signed `.pkpass` (pass.json, icons, manifest, detached PKCS #7 signature with the WWDR cert); Google: 302 to `https://pay.google.com/gp/v/save/<RS256 JWT>` |
+
+Live secrets are read by ARN from `EVENTS_TICKETS_APPLE_PASS_SECRET_ARN`
+(`{passTypeIdentifier, teamIdentifier, certificatePem, privateKeyPem,
+privateKeyPassword?, wwdrCertificatePem}`) and
+`EVENTS_TICKETS_GOOGLE_WALLET_SECRET_ARN` (`{issuerId, client_email,
+private_key}`), cached 5 minutes; a missing, empty or broken secret hides that
+kind. K19 needs `ticketId` and `kind`; only a `valid` ticket inside the link's
+scope (an order link: its own tickets; a ticket link: that ticket) gets a pass,
+everything else is 404. A pass shows event, time, place, ticket type, holder
+name and the QR payload, nothing else, and is never stored or cached.
+
 ## Not built yet (refused, never silently accepted)
 
 | What | ADR-K | Answer today |
 |---|---|---|
 | Table pick on the floor plan | 3 | `settings.tablePick: true` and `tableIds` -> 400 `table_pick_not_available` |
 | Resale at face value | 8 | `settings.resaleAllowed: true` -> 400 `resale_not_available`; K20 `kind: resale` -> 409 `transfer_closed` |
-| Apple / Google Wallet passes | 6 | K19 -> 404 (as when the Wallet secrets are missing); K18 `wallet` all false |
-| Event images | 1 | `imageKey` -> 400 `unknown_image` |
 | `insights.events` caller in insights, BokforingCard "Biljetter" group, `ticketSales*` roles | 10 | hotspot work (orchestrator); the hook answers are built |

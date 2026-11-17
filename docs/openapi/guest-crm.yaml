@@ -97,6 +97,9 @@ paths:
                   type: string
                   minLength: 2
                   maxLength: 120
+                locationId:
+                  type: string
+                  description: Optional. Only guests who visited this location. Unknown, another tenant's or (staff) another location's id is 404.
   /tenant/guests/{guestId}:
     get:
       tags:

@@ -9,6 +9,7 @@ TRIGGER:
     POST /locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status  poll / after the return
     POST /locations/{locationId}/catering/requests/{requestId}/decline      {"reason"}
     POST /locations/{locationId}/catering/requests/{requestId}/cancel       {"reason"}
+    POST /locations/{locationId}/catering/requests/{requestId}/refund       {"amount"?, "reason"?, "notifyGuest"?}
     POST /locations/{locationId}/catering/requests/{requestId}/delivered
     GET  /locations/{locationId}/catering/requests/{requestId}/documents/{docId}
     GET  /locations/{locationId}/catering/invoices
@@ -35,6 +36,14 @@ PURPOSE:
       order, voids an open company invoice (a paid one is refunded if it
       was paid through Stripe; Bankgiro payments are refunded by hand) and
       tells the guest.
+    - Refund (owner): (part of) a paid request back without cancelling it,
+      on confirmed / delivered / closed requests, capped at the signed
+      total less earlier refunds: a private Checkout or a company invoice
+      paid by card through Stripe (explicit amount, key
+      cat-refund-<requestId>-<n>), a Bankgiro invoice as a manual refund
+      owed (no Stripe call). The guest is told (catering_refunded) unless
+      notifyGuest is false. Rules: shared/refunds.py, shared/catering_refunds.py.
+      A cancel refunds what is left the same way.
     - Delivered: confirmed -> delivered, or closed when already paid.
     - Mark paid: a company paid the invoice by Bankgiro.
     - documents/{offer|signed|signature}: a 5-minute download link to the
@@ -62,9 +71,10 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
+from shared import catering_refunds as cr
 from shared import catering_signing as sign
 from shared import catering_stripe as cs
-from shared import http, prices, signing, tenant
+from shared import http, prices, refunds, signing, tenant
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -80,12 +90,14 @@ _ROUTES = {
     ("POST", _BASE + "/restaurant-sign/status"): "restaurant_sign_status",
     ("POST", _BASE + "/decline"): "decline",
     ("POST", _BASE + "/cancel"): "cancel",
+    ("POST", _BASE + "/refund"): "refund",
     ("POST", _BASE + "/delivered"): "delivered",
     ("GET", _BASE + "/documents/{docId}"): "document",
     ("GET", "/locations/{locationId}/catering/invoices"): "invoices",
     ("POST", "/locations/{locationId}/catering/invoices/{invoiceId}/mark-paid"): "mark_paid",
 }
 _EDITABLE = (c.REQUESTED, c.CHANGE_REQUESTED, c.OFFER_SENT)
+_CANCELLABLE = (c.SIGNED, c.CONFIRMED, c.DELIVERED)
 _OFFER_FIELDS = {"lines", "discountPercent", "deliveryFee", "equipmentReturn", "cleaningFee", "message",
                  "validUntil", "serviceIncluded"}
 _LINE_REFS = ("menuItemId", "dishId", "packageId")
@@ -109,7 +121,7 @@ def _unit_price(value):
 
 def _ctx(event, *, owner):
     location_id = http.path_id(event, "locationId")
-    ctx = tenant.for_jwt(event, location_id=location_id, feature="catering", owner_only=owner)
+    ctx = tenant.for_jwt(event, location_id=location_id, feature="catering", owner_only=owner, area="catering")
     return location_id, ctx
 
 
@@ -165,14 +177,7 @@ def _offer_from(data, item, settings, location, now):
     if totals["total"] > c.MAX_TOTAL_ORE:
         raise ValueError(f"offer total may be at most {c.MAX_TOTAL_ORE // 100} kr")
     valid = data.get("validUntil") or default_valid_until(today, settings["offerValidDays"], item.get("deliveryDate"))
-    try:
-        valid_day = date.fromisoformat(valid)
-    except (TypeError, ValueError):
-        raise ValueError("validUntil must be YYYY-MM-DD") from None
-    if valid_day < today:
-        raise ValueError("validUntil must not be in the past")
-    if item.get("deliveryDate") and valid > item["deliveryDate"]:
-        raise ValueError("validUntil must not be after the delivery date")
+    _check_valid_until(valid, item, location, now)
     return {
         "lines": lines,
         "totals": totals,
@@ -184,9 +189,27 @@ def _offer_from(data, item, settings, location, now):
     }
 
 
+def _check_valid_until(valid, item, location, now):
+    """validUntil is a day from today up to the delivery day; also checked
+    when a saved draft is sent later, so a stale draft is never sent
+    already expired."""
+    today = now.astimezone(ZoneInfo(location.get("timezone") or "Europe/Stockholm")).date()
+    try:
+        valid_day = date.fromisoformat(valid)
+    except (TypeError, ValueError):
+        raise ValueError("validUntil must be YYYY-MM-DD") from None
+    if valid_day < today:
+        raise ValueError("validUntil must not be in the past")
+    if item.get("deliveryDate") and valid > item["deliveryDate"]:
+        raise ValueError("validUntil must not be after the delivery date")
+
+
 def _view(event):
     location_id, ctx = _ctx(event, owner=False)
-    item = _load(event, location_id, ctx)
+    return _view_of(_load(event, location_id, ctx), ctx)
+
+
+def _view_of(item, ctx):
     offers = []
     for v in range(1, int(item.get("currentOfferVersion") or 0) + 1):
         try:
@@ -196,10 +219,14 @@ def _view(event):
         except c.NotFound:
             pass
     settings = c.settings_of(ctx.location)
-    left = c.capacity_left(location_id, settings, item["deliveryDate"]) if item.get("deliveryDate") else None
+    left = c.capacity_left(item["locationId"], settings, item["deliveryDate"]) if item.get("deliveryDate") else None
+    signed = next((o_ for o_ in offers if int(o_["version"]) == int(item.get("signedOfferVersion") or 0)), None)
+    total = int(((signed or {}).get("totals") or {}).get("total") or 0)
     return http.respond(200, {**c.staff_view(item), "offers": offers,
                               "history": c.history(item["requestId"]),
-                              "capacityLeft": left, "settings": c.public_settings(settings)})
+                              "capacityLeft": left, "settings": c.public_settings(settings),
+                              # what an owner refund can still give back (öre)
+                              "refundable": cr.refundable(item, total) if signed else 0})
 
 
 def _draft(event):
@@ -228,6 +255,7 @@ def _send(event):
         offer = _offer_from(body, item, settings, ctx.location, now)
     elif item.get("draft"):
         offer = item["draft"]
+        _check_valid_until(offer.get("validUntil"), item, ctx.location, now)
     else:
         raise ValueError("send an offer (lines, ...) or save a draft first")
     version = int(item.get("currentOfferVersion") or 0) + 1
@@ -361,25 +389,32 @@ def _decline(event):
 def _cancel(event):
     location_id, ctx = _ctx(event, owner=True)
     item = _load(event, location_id, ctx)
-    if item["status"] not in (c.SIGNED, c.CONFIRMED, c.DELIVERED):
+    if item["status"] not in _CANCELLABLE:
         raise c.InvalidState("not_cancellable")
     reason = _reason(event, required=True)
     now = c.now_utc()
     account = item.get("stripeAccountId") or o.stripe_account(ctx.tenant, ctx.location)
     refund_note = None
+    if item.get("customerType") == c.PRIVATE and not item.get("paid"):
+        # An open Checkout must not take money for a cancelled request; a
+        # payment that still lands is refunded by catering-stripe-webhook.
+        cs.expire_checkout(item.get("stripeAccountId"), item.get("checkoutSessionId"))
     if item.get("customerType") == c.PRIVATE and item.get("paid") and item.get("paymentIntentId"):
-        cs.refund_payment(account, item["paymentIntentId"], item["requestId"])
+        item = _refund_rest(item, account, ctx, now)
         refund_note = "refunded"
     elif item.get("stripeInvoiceId"):
         invoice = cs.get_invoice(account, item["stripeInvoiceId"])
         if invoice.get("status") == "open":
             cs.void_invoice(account, item["stripeInvoiceId"])
             refund_note = "invoice_voided"
-        elif invoice.get("status") == "paid" and invoice.get("payment_intent"):
-            cs.refund_payment(account, invoice["payment_intent"], item["requestId"])
-            refund_note = "refunded"
         elif invoice.get("status") == "paid":
-            refund_note = "refund_manually"  # paid by Bankgiro - the restaurant pays back by hand
+            intent = cs.invoice_payment_intent(account, invoice)
+            if item.get("paid"):
+                item = _refund_rest(item, account, ctx, now)
+            elif intent:  # paid at Stripe, invoice.paid not here yet: all of it back
+                cs.refund_payment(account, intent, item["requestId"])
+            # paid by Bankgiro: the restaurant pays back by hand
+            refund_note = "refunded" if intent else "refund_manually"
     c.transact([
         c.head_update(item, to_status=c.CANCELLED, sets=[
             "cancelReason = :r", "refundNote = :rn", "notice = :n", "updatedAt = :now", "capacityHeld = :zero"],
@@ -390,6 +425,30 @@ def _cancel(event):
         c.audit_put(item["requestId"], "cancelled", ctx.sub, now, reason=reason, refund=refund_note),
     ])
     return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
+
+
+def _refund_rest(item, account, ctx, now):
+    """What is left of a paid request back, as part of a cancellation
+    (shared/catering_refunds.py; nothing when it is already all refunded)."""
+    if not cr.refundable(item, statuses=_CANCELLABLE):
+        return item
+    item, _ = cr.refund(item, account, None, now, ctx.sub, notify=False, cancel=True, statuses=_CANCELLABLE)
+    return item
+
+
+def _refund(event):
+    """POST .../refund {amount?, reason?, notifyGuest?}: owner only, (part
+    of) a paid request back without cancelling it."""
+    location_id, ctx = _ctx(event, owner=True)
+    item = _load(event, location_id, ctx)
+    data = http.body(event, allowed={"amount", "reason", "notifyGuest"}, required=False)
+    account = item.get("stripeAccountId") or o.stripe_account(ctx.tenant, ctx.location)
+    item, entry = cr.refund(item, account, data.get("amount"), c.now_utc(), ctx.sub,
+                            reason=refunds.parse_reason(data.get("reason")),
+                            notify=refunds.parse_notify(data.get("notifyGuest")))
+    logger.info(json.dumps({"catering": "refunded", "requestId": item["requestId"],
+                            "amount": (entry or {}).get("amount"), "manual": bool((entry or {}).get("manual"))}))
+    return _view_of(item, ctx)
 
 
 def _delivered(event):
@@ -440,6 +499,7 @@ def _mark_paid(event):
 
 
 _HANDLERS = {"view": _view, "draft": _draft, "send": _send, "decline": _decline, "cancel": _cancel,
+             "refund": _refund,
              "delivered": _delivered, "document": _document, "invoices": _invoices, "mark_paid": _mark_paid,
              "restaurant_sign": _restaurant_sign, "restaurant_sign_status": _restaurant_sign_status}
 
@@ -456,6 +516,8 @@ def handler(event, context):
     except c.NotFound:
         return http.error(404, "not found")
     except c.InvalidState as exc:
+        return http.error(409, exc.code)
+    except refunds.Conflict as exc:
         return http.error(409, exc.code)
     except sign.NotReady as exc:
         return http.error(409, exc.code)

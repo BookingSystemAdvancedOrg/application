@@ -117,9 +117,7 @@ path can go.
    signed, valid 12 h) or the guest uses "Betala notan" on their own status
    page. `GET /locations/{id}/table-bill` shows the bill (no names or
    contacts); `POST .../table-bill/pay {expectedAmount}` locks it
-   (`paying` = {billId, orderIds, amount, at}) to the amount shown (and to
-   the table bill's `version` as read, so a bill whose orders changed but
-   kept the same count and total is refused with `bill_changed`), writes
+   (`paying` = {billId, orderIds, amount, at}) to the amount shown, writes
    `BILL#<billId>` (a snapshot of the orders) and creates one Checkout
    Session (Payment Element, key `bill-checkout-<billId>`, one line per
    order, metadata `kind: table_bill`). An order placed meanwhile is added
@@ -170,8 +168,6 @@ marked paid, the other orders are settled, the bill gets `mismatch:
 notan"), and an ERROR log `{"bill":"mismatch"}` raises the error alarm.
 Refund that order's amount on the bill's payment in the Stripe Dashboard,
 then press "Klar" (`POST .../tabs/{serviceDate}/{tableId}/mismatch-checked`).
-A flagged table bill never gets its TTL until then, so the flag cannot
-expire unseen.
 
 **Money reporting.** `unpaid` is not revenue anywhere. A bill paid online
 counts as a normal paid order (Statistik on the order's day; the

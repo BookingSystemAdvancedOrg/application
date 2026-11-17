@@ -11,7 +11,7 @@ PURPOSE:
     at most 30 lines) and the guest (name, mobile, e-mail).
 
       1. Abuse checks: attempts per IP address and per phone/e-mail
-         (shared/request_guard.py) and the Turnstile token (action "order").
+         (shared/request_guard.py) and the bot check (shared/bot_check.py).
       2. The location must take orders now in that mode (shared/orders.py:
          policy on, Stripe ready, not paused, open with time before last
          order). A table order needs a valid QR code of this location.
@@ -74,7 +74,7 @@ ENV_VARS:
     STRIPE_SECRET_ARN, STRIPE_API_VERSION,
     RESERVATION_LINK_KEY_SECRET_ARN (old QR codes and status links are signed with it),
     PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (table QR codes: the active floor plan),
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
+    BOT_CHECK_ENFORCED, SITE_WAF_SECRET, REQUEST_GUARD_TABLE_NAME,
     MARKETING_TABLE_NAME (discount codes; unset = codes are refused)
 
 Full details: docs/ORDERS.md
@@ -91,7 +91,7 @@ from shared import consent, dynamo, feature_hooks, http, manage_link, marketing,
 from shared import request_guard
 from shared import site
 from shared import marketing_offer as offer
-from shared import tenant, turnstile
+from shared import bot_check, tenant
 from shared import orders as o
 from shared import table_bills, table_qr
 from shared import reservations as r
@@ -116,8 +116,7 @@ _NOTES_MAX = 300
 def _guard(event, data, guest, now, *, pay_later=False):
     ip = http.source_ip(event)
     request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip, turnstile.ORDER_ACTION)
+    bot_check.verify(event, "order")
     limits = [
         ("order-phone", guest["customerPhone"], *CONTACT_LIMIT),
         ("order-email", guest["customerEmail"], *CONTACT_LIMIT),
@@ -526,7 +525,7 @@ def handler(event, context):
     except request_guard.Limited as exc:
         _refused(event, 429, "too_many_requests")
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         _refused(event, 503, "verification_unavailable")
         return http.error(503, "verification_unavailable")
     except o.Closed as exc:

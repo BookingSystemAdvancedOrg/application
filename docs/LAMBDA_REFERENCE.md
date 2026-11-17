@@ -330,11 +330,12 @@ service.
 | `RESERVATION_TABLE_NAME` | Write the new `pending` reservation here |
 | `PAYMENT_DELINQUENCY_TABLE_NAME` | Check for existing unpaid debt by phone number before allowing the booking |
 | `STRIPE_SECRET_KEY` | Create the card-on-file SetupIntent server-side |
-| `TURNSTILE_REQUIRED` | `true` when the guest sites show the platform's Turnstile widget - online bookings then need its token (`shared/turnstile.py`) |
-| `TURNSTILE_SECRET_ARN` | Secrets Manager secret `{"secretKey": "..."}` of that widget |
+| `BOT_CHECK_ENFORCED` | `true`: online holds and bookings must come through the restaurant site's AWS WAF (header `x-booqy-waf`), otherwise 400 `bot_check_failed`; anything else lets them pass and logs the ones that skipped the WAF (`shared/bot_check.py`) |
+| `SITE_WAF_SECRET` | The shared value the restaurant sites' CloudFront sends as `x-booqy-waf` after the web ACL (infrastructure `network/waf-sites`) |
+| `CLOUDFRONT_EDGE_SECRET` | Lets the function trust the viewer IP and host passed by the restaurant site's CloudFront (`shared/http.py` `edge_header`) |
 | `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`); manage-auth uses the same table for its per-IP forgot/reset password limits |
 
-**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `secretsmanager:GetSecretValue` on the Turnstile secret; `dynamodb:UpdateItem` on the request-guard table.
+**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `dynamodb:UpdateItem` on the request-guard table.
 
 **Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` - that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
 
@@ -1063,8 +1064,8 @@ Full details: `docs/ORDERS.md`.
 
 ### 22. `payment-intent`
 **Trigger:** API Gateway - `POST /order` - Auth: `NONE`
-**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1-20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; Turnstile (action `order`).
-**AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key, Turnstile secret.
+**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1-20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; bot check (AWS WAF, `shared/bot_check.py`).
+**AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key.
 
 ### 23. `webhook-payment-intent`
 **Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) - Auth: Stripe signature
@@ -1100,7 +1101,7 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 
 ### 27. `marketing-public`
 **Trigger:** API Gateway `POST /t`, `GET /m/c/{token}`, `GET|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET|POST /m/s/{token}` - Auth: `NONE`
-**Purpose:** Visit counting from restaurant sites; signed click redirects (to the campaign's frozen links only) and the unsubscribe page / RFC 8058 one-click. The welcome offer: the card's settings, sign-up (double opt-in: pending until confirmed from the email or the code is used; a personal single-use discount code; Turnstile and per-IP/per-address limits) and the code check before checkout (`shared/marketing_offer.py`).
+**Purpose:** Visit counting from restaurant sites; signed click redirects (to the campaign's frozen links only) and the unsubscribe page / RFC 8058 one-click. The welcome offer: the card's settings, sign-up (double opt-in: pending until confirmed from the email or the code is used; a personal single-use discount code; bot check (AWS WAF) and per-IP/per-address limits) and the code check before checkout (`shared/marketing_offer.py`).
 
 ### 28. `marketing-send`
 **Trigger:** EventBridge Scheduler every 2 minutes (overlapping runs are safe: campaign lease + per-recipient claim)
@@ -1209,7 +1210,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 24 | `get-order` | API GW `GET /locations/{locationId}/ordering`; `GET /locations/{locationId}/order-status/{orderId}` | NONE (+ X-Order-Token) |
 | 25 | `manage-order` | API GW `GET /locations/{locationId}/orders`; `ANY /locations/{locationId}/orders/{proxy+}` | JWT |
 | 26 | `marketing` | API GW `GET\|POST\|PUT\|DELETE /marketing/{proxy+}` | JWT (owner) |
-| 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET\|POST /m/s/{token}` | NONE (signed links, Turnstile) |
+| 27 | `marketing-public` | API GW `POST /t`, `GET /m/c/{token}`, `GET\|POST /m/u/{token}`, `GET /m/offer`, `POST /m/signup`, `POST /m/code`, `GET\|POST /m/s/{token}` | NONE (signed links, bot check) |
 | 28 | `marketing-send` | EventBridge Scheduler (2 min) | - |
 | 29 | `marketing-sync` | DynamoDB Streams (reservation, order); EventBridge (SES events) | - |
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |

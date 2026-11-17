@@ -10,7 +10,7 @@ TRIGGER:
     POST /locations/{locationId}/waitlist/{entryId}/remove      F5 {version, reason?}
     PUT  /locations/{locationId}/waitlist/settings              F6 owner only; mirrors publicJoin onto the location
 
-    API Gateway -- Auth: NONE (Turnstile + request guard, or the queue token)
+    API Gateway -- Auth: NONE (bot check + request guard, or the queue token)
     POST /public/locations/{locationId}/waitlist                F7 join from the site -> {token, position}
     GET  /public/waitlist/{token}                               F8 status
     POST /public/waitlist/{token}/accept                        F9 take the offered table -> booking
@@ -31,7 +31,7 @@ ENV_VARS:
     ENVIRONMENT, WAITLIST_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, RESERVATION_TABLE_NAME,
     SLOT_OCCUPANCY_TABLE_NAME, PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
-    RESERVATION_LINK_KEY_SECRET_ARN, TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN,
+    RESERVATION_LINK_KEY_SECRET_ARN, BOT_CHECK_ENFORCED, SITE_WAF_SECRET,
     REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME, EVENT_BUS_NAME,
     SCHEDULE_GROUP_NAME, SCHEDULER_INVOKE_ROLE_ARN, SELF_FUNCTION_ARN,
     SITE_DOMAIN, CUSTOMER_SITE_URL
@@ -47,7 +47,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import availability, booking_rules, events, guarantee, http, manage_link, request_guard, site, tenant
-from shared import turnstile
+from shared import bot_check
 from shared import reservations as r
 from shared.features import waitlist as wl
 
@@ -659,11 +659,10 @@ def public_join(event):
     want_from, want_until = wl.validate_hhmm(body.get("wantFrom"), "wantFrom"), wl.validate_hhmm(
         body.get("wantUntil"), "wantUntil")
     _guard(event, "waitlist-ip", JOIN_IP_LIMIT)
-    if turnstile.required():
-        try:
-            turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
-        except ValueError:
-            raise wl.WaitlistError(400, "turnstile_failed", "turnstileToken")
+    try:
+        bot_check.verify(event, "waitlist")
+    except ValueError:
+        raise wl.WaitlistError(400, bot_check.FAILED)
     entry, _ = _join(ctx, location_id, entry_id=body.get("entryId"), name=name, party=party, phone=phone,
                      email=email or None, note=None, source="site", want_from=want_from, want_until=want_until)
     entries = wl.day_entries(location_id, entry["date"])
@@ -836,7 +835,7 @@ def handler(event, context=None):
         if " " in exc.code:
             return http.respond(exc.status, {"error": exc.code, **({"field": exc.field} if exc.field else {})})
         return _err(exc.status, exc.code, exc.field)
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return _err(503, "service_unavailable")
     except (availability.AvailabilityConflict, availability.AvailabilityServiceFailure) as exc:
         logger.error(json.dumps({"route": route, "availability": type(exc).__name__}))

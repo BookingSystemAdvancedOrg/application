@@ -11,7 +11,8 @@ PURPOSE:
     this hostname belongs to and gets everything it needs to render: name,
     branding, enabled features, the locations (address, contact, opening
     hours and upcoming special days, booking rules), the legal entity for
-    the privacy notice, and the public Stripe / Turnstile keys.
+    the privacy notice, the public Stripe key and the bot check's
+    integration URL.
 
     Resolution: global row DOMAIN#<host>/TENANT -> tenantId, and the
     tenant's own TENANT#<t>/DOMAIN#<host> row must be active (Booqy Console
@@ -30,7 +31,7 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY, RETENTION_* (the periods the
+    STRIPE_PUBLISHABLE_KEY, WAF_INTEGRATION_URL, RETENTION_* (the periods the
     privacy notice shows, shared/retention.py)
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.3
@@ -266,7 +267,10 @@ def _site_config(params):
             "publishableKey": os.environ.get("STRIPE_PUBLISHABLE_KEY") or None,
             "accountId": (row.get("stripe") or {}).get("accountId"),
         },
-        "turnstile": {"siteKey": os.environ.get("TURNSTILE_SITE_KEY") or None},
+        # The sites' bot check (AWS WAF, shared/bot_check.py): with an
+        # integration URL the site loads <url>challenge.js and sends its form
+        # posts to /api/* on its own domain.
+        "botCheck": {"integrationUrl": os.environ.get("WAF_INTEGRATION_URL") or None},
         # The guest notice on the forms, the restaurant's own privacy notice
         # and the marketing checkbox wording (null without marketing).
         "privacy": {

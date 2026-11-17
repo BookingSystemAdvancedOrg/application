@@ -1110,7 +1110,6 @@ def test_a_booking_cannot_be_moved_to_a_closed_day(env):
 # --- abuse protection -----------------------------------------------------------------
 
 from shared import request_guard as shared_guard  # noqa: E402
-from shared import turnstile as shared_turnstile  # noqa: E402
 
 GUARD_TABLE = "test-request-guard"
 
@@ -1177,74 +1176,51 @@ def test_staff_bookings_are_not_limited(guard):
     assert codes == [201, 201, 201]
 
 
+WAF_SECRET = "site-waf-edge-secret"
+
+
 @pytest.fixture
 def bot_check(env, monkeypatch):
-    secret = boto3.client("secretsmanager", region_name=REGION).create_secret(
-        Name="test/turnstile", SecretString=json.dumps({"secretKey": "1x0000000000000000000000000000000AA"}))
-    monkeypatch.setenv("TURNSTILE_SECRET_ARN", secret["ARN"])
-    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
-    shared_turnstile.reset_cache()
-    calls = []
+    monkeypatch.setenv("SITE_WAF_SECRET", WAF_SECRET)
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    return env
 
-    def answer(result):
-        def post(payload):
-            calls.append(payload)
-            if isinstance(result, Exception):
-                raise result
-            return result
-        monkeypatch.setattr(shared_turnstile, "_post", post)
 
-    answer({"success": True, "action": "booking", "hostname": "roma.example"})
-    yield {"env": env, "calls": calls, "answer": answer}
-    shared_turnstile.reset_cache()
+def through_waf(env, secret=WAF_SECRET, **extra):
+    payload = {"date": DAY, "startTime": "18:00", "tableIds": ["table-b"], "partySize": 3,
+               "name": "Anna", "email": "anna@example.se", "phone": "070-123 45 67", "acceptTerms": True, **extra}
+    e = event("POST", "/locations/{locationId}/reservations", body=payload, headers={"x-booqy-waf": secret})
+    e["requestContext"]["http"]["sourceIp"] = "203.0.113.5"
+    return env["m"]["create"].handler(e, None)
 
 
 def test_online_booking_needs_the_bot_check(bot_check):
-    env = bot_check["env"]
+    env = bot_check
     missing = online_attempt(env)
     assert missing["statusCode"] == 400
-    assert body_of(missing)["error"] == "turnstile token is required"
-    assert bot_check["calls"] == []
+    assert body_of(missing)["error"] == "bot_check_failed"
     assert "table-b" in free_tables_at(env, "18:00")
 
-    ok = online_attempt(env, turnstileToken="XXXX.DUMMY.TOKEN.XXXX")
+    wrong = through_waf(env, secret="guess")
+    assert wrong["statusCode"] == 400
+    assert "table-b" in free_tables_at(env, "18:00")
+
+    ok = through_waf(env)
     assert ok["statusCode"] == 201, ok
-    sent = bot_check["calls"][0]
-    assert sent["secret"] == "1x0000000000000000000000000000000AA"
-    assert sent["response"] == "XXXX.DUMMY.TOKEN.XXXX" and sent["remoteip"] == "203.0.113.5"
-    assert sent["idempotency_key"]
 
 
-@pytest.mark.parametrize("result, status, error", [
-    ({"success": False, "error-codes": ["invalid-input-response"]}, 400, "turnstile verification failed"),
-    ({"success": False, "error-codes": ["timeout-or-duplicate"]}, 400, "turnstile token expired"),
-    ({"success": True, "action": "catering"}, 400, "turnstile verification failed"),
-    ({"success": False, "error-codes": ["invalid-input-secret"]}, 503, "verification_unavailable"),
-])
-def test_a_failed_bot_check_books_nothing(bot_check, result, status, error):
-    env = bot_check["env"]
-    bot_check["answer"](result)
-    response = online_attempt(env, turnstileToken="token")
-    assert response["statusCode"] == status
-    assert body_of(response)["error"] == error
-    assert "table-b" in free_tables_at(env, "18:00")
-
-
-def test_cloudflare_unreachable_is_retried_once_then_unavailable(bot_check):
-    import urllib.error
-    env = bot_check["env"]
-    bot_check["answer"](urllib.error.URLError("down"))
-    response = online_attempt(env, turnstileToken="token")
+def test_enforced_without_the_secret_is_unavailable(env, monkeypatch):
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    monkeypatch.delenv("SITE_WAF_SECRET", raising=False)
+    response = online_attempt(env)
     assert response["statusCode"] == 503
-    assert len(bot_check["calls"]) == 2
-    assert bot_check["calls"][0]["idempotency_key"] == bot_check["calls"][1]["idempotency_key"]
+    assert body_of(response)["error"] == "verification_unavailable"
 
 
 def test_staff_bookings_need_no_bot_check(bot_check):
-    assert staff_booking(bot_check["env"])["statusCode"] == 201
-    assert bot_check["calls"] == []
+    assert staff_booking(bot_check)["statusCode"] == 201
 
 
-def test_without_the_widget_no_token_is_asked_for(env, monkeypatch):
-    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
+def test_until_enforced_no_check_is_made(env, monkeypatch):
+    monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
     assert online_attempt(env)["statusCode"] == 201

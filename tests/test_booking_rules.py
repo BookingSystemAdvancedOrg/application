@@ -1,5 +1,5 @@
 """Booking rules (special days, online table rules, combinations), the
-Turnstile client and the request guard - unit level. End-to-end behaviour
+bot check and the request guard - unit level. End-to-end behaviour
 (availability, bookings, moves) is in test_reservations.py."""
 
 from datetime import date, datetime, timezone
@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from shared import booking_rules as rules
-from shared import request_guard, turnstile
+from shared import bot_check, request_guard
 
 TODAY = date(2026, 10, 12)
 
@@ -166,49 +166,42 @@ def test_online_options_best_fit_first():
     assert rules.online_options({"b": 4}, 2, off, []) == []
 
 
-# --- turnstile client ---------------------------------------------------------------------------
+# --- bot check -------------------------------------------------------------------------------
 
-@pytest.fixture
-def secret(monkeypatch):
-    turnstile.reset_cache()
-    turnstile._cache["secret"] = "secret-key"
-    yield
-    turnstile.reset_cache()
+def _ev(waf=None):
+    return {"headers": {} if waf is None else {"X-Booqy-Waf": waf}}
 
 
-def test_turnstile_retries_an_internal_error_once(secret, monkeypatch):
-    answers = [{"success": False, "error-codes": ["internal-error"]}, {"success": True, "action": "booking"}]
-    keys = []
-
-    def post(payload):
-        keys.append(payload["idempotency_key"])
-        return answers.pop(0)
-
-    monkeypatch.setattr(turnstile, "_post", post)
-    turnstile.verify("token", "203.0.113.5")
-    assert len(keys) == 2 and keys[0] == keys[1]
+def test_bot_check_passes_a_post_that_came_through_the_waf(monkeypatch):
+    monkeypatch.setenv("SITE_WAF_SECRET", "edge-secret")
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    assert bot_check.passed(_ev("edge-secret")) is True
+    bot_check.verify(_ev("edge-secret"), "booking")
 
 
-def test_turnstile_refuses_huge_or_blank_tokens_without_calling(secret, monkeypatch):
-    monkeypatch.setattr(turnstile, "_post", lambda payload: pytest.fail("called"))
-    with pytest.raises(ValueError, match="required"):
-        turnstile.verify("   ")
-    with pytest.raises(ValueError, match="failed"):
-        turnstile.verify("x" * 2049)
+def test_bot_check_refuses_a_missing_or_wrong_header_when_enforced(monkeypatch):
+    monkeypatch.setenv("SITE_WAF_SECRET", "edge-secret")
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    for event in (_ev(), _ev(""), _ev("guess"), {"headers": None}, None):
+        with pytest.raises(ValueError, match=bot_check.FAILED):
+            bot_check.verify(event, "booking")
 
 
-def test_turnstile_without_a_secret_is_unavailable(monkeypatch):
-    turnstile.reset_cache()
-    monkeypatch.delenv("TURNSTILE_SECRET_ARN", raising=False)
-    with pytest.raises(turnstile.Unavailable):
-        turnstile.verify("token")
+def test_bot_check_lets_everything_through_until_enforced(monkeypatch, caplog):
+    monkeypatch.setenv("SITE_WAF_SECRET", "edge-secret")
+    monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
+    with caplog.at_level("INFO", logger="shared.bot_check"):
+        bot_check.verify(_ev(), "order")
+    assert "not_through_waf" in caplog.text and '"order"' in caplog.text
 
 
-def test_turnstile_is_required_only_when_switched_on(monkeypatch):
-    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
-    assert turnstile.required() is False
-    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
-    assert turnstile.required() is True
+def test_bot_check_without_a_secret_never_passes_and_is_unavailable_when_enforced(monkeypatch):
+    monkeypatch.delenv("SITE_WAF_SECRET", raising=False)
+    assert bot_check.passed(_ev("")) is False
+    assert bot_check.passed(_ev("anything")) is False
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    with pytest.raises(bot_check.Unavailable):
+        bot_check.verify(_ev("anything"), "booking")
 
 
 # --- request guard ---------------------------------------------------------------------------

@@ -701,15 +701,11 @@ def test_checkout_validation(env):
     assert buy(env)[1]["code"] == "sales_closed"
 
 
-def test_checkout_turnstile_required(env, monkeypatch):
+def test_checkout_needs_the_bot_check(env, monkeypatch):
     published(env)
-    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
-    from shared import turnstile
-
-    def verify(token, ip=None, action=None):
-        raise ValueError("bad")
-    monkeypatch.setattr(turnstile, "verify", verify)
-    assert buy(env)[1]["code"] == "turnstile_failed"
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    monkeypatch.setenv("SITE_WAF_SECRET", "site-waf-edge-secret")
+    assert buy(env)[1]["code"] == "bot_check_failed"
     assert occ_row(env)["held"] == 0
 
 

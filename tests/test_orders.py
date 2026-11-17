@@ -133,7 +133,7 @@ def env(monkeypatch):
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
-    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
+    monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
@@ -528,13 +528,12 @@ def test_too_many_orders_from_one_address(env):
     assert response["statusCode"] == 429 and int(response["headers"]["Retry-After"]) > 0
 
 
-def test_turnstile_is_checked_with_the_order_action(env):
-    from shared import turnstile
+def test_the_bot_check_is_made_for_the_order_form(env):
+    from shared import bot_check
     seen = []
-    env["monkeypatch"].setenv("TURNSTILE_REQUIRED", "true")
-    env["monkeypatch"].setattr(turnstile, "verify", lambda token, ip, action: seen.append((token, ip, action)))
-    assert post_order(env, turnstileToken="tok")["statusCode"] == 201
-    assert seen == [("tok", "203.0.113.5", "order")]
+    env["monkeypatch"].setattr(bot_check, "verify", lambda event, form: seen.append(form))
+    assert post_order(env)["statusCode"] == 201
+    assert seen == ["order"]
 
 
 # --- webhook ------------------------------------------------------------------------------------

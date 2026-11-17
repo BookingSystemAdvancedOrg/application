@@ -23,7 +23,7 @@ def site(monkeypatch):
     for key, value in {
         "ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing",
         "AWS_SESSION_TOKEN": "testing", "AWS_DEFAULT_REGION": REGION,
-        "STRIPE_PUBLISHABLE_KEY": "pk_test_123", "TURNSTILE_SITE_KEY": "0x4AAA",
+        "STRIPE_PUBLISHABLE_KEY": "pk_test_123", "WAF_INTEGRATION_URL": "https://abc.edge.sdk.awswaf.com/abc/def/",
     }.items():
         monkeypatch.setenv(key, value)
     with mock_aws():
@@ -93,7 +93,8 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     assert [loc["name"] for loc in body["locations"]] == ["Hagastan", "Södermalm"]
     assert body["locations"][0]["bookingDurationHours"] == 1.5
     assert body["stripe"] == {"publishableKey": "pk_test_123", "accountId": "acct_A"}
-    assert body["turnstile"] == {"siteKey": "0x4AAA"}
+    assert body["botCheck"] == {"integrationUrl": "https://abc.edge.sdk.awswaf.com/abc/def/"}
+    assert "turnstile" not in body
     for secret in ("owner-private", "+46700000000", "boom", "txr_1", "acct_LOC", "chargesEnabled"):
         assert secret not in response["body"]
 

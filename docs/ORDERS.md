@@ -92,8 +92,8 @@ path can go.
 
 1. **Placing.** Name and mobile required, e-mail optional, terms accepted;
    discount codes and gift cards are refused (400 `codes_not_for_table`:
-   their holds are per order and a bill covers several orders). Turnstile,
-   the IP and contact limits as for every order, plus 8 table orders per
+   their holds are per order and a bill covers several orders). The bot
+   check (AWS WAF, `shared/bot_check.py`), the IP and contact limits as for every order, plus 8 table orders per
    phone and day. The order is written `confirmed` with paymentStatus
    `unpaid`, its day number at once, `readyEstimate`, `payLater: true` and
    `serviceDate`; no TTL, no notice (no receipt: nothing is paid). In the
@@ -250,7 +250,7 @@ simply unknown there.
 
 ## Security
 
-- Public routes: prices never from the client; Turnstile + per-IP and
+- Public routes: prices never from the client; bot check (AWS WAF) + per-IP and
   per-contact limits on `POST /order`; the status page needs the HMAC token.
 - Webhook: Stripe signature; metadata + connected account + session id +
   amount must all match the order (or the bill).

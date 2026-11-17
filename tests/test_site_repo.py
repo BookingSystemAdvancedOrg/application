@@ -239,7 +239,7 @@ def _env_for(environment):
         "OIDC_PROVIDER_ARN": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
         "API_BASE_URL": f"https://api-{environment}.example/", "MENU_IMAGE_BASE_URL": "https://img.example",
         "PREVIEW_DOMAIN": "booqy.se" if environment == "prod" else "dev.booqy.se",
-        "STRIPE_PUBLISHABLE_KEY": "pk_test_x", "TURNSTILE_SITE_KEY": "0x4AAA", "GITHUB_ORG_ID": str(ORG_ID),
+        "STRIPE_PUBLISHABLE_KEY": "pk_test_x", "GITHUB_ORG_ID": str(ORG_ID),
         **({} if environment == "prod" else {
             "TEST_GITHUB_ORG": TEST_ORG, "TEST_GITHUB_ORG_ID": str(TEST_ORG_ID), "SITE_TEMPLATE_OWNER": ORG,
             "TEST_SITES_BUCKET": f"dev-restaurant-sites-test-{account}", "TEST_DEPLOY_ROLE_PATH": "/booqy-test-sites/",
@@ -418,7 +418,7 @@ def test_prod_creates_the_repo_and_writes_both_sides_while_dev_only_does_aws(wor
         "PROD_API_BASE_URL": "https://api-prod.example",
         "DEV_AWS_ROLE_ARN": DEV_ROLE, "DEV_SITE_BUCKET": "dev-restaurant-sites-123456789012",
         "DEV_TENANT_ID": "t-dev-roma", "DEV_API_BASE_URL": "https://api-dev.example"}
-    common = {"menuImageBaseUrl": "https://img.example", "stripePublishableKey": "pk_test_x", "turnstileSiteKey": "0x4AAA"}
+    common = {"menuImageBaseUrl": "https://img.example", "stripePublishableKey": "pk_test_x"}
     assert gh.booqy_json("site-roma") == {"slug": "roma", "name": "Roma", "environments": {
         "prod": {"tenantId": PLAIN, "apiBaseUrl": "https://api-prod.example", **common,
                  "previewUrl": "https://roma.booqy.se"},
@@ -767,7 +767,7 @@ def test_a_test_customer_gets_a_public_repo_in_the_test_org_from_the_shared_temp
         "SANDBOX_MAIN_SITE_BUCKET": TEST_BUCKET, "SANDBOX_MAIN_TENANT_ID": TEST,
         "SANDBOX_MAIN_API_BASE_URL": "https://api-dev.example", "SANDBOX_MAIN_SITE_PREFIX": "main/sites"}
     common = {"tenantId": TEST, "apiBaseUrl": "https://api-dev.example", "menuImageBaseUrl": "https://img.example",
-              "stripePublishableKey": "pk_test_x", "turnstileSiteKey": "0x4AAA"}
+              "stripePublishableKey": "pk_test_x"}
     expected = {"slug": "pasta", "name": "Pasta", "environments": {
         "dev": {**common, "previewUrl": "https://pasta.test-dev.booqy.se"},
         "test": {**common, "previewUrl": "https://pasta.test.booqy.se"}}}

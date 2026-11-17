@@ -3697,12 +3697,14 @@ paths:
         committed atomically with per-table locks: if a table was taken
         meanwhile the answer is 409 `table_taken`.
 
-        Abuse protection: when the platform's Turnstile widget is configured
-        (`turnstile.siteKey` in `/site-config`), `turnstileToken` from the
-        widget is required and checked with Cloudflare (400 `turnstile token
-        is required` / `turnstile verification failed` / `turnstile token
-        expired`; 503 `verification_unavailable` when the check can't be
-        made). A few attempts per IP address (10 minutes) and per phone
+        Abuse protection: the bot check runs in AWS WAF on the restaurant
+        site's CloudFront (`botCheck.integrationUrl` in `/site-config`); the
+        site posts to `/api/*` on its own domain and CloudFront adds the
+        `x-booqy-waf` origin header after the web ACL. When the check is
+        enforced, a post without that header answers 400 `bot_check_failed`
+        (503 `verification_unavailable` when the check is enforced but not
+        configured). `turnstileToken` is ignored. A few attempts per IP
+        address (10 minutes) and per phone
         number or e-mail (24 hours) are allowed; past that 429
         `too_many_requests` with `Retry-After`. Returns a one-time
         `manageToken` (the guest's link to view or cancel the booking; an
@@ -3726,7 +3728,6 @@ paths:
               email: anna@example.se
               phone: '+46701234567'
               acceptTerms: true
-              turnstileToken: XXXX.DUMMY.TOKEN.XXXX
       responses:
         '201':
           description: Booked.
@@ -4137,7 +4138,8 @@ paths:
       summary: Hold the chosen table(s) for 15 minutes
       operationId: holdTables
       description: |
-        Public (Turnstile token in the body when required). Claims the
+        Public (bot check: the post must come through the site's AWS WAF,
+        as for `POST .../reservations`). Claims the
         tables exactly like a booking, as status `held`, for 15 minutes while
         the guest fills in their details. 409 `table_taken` when someone was
         faster. The hold ends by itself at `expiresAt` (the tables are free
@@ -4157,7 +4159,7 @@ paths:
                 startTime: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}
                 tableIds: {type: array, items: {type: string}, minItems: 1, maxItems: 6}
                 partySize: {type: integer, minimum: 1}
-                turnstileToken: {type: string}
+                turnstileToken: {type: string, deprecated: true, description: 'Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.'}
       responses:
         '201':
           description: The hold.
@@ -4294,7 +4296,9 @@ paths:
         Which restaurant a website hostname belongs to, and everything the
         booking site needs to render it: name, branding, enabled features,
         locations (address, contact, opening hours, booking rules), legal
-        entity and the public Stripe / Turnstile keys. Pass exactly one of
+        entity, the public Stripe key and the bot check's AWS WAF
+        integration URL (`botCheck.integrationUrl`; the site loads
+        `<url>challenge.js`). Pass exactly one of
         `host`, `tenantId` (a restaurant's own site repo, which knows its
         tenant; also the prod deploy gate, which needs `tenant.domain`) or
         `slug` (dev only - for `*.cloudfront.net` / localhost). Unknown,
@@ -4361,8 +4365,8 @@ paths:
         `ordering_no_payments`, `ordering_paused`, `ordering_closed`,
         `ordering_pickup_off`, `ordering_table_off`, `ordering_no_site`.
         At most 10 orders per IP address per 10 minutes and 10 per phone
-        number / e-mail per hour (429); Turnstile token (action `order`)
-        when the site shows the widget.
+        number / e-mail per hour (429); bot check: the post must come
+        through the site's AWS WAF when enforced (400 `bot_check_failed`).
       security: []
       x-required-groups: []
       requestBody:
@@ -5272,7 +5276,8 @@ paths:
         the email (/m/s/{token}) or the code is used. One code per person
         (canonical address), ever; signing up again re-sends it. Always
         answers {sent: true} so the form can't reveal who signed up.
-        Turnstile (action "signup") and per-IP / per-address limits.
+        Bot check (the post must come through the site's AWS WAF) and
+        per-IP / per-address limits.
       security: []
       x-required-groups: []
       requestBody:
@@ -5287,7 +5292,7 @@ paths:
                 email: {type: string}
                 name: {type: string}
                 consent: {type: boolean, enum: [true]}
-                turnstileToken: {type: string}
+                turnstileToken: {type: string, deprecated: true, description: 'Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.'}
       responses:
         '200':
           description: '{sent: true}'
@@ -6032,7 +6037,7 @@ paths:
         - Catering
       summary: Send a catering request
       operationId: createCateringRequest
-      description: 'Priced again exactly like the quote. Needs guests >= minGuests, the lead time for that many guests, a company signatory (name, role, authority) and Turnstile when the site shows it. Answers the guest''s link token.'
+      description: 'Priced again exactly like the quote. Needs guests >= minGuests, the lead time for that many guests, a company signatory (name, role, authority) and the bot check (the post must come through the site''s AWS WAF when enforced, 400 bot_check_failed). Answers the guest''s link token.'
       security: []
       x-required-groups: []
       requestBody:
@@ -7689,7 +7694,7 @@ components:
             notes: {type: string, maxLength: 1000}
             language: {type: string}
             acceptTerms: {type: boolean, enum: [true]}
-            turnstileToken: {type: string}
+            turnstileToken: {type: string, deprecated: true, description: 'Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.'}
             attribution: {type: object}
             marketingOptIn: {type: boolean}
             marketingConsent: {type: object}
@@ -7884,7 +7889,7 @@ components:
           nullable: true
     SiteConfig:
       type: object
-      required: [tenant, legal, locations, stripe, turnstile]
+      required: [tenant, legal, locations, stripe]
       properties:
         tenant:
           type: object
@@ -8000,12 +8005,18 @@ components:
             accountId:
               type: string
               nullable: true
-        turnstile:
+        botCheck:
           type: object
+          description: |
+            The guest forms' bot check (AWS WAF on the restaurant site's
+            CloudFront). With an integration URL the site loads
+            `<integrationUrl>challenge.js` and sends its form posts to
+            `/api/*` on its own domain.
           properties:
-            siteKey:
+            integrationUrl:
               type: string
               nullable: true
+              description: The web ACL's JavaScript integration base URL, null when not set up.
 
     ReservationStatus:
       type: string
@@ -8063,10 +8074,10 @@ components:
         turnstileToken:
           type: string
           maxLength: 2048
+          deprecated: true
           description: |
-            Token from the platform's Cloudflare Turnstile widget (action
-            `booking`). Required when the widget is configured; single-use and
-            valid for 5 minutes.
+            Ignored (was the Cloudflare Turnstile token). Still accepted so
+            older sites keep working; the bot check now runs in AWS WAF.
 
     ManualReservationRequest:
       type: object
@@ -9075,6 +9086,8 @@ components:
             - true
         turnstileToken:
           type: string
+          deprecated: true
+          description: Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.
         attribution:
           type: object
           description: Campaign tags from the visit (dropped silently when malformed).

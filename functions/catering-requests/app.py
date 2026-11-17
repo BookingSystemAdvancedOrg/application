@@ -31,7 +31,7 @@ PURPOSE:
     token so the site can open the request page right away.
 
     Abuse protection: attempts per IP and per phone/e-mail
-    (shared/request_guard.py) and Turnstile (action "catering"); quotes per IP.
+    (shared/request_guard.py) and the bot check (shared/bot_check.py); quotes per IP.
 
     GET: the location's requests, newest first (?status= filters).
 
@@ -40,7 +40,7 @@ ENV_VARS:
     USER_TABLE_NAME, CATERING_REQUESTS_TABLE_NAME, CATERING_REQUEST_HISTORY_TABLE_NAME,
     CATERING_DISCOUNT_TIERS_TABLE_NAME, CATERING_MENU_TABLE_NAME, MENU_TABLE_NAME (legacy items),
     LINK_SIGNING_KEY_SECRET_ARN,
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
+    BOT_CHECK_ENFORCED, SITE_WAF_SECRET, REQUEST_GUARD_TABLE_NAME,
     MARKETING_TABLE_NAME (optional: catering statistics and "offers" opt-in),
     CONSENT_TABLE_NAME (optional: the marketing consent log, shared/consent.py)
 
@@ -55,7 +55,7 @@ from datetime import date, timedelta
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import consent, dynamo, http, marketing, request_guard, tenant, turnstile
+from shared import bot_check, consent, dynamo, http, marketing, request_guard, tenant
 from shared import reservations as r
 
 logger = logging.getLogger()
@@ -199,8 +199,7 @@ def _create(event):
 
     ip = http.source_ip(event)
     request_guard.check([("catering-ip", ip, *IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip, turnstile.CATERING_ACTION)
+    bot_check.verify(event, "catering")
     counted = request_guard.check([
         ("catering-phone", fields["customerPhone"], *CONTACT_LIMIT),
         ("catering-email", fields["customerEmail"], *CONTACT_LIMIT),
@@ -320,7 +319,7 @@ def handler(event, context):
         return exc.response()
     except request_guard.Limited as exc:
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return http.error(503, "verification_unavailable")
     except c.Unavailable as exc:
         return http.error(409, exc.code)

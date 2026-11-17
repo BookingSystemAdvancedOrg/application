@@ -62,7 +62,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GiftCardsCheckout'
         '400':
-          description: invalid_amount, invalid_email, message_too_long, turnstile_failed.
+          description: invalid_amount, invalid_email, message_too_long, bot_check_failed (the post skipped the site's AWS WAF while the check is enforced).
           content:
             application/json:
               schema: *id001
@@ -551,7 +551,10 @@ components:
         message:
           type: string
           maxLength: 300
-        turnstileToken: *id003
+        turnstileToken:
+          type: string
+          deprecated: true
+          description: Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.
     GiftCardsCheckout:
       type: object
       properties:
@@ -566,7 +569,10 @@ components:
       - code
       properties:
         code: *id003
-        turnstileToken: *id003
+        turnstileToken:
+          type: string
+          deprecated: true
+          description: Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.
     GiftCardsBalance:
       type: object
       properties:

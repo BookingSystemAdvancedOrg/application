@@ -394,7 +394,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/WaitlistJoined'
         '400':
-          description: Validation error, or turnstile_failed (field turnstileToken).
+          description: Validation error, or bot_check_failed (the post skipped the site's AWS WAF while the check is enforced).
           content:
             application/json:
               schema: *id001
@@ -716,7 +716,10 @@ components:
         email: *id002
         wantFrom: *id002
         wantUntil: *id002
-        turnstileToken: *id002
+        turnstileToken:
+          type: string
+          deprecated: true
+          description: Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.
     WaitlistJoined:
       type: object
       properties:

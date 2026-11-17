@@ -139,7 +139,18 @@ _MANUAL_ID_PATTERN = re.compile(
     r"MANUAL_BLOCK#[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
-_BOOKING_HORIZON = timedelta(days=21)
+# How far ahead a booking may start (online, by staff and by the phone agent).
+# One place: a per-location rule later changes only last_bookable_date().
+BOOKING_HORIZON_DAYS = 21
+_BOOKING_HORIZON = timedelta(days=BOOKING_HORIZON_DAYS)
+
+
+def last_bookable_date(today, location=None):
+    """The last local date with bookable start times, seen from `today` (the
+    location's local date)."""
+    return today + timedelta(days=BOOKING_HORIZON_DAYS)
+
+
 # Start times sit on the clock's half hours (14:00, 14:30 - never 14:02),
 # and a booking must start at least LEAD_TIME from now - online and by staff
 # alike. Only staff walk-ins (the guest is standing there) skip the lead time.

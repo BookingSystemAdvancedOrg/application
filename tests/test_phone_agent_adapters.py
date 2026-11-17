@@ -73,9 +73,13 @@ def test_create_agent_builds_a_swedish_first_multilingual_agent_on_booqys_llm(vo
     assert set(llm["built_in_tools"]) == {"end_call", "language_detection", "transfer_to_number"}
     transfer = llm["built_in_tools"]["transfer_to_number"]["params"]["transfers"][0]
     assert transfer["transfer_destination"]["phone_number"] == "+46812345678"
-    assert body["conversation_config"]["tts"] == {"voice_id": "voice-sv-1", "model_id": "eleven_flash_v2_5"}
+    assert body["conversation_config"]["tts"] == {"voice_id": "voice-sv-1", "model_id": "eleven_flash_v2_5",
+                                                  "stability": 0.6, "speed": 0.95}
+    assert body["conversation_config"]["turn"] == {"turn_eagerness": "normal", "turn_timeout": 8}
     presets = body["conversation_config"]["language_presets"]
     assert len(presets) == 31 and {"en", "de", "tr", "ar", "fil"} <= set(presets) and "sv" not in presets
+    assert "so" not in presets                      # flash v2.5 cannot speak Somali
+
     assert body["conversation_config"]["conversation"]["max_duration_seconds"] == 480
     settings = body["platform_settings"]
     assert settings["overrides"]["enable_conversation_initiation_client_data_from_webhook"] is True
@@ -85,6 +89,17 @@ def test_create_agent_builds_a_swedish_first_multilingual_agent_on_booqys_llm(vo
     assert settings["privacy"]["record_voice"] is False
     # keys never travel in plain text inside the agent
     assert "llm-key-value" not in json.dumps(body) and "init-token-value" not in json.dumps(body)
+
+
+def test_v4_voice_model_adds_somali_persian_and_amharic(voice_env, monkeypatch):
+    monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
+    listed = {"secrets": [{"name": "dev-booqy-llm-endpoint-key", "secret_id": "sec-llm"},
+                          {"name": "dev-booqy-webhook-token", "secret_id": "sec-tok"}]}
+    http = Http([("GET", "/v1/convai/secrets", 200, listed), ("GET", "/v1/convai/secrets", 200, listed)])
+    body = provider(http).agent_body(CONFIG)
+    presets = body["conversation_config"]["language_presets"]
+    assert {"so", "fa", "am", "ckb", "ru", "de"} <= set(presets) and "sv" not in presets
+    assert body["conversation_config"]["tts"]["model_id"] == "eleven_v4_turbo"
 
 
 def test_create_agent_is_idempotent_by_name(voice_env):
@@ -283,14 +298,21 @@ class FakeBedrock:
         return {"stream": self.stream}
 
 
-def test_real_agent_model_calls_converse_stream_on_the_configured_model():
+def test_real_agent_model_calls_converse_stream_on_the_configured_model(monkeypatch):
+    monkeypatch.delenv("PHONE_AGENT_THINKING", raising=False)
     bedrock = FakeBedrock([{"contentBlockDelta": {"delta": {"text": "Hej!"}}}, {"messageStop": {"stopReason":
                                                                                                 "end_turn"}}])
     model = RealAgentModel(client=bedrock, model_id="eu.anthropic.claude-haiku")
     turn = model.converse("system", [{"role": "user", "content": "Hej"}], TOOLS, max_tokens=400)
     assert turn.text == "Hej!"
     assert bedrock.args["modelId"] == "eu.anthropic.claude-haiku" and bedrock.args["system"] == [{"text": "system"}]
-    assert bedrock.args["inferenceConfig"]["maxTokens"] == 400 and "toolConfig" in bedrock.args
+    # thinking at effort low (Haiku 5.5 thinks by default): reasoning gets its own room on top of the reply
+    assert bedrock.args["inferenceConfig"]["maxTokens"] == 1900 and "toolConfig" in bedrock.args
+    assert bedrock.args["additionalModelRequestFields"] == {"output_config": {"effort": "low"}}
+    monkeypatch.setenv("PHONE_AGENT_THINKING", "off")
+    model.converse("system", [{"role": "user", "content": "Hej"}], TOOLS, max_tokens=400)
+    assert bedrock.args["additionalModelRequestFields"] == {"thinking": {"type": "disabled"}}
+    assert bedrock.args["inferenceConfig"]["maxTokens"] == 400
 
 
 def test_real_agent_model_errors():

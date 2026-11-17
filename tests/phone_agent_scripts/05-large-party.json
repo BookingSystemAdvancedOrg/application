@@ -1,0 +1,106 @@
+{
+ "id": "05-large-party",
+ "title": "A party above the phone maximum: no booking, a callback tagged largeParty",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "19:00"
+   ]
+  },
+  "maxPartySizeOnline": 8
+ },
+ "expect": {
+  "booked": null,
+  "callback": "largeParty"
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka bord för tolv personer imorgon klockan sju på kvällen.",
+    "Ja, gärna, ring upp mig.",
+    "Tack, hej då."
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for twelve people tomorrow at seven in the evening.",
+    "Yes, please call me back.",
+    "Thank you, goodbye."
+   ],
+   "confirm": null
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte für morgen um sieben Uhr abends einen Tisch für zwölf Personen reservieren.",
+    "Ja, bitte rufen Sie mich zurück.",
+    "Danke, auf Wiederhören."
+   ],
+   "confirm": null
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хочу забронировать столик на двенадцать человек на завтра на семь вечера.",
+    "Да, пожалуйста, перезвоните мне.",
+    "Спасибо, до свидания."
+   ],
+   "confirm": null
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa miis laba iyo toban qof ah berri saacadda toddobada fiidkii.",
+    "Haa, fadlan dib ii soo wac.",
+    "Mahadsanid, nabad gelyo."
+   ],
+   "confirm": null
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لاثني عشر شخصا غدا الساعة السابعة مساء.",
+    "نعم، من فضلك اتصلوا بي.",
+    "شكرا، مع السلامة."
+   ],
+   "confirm": null
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän kahdelletoista hengelle huomenna kello seitsemän illalla.",
+    "Kyllä, soittakaa minulle takaisin.",
+    "Kiitos, näkemiin."
+   ],
+   "confirm": null
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla dwunastu osób na jutro na dziewiętnastą.",
+    "Tak, proszę oddzwonić.",
+    "Dziękuję, do widzenia."
+   ],
+   "confirm": null
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarın akşam saat yedide on iki kişilik bir masa ayırtmak istiyorum.",
+    "Evet, lütfen beni geri arayın.",
+    "Teşekkürler, iyi günler."
+   ],
+   "confirm": null
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för tolv imorgon klockan 19",
+    "Ja"
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hi, I'd like to book a table for twelve tomorrow at 7 pm",
+    "Yes"
+   ],
+   "confirm": null
+  }
+ }
+}

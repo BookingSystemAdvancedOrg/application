@@ -108,12 +108,20 @@ def person(tenant_row: Optional[dict], sub: Optional[str]) -> dict:
     return {"add": _clean(entry.get("add")), "remove": _clean(entry.get("remove"))}
 
 
+AGENT_SUB_PREFIX = "agent:"            # = tenant.SYSTEM_SUB_PREFIX (tenant imports this module)
+AGENT_AREAS = ("bokningar", "layout")
+
+
 def areas_for(tenant_row: Optional[dict], role: Optional[str], sub: Optional[str]) -> list:
     """Every area the caller may open, in menu order."""
     if role == "owner_user":
         return list(AREAS)
     if role != "staff_user":
         return []
+    if isinstance(sub, str) and sub.startswith(AGENT_SUB_PREFIX):
+        # The phone agent's system principal (tenant.SYSTEM_SUB_PREFIX, never a
+        # Cognito login) books and reads bookings whatever the staff defaults say.
+        return [a for a in AREAS if a in AGENT_AREAS]
     own = person(tenant_row, sub)
     allowed = (set(defaults(tenant_row)) | set(own["add"])) - set(own["remove"])
     return [a for a in AREAS if a in allowed]

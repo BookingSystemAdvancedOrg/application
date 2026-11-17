@@ -1,0 +1,126 @@
+{
+ "id": "13-ambiguous-yes",
+ "title": "An unclear answer to the read-back (mm, maybe): no booking, asks again",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "18:00",
+    "19:00",
+    "20:00"
+   ]
+  }
+ },
+ "expect": {
+  "booked": null
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag skulle vilja boka ett bord för fyra personer imorgon klockan sju på kvällen.",
+    "Klockan sju.",
+    "Anna Berg.",
+    "Mm, kanske.",
+    "Jag får fundera, jag ringer igen. Hej då."
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for four people tomorrow at seven in the evening.",
+    "Seven o'clock.",
+    "Anna Berg.",
+    "Hmm, maybe.",
+    "I need to think about it, I will call again. Goodbye."
+   ],
+   "confirm": null
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte gerne für morgen Abend um sieben Uhr einen Tisch für vier Personen reservieren.",
+    "Um sieben.",
+    "Anna Berg.",
+    "Hm, vielleicht.",
+    "Ich muss noch überlegen, ich rufe wieder an. Auf Wiederhören."
+   ],
+   "confirm": null
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хотел бы забронировать столик на четверых на завтра на семь вечера.",
+    "В семь.",
+    "Анна Берг.",
+    "Хм, может быть.",
+    "Мне нужно подумать, я перезвоню. До свидания."
+   ],
+   "confirm": null
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan miis u qabsado afar qof berri fiidkii saacadda toddobada.",
+    "Saacadda toddobada.",
+    "Axmed Cali.",
+    "Mm, laga yaabee.",
+    "Waan ka fikirayaa, mar kale ayaan soo wacayaa. Nabad gelyo."
+   ],
+   "confirm": null
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لأربعة أشخاص غدا الساعة السابعة مساء.",
+    "السابعة.",
+    "أحمد علي.",
+    "مم، ربما.",
+    "سأفكر في الأمر وأتصل لاحقا. مع السلامة."
+   ],
+   "confirm": null
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän neljälle hengelle huomenna kello seitsemän illalla.",
+    "Kello seitsemän.",
+    "Anna Virtanen.",
+    "Hmm, ehkä.",
+    "Mietin vielä, soitan uudelleen. Näkemiin."
+   ],
+   "confirm": null
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla czterech osób na jutro na godzinę dziewiętnastą.",
+    "Na dziewiętnastą.",
+    "Anna Kowalska.",
+    "Hm, może.",
+    "Muszę się zastanowić, zadzwonię jeszcze. Do widzenia."
+   ],
+   "confirm": null
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarın akşam saat yedide dört kişilik bir masa ayırtmak istiyorum.",
+    "Saat yedi.",
+    "Ayşe Yılmaz.",
+    "Hmm, belki.",
+    "Biraz düşünmem lazım, tekrar ararım. İyi günler."
+   ],
+   "confirm": null
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för fyra imorgon klockan 19",
+    "Mm, kanske",
+    "Jag får fundera"
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hi, I'd like to book a table for four tomorrow at 7 pm",
+    "Hmm, maybe",
+    "I need to think"
+   ],
+   "confirm": null
+  }
+ }
+}

@@ -32,47 +32,94 @@ def local_today(location) -> date:
 
 
 def allowed_languages(config):
-    """The languages a call may switch to: every language the voice speaks
-    (owner 2026-11-13: whatever the caller speaks)."""
-    return pa.LANGUAGES
+    """The languages a call may switch to: every language the configured
+    voice model speaks (owner 2026-11-13 and 2026-11-17: whatever the caller
+    speaks). CONFIG `languages` is not a filter yet: the admin has no
+    language picker, so every saved config lists the full list of the day it
+    was saved, and honouring it would shut out languages added since."""
+    return language.voice_languages()
+
+
+def _turn_setup(lang, caller_text, state, disclosed, allowed):
+    """(language the prompt asks for, the fast hint, whether the model must
+    say the AI sentence itself) before the model runs."""
+    hint = language.hint(caller_text)
+    prompt_lang = hint if hint in allowed else lang
+    disclose_now = bool(state.pop("discloseNext", None)) or (
+        prompt_lang not in disclosed and copy.disclosure_short(prompt_lang) is None)
+    return prompt_lang, hint, disclose_now
+
+
+def _after_turn(lang, hint, result, caller_text, state, allowed):
+    """(the call's language now, a language the voice cannot speak or None)."""
+    new_lang, unsupported = language.decide(lang, hint, result.language, caller_text, allowed=allowed,
+                                            previous_tag=state.get("lastTag"))
+    state["lastTag"] = result.language
+    if result.error:
+        return lang, None
+    return new_lang, unsupported
+
+
+def _unsupported_reply(executor, state, code, messages):
+    """A language the voice cannot speak: the fixed sentences in Swedish,
+    English and Arabic; the second time the caller still cannot continue,
+    Booqy asks the restaurant to call back (topic language:<code>) and ends."""
+    again = state.get("unsupported") == code
+    state["unsupported"] = code
+    if again and not state.get("callbackId"):
+        executor.request_callback({"topic": f"language:{code}"})
+    reply = copy.unsupported_language(callback=again)
+    if again:
+        state.setdefault("providerActions", []).append({"name": "end_call", "arguments": {"reason": "callback"}})
+    agent.replace_last_reply(messages, reply)
+    return reply
 
 
 def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback):
     """Runs the caller's utterance through the agent loop and persists the
     conversation, the tool state and the transcript turns on the call.
 
-    The caller's language is decided first (language.next_language): on a
-    switch the short art. 50 disclosure is said once in the new language
-    before the reply, the system prompt asks for that language and the
-    provider is told to switch (`actions`: its language_detection system
-    tool). Returns (result, updated_call, state, actions)."""
+    The language: the fast hint sets the prompt's language before the model
+    runs; the model's `[xx]` tag decides after it (language.decide). On a
+    switch the short art. 50 sentence is said once in the new language
+    before the reply (by Booqy from copy.DISCLOSURE_SHORT, else by the model
+    when the prompt asked for it), and the provider is told to switch
+    (`actions`: its language_detection system tool). A language the voice
+    cannot speak gets copy.UNSUPPORTED_LANGUAGE instead of the reply.
+    Returns (result, updated_call, state, actions)."""
     calls.append_turn(call, "caller", caller_text, at)
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     lang = current.get("language") or "sv"
     actions, spoken = [], []
-    hint = language.next_language(lang, caller_text, language.CALL_LANGUAGES)   # what the prompt asks for
-    messages = agent.loads(current.get("agentMessages"))
     state = json.loads(current.get("toolState") or "{}")
+    allowed = allowed_languages(config)
+    disclosed = list(pa.plain(current.get("disclosure") or {}).get("languages") or [lang])
+    prompt_lang, hint, disclose_now = _turn_setup(lang, caller_text, state, disclosed, allowed)
+    messages = agent.loads(current.get("agentMessages"))
     executor = Executor(tenant_id=call["tenantId"], tenant_row=tenant_row, location=location, loc_config=loc,
                         invoke=invoke, state=state, caller_phone=call.get("from"), voice=voice,
                         call_ref=call.get("callRef"), callbacks=add_callback, today=local_today(location),
-                        language=hint)
-    system = agent.system_prompt(hint, config.get("agentName"), location.get("name"), executor.today,
-                                 config.get("tone"))
-    result = agent.run_turn(model, messages, caller_text, executor, system=system)
-    new_lang = result.language if result.language in allowed_languages(config) else hint
-    if new_lang != lang:
-        # The short art. 50 disclosure once in the new language, before the reply,
-        # and the provider follows (its language_detection system tool).
+                        language=prompt_lang)
+    system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
+                                 config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
+                                 phone_known=executor.caller_known, unsupported=state.get("unsupported"))
+    result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang)
+    new_lang, unsupported = _after_turn(lang, hint, result, caller_text, state, allowed)
+    if unsupported:
+        result.reply = _unsupported_reply(executor, state, unsupported, messages)
+    elif new_lang != lang:
         current, said = calls.repeat_disclosure(current, new_lang, at, new_language=True)
+        if said is None and not (disclose_now and prompt_lang == new_lang):
+            state["discloseNext"] = True    # the model says it in the next turn
         current = calls.set_status(current, current["status"], [current["status"]], language=new_lang) or current
         actions.append({"name": "language_detection", "arguments": {
-            "reason": f"The caller speaks {language.NAMES.get(new_lang, new_lang)}", "language": new_lang}})
+            "reason": f"The caller speaks {language.name(new_lang)}", "language": new_lang}})
         if said:
             spoken.append(said)
     state["counterOffer"] = executor.counter_offer()
     actions.extend(state.pop("providerActions", None) or [])
     metric("TurnLatencyMs", result.latency_ms, "Milliseconds")
+    metric("TurnRounds", result.rounds)
     for tool in result.tool_calls:
         calls.append_turn(call, "tool", tool["name"], at, tool_name=tool["name"], tool_ok=tool["ok"])
     calls.append_turn(call, "agent", result.reply, at)
@@ -129,21 +176,31 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
         raise pa.PhoneAgentError(409, "session_full")
     _count_sim_turn(tenant_id)
     lang = start_lang = language_ or row.get("language") or "sv"
-    switched = None
-    if not language_:
-        lang = language.next_language(lang, text, language.CALL_LANGUAGES)
     messages = agent.loads(row.get("messages"))
     state = json.loads(row.get("toolState") or "{}")
     first = not messages
+    allowed = allowed_languages(config)
+    disclosed = list(state.get("disclosed") or [start_lang])
+    if language_:
+        prompt_lang, hint, disclose_now = language_, language_, False
+    else:
+        prompt_lang, hint, disclose_now = _turn_setup(lang, text, state, disclosed, allowed)
     executor = Executor(tenant_id=tenant_id, tenant_row=tenant_row, location=location, loc_config=loc,
-                        invoke=invoke, state=state, dry_run=True, today=local_today(location), language=lang)
-    system = agent.system_prompt(lang, config.get("agentName"), location.get("name"), executor.today,
-                                 config.get("tone"))
-    result = agent.run_turn(model, messages, text, executor, system=system)
-    if not language_ and result.language in allowed_languages(config):
-        lang = result.language
-    if lang != start_lang and lang != row.get("language", start_lang):
-        switched = copy.disclosure_short(lang, location.get("name"))
+                        invoke=invoke, state=state, dry_run=True, today=local_today(location), language=prompt_lang)
+    system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
+                                 config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
+                                 unsupported=state.get("unsupported"))
+    result = agent.run_turn(model, messages, text, executor, system=system, lang=prompt_lang)
+    switched = None
+    if not language_:
+        lang, unsupported = _after_turn(lang, hint, result, text, state, allowed)
+        if unsupported:
+            result.reply = _unsupported_reply(executor, state, unsupported, messages)
+            state.pop("providerActions", None)
+        elif lang not in disclosed:
+            disclosed.append(lang)
+            switched = copy.disclosure_short(lang)
+    state["disclosed"] = disclosed
     reply = result.reply
     if first:  # the simulator shows the greeting with the disclosure first, like a call
         greeting = copy.greeting(start_lang, config.get("agentName"), location.get("name"),

@@ -1,0 +1,105 @@
+{
+ "id": "04-horizon-and-past",
+ "title": "Five weeks ahead and a past date: clear answers, no error sentence, no booking",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "19:00"
+   ]
+  }
+ },
+ "expect": {
+  "booked": null,
+  "noErrorSentence": true
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för två den tjugonde december klockan sju på kvällen.",
+    "Jaha, går det den första november då?",
+    "Nej tack, då hör jag av mig senare. Hej då."
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for two on the twentieth of December at seven in the evening.",
+    "I see, what about the first of November then?",
+    "No, thank you, I will call again later. Goodbye."
+   ],
+   "confirm": null
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte einen Tisch für zwei Personen am zwanzigsten Dezember um sieben Uhr abends reservieren.",
+    "Verstehe, und am ersten November?",
+    "Nein danke, ich melde mich später. Auf Wiederhören."
+   ],
+   "confirm": null
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хочу забронировать столик на двоих на двадцатое декабря в семь вечера.",
+    "Понятно, а первого ноября?",
+    "Нет, спасибо, я позвоню позже. До свидания."
+   ],
+   "confirm": null
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa miis laba qof ah labaatanka Diseembar saacadda toddobada fiidkii.",
+    "Waan fahmay, ka warran kowda Nofeembar?",
+    "Maya mahadsanid, mar dambe ayaan soo wacayaa. Nabad gelyo."
+   ],
+   "confirm": null
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لشخصين يوم العشرين من ديسمبر الساعة السابعة مساء.",
+    "فهمت، وماذا عن الأول من نوفمبر؟",
+    "لا شكرا، سأتصل لاحقا. مع السلامة."
+   ],
+   "confirm": null
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän kahdelle kahdeskymmenes joulukuuta kello seitsemän illalla.",
+    "Selvä, entä ensimmäinen marraskuuta?",
+    "Ei kiitos, soitan myöhemmin. Näkemiin."
+   ],
+   "confirm": null
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla dwóch osób na dwudziestego grudnia na dziewiętnastą.",
+    "Rozumiem, a pierwszego listopada?",
+    "Nie, dziękuję, zadzwonię później. Do widzenia."
+   ],
+   "confirm": null
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yirmi aralık için saat yedide iki kişilik bir masa ayırtmak istiyorum.",
+    "Anladım, peki bir kasım?",
+    "Hayır, teşekkürler, daha sonra ararım. İyi günler."
+   ],
+   "confirm": null
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Jag vill boka ett bord för två 2026-12-20 klockan 19",
+    "Nej"
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "I'd like to book a table for two on 2026-12-20 at 7 pm",
+    "No"
+   ],
+   "confirm": null
+  }
+ }
+}

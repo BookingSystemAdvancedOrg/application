@@ -56,6 +56,11 @@ from shared.voice_provider import SipTarget, TransferResult, VoiceEvent, VoicePr
 API_BASE = "https://api.elevenlabs.io"          # EU residency: https://api.eu.residency.elevenlabs.io
 SIP_HOST = "sip.rtc.elevenlabs.io"
 TTS_MODEL = "eleven_flash_v2_5"                  # low latency, Swedish among its languages
+# eleven_v4_turbo (or eleven_v3_conversational) also speaks Somali, Persian, Amharic
+# and more (language.voice_languages); set PHONE_AGENT_TTS_MODEL after the sandbox test.
+TTS_STABILITY = 0.6
+TTS_SPEED = 0.95
+TURN_TIMEOUT_S = 8
 # 46elks' SIP egress addresses (46elks.com/docs/ip-addresses): 46elks cannot do
 # SIP digest auth, so the ElevenLabs trunk allows these addresses over TCP only.
 ELKS_SIP_ADDRESSES = ("176.10.154.205", "85.24.146.136")
@@ -184,9 +189,9 @@ class RealVoiceProvider(VoiceProvider):
         init_secret = self._workspace_secret(f"{prefix}booqy-webhook-token", self.secret.get("initiationToken"))
         greeting_sv = str(config.get("greetingSv") or "")
         greeting_en = str(config.get("greetingEn") or greeting_sv)
-        # Every language the voice speaks: the call follows whatever the caller speaks.
-        from shared.features.phone_agent.language import VOICE_LANGUAGES
-        others = [lang for lang in VOICE_LANGUAGES if lang != "sv"]
+        # Every language this TTS model speaks: the call follows whatever the caller speaks.
+        from shared.features.phone_agent.language import voice_languages
+        others = [lang for lang in voice_languages(self.tts_model) if lang != "sv"]
         tools = {"end_call": {"type": "system", "name": "end_call", "params": {"system_tool_type": "end_call"}}}
         if others:
             tools["language_detection"] = {"type": "system", "name": "language_detection",
@@ -214,9 +219,12 @@ class RealVoiceProvider(VoiceProvider):
                     "built_in_tools": tools,
                 },
             },
-            "tts": {"voice_id": self.voice_id, "model_id": self.tts_model},
-            # Barge-in stays on (the default); a patient turn-taker for people on the phone.
-            "turn": {"turn_eagerness": "normal"},
+            # A calm, unhurried receptionist voice [VERIFY IN SANDBOX: stability and speed on the chosen voice].
+            "tts": {"voice_id": self.voice_id, "model_id": self.tts_model, "stability": TTS_STABILITY,
+                    "speed": TTS_SPEED},
+            # Barge-in stays on (the default) except during the disclosure; a caller who
+            # pauses to think gets TURN_TIMEOUT_S before the agent speaks again.
+            "turn": {"turn_eagerness": "normal", "turn_timeout": TURN_TIMEOUT_S},
             "conversation": {"max_duration_seconds": int(config.get("maxDurationSeconds") or 480)},
             "language_presets": {lang: {"overrides": {"agent": {"first_message": greeting_en}}} for lang in others},
         }

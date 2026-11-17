@@ -1,0 +1,114 @@
+{
+ "id": "08-move-taken",
+ "title": "Move to a taken time: other times offered, moved after a clear yes",
+ "fixture": {
+  "listed": {
+   "+1": [
+    {
+     "reservationId": "r9",
+     "customer": "caller",
+     "status": "reserved",
+     "startTime": "19:00",
+     "partySize": 4
+    }
+   ]
+  },
+  "availability": {
+   "+2": [
+    "18:00",
+    "21:00"
+   ]
+  },
+  "layout": false
+ },
+ "expect": {
+  "moved": {
+   "reservationId": "r9",
+   "date": "+2",
+   "time": "21:00"
+  }
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill flytta min bokning från imorgon till onsdag klockan åtta på kvällen.",
+    "Klockan nio går bra.",
+    "Ja, det stämmer.",
+    "Tack, hej då."
+   ],
+   "confirm": 2
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to move my booking from tomorrow to Wednesday at eight in the evening.",
+    "Nine o'clock is fine.",
+    "Yes, that is right.",
+    "Thank you, goodbye."
+   ],
+   "confirm": 2
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte meine Reservierung von morgen auf Mittwoch um acht Uhr abends verlegen.",
+    "Neun Uhr passt.",
+    "Ja, das stimmt.",
+    "Danke, auf Wiederhören."
+   ],
+   "confirm": 2
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хочу перенести бронирование с завтра на среду на восемь вечера.",
+    "Девять часов подойдёт.",
+    "Да, всё верно.",
+    "Спасибо, до свидания."
+   ],
+   "confirm": 2
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan ballantayda berri u wareejiyo Arbacada saacadda siddeedda fiidkii.",
+    "Saacadda sagaalka way fiican tahay.",
+    "Haa, waa sax.",
+    "Mahadsanid, nabad gelyo."
+   ],
+   "confirm": 2
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد نقل حجزي من الغد إلى يوم الأربعاء الساعة الثامنة مساء.",
+    "الساعة التاسعة مناسبة.",
+    "نعم، هذا صحيح.",
+    "شكرا، مع السلامة."
+   ],
+   "confirm": 2
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin siirtää huomisen varaukseni keskiviikolle kello kahdeksan illalla.",
+    "Kello yhdeksän sopii.",
+    "Kyllä, se pitää paikkansa.",
+    "Kiitos, näkemiin."
+   ],
+   "confirm": 2
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym przenieść rezerwację z jutra na środę na dwudziestą.",
+    "Dwudziesta pierwsza pasuje.",
+    "Tak, zgadza się.",
+    "Dziękuję, do widzenia."
+   ],
+   "confirm": 2
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarınki rezervasyonumu çarşamba akşam saat sekize almak istiyorum.",
+    "Saat dokuz uygun.",
+    "Evet, doğru.",
+    "Teşekkürler, iyi günler."
+   ],
+   "confirm": 2
+  }
+ }
+}

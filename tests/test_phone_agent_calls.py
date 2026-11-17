@@ -293,8 +293,8 @@ def _refused(e, reason):
     row = phone.row()
     assert (row["status"], row["outcome"], row["refusedReason"], int(row["billedMinutes"])) == \
         ("processed", "refused", reason, 0)
-    assert ("say", phone.ref, "Tyvärr kan vi inte ta emot bokningar per telefon just nu, besök vår hemsida.") in \
-        e.voice.calls
+    assert ("say", phone.ref, "Tyvärr kan vi inte ta emot bokningar per telefon just nu. Välkommen att boka på vår "
+                              "webbplats.") in e.voice.calls
     assert ("PhoneCall.Refused", {"tenantId": TENANT_A, "locationId": LOC_A, "callId": phone.call_id,
                                   "reason": reason}) in e.published
 
@@ -353,8 +353,8 @@ def test_disclosure_repeated_when_interrupted_and_in_a_new_language(live):
     row = phone.row()
     assert row["disclosure"]["repeats"] == 1 and row["disclosure"]["languages"] == ["sv", "en"]
     said = [c[2] for c in live.voice.calls if c[0] == "say"]
-    assert said[1] == "Jag är en AI-assistent för Location loc-a-1."
-    assert said[2] == "I am an AI assistant for Location loc-a-1." and len(said) == 3
+    assert said[1] == "Jag är restaurangens AI-assistent."
+    assert said[2] == "I am the restaurant's AI assistant." and len(said) == 3
     texts = [t["text"] for t in phone.turns()]
     assert "AI-assistent" in texts[0] and texts[1:] == said[1:]
 
@@ -400,7 +400,7 @@ def test_max_call_length_ends_and_processes_once(live):
     phone = Phone(live)
     live.clock.value = live.clock.value.replace(minute=9)              # 480 s max
     reply = phone.say("Hej")
-    assert "för långt" in reply and phone.row()["status"] == "processed"
+    assert "blivit långt" in reply and phone.row()["status"] == "processed"
     jobs = __import__("test_phone_agent_support").load("phone-agent-jobs")
     assert jobs.sweep(live.clock.value)["processed"] == 0                # nothing left for the sweep
 

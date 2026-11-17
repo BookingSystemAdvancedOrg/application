@@ -1,0 +1,107 @@
+{
+ "id": "06-guarantee",
+ "title": "A party that needs a card guarantee: told before any read-back, callback tagged guarantee, no booking attempt",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "19:00"
+   ]
+  },
+  "guaranteeFrom": 4
+ },
+ "expect": {
+  "booked": null,
+  "callback": "guarantee",
+  "noCreate": true
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag skulle vilja boka ett bord för fyra personer imorgon klockan sju på kvällen.",
+    "Ja, gärna, ring upp mig.",
+    "Tack, hej då."
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for four people tomorrow at seven in the evening.",
+    "Yes, please call me back.",
+    "Thank you, goodbye."
+   ],
+   "confirm": null
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte gerne für morgen Abend um sieben Uhr einen Tisch für vier Personen reservieren.",
+    "Ja, bitte rufen Sie mich zurück.",
+    "Danke, auf Wiederhören."
+   ],
+   "confirm": null
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хотел бы забронировать столик на четверых на завтра на семь вечера.",
+    "Да, пожалуйста, перезвоните мне.",
+    "Спасибо, до свидания."
+   ],
+   "confirm": null
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan miis u qabsado afar qof berri fiidkii saacadda toddobada.",
+    "Haa, fadlan dib ii soo wac.",
+    "Mahadsanid, nabad gelyo."
+   ],
+   "confirm": null
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لأربعة أشخاص غدا الساعة السابعة مساء.",
+    "نعم، من فضلك اتصلوا بي.",
+    "شكرا، مع السلامة."
+   ],
+   "confirm": null
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän neljälle hengelle huomenna kello seitsemän illalla.",
+    "Kyllä, soittakaa minulle takaisin.",
+    "Kiitos, näkemiin."
+   ],
+   "confirm": null
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla czterech osób na jutro na godzinę dziewiętnastą.",
+    "Tak, proszę oddzwonić.",
+    "Dziękuję, do widzenia."
+   ],
+   "confirm": null
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarın akşam saat yedide dört kişilik bir masa ayırtmak istiyorum.",
+    "Evet, lütfen beni geri arayın.",
+    "Teşekkürler, iyi günler."
+   ],
+   "confirm": null
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för fyra imorgon klockan 19",
+    "Ja"
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hi, I'd like to book a table for four tomorrow at 7 pm",
+    "Yes"
+   ],
+   "confirm": null
+  }
+ }
+}

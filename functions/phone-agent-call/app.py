@@ -36,6 +36,7 @@ ENV_VARS:
 """
 
 import base64
+import hashlib
 import hmac
 import time
 import json
@@ -439,8 +440,35 @@ def turn_endpoint(event):
     text = _last_caller_text(body.get("messages"))
     if not text:
         return _sse("")
-    reply, actions = run_call_turn(call, text, pa.now())
+    at = pa.now()
+    key = _turn_key(call, body.get("messages"), text)
+    last = pa.plain(call.get("lastTurn") or {})
+    seen = pa.parse_iso(last.get("at"))
+    if key and last.get("key") == key and seen and (at - seen).total_seconds() <= REPEAT_WINDOW_S:
+        # The provider sent the same turn again (a retry): the same answer, no tool runs twice.
+        actions = list(last.get("actions") or [])
+        return _sse(last.get("reply") or "", tool_calls=[a for a in actions if a["name"] in offered])
+    reply, actions = run_call_turn(call, text, at)
+    current = calls.get_call(call["tenantId"], call["callId"])
+    if key and current and current.get("status") in calls.OPEN:
+        calls.remember_turn(current, key, reply, actions, at)
     return _sse(reply, tool_calls=[a for a in actions if a["name"] in offered])
+
+
+REPEAT_WINDOW_S = 30
+
+
+def _turn_key(call, messages, text):
+    """The same conversation history at the same call (a hash, never the
+    text), or None when the request carries no history to tell a retry from
+    a caller who says the same thing twice."""
+    history = [m for m in messages or [] if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+    if len(history) < 2:
+        return None
+    digest = hashlib.sha256(call["callId"].encode("utf-8"))
+    for m in history:
+        digest.update(f"|{m.get('role')}:{_content(m)}".encode("utf-8"))
+    return digest.hexdigest()[:32]
 
 
 def run_call_turn(call, text, at):
@@ -458,7 +486,7 @@ def run_call_turn(call, text, at):
     max_seconds = int(loc.get("maxCallSeconds") or pa.MAX_CALL_DEFAULT)
     if at - started > timedelta(seconds=max_seconds):
         finish(call, at, "max_length")
-        return copy.pick(copy.MAX_LENGTH, lang), [{"name": "end_call", "arguments": {"reason": "max_length"}}]
+        return copy.text(copy.MAX_LENGTH, lang), [{"name": "end_call", "arguments": {"reason": "max_length"}}]
     result, updated, state, actions = session.call_turn(
         call, text, model=client("model"), invoke=invoker(), voice=client("voice"), tenant_row=tenant_row,
         location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)))
@@ -521,11 +549,14 @@ def lex_turn(event):
         return _lex_answer(event, copy.REFUSED["sv"] if call.get("outcome") == "refused" else "", close=True,
                            attributes=ids)
     if not text:
-        return _lex_answer(event, "Hallå? Jag hörde inte riktigt, kan du säga det igen?", attributes=ids)
+        return _lex_answer(event, copy.text(copy.STILL_THERE, call.get("language") or "sv"), attributes=ids)
     reply, actions = run_call_turn(call, text, at)
     names = {a["name"] for a in actions}
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     done = "end_call" in names or current.get("status") in ("ended", "processed")
+    if done and current.get("status") != "processed":
+        # Lex Close makes the Connect flow hang up: the call ends here, not at the sweep.
+        finish(current, at, "agent_end")
     return _lex_answer(event, reply, close=done, attributes=ids)
 
 

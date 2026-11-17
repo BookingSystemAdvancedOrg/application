@@ -93,13 +93,13 @@ def test_caller_in_english_gets_the_disclosure_in_english_and_the_provider_switc
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "Hi, I'd like to book a table for four tomorrow at 7 pm"}]})
     assert status == 200
-    assert text.startswith("I am an AI assistant for")
+    assert text.startswith("I am the restaurant's AI assistant.")
     assert {"name": "language_detection", "arguments": {"reason": "The caller speaks English", "language": "en"}} \
         in tools
     row = phone.row()
     assert row["language"] == "en" and row["disclosure"]["languages"] == ["sv", "en"]
     turns = [t["text"] for t in phone.turns()]
-    assert "AI-assistent" in turns[0] and turns[2].startswith("I am an AI assistant")   # greeting, caller, disclosure
+    assert "AI-assistent" in turns[0] and turns[2] == "I am the restaurant's AI assistant."   # greeting, caller, disclosure
     # the second English sentence: no second disclosure, no second switch
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "My name is Anna"}]})
@@ -118,8 +118,8 @@ def test_any_language_reaches_the_model_and_the_disclosure_follows(live):
     live.model.responses = [Turn(text="Gerne. Für wie viele Personen?")]
     phone = Phone(live)
     reply = phone.say("Hallo, ich möchte einen Tisch für morgen reservieren")
-    assert reply == "Ich bin ein KI-Assistent von Location loc-a-1. Gerne. Für wie viele Personen?"
-    assert "Answer in German" in seen[0]
+    assert reply == "Ich bin der KI-Assistent des Restaurants. Gerne. Für wie viele Personen?"
+    assert "answer only in German" in seen[0]
     assert phone.row()["language"] == "de"
 
 
@@ -130,7 +130,7 @@ def test_any_language_the_model_answers_in_is_followed(live):
     phone = Phone(live)
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "Merhaba, yarın akşam için masa ayırtmak istiyorum"}]})
-    assert text == "Location loc-a-1 için bir yapay zekâ asistanıyım. Tabii, kaç kişi için?"
+    assert text == "Ben restoranın yapay zekâ asistanıyım. Tabii, kaç kişi için?"
     assert tools == [{"name": "language_detection", "arguments": {"reason": "The caller speaks Turkish",
                                                                   "language": "tr"}}]
     assert phone.row()["language"] == "tr" and phone.row()["disclosure"]["languages"] == ["sv", "tr"]
@@ -147,11 +147,13 @@ def test_a_tag_naming_a_language_the_voice_cannot_speak_is_ignored(live):
     assert phone.row()["language"] == "sv"
 
 
-def test_every_voice_language_has_the_fixed_disclosure():
+def test_every_flash_voice_language_and_every_reviewed_language_has_the_fixed_disclosure():
     from shared.features.phone_agent import copy
-    assert set(language.VOICE_LANGUAGES) <= set(copy.DISCLOSURE_SHORT)
-    for lang in language.VOICE_LANGUAGES:
-        assert "Bistro" in copy.disclosure_short(lang, "Bistro")
+    assert set(language.FLASH_LANGUAGES) <= set(copy.DISCLOSURE_SHORT)
+    assert set(copy.REVIEWED) <= set(copy.DISCLOSURE_SHORT)
+    for lang in copy.REVIEWED:      # the sentences said without the model exist in every reviewed language
+        assert copy.ERROR[lang] and copy.MAX_LENGTH[lang] and copy.TRANSFERRING[lang], lang
+    assert copy.disclosure_short("sw") is None      # a v4 language without a fixed sentence: the model says it
 
 
 # --- location from the number, one number for several locations ------------------------------------
@@ -167,9 +169,9 @@ def test_shared_number_asks_which_location_first_and_scopes_every_tool(live):
     greeting = phone.turns()[0]["text"]
     assert greeting.endswith("Vilken av våra restauranger gäller det, Brasserie Malmö eller Brasserie Norrmalm?")
     since = len(live.invoke.calls)
-    assert phone.say("Vet inte riktigt") == ("Förlåt, jag hörde inte vilken. Är det Brasserie Malmö eller "
+    assert phone.say("Vet inte riktigt") == ("Ursäkta, jag hörde inte vilken. Gäller det Brasserie Malmö eller "
                                              "Brasserie Norrmalm?")
-    assert phone.say("Det gäller Norrmalm") == "Brasserie Norrmalm, toppen. Vad kan jag hjälpa dig med?"
+    assert phone.say("Det gäller Norrmalm") == "Brasserie Norrmalm, tack. Vad kan jag hjälpa dig med?"
     assert tool_events(live, since) == []      # no tool before the caller chose
     assert phone.row()["locationId"] == LOC_A2 and not phone.row().get("locationPending")
     reply = phone.say("Har ni något vegetariskt på menyn?")
@@ -340,7 +342,7 @@ def test_simulator_counter_offer_end_to_end(live, lang):
         assert expected in body["reply"], body["reply"]
     assert replies[0]["disclosure"] and "AI-assistent" in replies[0]["reply"]
     if lang == "en":   # the simulator starts in Swedish and switches, like a call
-        assert "I am an AI assistant for" in replies[0]["reply"] and replies[0]["language"] == "en"
+        assert "I am the restaurant's AI assistant." in replies[0]["reply"] and replies[0]["language"] == "en"
     assert replies[-1]["state"]["counterOffer"] == "other_time" and replies[-1]["state"]["outcome"] == "booked"
     assert live.invoke.reservations == {}      # dry run: nothing booked
     assert not [c for c in live.invoke.calls if c[0] == "create-pending-reservation"]
@@ -394,7 +396,7 @@ def test_elevenlabs_call_from_initiation_to_post_call(live, monkeypatch):
         {"role": "system", "content": marker}, {"role": "assistant", "content": first},
         {"role": "user", "content": "Hi, can I speak to a person please"}]},
         auth={"Authorization": f"Bearer {KEY}"})
-    assert status == 200 and text.startswith("I am an AI assistant")
+    assert status == 200 and text.startswith("I am the restaurant's AI assistant.")
     names = [t["name"] for t in tools]
     assert names == ["language_detection", "transfer_to_number"]
     transfer = tools[1]["arguments"]

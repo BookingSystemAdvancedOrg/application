@@ -1,0 +1,91 @@
+{
+ "id": "10-switch-mid-call",
+ "title": "The caller switches language at the third turn: the AI sentence once in the new language, every later reply in it",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "18:00",
+    "19:00",
+    "20:00"
+   ]
+  },
+  "ttsModel": "eleven_v4_turbo"
+ },
+ "expect": {
+  "booked": {
+   "date": "+1",
+   "time": "19:00",
+   "partySize": 4
+  }
+ },
+ "calls": {
+  "sv>so": {
+   "turns": [
+    "Hej, jag vill boka ett bord.",
+    "Imorgon klockan sju på kvällen.",
+    "Waan ka xumahay, Soomaali ma ku hadli kartaa? Waxaan nahay afar qof.",
+    "Saacadda toddobada way fiican tahay.",
+    "Axmed Cali.",
+    "Haa, waa sax."
+   ],
+   "languages": [
+    "sv",
+    "sv",
+    "so",
+    "so",
+    "so",
+    "so"
+   ],
+   "confirm": 5,
+   "names": [
+    "Axmed",
+    "Ahmed"
+   ]
+  },
+  "sv>ru": {
+   "turns": [
+    "Hej, jag vill boka ett bord.",
+    "Imorgon klockan sju på kvällen.",
+    "Извините, можно по-русски? Нас будет четыре человека.",
+    "Да, семь часов подходит.",
+    "Анна Иванова.",
+    "Да, всё верно."
+   ],
+   "languages": [
+    "sv",
+    "sv",
+    "ru",
+    "ru",
+    "ru",
+    "ru"
+   ],
+   "confirm": 5,
+   "names": [
+    "Анна",
+    "Anna"
+   ]
+  },
+  "de>en": {
+   "turns": [
+    "Guten Tag, ich möchte einen Tisch reservieren.",
+    "Morgen um sieben Uhr abends.",
+    "Sorry, can we continue in English? We are four people.",
+    "Seven o'clock is fine.",
+    "Anna Berg.",
+    "Yes, that is correct."
+   ],
+   "languages": [
+    "de",
+    "de",
+    "en",
+    "en",
+    "en",
+    "en"
+   ],
+   "confirm": 5,
+   "names": [
+    "Anna"
+   ]
+  }
+ }
+}

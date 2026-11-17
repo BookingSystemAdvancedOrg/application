@@ -1,0 +1,111 @@
+{
+ "id": "07b-cancel-hidden-number",
+ "title": "Cancellation with a hidden number: nothing is found or cancelled",
+ "fixture": {
+  "listed": {
+   "+1": [
+    {
+     "reservationId": "r9",
+     "customer": "caller",
+     "status": "reserved",
+     "startTime": "19:00",
+     "partySize": 2
+    }
+   ]
+  },
+  "caller": "hidden"
+ },
+ "expect": {
+  "cancelled": null
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag skulle vilja avboka min bokning imorgon.",
+    "Ja, avboka den, tack.",
+    "Nej tack, hej då."
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to cancel my booking for tomorrow.",
+    "Yes, please cancel it.",
+    "No, thank you. Goodbye."
+   ],
+   "confirm": null
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte meine Reservierung für morgen stornieren.",
+    "Ja, bitte stornieren Sie sie.",
+    "Nein danke, auf Wiederhören."
+   ],
+   "confirm": null
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хочу отменить своё бронирование на завтра.",
+    "Да, пожалуйста, отмените.",
+    "Нет, спасибо. До свидания."
+   ],
+   "confirm": null
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan joojiyo ballantayda berri.",
+    "Haa, fadlan jooji.",
+    "Maya mahadsanid, nabad gelyo."
+   ],
+   "confirm": null
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد إلغاء حجزي ليوم غد.",
+    "نعم، من فضلك ألغه.",
+    "لا شكرا، مع السلامة."
+   ],
+   "confirm": null
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin peruuttaa huomisen varaukseni.",
+    "Kyllä, perukaa se, kiitos.",
+    "Ei kiitos, näkemiin."
+   ],
+   "confirm": null
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym odwołać moją rezerwację na jutro.",
+    "Tak, proszę ją odwołać.",
+    "Nie, dziękuję. Do widzenia."
+   ],
+   "confirm": null
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarınki rezervasyonumu iptal etmek istiyorum.",
+    "Evet, lütfen iptal edin.",
+    "Hayır, teşekkürler. İyi günler."
+   ],
+   "confirm": null
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Jag vill avboka min bokning",
+    "Ja"
+   ],
+   "confirm": null
+  },
+  "en": {
+   "turns": [
+    "I want to cancel my booking",
+    "Yes"
+   ],
+   "confirm": null
+  }
+ }
+}

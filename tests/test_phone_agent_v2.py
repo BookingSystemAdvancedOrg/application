@@ -1,0 +1,448 @@
+"""Phone agent v2 (owner 2026-11-17): polite and natural in any language the
+caller speaks, books tables only from tool results and only after a read-back
+and a clear yes. Language hint, hysteresis and unsupported languages; the
+English instruction prompt; the tool checks before any read (past date,
+horizon, large party, card guarantee), next free days, confirmed writes, the
+caller-ID rule; the turn budget, history compaction and retry memory; the
+agent principal's booking areas."""
+
+import json
+import re
+import time
+
+import pytest
+
+from shared import staff_access, tenant
+from shared.agent_model import AgentModelError, ToolUse, Turn
+from shared.features import phone_agent as pa
+from shared.features.phone_agent import agent, copy, language
+from shared.features.phone_agent.tools import TOOLS, Executor
+from test_phone_agent_calls import KEY, NUMBER, Phone, live  # noqa: F401 (fixture)
+from test_phone_agent_support import CALLER, L, LOC_A, TENANT_A, TODAY, call, enable, env, webhook
+
+assert live and env
+TOMORROW = "2026-11-03"
+DASHES = re.compile("[\u2013\u2014]|&[nm]dash;")
+
+
+# --- language: the hint, the tag and the decision -----------------------------------------------
+
+@pytest.mark.parametrize("text, lang", [
+    ("Здравствуйте, я хотел бы забронировать столик на завтра", "ru"),
+    ("Привіт, мені потрібен столик на чотирьох, будь ласка", "uk"),
+    ("Waxaan rabaa miis berri fadlan, afar qof", "so"),
+    ("Merhaba, yarın akşam için dört kişilik bir masa istiyorum", "tr"),
+    ("سلام، می‌خواهم برای فردا یک میز رزرو کنم", "fa"),
+    ("سڵاو، دەمەوێت مێزێک بۆ سبەی ڕیزەرڤ بکەم", "ckb"),
+    ("ሰላም፣ ለነገ ጠረጴዛ ማስያዝ እፈልጋለሁ", None),        # Ethiopic: Amharic or Tigrinya, the model's tag decides
+    ("مرحبا أريد حجز طاولة لأربعة أشخاص", "ar"),
+    ("Hallo, ich möchte einen Tisch für morgen reservieren", "de"),
+])
+def test_hint_reads_scripts_and_more_word_lists(text, lang):
+    assert language.hint(text) == lang
+
+
+@pytest.mark.parametrize("text", ["okay", "Ahmed", "Ja", "Kungsgatan", "mm", "Danke"])
+def test_one_word_never_switches_even_when_the_model_tags_it(text):
+    allowed = language.V4_LANGUAGES
+    assert language.decide("sv", language.hint(text), "de", text, allowed=allowed) == ("sv", None)
+
+
+def test_switch_needs_a_second_sign():
+    allowed = language.V4_LANGUAGES
+    # three words in the new language
+    assert language.decide("sv", None, "so", "waan ka xumahay saaxiib", allowed=allowed) == ("so", None)
+    # the hint agrees
+    assert language.decide("sv", "ru", "ru", "Здравствуйте", allowed=allowed) == ("ru", None)
+    # the caller asked for a language, in Swedish
+    assert language.decide("sv", "sv", "en", "Kan vi prata engelska?", allowed=allowed) == ("en", None)
+    # Swedish words (the hint says so): a wrong tag never flips the call
+    assert language.decide("sv", "sv", "en", "Jag vill boka ett bord", allowed=allowed) == ("sv", None)
+    # the second turn tagged the same language switches
+    assert language.decide("sv", None, "de", "Danke", allowed=allowed, previous_tag="de") == ("de", None)
+
+
+def test_a_language_the_voice_cannot_speak_is_reported_not_switched():
+    flash = language.FLASH_LANGUAGES
+    assert language.decide("sv", "so", "so", "Waxaan rabaa miis berri", allowed=flash) == ("sv", "so")
+    assert language.decide("sv", None, "ti", "ሰላም ጠረጴዛ ክሕዝ ደልየ", allowed=language.V4_LANGUAGES) == ("sv", "ti")
+    assert language.tag("[xx] Hej") == (None, "Hej")         # not a language: ignored
+    assert language.tag("[nb] Hei")[0] == "no" and language.tag("[ku] Silav")[0] == "kmr"
+
+
+def test_voice_languages_follow_the_tts_model(monkeypatch):
+    monkeypatch.delenv("PHONE_AGENT_TTS_MODEL", raising=False)
+    assert "so" not in language.voice_languages() and "de" in language.voice_languages()
+    monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
+    assert {"so", "fa", "am", "ckb"} <= set(language.voice_languages())
+    assert set(language.voice_languages()) <= set(pa.LANGUAGES)       # the owner's config may list every one
+
+
+# --- copy and the instruction prompt -------------------------------------------------------------
+
+def test_fixed_sentences_are_polite_and_have_no_dashes():
+    for name in dir(copy):
+        value = getattr(copy, name)
+        texts = value.values() if isinstance(value, dict) else [value] if isinstance(value, str) else []
+        for text in texts:
+            if isinstance(text, str):
+                assert not DASHES.search(text), name
+                assert "!" not in text and "toppen" not in text.lower(), name
+    assert copy.pick(copy.ERROR, "sw") is None and copy.text(copy.ERROR, "sw") == copy.ERROR["en"]
+    assert copy.unsupported_language().count("arabiska") == 1
+
+
+def test_prompt_is_english_names_the_language_and_lists_every_bookable_day():
+    from datetime import date, timedelta
+    today = date(2026, 11, 17)
+    prompt = agent.system_prompt("de", "Sara", "Bistro A", today, "formal", last_day=today + timedelta(days=21))
+    assert "answer only in German" in prompt and "Sie in German" in prompt
+    assert "2026-11-17 Tuesday (today)" in prompt and "2026-11-18 Wednesday (tomorrow)" in prompt
+    assert "2026-12-08 Tuesday" in prompt and "2026-12-09" not in prompt
+    assert "until 2026-12-08 (Tuesday)" in prompt
+    assert "{" not in prompt and "}" not in prompt and not DASHES.search(prompt)
+    assert prompt.count("clear yes") >= 2 and "Never invent" in prompt
+    hidden = agent.system_prompt("so", "Sara", "Bistro A", today, "friendly", disclose_now=True, phone_known=False,
+                                 unsupported="ti")
+    assert "answer only in Somali" in hidden and "Speech recognition is weak in Somali" in hidden
+    assert "first say in one short sentence, in Somali, that you are the AI" in hidden
+    assert "number is hidden" in hidden and 'language:ti' in hidden and "Tigrinya" in hidden
+    assert "Use du in Swedish" in hidden
+
+
+def test_tool_schemas_name_formats_and_need_a_confirmation():
+    by = {t["name"]: t["input_schema"] for t in TOOLS}
+    assert "confirmed" in by["create_reservation"]["required"]
+    assert "confirmed" in by["move_reservation"]["required"] and "confirmed" in by["cancel_reservation"]["required"]
+    assert "YYYY-MM-DD" in by["get_availability"]["properties"]["date"]["description"]
+    assert by["end_call"]["properties"]["outcome"]["enum"][0] == "booked"
+
+
+# --- tools ---------------------------------------------------------------------------------------
+
+def _ex(e, *, caller=CALLER, location=None, loc=None, tenant_row=None, state=None):
+    return Executor(tenant_id=TENANT_A, tenant_row=tenant_row or {"tenantId": TENANT_A},
+                    location={"locationId": LOC_A, **(location or {})}, loc_config=loc or {}, invoke=e.invoke,
+                    state={} if state is None else state, caller_phone=caller, today=TODAY)
+
+
+def test_past_and_too_far_dates_are_answered_before_any_read(env):
+    ex = _ex(env)
+    past = ex.run("get_availability", {"date": "2026-11-01", "partySize": 2})
+    assert past["code"] == "pastDate" and past["say"] and past["times"] == []
+    far = ex.run("hold_table", {"date": "2026-12-07", "time": "19:00", "partySize": 2})
+    assert far["code"] == "beyondHorizon" and far["lastDate"] == "2026-11-23" and far["held"] is False
+    assert ex.run("get_availability", {"date": "2026-11-23", "partySize": 2}).get("code") is None   # last day
+    assert len([c for c in env.invoke.calls if c[0] == "get-availability"]) >= 1
+    assert not [c for c in env.invoke.calls if json.loads(json.dumps(c[2]["queryStringParameters"] or {})).get(
+        "date") in ("2026-11-01", "2026-12-07")]
+
+
+def test_large_party_and_card_guarantee_are_told_before_any_offer(env, monkeypatch):
+    from shared import guarantee
+    ex = _ex(env, location={"maxPartySizeOnline": 8})
+    big = ex.run("get_availability", {"date": TOMORROW, "partySize": 9})
+    assert big["code"] == "largeParty" and big["largeParty"] is True and "request_callback" in big["say"]
+    assert ex.state["needsCallback"] == "largeParty"
+    monkeypatch.setattr(guarantee, "required", lambda location, tenant_row, party: party >= 4)
+    env.availability.set(TOMORROW, ["19:00"])
+    held = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})
+    assert held["code"] == "guaranteeRequired" and "holdId" not in held
+    assert not [c for c in env.invoke.calls if c[0] == "get-availability"]
+
+
+def test_phone_max_party_size_books_above_the_online_limit_from_the_staff_view(env):
+    env.availability.set(TOMORROW, [], staff={"19:00": {"t6": 6, "t2a": 2}, "20:00": {"t2a": 2}})
+    ex = _ex(env, location={"maxPartySizeOnline": 4}, loc={"phoneMaxPartySize": 8})
+    answer = ex.run("get_availability", {"date": TOMORROW, "partySize": 6, "time": "19:00"})
+    assert answer["times"] == ["19:00"] and answer["suggest"] == ["19:00"]
+    held = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 6})
+    assert held["holdId"] and ex.state["proposals"][held["holdId"]]["tableIds"] == ["t6"]
+    assert "tableIds" not in held                               # no table ids in the model's view
+    assert ex.run("get_availability", {"date": TOMORROW, "partySize": 9})["code"] == "largeParty"
+
+
+def test_full_day_lists_the_next_free_days_in_one_call(env):
+    env.availability.set("2026-11-05", ["18:00", "19:30", "21:00"])
+    env.availability.set("2026-11-06", ["19:00"])
+    env.availability.set("2026-11-07", ["17:00"])
+    ex = _ex(env)
+    answer = ex.run("get_availability", {"date": TOMORROW, "partySize": 4, "time": "19:00"})
+    assert answer["dayFull"] is True and answer["weekday"] == "Tuesday"
+    assert answer["nextDays"] == [{"date": "2026-11-05", "weekday": "Thursday", "suggest": ["18:00", "19:30"]},
+                                  {"date": "2026-11-06", "weekday": "Friday", "suggest": ["19:00"]}]
+    assert ex.state["furthest"] == "next_day"
+
+
+def test_times_are_capped_and_a_spoken_time_is_put_on_the_slot_grid(env):
+    times = [f"{h:02d}:{m:02d}" for h in range(11, 23) for m in (0, 30)]
+    env.availability.set(TOMORROW, times)
+    answer = _ex(env).run("get_availability", {"date": TOMORROW, "partySize": 2, "time": "19.15"})
+    assert len(answer["times"]) == 12 and answer["times"][0] == "11:00" and answer["times"][-1] == "22:30"
+    assert answer["requestedTime"] == "19:00" and answer["suggest"] == ["18:30", "19:00", "19:30"]
+
+
+def test_create_needs_the_confirmation_and_books_under_the_caller_id(env):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex = _ex(env)
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"]
+    assert ex.run("create_reservation", {"holdId": hold, "name": "Anna"})["code"] == "notConfirmed"
+    assert ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": "yes"})["code"] == \
+        "notConfirmed"
+    assert not env.invoke.reservations
+    done = ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True,
+                                         "phone": "+46709998877"})
+    assert done["booked"] is True and done["weekday"] == "Tuesday"
+    assert env.invoke.reservations["r1"]["phone"] == CALLER      # never a number the caller merely says
+    again = ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True})
+    assert again["reservationId"] == "r1" and len(env.invoke.reservations) == 1
+
+
+def test_a_hidden_caller_id_books_under_the_confirmed_spoken_number(env):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex = _ex(env, caller="anonymous")
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"]
+    bad = ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True, "phone": "12"})
+    assert bad["code"] == "phoneInvalid"
+    ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True, "phone": "070 999 88 77"})
+    assert env.invoke.reservations["r1"]["phone"] == "+46709998877"
+
+
+def test_a_400_from_the_booking_route_is_never_called_a_taken_time(env, monkeypatch):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex = _ex(env)
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"]
+    real = env.invoke.__call__
+
+    def refuse(fn, event):
+        if fn == "create-pending-reservation":
+            env.invoke.calls.append((fn, event["routeKey"], event))
+            return 400, {"error": "name must be at most 80 characters"}
+        return real(fn, event)
+
+    monkeypatch.setattr(type(env.invoke), "__call__", lambda self, fn, event: refuse(fn, event))
+    out = ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True})
+    assert out["code"] == "nameInvalid" and "held" not in out
+
+
+def test_move_checks_the_new_time_and_offers_others(env):
+    env.invoke.listed[TOMORROW] = [{"reservationId": "r9", "customerPhone": CALLER, "status": "reserved",
+                                    "date": TOMORROW, "startTime": "19:00", "partySize": 4}]
+    env.availability.set("2026-11-04", ["18:00", "21:00"])
+    ex = _ex(env)
+    found = ex.run("find_reservations", {})
+    assert found["reservations"][0]["weekday"] == "Tuesday"
+    assert ex.run("move_reservation", {"reservationId": "r9", "date": "2026-11-04", "time": "20:00"})["code"] == \
+        "notConfirmed"
+    moved = ex.run("move_reservation", {"reservationId": "r9", "date": "2026-11-04", "time": "21:00",
+                                        "confirmed": True})
+    assert moved["moved"] is True
+    (_, _, event), = [c for c in env.invoke.calls if c[0] == "mark-arrived"]
+    assert json.loads(event["body"]) == {"date": "2026-11-04", "startTime": "21:00", "tableIds": ["t4"]}
+    assert ex.run("cancel_reservation", {"reservationId": "r9"})["code"] == "notConfirmed"
+
+
+def test_find_reads_the_whole_horizon_in_parallel(env):
+    env.invoke.listed["2026-11-20"] = [{"reservationId": "r7", "customerPhone": CALLER, "status": "reserved",
+                                        "date": "2026-11-20", "startTime": "18:00", "partySize": 2}]
+    found = _ex(env).run("find_reservations", {})
+    assert [r["reservationId"] for r in found["reservations"]] == ["r7"]
+    days = {c[2]["queryStringParameters"]["date"] for c in env.invoke.calls if c[0] == "get-reservation"}
+    assert len(days) == 22 and min(days) == "2026-11-02" and max(days) == "2026-11-23"
+
+
+def test_info_and_menu_are_structured_english(env):
+    env.invoke.site = {"locations": [{"locationId": LOC_A, "name": "Bistro A", "address": "Storgatan 1",
+                                      "businessHours": {"tue": [{"opensAt": "11:00", "closesAt": "22:00"}],
+                                                        "mon": [{"opensAt": "17:00", "closesAt": "01:00"}]},
+                                      "specialDays": [{"date": "2026-12-24", "kind": "closed", "note": "Julafton"}],
+                                      "maxPartySizeOnline": 8}]}
+    ex = _ex(env, location={"maxPartySizeOnline": 8})
+    info = ex.run("get_restaurant_info", {})
+    assert info["hours"] == [{"weekday": "Monday", "open": "17:00", "close": "01:00"},
+                             {"weekday": "Tuesday", "open": "11:00", "close": "22:00"}]
+    assert info["hoursNote"] and info["specialDays"][0] == {"date": "2026-12-24", "weekday": "Thursday",
+                                                            "kind": "closed", "note": "Julafton"}
+    assert info["lastBookableDate"] == "2026-11-23" and info["largestPartyByPhone"] == 8
+    menu = ex.run("get_menu", {"query": "lasagne"})
+    assert menu == {"dishes": [{"name": "Vegetarisk lasagne", "price": 189, "currency": "SEK"}]}
+
+
+def test_callback_topics_are_tagged(env):
+    calls = []
+    ex = _ex(env)
+    ex.callbacks = lambda **kw: calls.append(kw) or "cb1"
+    ex.run("request_callback", {"topic": "language:ti"})
+    ex.run("request_callback", {"topic": "wants a cake"})
+    assert [c["topic"] for c in calls] == ["language:ti", "other wants a cake"]
+
+
+# --- the agent loop ------------------------------------------------------------------------------
+
+class Scripted:
+    def __init__(self, turns, delay=0.0):
+        self.turns, self.delay, self.calls = list(turns), delay, 0
+
+    def converse(self, system, messages, tools, *, max_tokens):
+        self.calls += 1
+        time.sleep(self.delay)
+        item = self.turns.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class NoTools:
+    def run(self, name, args):
+        return {"ok": True}
+
+
+def test_turn_budget_and_errors_answer_in_the_call_language():
+    lookup = Turn(tool_uses=(ToolUse("u1", "get_menu", {}),))
+    slow = Scripted([lookup, lookup, Turn(text="[de] Gerne.")], delay=0.05)
+    result = agent.run_turn(slow, [], "Hallo", NoTools(), system="s", lang="de", budget_s=0.01)
+    assert result.error and result.reply == copy.ERROR["de"] and slow.calls == 1
+    failing = Scripted([AgentModelError("unavailable", True)])
+    assert agent.run_turn(failing, [], "Merhaba", NoTools(), system="s", lang="tr").reply == copy.ERROR["tr"]
+    looping = Scripted([lookup] * 6)
+    result = agent.run_turn(looping, [], "Hej", NoTools(), system="s", lang="sv")
+    assert result.error and looping.calls == agent.MAX_ROUNDS
+
+
+def test_a_booking_in_the_turn_always_gets_its_spoken_answer():
+    book = Turn(tool_uses=(ToolUse("u1", "create_reservation", {}),))
+    model = Scripted([book, Turn(text="[sv] Klart, ni är bokade.")], delay=0.05)
+    result = agent.run_turn(model, [], "Ja", NoTools(), system="s", lang="sv", budget_s=0.01)
+    assert not result.error and result.reply == "Klart, ni är bokade."
+
+
+def test_text_beside_a_tool_use_is_spoken():
+    bye = Turn(text="[sv] Tack för samtalet, hej då.", tool_uses=(ToolUse("u1", "end_call", {}),))
+    result = agent.run_turn(Scripted([bye, Turn(text=None)]), [], "Hej då", NoTools(), system="s", lang="sv")
+    assert result.reply == "Tack för samtalet, hej då." and result.language == "sv" and not result.error
+
+
+def test_old_tool_results_are_shortened_but_keep_ids():
+    big = json.dumps({"holdId": "p1", "times": ["18:00"] * 200, "date": TOMORROW})
+    messages = []
+    for i in range(4):
+        messages += [{"role": "user", "content": f"turn {i}"},
+                     {"role": "assistant", "content": [{"type": "tool_use", "id": f"u{i}", "name": "x", "input": {}}]},
+                     {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"u{i}", "content": big}]}]
+    agent.compact(messages)
+    first = json.loads(messages[2]["content"][0]["content"])
+    assert first["holdId"] == "p1" and "times" not in first
+    assert json.loads(messages[-1]["content"][0]["content"])["times"]          # the last rounds stay whole
+
+
+# --- whole calls: switching, unsupported languages, retries ---------------------------------------
+
+def _say(phone, text):
+    return phone.say(text)
+
+
+def test_a_somali_caller_hears_somali_when_the_voice_speaks_it(live, monkeypatch):
+    monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
+    seen = []
+    live.model.converse = lambda system, messages, tools, *, max_tokens: (
+        seen.append(system), Turn(text="[so] Haa, immisa qof?"))[1]
+    phone = Phone(live)
+    reply = phone.say("Waxaan rabaa miis berri fadlan")
+    assert reply == "Waxaan ahay kaaliyaha AI-ga ee makhaayadda. Haa, immisa qof?"
+    assert "answer only in Somali" in seen[0] and "Speech recognition is weak in Somali" in seen[0]
+    assert phone.row()["language"] == "so"
+
+
+def test_somali_on_a_voice_that_cannot_speak_it_gets_the_fixed_sentences_then_a_callback(live, monkeypatch):
+    monkeypatch.delenv("PHONE_AGENT_TTS_MODEL", raising=False)
+    live.model.responses = [Turn(text="[so] Haa, immisa qof?"), Turn(text="[so] Waan ka xumahay.")]
+    phone = Phone(live)
+    first = phone.say("Waxaan rabaa miis berri fadlan")
+    assert first == copy.unsupported_language() and phone.row()["language"] == "sv"
+    second = phone.say("Ma garanayo, waxaan rabaa Soomaali")
+    assert second == copy.unsupported_language(callback=True)
+    _, body = call(live, "GET", L + "/callbacks")
+    assert body["callbacks"][0]["topic"] == "language:so"
+    messages = agent.loads(phone.row()["agentMessages"])
+    assert messages[-1]["content"] == second                           # the history holds what was said
+
+
+def test_a_language_without_a_fixed_sentence_is_disclosed_by_the_model(live, monkeypatch):
+    monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
+    seen = []
+    replies = iter([Turn(text="[sw] Habari, mimi ni msaidizi wa AI. Watu wangapi?"), Turn(text="[sw] Sawa.")])
+    live.model.converse = lambda system, messages, tools, *, max_tokens: (seen.append(system), next(replies))[1]
+    phone = Phone(live)
+    phone.say("Habari, nataka kuhifadhi meza kesho jioni tafadhali")
+    assert phone.row()["language"] == "sw"
+    assert phone.row()["disclosure"]["modelSaid"] == ["sw"] and phone.row()["disclosure"]["languages"] == ["sv", "sw"]
+    assert "that you are the AI" not in seen[0]                   # the hint did not know Swahili: next turn
+    phone.say("Watu wanne")
+    assert "first say in one short sentence, in Swahili" in seen[1]
+
+
+def test_okay_and_a_name_keep_a_swedish_call_swedish(live):
+    live.model.responses = [Turn(text="[en] Okay."), Turn(text="[de] Gut."), Turn(text="[sv] Tack.")]
+    phone = Phone(live)
+    for text in ("Okay", "Ahmed", "Kungsgatan"):
+        phone.say(text)
+        assert phone.row()["language"] == "sv"
+    assert phone.row()["disclosure"]["languages"] == ["sv"]
+
+
+def test_a_provider_retry_of_the_same_turn_runs_no_tool_twice(live):
+    from test_phone_agent_live import TOOLS as PROVIDER_TOOLS, turn
+    live.availability.set(TOMORROW, ["19:00"])
+    phone = Phone(live)
+    greeting = phone.row()["disclosure"]["text"]
+    body = {"booqy": phone.ids, "tools": PROVIDER_TOOLS, "messages": [
+        {"role": "assistant", "content": greeting},
+        {"role": "user", "content": "Hej, jag vill boka ett bord för fyra imorgon klockan 19"}]}
+    first = turn(live, body)
+    count = len(live.invoke.calls)
+    assert turn(live, body) == first and len(live.invoke.calls) == count
+    assert phone.row()["lastTurn"]["key"] and "Hej" not in json.dumps(phone.row()["lastTurn"]["key"])
+    phone.hang_up()
+    assert "lastTurn" not in phone.row()                          # never kept past the call
+
+
+def test_lex_line_meters_the_call_when_the_agent_ends_it(live):
+    from test_phone_agent_live import lex
+    out, attrs = lex(live, "contact-9", "Hej")
+    live.model.responses = [
+        {"tool_uses": [{"id": "u1", "name": "end_call", "input": {"outcome": "info", "summary": "Hälsade"}}]},
+        Turn(text="Tack för samtalet, hej då."),
+    ]
+    lex(live, "contact-9", "Tack, det var allt", attrs)
+    row = live.live.calls.get_call(attrs["tenantId"], attrs["callId"])
+    assert row["status"] == "processed" and row["endReason"] == "agent_end"
+    out, _ = lex(live, "contact-10", "")
+    assert out["messages"][0]["content"]
+
+
+# --- settings and the agent principal ------------------------------------------------------------
+
+def test_phone_max_party_size_is_validated_and_kept_when_an_older_admin_saves(env):
+    assert enable(env, phoneMaxPartySize=12)["phoneMaxPartySize"] == 12
+    assert enable(env, version=1)["phoneMaxPartySize"] == 12                 # absent: kept
+    assert enable(env, version=2, phoneMaxPartySize=None)["phoneMaxPartySize"] is None
+    status, body = call(env, "PUT", L, body={**pa_always(), "version": 3, "phoneMaxPartySize": 51})
+    assert status == 400 and body["field"] == "phoneMaxPartySize"
+
+
+def pa_always():
+    from test_phone_agent_support import ALWAYS
+    return dict(ALWAYS)
+
+
+def test_new_configs_default_to_the_formal_tone(env):
+    status, body = call(env, "GET", "/tenant/phone-agent")
+    assert status == 200 and body["config"]["tone"] == "formal"
+
+
+def test_agent_principal_may_book_whatever_the_staff_defaults_say():
+    row = {"staffAccess": {"defaults": ["statistik"]}}
+    assert staff_access.allows(row, "staff_user", tenant.SYSTEM_SUB_PREFIX + LOC_A, ("bokningar", "layout"))
+    assert staff_access.AGENT_SUB_PREFIX == tenant.SYSTEM_SUB_PREFIX
+    assert not staff_access.allows(row, "staff_user", "human-sub", "bokningar")
+    assert staff_access.allows(row, "staff_user", tenant.SYSTEM_SUB_PREFIX + LOC_A, "statistik") is False

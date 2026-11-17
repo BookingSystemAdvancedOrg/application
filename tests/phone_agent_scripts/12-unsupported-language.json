@@ -1,0 +1,31 @@
+{
+ "id": "12-unsupported-language",
+ "title": "A language the voice cannot speak (Tigrinya): the fixed sentences in Swedish, English and Arabic, no switch, a callback tagged language",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "19:00"
+   ]
+  }
+ },
+ "expect": {
+  "booked": null,
+  "unsupported": true,
+  "callback": "language:"
+ },
+ "calls": {
+  "ti": {
+   "turns": [
+    "ሰላም፣ ጽባሕ ምሸት ሰዓት ሸውዓተ ንኣርባዕተ ሰባት ጠረጴዛ ክሕዝ ደልየ ኣለኹ።",
+    "ትግርኛ ጥራይ እየ ዝዛረብ፣ ይቕሬታ።",
+    "የቐንየለይ።"
+   ],
+   "languages": [
+    "sv",
+    "sv",
+    "sv"
+   ],
+   "confirm": null
+  }
+ }
+}

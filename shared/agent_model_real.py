@@ -100,6 +100,28 @@ def read_stream(stream):
     return Turn(("".join(text).strip() or None), tuple(tools), stop)
 
 
+THINKING_HEADROOM = 1500
+DEFAULT_THINKING = "low"
+
+
+def thinking_fields():
+    """(additionalModelRequestFields, extra max tokens) from PHONE_AGENT_THINKING.
+
+    Claude Haiku 5.5 thinks by default (effort medium), and its reasoning
+    counts against maxTokens: a hard language (Tigrinya) used every token on
+    reasoning and answered nothing. The evaluation (scripts/phone_agent_eval.py)
+    showed thinking off is about a second faster but reasons in the spoken
+    text and skips read-backs, so the default is adaptive thinking at effort
+    "low" with THINKING_HEADROOM tokens on top of the reply budget; "medium"
+    or "high" think more, "off" disables thinking, "default" sends nothing."""
+    value = (os.environ.get("PHONE_AGENT_THINKING") or DEFAULT_THINKING).lower()
+    if value == "off":
+        return {"thinking": {"type": "disabled"}}, 0
+    if value in ("low", "medium", "high"):
+        return {"output_config": {"effort": value}}, THINKING_HEADROOM
+    return None, THINKING_HEADROOM
+
+
 class RealAgentModel(AgentModel):
     def __init__(self, client=None, model_id=None):
         self.model_id = model_id or os.environ.get("PHONE_AGENT_MODEL_ID") or ""
@@ -117,6 +139,10 @@ class RealAgentModel(AgentModel):
             raise AgentModelError("not_configured")
         args = {"modelId": self.model_id, "system": [{"text": system}], "messages": to_bedrock_messages(messages),
                 "inferenceConfig": {"maxTokens": int(max_tokens)}}  # newer models refuse `temperature`
+        extra, headroom = thinking_fields()
+        if extra:
+            args["additionalModelRequestFields"] = extra
+            args["inferenceConfig"]["maxTokens"] = int(max_tokens) + headroom
         tool_config = to_bedrock_tools(tools)
         if tool_config:
             args["toolConfig"] = tool_config

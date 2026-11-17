@@ -132,3 +132,55 @@ def availability_answer(guest, staff, layout, party_size, time=None, *, nearby_t
             out["nearby"] = nearby(guest, staff, layout, time, party_size, nearby_tables=nearby_tables,
                                    phone_only_tables=phone_only_tables)
     return out
+
+
+# --- parties above the online maximum (phoneMaxPartySize) -----------------------------------------
+# The guest view has no options for them, so the agent reads the staff view
+# like a staff member taking the call: one free table that seats the party,
+# else two free tables next to each other on the floor plan.
+
+def staff_option(staff, layout, time, party_size):
+    """Table ids for the party at `time` from the staff view, else None."""
+    slot = _slot(staff, time)
+    if not slot:
+        return None
+    free = sorted((int(t.get("seats") or 0), t["tableId"]) for t in slot.get("tables") or [] if t.get("tableId"))
+    single = next((tid for seats, tid in free if seats >= party_size), None)
+    if single:
+        return [single]
+    pair = next((n for n in nearby({}, staff, layout, time, party_size) if n["kind"] == "adjacent_pair"), None)
+    return list(pair["tableIds"]) if pair else None
+
+
+def staff_times(staff, layout, party_size):
+    """Start times ("HH:MM") the staff view can seat the party at, in clock order."""
+    times = {s["startTime"] for s in (staff or {}).get("slots") or [] if s.get("startTime")}
+    return sorted((t for t in times if staff_option(staff, layout, t, party_size)), key=_minute)
+
+
+def staff_offers(staff, layout, time, party_size):
+    """`offers()` for the staff view (no nearby kinds: every free table already counts)."""
+    option = staff_option(staff, layout, time, party_size)
+    if option:
+        return {"bookable": True, "tableIds": option}
+    times = staff_times(staff, layout, party_size)
+    wanted = _minute(time)
+    return {"bookable": False, "reason": "time_taken" if times else "day_full",
+            "before": sorted((t for t in times if _minute(t) < wanted), key=lambda t: wanted - _minute(t)),
+            "after": sorted((t for t in times if _minute(t) > wanted), key=lambda t: _minute(t) - wanted),
+            "nearby": [], "dayFull": not times}
+
+
+def spread(times, wished=None, cap=12):
+    """At most `cap` times for the model (the history stays small): the
+    first, the last and the ones nearest the wished time, in clock order."""
+    times = list(times)
+    if len(times) <= cap:
+        return times
+    keep = {times[0], times[-1]}
+    if wished:
+        keep |= set(sorted(times, key=lambda t: (abs(_minute(t) - _minute(wished)), _minute(t)))[:cap - 2])
+    else:
+        step = (len(times) - 1) / (cap - 1)
+        keep |= {times[round(i * step)] for i in range(cap)}
+    return sorted(keep, key=_minute)[:cap]

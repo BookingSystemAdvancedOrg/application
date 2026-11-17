@@ -45,6 +45,7 @@ from tenant_support import LOCATION_TABLE_DEFAULT
 
 SCRIPTS = Path(__file__).parent / "phone_agent_scripts"
 HIDDEN = "anonymous"
+RESTAURANT = "Bistro Lindgården"
 _STYLE = (("digits", re.compile(r"\d")), ("symbols", re.compile(r"[#*_`\[\]{}<>|/\\]")),
           ("exclamation", re.compile(r"!")), ("dashes", re.compile("[\u2013\u2014]")),
           ("emoji", re.compile("[\U0001F300-\U0001FAFF☀-➿]")), ("list", re.compile(r"(^|\n)\s*[-*•]\s")))
@@ -102,6 +103,11 @@ def _refusing_patch(invoke, availability):
 
 def setup(e, scenario, monkeypatch):
     fixture = scenario.get("fixture") or {}
+    # A real restaurant name (the default "Location loc-a-1" holds digits the style grader counts).
+    e.res.Table(LOCATION_TABLE_DEFAULT).update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": f"LOCATION#{LOC_A}"},
+        UpdateExpression="SET #n = :n", ExpressionAttributeNames={"#n": "name"},
+        ExpressionAttributeValues={":n": RESTAURANT})
     for offset, times in (fixture.get("availability") or {}).items():
         e.availability.set(day(offset), times)
     if fixture.get("layout") is False:

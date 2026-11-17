@@ -103,7 +103,8 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  phone_known=executor.caller_known, unsupported=state.get("unsupported"))
-    result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang)
+    result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang,
+                            keep_preamble=disclose_now)
     new_lang, unsupported = _after_turn(lang, hint, result, caller_text, state, allowed)
     if unsupported:
         result.reply = _unsupported_reply(executor, state, unsupported, messages)
@@ -190,7 +191,8 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  unsupported=state.get("unsupported"))
-    result = agent.run_turn(model, messages, text, executor, system=system, lang=prompt_lang)
+    result = agent.run_turn(model, messages, text, executor, system=system, lang=prompt_lang,
+                            keep_preamble=disclose_now)
     switched = None
     if not language_:
         lang, unsupported = _after_turn(lang, hint, result, text, state, allowed)

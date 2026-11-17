@@ -8,13 +8,14 @@ data: it gets only the returned text."""
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from shared import agent_model
 from shared.features.phone_agent import copy, language
-from shared.features.phone_agent.tools import TOOLS
+from shared.features.phone_agent.tools import TOOLS, read_as
 
 MAX_ROUNDS = 4          # model passes per caller utterance (tool calls in between)
 MAX_TOKENS = 400
@@ -111,13 +112,19 @@ def compact(messages):
 
 
 def run_turn(model, messages: list, caller_text: str, executor, *, system: str, lang="sv",
-             budget_s=TURN_BUDGET_S) -> TurnResult:
+             budget_s=TURN_BUDGET_S, keep_preamble=False) -> TurnResult:
     """Appends the caller's text and the agent's turns to `messages` (in
     place) and returns the reply. A model error, too many rounds or a turn
     over its time budget ends the turn with the fixed error sentence in the
     call's language (the caller is offered a callback). A booking, move or
     cancellation that already succeeded in this turn always gets its last
-    round, so the caller hears what was done."""
+    round, so the caller hears what was done.
+
+    Text the model writes before a lookup or a write ("one moment, I am
+    checking") is left out when a later round answers: the caller hears the
+    whole reply only once the turn ends, so it would only repeat. The
+    goodbye written with end_call is kept; `keep_preamble` keeps it all
+    (the model was asked to say the AI sentence itself in this reply)."""
     started = time.monotonic()
     compact(messages)
     messages.append({"role": "user", "content": caller_text})
@@ -148,8 +155,10 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             tagged, text = language.tag(turn.text)
             code = tagged or code
             text = _whole_sentences(text) if turn.stop_reason == "max_tokens" else (text or "").strip()
-            if text and text not in [t for _, t in spoken]:
-                spoken.append((tagged, text))
+            text = spoken_text(text, tagged or lang)
+            preamble = bool(turn.tool_uses) and not all(u.name == "end_call" for u in turn.tool_uses)
+            if text and text not in [t for _, t, _ in spoken]:
+                spoken.append((tagged, text, preamble and not keep_preamble))
         if not turn.tool_uses:
             if not spoken:
                 return failed(rounds)          # never silence: the error sentence offers a callback
@@ -160,7 +169,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             result = executor.run(use.name, use.input)
             calls.append({"name": use.name, "ok": _ok(result)})
             results.append({"type": "tool_result", "tool_use_id": use.id,
-                            "content": json.dumps(result, ensure_ascii=False, default=str)})
+                            "content": json.dumps(read_as(result), ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
         if spoken and all(u.name == "end_call" for u in turn.tool_uses):
             # The goodbye was said with end_call: no further round (it only repeats the goodbye).
@@ -176,8 +185,47 @@ _SENTENCE_END = ".?!。？！؟።"
 def _said(spoken, code):
     """The spoken reply: every piece in the reply's language (a piece the
     model tagged with another language before a tool call is left out, so
-    the caller never hears two languages in one reply)."""
-    return " ".join(text for tagged, text in spoken if tagged in (None, code))
+    the caller never hears two languages in one reply), without the
+    announcements written before a lookup when a later piece answers."""
+    pieces = [(text, preamble) for tagged, text, preamble in spoken if tagged in (None, code)]
+    answer = [text for text, preamble in pieces if not preamble]
+    return " ".join(answer or [text for text, _ in pieces])
+
+
+# A tag inside the reply ("...\n[de] Am Mittwoch..."): the model started a new text block.
+_INNER_TAG = re.compile(r"\[([A-Za-z]{2,3})(?:[-_][A-Za-z]{2,4})?\]\s*")
+# A note to itself in English ("Let me correct that: ..."): never spoken.
+_META = re.compile(r"^\s*(let me (correct|fix|rephrase|try)|correction\b|note\s*:|wait\b|actually,|oops|i (made a mistake|"
+                   r"need to correct|should (have )?(say|said|use|used))|sorry, (that|i (made|used|said)))", re.I)
+# The same inside a sentence ("... Corrected: Haa, ..."): only what follows is meant.
+_META_INLINE = re.compile(r"\b(corrected|correction|let me (correct|rephrase)( that)?)\s*:\s*", re.I)
+_DASHES = re.compile(r"\s*[\u2013\u2014]\s*")
+
+
+def spoken_text(text, code=None):
+    """What the voice may say of one model text: no inner language tags, no
+    English note the model wrote to itself (a self-correction keeps only
+    what follows it), no dashes or markdown (they are read aloud or break
+    the sentence melody), no exclamation marks (an exclaimed voice sounds
+    informal)."""
+    text = str(text or "")
+    paragraphs = [p for p in re.split(r"\n\s*", text) if p.strip()]
+    if code != "en":
+        meta = [i for i, p in enumerate(paragraphs) if _META.match(_INNER_TAG.sub("", p))]
+        if meta:
+            after = paragraphs[meta[-1] + 1:]
+            paragraphs = after or [p for i, p in enumerate(paragraphs) if i not in meta]
+    text = " ".join(paragraphs)
+    if code != "en":
+        inline = list(_META_INLINE.finditer(text))
+        if inline and text[inline[-1].end():].strip():
+            text = text[inline[-1].end():]
+    text = _INNER_TAG.sub(lambda m: "" if language.normalise(m.group(1)) in language.NAMES else m.group(0), text)
+    text = _DASHES.sub(", ", text)
+    text = re.sub(r"[*#`]+", "", text)
+    text = re.sub(r"[!¡]+", lambda m: "" if m.group(0) == "¡" else ".", text)   # calm, never exclaimed
+    text = re.sub(r",\s*([.?!])", r"\1", text)
+    return " ".join(text.split()).strip()
 
 
 def _whole_sentences(text):

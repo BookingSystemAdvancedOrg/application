@@ -60,7 +60,11 @@ location and forwards the restaurant's number.
   `find_reservations` reads the whole horizon (parallel) and only the caller's number; move (checked
   against availability first) and cancel act only on a booking found that way.
 - **Turn engine**: at most 4 model rounds and a 9 s budget per caller utterance (a booking that succeeded
-  always gets its spoken answer), text beside a tool call is spoken, older large tool results are
+  always gets its spoken answer), the goodbye beside end_call is spoken but an announcement before a
+  lookup ("one moment") is dropped when the answer follows, inner language tags, English self-corrections,
+  dashes and exclamation marks never reach the voice (`agent.spoken_text`), every tool result carries
+  `readAs` (each time and date in spoken English, so "18:00" is never turned into another hour), a
+  lookup after `find_reservations` reminds that a move needs no name or hold, older large tool results are
   shortened (ids kept), the stored history is capped at 120 KB, and a provider retry of the same turn
   (same message history within 30 s) gets the same reply without running tools again (`lastTurn`, removed
   when the call is processed). The Connect line ends and meters the call when the agent says goodbye.
@@ -97,9 +101,12 @@ Thirteen scenarios (booking, other time, full day, horizon and past date, large 
 cancel with and without caller ID, move to a taken time, mishearing, switch mid-call, false switch,
 unsupported language, unclear yes) in sv, en, de, ru, so, ar, fi, pl and tr; graders safety, outcome,
 language, and live also style, register and latency. The report holds codes and timings, no transcripts.
-A full live run is about 100 calls of Claude Haiku 5.5 (well under USD 10). 2026-11-17: 92 of 104 calls
-passed every grader, safety and language 104 of 104; the rest are digits in Somali replies, two questions
-in one reply and run-to-run variance in the move scenario.
+A full live run is about 100 calls of Claude Haiku 5.5 (well under USD 10). 2026-11-17, after the
+spoken-text, readAs and move fixes: 93 of 104 calls passed every grader, safety and language 104 of 104,
+moves 18 of 18 over two runs; the rest are long read-back sentences, two questions in one reply, digits in
+Somali and turns over the 9 s budget when four calls run at once. Somali on Claude Haiku 5.5 still mixes up
+dates and corrects itself; the same six Somali scenarios passed every grader on Claude Sonnet 5.5
+(an owner decision: cost).
 
 ## Unverified
 

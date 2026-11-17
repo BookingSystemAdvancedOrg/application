@@ -111,6 +111,10 @@ SAY = {
     "nameInvalid": "The name could not be used. Ask for the name again.",
     "phoneInvalid": "The phone number could not be used. Ask for it again, or book without a number.",
 }
+# Beside a time lookup once the caller's own booking was found: a move is not a new booking.
+MOVE_NEXT = ("If the caller wants to move the booking found by find_reservations: ask for no name and do not "
+             "hold. When they pick a time, read back the old and the new day and time, ask whether to move it, "
+             "and after a clear yes call move_reservation.")
 # The existing Lambdas the tools invoke (`<env>-<name>:live`). A cancel goes
 # through the staff status route on mark-arrived, never cancel-reservation
 # (a guest route that needs the manage-link token).
@@ -469,6 +473,8 @@ class Executor:
         answer["before"], answer["after"] = answer["before"][:3], answer["after"][:3]
         answer["times"] = of.spread(answer["times"], time, MAX_TIMES)
         answer.update({"date": day, "weekday": _weekday(day), "partySize": party})
+        if self.state.get("found"):
+            answer["next"] = MOVE_NEXT
         if not answer["times"] and not answer.get("nearby"):
             answer["dayFull"] = True
             answer["nextDays"] = self._next_days(day, party, time)
@@ -501,7 +507,10 @@ class Executor:
         hold_id = f"p{len(self.state['proposals']) + 1}"
         self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party, "tableIds": table_ids,
                                             "nearby": bool(kind)}
-        return {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party}
+        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party}
+        if self.state.get("found"):
+            held["next"] = MOVE_NEXT
+        return held
 
     def _counter(self, result, time):
         if result.get("nearby"):
@@ -750,3 +759,82 @@ class Executor:
         if self.state.get("outcome") == "booked":
             return self.state.get("accepted") or "none"
         return self.state.get("furthest") or "none"
+
+
+# --- how to say what a result holds -------------------------------------------------------------
+#
+# The model turned "18:00" into "twelve in the evening" in Somali and "17:30"
+# into "seven thirty" in Turkish: every time and date in a result gets its
+# spoken English form (`readAs`), which the model only has to translate.
+
+_ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
+_ORDINALS = ("", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+             "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth",
+             "eighteenth", "nineteenth", "twentieth", "twenty-first", "twenty-second", "twenty-third",
+             "twenty-fourth", "twenty-fifth", "twenty-sixth", "twenty-seventh", "twenty-eighth", "twenty-ninth",
+             "thirtieth", "thirty-first")
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+           "November", "December")
+_CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def clock_words(value):
+    """"19:30" -> "half past seven in the evening" (English, for the model)."""
+    m = _CLOCK.match(str(value))
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2))
+    part = ("at night" if hour < 5 else "in the morning" if hour < 12 else "in the afternoon" if hour < 17
+            else "in the evening")
+    if hour == 12 and minute == 0:
+        return "twelve noon"
+    if hour == 0 and minute == 0:
+        return "midnight"
+    h12 = hour % 12 or 12
+    nxt = (hour + 1) % 12 or 12
+    if minute == 0:
+        said = f"{_ONES[h12]} o'clock"
+    elif minute == 30:
+        said = f"half past {_ONES[h12]}"
+    elif minute == 15:
+        said = f"quarter past {_ONES[h12]}"
+    elif minute == 45:
+        said = f"quarter to {_ONES[nxt]}"
+    else:
+        said = f"{minute} minutes past {_ONES[h12]}"
+    return f"{said} {part}"
+
+
+def date_words(value):
+    """"2026-11-04" -> "Wednesday the fourth of November" (no year)."""
+    if not _ISO_DAY.match(str(value)):
+        return None
+    try:
+        day = date.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return f"{_WEEKDAYS[day.weekday()]} the {_ORDINALS[day.day]} of {_MONTHS[day.month - 1]}"
+
+
+def read_as(result):
+    """The result with `readAs`: {"19:30": "half past seven in the evening",
+    "2026-11-04": "Wednesday the fourth of November"} for every time and
+    date it holds (none: the result unchanged)."""
+    if not isinstance(result, dict):
+        return result
+    found = {}
+
+    def walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str) and value not in found:
+            said = clock_words(value) or date_words(value)
+            if said:
+                found[value] = said
+    walk(result)
+    return {**result, "readAs": found} if found else result

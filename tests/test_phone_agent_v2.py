@@ -322,6 +322,61 @@ def test_text_beside_a_tool_use_is_spoken():
     assert result.reply == "Tack för samtalet, hej då." and result.language == "sv" and not result.error
 
 
+def test_an_announcement_before_a_lookup_is_left_out_when_the_answer_follows():
+    look = Turn(text="[sv] Ett ögonblick, jag kontrollerar.", tool_uses=(ToolUse("u1", "get_menu", {}),))
+    model = Scripted([look, Turn(text="[sv] Det finns lasagne i dag.")])
+    assert agent.run_turn(model, [], "Har ni lasagne?", NoTools(), system="s", lang="sv").reply == \
+        "Det finns lasagne i dag."
+    # the model said the AI sentence itself (a language without a fixed one): kept
+    look = Turn(text="[ta] நான் AI உதவியாளர்.", tool_uses=(ToolUse("u1", "get_menu", {}),))
+    model = Scripted([look, Turn(text="[ta] லசானியா உள்ளது.")])
+    assert agent.run_turn(model, [], "x", NoTools(), system="s", lang="ta", keep_preamble=True).reply == \
+        "நான் AI உதவியாளர். லசானியா உள்ளது."
+
+
+def test_inner_tags_self_corrections_and_dashes_are_never_spoken():
+    assert agent.spoken_text("Leider ist morgen ausgebucht.\n[de] Am Mittwoch ist um sieben frei.", "de") == \
+        "Leider ist morgen ausgebucht. Am Mittwoch ist um sieben frei."
+    said = agent.spoken_text("Свободно в шесть или half past seven?\n\nLet me correct that: the times are ...\n\n"
+                             "[ru] Свободно в шесть или в половине восьмого. Какое время вам подходит?", "ru")
+    assert said == "Свободно в шесть или в половине восьмого. Какое время вам подходит?"
+    assert agent.spoken_text("Номер для связи \u2014 тот, с которого вы звоните.", "ru") == \
+        "Номер для связи, тот, с которого вы звоните."
+    assert not DASHES.search(agent.spoken_text("**Klart** \u2013 välkommen.", "sv"))
+    assert agent.spoken_text("Hej då och välkommen!", "sv") == "Hej då och välkommen."
+    assert agent.spoken_text("¡Hasta luego!", "es") == "Hasta luego."
+    assert agent.spoken_text("Berri, Talaado, sagaal... Corrected: Berri, Talaado, saddexaad. Midkee?", "so") == \
+        "Berri, Talaado, saddexaad. Midkee?"
+    # English callers may say "actually"
+    assert agent.spoken_text("Actually, seven is fine.", "en") == "Actually, seven is fine."
+
+
+def test_tool_results_carry_how_to_say_their_times_and_dates():
+    from shared.features.phone_agent.tools import clock_words, date_words, read_as
+    assert clock_words("19:30") == "half past seven in the evening"
+    assert clock_words("18:00") == "six o'clock in the evening"
+    assert clock_words("11:45") == "quarter to twelve in the morning"
+    assert clock_words("12:00") == "twelve noon"
+    assert date_words("2026-11-04") == "Wednesday the fourth of November"
+    out = read_as({"date": "2026-11-04", "suggest": ["17:30", "19:30"], "holdId": "p1"})
+    assert out["readAs"] == {"2026-11-04": "Wednesday the fourth of November",
+                             "17:30": "half past five in the evening", "19:30": "half past seven in the evening"}
+    assert read_as({"ok": True}) == {"ok": True}
+    seen = []
+
+    class Tools:
+        def run(self, name, args):
+            return {"times": ["19:00"]}
+
+    class Model(Scripted):
+        def converse(self, system, messages, tools, *, max_tokens):
+            seen.append(messages[-1])
+            return super().converse(system, messages, tools, max_tokens=max_tokens)
+    model = Model([Turn(tool_uses=(ToolUse("u1", "get_availability", {}),)), Turn(text="[sv] Klockan sju.")])
+    agent.run_turn(model, [], "Imorgon?", Tools(), system="s", lang="sv")
+    assert "seven o'clock in the evening" in seen[-1]["content"][0]["content"]
+
+
 def test_old_tool_results_are_shortened_but_keep_ids():
     big = json.dumps({"holdId": "p1", "times": ["18:00"] * 200, "date": TOMORROW})
     messages = []

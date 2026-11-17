@@ -40,9 +40,7 @@ TRIGGER:
     GET  /locations/{locationId}/orders/tabs
          Every table with an open bill, oldest first: {serviceDate, tabs:
          [{tableId, tableLabel, title, serviceDate, amount, count, oldestAt,
-         orders, paying?, stale, mismatch?}]}. Area Beställningar or Layout;
-         with Layout only, the orders carry no personal data (no name,
-         phone, e-mail, notes or history).
+         orders, paying?, stale, mismatch?}]}. Area Beställningar or Layout.
     POST /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/pay-link
          {} -> {url, expiresAt, amount, count}: the link (QR code) the guest
          pays the whole bill with. 409 bill_empty.
@@ -308,22 +306,10 @@ def _regenerate(location_id, ctx, table_id):
     return http.respond(200, _code_view(table, base, slug))
 
 
-# What staff with only the Layout area see of an order on a table's bill:
-# the dishes and amounts, never who ordered (no name, phone, e-mail, notes or
-# history with staff ids).
-_FLOOR_HIDDEN = ("customerName", "customerPhone", "customerEmail", "notes", "history", "paidOutside",
-                 "writtenOff", "refund", "giftCard")
-
-
-def floor_view(item):
-    view = o.staff_view(item)
-    return {k: v for k, v in view.items() if k not in _FLOOR_HIDDEN}
-
-
 def _tabs(location_id, ctx):
     now = o.now_utc()
-    view = o.staff_view if ctx.allows("bestallningar") else floor_view
-    return http.respond(200, table_bills.staff_tabs(ctx.location, ctx.tenant, location_id, now, staff_view=view))
+    return http.respond(200, table_bills.staff_tabs(ctx.location, ctx.tenant, location_id, now,
+                                                    staff_view=o.staff_view))
 
 
 def _tab_action(event, location_id, ctx, service_date, table_id, action):

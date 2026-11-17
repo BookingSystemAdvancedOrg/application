@@ -4933,9 +4933,7 @@ paths:
         Every table with an open bill, oldest first: the unpaid orders,
         the amount, whether a guest is paying it right now, and `stale`
         when it is from an earlier service day or the location has
-        closed. Staff with Beställningar or Layout; with Layout only the
-        orders carry no personal data (no customerName, customerPhone,
-        customerEmail, notes or history).
+        closed. Staff with Beställningar or Layout.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -9512,16 +9510,7 @@ components:
           description: From an earlier service day, or the location has closed.
         mismatch:
           type: object
-          description: >-
-            Owner check needed: a payment came for an order no longer unpaid,
-            or for a bill already closed (paidAfterClose). amount = what to
-            check and refund in the Stripe Dashboard.
-          properties:
-            billId: {type: string}
-            orderIds: {type: array, items: {type: string}}
-            amount: {type: integer}
-            at: {type: string, format: date-time}
-            paidAfterClose: {type: boolean}
+          description: Owner check needed (a payment came for an order no longer unpaid).
 
     TableTabList:
       type: object

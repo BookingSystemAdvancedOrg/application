@@ -111,9 +111,7 @@ path can go.
    `openCount`, `openTotal`. Staff see it in Beställningar (Notor), on the
    Layout floor view and as "Obetald" on the kitchen display. A bill from an
    earlier service day, or after closing, is `stale` (amber) until it is
-   paid, cancelled or written off. Nothing is deleted: an open, locked or
-   flagged bill never gets a TTL; only an empty, settled one does
-   (3 days), and a new order takes it away again.
+   paid, cancelled or written off. Nothing is deleted.
 4. **Paying with the phone.** Staff show a pay link
    (`POST .../orders/tabs/{serviceDate}/{tableId}/pay-link`, a QR code,
    signed, valid 12 h) or the guest uses "Betala notan" on their own status
@@ -169,20 +167,7 @@ orders right now is stopped first (409 `bill_paid` / `bill_processing` /
 longer unpaid (the lock should make this impossible), the bill is still
 marked paid, the other orders are settled, the bill gets `mismatch:
 [orderIds]` and the table bill a `mismatch` flag (owner sees "Kontrollera
-notan" with the amount to check), and an ERROR log `{"bill":"mismatch"}`
-raises the error alarm. The bill, the table bill (lock cleared, settled
-orders off, flag) are written in one transaction after the orders; a crash
-leaves the bill `paying` and the next try (webhook retry, guest page,
-takeover) repairs it (an order already paid by this bill is not "missed").
-
-**Paid after close.** A bill payment that succeeds after the bill was
-closed (`expired` / `failed`) settles nothing (its orders may have been
-paid another way since): the bill becomes `paid` with `paidAfterClose`
-{previousStatus, at}, `mismatch` = all its orders and no TTL, the table
-bill gets the owner flag (`mismatch.paidAfterClose`, the bill amount; the
-table record is written again if it had expired) and an ERROR log
-`{"bill":"paid_after_close"}`. Same runbook: refund it in the Stripe
-Dashboard, then "Klar".
+notan"), and an ERROR log `{"bill":"mismatch"}` raises the error alarm.
 Refund that order's amount on the bill's payment in the Stripe Dashboard,
 then press "Klar" (`POST .../tabs/{serviceDate}/{tableId}/mismatch-checked`).
 A flagged table bill never gets its TTL until then, so the flag cannot
@@ -275,11 +260,6 @@ simply unknown there.
   amount must all match the order (or the bill).
 - Table bills: the guest routes need the staff pay link (signed, 12 h) or a
   pay-later order's status token; the bill view carries no names or
-  contacts; 120 pay attempts per IP per 10 minutes (a dining room shares
-  the restaurant's wifi). Pay-later table orders have their own IP limit
-  (120 per 10 minutes, `table-order-ip`, not the pickup limit of 10) and
-  rely on the bot check, the phone limits (8 a day) and the bill cap.
-- Staff with only the Layout area see the open bills without personal data
-  (no name, phone, e-mail, notes or history).
+  contacts; 20 pay attempts per IP per 10 minutes.
 - Staff routes: tenant from the JWT, staff limited to their location, status
   writes conditional on the status the screen showed.

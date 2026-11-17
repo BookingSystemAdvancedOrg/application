@@ -19,11 +19,8 @@ Records (order table, partition LOCATION#<locationId>):
         recordType "tableTab", tenantId, locationId, tableId, tableLabel,
         serviceDate, open_<orderId> {date, number, total, at} per unpaid
         order, openCount, openTotal (öre), paying {billId, orderIds, amount,
-        at, expiresAt} only while a guest pays, lastPaidAt, mismatch?
-        {billId, orderIds, amount, at, paidAfterClose?} (a flag for the
-        owner: money taken that settled nothing), updatedAt, version,
-        ttl (only when empty, unlocked and unflagged: now + 3 days; an
-        open bill never expires).
+        at, expiresAt} only while a guest pays, lastPaidAt, mismatch?,
+        updatedAt, version, ttl (only when empty: now + 3 days).
     BILL#<billId>   one payment attempt: a snapshot of the orders it pays
         (number, lines, totals), amount, vat, stripeAccountId,
         checkoutSessionId, paymentIntentId, payerEmail?, status
@@ -646,13 +643,9 @@ def settle_paid(bill, session, now, actor):
 
 def _settle_mismatch(bill, session, now, actor):
     """The money is in, but an order on the bill is no longer unpaid (which
-    the lock should make impossible). The orders that still are unpaid are
-    settled one by one; then the bill (paid, ``mismatch``), the table's bill
-    (those orders off it, the lock cleared, the flag for the owner) are
-    written in ONE transaction, so a crash in between leaves the bill
-    ``paying`` and the next try (webhook retry, guest page, takeover) repairs
-    it: an order already paid by this bill counts as settled, not missed.
-    The owner refunds the difference on this payment in the Stripe Dashboard."""
+    the lock should make impossible). The bill is paid; the orders that
+    still are unpaid are settled one by one; the rest is flagged for the
+    owner (refund the difference on this payment in the Stripe Dashboard)."""
     location_id = bill["locationId"]
     pi = session.get("payment_intent") or "-"
     settled, missed = [], []
@@ -664,113 +657,49 @@ def _settle_mismatch(bill, session, now, actor):
         except ClientError as exc:
             if not _cancelled(exc):
                 raise
-            current = _table().get_item(Key=o.order_key(location_id, order["date"], order["orderId"]),
-                                        ConsistentRead=True).get("Item") or {}
-            if current.get("billId") == bill["billId"] and current.get("paymentStatus") == o.PAY_PAID:
-                settled.append(order)  # an earlier try settled it
-            else:
-                missed.append(order["orderId"])
-    for _ in range(3):
-        tab = load_tab(location_id, bill["serviceDate"], bill["tableId"])
-        items = [_bill_paid_update(bill, session, now, actor, mismatch=missed or None)]
-        if tab:
-            items.append(_mismatch_tab_update(location_id, tab, bill, settled, missed, now))
+            missed.append(order["orderId"])
+    try:
+        dynamo.client().transact_write_items(TransactItems=[_bill_paid_update(bill, session, now, actor,
+                                                                              mismatch=missed or None)])
+    except ClientError as exc:
+        if not _cancelled(exc):
+            raise
+        return None
+    tab = load_tab(location_id, bill["serviceDate"], bill["tableId"]) or {}
+    on_tab = [x for x in settled if ENTRY + x["orderId"] in tab]
+    if tab:
+        names = {"#p": "paying", "#u": "updatedAt"}
+        values = {":bid": bill["billId"], ":now": o.iso(now)}
         try:
-            dynamo.client().transact_write_items(TransactItems=items)
-            break
+            update = _remove_entries_update(location_id, tab, [x["orderId"] for x in on_tab],
+                                            [int(x["total"]) for x in on_tab], now, paid=True)["Update"]
+            _table().update_item(Key={k: v["S"] for k, v in update["Key"].items()},
+                                 UpdateExpression=update["UpdateExpression"],
+                                 ConditionExpression=update["ConditionExpression"],
+                                 ExpressionAttributeNames=update["ExpressionAttributeNames"],
+                                 ExpressionAttributeValues={k: _plain(v) for k, v in
+                                                            update["ExpressionAttributeValues"].items()})
+            if missed:
+                _table().update_item(
+                    Key=tab_key(location_id, bill["serviceDate"], bill["tableId"]),
+                    UpdateExpression="SET mismatch = :m",
+                    ExpressionAttributeValues={":m": {"billId": bill["billId"], "orderIds": missed,
+                                                      "at": o.iso(now)}})
+            _table().update_item(
+                Key=tab_key(location_id, bill["serviceDate"], bill["tableId"]),
+                UpdateExpression="SET #u = :now REMOVE #p", ConditionExpression="#p.billId = :bid",
+                ExpressionAttributeNames=names, ExpressionAttributeValues=values)
         except ClientError as exc:
-            if not _cancelled(exc):
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
-            fresh = load_bill(location_id, bill["billId"])
-            if not fresh or fresh.get("status") != PAYING:
-                return None  # someone else settled it
-            # The table's bill changed meanwhile (a new order): read it again.
-    else:
-        raise RuntimeError("table bill kept changing while settling a mismatch")
     logger.error(json.dumps({"bill": "mismatch", "billId": bill["billId"], "locationId": location_id,
                              "orders": missed}))
     return load_bill(location_id, bill["billId"])
 
 
-def _mismatch_tab_update(location_id, tab, bill, settled, missed, now):
-    """The table's bill after a mismatch, as one Update conditional on the
-    version read: the settled orders still on it removed, this bill's lock
-    cleared, the owner's flag set when something was missed."""
-    open_ = entries(tab)
-    on_tab = [x for x in settled if x["orderId"] in open_]
-    names = {"#n": "openCount", "#t": "openTotal", "#v": "version", "#u": "updatedAt"}
-    values = {":negn": -len(on_tab), ":negt": -sum(int(open_[x["orderId"]].get("total") or 0) for x in on_tab),
-              ":one": 1, ":now": o.iso(now), ":version": int(tab.get("version") or 0)}
-    sets, removes = ["#u = :now", "lastPaidAt = :now"], []
-    for i, order in enumerate(on_tab):
-        names[f"#e{i}"] = ENTRY + order["orderId"]
-        removes.append(f"#e{i}")
-    if (tab.get("paying") or {}).get("billId") == bill["billId"]:
-        names["#p"] = "paying"
-        removes.append("#p")
-    if missed:
-        sets.append("mismatch = :m")
-        # amount: what was charged for the missed orders (to refund).
-        values[":m"] = {"billId": bill["billId"], "orderIds": missed, "at": o.iso(now),
-                        "amount": sum(int(x.get("total") or 0) for x in bill.get("orders") or []
-                                      if x["orderId"] in missed)}
-    expression = "SET " + ", ".join(sets) + " ADD #n :negn, #t :negt, #v :one"
-    if removes:
-        expression += " REMOVE " + ", ".join(removes)
-    condition = "attribute_exists(PK) AND #v = :version" if "version" in tab else \
-        "attribute_exists(PK) AND attribute_not_exists(#v)"
-    if "version" not in tab:
-        del values[":version"]
-    return _update(tab_key(location_id, bill["serviceDate"], bill["tableId"]), expression, condition, names, values)
-
-
-def _flag_late_payment(bill, session, account, now):
-    """Money arrived for a bill that was already closed (expired / failed):
-    nothing is settled with it (its orders may since have been paid another
-    way), but the payment is recorded on the bill (kept: no TTL) and the
-    table's bill is flagged so the owner sees "Kontrollera notan" and
-    refunds it in the Stripe Dashboard."""
-    location_id, bill_id = bill["locationId"], bill["billId"]
-    order_ids = [x["orderId"] for x in bill.get("orders") or []]
-    previous = bill.get("status")
-    try:
-        _table().update_item(
-            Key=bill_key(location_id, bill_id),
-            UpdateExpression=("SET #s = :paid, paidAt = :now, paymentIntentId = :pi, checkoutSessionId = :sid, "
-                              "mismatch = :ids, paidAfterClose = :late, updatedAt = :now, "
-                              "history = list_append(if_not_exists(history, :empty), :entry), "
-                              "#v = if_not_exists(#v, :zero) + :one REMOVE #ttl"),
-            ConditionExpression="#s IN (:expired, :failed)",
-            ExpressionAttributeNames={"#s": "status", "#v": "version", "#ttl": "ttl"},
-            ExpressionAttributeValues={
-                ":paid": PAID, ":now": o.iso(now), ":pi": session.get("payment_intent") or "-",
-                ":sid": session.get("id") or bill.get("checkoutSessionId") or "-", ":ids": order_ids,
-                ":late": {"previousStatus": previous, "at": o.iso(now)}, ":empty": [],
-                ":entry": [o.history_entry("paid_after_close", "stripe", now, previous=previous)],
-                ":zero": 0, ":one": 1, ":expired": EXPIRED, ":failed": FAILED})
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False  # recorded already
-        raise
-    # The table's bill may have expired (TTL) since: written whole, so the
-    # owner's list shows it either way.
-    _table().update_item(
-        Key=tab_key(location_id, bill["serviceDate"], bill["tableId"]),
-        UpdateExpression=("SET mismatch = :m, recordType = :rt, tenantId = :tn, locationId = :lo, tableId = :ti, "
-                          "tableLabel = if_not_exists(tableLabel, :tl), serviceDate = :sd, updatedAt = :now, "
-                          "openCount = if_not_exists(openCount, :zero), openTotal = if_not_exists(openTotal, :zero) "
-                          "ADD #v :one REMOVE #ttl"),
-        ExpressionAttributeNames={"#v": "version", "#ttl": "ttl"},
-        ExpressionAttributeValues={
-            ":m": {"billId": bill_id, "orderIds": order_ids, "at": o.iso(now), "paidAfterClose": True,
-                   "amount": int(bill.get("amount") or 0)},
-            ":rt": "tableTab", ":tn": bill["tenantId"], ":lo": location_id, ":ti": bill["tableId"],
-            ":tl": bill.get("tableLabel") or "", ":sd": bill["serviceDate"], ":now": o.iso(now), ":zero": 0,
-            ":one": 1})
-    logger.error(json.dumps({"bill": "paid_after_close", "billId": bill_id, "locationId": location_id,
-                             "previousStatus": previous, "amount": int(bill.get("amount") or 0),
-                             "account": account}))
-    return True
+def _plain(av):
+    from boto3.dynamodb.types import TypeDeserializer  # noqa: PLC0415
+    return TypeDeserializer().deserialize(av)
 
 
 def settle_failed(bill, now, actor, reason):
@@ -896,13 +825,7 @@ def on_session_event(kind, session, account, now):
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         if session.get("payment_status") != "paid":
             return "waiting"
-        if settle_paid(bill, session, now, "stripe"):
-            return "bill_paid"
-        fresh = load_bill(bill["locationId"], bill["billId"]) or bill
-        if fresh.get("status") in (EXPIRED, FAILED):
-            # Money for a bill that was closed: never silent.
-            return "bill_paid_after_close" if _flag_late_payment(fresh, session, account, now) else "already_settled"
-        return "already_settled"
+        return "bill_paid" if settle_paid(bill, session, now, "stripe") else "already_settled"
     reason = "checkout_expired" if kind == "checkout.session.expired" else "payment_failed"
     return "bill_failed" if settle_failed(bill, now, "stripe", reason) else "already_settled"
 

@@ -12,6 +12,9 @@ PURPOSE:
 
       1. Abuse checks: attempts per IP address and per phone/e-mail
          (shared/request_guard.py) and the bot check (shared/bot_check.py).
+         Pay-later table orders have a much higher IP limit of their own
+         (TABLE_IP_LIMIT: guests share the restaurant's wifi) and rely on
+         the bot check, the phone limits and the table's bill cap.
       2. The location must take orders now in that mode (shared/orders.py:
          policy on, Stripe ready, not paused, open with time before last
          order). A table order needs a valid QR code of this location.
@@ -107,15 +110,25 @@ _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email",
            "embedded", "marketingConsent", "giftCardCode", "payLater"}
 _BILL_FIELDS = {"expectedAmount", "email", "resumeBillId", "resumeToken"}
 IP_LIMIT = (10, 10 * 60)
+# Pay-later table orders: a full dining room often shares the restaurant's
+# wifi (one IP), so the IP limit is only a flood stop. The real limits are
+# the bot check, the phone limits and the table's bill cap (8 open orders,
+# 5 000 kr), and nothing is charged when the order is placed.
+TABLE_IP_LIMIT = (120, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 TABLE_PHONE_LIMIT = (8, 24 * 60 * 60)   # pay-later table orders per phone and day
-BILL_IP_LIMIT = (20, 10 * 60)
+# Paying a table's bill needs the order's status token or the staff's pay
+# link; the guests of a whole room may pay from the same wifi.
+BILL_IP_LIMIT = (120, 10 * 60)
 _NOTES_MAX = 300
 
 
 def _guard(event, data, guest, now, *, pay_later=False):
     ip = http.source_ip(event)
-    request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
+    if pay_later:
+        request_guard.check([("table-order-ip", ip, *TABLE_IP_LIMIT)], now)
+    else:
+        request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
     bot_check.verify(event, "order")
     limits = [
         ("order-phone", guest["customerPhone"], *CONTACT_LIMIT),

@@ -179,10 +179,15 @@ def guest_sms(kind, item, tenant_row, location, link):
                              "Se mejlet för mer information.",
         "catering_cancelled": f"{name}: Tyvärr har vi behövt avboka din catering {_when(item)}. "
                               + _REFUND_SMS.get(item.get("refundNote"), "") + "Se mejlet.",
-        "catering_refunded": f"{name}: Vi har betalat tillbaka {money((item.get('notice') or {}).get('amount') or 0)} "
-                             f"för din catering {_when(item)}. Se mejlet.",
+        "catering_refunded": _refunded_sms(item, name),
     }
     return texts[kind]
+
+
+def _refunded_sms(item, name):
+    notice = item.get("notice") or {}
+    verb = "betalar" if notice.get("manual") else "har betalat"
+    return f"{name}: Vi {verb} tillbaka {money(notice.get('amount') or 0)} för din catering {_when(item)}. Se mejlet."
 
 
 def owner_email(kind, item, tenant_row, location, admin_link):

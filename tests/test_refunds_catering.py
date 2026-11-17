@@ -113,6 +113,15 @@ def test_refund_message():
     assert subject == "Återbetalning för din catering - Roma"
     assert "500 kr" in text and "Saknades en låda" in text
     assert "500 kr" in catering_messages.guest_sms("catering_refunded", item, {"name": "Roma"}, {}, "https://l")
+    assert "Vi har betalat tillbaka 500 kr" in catering_messages.guest_sms(
+        "catering_refunded", item, {"name": "Roma"}, {}, "https://l")
+
+
+def test_manual_refund_sms_says_owed():
+    item = {"deliveryDate": "2026-10-10", "deliveryTime": "12:00", "customerName": "Eva Ek",
+            "notice": {"type": "catering_refunded", "amount": 50000, "manual": True}}
+    sms = catering_messages.guest_sms("catering_refunded", item, {"name": "Roma"}, {}, "https://l")
+    assert "Vi betalar tillbaka 500 kr" in sms and "har betalat" not in sms and sms.endswith("Se mejlet.")
 
 
 def test_refunds_are_reversed_per_row_in_the_books():

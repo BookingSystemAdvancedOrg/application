@@ -179,7 +179,7 @@ def test_ordering_is_public_only_when_stripe_can_charge(site):
     shared_tenant.reset_caches()
     body = json.loads(call(module, {"host": "www.roma.se"})["body"])
     by_id = {loc["locationId"]: loc for loc in body["locations"]}
-    assert by_id[LOC_A]["ordering"] == {"pickup": True, "table": True, "prepMinutes": 15}
+    assert by_id[LOC_A]["ordering"] == {"pickup": True, "prepMinutes": 15}
     assert by_id[LOC_A2]["ordering"] is None
 
 

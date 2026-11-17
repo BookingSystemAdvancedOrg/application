@@ -1064,7 +1064,7 @@ Full details: `docs/ORDERS.md`.
 
 ### 22. `payment-intent`
 **Trigger:** API Gateway - `POST /order` - Auth: `NONE`
-**Purpose:** Places a food order (pickup, or at a table from its QR code): checks the location takes orders now, prices every line from the menu (quantity 1-20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; bot check (AWS WAF, `shared/bot_check.py`).
+**Purpose:** Places a food order for pickup (QR ordering at the table is off since 2026-11-17: `mode: "table"` or a `tableCode` answers 410 `table_ordering_off`): checks the location takes orders now, prices every line from the menu (quantity 1-20, VAT per line), writes the order `pending_payment` and creates a Stripe Checkout Session on the restaurant's connected account. Answers `{orderId, statusToken, totalAmount}` plus `checkoutUrl` (hosted Checkout) or, with `embedded: true`, `{clientSecret, stripeAccount}` for the site's Payment Element (Checkout Session `ui_mode: elements`). Attempt limits per IP and phone/e-mail; bot check (AWS WAF, `shared/bot_check.py`).
 **AWS resource access:** Order table (Put/Update + transaction), menu table (BatchGetItem), tenant/location reads, request-guard counters, Stripe key, link signing key.
 
 ### 23. `webhook-payment-intent`
@@ -1073,11 +1073,11 @@ Full details: `docs/ORDERS.md`.
 
 ### 24. `get-order`
 **Trigger:** API Gateway - `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) - Auth: `NONE`
-**Purpose:** Open/closed right now (and a QR code's table), and the guest's order. A pending order is checked with Stripe so the return page shows `confirmed` without waiting for the webhook.
+**Purpose:** Open/closed right now (`?table=` from an old QR code answers 410 `table_ordering_off`), and the guest's order. A pending order is checked with Stripe so the return page shows `confirmed` without waiting for the webhook.
 
 ### 25. `manage-order`
 **Trigger:** API Gateway - `GET /locations/{locationId}/orders`, `GET|PUT|POST /locations/{locationId}/orders/{proxy+}` - Auth: `JWT` (owner, staff of the location)
-**Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; signed QR codes for tables.
+**Purpose:** The day's orders; status moves (`preparing`, `ready` → "ready" SMS for pickup, `completed`, `cancelled` → Stripe refund + guest message); pausing orders; the old table-codes routes answer 410 `table_ordering_off`.
 
 ### 25a. `print-jobs`
 **Trigger:** order table stream (paid, cancelled; DLQ `print-stream`), Scheduler every 5 minutes (`{"source": "sweep"}`), API Gateway `GET /locations/{locationId}/print`, `GET|POST|PUT|DELETE /locations/{locationId}/print/{proxy+}` - Auth: `JWT` (owner; staff for status, test print and reprint)

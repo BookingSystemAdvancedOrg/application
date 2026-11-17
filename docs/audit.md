@@ -55,7 +55,7 @@ No route was found where staff can read another location's guest data. The one g
 | booqy.se | `booqy-theme` | localStorage | booqy.se, only on toggle | user's own choice | `/cookies` (new) |
 | Admin | refresh cookie | HttpOnly cookie | Booqy (login) | yes | `/cookies` (existing) |
 | Admin | location, logout-pending, guide, motion, theme, sample data | localStorage | admin | yes / own choice | `/cookies` |
-| Customer sites | location, theme, cart, table code, order and catering tokens, preview slug, offer card | local/sessionStorage | site | yes / own choice | `/cookies` (new) and `/integritetspolicy#cookies` |
+| Customer sites | location, theme, cart, order and catering tokens, preview slug, offer card | local/sessionStorage | site | yes / own choice | `/cookies` (new) and `/integritetspolicy#cookies` |
 | Customer sites | `__stripe_mid`, `__stripe_sid` | cookie | Stripe, payment steps only | yes (fraud prevention for a payment the guest asked for) | same |
 | Customer sites | Cloudflare Turnstile | none recorded | Cloudflare | yes (bot protection) | same |
 | Console | Cognito tokens (Amplify) | localStorage | console | yes | not disclosed (C5) |

@@ -3,7 +3,6 @@
 hmac.compare_digest raises TypeError for a str with non-ASCII characters;
 every public token check compares through shared.safe_compare."""
 
-import pytest
 
 from shared import catering, manage_link, safe_compare, signing
 from shared import orders as o
@@ -20,12 +19,6 @@ def test_safe_equal():
     assert not safe_compare.equal("abc", "\udcff")
     assert not safe_compare.equal("abc", None) and not safe_compare.equal(None, None)
     assert not safe_compare.equal("abc", 1)
-
-
-def test_table_code_with_a_non_ascii_signature_is_invalid(monkeypatch):
-    monkeypatch.setattr(o, "_sign", lambda *parts: "sig")
-    with pytest.raises(ValueError):
-        o.read_table_code(TENANT, LOC, "abc.å")
 
 
 def test_order_status_token_non_ascii_is_no_match(monkeypatch):

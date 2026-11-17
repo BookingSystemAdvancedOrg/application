@@ -161,7 +161,7 @@ def _ordering(row, tenant_row):
     policy = orders.policy_of(row)
     if not policy or not orders.stripe_account(tenant_row, row):
         return None
-    return {"pickup": policy["pickup"], "table": policy["table"], "prepMinutes": policy["prepMinutes"]}
+    return {"pickup": policy["pickup"], "prepMinutes": policy["prepMinutes"]}
 
 
 def _waitlist(row):

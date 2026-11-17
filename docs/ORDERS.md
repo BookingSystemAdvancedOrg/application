@@ -1,19 +1,35 @@
 # Food orders
 
-Guests order food in two ways:
+Guests order food online for pickup:
 
 | Mode | Where the guest is | How they get the food |
 |---|---|---|
-| `pickup` | anywhere - the restaurant's site, `/bestall` | collects at the counter when the "ready" SMS arrives |
-| `table` | at a table - scans its QR code, `/bestall?bord=<code>` | staff bring it to that table |
+| `pickup` | not at the restaurant - the restaurant's site, `/bestall` | collects at the counter when the "ready" SMS arrives |
 
 Payment is always online with Stripe Checkout on the restaurant's own
-connected account (direct charge, like the card guarantee), for table orders
-too: the guest pays at once, and only a paid order reaches the kitchen,
-the printer and the kitchen display. The table comes from the QR code on the
-server (`shared/table_qr.py`), never from the browser; staff see its name
-("Bord 7") on the order card, the kitchen display and every printed ticket. Each dish can be
-ordered 1-20 times; an order has at most 30 lines.
+connected account (direct charge, like the card guarantee): the guest pays
+at once, and only a paid order reaches the kitchen, the printer and the
+kitchen display. Each dish can be ordered 1-20 times; an order has at most
+30 lines.
+
+**No ordering at the table (owner decision 2026-11-17).** Ordering and
+paying with a QR code at the table needs a certified register, so it is
+off. A guest at the restaurant orders and pays at the counter in the
+restaurant's own till; a guest with a booking arrives and pays there too.
+- `POST /order` with `mode: "table"` or a `tableCode`, and
+  `GET /locations/{id}/ordering?table=...`, answer **410
+  `table_ordering_off`** with `message` "Beställ och betala i kassan i
+  restaurangen." Guest sites send `/bestall?bord=<code>` (an old printed
+  sticker) to a page that says the same, with links to the menu and booking.
+- The table-codes routes (`.../orders/table-codes[/...]`) answer 410 too;
+  `shared/table_qr.py` is gone. The `TABLEQR#...` items stay in the order
+  table untouched, so the feature can return through a certified register.
+- The ordering policy has no `table` option: a stored or sent `table` flag
+  is accepted and ignored.
+- Orders placed at a table before that keep `mode: "table"`, `tableId` and
+  `tableLabel`: the order card, kitchen display, printed tickets, guest
+  status page, SMS ("Serveras till bord 5"), refunds and Statistik ("Vid
+  bordet") still show and handle them.
 
 ## Flow
 
@@ -55,12 +71,12 @@ ordered 1-20 times; an order has at most 30 lines.
    characters, no link - the link is in the receipt e-mail):
 
        Roma: Beställning #12 bekräftad. Klar ca 18:40. Adress: Götgatan 1, Stockholm
-       Roma: Beställning #12 bekräftad. Serveras till bord 5.
+       Roma: Beställning #12 bekräftad. Serveras till bord 5.   (past table orders)
        Roma: Beställning #12 är klar att hämta. Adress: Götgatan 1, Stockholm
 5. **Kitchen:** the admin's Beställningar screen lists the day's paid
    orders. Two clicks: "Påbörja - skicka sms" (`preparing`, the
    confirmation SMS) and "Klar - skicka sms" (`ready`, pickup) / "Klar att
-   servera" (table), then `completed`; or `cancelled` (refunds what is left
+   servera" (past table orders), then `completed`; or `cancelled` (refunds what is left
    of the order with Stripe). The owner can also refund part or all of the
    card payment without cancelling ("Återbetala", POST
    `.../orders/{orderId}/refund`, also on completed orders): paymentStatus
@@ -106,51 +122,21 @@ cancelledAt, notice, history, version, ttl (pending only)`. Amounts are öre.
 
 | What | Rate |
 |---|---|
-| Alcohol (menu item `alcohol: true`) - table orders only | 25 % |
-| Food and soft drinks served at the table | 12 % |
+| Alcohol (menu item `alcohol: true`) - past table orders only | 25 % |
+| Food and soft drinks served at the table (past table orders) | 12 % |
 | Takeaway food and soft drinks, 2026-04-01 - 2027-12-31 | 6 % |
 | Takeaway food and soft drinks, otherwise | 12 % |
 
 Alcohol can't be ordered for pickup (a restaurant may serve alcohol, not
-sell it to take away). Whether a restaurant needs a certified cash register
+sell it to take away), so with table ordering off it can't be ordered
+online at all (`alcohol_not_for_pickup`). Whether a restaurant needs a certified cash register
 (kassaregister) for these sales is the restaurant's matter with its
 accountant; the receipt shows seller, org.nr, lines, VAT per rate and total.
-
-## QR codes
-
-One code per table of the ACTIVE published floor plan (`shared/table_qr.py`).
-The code is a random 128-bit key (22 characters) stored in the location's
-partition of the order table; it carries no table id, so it can't be guessed
-or edited into another table, and a code of another tenant or location is
-simply unknown there.
-
-- `GET /locations/{id}/orders/table-codes` (staff/owner): every published
-  table with its code, current name and the URL to print
-  (`/bestall?bord=<code>`); codes are created on first use. The admin shows
-  them in Layout (select a table, or "QR-koder" for all) and under
-  Inställningar -> Beställning, prints A6 cards or an A4 sheet (four per
-  page) and downloads PDF, PNG or SVG.
-- `POST .../table-codes/{tableId}/regenerate`: new code for a stolen sticker;
-  the old key is kept with `revokedAt`.
-- The guest's `GET /locations/{id}/ordering?table=<code>` and `POST /order`
-  resolve the code against the active floor plan: the name follows renames
-  and moves; 400 `table code is invalid` (unknown), `table code revoked`
-  (regenerated), `table removed` (no longer in the plan; a new table that
-  reuses the number is a new element with a new code). A draft layout never
-  counts. Opening hours, pauses and "ordering at the table" off still close
-  ordering as before.
-- The order stores `tableId` and the table's name at order time
-  (`tableLabel`); staff screens, the kitchen ticket and the guest messages
-  show it ("Bord 7" for a number, a named table as it is).
-- Codes printed before 2026-11-13 (`payload.signature`, name inside) still
-  work, with the name from the floor plan, until the table's code is
-  regenerated once or the table is removed.
 
 ## Security
 
 - Public routes: prices never from the client; bot check (AWS WAF) + per-IP and
-  per-contact limits on `POST /order` (10 per IP per 10 minutes; table
-  orders 40, since a dining room often shares one wifi); the status page
+  per-contact limits on `POST /order` (10 per IP per 10 minutes); the status page
   needs the HMAC token.
 - Webhook: Stripe signature; metadata + connected account + session id +
   amount must all match the order.

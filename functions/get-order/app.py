@@ -3,12 +3,10 @@
 TRIGGER:
     API Gateway -- Auth: NONE (guests)
     GET /locations/{locationId}/ordering[?table=<QR code>]
-        Can the guest order right now: {open, reason, pickup, table,
-        prepMinutes, lastOrderAt, pausedUntil} plus, with a QR code, the
-        table it belongs to ({forTable: {label, title}}, the table's current
-        name in the active floor plan). 400 "table code is invalid" for a
-        code that isn't this location's, "table code revoked" for a
-        regenerated one, "table removed" when the table left the floor plan.
+        Can the guest order right now: {open, reason, pickup, prepMinutes,
+        lastOrderAt, pausedUntil}. QR ordering at the table is off (owner
+        decision 2026-11-17): ?table= from an old printed QR code answers
+        410 table_ordering_off with a guest text that sends them to the till.
     GET /locations/{locationId}/order-status/{orderId}
         Header X-Order-Token (the status token from POST /order or the
         link in the guest's SMS/e-mail). The order as the guest sees it.
@@ -24,7 +22,6 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     ORDER_TABLE_NAME, RESERVATION_LINK_KEY_SECRET_ARN,
-    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (table QR codes),
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (pending orders)
 """
 
@@ -34,7 +31,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import http, manage_link, order_payments, tenant
 from shared import orders as o
-from shared import table_qr
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -51,11 +47,9 @@ def _ordering(event):
     unknown = sorted(set(params) - {"table"})
     if unknown:
         raise ValueError(f"unsupported query parameters: {', '.join(unknown)}")
-    state = o.availability(ctx.location, ctx.tenant, o.now_utc())
-    if params.get("table"):
-        _, label = table_qr.resolve(ctx.tenant_id, location_id, params["table"])
-        state["forTable"] = {"label": label, "title": table_qr.table_title(label)}
-    return http.respond(200, state)
+    if "table" in params:
+        return o.table_ordering_off()
+    return http.respond(200, o.availability(ctx.location, ctx.tenant, o.now_utc()))
 
 
 def _status(event):

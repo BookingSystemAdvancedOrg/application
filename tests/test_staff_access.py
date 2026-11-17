@@ -249,7 +249,6 @@ GUARDED = [
     ("waitlist", "POST /locations/{locationId}/waitlist/{entryId}/seat", {**L, "entryId": "e1"}, "bokningar"),
     ("manage-order", "GET /locations/{locationId}/orders", L, "bestallningar"),
     ("manage-order", "PUT /locations/{locationId}/orders/{proxy+}", {**L, "proxy": "o1/status"}, "bestallningar"),
-    ("manage-order", "GET /locations/{locationId}/orders/{proxy+}", {**L, "proxy": "table-codes"}, "layout"),
     ("print-jobs", "GET /locations/{locationId}/print", L, "bestallningar"),
     ("print-jobs", "GET /locations/{locationId}/print/{proxy+}", {**L, "proxy": "routing"}, "meny"),
     ("print-jobs", "POST /locations/{locationId}/print/{proxy+}", {**L, "proxy": "jobs"}, "bestallningar"),

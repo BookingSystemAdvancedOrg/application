@@ -420,8 +420,8 @@
    "steps": [
     "Öppna Beställningar.",
     "Tryck Påbörja på en ny beställning när köket börjar.",
-    "Tryck Klar när maten är färdig (eller Klar att servera för bordsbeställningar).",
-    "Tryck Hämtad eller Serverad när gästen har fått maten."
+    "Tryck Klar när maten är färdig.",
+    "Tryck Hämtad när gästen har hämtat maten."
    ],
    "actions": [
     {
@@ -491,34 +491,29 @@
   {
    "id": "bestallning-installningar",
    "route": "/installningar",
-   "title": "Slå på beställning och QR-koder",
+   "title": "Slå på beställning online",
    "audience": "owner",
    "feature": "ordering",
    "keywords": [
-    "beställning vid bordet",
-    "qr-kod",
-    "qr",
     "ta emot beställningar",
     "tillagningstid",
     "sista beställning",
     "avhämtning inställning",
-    "beställa vid bordet",
-    "bordsbeställning",
+    "takeaway",
     "gästerna kan beställa",
-    "kan beställa vid bordet"
+    "beställning online"
    ],
-   "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Beställning, Beställning och QR-koder.",
+   "answer": "Beställning online med avhämtning slår du på under Inställningar, Beställning, Beställning online.",
    "steps": [
-    "Öppna Inställningar, välj Beställning och sedan Beställning och QR-koder.",
-    "Slå på Ta emot beställningar och välj Avhämtning och Beställning vid bordet (QR-kod).",
+    "Öppna Inställningar, välj Beställning och sedan Beställning online.",
+    "Slå på Ta emot beställningar (avhämtning).",
     "Ställ in tillagningstid som gästen ser och sista beställning före stängning.",
-    "Tryck Spara beställning.",
-    "Under QR-koder för borden trycker du Skriv ut eller Ladda ner."
+    "Tryck Spara beställning."
    ],
    "actions": [
     {
      "id": "inst-bestallning-open",
-     "label": "Öppna Beställning och QR-koder",
+     "label": "Öppna Beställning online",
      "to": "/installningar",
      "hash": "bestallning"
     }
@@ -2219,11 +2214,15 @@
     "gästerna beställer",
     "beställ mat",
     "beställa online",
-    "beställa via qr"
+    "beställa via qr",
+    "beställa vid bordet",
+    "qr-kod på bordet",
+    "betala vid bordet",
+    "bordsbeställning"
    ],
-   "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. De betalar i förväg.",
+   "answer": "Gästerna beställer och betalar under Beställ på hemsidan och hämtar maten hos er. Beställning och betalning med QR-kod vid bordet finns inte: gäster på plats betalar i er egen kassa.",
    "steps": [
-    "Gästen öppnar Beställ på hemsidan eller scannar QR-koden på bordet.",
+    "Gästen öppnar Beställ på hemsidan.",
     "Gästen väljer rätter och betalar.",
     "Beställningen dyker upp under Beställningar."
    ],
@@ -3028,9 +3027,9 @@
    "kind": "page",
    "route": "/installningar",
    "hash": "bestallning",
-   "title": "Beställning och QR-koder",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
-   "text": "Beställning och QR-koder finns under Inställningar, Beställning. Avhämtning, beställning vid bordet och QR-koder.",
+   "title": "Beställning online",
+   "where": "Inställningar, Beställning, Beställning online",
+   "text": "Beställning online finns under Inställningar, Beställning. Beställning online med avhämtning, tillagningstid och sista beställning.",
    "highlight": [
     "help:settings-tab:bestallning"
    ],
@@ -4580,7 +4579,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Tillagningstid som gästen ser (min)",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
+   "where": "Inställningar, Beställning, Beställning online",
    "text": "",
    "highlight": [
     "text:Tillagningstid som gästen ser (min)"
@@ -4594,24 +4593,10 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Sista beställning (min före stängning)",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
+   "where": "Inställningar, Beställning, Beställning online",
    "text": "",
    "highlight": [
     "text:Sista beställning (min före stängning)"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-OrderingCard:qr-koder-for-borden:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bestallning",
-   "title": "QR-koder för borden",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
-   "text": "Publicera en layout först.",
-   "highlight": [
-    "text:QR-koder för borden"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -6454,7 +6439,7 @@
    "route": "/statistik",
    "title": "Snittorder",
    "where": "Statistik",
-   "text": "Betalt belopp per onlinebeställning (avhämtning och vid bordet) i perioden.",
+   "text": "Betalt belopp per onlinebeställning i perioden.",
    "highlight": [
     "help:kpi:snittorder"
    ],
@@ -6480,7 +6465,7 @@
    "route": "/statistik",
    "title": "Beställningar",
    "where": "Statistik",
-   "text": "Betalda onlinebeställningar i perioden, avhämtning och vid bordet.",
+   "text": "Betalda onlinebeställningar i perioden.",
    "highlight": [
     "help:kpi:bestallningar"
    ],
@@ -6746,19 +6731,6 @@
    ],
    "audience": "all",
    "area": "statistik"
-  },
-  {
-   "id": "features-table-qr-TableQr:qr-koder-for-borden:heading",
-   "kind": "element",
-   "route": "/layout",
-   "title": "QR-koder för borden",
-   "where": "Layout",
-   "text": "Publicera en layout först.",
-   "highlight": [
-    "text:QR-koder för borden"
-   ],
-   "audience": "all",
-   "area": "layout"
   },
   {
    "id": "shared-ChangedNote:anvand:button",

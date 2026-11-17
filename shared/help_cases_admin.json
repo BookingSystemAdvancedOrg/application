@@ -347,28 +347,14 @@
   }
  },
  {
-  "question": "Hur laddar jag ner QR-koden för ett bord?",
+  "question": "Kan gästerna beställa vid bordet?",
   "role": "owner_user",
   "features": [
    "reservations",
    "ordering"
   ],
   "expect": {
-   "hash": "bestallning",
-   "highlight": [
-    "text:QR-koder för borden"
-   ]
-  }
- },
- {
-  "question": "Hur gör jag så att gästerna kan beställa vid bordet?",
-  "role": "owner_user",
-  "features": [
-   "reservations",
-   "ordering"
-  ],
-  "expect": {
-   "source": "bestallning-installningar"
+   "source": "gast-bestalla"
   }
  },
  {

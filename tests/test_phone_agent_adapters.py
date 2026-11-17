@@ -336,6 +336,7 @@ class FlakyBedrock(FakeBedrock):
     def converse_stream(self, **args):
         from botocore.exceptions import ClientError
         self.calls += 1
+        self.at = getattr(self, "at", []) + [time.monotonic()]
         time.sleep(self.delay)
         if self.calls <= self.failures:
             raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ConverseStream")
@@ -354,6 +355,13 @@ def test_real_agent_model_retries_once_only_when_the_turn_has_time_for_it():
     with pytest.raises(AgentModelError) as raised:
         RealAgentModel(client=twice, model_id="m").converse("s", [], [], max_tokens=5)
     assert raised.value.code == "unavailable" and twice.calls == 2
+    # a throttle is not retried at once (botocore's own backoff is off): a short jittered pause first,
+    # and only when the attempt still fits after it
+    assert twice.at[1] - twice.at[0] >= 0.1
+    tight = FlakyBedrock(1)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=tight, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=2.55)
+    assert raised.value.code == "timeout" and tight.calls == 1
 
 
 def test_real_agent_model_timeouts_follow_the_time_left_and_botocore_never_retries(monkeypatch):

@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
+import threading
 import time
 
 import boto3
@@ -133,13 +135,15 @@ def thinking_fields():
 READ_TIMEOUT_S = 12          # without a turn deadline (a direct call)
 CONNECT_TIMEOUT_S = 2
 MIN_ATTEMPT_S = 2.5          # a retry is sent only when this much of the turn is left
+RETRY_PAUSE_S = (0.1, 0.5)   # jittered pause before the retry (a throttle right away is throttled again)
+_CLIENT_LOCK = threading.Lock()   # boto3 creates clients unsafely across threads (agent._within workers)
 
 
 class RealAgentModel(AgentModel):
     """`timeout_s` (the time left of the caller's turn) sets the connect and
     read timeouts of the call, bounds reading the stream, and allows the one
-    retry of a throttled or failed call only when MIN_ATTEMPT_S still fits;
-    past it AgentModelError("timeout") (agent.run_turn: the still-checking
+    retry of a throttled or failed call (after a short jittered pause) only
+    when MIN_ATTEMPT_S still fits after the pause; past it AgentModelError("timeout") (agent.run_turn: the still-checking
     sentence). Botocore never retries on its own (it would not know the
     deadline)."""
 
@@ -158,11 +162,12 @@ class RealAgentModel(AgentModel):
         if self._client is not None:
             return self._client
         read = READ_TIMEOUT_S if seconds is None else max(1, min(READ_TIMEOUT_S, math.ceil(seconds)))
-        if read not in self._clients:
-            self._clients[read] = boto3.client("bedrock-runtime", config=Config(
-                connect_timeout=min(CONNECT_TIMEOUT_S, read), read_timeout=read,
-                retries={"total_max_attempts": 1, "mode": "standard"}))
-        return self._clients[read]
+        with _CLIENT_LOCK:
+            if read not in self._clients:
+                self._clients[read] = boto3.client("bedrock-runtime", config=Config(
+                    connect_timeout=min(CONNECT_TIMEOUT_S, read), read_timeout=read,
+                    retries={"total_max_attempts": 1, "mode": "standard"}))
+            return self._clients[read]
 
     def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         if not self.model_id:
@@ -184,11 +189,13 @@ class RealAgentModel(AgentModel):
             try:
                 return self._once(args, left, deadline)
             except AgentModelError as exc:
-                fits = left is None or deadline - time.monotonic() >= MIN_ATTEMPT_S
+                pause = random.uniform(*RETRY_PAUSE_S)
+                fits = left is None or deadline - time.monotonic() >= MIN_ATTEMPT_S + pause
                 if attempt or not exc.retryable or not fits:
                     if exc.retryable and not fits:
                         raise AgentModelError("timeout", True) from None
                     raise
+                time.sleep(pause)
 
     def _once(self, args, left, deadline):
         try:

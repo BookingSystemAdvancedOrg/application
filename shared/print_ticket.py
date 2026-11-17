@@ -137,6 +137,10 @@ def _tz(location):
         return ZoneInfo("Europe/Stockholm")
 
 
+# A pay-later QR table order: in the kitchen at once, paid before the guests leave.
+PAY_AT_TABLE = "BETALAS VID BORDET"
+
+
 def order_ticket(order, location, *, width=80, copy=False, retry=False, fmt="star"):
     """The kitchen ticket for a paid order. `copy`: printed again on request
     ("Skriv ut igen"); `retry`: an earlier attempt may have printed already."""
@@ -153,6 +157,8 @@ def order_ticket(order, location, *, width=80, copy=False, retry=False, fmt="sta
         label = clean(order.get("tableLabel")) or "?"
         t.line((f"BORD {label}" if label[0].isdigit() or label == "?" else label).upper(),
                bold=True, big=True, center=True)
+        if order.get("payLater"):
+            t.line(PAY_AT_TABLE, bold=True, center=True)
     else:
         t.line("AVHÄMTNING", bold=True, big=True, center=True)
     placed = _local(order.get("confirmedAt") or order.get("createdAt"), tz)
@@ -243,6 +249,8 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
     if ticket.get("number"):
         t.line(f"#{ticket['number']}", bold=True, big=True, center=True)
     t.line(_where(ticket.get("mode"), ticket.get("tableLabel")), bold=True, big=True, center=True)
+    if ticket.get("payLater") and ticket.get("mode") == "table":
+        t.line(PAY_AT_TABLE, bold=True, center=True)
     placed = _local(ticket.get("placedAt") or ticket.get("createdAt"), tz)
     ready = _local(ticket.get("readyEstimate"), tz)
     when = [f"Beställd {placed:%H:%M}"] if placed else []

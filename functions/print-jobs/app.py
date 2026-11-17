@@ -4,6 +4,9 @@ TRIGGER:
     * DynamoDB Stream, order table (filtered at the event source mapping,
       ReportBatchItemFailures, DLQ print-stream drained by dlq-replay):
         MODIFY pending_payment -> confirmed   the auto job (if auto print is on)
+        INSERT confirmed + payLater           the same for a pay-later QR table
+                                               order (in the kitchen at once,
+                                               paid at the table later)
         MODIFY * -> cancelled                  open jobs cancelled; "MAKULERAD"
                                                slip if a ticket may be printed
     * EventBridge Scheduler every 5 minutes, {"source": "sweep"}: jobs out of
@@ -70,7 +73,10 @@ def _record(record, now):
     old = _image(record.get("dynamodb", {}).get("OldImage"))
     if not str(new.get("SK", "")).startswith("ORDER#") or not new.get("orderId") or not new.get("locationId"):
         return
-    if old.get("status") == o.PENDING_PAYMENT and new.get("status") == o.CONFIRMED:
+    paid = old.get("status") == o.PENDING_PAYMENT and new.get("status") == o.CONFIRMED
+    # A pay-later QR table order is written straight to the kitchen as confirmed (INSERT).
+    pay_later = not old and new.get("status") == o.CONFIRMED and new.get("payLater") is True
+    if paid or pay_later:
         created = p.on_order_paid(new, now)
         logger.info(json.dumps({"print": "auto_job", "orderId": new["orderId"], "created": created}))
     elif new.get("status") == o.CANCELLED and old.get("status") != o.CANCELLED:

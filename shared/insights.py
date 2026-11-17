@@ -67,7 +67,7 @@ NOT_AN_ORDER = frozenset({"pending_payment", "failed", "cancelled"})
 CATERING_WON = frozenset({"signed", "confirmed", "delivered", "closed"})
 
 MONEY_FIELDS = ("revenue", "orderRevenue", "cateringRevenue", "tableRevenue", "pickupRevenue",
-                "avgOrder", "feesCharged", "feesRefunded", "avgCatering",
+                "avgOrder", "paidOutsideRevenue", "feesCharged", "feesRefunded", "avgCatering",
                 # margin per dish (dishMargin, owner only): dishes and summary
                 "cost", "margin", "marginPct", "missingCost", "targetMarginPct")
 
@@ -308,8 +308,13 @@ def _booking(row, item, day, tz, tables):
 
 
 def _order(row, item, tz):
-    # partly_refunded (owner refund of part of a kept order): still an order, revenue less the refund
-    if item.get("paymentStatus") not in ("paid", "partly_refunded") or item.get("status") in NOT_AN_ORDER:
+    # partly_refunded (owner refund of part of a kept order): still an order, revenue less the refund.
+    # paid_outside (a pay-later table bill the guest paid outside Booqy): its own figure
+    # ("out"/"outN") and its dishes, never Booqy order revenue. unpaid, written_off and
+    # void (an unpaid order cancelled) count nowhere.
+    outside = item.get("paymentStatus") == "paid_outside"
+    if (item.get("paymentStatus") not in ("paid", "partly_refunded") and not outside) \
+            or item.get("status") in NOT_AN_ORDER:
         return
     created = _parse_iso(item.get("createdAt"))
     if not created:
@@ -317,6 +322,11 @@ def _order(row, item, tz):
     hour = str(created.astimezone(tz).hour)
     cell = row["o"].setdefault(hour, {"n": 0, "rev": 0, "tbl": 0, "pk": 0, "tn": 0, "prep": 0, "prepN": 0, "late": 0})
     total = _int(item.get("totalAmount")) - _int((item.get("refund") or {}).get("amount"))
+    if outside:
+        cell["out"] = _int(cell.get("out")) + total
+        cell["outN"] = _int(cell.get("outN")) + 1
+        _order_dishes(row, item, hour)
+        return
     cell["n"] += 1
     cell["rev"] += total
     if item.get("mode") == "table":
@@ -331,6 +341,10 @@ def _order(row, item, tz):
         estimate = _parse_iso(item.get("readyEstimate"))
         if estimate and ready > estimate + timedelta(minutes=2):
             cell["late"] += 1
+    _order_dishes(row, item, hour)
+
+
+def _order_dishes(row, item, hour):
     ids = set()
     for line in item.get("lines") or ():
         if not isinstance(line, dict):
@@ -451,7 +465,7 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
     t = {k: 0 for k in ("bookings", "guests", "arrived", "noShows", "cancelled", "lateCancels", "cardOnFile",
                         "seats", "feesCharged", "feeCount", "feesFailed", "feesRefunded", "bookedMin", "openMin",
                         "orders", "orderRevenue", "tableRevenue", "pickupRevenue", "tableOrders", "prepMin",
-                        "prepCount", "lateOrders")}
+                        "prepCount", "lateOrders", "paidOutsideRevenue", "paidOutsideOrders")}
     sources = {s: 0 for s in SOURCES}
     lead = [0] * len(LEAD_LABELS)
     party = {}
@@ -551,6 +565,8 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
             t["prepMin"] += _int(cell.get("prep"))
             t["prepCount"] += _int(cell.get("prepN"))
             t["lateOrders"] += _int(cell.get("late"))
+            t["paidOutsideRevenue"] += _int(cell.get("out"))
+            t["paidOutsideOrders"] += _int(cell.get("outN"))
             by_hour.setdefault(hour, {"hour": hour, "bookings": 0, "guests": 0, "orders": 0})["orders"] += n
             by_weekday[wd]["orders"] += n
             point["orders"] += n
@@ -655,6 +671,10 @@ def summarize(rows, *, service="all", channel="all", splits=None, compare_dishes
         "tableRevenue": t["tableRevenue"],
         "pickupRevenue": t["pickupRevenue"],
         "tableOrders": t["tableOrders"],
+        # Pay-later table bills paid outside Booqy (own terminal, cash, Swish):
+        # not Booqy order revenue, shown on their own.
+        "paidOutsideRevenue": t["paidOutsideRevenue"],
+        "paidOutsideOrders": t["paidOutsideOrders"],
         "avgOrder": round(order_revenue / t["orders"]) if t["orders"] else None,
         "prepMinutes": round(t["prepMin"] / t["prepCount"], 1) if t["prepCount"] else None,
         "latePct": _pct(t["lateOrders"], t["prepCount"]),

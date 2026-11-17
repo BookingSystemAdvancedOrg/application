@@ -16,6 +16,19 @@ TRIGGER:
         with Stripe, so the page right after payment shows "confirmed"
         even if the webhook is a few seconds behind.
 
+    GET /locations/{locationId}/table-bill[?order=<orderId>]
+        Header X-Order-Token: the staff pay link token, or the guest's
+        order status token with ?order= (a pay-later table order). The
+        table's open bill as anyone at the table may see it (no names,
+        phones or e-mails): {tableTitle, serviceDate, status open | paying |
+        empty, amount, count, orders [{number, createdAt, total, lines}],
+        vat, paying? {startedAt, retryAfter}, location {name}}.
+    GET /locations/{locationId}/table-bill/{billId}
+        Header X-Order-Token: the bill token from POST .../table-bill/pay.
+        One payment attempt; while it is paying the Checkout Session is
+        checked with Stripe (like the status page). {billId, status paying
+        | paid | expired | failed, amount, paidAt?, tableTitle, orders, vat}.
+
 PURPOSE:
     The guest's side of ordering: open/closed before ordering, and the
     order's progress (confirmed -> preparing -> ready) afterwards. A wrong
@@ -34,7 +47,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import http, manage_link, order_payments, tenant
 from shared import orders as o
-from shared import table_qr
+from shared import table_bills, table_qr
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -42,6 +55,8 @@ logger.setLevel(logging.INFO)
 
 _ORDERING = "/locations/{locationId}/ordering"
 _STATUS = "/locations/{locationId}/order-status/{orderId}"
+_BILL = "/locations/{locationId}/table-bill"
+_BILL_ONE = "/locations/{locationId}/table-bill/{billId}"
 
 
 def _ordering(event):
@@ -70,17 +85,57 @@ def _status(event):
             item = order_payments.sync_from_stripe(item, o.now_utc(), "guest")
         except (stripe.StripeError, stripe.StripeUnavailable):
             logger.warning("checkout session lookup failed for %s", item["orderId"])
-    return http.respond(200, o.guest_view(item, ctx.location))
+    view = o.guest_view(item, ctx.location)
+    bill = table_bills.order_bill(item)
+    if bill:
+        view["bill"] = bill
+    return http.respond(200, view)
+
+
+def _bill(event):
+    location_id = http.path_id(event, "locationId")
+    ctx = tenant.for_public(location_id, feature="ordering")
+    params = http.query(event)
+    unknown = sorted(set(params) - {"order"})
+    if unknown:
+        raise ValueError(f"unsupported query parameters: {', '.join(unknown)}")
+    now = o.now_utc()
+    service_date, table_id = table_bills.resolve_guest(ctx, location_id, http.header(event, "x-order-token"),
+                                                       params.get("order"), now)
+    tab = table_bills.load_tab(location_id, service_date, table_id)
+    if not tab:
+        raise o.NotFound
+    return http.respond(200, table_bills.guest_view(tab, ctx.location, now))
+
+
+def _bill_one(event):
+    location_id = http.path_id(event, "locationId")
+    ctx = tenant.for_public(location_id, feature="ordering")
+    bill_id = http.path_id(event, "billId")
+    if not table_bills.bill_token_matches(ctx.tenant_id, location_id, bill_id, http.header(event, "x-order-token")):
+        raise o.NotFound
+    bill = table_bills.load_bill(location_id, bill_id)
+    if not bill or bill.get("tenantId") != ctx.tenant_id:
+        raise o.NotFound
+    if bill.get("status") == table_bills.PAYING:
+        try:
+            bill = table_bills.sync(bill, o.now_utc(), "guest")
+        except (stripe.StripeError, stripe.StripeUnavailable):
+            logger.warning("checkout session lookup failed for bill %s", bill_id)
+    return http.respond(200, table_bills.bill_view(bill))
+
+
+_ROUTES = {_ORDERING: _ordering, _STATUS: _status, _BILL: _bill, _BILL_ONE: _bill_one}
 
 
 def handler(event, context):
     method, path = http.route(event)
-    if path not in (_ORDERING, _STATUS):
+    if path not in _ROUTES:
         return http.error(404, "not found")
     if method != "GET":
         return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET"})
     try:
-        return _ordering(event) if path == _ORDERING else _status(event)
+        return _ROUTES[path](event)
     except tenant.TenantError as exc:
         return exc.response()
     except o.NotFound:

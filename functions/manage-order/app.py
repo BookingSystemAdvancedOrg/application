@@ -36,6 +36,27 @@ TRIGGER:
          A new code for one table (sticker stolen or worn): the old printed
          code stops working at once and shows the guest a clear message.
 
+    Table bills (pay-later QR table orders, shared/table_bills.py):
+    GET  /locations/{locationId}/orders/tabs
+         Every table with an open bill, oldest first: {serviceDate, tabs:
+         [{tableId, tableLabel, title, serviceDate, amount, count, oldestAt,
+         orders, paying?, stale, mismatch?}]}. Area Beställningar or Layout.
+    POST /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/pay-link
+         {} -> {url, expiresAt, amount, count}: the link (QR code) the guest
+         pays the whole bill with. 409 bill_empty.
+    POST .../tabs/{serviceDate}/{tableId}/paid-outside
+         {method card_terminal|cash|swish|other, note?, orderIds?,
+         expectedAmount}: the guest paid outside Booqy (no Booqy receipt).
+    POST .../tabs/{serviceDate}/{tableId}/write-off
+         {reason, orderIds?, expectedAmount}: owner only, closed unpaid.
+    POST .../tabs/{serviceDate}/{tableId}/mismatch-checked
+         owner only: a flagged bill payment has been checked.
+         The three answer {tab, orders}; 409 bill_changed (the amount or
+         orders differ from what the screen showed), bill_being_paid,
+         bill_paid, bill_processing. Every action writes an audit row.
+    Cancelling an unpaid order (PUT .../status cancelled) refunds nothing:
+    it leaves its table's bill, paymentStatus void.
+
 PURPOSE:
     The restaurant's side of food orders. Status writes are conditional on
     the status the screen showed (or the order's version), so two staff
@@ -63,7 +84,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import dynamo, feature_hooks, http, manage_link, order_payments, refunds, site, tenant
 from shared import orders as o
-from shared import table_qr
+from shared import table_bills, table_qr
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -159,6 +180,15 @@ def _refund_gift_card(item, now):
 
 
 def _cancel(item, ctx, now, current):
+    if item.get("paymentStatus") == o.PAY_UNPAID:
+        return table_bills.cancel_unpaid(item, ctx, now, current)
+    if item.get("paymentStatus") in (o.PAY_OUTSIDE, o.PAY_WRITTEN_OFF):
+        # Settled outside Booqy: there is nothing Booqy could refund.
+        raise o.InvalidState("settled_outside_booqy")
+    return _cancel_paid(item, ctx, now, current)
+
+
+def _cancel_paid(item, ctx, now, current):
     """Stripe first (what is left of the card part, nothing when a gift card
     covered it or it is already refunded), recorded on the order
     (shared/refunds.py); then a gift card's part back, once; then cancelled.
@@ -276,12 +306,62 @@ def _regenerate(location_id, ctx, table_id):
     return http.respond(200, _code_view(table, base, slug))
 
 
+def _tabs(location_id, ctx):
+    now = o.now_utc()
+    return http.respond(200, table_bills.staff_tabs(ctx.location, ctx.tenant, location_id, now,
+                                                    staff_view=o.staff_view))
+
+
+def _tab_action(event, location_id, ctx, service_date, table_id, action):
+    if not table_bills.valid_service_date(service_date) or not table_bills.valid_table_id(table_id):
+        raise o.NotFound
+    now = o.now_utc()
+    if action == "pay-link":
+        if event.get("body"):
+            http.body(event, allowed=set())
+        base, slug = site.base(ctx.tenant_id, ctx.tenant)
+        return http.respond(200, table_bills.pay_link(ctx, location_id, service_date, table_id, now,
+                                                      base=base, slug=slug))
+    if action in ("write-off", "mismatch-checked") and not ctx.is_owner:
+        raise tenant.TenantError(403, "owner_only")
+    if action == "mismatch-checked":
+        table_bills.clear_mismatch(ctx, location_id, service_date, table_id)
+        return http.respond(200, {"ok": True})
+    if action == "paid-outside":
+        data = http.body(event, allowed={"method", "note", "orderIds", "expectedAmount"})
+        kind = o.PAY_OUTSIDE
+    else:
+        data = http.body(event, allowed={"reason", "orderIds", "expectedAmount"})
+        kind = o.PAY_WRITTEN_OFF
+    updated = table_bills.close_without_booqy(ctx, location_id, service_date, table_id, kind, data, now)
+    tab = table_bills.load_tab(location_id, service_date, table_id) or {
+        "tableId": table_id, "serviceDate": service_date}
+    today = o.service_date(ctx.location, now)
+    closed = o.availability(ctx.location, ctx.tenant, now).get("reason") == "closed"
+    open_ids = set(table_bills.entries(tab))
+    orders = {i["orderId"]: i for i in (o.load(location_id, x) for x in open_ids)}
+    return http.respond(200, {"tab": table_bills.tab_view(tab, orders, today, closed, o.staff_view),
+                              "orders": [o.staff_view(i) for i in updated]})
+
+
+_TAB_ACTIONS = ("pay-link", "paid-outside", "write-off", "mismatch-checked")
+
+
 def _item_route(event, method):
     proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
     parts = proxy.split("/") if proxy else []
-    # The table QR codes are shown on Layout too (the floor plan's tables).
+    # The table QR codes and the open table bills are shown on Layout too (the floor plan's tables).
     table_codes = bool(parts) and parts[0] == "table-codes"
-    location_id, ctx = _ctx(event, ("bestallningar", "layout") if table_codes else "bestallningar")
+    read_tabs = parts == ["tabs"]
+    location_id, ctx = _ctx(event, ("bestallningar", "layout") if table_codes or read_tabs else "bestallningar")
+    if read_tabs:
+        if method != "GET":
+            return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET"})
+        return _tabs(location_id, ctx)
+    if len(parts) == 4 and parts[0] == "tabs" and parts[3] in _TAB_ACTIONS:
+        if method != "POST":
+            return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
+        return _tab_action(event, location_id, ctx, parts[1], parts[2], parts[3])
     if parts == ["pause"]:
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})
@@ -328,6 +408,8 @@ def handler(event, context):
         return http.error(404, "not found")
     except o.InvalidState as exc:
         return http.error(409, exc.code)
+    except table_bills.BillError as exc:
+        return http.respond(exc.status, {"error": exc.code, **exc.extra})
     except refunds.Conflict as exc:
         return http.error(409, exc.code)
     except stripe.StripeError as exc:

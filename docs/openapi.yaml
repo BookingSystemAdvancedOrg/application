@@ -4471,6 +4471,145 @@ paths:
         '503':
           $ref: '#/components/responses/OrderServiceUnavailable'
 
+  /locations/{locationId}/table-bill:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TableBillToken'
+      - $ref: '#/components/parameters/TableBillOrder'
+    get:
+      tags:
+        - Orders
+      summary: A table's open bill (pay-later QR table orders)
+      operationId: getTableBill
+      description: |
+        Public, with `X-Order-Token`: the staff pay link token (from the
+        QR code staff show), or the guest's order status token together
+        with `?order=<orderId>` of a pay-later table order. Every unpaid
+        order of the table this service day, as anyone at the table may
+        see it: no names, phones or e-mails. A wrong or expired token
+        answers 404.
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The open bill.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillView'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/table-bill/pay:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TableBillToken'
+      - $ref: '#/components/parameters/TableBillOrder'
+    post:
+      tags:
+        - Orders
+      summary: Pay a table's whole open bill with the phone
+      operationId: payTableBill
+      description: |
+        Public, same token as GET .../table-bill. Locks the bill to
+        `expectedAmount` and its orders and starts one Stripe Checkout
+        Session (Payment Element, the restaurant's account, idempotency key
+        per bill). Confirm `clientSecret` on `stripeAccount`; afterwards
+        poll GET .../table-bill/{billId} with `billToken`. An order placed
+        meanwhile stays for the next bill. A payment left open locks the
+        bill for at most 120 seconds; then another guest can pay (the old
+        session is expired at Stripe first). `resumeBillId` +
+        `resumeToken`: the same device going back and forth gets its
+        session again (200). 409 `bill_empty`, `bill_changed` (with
+        `bill`, the fresh view), `bill_being_paid` (with `retryAfter`),
+        `bill_processing`, `bill_paid`, `bill_below_minimum` (under 3 kr),
+        `ordering_no_payments`; 429 (20 per IP address per 10 minutes);
+        503 `payment_unavailable`. Gift cards and discount codes are not
+        used on table bills.
+      security: []
+      x-required-groups: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TableBillPayRequest'
+      responses:
+        '200':
+          description: The same device's open session, resumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillPayment'
+        '201':
+          description: The payment started.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillPayment'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '429':
+          $ref: '#/components/responses/OrderTooManyRequests'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/table-bill/{billId}:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - name: billId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+      - name: X-Order-Token
+        in: header
+        required: true
+        description: The billToken from POST .../table-bill/pay.
+        schema:
+          type: string
+    get:
+      tags:
+        - Orders
+      summary: One payment of a table's bill
+      operationId: getTableBillPayment
+      description: |
+        Public, with the bill token. While it is paying the Checkout
+        Session is checked with Stripe, so the page right after payment
+        already shows `paid` (also after a Swish, Klarna or 3-D Secure
+        return to `/notan/<locationId>?nota=<billId>#<billToken>`).
+      security: []
+      x-required-groups: []
+      responses:
+        '200':
+          description: The bill payment.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillPaymentView'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
   /locations/{locationId}/orders:
     parameters:
       - $ref: '#/components/parameters/LocationId'
@@ -4777,6 +4916,214 @@ paths:
           $ref: '#/components/responses/OrderBadRequest'
         '404':
           $ref: '#/components/responses/OrderNotFound'
+
+  /locations/{locationId}/orders/tabs:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+        - Orders
+      summary: Open table bills (pay-later QR table orders)
+      operationId: listTableTabs
+      description: |
+        Every table with an open bill, oldest first: the unpaid orders,
+        the amount, whether a guest is paying it right now, and `stale`
+        when it is from an earlier service day or the location has
+        closed. Staff with Beställningar or Layout.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: The open bills.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableTabList'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/pay-link:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TabServiceDate'
+      - $ref: '#/components/parameters/TabTableId'
+    post:
+      tags:
+        - Orders
+      summary: Pay link (QR code) for a table's bill
+      operationId: createTableBillPayLink
+      description: |
+        The link the guest scans to pay the whole bill with the phone,
+        valid 12 hours. 409 `bill_empty`. Writes an audit row per order.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Done.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillPayLink'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/paid-outside:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TabServiceDate'
+      - $ref: '#/components/parameters/TabTableId'
+    post:
+      tags:
+        - Orders
+      summary: The guest paid outside Booqy
+      operationId: markTableBillPaidOutside
+      description: |
+        Staff record that the guest paid the bill (or `orderIds` of it)
+        outside Booqy: the restaurant's own card terminal, cash, Swish or
+        other. paymentStatus `paid_outside`; Booqy issues no receipt for it.
+        `expectedAmount` must be the sum of those orders (else 409
+        `bill_changed`); a guest paying them right now is stopped first
+        (409 `bill_paid` / `bill_processing` / `bill_being_paid` when that
+        is not possible). One audit row per order.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaidOutsideRequest'
+      responses:
+        '200':
+          description: Done.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableTabActionResult'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/write-off:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TabServiceDate'
+      - $ref: '#/components/parameters/TabTableId'
+    post:
+      tags:
+        - Orders
+      summary: Write off a table's unpaid bill
+      operationId: writeOffTableBill
+      description: |
+        Owner only: the bill (or `orderIds` of it) is closed without
+        payment, paymentStatus `written_off`, not counted as a sale.
+        Same rules as paid-outside.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WriteOffRequest'
+      responses:
+        '200':
+          description: Done.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableTabActionResult'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
+
+  /locations/{locationId}/orders/tabs/{serviceDate}/{tableId}/mismatch-checked:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/TabServiceDate'
+      - $ref: '#/components/parameters/TabTableId'
+    post:
+      tags:
+        - Orders
+      summary: A flagged bill payment has been checked
+      operationId: clearTableBillMismatch
+      description: |
+        Owner only. Clears `mismatch` on a table bill (a payment arrived
+        for an order that was no longer unpaid; refund that part on the
+        payment in the Stripe Dashboard first).
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - owner_user
+      responses:
+        '200':
+          description: Done.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableBillOk'
+        '400':
+          $ref: '#/components/responses/OrderBadRequest'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          $ref: '#/components/responses/OrderConflict'
+        '503':
+          $ref: '#/components/responses/OrderServiceUnavailable'
 
   /locations/{locationId}/orders/table-codes/{tableId}/regenerate:
     parameters:
@@ -7028,6 +7375,39 @@ components:
       description: The order's status token (POST /order, or the guest's SMS/e-mail link).
       schema:
         type: string
+    TableBillToken:
+      name: X-Order-Token
+      in: header
+      required: true
+      description: |
+        The staff pay link token (L.<payload>.<signature>, from the link's
+        fragment), or the guest's order status token with `order`.
+      schema:
+        type: string
+    TableBillOrder:
+      name: order
+      in: query
+      required: false
+      description: A pay-later table order's id (with its status token).
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{32}$'
+    TabServiceDate:
+      name: serviceDate
+      in: path
+      required: true
+      description: The bill's service day (YYYY-MM-DD).
+      schema:
+        type: string
+        format: date
+    TabTableId:
+      name: tableId
+      in: path
+      required: true
+      description: The table's element id in the floor plan.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{1,128}$'
   headers:
     CacheControlNoStore:
       description: Prevents storage of authentication, PII, or staff data.
@@ -8625,7 +9005,6 @@ components:
         - items
         - name
         - phone
-        - email
         - acceptTerms
       properties:
         locationId:
@@ -8717,6 +9096,19 @@ components:
             The site pays on its own page with Stripe's Payment Element: the
             response carries clientSecret and stripeAccount instead of
             checkoutUrl.
+        payLater:
+          type: boolean
+          description: |
+            Table orders only (400 `payLater is only for table orders`). No
+            payment step: the order goes to the kitchen at once (`confirmed`,
+            paymentStatus `unpaid`) and is paid with the table's bill before
+            the guests leave (GET/POST .../table-bill). `email` is optional;
+            `discountCode` and `giftCardCode` are refused (400
+            `codes_not_for_table`). 409 `table_bill_full` when the table
+            already has 8 unpaid orders or 5 000 kr; one phone may place 8
+            table orders a day (429). A table order without `payLater`
+            (sites from before) is paid first as before. `email` is required
+            for every other order.
         giftCardCode:
           type: string
           maxLength: 64
@@ -8766,6 +9158,16 @@ components:
         chargedAmount:
           type: integer
           description: With giftCardCode only. What the guest pays by card (öre); 0 = no checkout.
+        number:
+          type: integer
+          description: Pay-later table orders only (the order is in the kitchen at once).
+        payLater:
+          type: boolean
+          description: true for a pay-later table order (no payment fields).
+        serviceDate:
+          type: string
+          format: date
+          description: Pay-later table orders only. The service day of the table's bill.
 
     OrderLine:
       type: object
@@ -8840,6 +9242,27 @@ components:
             - failed
             - partly_refunded
             - refunded
+            - unpaid
+            - paid_outside
+            - written_off
+            - void
+        payLater:
+          type: boolean
+          description: A pay-later QR table order (paid with the table's bill).
+        serviceDate:
+          type: string
+          format: date
+        paidOutside:
+          description: |
+            Guest view: true when the restaurant recorded a payment outside
+            Booqy. Staff view: {method, note, by, at}.
+        bill:
+          type: object
+          description: An unpaid pay-later order's table bill (guest view).
+          properties:
+            amount: {type: integer}
+            count: {type: integer}
+            status: {type: string, enum: [open, paying, empty]}
         mode:
           type: string
           enum:
@@ -8929,6 +9352,18 @@ components:
             refundable:
               type: integer
               description: What an owner refund can still give back (card part, öre).
+            billId:
+              type: string
+              description: The table bill that paid this order.
+            paidAt:
+              type: string
+              format: date-time
+            writtenOff:
+              type: object
+              properties:
+                reason: {type: string}
+                by: {type: string}
+                at: {type: string, format: date-time}
             giftCard:
               type: object
             history:
@@ -8948,6 +9383,198 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Order'
+
+    TableBillOrder:
+      type: object
+      properties:
+        number: {type: integer}
+        createdAt: {type: string, format: date-time}
+        total: {type: integer}
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              quantity: {type: integer}
+              total: {type: integer}
+              vatRate: {type: integer}
+
+    TableBillView:
+      type: object
+      properties:
+        tableTitle: {type: string}
+        serviceDate: {type: string, format: date}
+        status:
+          type: string
+          enum: [open, paying, empty]
+        amount: {type: integer, description: Öre.}
+        count: {type: integer}
+        currency: {type: string}
+        minChargeOre: {type: integer}
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableBillOrder'
+        vat:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderVat'
+        paying:
+          type: object
+          properties:
+            startedAt: {type: string, format: date-time}
+            retryAfter: {type: integer}
+        location:
+          type: object
+          properties:
+            name: {type: string}
+
+    TableBillPayRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedAmount
+      properties:
+        expectedAmount:
+          type: integer
+          description: The amount the guest saw (öre).
+        email:
+          type: string
+          description: Optional, the receipt goes here.
+        resumeBillId:
+          type: string
+        resumeToken:
+          type: string
+
+    TableBillPayment:
+      type: object
+      properties:
+        billId: {type: string}
+        billToken: {type: string}
+        clientSecret: {type: string}
+        stripeAccount: {type: string}
+        amount: {type: integer}
+        count: {type: integer}
+
+    TableBillPaymentView:
+      type: object
+      properties:
+        billId: {type: string}
+        status:
+          type: string
+          enum: [paying, paid, expired, failed]
+        amount: {type: integer}
+        count: {type: integer}
+        paidAt: {type: string, format: date-time}
+        tableTitle: {type: string}
+        serviceDate: {type: string, format: date}
+        currency: {type: string}
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableBillOrder'
+        vat:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderVat'
+
+    TableTab:
+      type: object
+      properties:
+        tableId: {type: string}
+        tableLabel: {type: string}
+        title: {type: string}
+        serviceDate: {type: string, format: date}
+        amount: {type: integer}
+        count: {type: integer}
+        oldestAt: {type: string, format: date-time}
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+        paying:
+          type: object
+          properties:
+            billId: {type: string}
+            amount: {type: integer}
+            startedAt: {type: string, format: date-time}
+        stale:
+          type: boolean
+          description: From an earlier service day, or the location has closed.
+        mismatch:
+          type: object
+          description: Owner check needed (a payment came for an order no longer unpaid).
+
+    TableTabList:
+      type: object
+      properties:
+        serviceDate: {type: string, format: date}
+        tabs:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableTab'
+
+    TableBillPayLink:
+      type: object
+      properties:
+        url: {type: string, format: uri}
+        expiresAt: {type: string, format: date-time}
+        amount: {type: integer}
+        count: {type: integer}
+
+    PaidOutsideRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - method
+        - expectedAmount
+      properties:
+        method:
+          type: string
+          enum: [card_terminal, cash, swish, other]
+        note:
+          type: string
+          maxLength: 200
+        orderIds:
+          type: array
+          maxItems: 8
+          items: {type: string}
+        expectedAmount:
+          type: integer
+
+    WriteOffRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - reason
+        - expectedAmount
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+        orderIds:
+          type: array
+          maxItems: 8
+          items: {type: string}
+        expectedAmount:
+          type: integer
+
+    TableTabActionResult:
+      type: object
+      properties:
+        tab:
+          $ref: '#/components/schemas/TableTab'
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+
+    TableBillOk:
+      type: object
+      properties:
+        ok: {type: boolean}
 
     OrderStatusRequest:
       type: object
@@ -12156,6 +12783,12 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     OrderNotFound:
       description: No such location/order (or not this tenant's, or a wrong token).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    OrderForbidden:
+      description: Not allowed for this user (e.g. owner_only, no_access).
       content:
         application/json:
           schema:

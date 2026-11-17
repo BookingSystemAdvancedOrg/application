@@ -490,6 +490,41 @@
    "kind": "guide"
   },
   {
+   "id": "bestallning-notan",
+   "route": "/bestallningar",
+   "title": "Notan vid bordet",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "nota",
+    "notan",
+    "obetald",
+    "betala vid bordet",
+    "betala med mobilen",
+    "markera som betald",
+    "betald utanför booqy",
+    "skriv av",
+    "qr-kod bord",
+    "bordsbeställning"
+   ],
+   "answer": "Gäster som beställer med QR-koden på bordet betalar innan de går. Alla obetalda beställningar vid ett bord blir en nota. Under Beställningar, Notor ser du vad varje bord ska betala.",
+   "steps": [
+    "Öppna Beställningar och välj Notor.",
+    "Tryck Betala med mobilen och låt gästen skanna QR-koden. Gästen betalar hela notan i mobilen.",
+    "Betalade gästen i er egen kortterminal, kontant eller med Swish? Tryck Markera som betald och välj hur. Booqy ger inget kvitto för det, kvittot kommer från ert eget system.",
+    "En obetald beställning som inte ska lagas avbryter du på tavlan. Gästen har inte betalat något, så inget betalas tillbaka.",
+    "En gul nota är från en tidigare dag eller efter stängning. Ägaren kan trycka Skriv av om gästen gick utan att betala."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-open",
+     "label": "Öppna Beställningar",
+     "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
    "id": "bestallning-installningar",
    "route": "/installningar",
    "title": "Slå på beställning och QR-koder",

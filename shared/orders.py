@@ -5,7 +5,9 @@ Two ways to order:
     pickup  the guest orders from anywhere (the restaurant's site) and
             collects at the counter when the "ready" SMS arrives
     table   the guest scans the QR code on a table; staff bring the food
-            to that table
+            to that table. Pay later (``payLater``): the order goes to the
+            kitchen at once, unpaid, and is paid with the table's bill
+            before the guests leave (shared/table_bills.py)
 
 Order record (order table, one partition per location):
     PK LOCATION#<locationId>   SK ORDER#<date>#<orderId>       the order
@@ -19,6 +21,9 @@ Lifecycle:
     paymentStatus  processing -> paid -> [partly_refunded ->] refunded | processing -> failed
                    (partly_refunded / refunded follow the card part: owner
                    refunds, cancel, Stripe Dashboard)
+    pay later      written confirmed + unpaid; unpaid -> paid (the table's
+                   bill paid online) | paid_outside (staff: paid outside
+                   Booqy) | written_off (owner) | void (cancelled unpaid)
 
 Prices are always read from the menu here - what the browser sent is never
 trusted. Amounts are öre (Stripe's minor unit for SEK).
@@ -45,7 +50,7 @@ import json
 import os
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
@@ -89,6 +94,15 @@ PAY_PAID = "paid"
 PAY_FAILED = "failed"
 PAY_PARTLY_REFUNDED = "partly_refunded"  # part of the card payment refunded (owner refund)
 PAY_REFUNDED = "refunded"
+# Pay-later QR table orders (shared/table_bills.py)
+PAY_UNPAID = "unpaid"              # in the kitchen, on the table's open bill
+PAY_OUTSIDE = "paid_outside"       # staff: the guest paid outside Booqy (own terminal, cash, Swish)
+PAY_WRITTEN_OFF = "written_off"    # owner: closed without payment
+PAY_VOID = "void"                  # an unpaid order cancelled: nothing to refund
+OUTSIDE_METHODS = ("card_terminal", "cash", "swish", "other")
+# An open table bill holds at most this much (atomic on the table's bill record).
+TABLE_MAX_OPEN_ORDERS = 8
+TABLE_MAX_OPEN_ORE = 500_000       # 5 000 kr
 
 NOTICE_CONFIRMED = "order_confirmed"   # paid: receipt email (no SMS - the kitchen hasn't seen it yet)
 NOTICE_STARTED = "order_started"       # staff pressed "Påbörja": the confirmation SMS (email if no SMS possible)
@@ -304,6 +318,31 @@ def availability(location, tenant_row, now):
             return {**base, "open": True, "closesAt": _clock(closes),
                     "lastOrderAt": _clock(last)}
     return {**base, "open": False, "reason": "closed"}
+
+
+def service_date(location, now):
+    """The service day a pay-later table order belongs to (its bill): the
+    local date whose opening hours contain ``now``. A bar open until 01:00
+    keeps one bill across midnight; outside every opening span, the local
+    date. Returns YYYY-MM-DD."""
+    local = local_now(location, now)
+    minute = local.hour * 60 + local.minute
+    for opens, closes in _spans_today(location, local):
+        if opens <= minute < closes:
+            # A span that started yesterday (opens below 0) belongs to
+            # yesterday while it is still yesterday's evening.
+            if opens < 0 and minute < _yesterday_closes(location, local):
+                return (local.date() - timedelta(days=1)).isoformat()
+            return local.date().isoformat()
+    return local.date().isoformat()
+
+
+def _yesterday_closes(location, local):
+    """Minute (from today's midnight) at which yesterday's hours past
+    midnight end, 0 when they don't run past midnight."""
+    yesterday = local - timedelta(days=1)
+    ends = [closes - 1440 for _, closes in _spans_today(location, yesterday) if closes > 1440]
+    return max(ends, default=0)
 
 
 def _clock(minute):
@@ -653,6 +692,10 @@ def guest_view(item, location=None):
         "readyEstimate": item.get("readyEstimate"),
         "readyAt": item.get("readyAt"),
         "language": item.get("language", "sv"),
+        # Pay-later QR table order: in the kitchen, paid with the table's bill.
+        "payLater": True if item.get("payLater") else None,
+        "serviceDate": item.get("serviceDate") if item.get("payLater") else None,
+        "paidOutside": True if item.get("paymentStatus") == PAY_OUTSIDE else None,
     }
     if location:
         view["location"] = {k: location.get(k) for k in ("name", "address", "phoneNumber")}
@@ -689,6 +732,10 @@ def staff_view(item):
         "refund": _refund_view(item.get("refund")),
         "giftCard": _gift_view(item.get("giftCard")),
         "paymentMethod": item.get("paymentMethod"),
+        "billId": item.get("billId"),
+        "paidAt": item.get("paidAt"),
+        "paidOutside": item.get("paidOutside"),
+        "writtenOff": item.get("writtenOff"),
         "history": item.get("history") or [],
         # What an owner refund can still give back (card part, öre).
         "refundable": refundable_amount(item),

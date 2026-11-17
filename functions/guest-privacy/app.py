@@ -95,7 +95,9 @@ _ERASE = "/privacy/guests/erase"
 _GUEST_ROWS = (("booking", "RESERVATION_TABLE_NAME", "RESERVATION#", "bookings"),
                ("order", "ORDER_TABLE_NAME", "ORDER#", "orders"),
                ("catering", "CATERING_TABLE_NAME", "REQUEST#", "cateringRequests"),
-               ("card", "ORDER_TABLE_NAME", "CARD#", "cardPayments"))
+               ("card", "ORDER_TABLE_NAME", "CARD#", "cardPayments"),
+               # Table bills paid with the phone: the payer's optional receipt e-mail.
+               ("bill", "ORDER_TABLE_NAME", "BILL#", "tableBills"))
 _CATERING_IN_PROGRESS = (catering.REQUESTED, catering.OFFER_SENT, catering.CHANGE_REQUESTED, catering.SIGNED,
                          catering.CONFIRMED)
 _ORDER_IN_PROGRESS = (orders.PENDING_PAYMENT, *orders.OPEN_STATUSES)
@@ -235,7 +237,7 @@ def _catering_export(item):
 
 
 def _matches(item, email, phone):
-    stored_email = item.get("customerEmail") or item.get("receiptEmail")
+    stored_email = item.get("customerEmail") or item.get("receiptEmail") or item.get("payerEmail")
     if email and isinstance(stored_email, str) and stored_email.strip().lower() == email:
         return True
     return bool(phone and item.get("customerPhone") == phone)
@@ -298,7 +300,8 @@ def _hook(ctx, name, email, phone):
 
 
 def _export(ctx, email, phone):
-    out = {"email": email, "phone": phone, "bookings": [], "orders": [], "cateringRequests": [], "cardPayments": []}
+    out = {"email": email, "phone": phone, "bookings": [], "orders": [], "cateringRequests": [], "cardPayments": [],
+           "tableBills": []}
     name = consent.table_name()
     out["consents"] = _lookup(ctx, dynamo.table(name), email, phone) if name else {}
     sub, _, code = _marketing_rows(ctx.tenant_id, email)
@@ -321,7 +324,10 @@ def _in_progress(kind, item, today):
     if kind == "booking":
         return item.get("status") in r.ACTIVE and str(item.get("date") or "") >= today
     if kind == "order":
-        return item.get("status") in _ORDER_IN_PROGRESS
+        # An unpaid pay-later table order is in progress until its bill is settled.
+        return item.get("status") in _ORDER_IN_PROGRESS or item.get("paymentStatus") == orders.PAY_UNPAID
+    if kind == "bill":
+        return item.get("status") == "paying"
     if kind == "card":
         return False
     return item.get("status") in _CATERING_IN_PROGRESS
@@ -404,7 +410,8 @@ def _erase(ctx, email, phone):
         if _in_progress(kind, item, today):
             result["kept"].append({"kind": kind, "locationId": item["locationId"], "status": item.get("status"),
                                    "date": item.get("date") or item.get("deliveryDate"),
-                                   "id": item.get("reservationId") or item.get("orderId") or item.get("requestId")})
+                                   "id": item.get("reservationId") or item.get("orderId") or item.get("requestId")
+                                         or item.get("billId")})
             continue
         if item.get("anonymisedAt"):
             continue

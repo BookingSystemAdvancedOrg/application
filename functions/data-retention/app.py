@@ -212,6 +212,17 @@ def _orders(location_id, policy, today, now, counts, budget):
                 _delete(name, {"PK": pk, "SK": item["SK"]}, budget)
                 if item.get("orderId"):
                     _delete(name, {"PK": pk, "SK": f"OID#{item['orderId']}"}, budget)
+    # Table bills (pay-later QR table orders paid with the phone), same table.
+    for item in _query(name, Key("PK").eq(pk) & Key("SK").begins_with("BILL#")):
+        action = retention.bill_action(item, today, policy)
+        if action == "anonymise":
+            counts["billsAnonymised"] += 1
+            if not dry_run():
+                _anonymise(name, item, "bill", now, budget)
+        elif action == "delete":
+            counts["billsDeleted"] += 1
+            if not dry_run():
+                _delete(name, {"PK": pk, "SK": item["SK"]}, budget)
     # Card payment records from before 2026-11-13 (none are written any more), same table.
     for item in _query(name, Key("PK").eq(pk) & Key("SK").begins_with("CARD#")):
         action = retention.card_action(item, today, policy)

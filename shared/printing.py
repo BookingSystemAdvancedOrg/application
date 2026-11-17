@@ -403,7 +403,9 @@ def _put_once(item):
 def order_header(order):
     return {"orderId": order["orderId"], "number": order.get("number"), "mode": order.get("mode"),
             "tableLabel": order.get("tableLabel"), "placedAt": order.get("confirmedAt") or order.get("createdAt"),
-            "readyEstimate": order.get("readyEstimate")}
+            "readyEstimate": order.get("readyEstimate"),
+            # Pay-later QR table order: the ticket says it is paid at the table.
+            **({"payLater": True} if order.get("payLater") else {})}
 
 
 def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False):

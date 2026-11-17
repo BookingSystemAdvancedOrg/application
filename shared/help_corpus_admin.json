@@ -17,7 +17,6 @@
   "/layout",
   "/gaster",
   "/presentkort",
-  "/webbplats",
   "/evenemang",
   "/evenemang/:eventId",
   "/evenemang/:eventId/inslapp/:occurrenceId",
@@ -1293,69 +1292,6 @@
      "id": "presentkort-open",
      "label": "Öppna Presentkort",
      "to": "/presentkort"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "webbplats-redigera",
-   "route": "/webbplats",
-   "title": "Ändra hemsidan",
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "keywords": [
-    "webbplats",
-    "hemsida",
-    "hemsidan",
-    "sida",
-    "block",
-    "färger",
-    "typsnitt",
-    "utseende hemsida"
-   ],
-   "answer": "Ägaren ändrar hemsidan under Webbplats: sidor, block och utseende.",
-   "steps": [
-    "Öppna Webbplats.",
-    "Välj sida, eller tryck Ny sida.",
-    "Tryck Lägg till block för text, bild, meny, öppettider, boka bord med mera.",
-    "Under Utseende väljer du färger och typsnitt.",
-    "Tryck Spara utkast."
-   ],
-   "actions": [
-    {
-     "id": "webbplats-open",
-     "label": "Öppna Webbplats",
-     "to": "/webbplats"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "webbplats-publicera",
-   "route": "/webbplats",
-   "title": "Publicera hemsidan",
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "keywords": [
-    "publicera hemsida",
-    "publicera",
-    "förhandsgranska",
-    "förhandsvisning",
-    "versioner hemsida",
-    "återställ"
-   ],
-   "answer": "Ändringar på hemsidan syns för gästerna först när du publicerar. Personuppgiftsbiträdesavtalet måste vara godkänt.",
-   "steps": [
-    "Öppna Webbplats och tryck Spara utkast.",
-    "Tryck Förhandsgranska för att se resultatet.",
-    "Tryck Publicera.",
-    "Vill du gå tillbaka: Versioner, Återställ."
-   ],
-   "actions": [
-    {
-     "id": "webbplats-open",
-     "label": "Öppna Webbplats",
-     "to": "/webbplats"
     }
    ],
    "kind": "guide"
@@ -2961,20 +2897,6 @@
    "area": "presentkort"
   },
   {
-   "id": "nav:webbplats",
-   "kind": "page",
-   "route": "/webbplats",
-   "title": "Webbplats",
-   "where": "vänstermenyn",
-   "text": "Webbplats finns i vänstermenyn.",
-   "highlight": [
-    "help:nav:/webbplats"
-   ],
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "area": "webbplats"
-  },
-  {
    "id": "nav:evenemang",
    "kind": "page",
    "route": "/evenemang",
@@ -3026,7 +2948,7 @@
    "audience": "all"
   },
   {
-   "id": "nav:installningar:skrivbordsappen:17",
+   "id": "nav:installningar:skrivbordsappen:16",
    "kind": "page",
    "route": "/installningar",
    "hash": "skrivbordsappen",
@@ -6510,20 +6432,6 @@
    "audience": "all",
    "feature": "phoneAgent",
    "area": "telefon"
-  },
-  {
-   "id": "features-site-builder-WebbplatsPage:block-pa-sidan:heading",
-   "kind": "element",
-   "route": "/webbplats",
-   "title": "Block på sidan",
-   "where": "Webbplats",
-   "text": "Inga block än.",
-   "highlight": [
-    "text:Block på sidan"
-   ],
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "area": "webbplats"
   },
   {
    "id": "features-statistik-Overview:bokningar-idag:kpi",

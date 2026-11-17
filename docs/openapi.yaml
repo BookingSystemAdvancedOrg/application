@@ -7913,16 +7913,9 @@ components:
               type: object
               description: |
                 reservations, ordering, catering, marketing,
-                siteBuilder, giftCards, waitlist, events. Never phoneAgent.
+                giftCards, waitlist, events. Never phoneAgent.
               additionalProperties:
                 type: boolean
-            site:
-              type: object
-              description: Only when siteBuilder is on and the site builder wrote it.
-              required: [mode, version]
-              properties:
-                mode: {type: string, enum: [builder, custom]}
-                version: {type: integer, minimum: 0, description: The live version (0 = nothing published).}
         legal:
           type: object
           properties:

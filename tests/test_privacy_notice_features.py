@@ -13,7 +13,7 @@ def _text(features):
     return privacy_notice.template(tenant_row(TENANT_A, features=features), PERIODS)
 
 
-@pytest.mark.parametrize("features", [None, features_on(), features_on("giftCards", "siteBuilder")])
+@pytest.mark.parametrize("features", [None, features_on(), features_on("giftCards", "events")])
 def test_paragraphs_absent_when_off(features):
     text = _text(features)
     assert "Gästregister" not in text and "- Kö:" not in text

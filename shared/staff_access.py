@@ -22,7 +22,7 @@ grant works at once).
 An area opens the page and the work staff do there. Actions that were the
 owner's before (refunds, amounts, settings inside a page, exports, roles)
 stay the owner's: an area never makes staff an owner. The pages that were
-owner only (Personal, Presentkort, Webbplats, Marknadsföring) open their own
+owner only (Personal, Presentkort, Marknadsföring) open their own
 work to granted staff, except who may do what (roles, permissions, deleting
 accounts), which is the owner's alone.
 """
@@ -44,10 +44,14 @@ AREAS = (
     "personal",
     "gaster",
     "presentkort",
-    "webbplats",
     "evenemang",
     "marknadsforing",
 )
+
+# Areas of removed pages. Stored grants with them are dropped when read
+# (_clean keeps AREAS only), and an older admin that still sends one gets it
+# accepted and dropped instead of a 400.
+RETIRED_AREAS = ("webbplats",)  # the site builder, removed 2026-11-17
 
 # What staff could open before permissions existed: a restaurant whose owner
 # has never saved a choice keeps working exactly as before.
@@ -149,7 +153,7 @@ def owner_view(tenant_row: Optional[dict]) -> dict:
 def _areas_value(value, name: str) -> list:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ValueError(f"{name} must be a list of areas")
-    unknown = sorted(set(value) - set(AREAS))
+    unknown = sorted(set(value) - set(AREAS) - set(RETIRED_AREAS))
     if unknown:
         raise ValueError(f"{name} has unknown areas: {', '.join(unknown)}")
     return _clean(value)

@@ -87,8 +87,8 @@ def validate(data: dict) -> list[str]:
     for name, values in (("feature key", keys), ("feature id", ids)):
         dupes = sorted({v for v in values if values.count(v) > 1})
         errors += [f"duplicate {name} {d}" for d in dupes]
-    if len(keys) != 16 or sum(not f["existing"] for f in features) != 12:
-        errors.append("expected 16 features, 12 of them new")
+    if len(keys) != 15 or sum(not f["existing"] for f in features) != 11:
+        errors.append("expected 15 features, 11 of them new")
     new_ids = {f["id"] for f in features if not f["existing"]}
     for name, lim in data["limits"].items():
         if lim["feature"] not in keys:
@@ -129,7 +129,7 @@ def validate(data: dict) -> list[str]:
     site_features = [f["key"] for f in features if f["siteConfig"]]
     if sorted(data["siteConfig"]["tenantFeatures"]) != sorted(site_features):
         errors.append("siteConfig.tenantFeatures differs from the features with siteConfig: true")
-    for name in ("tenant.site", "location.waitlist"):
+    for name in ("location.waitlist",):
         if not _type_ok(data["siteConfig"][name]):
             errors.append(f"siteConfig.{name}: bad field type")
     return errors
@@ -303,7 +303,6 @@ def gen_site_kit(data: dict, digest: str) -> str:
     return "\n".join(_ts_head(digest) + _ts_features(data, labels=False) + [
         f"export const SITE_CONFIG_FEATURES = {_ts(sc['tenantFeatures'])} as const;",
         "export type SiteFeatureKey = (typeof SITE_CONFIG_FEATURES)[number];", "",
-        f"export type SiteBuilderState = {_ts_type(sc['tenant.site'])};",
         f"export type LocationWaitlist = {_ts_type(sc['location.waitlist'])};", "",
     ] + _ts_slots(data, "site", "SiteSlotId", "SITE_SLOTS", False) + [""] + [
         f"export const {name} = '{storage[name]['key']}';" for name in sorted(storage)

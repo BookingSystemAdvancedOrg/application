@@ -53,7 +53,6 @@ _TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
 # The guest-facing flags (CONTRACTS.md 7).
 _FEATURES = contracts.SITE_CONFIG_FEATURES
-_SITE_MODES = ("builder", "custom")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
                      "about", "faviconUrl", "instagramUrl", "facebookUrl")
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -165,18 +164,6 @@ def _ordering(row, tenant_row):
     return {"pickup": policy["pickup"], "table": policy["table"], "prepMinutes": policy["prepMinutes"]}
 
 
-def _site(row):
-    """PROFILE.site {mode, version} (written by site-builder), or None."""
-    site = row.get("site")
-    if not isinstance(site, dict) or site.get("mode") not in _SITE_MODES:
-        return None
-    try:
-        version = int(site.get("version"))
-    except (TypeError, ValueError):
-        return None
-    return {"mode": site["mode"], "version": version} if version >= 0 else None
-
-
 def _waitlist(row):
     """Location row waitlist {publicJoin} (written by waitlist), or None."""
     value = row.get("waitlist")
@@ -245,7 +232,6 @@ def _site_config(params):
         tenant.list_locations(tenant_id),
         key=lambda r: (str(r.get("createdAt") or "~"), str(r.get("name") or ""), r.get("SK", "")),
     )
-    site = _site(row) if features.get("siteBuilder") else None
     config = {
         "tenant": {
             "tenantId": tenant_id,
@@ -279,8 +265,6 @@ def _site_config(params):
             "marketingConsent": consent.public_text(row.get("name")) if features.get("marketing") else None,
         },
     }
-    if site is not None:
-        config["tenant"]["site"] = site
     return config
 
 

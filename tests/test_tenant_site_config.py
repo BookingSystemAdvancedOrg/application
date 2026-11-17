@@ -84,7 +84,7 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     assert body["tenant"]["name"] == "Roma" and body["tenant"]["slug"] == "roma"
     assert body["tenant"]["features"] == {"reservations": True, "ordering": True,
                                           "catering": True, "marketing": False,
-                                          "giftCards": False, "waitlist": False, "siteBuilder": False,
+                                          "giftCards": False, "waitlist": False,
                                           "events": False}
     assert body["tenant"]["branding"] == {"primaryColor": "#aa3300",
                                           "logoUrl": "https://cdn.roma.se/logo.png", "tagline": "Pizza"}

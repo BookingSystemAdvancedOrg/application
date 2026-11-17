@@ -48,11 +48,11 @@ def test_owner_always_has_everything():
 def test_staff_areas_are_group_plus_own_minus_removed():
     row = tenant_row(TENANT_A, staffAccess={
         "defaults": ["bokningar", "meny"],
-        "users": {"s1": {"add": ["webbplats"], "remove": ["meny"]}},
+        "users": {"s1": {"add": ["presentkort"], "remove": ["meny"]}},
     })
-    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "webbplats"]
+    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "presentkort"]
     assert sa.areas_for(row, "staff_user", "s2") == ["bokningar", "meny"]
-    assert sa.allows(row, "staff_user", "s1", ("meny", "webbplats"))
+    assert sa.allows(row, "staff_user", "s1", ("meny", "presentkort"))
     assert not sa.allows(row, "staff_user", "s1", "meny")
     assert sa.areas_for(row, None, "s1") == []
 
@@ -65,6 +65,22 @@ def test_unknown_area_raises_instead_of_guessing():
 def test_stored_garbage_is_ignored():
     row = tenant_row(TENANT_A, staffAccess={"defaults": ["bokningar", "kassa", 3], "users": {"s": "x"}})
     assert sa.areas_for(row, "staff_user", "s") == ["bokningar"]
+
+
+def test_retired_webbplats_area_is_harmless():
+    """The site builder (area webbplats) was removed: a stored grant is
+    dropped when read, and an older admin that still sends it is accepted
+    with the area dropped instead of a 400."""
+    assert "webbplats" not in sa.AREAS
+    row = tenant_row(TENANT_A, staffAccess={"defaults": ["bokningar", "webbplats"],
+                                            "users": {"s1": {"add": ["webbplats", "meny"]}}})
+    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "meny"]
+    assert sa.owner_view(row)["defaults"] == ["bokningar"]
+    new = sa.apply_edit(tenant_row(TENANT_A), {"version": 0, "defaults": ["webbplats", "meny"],
+                                               "users": {"s1": {"add": ["webbplats"], "remove": []}}}, "t", "o")
+    assert new["defaults"] == ["meny"] and "s1" not in (new.get("users") or {})
+    with pytest.raises(ValueError):
+        sa.apply_edit(tenant_row(TENANT_A), {"version": 0, "defaults": ["kassa"]}, "t", "o")
 
 
 def test_apply_edit_validates_bumps_version_and_tidies():
@@ -127,7 +143,7 @@ def tenancy(monkeypatch):
 
 
 def sa_features():
-    return ("guestCrm", "giftCards", "siteBuilder", "events", "marketing", "metaAds", "googleBusiness",
+    return ("guestCrm", "giftCards", "events", "marketing", "metaAds", "googleBusiness",
             "socialPosting", "personalliggare", "phoneAgent", "waitlist")
 
 
@@ -260,8 +276,6 @@ GUARDED = [
     ("guest-crm", "POST /locations/{locationId}/guests/lookup", L, "bokningar"),
     ("gift-cards", "GET /tenant/gift-cards", {}, "presentkort"),
     ("gift-cards", "GET /tenant/gift-cards/settings", {}, "presentkort"),
-    ("site-builder", "GET /tenant/site-builder", {}, "webbplats"),
-    ("site-builder", "POST /tenant/site-builder/publish", {}, "webbplats"),
     ("events-tickets", "GET /locations/{locationId}/events", L, "evenemang"),
     ("events-tickets", "POST /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}/check-ins",
      {**L, "eventId": "e1", "occurrenceId": "o1"}, "evenemang"),

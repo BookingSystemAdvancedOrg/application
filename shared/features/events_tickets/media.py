@@ -6,7 +6,7 @@ tenant, AVIF/JPEG/PNG/WebP only, 5-minute PUT URL) and sends the returned
 `imageKey` with K2/K4. So there is no new bucket, CloudFront path or IAM: this
 Lambda never touches S3. It only checks that the key has the exact shape
 pre-signed-url hands out for THIS tenant and THIS location (the same rule as
-manage-menu, site-builder and meta-ads), so a tenant can never show another
+manage-menu and meta-ads), so a tenant can never show another
 tenant's picture. Guests get the key (as for menu dishes) and build the URL
 from the site's image CDN base. Alt text is required with an image.
 """

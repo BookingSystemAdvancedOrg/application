@@ -187,6 +187,23 @@ def test_printers_changed_from_booqy_console_move_the_stations(env):
     assert stations(env) == {"kok": ("Kök", ["d" * 32]), "bar": ("Dryck", ["d" * 32])}
 
 
+def test_a_failed_console_sync_never_stops_a_read(env, monkeypatch):
+    """A broken stations sync must not stop the printer's poll or an order:
+    the read goes on and the token stays for the next read."""
+    add(env, "Köket", "kok")
+    table = p._table()
+    table.update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"}, UpdateExpression="SET syncRouting = :t",
+                      ExpressionAttributeValues={":t": "tok1"})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(routing, "apply_kinds", boom)
+    assert p.get_settings(LOC_A)["printerId"]
+    item = table.get_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": "SETTINGS"})["Item"]
+    assert item["syncRouting"] == "tok1"
+
+
 def test_removing_the_last_dryck_printer_sends_drinks_to_kok(env):
     kok = add(env, "Köket", "kok")["device"]["deviceId"]
     bar = add(env, "Baren", "dryck")["device"]["deviceId"]

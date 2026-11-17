@@ -518,7 +518,7 @@ def price_lines(location_id, wanted, mode, on_date):
             **({"options": chosen} if chosen else {}),
             # Kitchen ticket routing, as the dish was when ordered (shared/routing.py).
             **({"category": item["category"]} if isinstance(item.get("category"), str) else {}),
-            **({"categoryName": category_names[item["category"]]} 
+            **({"categoryName": category_names[item["category"]]}
                if isinstance(item.get("category"), str) and item["category"] in category_names else {}),
             **({k: item[k] for k in menu.ROUTING_FIELDS if item.get(k)}),
         })

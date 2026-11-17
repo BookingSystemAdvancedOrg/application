@@ -184,7 +184,13 @@ def get_settings(location_id, *, setup=False):
     """The settings the owner edits; `setup` adds setupSkipped (Kom igång)."""
     item = _table().get_item(Key=_key(location_id, "SETTINGS"), ConsistentRead=True).get("Item") or {}
     if item.get("syncRouting"):
-        sync_routing(location_id, item, now_utc())
+        try:
+            sync_routing(location_id, item, now_utc())
+        except Exception as exc:  # noqa: BLE001 - never let the stations sync stop a poll or an order
+            # The token stays, so the next read tries again; printing goes on
+            # with the stations as they were.
+            print(json.dumps({"print": "sync_routing_failed", "locationId": location_id,
+                              "error": type(exc).__name__}))
     out = {"autoPrint": bool(item.get("autoPrint", False)), "printerId": item.get("printerId"),
            "paperWidth": int(item.get("paperWidth") or 80), "version": int(item.get("version") or 0)}
     if setup:

@@ -263,12 +263,14 @@ def test_scenario_large_party_gets_the_guarantee_link_never_card_details(opening
     assert sent.text == agent_model.CONFIRMATIONS["send_guarantee_link"][0 if lang == "sv" else 1]
 
 
-@pytest.mark.parametrize("opening, lang", [("Jag vill flytta min bokning till fredag klockan 20", "sv"),
-                                           ("I'd like to move my booking to Friday at 8 pm", "en")])
-def test_scenario_move_inside_cutoff(opening, lang):
+@pytest.mark.parametrize("opening, yes, lang", [("Jag vill flytta min bokning till fredag klockan 20", "Ja", "sv"),
+                                                ("I'd like to move my booking to Friday at 8 pm", "Yes", "en")])
+def test_scenario_move_inside_cutoff(opening, yes, lang):
     call = Call()
     assert _use(call.say(opening)) == ("find_reservations", {})
-    assert _use(call.tool({"reservations": [{"reservationId": "r3", "date": "2026-11-04", "time": "19:00"}]})) == (
+    found = call.tool({"reservations": [{"reservationId": "r3", "date": "2026-11-04", "time": "19:00"}]})
+    assert ("flytta" if lang == "sv" else "move") in found.text            # read back, never moved at once
+    assert _use(call.say(yes)) == (
         "move_reservation", {"reservationId": "r3", "date": "2026-11-06", "time": "20:00", "confirmed": True})
     assert call.tool({"ok": True}).text == agent_model.CONFIRMATIONS["move_reservation"][0 if lang == "sv" else 1]
 

@@ -233,6 +233,8 @@ def test_move_own_booking(live, lang):
                                      "date": TOMORROW, "startTime": "19:00"}]
     phone = Phone(live)
     phone.say(LINES[lang]["move"])
+    assert not [c for c in live.invoke.calls if c[0] == "mark-arrived"]      # read back first
+    phone.say("Ja" if lang == SV else "Yes")
     phone.hang_up()
     assert phone.row()["outcome"] == "moved"
     (_, route, event), = [c for c in live.invoke.calls if c[0] == "mark-arrived"]

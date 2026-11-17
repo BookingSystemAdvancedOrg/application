@@ -30,7 +30,11 @@ location and forwards the restaurant's number.
   language: polite and natural (tone `formal` by default, `friendly` keeps polite forms outside the Nordic
   languages and English), short spoken sentences, numbers in words, offers only from tool results, a
   read-back and a clear yes before any booking, move or cancellation (the tools also refuse without
-  `confirmed: true`). The call starts in Swedish; `language.hint()` sets the prompt's language before the
+  `confirmed: true`, and refuse with `readBackFirst` a table or a booking first looked up in the same
+  caller utterance: the caller cannot have said yes to a read-back of it; review
+  2026-11-17). A second booking on the same day in one call is refused (`alreadyBooked`: a correction is
+  a move of the first, which the call may change also with a hidden number). Above the online maximum
+  the staff view never offers a time that already started today. The call starts in Swedish; `language.hint()` sets the prompt's language before the
   model runs, the model's `[xx]` tag decides after it (`language.decide()`: one word, a name or a street
   never switches; a caller asking for a language does). The call may switch to every language the voice
   model speaks (`language.voice_languages(PHONE_AGENT_TTS_MODEL)`: 32 with flash v2.5, Somali, Persian,

@@ -108,6 +108,13 @@ SAY = {
                           copy.GUARANTEE_CALLBACK["en"] + "\" Do not read back or book. If yes, call "
                           "request_callback with topic guarantee."),
     "notConfirmed": "Read back the day, time, number of guests and name, and wait for a clear yes first.",
+    # The caller has not yet heard a read-back of this: the table, the booking or the new day was only
+    # looked up in this reply (a change, or a yes to something else). The check stays valid.
+    "readBackFirst": ("The caller has not heard a read-back of this yet. Read it back now in one sentence and "
+                      "ask whether it is correct; after a clear yes, call the tool again."),
+    "alreadyBooked": ("This call already booked a table on that day (see booking). Do not book again. To change "
+                      "it, read back the change and after a clear yes call move_reservation with its "
+                      "reservationId; for a second table that day, offer that the restaurant calls back."),
     "nameInvalid": "The name could not be used. Ask for the name again.",
     "phoneInvalid": "The phone number could not be used. Ask for it again, or book without a number.",
 }
@@ -215,7 +222,7 @@ class Executor:
     furthest counter-offer, and what the call achieved."""
 
     def __init__(self, *, tenant_id, tenant_row, location, loc_config, invoke, state, caller_phone=None, dry_run=False,
-                 voice=None, call_ref=None, callbacks=None, today=None, language="sv"):
+                 voice=None, call_ref=None, callbacks=None, today=None, language="sv", now_time=None):
         self.tenant_id = tenant_id
         self.tenant_row = tenant_row
         self.location = location
@@ -230,8 +237,13 @@ class Executor:
         self.call_ref = call_ref
         self.callbacks = callbacks
         self.today = today or date.today()
+        self.now_time = now_time      # "HH:MM" local: today's started times are never offered (staff view)
         self.last_day = shared_availability.last_bookable_date(self.today, location)
         self.language = language or "sv"
+        # The caller utterance this runs in (session.call_turn / sim_turn count them). A write needs the
+        # thing it writes to have been looked up in an EARLIER utterance: the caller cannot have said yes
+        # to a read-back of something first looked up in this one. None (a direct call in tests): no check.
+        self.turn = state.get("turn")
         self._cache = {}
 
     # -- plumbing ---------------------------------------------------------------------
@@ -315,6 +327,10 @@ class Executor:
             raise ValueError("partySize")
         return party
 
+    def _heard_before(self, seen_turn):
+        """The thing a write acts on was looked up in an earlier caller utterance than this one."""
+        return self.turn is None or (seen_turn is not None and int(seen_turn) < int(self.turn))
+
     def _date_problem(self, day):
         when = date.fromisoformat(day)
         if when < self.today:
@@ -350,9 +366,16 @@ class Executor:
         """Above the online maximum but within phoneMaxPartySize: the staff view."""
         return self.online_max is not None and party > self.online_max
 
+    def _upcoming(self, day, staff):
+        """The staff view lists times that already started today (walk-ins): not for a phone booking."""
+        if not self.now_time or day != self.today.isoformat() or not isinstance(staff, dict):
+            return staff
+        return {**staff, "slots": [s for s in staff.get("slots") or [] if str(s.get("startTime") or "") >
+                                   self.now_time]}
+
     def _views(self, day, party):
         if self._staff_path(party):
-            return None, self._staff_view(day), self._layout()
+            return None, self._upcoming(day, self._staff_view(day)), self._layout()
         status, guest = self._call("get-availability", "GET", "/locations/{locationId}/availability",
                                    query={"date": day, "partySize": str(party)})
         if status != 200:
@@ -504,9 +527,16 @@ class Executor:
             table_ids = result["tableIds"]
         else:
             return self._counter(result, time)
-        hold_id = f"p{len(self.state['proposals']) + 1}"
-        self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party, "tableIds": table_ids,
-                                            "nearby": bool(kind)}
+        # The same table again (the model re-checks before booking): the read-back of the first check holds.
+        same = next((k for k, p in self.state["proposals"].items() if not p.get("reservationId")
+                     and (p["date"], p["time"], int(p["partySize"]), sorted(p["tableIds"])) ==
+                     (day, time, party, sorted(table_ids))), None)
+        hold_id = same or f"p{len(self.state['proposals']) + 1}"
+        if same and self.state["proposals"][same].get("turn") is None:
+            self.state["proposals"][same]["turn"] = self.turn
+        if not same:
+            self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party,
+                                                "tableIds": table_ids, "nearby": bool(kind), "turn": self.turn}
         held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party}
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
@@ -542,6 +572,14 @@ class Executor:
             return {"reservationId": proposal["reservationId"], "booked": True}
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
+        if not self._heard_before(proposal.get("turn")):
+            return {"ok": False, **_say("readBackFirst")}
+        booked = next((p for p in self.state["proposals"].values()
+                       if p.get("reservationId") and p["date"] == proposal["date"]), None)
+        if booked:   # a second booking the same day in one call: a correction, not a new table
+            return {"ok": False, "booking": {"reservationId": booked["reservationId"], "date": booked["date"],
+                                             "time": booked["time"], "partySize": booked["partySize"]},
+                    **_say("alreadyBooked")}
         problem = self._party_problem(int(proposal["partySize"]))
         if problem:      # the safety net behind get_availability and hold_table
             return {"ok": False, **problem}
@@ -582,6 +620,8 @@ class Executor:
                 return {"ok": False, "code": "booking_failed"}
             reservation_id = answer["reservationId"]
         proposal["reservationId"] = reservation_id
+        # The caller's own booking: it may be moved or cancelled in this call (also with a hidden number).
+        self._remember_found([{"reservationId": reservation_id, "partySize": int(proposal["partySize"])}])
         first = self.state.get("first") or {}
         accepted = "none"
         if proposal.get("nearby"):
@@ -634,14 +674,30 @@ class Executor:
                     when = item.get("date") or d
                     found.append({"reservationId": item["reservationId"], "date": when, "weekday": _weekday(when),
                                   "time": item.get("startTime"), "partySize": item.get("partySize")})
-        self.state["found"] = [f["reservationId"] for f in found]
-        self.state["foundParty"] = {f["reservationId"]: int(f["partySize"]) for f in found
-                                    if isinstance(f.get("partySize"), int) and not isinstance(f["partySize"], bool)}
+        self._remember_found(found)
         return {"reservations": found[:3]}
+
+    def _remember_found(self, found):
+        """The caller's bookings this call may change, with the utterance each was first found in."""
+        ids = self.state.setdefault("found", [])
+        party = self.state.setdefault("foundParty", {})
+        turns = self.state.setdefault("foundTurn", {})
+        for f in found:
+            rid = f["reservationId"]
+            if rid not in ids:
+                ids.append(rid)
+            if isinstance(f.get("partySize"), int) and not isinstance(f["partySize"], bool):
+                party[rid] = int(f["partySize"])
+            if self.turn is not None:
+                turns.setdefault(rid, self.turn)
 
     def _own(self, reservation_id):
         if reservation_id not in (self.state.get("found") or []):
             raise pa.PhoneAgentError(404, "not_found")
+
+    def _heard(self, reservation_id):
+        """The booking was found in an earlier utterance than this one (so it can have been read back)."""
+        return self._heard_before((self.state.get("foundTurn") or {}).get(reservation_id))
 
     def move_reservation(self, args):
         self._own(args["reservationId"])
@@ -652,6 +708,8 @@ class Executor:
         problem = self._date_problem(day) or (self._party_problem(party) if party else None)
         if problem:
             return {"ok": False, **problem}
+        if not self._heard(args["reservationId"]):
+            return {"ok": False, **_say("readBackFirst")}
         if not self.dry_run:
             body = {"date": day, "startTime": time}
             if party:
@@ -676,6 +734,8 @@ class Executor:
         self._own(args["reservationId"])
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
+        if not self._heard(args["reservationId"]):
+            return {"ok": False, **_say("readBackFirst")}
         if not self.dry_run:
             # The staff status route (no manage-link secret needed); "before it
             # starts" is the guest cancel rule, kept by find_reservations only

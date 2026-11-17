@@ -501,3 +501,76 @@ def test_agent_principal_may_book_whatever_the_staff_defaults_say():
     assert staff_access.AGENT_SUB_PREFIX == tenant.SYSTEM_SUB_PREFIX
     assert not staff_access.allows(row, "staff_user", "human-sub", "bokningar")
     assert staff_access.allows(row, "staff_user", tenant.SYSTEM_SUB_PREFIX + LOC_A, "statistik") is False
+
+
+# --- review 2026-11-17: a write needs a read-back the caller could have heard -------------------
+
+def _turn(ex, n):
+    ex.state["turn"] = n
+    ex.turn = n
+
+
+def test_a_table_checked_in_the_same_utterance_is_never_booked(env):
+    env.availability.set(TOMORROW, ["19:00", "20:00"])
+    ex = _ex(env, state={"turn": 1})
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"]
+    same_turn = ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True})
+    assert same_turn["code"] == "readBackFirst" and not env.invoke.reservations
+    _turn(ex, 2)
+    # "Yes, but at eight": a new table looked up in the yes utterance is read back first.
+    changed = ex.run("hold_table", {"date": TOMORROW, "time": "20:00", "partySize": 2})["holdId"]
+    assert ex.run("create_reservation", {"holdId": changed, "name": "Anna", "confirmed": True})["code"] == \
+        "readBackFirst"
+    # The same table re-checked before booking keeps the earlier read-back.
+    assert ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"] == hold
+    assert ex.run("create_reservation", {"holdId": hold, "name": "Anna", "confirmed": True})["booked"] is True
+
+
+def test_a_second_booking_the_same_day_in_one_call_is_refused_and_the_first_can_be_moved(env):
+    env.availability.set(TOMORROW, ["19:00", "20:00"])
+    ex = _ex(env, caller="anonymous", state={"turn": 1})
+    first = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 2})["holdId"]
+    _turn(ex, 2)
+    assert ex.run("create_reservation", {"holdId": first, "name": "Anna", "confirmed": True})["booked"] is True
+    # "Oh, we are three": the model holds again for three and tries to book a second table.
+    again = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 3})["holdId"]
+    _turn(ex, 3)
+    second = ex.run("create_reservation", {"holdId": again, "name": "Anna", "confirmed": True})
+    assert second["code"] == "alreadyBooked" and second["booking"]["reservationId"] == "r1"
+    assert len(env.invoke.reservations) == 1
+    # The booking made in this call is the caller's own, also with a hidden number.
+    assert "r1" in ex.state["found"] and ex.state["foundParty"]["r1"] == 2
+
+
+def test_cancel_and_move_need_the_booking_found_in_an_earlier_utterance(env):
+    env.invoke.listed[TOMORROW] = [{"reservationId": "r9", "customerPhone": CALLER, "status": "reserved",
+                                    "date": TOMORROW, "startTime": "19:00", "partySize": 4}]
+    env.availability.set("2026-11-04", ["18:00", "21:00"])
+    ex = _ex(env, state={"turn": 1})
+    ex.run("find_reservations", {})
+    assert ex.run("cancel_reservation", {"reservationId": "r9", "confirmed": True})["code"] == "readBackFirst"
+    assert ex.run("move_reservation", {"reservationId": "r9", "date": "2026-11-04", "time": "21:00",
+                                       "confirmed": True})["code"] == "readBackFirst"
+    assert not [c for c in env.invoke.calls if c[0] == "mark-arrived"]
+    _turn(ex, 2)
+    assert ex.run("move_reservation", {"reservationId": "r9", "date": "2026-11-04", "time": "21:00",
+                                       "confirmed": True})["moved"] is True
+    assert ex.run("cancel_reservation", {"reservationId": "r9", "confirmed": True})["cancelled"] is True
+
+
+def test_the_staff_view_never_offers_a_time_that_already_started_today(env):
+    today = TODAY.isoformat()
+    env.availability.set(today, [], staff={"12:00": {"t6": 6}, "18:00": {"t6": 6}, "20:00": {"t6": 6}})
+    ex = Executor(tenant_id=TENANT_A, tenant_row={"tenantId": TENANT_A},
+                  location={"locationId": LOC_A, "maxPartySizeOnline": 4}, loc_config={"phoneMaxPartySize": 8},
+                  invoke=env.invoke, state={}, caller_phone=CALLER, today=TODAY, now_time="17:40")
+    assert ex.run("get_availability", {"date": today, "partySize": 6})["times"] == ["18:00", "20:00"]
+    assert ex.run("hold_table", {"date": today, "time": "12:00", "partySize": 6}).get("holdId") is None
+
+
+def test_every_session_turn_is_counted_for_the_tools(live):
+    live.model.responses = [Turn(text="[sv] Hur många blir ni?"), Turn(text="[sv] Tack.")]
+    phone = Phone(live)
+    phone.say("Hej, jag vill boka ett bord")
+    phone.say("Fyra personer")
+    assert json.loads(phone.row()["toolState"])["turn"] == 2

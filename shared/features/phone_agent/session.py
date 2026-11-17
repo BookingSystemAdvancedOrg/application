@@ -26,9 +26,19 @@ def metric(name, value, unit="Count", **dims):
         "Metrics": [{"Name": name, "Unit": unit}]}]}, name: value, **dims}))
 
 
-def local_today(location) -> date:
+def local_now(location) -> datetime:
     from zoneinfo import ZoneInfo
-    return datetime.now(ZoneInfo((location or {}).get("timezone") or "Europe/Stockholm")).date()
+    return datetime.now(ZoneInfo((location or {}).get("timezone") or "Europe/Stockholm"))
+
+
+def local_today(location) -> date:
+    return local_now(location).date()
+
+
+def now_clock(location):
+    """"HH:MM" local now, for the day local_today() answers (None when they differ, as in tests)."""
+    now = local_now(location)
+    return now.strftime("%H:%M") if now.date() == local_today(location) else None
 
 
 def allowed_languages(config):
@@ -92,6 +102,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     lang = current.get("language") or "sv"
     actions, spoken = [], []
     state = json.loads(current.get("toolState") or "{}")
+    state["turn"] = int(state.get("turn") or 0) + 1       # tools.Executor: a write needs an earlier read-back
     allowed = allowed_languages(config)
     disclosed = list(pa.plain(current.get("disclosure") or {}).get("languages") or [lang])
     prompt_lang, hint, disclose_now = _turn_setup(lang, caller_text, state, disclosed, allowed)
@@ -99,7 +110,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     executor = Executor(tenant_id=call["tenantId"], tenant_row=tenant_row, location=location, loc_config=loc,
                         invoke=invoke, state=state, caller_phone=call.get("from"), voice=voice,
                         call_ref=call.get("callRef"), callbacks=add_callback, today=local_today(location),
-                        language=prompt_lang)
+                        now_time=now_clock(location), language=prompt_lang)
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  phone_known=executor.caller_known, unsupported=state.get("unsupported"))
@@ -179,6 +190,7 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     lang = start_lang = language_ or row.get("language") or "sv"
     messages = agent.loads(row.get("messages"))
     state = json.loads(row.get("toolState") or "{}")
+    state["turn"] = int(state.get("turn") or 0) + 1
     first = not messages
     allowed = allowed_languages(config)
     disclosed = list(state.get("disclosed") or [start_lang])
@@ -187,7 +199,8 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     else:
         prompt_lang, hint, disclose_now = _turn_setup(lang, text, state, disclosed, allowed)
     executor = Executor(tenant_id=tenant_id, tenant_row=tenant_row, location=location, loc_config=loc,
-                        invoke=invoke, state=state, dry_run=True, today=local_today(location), language=prompt_lang)
+                        invoke=invoke, state=state, dry_run=True, today=local_today(location),
+                        now_time=now_clock(location), language=prompt_lang)
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  unsupported=state.get("unsupported"))

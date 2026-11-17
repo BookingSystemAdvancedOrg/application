@@ -153,8 +153,8 @@ GUARANTEE_CALLBACK = {
 }
 # A language the voice cannot speak (Tigrinya, Kurmanji ...): said in these three, in this order.
 UNSUPPORTED_LANGUAGE = {
-    SV: ("Jag beklagar, jag kan inte tala ert språk. Jag kan tala svenska, engelska eller arabiska, eller så "
-         "ringer restaurangen upp er."),
+    SV: ("Jag beklagar, jag kan inte tala ditt språk. Jag kan tala svenska, engelska eller arabiska, eller så "
+         "ringer restaurangen upp dig."),
     EN: ("I am sorry, I cannot speak your language. I can speak Swedish, English or Arabic, or the restaurant "
          "can call you back."),
     "ar": ("عذراً، لا أستطيع التحدث بلغتكم. يمكنني التحدث بالسويدية أو الإنجليزية أو العربية، أو يمكن للمطعم "
@@ -163,7 +163,7 @@ UNSUPPORTED_LANGUAGE = {
 UNSUPPORTED_ORDER = (SV, EN, "ar")
 # Said when the caller still cannot continue: Booqy has asked the restaurant to call back.
 UNSUPPORTED_CALLBACK = {
-    SV: "Restaurangen ringer upp er så snart som möjligt. Tack för samtalet.",
+    SV: "Restaurangen ringer upp dig så snart som möjligt. Tack för samtalet.",
     EN: "The restaurant will call you back as soon as possible. Thank you for calling.",
     "ar": "سيعاود المطعم الاتصال بكم في أقرب وقت ممكن. شكراً لاتصالكم.",
 }

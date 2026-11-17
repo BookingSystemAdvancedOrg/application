@@ -562,10 +562,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             found = list(result.get("reservations") or [])
             if not found:
                 return self._say("find_reservations_none", lang)
-            if intent == "move" and "date" in slots and "time" in slots:
-                return self._use("move_reservation", {"reservationId": found[0]["reservationId"],
-                                                      "date": slots["date"], "time": slots["time"],
-                                                      "confirmed": True}, offered, lang)
+            # Read back and ask, also when the caller named the new time: the yes moves it (_confirm).
             action = _ACTION.get(intent, _ACTION["cancel"])[0 if lang == _SV else 1]
             return self._say("find_reservations", lang, date=found[0].get("date", ""),
                              time=found[0].get("time", ""), action=action)

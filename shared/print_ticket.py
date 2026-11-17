@@ -126,7 +126,22 @@ class _Epos(_Ticket):
                 + '<feed line="1"/><cut type="feed"/></epos-print>')
 
 
+class _Lines(_Epos):
+    """The same ticket as rows for the simulated printer in Booqy Admin:
+    [{text, bold?, big?, center?}], wrapped like the paper would."""
+
+    def _text(self, text, *, bold=False, big=False, center=False):
+        row = {"text": text}
+        row.update({k: True for k, v in (("bold", bold), ("big", big), ("center", center)) if v})
+        self.parts.append(row)
+
+    def done(self):
+        return list(self.parts)
+
+
 def _new(width, fmt):
+    if fmt == "text":
+        return _Lines(width)
     return _Epos(width) if fmt == "epson" else _Ticket(width)
 
 

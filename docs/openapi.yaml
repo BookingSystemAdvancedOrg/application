@@ -6395,6 +6395,8 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/Printer'}
                   status: {$ref: '#/components/schemas/PrintStatus'}
+                  routing: {$ref: '#/components/schemas/TicketRouting'}
+                  simulatorAllowed: {type: boolean, description: 'True outside prod: a simulated printer may be added.'}
         '404':
           description: Unknown location or another tenant's.
 
@@ -6462,10 +6464,11 @@ paths:
               required: [name]
               properties:
                 name: {type: string, minLength: 1, maxLength: 40}
-                protocol: {type: string, enum: [star, epson], default: star, description: 'star = CloudPRNT, epson = Server Direct Print'}
+                protocol: {type: string, enum: [star, epson, sim], default: star, description: 'star = CloudPRNT, epson = Server Direct Print, sim = simulated printer (refused in prod, 400)'}
+                kind: {type: string, enum: [kok, dryck, annat], description: 'Kök (food), Dryck (drinks) or Annat (a station of its own, named after the printer): the stations follow it, and the first printer turns auto print on. Without it the stations are left as they are.'}
       responses:
         '201':
-          description: The printer and its CloudPRNT or Server Direct Print credentials.
+          description: The printer and its CloudPRNT or Server Direct Print credentials (a simulated printer has none).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrinterCredentials'}
@@ -6476,6 +6479,31 @@ paths:
     parameters:
       - $ref: '#/components/parameters/LocationId'
       - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    put:
+      tags: [Printing]
+      summary: Rename a printer or change its kind (Kök, Dryck or Annat)
+      operationId: updatePrinter
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                name: {type: string, minLength: 1, maxLength: 40}
+                kind: {type: string, enum: [kok, dryck, annat]}
+      responses:
+        '200':
+          description: The overview after the change (as GET /print).
+        '400':
+          description: Invalid name or kind.
+        '404':
+          description: Unknown printer.
     delete:
       tags: [Printing]
       summary: Remove (revoke) a printer
@@ -6507,6 +6535,115 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrinterCredentials'}
+
+  /locations/{locationId}/print/devices/{deviceId}/simulated:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: deviceId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    get:
+      tags: [Printing]
+      summary: A simulated printer's paper (dev only)
+      operationId: getSimulatedPrinter
+      description: The newest tickets the simulated printer "printed", rendered now from the ticket and the order (no personal data is stored with them).
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      responses:
+        '200':
+          description: Its tickets, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device: {$ref: '#/components/schemas/Printer'}
+                  paperWidth: {type: integer, enum: [80, 58]}
+                  tickets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        jobId: {type: string}
+                        kind: {type: string, enum: [station, allergy, test, cancel]}
+                        printedAt: {type: string, format: date-time}
+                        lines:
+                          type: array
+                          items:
+                            type: object
+                            required: [text]
+                            properties:
+                              text: {type: string}
+                              bold: {type: boolean}
+                              big: {type: boolean}
+                              center: {type: boolean}
+        '404':
+          description: Unknown printer or not a simulated one.
+
+  /locations/{locationId}/print/routing/categories:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    put:
+      tags: [Printing]
+      summary: Where whole menu categories go ("Skickas till")
+      operationId: setCategoryRouting
+      description: Merged into the stored routing, so the menu and an open settings screen never undo each other. null goes back to the default (Dryck for drinks, Kök for the rest; an alcohol item in a category with no choice goes to Dryck).
+      security:
+        - bearerAuth: []
+      x-required-groups: [staff_user, owner_user]
+      x-staff-area: meny
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [categories]
+              properties:
+                categories:
+                  type: object
+                  minProperties: 1
+                  maxProperties: 40
+                  additionalProperties: {type: string, nullable: true, description: 'stationId, "none" or null'}
+      responses:
+        '200':
+          description: The routing (as GET /print/routing).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketRouting'}
+        '400':
+          description: Unknown category id or station.
+        '409':
+          description: changed_retry (the routing changed twice while saving).
+
+  /locations/{locationId}/print/setup:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+    post:
+      tags: [Printing]
+      summary: '"Inga skrivare än" in Kom igång (the step stays open)'
+      operationId: setPrinterSetup
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [skipped]
+              properties:
+                skipped: {type: boolean}
+      responses:
+        '200':
+          description: The status (as GET /print/status).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrintStatus'}
+        '400':
+          description: skipped must be true or false.
 
   /locations/{locationId}/print/devices/{deviceId}/test:
     parameters:
@@ -6951,7 +7088,10 @@ components:
         lastSeenAt: {type: string, format: date-time}
         statusCode: {type: string}
         createdAt: {type: string, format: date-time}
-        online: {type: boolean}
+        online: {type: boolean, description: Always true for a simulated printer.}
+        protocol: {type: string, enum: [star, epson, sim]}
+        kind: {type: string, enum: [kok, dryck, annat], description: 'Stored, or for a printer from before kinds what it does (Dryck when it serves only the Bar station, else Kök).'}
+        simulated: {type: boolean, description: A simulated printer (dev only); it has no server URL or secret.}
         serverUrl: {type: string, description: CloudPRNT server URL to enter in the printer}
     PrinterCredentials:
       type: object
@@ -6964,6 +7104,8 @@ components:
       properties:
         autoPrint: {type: boolean}
         printerConfigured: {type: boolean}
+        printerCount: {type: integer, description: Printers of the location (Kom igång is done at 1).}
+        setupSkipped: {type: boolean, description: '"Inga skrivare än" was chosen; the step stays open.'}
         online: {type: boolean}
         lastSeenAt: {type: string, format: date-time}
         unprinted: {type: integer}
@@ -6979,7 +7121,8 @@ components:
         stations:
           type: array
           minItems: 1
-          maxItems: 12
+          maxItems: 16
+          description: 'kok prints on the Kök printers, bar (Dryck) on the Dryck printers, a<12 hex> on one Annat printer (named after it).'
           items:
             type: object
             required: [name]
@@ -6987,9 +7130,11 @@ components:
               stationId: {type: string, pattern: '^[a-z0-9]{2,16}$'}
               name: {type: string, minLength: 1, maxLength: 30}
               printerIds: {type: array, items: {type: string}}
+              kind: {type: string, enum: [kok, dryck, annat], readOnly: true}
+              printerNames: {type: array, items: {type: string}, readOnly: true, description: The printers' names (Meny cannot read the printers).}
         categories:
           type: object
-          description: starters, mains, desserts, drinks -> stationId or "none" (no ticket)
+          description: starters, mains, desserts, drinks and the location's own menu category ids -> stationId or "none" (no ticket)
           additionalProperties: {type: string}
         allergyTicket: {type: boolean}
         version: {type: integer}

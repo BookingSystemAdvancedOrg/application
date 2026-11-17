@@ -9,11 +9,20 @@ TRIGGER:
     * EventBridge Scheduler every 5 minutes, {"source": "sweep"}: jobs out of
       attempts turn FAILED; PrintStuckJobs / PrintFailedJobs metrics.
     * API Gateway -- Auth: JWT (owner_user, staff_user of the location's tenant)
-      GET    /locations/{locationId}/print                     settings, printers, status
+      GET    /locations/{locationId}/print                     settings, printers, status,
+                                                               simulatorAllowed (not in prod)
       GET    /locations/{locationId}/print/status              status only (orders screen)
       PUT    /locations/{locationId}/print/settings            owner: {autoPrint, printerId, paperWidth, version}
-      POST   /locations/{locationId}/print/devices             owner: {name, protocol?} -> device + secret (shown once)
+      POST   /locations/{locationId}/print/devices             owner: {name, kind?, protocol?} -> device + secret
+                                                               (shown once); protocol "sim" outside prod: no secret
+      PUT    /locations/{locationId}/print/devices/{deviceId}  owner: {name?, kind?} (kind kok|dryck|annat
+                                                               moves its tickets)
       DELETE /locations/{locationId}/print/devices/{deviceId}  owner: revoke the printer
+      GET    /locations/{locationId}/print/devices/{deviceId}/simulated  a simulated printer's last tickets,
+                                                               rendered now (never stored with personal data)
+      POST   /locations/{locationId}/print/setup               owner: {skipped}: "Inga skrivare än" in Kom igång
+      PUT    /locations/{locationId}/print/routing/categories  owner or Meny staff: {categories:
+                                                               {categoryId: stationId|"none"|null}}
       POST   /locations/{locationId}/print/devices/{deviceId}/rotate  owner: new secret
       POST   /locations/{locationId}/print/devices/{deviceId}/test    test print
       POST   /locations/{locationId}/print/jobs                {orderId, stationId?}: "Skriv ut igen"
@@ -48,7 +57,7 @@ import os
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, printing as p, routing, tenant
+from shared import http, print_ticket, printing as p, routing, tenant
 from shared import orders as o
 
 logger = logging.getLogger()
@@ -99,27 +108,36 @@ def _server_url():
 
 
 def _status(location_id, now):
-    settings = p.get_settings(location_id)
+    settings = p.get_settings(location_id, setup=True)
     return p.summary(location_id, settings, p.list_devices(location_id), now)
 
 
 def _routing(location_id, settings, devices):
     """The config as the screen edits it: only printers that still exist."""
     config = routing.get_config(location_id, settings["printerId"])
-    ids = {d["deviceId"] for d in devices}
+    names = {d["deviceId"]: d.get("name") or "" for d in devices}
     for station in config["stations"]:
-        station["printerIds"] = [d for d in station["printerIds"] if d in ids]
+        station["printerIds"] = [d for d in station["printerIds"] if d in names]
+        station["kind"] = routing.station_kind(station["stationId"])
+        station["printerNames"] = [names[d] for d in station["printerIds"]]  # Meny cannot read the printers
     return config
 
 
 def _overview(location_id, now):
-    settings = p.get_settings(location_id)
+    settings = p.get_settings(location_id, setup=True)
     devices = p.list_devices(location_id)
+    config = _routing(location_id, settings, devices)
+    views = []
+    for d in devices:
+        view = p.device_view(d, now, _server_url())
+        view["kind"] = routing.infer_kind(d, config)  # a printer from before kinds shows what it does
+        views.append(view)
     return {
-        "settings": settings,
-        "devices": [p.device_view(d, now, _server_url()) for d in devices],
+        "settings": {k: v for k, v in settings.items() if k != "setupSkipped"},
+        "devices": views,
         "status": p.summary(location_id, settings, devices, now),
-        "routing": _routing(location_id, settings, devices),
+        "routing": config,
+        "simulatorAllowed": p.simulator_allowed(),
     }
 
 
@@ -130,8 +148,47 @@ def _owner(ctx):
 
 def _credentials(device, secret):
     """What the printer's CloudPRNT settings need; the secret only here."""
+    if secret is None:  # a simulated printer has nothing to type in
+        return {"device": p.device_view(device, p.now_utc())}
     return {"device": p.device_view(device, p.now_utc(), _server_url()), "username": device["deviceId"],
             "secret": secret}
+
+
+def _simulated(location_id, device_id, ctx):
+    """A simulated printer's paper: its newest tickets as rows, rendered from
+    the ticket and order now (like a real printer at fetch time)."""
+    device = p.get_device(location_id, device_id)
+    if not p.is_sim(device):
+        raise p.NotFound
+    width = p.get_settings(location_id)["paperWidth"]
+    out = []
+    for row, job in p.simulated(location_id, device_id):
+        kind = job.get("kind")
+        try:
+            if kind == p.TEST:
+                lines = print_ticket.test_ticket(ctx.location, device.get("name"), width=width,
+                                                 now=p.parse_iso(job["createdAt"]), fmt="text")
+            elif kind in (p.STATION, p.ALLERGY):
+                ticket = p.get_job(location_id, job.get("ticketSk"))
+                if not ticket:
+                    continue
+                order = None
+                if ticket.get("orderId"):
+                    try:
+                        order = o.load(location_id, ticket["orderId"])
+                    except o.NotFound:
+                        order = None
+                lines = print_ticket.station_ticket(ticket, order, ctx.location, width=width, copy=bool(job.get("copy")),
+                                                    allergy=kind == p.ALLERGY, fmt="text")
+            elif kind == p.CANCEL:
+                lines = print_ticket.cancel_ticket(o.load(location_id, job.get("orderId")), ctx.location, width=width,
+                                                   now=p.parse_iso(job["createdAt"]), fmt="text")
+            else:
+                continue
+        except o.NotFound:
+            continue
+        out.append({"jobId": p.job_token(job["SK"]), "kind": kind, "printedAt": row["createdAt"], "lines": lines})
+    return {"device": p.device_view(device, p.now_utc()), "paperWidth": width, "tickets": out}
 
 
 def _route(event, method, location_id, ctx):
@@ -155,19 +212,39 @@ def _route(event, method, location_id, ctx):
     elif parts == ["devices"]:
         if method == "POST":
             _owner(ctx)
-            data = http.body(event, allowed={"name", "protocol"})
+            data = http.body(event, allowed={"name", "protocol", "kind"})
             device, secret = p.add_device(ctx.tenant_id, location_id, data.get("name"), ctx.sub, now,
-                                          data.get("protocol") or "star")
-            logger.info(json.dumps({"print": "device_added", "deviceId": device["deviceId"]}))
+                                          data.get("protocol") or "star", data.get("kind"))
+            logger.info(json.dumps({"print": "device_added", "deviceId": device["deviceId"],
+                                    "protocol": device["protocol"], "kind": device.get("kind")}))
             return http.respond(201, _credentials(device, secret))
         allow = "POST"
     elif len(parts) == 2 and parts[0] == "devices":
+        if method == "PUT":
+            _owner(ctx)
+            data = http.body(event, allowed={"name", "kind"})
+            if not data:
+                raise ValueError("name or kind is required")
+            p.update_device(ctx.tenant_id, location_id, parts[1], data, ctx.sub, now)
+            logger.info(json.dumps({"print": "device_changed", "deviceId": parts[1], "fields": sorted(data)}))
+            return http.respond(200, _overview(location_id, now))
         if method == "DELETE":
             _owner(ctx)
             p.remove_device(location_id, parts[1], now)
             logger.info(json.dumps({"print": "device_removed", "deviceId": parts[1]}))
             return http.respond(200, _overview(location_id, now))
-        allow = "DELETE"
+        allow = "PUT, DELETE"
+    elif len(parts) == 3 and parts[0] == "devices" and parts[2] == "simulated":
+        if method == "GET":
+            return http.respond(200, _simulated(location_id, parts[1], ctx))
+        allow = "GET"
+    elif parts == ["setup"]:
+        if method == "POST":
+            _owner(ctx)
+            data = http.body(event, allowed={"skipped"})
+            p.set_setup_skipped(ctx.tenant_id, location_id, data.get("skipped"), ctx.sub, now)
+            return http.respond(200, _status(location_id, now))
+        allow = "POST"
     elif len(parts) == 3 and parts[0] == "devices" and parts[2] == "rotate":
         if method == "POST":
             _owner(ctx)
@@ -202,8 +279,17 @@ def _route(event, method, location_id, ctx):
             _owner(ctx)
             data = http.body(event, allowed={"stations", "categories", "allergyTicket", "version"})
             config = routing.validate_config(data, {d["deviceId"] for d in devices})
-            return http.respond(200, routing.put_config(ctx.tenant_id, location_id, config, ctx.sub, now))
+            routing.put_config(ctx.tenant_id, location_id, config, ctx.sub, now)
+            return http.respond(200, _routing(location_id, settings, devices))
         allow = "GET, PUT"
+    elif parts == ["routing", "categories"]:
+        if method == "PUT":
+            # Owner, or staff with Meny: where a whole category's dishes go.
+            data = http.body(event, allowed={"categories"})
+            routing.set_categories(ctx.tenant_id, location_id, data.get("categories"),
+                                   p.get_settings(location_id)["printerId"], ctx.sub, now)
+            return http.respond(200, _routing(location_id, p.get_settings(location_id), p.list_devices(location_id)))
+        allow = "PUT"
     elif parts == ["tickets"]:
         if method == "GET":
             return http.respond(200, {"tickets": [routing.view(t) for t in routing.list_tickets(location_id, now)]})
@@ -236,8 +322,10 @@ def _api(event):
     try:
         location_id = http.path_id(event, "locationId")
         proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
-        # Meny shows each dish's station (GET routing); the rest is Beställningar.
-        area = ("bestallningar", "meny") if method == "GET" and proxy == "routing" else "bestallningar"
+        # Meny shows each dish's station (GET routing) and sets where a whole
+        # category goes (PUT routing/categories); the rest is Beställningar.
+        menu_path = (method == "GET" and proxy == "routing") or proxy == "routing/categories"
+        area = ("bestallningar", "meny") if menu_path else "bestallningar"
         ctx = tenant.for_jwt(event, location_id=location_id, feature="ordering", area=area)
         if path == _ROOT:
             if method != "GET":

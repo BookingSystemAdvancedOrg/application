@@ -523,31 +523,72 @@
   {
    "id": "skrivare",
    "route": "/installningar",
-   "title": "Koppla en kökskrivare",
+   "title": "Lägga till kvittoskrivare (Kök, Dryck)",
    "audience": "owner",
    "feature": "ordering",
    "keywords": [
     "skrivare",
     "kvittoskrivare",
     "kökskrivare",
+    "bongskrivare",
+    "bong",
     "utskrift",
     "cloudprnt",
     "testutskrift",
-    "pappersbredd"
+    "pappersbredd",
+    "kök",
+    "dryck",
+    "bar",
+    "simulerad skrivare",
+    "kom igång"
    ],
-   "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Beställning, Skrivare och stationer.",
+   "answer": "Kvittoskrivarna lägger du till under Inställningar, Beställning, Kvittoskrivare. Det är också ett steg i Kom igång. Varje skrivare är Kök, Dryck eller Annat. Maten skrivs ut på Kök, drycken på Dryck.",
    "steps": [
-    "Öppna Inställningar, välj Beställning och sedan Skrivare och stationer.",
-    "Tryck Lägg till skrivare och följ stegen. Uppgifterna som visas skriver du in i skrivaren direkt, de visas bara en gång.",
+    "Öppna Inställningar, välj Beställning och sedan Kvittoskrivare.",
+    "Tryck Lägg till skrivare och välj Kök, Dryck eller Annat. Ge den ett namn och tryck Lägg till.",
+    "Skriv in uppgifterna som visas i skrivaren direkt, de visas bara en gång.",
     "Tryck Testutskrift för att se att den fungerar.",
-    "Slå på Skriv ut beställningar automatiskt, välj skrivare och pappersbredd och tryck Spara skrivare."
+    "Under Vad skickas vart? väljer du med ett tryck vilken skrivare varje kategori går till.",
+    "Har ni ingen skrivare än, tryck Inga skrivare än. Steget står kvar i Kom igång tills en skrivare finns."
    ],
    "actions": [
     {
      "id": "inst-skrivare-open",
-     "label": "Öppna Skrivare och stationer",
+     "label": "Öppna Kvittoskrivare",
      "to": "/installningar",
      "hash": "skrivare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "skickas-till",
+   "route": "/meny",
+   "title": "Välja vilken skrivare en rätt skickas till",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "skickas till",
+    "bong",
+    "station",
+    "kök",
+    "dryck",
+    "bar",
+    "drycker till köket",
+    "kategori",
+    "skrivare"
+   ],
+   "answer": "Varje rätt och kategori har Skickas till: Kök, Dryck, en Annat-skrivare eller Ingen bong. Mat går till Kök och dryck till Dryck om inget annat är valt.",
+   "steps": [
+    "Öppna Meny och tryck på rätten (eller Lägg till rätt).",
+    "Under Bong, Skickas till: tryck på skrivaren. Bongen nedanför visar var rätten hamnar.",
+    "För en hel kategori: öppna Kategorier och tryck på skrivaren under kategorin. Det sparas direkt."
+   ],
+   "actions": [
+    {
+     "id": "meny-skickas-till-open",
+     "label": "Öppna Meny",
+     "to": "/meny"
     }
    ],
    "kind": "guide"
@@ -3041,9 +3082,9 @@
    "kind": "page",
    "route": "/installningar",
    "hash": "skrivare",
-   "title": "Skrivare och stationer",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Skrivare och stationer finns under Inställningar, Beställning. Skrivaren i köket som skriver ut beställningarna och stationerna.",
+   "title": "Kvittoskrivare",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Kvittoskrivare finns under Inställningar, Beställning. Skrivarna i köket och baren, och vad som skickas vart.",
    "highlight": [
     "help:settings-tab:skrivare"
    ],
@@ -4628,68 +4669,12 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-PrinterCard:skriv-in-detta-i-skrivaren-nu:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Skriv in detta i skrivaren nu",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Lösenordet visas bara nu.",
-   "highlight": [
-    "text:Skriv in detta i skrivaren nu"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:lagg-till-skrivare:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till skrivare",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Lägg till skrivare"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:marke:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Märke",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Märke"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:lagg-till:button",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Lägg till"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
    "id": "features-installningar-PrinterCard:orderskrivare-omtryck-och-makulering:field",
    "kind": "element",
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Orderskrivare (omtryck och makulering)",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Orderskrivare (omtryck och makulering)"
@@ -4703,7 +4688,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Pappersbredd",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Pappersbredd"
@@ -4717,7 +4702,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Om något inte fungerar",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Om något inte fungerar"
@@ -4731,7 +4716,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Epson TM-m30III och andra Epson med Server Direct Print",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Epson TM-m30III och andra Epson med Server Direct Print"
@@ -5009,62 +4994,6 @@
    ],
    "audience": "owner",
    "area": "personal"
-  },
-  {
-   "id": "features-installningar-StationsCard:bongar-och-stationer:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Bongar och stationer",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Varje station får sin egen bong: maten till köket, drycken till baren. Allergier och önskemål följer rätten och står i fetstil. En station utan skrivare syns bara på köksskärmen under Beställningar.",
-   "highlight": [
-    "text:Bongar och stationer"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:station:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Station",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Station"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:lagg-till-station:button",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till station",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
-   "highlight": [
-    "text:Lägg till station"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:vart-gar-menyns-kategorier:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Vart går menyns kategorier?",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
-   "highlight": [
-    "text:Vart går menyns kategorier?"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
   },
   {
    "id": "features-installningar-TableRulesCard:kombinationer:heading",
@@ -5931,7 +5860,7 @@
    "route": "/meny",
    "title": "Kategorier",
    "where": "Meny",
-   "text": "",
+   "text": "Skickas till: vilken skrivare hela kategorins bongar hamnar på. Ett tryck sparar direkt. En rätt kan välja egen.",
    "highlight": [
     "text:Kategorier"
    ],
@@ -6038,19 +5967,6 @@
    "text": "",
    "highlight": [
     "text:Pris (kr)"
-   ],
-   "audience": "all",
-   "area": "meny"
-  },
-  {
-   "id": "features-meny-DishModal:vart-gar-ratten:field",
-   "kind": "element",
-   "route": "/meny",
-   "title": "Vart går rätten?",
-   "where": "Meny",
-   "text": "",
-   "highlight": [
-    "text:Vart går rätten?"
    ],
    "audience": "all",
    "area": "meny"
@@ -6276,6 +6192,62 @@
    "audience": "all",
    "feature": "phoneAgent",
    "area": "telefon"
+  },
+  {
+   "id": "features-printers-PrinterTiles:skriv-in-i-skrivaren:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Skriv in i skrivaren",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Lösenordet visas bara nu.",
+   "highlight": [
+    "text:Skriv in i skrivaren"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:namn:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Namn",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:spara:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Spara",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "",
+   "highlight": [
+    "text:Spara"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:vad-ska-den-skriva-ut:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Vad ska den skriva ut?",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Kök: maten. Dryck: drinkar och annat från baren. Annat: en egen station, till exempel pizzaugnen eller desserterna.",
+   "highlight": [
+    "text:Vad ska den skriva ut?"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
   },
   {
    "id": "features-statistik-Overview:bokningar-idag:kpi",

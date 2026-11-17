@@ -1,9 +1,7 @@
 """payment-intent
 
 TRIGGER:
-    API Gateway -- Auth: NONE (guests)
-    POST /order
-    POST /locations/{locationId}/table-bill/pay[?order=<orderId>]
+    API Gateway -- POST /order -- Auth: NONE (guests)
 
 PURPOSE:
     A guest orders food: online for pickup, or from a table's QR code. The
@@ -45,26 +43,6 @@ PURPOSE:
     order is confirmed at once. A refused card is 409 with the feature's
     code; a failure after the reserve gives the amount back (op reverse).
 
-    Pay later (QR table orders, ``payLater: true``, mode table only): no
-    payment step. Name and mobile are required, e-mail optional; discount
-    codes and gift cards are refused (400 codes_not_for_table). The order is
-    written confirmed + unpaid (number at once, no TTL, no receipt) and put
-    on its table's open bill in the same transaction (shared/table_bills.py);
-    a full bill (8 open orders or 5 000 kr) is 409 table_bill_full, and one
-    phone may place 8 table orders a day. 201 {orderId, locationId,
-    statusToken, totalAmount, number, payLater: true, serviceDate}. A table
-    order without payLater (sites from before pay later) still pays first.
-
-    POST .../table-bill/pay {expectedAmount, email?, resumeBillId?,
-    resumeToken?}, header X-Order-Token (the staff pay link, or the
-    guest's order status token with ?order=): pays the table's whole open
-    bill with the Payment Element. 201 {billId, billToken, clientSecret,
-    stripeAccount, amount, count} (200 when the same device resumes its
-    session). 409 bill_empty, bill_changed (+ the fresh bill),
-    bill_being_paid (+ retryAfter), bill_processing, bill_paid,
-    bill_below_minimum, ordering_no_payments; 404 for a wrong token; 503
-    payment_unavailable.
-
     Multi-tenant: the location decides the tenant; tenants without the
     "ordering" feature, or inactive ones, get 404.
 
@@ -93,7 +71,7 @@ from shared import site
 from shared import marketing_offer as offer
 from shared import bot_check, tenant
 from shared import orders as o
-from shared import table_bills, table_qr
+from shared import table_qr
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -101,38 +79,27 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _PATH = "/order"
-_BILL_PAY = "/locations/{locationId}/table-bill/pay"
 _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email", "notes",
            "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn",
-           "embedded", "marketingConsent", "giftCardCode", "payLater"}
-_BILL_FIELDS = {"expectedAmount", "email", "resumeBillId", "resumeToken"}
+           "embedded", "marketingConsent", "giftCardCode"}
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
-TABLE_PHONE_LIMIT = (8, 24 * 60 * 60)   # pay-later table orders per phone and day
-BILL_IP_LIMIT = (20, 10 * 60)
 _NOTES_MAX = 300
 
 
-def _guard(event, data, guest, now, *, pay_later=False):
+def _guard(event, data, guest, now):
     ip = http.source_ip(event)
     request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
     bot_check.verify(event, "order")
-    limits = [
+    return request_guard.check([
         ("order-phone", guest["customerPhone"], *CONTACT_LIMIT),
         ("order-email", guest["customerEmail"], *CONTACT_LIMIT),
-    ]
-    if pay_later:
-        limits.append(("table-order-phone", guest["customerPhone"], *TABLE_PHONE_LIMIT))
-    return request_guard.check(limits, now)
+    ], now)
 
 
-def _guest(data, *, pay_later=False):
-    # Pay later at the table: name and mobile, e-mail optional (no receipt
-    # until the bill is paid; the payer may give one then).
+def _guest(data):
     guest = r.validate_guest({k: data.get(k) for k in ("name", "email", "phone", "language")
-                              if data.get(k) is not None}, require_contact=not pay_later)
-    if pay_later and not guest.get("customerPhone"):
-        raise ValueError("phone is required")
+                              if data.get(k) is not None}, require_contact=True)
     notes = data.get("notes")
     if notes not in (None, ""):
         if not isinstance(notes, str):
@@ -155,18 +122,8 @@ def _create(event):
         raise ValueError("mode must be pickup or table")
     if data.get("acceptTerms") is not True:
         raise ValueError("acceptTerms must be true")
-    pay_later = data.get("payLater", False)
-    if not isinstance(pay_later, bool):
-        raise ValueError("payLater must be true or false")
-    if pay_later and mode != o.TABLE:
-        raise ValueError("payLater is only for table orders")
-    if pay_later and (data.get("discountCode") not in (None, "") or data.get("giftCardCode") not in (None, "")):
-        raise ValueError("codes_not_for_table")
-    if mode == o.TABLE and not pay_later:
-        # A site from before pay later: the table order is paid first, as before.
-        logger.info(json.dumps({"order": "legacy_table_pay_first", "locationId": location_id}))
     wanted = o.validate_lines(data.get("items"))
-    guest = _guest(data, pay_later=pay_later)
+    guest = _guest(data)
     attribution = marketing.validate_attribution(data.get("attribution"))
     if attribution:
         guest["attribution"] = attribution
@@ -188,12 +145,9 @@ def _create(event):
             raise ValueError("gift_cards_off")
     now = o.now_utc()
 
-    counted = _guard(event, data, guest, now, pay_later=pay_later)
+    counted = _guard(event, data, guest, now)
     try:
-        if pay_later:
-            response = _place_pay_later(ctx, location_id, data, wanted, guest, now)
-        else:
-            response = _place(ctx, location_id, mode, data, wanted, guest, now)
+        response = _place(ctx, location_id, mode, data, wanted, guest, now)
     except Exception:
         request_guard.refund(counted)
         raise
@@ -257,96 +211,6 @@ def _place(ctx, location_id, mode, data, wanted, guest, now):
         if gift:
             _reverse_gift_card(ctx.tenant_id, location_id, order_id)
         raise
-
-
-def _place_pay_later(ctx, location_id, data, wanted, guest, now):
-    """A QR table order paid later with the table's bill: straight to the
-    kitchen (confirmed, unpaid) and onto the table's open bill, atomically."""
-    policy = o.require_open(ctx.location, ctx.tenant, o.TABLE, now)
-    table_id, table_label = table_qr.resolve(ctx.tenant_id, location_id, data.get("tableCode"))
-    account = o.stripe_account(ctx.tenant, ctx.location)  # the account the bill will be paid to
-    local_date = o.local_now(ctx.location, now).date()
-    lines, total = o.price_lines(location_id, wanted, o.TABLE, local_date)
-    if total > o.TABLE_MAX_OPEN_ORE:
-        raise o.Closed("table_bill_full")
-    date_str = local_date.isoformat()
-    order_id = o.new_id()
-    prep = int(policy["prepMinutes"])
-    item = {
-        **o.order_key(location_id, date_str, order_id),
-        "orderId": order_id,
-        "tenantId": ctx.tenant_id,
-        "locationId": location_id,
-        "date": date_str,
-        "serviceDate": o.service_date(ctx.location, now),
-        "timezone": ctx.location.get("timezone") or "Europe/Stockholm",
-        "mode": o.TABLE,
-        "payLater": True,
-        "tableId": table_id,
-        "tableLabel": table_label,
-        "lines": lines,
-        "totalAmount": total,
-        "vat": o.vat_breakdown(lines),
-        "currency": o.CURRENCY,
-        **{k: v for k, v in guest.items() if v is not None and k not in ("marketingOptIn", "orderMarketingOptIn")},
-        **({"marketingOptIn": True} if guest.get("orderMarketingOptIn") else {}),
-        "prepMinutes": prep,
-        "status": o.CONFIRMED,
-        "paymentStatus": o.PAY_UNPAID,
-        "stripeAccountId": account,
-        "termsAcceptedAt": o.iso(now),
-        "createdAt": o.iso(now),
-        "confirmedAt": o.iso(now),
-        "readyEstimate": o.iso(now + timedelta(minutes=prep)),
-        "updatedAt": o.iso(now),
-        "version": 1,
-        "history": [o.history_entry("created", "guest", now, status=o.CONFIRMED, mode=o.TABLE, payLater=True)],
-    }
-    item = {k: v for k, v in item.items() if v is not None}
-    # Signed before anything is written: a missing key fails the request.
-    token = o.status_token(item)
-    item["number"] = o.next_number(location_id, date_str)
-    pointer = {**o.pointer_key(location_id, order_id), "orderId": order_id, "date": date_str,
-               "tenantId": ctx.tenant_id}
-    try:
-        dynamo.client().transact_write_items(TransactItems=[
-            {"Put": {"TableName": o.order_table(), "Item": r.serialize(item),
-                     "ConditionExpression": "attribute_not_exists(PK)"}},
-            {"Put": {"TableName": o.order_table(), "Item": r.serialize(pointer),
-                     "ConditionExpression": "attribute_not_exists(PK)"}},
-            table_bills.add_order(item, now),
-        ])
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException" and table_bills.bill_full(item):
-            raise o.Closed("table_bill_full") from None
-        raise
-    logger.info(json.dumps({"order": "created", "orderId": order_id, "tenantId": ctx.tenant_id,
-                            "mode": o.TABLE, "total": total, "payLater": True}))
-    return http.respond(201, {"orderId": order_id, "locationId": location_id, "statusToken": token,
-                              "totalAmount": total, "number": item["number"], "payLater": True,
-                              "serviceDate": item["serviceDate"]})
-
-
-def _bill_pay(event):
-    """POST /locations/{locationId}/table-bill/pay: the table's whole open bill."""
-    location_id = http.path_id(event, "locationId")
-    ctx = tenant.for_public(location_id, feature="ordering")
-    params = http.query(event)
-    unknown = sorted(set(params) - {"order"})
-    if unknown:
-        raise ValueError(f"unsupported query parameters: {', '.join(unknown)}")
-    data = http.body(event, allowed=_BILL_FIELDS)
-    now = o.now_utc()
-    request_guard.check([("bill-ip", http.source_ip(event), *BILL_IP_LIMIT)], now)
-    service_date, table_id = table_bills.resolve_guest(ctx, location_id, http.header(event, "x-order-token"),
-                                                       params.get("order"), now)
-    base, slug = site.base(ctx.tenant_id, ctx.tenant)
-    if not base:
-        raise o.Closed("ordering_no_site")
-    status, body = table_bills.pay(
-        ctx, location_id, service_date, table_id, data, base=base, slug=slug, now=now,
-        ensure_domains=lambda account: payment_domains.ensure(account, lambda: site.hosts(ctx.tenant_id, ctx.tenant)))
-    return http.respond(status, body)
 
 
 def _gift_card_answer(tenant_id, payload):
@@ -507,18 +371,12 @@ def _refused(event, status, error):
 
 def handler(event, context):
     method, path = http.route(event)
-    if path not in (_PATH, _BILL_PAY):
+    if path != _PATH:
         return http.error(404, "not found")
     if method != "POST":
         return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
     try:
-        return _create(event) if path == _PATH else _bill_pay(event)
-    except table_bills.BillError as exc:
-        _refused(event, exc.status, exc.code)
-        return http.respond(exc.status, {"error": exc.code, **exc.extra},
-                            {"Retry-After": str(exc.extra["retryAfter"])} if "retryAfter" in exc.extra else None)
-    except o.NotFound:
-        return http.error(404, "not found")
+        return _create(event)
     except tenant.TenantError as exc:
         _refused(event, exc.status, exc.error)
         return exc.response()

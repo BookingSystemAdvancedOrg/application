@@ -461,24 +461,13 @@ def _in(day, first, last):
 
 
 def order_events(orders, first, last, tz):
-    """Food orders paid through Booqy (Stripe). The sale day is when the money
-    came: paidAt for a pay-later table order paid with its bill, confirmedAt
-    otherwise. Table bills paid outside Booqy (own terminal, cash, Swish) are
-    not Booqy sales: left out, with one note per day (the restaurant books
-    them from its own register). Unpaid and written-off orders are no sale."""
     out = []
-    outside = {}
     for item in orders:
         rows = item.get("vat") or []
-        if item.get("paymentStatus") == o.PAY_OUTSIDE:
-            day = local_day(item.get("paidAt") or item.get("confirmedAt"), tz)
-            if _in(day, first, last):
-                outside[day] = outside.get(day, 0) + 1
-            continue
         if item.get("paymentStatus") not in (o.PAY_PAID, o.PAY_PARTLY_REFUNDED, o.PAY_REFUNDED) or not rows:
             continue
         role_text = T_ONLINE
-        paid_day = local_day(item.get("paidAt") or item.get("confirmedAt"), tz)
+        paid_day = local_day(item.get("confirmedAt"), tz)
         if _in(paid_day, first, last):
             out.append(sale(paid_day, rows, "stripe", role_text, item.get("totalAmount")))
         refund = item.get("refund") or {}
@@ -489,9 +478,6 @@ def order_events(orders, first, last, tz):
             if amount < int(item.get("totalAmount") or 0):
                 event.warnings.append("Delvis återbetald beställning: momsen fördelad efter belopp.")
             out.append(event)
-    for day, count in sorted(outside.items()):
-        out.append(Event(day, [], [f"{count} bordsbeställningar betalda utanför Booqy ingår inte "
-                                   "(bokförs från ert eget system)."]))
     return out
 
 

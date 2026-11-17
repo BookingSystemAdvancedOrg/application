@@ -10,9 +10,6 @@ guests who ordered in English.
     order_cancelled  SMS + e-mail: cancelled by the restaurant, refunded
     order_refunded   e-mail: the restaurant refunded (part of) the order
                      without cancelling it (amount, its message)
-    bill_paid        e-mail: the receipt for a table's bill paid with the
-                     phone (pay-later QR table orders), to the payer's
-                     optional e-mail (bill_email)
 
 The receipt shows the seller (legal name, organisation number, address),
 each line, VAT per rate and the total. Pure functions; nothing here sends.
@@ -56,11 +53,6 @@ _TEXT = {
         "refunded.lead": ("{restaurant} har betalat tillbaka {amount} för din beställning #{number}. "
                           "Pengarna syns på ditt kort inom 5-10 bankdagar."),
         "refunded.reason": "Meddelande från restaurangen: {reason}",
-        "cancelled.lead.unpaid": ("Restaurangen har avbrutit din beställning #{number}. "
-                                  "Du har inte betalat något för den."),
-        "bill.subject": "Kvitto för notan vid {table} - {restaurant}",
-        "bill.lead": "Tack! Notan vid {table} är betald.",
-        "bill": "Nota",
         "hello": "Hej {name}!",
         "receipt": "Kvitto",
         "order": "Beställning",
@@ -111,10 +103,6 @@ _TEXT = {
         "refunded.lead": ("{restaurant} has refunded {amount} for your order #{number}. "
                           "It shows on your card within 5-10 business days."),
         "refunded.reason": "Message from the restaurant: {reason}",
-        "cancelled.lead.unpaid": "The restaurant has cancelled your order #{number}. You have not paid anything for it.",
-        "bill.subject": "Receipt for the bill at {table} - {restaurant}",
-        "bill.lead": "Thank you! The bill at {table} is paid.",
-        "bill": "Bill",
         "hello": "Hi {name},",
         "receipt": "Receipt",
         "order": "Order",
@@ -214,9 +202,6 @@ def _parts(item):
 
 
 def _cancelled_lead(item, lang):
-    if item.get("paymentStatus") == o.PAY_VOID:
-        # A pay-later table order cancelled before it was paid: nothing to give back.
-        return _t(lang, "cancelled.lead.unpaid", number=item.get("number") or "")
     gift, gift_ore, card_ore = _parts(item)
     if not gift or gift_ore <= 0:
         return _t(lang, "cancelled.lead", amount=money(card_ore))
@@ -238,20 +223,6 @@ def _payment_rows(item, lang):
     if card > 0:
         rows.append((_t(lang, "payment.card"), money(card)))
     return rows
-
-
-def bill_email(bill, tenant_row, location):
-    """(subject, text, html): the receipt for a table's bill paid with the
-    phone. Every order's lines, VAT per rate, the total; reference = the
-    bill id. No link (the bill has no page to follow)."""
-    lines = [{"name": f"#{order.get('number') or ''} {line.get('name') or ''}".strip(),
-              "quantity": int(line.get("quantity") or 1), "total": int(line.get("total") or 0)}
-             for order in bill.get("orders") or [] for line in order.get("lines") or []]
-    item = {"language": "sv", "customerName": "", "lines": lines, "totalAmount": int(bill.get("amount") or 0),
-            "vat": bill.get("vat") or [], "orderId": bill.get("billId"), "number": "",
-            "timezone": bill.get("timezone"), "confirmedAt": bill.get("paidAt"), "mode": "table",
-            "tableLabel": bill.get("tableLabel")}
-    return email("bill_paid", item, tenant_row, location, None)
 
 
 def sms(kind, item, tenant_row, location, link=None):
@@ -297,9 +268,6 @@ def email(kind, item, tenant_row, location, link):
         subject = _t(lang, "ready.subject", number=number, restaurant=name)
         lead = _t(lang, "ready.lead") + (_t(lang, "pickup.at", address=location["address"])
                                          if (location or {}).get("address") else "")
-    elif kind == "bill_paid":
-        subject = _t(lang, "bill.subject", table=_table(item, lang), restaurant=name)
-        lead = _t(lang, "bill.lead", table=_table(item, lang))
     elif kind == "order_refunded":
         notice = (item.get("refund") or {}).get("notice") or {}
         subject = _t(lang, "refunded.subject", number=number, restaurant=name)
@@ -314,7 +282,7 @@ def email(kind, item, tenant_row, location, link):
     contact = contact_line(tenant_row, location)
     contact_text = _t(lang, "contact", restaurant=name, contact=contact) if contact else ""
     footer = _t(lang, "footer", restaurant=name)
-    show_receipt = kind in ("order_confirmed", "bill_paid")
+    show_receipt = kind == "order_confirmed"
     seller = _seller(tenant_row, location)
     when = _local(item, item.get("confirmedAt") or item.get("createdAt"), "%Y-%m-%d %H:%M")
     lines = item.get("lines") or []
@@ -322,8 +290,7 @@ def email(kind, item, tenant_row, location, link):
 
     text = [hello, "", lead, ""]
     if show_receipt:
-        heading = _t(lang, "bill") if kind == "bill_paid" else f"{_t(lang, 'order')} #{number}"
-        text += [f"{_t(lang, 'receipt')} - {heading}", f"{_t(lang, 'date')}: {when}", ""]
+        text += [f"{_t(lang, 'receipt')} - {_t(lang, 'order')} #{number}", f"{_t(lang, 'date')}: {when}", ""]
         text += [f"{line['quantity']} x {o.line_label(line)}  {money(line['total'])}" for line in lines]
         discount = item.get("discount") or {}
         if discount.get("code"):
@@ -372,7 +339,7 @@ def email(kind, item, tenant_row, location, link):
             + ([seller["address"]] if seller["address"] else [])
         receipt_html = (
             f'<h2 style="margin:24px 0 4px;font-size:16px">{e(_t(lang, "receipt"))} &middot; '
-            f'{e(heading)}</h2>'
+            f'{e(_t(lang, "order"))} #{e(str(number))}</h2>'
             f'<p style="margin:0 0 12px;color:#6b6b6b">{e(when)}</p>'
             f'<table role="presentation" style="border-collapse:collapse;width:100%">{rows}'
             f'<tr><td style="padding:10px 12px 4px 0;border-top:1px solid #e5e5e5;font-weight:600">'

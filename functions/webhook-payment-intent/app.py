@@ -23,15 +23,6 @@ PURPOSE:
                                                records Dashboard refunds, never
                                                twice (shared/refunds.py)
 
-    Table bills (pay-later QR table orders, shared/table_bills.py):
-    sessions with metadata kind "table_bill" settle the bill instead -
-    completed/async_succeeded + paid: the bill and every order on it paid
-    in one transaction (the bill's bill_paid notice is the payer's receipt);
-    expired / async_failed: the table's payment lock released.
-    charge.refunded on a bill's payment is a backstop: an owner refund of
-    one order whose answer was lost is completed, a Stripe Dashboard refund
-    is recorded on the bill (not split across its orders).
-
     Confirming writes the order_confirmed notice: the Order table's stream
     sends the guest's SMS and receipt e-mail (notification).
 
@@ -65,7 +56,7 @@ import time
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, order_payments, refunds, table_bills
+from shared import dynamo, feature_hooks, order_payments, refunds
 from shared import orders as o
 from shared import stripe_client as stripe
 
@@ -151,8 +142,6 @@ def _reverse_gift_card(item, now):
 
 
 def _session_event(kind, session, account, now):
-    if table_bills.is_bill_event(session.get("metadata")):
-        return table_bills.on_session_event(kind, session, account, now)
     item = _order(session.get("metadata"), account)
     if not item:
         return "ignored"
@@ -171,8 +160,6 @@ def _session_event(kind, session, account, now):
 
 
 def _charge_refunded(charge, account, now):
-    if table_bills.is_bill_event(charge.get("metadata")):
-        return table_bills.on_charge_refunded(charge, account, now)
     item = _order(charge.get("metadata"), account)
     if not item or item.get("paymentIntentId") != charge.get("payment_intent"):
         return "ignored"

@@ -279,7 +279,7 @@ def cancel(location_id, source_id, now):
 def view(item):
     return {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
                                      "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
-                                     "updatedAt", "payLater") if item.get(k) is not None}
+                                     "updatedAt") if item.get(k) is not None}
 
 
 def drop_printer(location_id, device_id, now):

@@ -68,13 +68,7 @@ CATERING_GUEST_FIELDS = ("customerEmail", "customerPhone", "notes", "marketingOp
 CATERING_PRIVATE_FIELDS = ("deliveryAddress",)
 
 CATERING_UNSUCCESSFUL = ("declined", "rejected", "expired", "cancelled")
-ORDER_RECEIPT_STATUSES = ("paid", "refunded", "partly_refunded", "partially_refunded",
-                          # pay-later table orders settled without Booqy money: kept like a
-                          # sale (the restaurant's own books may point at them)
-                          "paid_outside", "written_off")
-# A pay-later table order not paid yet: never deleted while it is open.
-ORDER_OPEN_PAYMENT = "unpaid"
-BILL_GUEST_FIELDS = ("payerEmail",)
+ORDER_RECEIPT_STATUSES = ("paid", "refunded", "partly_refunded", "partially_refunded")
 BOOKING_CHARGE_STATUSES = ("succeeded", "refunded", "processing", "pending")
 
 
@@ -186,29 +180,6 @@ def order_action(item, today, p):
         return None
     if item.get("status") == "pending_payment" and int(item.get("ttl") or 0):
         return None  # the checkout TTL removes it
-    if item.get("paymentStatus") == ORDER_OPEN_PAYMENT:
-        return None  # an open table bill: paid, written off or cancelled first
-    if day <= months_before(today, p.cancelled_months):
-        return "delete"
-    return None
-
-
-def bill_action(item, today, p):
-    """A table bill (BILL#, one payment attempt for a table's open orders):
-    a paid one is a payment record (accounting years, the payer's e-mail
-    removed after the guest months); the others expire by their TTL."""
-    day = parse_day(item.get("serviceDate"))
-    if not day:
-        return None
-    if item.get("status") == "paid":
-        if today > accounting_end(day, p.accounting_years):
-            return "delete"
-        if item.get("payerEmail") and day <= months_before(today, p.guest_months) \
-                and not item.get("anonymisedAt"):
-            return "anonymise"
-        return None
-    if int(item.get("ttl") or 0):
-        return None
     if day <= months_before(today, p.cancelled_months):
         return "delete"
     return None
@@ -336,8 +307,8 @@ def suppression_ttl(withdrawn_at, p):
 def anonymise_update(kind, item, now_iso, ttl=None):
     """(UpdateExpression, names, values) that strips the guest's details
     (and sets the row's expiry when `ttl` is given)."""
-    if kind in ("card", "bill"):
-        present = [f for f in (CARD_GUEST_FIELDS if kind == "card" else BILL_GUEST_FIELDS) if f in item]
+    if kind == "card":
+        present = [f for f in CARD_GUEST_FIELDS if f in item]
         names = {"#a": "anonymisedAt", **{f"#r{i}": f for i, f in enumerate(present)}}
         expr = "SET #a = :a" + (" REMOVE " + ", ".join(f"#r{i}" for i in range(len(present))) if present else "")
         return expr, names, {":a": now_iso}

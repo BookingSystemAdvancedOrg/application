@@ -254,7 +254,7 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
         t.line("KAN VARA DUBBLETT", bold=True, center=True)
     if copy:
         t.line("KOPIA", bold=True, center=True)
-    t.line(clean(ticket.get("stationName")).upper() or "KÖK", bold=True, big=True, center=True)
+    t.line(clean(routing.station_name(ticket)).upper() or "KÖK", bold=True, big=True, center=True)
     if ticket.get("number"):
         t.line(f"#{ticket['number']}", bold=True, big=True, center=True)
     t.line(_where(ticket.get("mode"), ticket.get("tableLabel")), bold=True, big=True, center=True)

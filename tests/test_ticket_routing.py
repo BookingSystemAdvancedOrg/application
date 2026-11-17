@@ -93,6 +93,18 @@ def test_kitchen_ticket_has_no_drinks_and_allergies_in_bold():
     assert "Kontrollera allergin" in allergy
 
 
+def test_old_bar_ticket_reprints_as_dryck_like_new_orders():
+    # a ticket stored when the drinks station was still called Bar
+    old = {**r.tickets(ORDER_ID, p.order_header(demo_order()), LINES, None, r.default_config(), p.now_utc())[1],
+           "stationName": "Bar"}
+    assert old["stationId"] == r.DRINK
+    text = t.station_ticket(old, demo_order(), {}, copy=True).decode("cp1252")
+    assert "DRYCK" in text and "BAR" not in text and "KOPIA" in text
+    assert r.view(old)["stationName"] == "Dryck"
+    # an Annat station someone named Bar keeps its name
+    assert r.station_name({"stationId": "a1", "stationName": "Bar"}) == "Bar"
+
+
 def test_every_station_ticket_names_the_table_or_pickup():
     for header, where in ((p.order_header(demo_order()), "BORD 7"),
                           (p.order_header({**demo_order(), "mode": "pickup", "tableLabel": None}), "AVHÄMTNING")):
@@ -104,7 +116,7 @@ def test_epson_ticket_is_epos_xml():
     ticket = r.tickets(ORDER_ID, p.order_header(demo_order()), LINES, None, r.default_config(), p.now_utc())[1]
     xml = t.station_ticket(ticket, None, {}, fmt="epson")
     assert xml.startswith('<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">')
-    assert '<text align="center" dw="true" dh="true" em="true">BAR&#10;</text>' in xml
+    assert '<text align="center" dw="true" dh="true" em="true">DRYCK&#10;</text>' in xml
     assert "Läsk" in xml and "Burgare" not in xml and xml.endswith('<cut type="feed"/></epos-print>')
     assert "&lt;" in t.station_ticket({**ticket, "notes": "<b>"}, None, {}, fmt="epson")
 
@@ -214,7 +226,7 @@ def test_no_printers_still_makes_kitchen_display_tickets(env):
     stream(env, demo_order(status="pending_payment"), demo_order())
     assert p.order_jobs(LOC_A, ORDER_ID) == []
     status, body = api(env, "GET", "tickets", role="staff_user")
-    assert status == 200 and sorted(x["stationName"] for x in body["tickets"]) == ["Bar", "Kök"]
+    assert status == 200 and sorted(x["stationName"] for x in body["tickets"]) == ["Dryck", "Kök"]
     assert body["tickets"][0]["tableLabel"] == "7" and body["tickets"][0]["number"] == 12
 
 

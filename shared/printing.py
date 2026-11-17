@@ -870,7 +870,8 @@ def order_tickets(location_id, now):
     for ticket in routing.list_tickets(location_id, now):
         if ticket.get("orderId"):
             out.setdefault(ticket["orderId"], []).append(
-                {k: ticket.get(k) for k in ("stationId", "stationName", "status", "allergy")})
+                {**{k: ticket.get(k) for k in ("stationId", "status", "allergy")},
+                 "stationName": routing.station_name(ticket)})
     return out
 
 

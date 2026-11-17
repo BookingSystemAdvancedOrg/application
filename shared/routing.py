@@ -327,10 +327,23 @@ def cancel(location_id, source_id, now):
                                  ExpressionAttributeValues={":c": CANCELLED, ":now": printing.iso(now)})
 
 
+def station_name(ticket):
+    """The station's name on a ticket. A ticket stored before the drinks
+    station was called Dryck says "Bar"; it is shown and reprinted as Dryck,
+    like new orders."""
+    name = (ticket or {}).get("stationName")
+    if ticket and ticket.get("stationId") == DRINK and isinstance(name, str) and name.strip().lower() == "bar":
+        return "Dryck"
+    return name
+
+
 def view(item):
-    return {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
-                                     "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
-                                     "updatedAt") if item.get(k) is not None}
+    out = {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
+                                    "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
+                                    "updatedAt") if item.get(k) is not None}
+    if out.get("stationName") is not None:
+        out["stationName"] = station_name(item)
+    return out
 
 
 def station_kind(station_id):

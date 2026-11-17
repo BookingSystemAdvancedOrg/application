@@ -136,6 +136,18 @@
   }
  },
  {
+  "question": "Hur tar jag betalt för notan vid bordet?",
+  "role": "staff_user",
+  "features": [
+   "reservations",
+   "ordering"
+  ],
+  "expect": {
+   "source": "bestallning-notan",
+   "route": "/bestallningar"
+  }
+ },
+ {
   "question": "Var hittar jag SIE-filen till revisorn?",
   "role": "owner_user",
   "features": [

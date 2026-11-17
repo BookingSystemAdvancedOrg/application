@@ -3282,19 +3282,6 @@
    "area": "bokningar"
   },
   {
-   "id": "features-bokningar-ReservationModal:aterbetala-avgiften:heading",
-   "kind": "element",
-   "route": "/bokningar",
-   "title": "Återbetala avgiften",
-   "where": "Bokningar",
-   "text": "",
-   "highlight": [
-    "text:Återbetala avgiften"
-   ],
-   "audience": "all",
-   "area": "bokningar"
-  },
-  {
    "id": "features-bokningar-ReservationModal:stang:button",
    "kind": "element",
    "route": "/bokningar",
@@ -6819,6 +6806,32 @@
    "audience": "all",
    "feature": "personalliggare",
    "area": "personalliggare"
+  },
+  {
+   "id": "shared-RefundDialog:belopp-kr:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Belopp (kr)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Belopp (kr)"
+   ],
+   "audience": "all",
+   "area": "bokningar"
+  },
+  {
+   "id": "shared-RefundDialog:anledning-valfri:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Anledning (valfri)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Anledning (valfri)"
+   ],
+   "audience": "all",
+   "area": "bokningar"
   }
  ]
 }

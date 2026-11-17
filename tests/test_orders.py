@@ -528,6 +528,23 @@ def test_too_many_orders_from_one_address(env):
     assert response["statusCode"] == 429 and int(response["headers"]["Retry-After"]) > 0
 
 
+def test_table_orders_have_their_own_higher_ip_limit(env):
+    env["res"].create_table(TableName="test-guard", KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}],
+                            AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}],
+                            BillingMode="PAY_PER_REQUEST")
+    env["monkeypatch"].setenv("REQUEST_GUARD_TABLE_NAME", "test-guard")
+    code = o.table_code(TENANT_A, LOC_A, "t1", "1")
+    for i in range(40):
+        response = post_order(env, mode="table", tableCode=code, phone=f"07012{i:05d}", email=f"g{i}@example.se",
+                              items=[{"menuItemId": "pizza", "quantity": 1}])
+        assert response["statusCode"] == 201, response
+    response = post_order(env, mode="table", tableCode=code, phone="0709999999", email="x@example.se",
+                          items=[{"menuItemId": "pizza", "quantity": 1}])
+    assert response["statusCode"] == 429
+    # Pickup keeps its own, lower limit on the same address.
+    assert post_order(env, phone="0708888888", email="p@example.se")["statusCode"] == 201
+
+
 def test_the_bot_check_is_made_for_the_order_form(env):
     from shared import bot_check
     seen = []
@@ -689,6 +706,41 @@ def test_kitchen_flow_and_ready_sms_notice_for_pickup(env):
     assert item["readyAt"] == "2026-09-08T12:00:00Z"
     assert body_of(set_status(env, oid, "completed"))["status"] == "completed"
     assert body_of(set_status(env, oid, "preparing")) == err("cannot_move_completed_to_preparing")
+
+
+def test_table_order_pays_first_and_reaches_the_kitchen_only_when_paid(env):
+    code = o.table_code(TENANT_A, LOC_A, "t-7", "Bord 7")
+    # The browser can neither skip the payment nor name the table itself.
+    for extra in ({"payLater": True}, {"tableId": "t-3"}, {"tableLabel": "VIP"}):
+        refused = post_order(env, mode="table", tableCode=code, **extra)
+        assert refused["statusCode"] == 400, extra
+    assert env["stripe"].calls == []
+
+    created = body_of(post_order(env, mode="table", tableCode=code, items=[{"menuItemId": "pizza", "quantity": 1}]))
+    item = stored(env, created["orderId"])
+    assert item["status"] == "pending_payment" and item["paymentStatus"] == "processing"
+    assert item["mode"] == "table" and item["tableId"] == "t-7" and item["tableLabel"] == "Bord 7"
+    assert "number" not in item and "notice" not in item
+    assert created["checkoutUrl"].startswith("https://checkout.stripe.com/")
+    day = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))
+    assert day["orders"] == []  # unpaid: not on the restaurant's screen
+
+    webhook(env, stripe_event("checkout.session.completed", paid_session(env, created["orderId"])))
+    item = stored(env, created["orderId"])
+    assert item["status"] == "confirmed" and item["paymentStatus"] == "paid" and item["number"] == 1
+    assert item["notice"]["type"] == "order_confirmed"
+    (shown,) = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))["orders"]
+    assert (shown["mode"], shown["tableId"], shown["tableLabel"]) == ("table", "t-7", "Bord 7")
+    guest = body_of(env["m"]["get"].handler(status_event(created["orderId"], created["statusToken"]), None))
+    assert (guest["mode"], guest["tableLabel"], guest["status"]) == ("table", "Bord 7", "confirmed")
+    assert "tableId" not in guest
+
+
+def test_pickup_order_shows_no_table(env):
+    created = place_and_pay(env)
+    (shown,) = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))["orders"]
+    assert shown["mode"] == "pickup" and "tableLabel" not in shown and "tableId" not in shown
+    assert stored(env, created["orderId"])["status"] == "confirmed"
 
 
 def test_table_order_ready_sends_nothing(env):

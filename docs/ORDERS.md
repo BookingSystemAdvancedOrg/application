@@ -8,7 +8,11 @@ Guests order food in two ways:
 | `table` | at a table - scans its QR code, `/bestall?bord=<code>` | staff bring it to that table |
 
 Payment is always online with Stripe Checkout on the restaurant's own
-connected account (direct charge, like the card guarantee). Each dish can be
+connected account (direct charge, like the card guarantee), for table orders
+too: the guest pays at once, and only a paid order reaches the kitchen,
+the printer and the kitchen display. The table comes from the QR code on the
+server (`shared/table_qr.py`), never from the browser; staff see its name
+("Bord 7") on the order card, the kitchen display and every printed ticket. Each dish can be
 ordered 1-20 times; an order has at most 30 lines.
 
 ## Flow
@@ -145,7 +149,9 @@ simply unknown there.
 ## Security
 
 - Public routes: prices never from the client; bot check (AWS WAF) + per-IP and
-  per-contact limits on `POST /order`; the status page needs the HMAC token.
+  per-contact limits on `POST /order` (10 per IP per 10 minutes; table
+  orders 40, since a dining room often shares one wifi); the status page
+  needs the HMAC token.
 - Webhook: Stripe signature; metadata + connected account + session id +
   amount must all match the order.
 - Staff routes: tenant from the JWT, staff limited to their location, status

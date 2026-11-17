@@ -10,6 +10,8 @@ PURPOSE:
 
       1. Abuse checks: attempts per IP address and per phone/e-mail
          (shared/request_guard.py) and the bot check (shared/bot_check.py).
+         Table orders have a higher IP limit of their own (TABLE_IP_LIMIT):
+         a full dining room often shares the restaurant's wifi.
       2. The location must take orders now in that mode (shared/orders.py:
          policy on, Stripe ready, not paused, open with time before last
          order). A table order needs a valid QR code of this location.
@@ -83,13 +85,20 @@ _FIELDS = {"locationId", "mode", "tableCode", "items", "name", "phone", "email",
            "language", "acceptTerms", "turnstileToken", "attribution", "discountCode", "marketingOptIn",
            "embedded", "marketingConsent", "giftCardCode"}
 IP_LIMIT = (10, 10 * 60)
+# QR table orders: the guests of a whole dining room may share the
+# restaurant's wifi (one IP). Every order is still paid first, so the bot
+# check and the per-phone/e-mail limits stay the real brakes.
+TABLE_IP_LIMIT = (40, 10 * 60)
 CONTACT_LIMIT = (10, 60 * 60)
 _NOTES_MAX = 300
 
 
-def _guard(event, data, guest, now):
+def _guard(event, data, guest, now, mode):
     ip = http.source_ip(event)
-    request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
+    if mode == o.TABLE:
+        request_guard.check([("table-order-ip", ip, *TABLE_IP_LIMIT)], now)
+    else:
+        request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
     bot_check.verify(event, "order")
     return request_guard.check([
         ("order-phone", guest["customerPhone"], *CONTACT_LIMIT),
@@ -145,7 +154,7 @@ def _create(event):
             raise ValueError("gift_cards_off")
     now = o.now_utc()
 
-    counted = _guard(event, data, guest, now)
+    counted = _guard(event, data, guest, now, mode)
     try:
         response = _place(ctx, location_id, mode, data, wanted, guest, now)
     except Exception:

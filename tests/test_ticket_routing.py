@@ -93,6 +93,13 @@ def test_kitchen_ticket_has_no_drinks_and_allergies_in_bold():
     assert "Kontrollera allergin" in allergy
 
 
+def test_every_station_ticket_names_the_table_or_pickup():
+    for header, where in ((p.order_header(demo_order()), "BORD 7"),
+                          (p.order_header({**demo_order(), "mode": "pickup", "tableLabel": None}), "AVHÄMTNING")):
+        for ticket in r.tickets(ORDER_ID, header, LINES, None, r.default_config(), p.now_utc()):
+            assert where in t.station_ticket(ticket, None, {}).decode("cp1252"), ticket["stationId"]
+
+
 def test_epson_ticket_is_epos_xml():
     ticket = r.tickets(ORDER_ID, p.order_header(demo_order()), LINES, None, r.default_config(), p.now_utc())[1]
     xml = t.station_ticket(ticket, None, {}, fmt="epson")

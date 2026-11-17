@@ -7,9 +7,11 @@ data: it gets only the returned text."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -19,7 +21,8 @@ from shared.features.phone_agent.tools import TOOLS, read_as
 
 MAX_ROUNDS = 4          # model passes per caller utterance (tool calls in between)
 MAX_TOKENS = 400
-TURN_BUDGET_S = 9.0     # no new model round after this; the caller hears the error sentence
+TURN_BUDGET_S = 8.0     # model and tools per caller utterance, from its start: then the still-checking sentence
+MIN_ROUND_S = 1.0       # no new model round with less left than this
 KEEP_TOOL_ROUNDS = 2    # tool results older than this many rounds are shortened in the history
 MAX_HISTORY_BYTES = 120_000
 WRITES = ("create_reservation", "move_reservation", "cancel_reservation", "request_callback", "transfer_to_staff")
@@ -34,6 +37,7 @@ class TurnResult:
     error: bool = False
     language: str | None = None        # the model's `[<code>]` tag of the reply (any known language)
     rounds: int = 0
+    cut: bool = False                  # the deadline came first: the caller heard the still-checking sentence
 
 
 def calendar(today: date, last: date) -> str:
@@ -49,8 +53,9 @@ def calendar(today: date, last: date) -> str:
 
 
 def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, last_day=None, disclose_now=False,
-                  phone_known=True, unsupported=None) -> str:
-    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT)."""
+                  phone_known=True, unsupported=None, resume=False) -> str:
+    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT);
+    `resume`: the previous turn was cut by the deadline (copy.RESUME)."""
     name = language.name(lang) if lang in language.NAMES else "Swedish"
     last_day = last_day or today + timedelta(days=21)
     register = copy.REGISTER.get(tone or "formal", copy.REGISTER["formal"]).format(language_name=name)
@@ -64,7 +69,7 @@ def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, l
         if unsupported else "",
         phone_known=copy.PHONE_KNOWN if phone_known else copy.PHONE_HIDDEN,
         horizon_last=f"{last_day.isoformat()} ({_WEEKDAYS[last_day.weekday()]})",
-        calendar=calendar(today, last_day))
+        calendar=calendar(today, last_day)) + (copy.RESUME if resume else "")
 
 
 def _ok(result) -> bool:
@@ -73,6 +78,66 @@ def _ok(result) -> bool:
 
 def error_sentence(lang):
     return copy.text(copy.ERROR, lang or "sv")
+
+
+def still_checking(lang, spoken=()):
+    """The sentence of a turn cut by the deadline: the fixed one in `lang`,
+    else the model's own announcement from this turn in that language ("one
+    moment, I am checking"), else English."""
+    fixed = copy.pick(copy.STILL_CHECKING, lang or "sv")
+    if fixed:
+        return fixed
+    own = [text for tagged, text, _ in spoken if tagged in (None, lang)]
+    return own[-1] if own else copy.text(copy.STILL_CHECKING, lang)
+
+
+class _Late(Exception):
+    """The deadline came before the model or a read answered."""
+
+
+def _within(fn, seconds):
+    """`fn()` if it answers within `seconds`, else _Late. The worker is left
+    to finish on its own (it holds no state the turn saves)."""
+    if seconds <= 0:
+        raise _Late
+    pool = ThreadPoolExecutor(1)
+    future = pool.submit(fn)
+    pool.shutdown(wait=False)
+    try:
+        return future.result(timeout=seconds)
+    except FutureTimeout:
+        raise _Late from None
+
+
+def _takes_timeout(fn):
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "timeout_s" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def _converse(model, system, messages, seconds):
+    snapshot = list(messages)     # the worker never sees the list grow
+    extra = {"timeout_s": seconds} if _takes_timeout(model.converse) else {}
+    return _within(lambda: model.converse(system, snapshot, TOOLS, max_tokens=MAX_TOKENS, **extra), seconds)
+
+
+def _tool(executor, use, seconds):
+    """A write always runs to its end on the call's state (never left
+    half-known: no double booking); a read runs on a fork that is joined
+    only when it answers in time."""
+    if use.name in WRITES:
+        return executor.run(use.name, use.input)
+    if not hasattr(executor, "fork"):
+        return _within(lambda: executor.run(use.name, use.input), seconds)
+    twin = executor.fork()
+    result = _within(lambda: twin.run(use.name, use.input), seconds)
+    executor.join(twin)
+    return result
+
+
+_LATE = {"ok": False, "code": "timeout", "say": "This did not finish in time. Run it again."}
 
 
 _KEEP_KEYS = ("ok", "code", "holdId", "reservationId", "date", "weekday", "time", "partySize", "reservations")
@@ -114,11 +179,19 @@ def compact(messages):
 def run_turn(model, messages: list, caller_text: str, executor, *, system: str, lang="sv",
              budget_s=TURN_BUDGET_S, keep_preamble=False) -> TurnResult:
     """Appends the caller's text and the agent's turns to `messages` (in
-    place) and returns the reply. A model error, too many rounds or a turn
-    over its time budget ends the turn with the fixed error sentence in the
-    call's language (the caller is offered a callback). A booking, move or
-    cancellation that already succeeded in this turn always gets its last
-    round, so the caller hears what was done.
+    place) and returns the reply. A model error or too many rounds ends the
+    turn with the fixed error sentence in the call's language (the caller is
+    offered a callback).
+
+    The deadline: model rounds and tools together get `budget_s` from the
+    start of the turn, enforced here (a model call or a read that has not
+    answered in time is no longer waited for) and passed to the model as its
+    timeout. When it runs out the caller hears the still-checking sentence
+    and the work is kept: the conversation holds every finished tool result
+    (a read that did not finish answers `timeout`), what this turn looked up
+    counts as looked up in the next one (`executor.not_heard`: a write still
+    needs a read-back) and the next turn resumes (copy.RESUME). A write is
+    never abandoned half-way.
 
     Text the model writes before a lookup or a write ("one moment, I am
     checking") is left out when a later round answers: the caller hears the
@@ -126,26 +199,44 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     goodbye written with end_call is kept; `keep_preamble` keeps it all
     (the model was asked to say the AI sentence itself in this reply)."""
     started = time.monotonic()
+    deadline = started + budget_s
     compact(messages)
     messages.append({"role": "user", "content": caller_text})
     calls = []
 
+    def ms():
+        return int((time.monotonic() - started) * 1000)
+
     def failed(rounds):
         text = error_sentence(lang)
         messages.append({"role": "assistant", "content": text})
-        return TurnResult(text, calls, int((time.monotonic() - started) * 1000), error=True, rounds=rounds)
+        return TurnResult(text, calls, ms(), error=True, rounds=rounds)
+
+    def cut(rounds):
+        text = still_checking(lang, spoken)
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
+        if hasattr(executor, "not_heard"):
+            executor.not_heard()
+        said_in = lang if copy.pick(copy.STILL_CHECKING, lang) or text != copy.text(copy.STILL_CHECKING, lang) \
+            else None
+        return TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in)
 
     rounds, spoken, code = 0, [], None
     for round_ in range(MAX_ROUNDS + 1):
         wrote = any(c["ok"] and c["name"] in WRITES for c in calls)
         if round_ == MAX_ROUNDS and not wrote:
             break
-        if round_ and time.monotonic() - started > budget_s and not wrote:
-            break
+        left = deadline - time.monotonic()
+        if round_ and left < MIN_ROUND_S:
+            return cut(rounds)
         rounds = round_ + 1
         try:
-            turn = model.converse(system, messages, TOOLS, max_tokens=MAX_TOKENS)
-        except agent_model.AgentModelError:
+            turn = _converse(model, system, messages, left)
+        except _Late:
+            return cut(rounds)
+        except agent_model.AgentModelError as exc:
+            if exc.code == "timeout":
+                return cut(rounds)
             return failed(rounds)
         content = ([{"type": "text", "text": turn.text}] if turn.text else []) + [
             {"type": "tool_use", "id": u.id, "name": u.name, "input": dict(u.input)} for u in turn.tool_uses]
@@ -162,20 +253,27 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         if not turn.tool_uses:
             if not spoken:
                 return failed(rounds)          # never silence: the error sentence offers a callback
-            return TurnResult(_said(spoken, code), calls, int((time.monotonic() - started) * 1000),
-                              language=code, rounds=rounds)
-        results = []
+            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
+        results, late = [], False
         for use in turn.tool_uses:
-            result = executor.run(use.name, use.input)
-            calls.append({"name": use.name, "ok": _ok(result)})
+            left = deadline - time.monotonic()
+            if late or left <= 0:
+                late, result = True, _LATE      # not run: the next turn runs it again
+            else:
+                try:
+                    result = _tool(executor, use, left)
+                    calls.append({"name": use.name, "ok": _ok(result)})
+                except _Late:
+                    late, result = True, _LATE
             results.append({"type": "tool_result", "tool_use_id": use.id,
                             "content": json.dumps(read_as(result), ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
+        if late:
+            return cut(rounds)
         if spoken and all(u.name == "end_call" for u in turn.tool_uses):
             # The goodbye was said with end_call: no further round (it only repeats the goodbye).
             messages.append({"role": "assistant", "content": [{"type": "text", "text": "..."}]})
-            return TurnResult(_said(spoken, code), calls, int((time.monotonic() - started) * 1000),
-                              language=code, rounds=rounds)
+            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
     return failed(rounds)
 
 

@@ -70,6 +70,15 @@ def _after_turn(lang, hint, result, caller_text, state, allowed):
     return new_lang, unsupported
 
 
+def _after_cut(result, state, disclose_now):
+    """A turn cut by the deadline: the AI sentence the model was to say is
+    said in the next turn (the resume flag is set by the executor)."""
+    if result.cut:
+        metric("TurnCut", 1)
+        if disclose_now:
+            state["discloseNext"] = True
+
+
 def _unsupported_reply(executor, state, code, messages):
     """A language the voice cannot speak: the fixed sentences in Swedish,
     English and Arabic; the second time the caller still cannot continue,
@@ -113,9 +122,11 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
                         now_time=now_clock(location), language=prompt_lang)
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
-                                 phone_known=executor.caller_known, unsupported=state.get("unsupported"))
+                                 phone_known=executor.caller_known, unsupported=state.get("unsupported"),
+                                 resume=bool(state.pop("resume", None)))
     result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang,
                             keep_preamble=disclose_now)
+    _after_cut(result, state, disclose_now)
     new_lang, unsupported = _after_turn(lang, hint, result, caller_text, state, allowed)
     if unsupported:
         result.reply = _unsupported_reply(executor, state, unsupported, messages)
@@ -203,9 +214,10 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
                         now_time=now_clock(location), language=prompt_lang)
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
-                                 unsupported=state.get("unsupported"))
+                                 unsupported=state.get("unsupported"), resume=bool(state.pop("resume", None)))
     result = agent.run_turn(model, messages, text, executor, system=system, lang=prompt_lang,
                             keep_preamble=disclose_now)
+    _after_cut(result, state, disclose_now)
     switched = None
     if not language_:
         lang, unsupported = _after_turn(lang, hint, result, text, state, allowed)

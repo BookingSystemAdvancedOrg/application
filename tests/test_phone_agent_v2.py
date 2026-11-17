@@ -242,13 +242,25 @@ def test_move_checks_the_new_time_and_offers_others(env):
     assert ex.run("cancel_reservation", {"reservationId": "r9"})["code"] == "notConfirmed"
 
 
-def test_find_reads_the_whole_horizon_in_parallel(env):
+def test_find_reads_only_the_callers_bookings_in_one_bounded_query(env):
+    env.invoke.listed["2026-11-20"] = [{"reservationId": "r7", "customerPhone": CALLER, "status": "reserved",
+                                        "date": "2026-11-20", "startTime": "18:00", "partySize": 2},
+                                       {"reservationId": "r8", "customerPhone": "+46709999999", "status": "reserved",
+                                        "date": "2026-11-20", "startTime": "19:00", "partySize": 2}]
+    found = _ex(env).run("find_reservations", {})
+    assert [r["reservationId"] for r in found["reservations"]] == ["r7"]
+    (query,) = [c[2]["queryStringParameters"] for c in env.invoke.calls if c[0] == "get-reservation"]
+    assert query == {"from": "2026-11-02", "to": "2026-11-23", "phone": CALLER}
+
+
+def test_find_falls_back_to_the_day_reads_while_get_reservation_is_older(env):
+    env.invoke.range_query_missing = True
     env.invoke.listed["2026-11-20"] = [{"reservationId": "r7", "customerPhone": CALLER, "status": "reserved",
                                         "date": "2026-11-20", "startTime": "18:00", "partySize": 2}]
     found = _ex(env).run("find_reservations", {})
     assert [r["reservationId"] for r in found["reservations"]] == ["r7"]
-    days = {c[2]["queryStringParameters"]["date"] for c in env.invoke.calls if c[0] == "get-reservation"}
-    assert len(days) == 22 and min(days) == "2026-11-02" and max(days) == "2026-11-23"
+    days = {c[2]["queryStringParameters"].get("date") for c in env.invoke.calls if c[0] == "get-reservation"}
+    assert len(days - {None}) == 22
 
 
 def test_info_and_menu_are_structured_english(env):
@@ -283,13 +295,23 @@ class Scripted:
     def __init__(self, turns, delay=0.0):
         self.turns, self.delay, self.calls = list(turns), delay, 0
 
-    def converse(self, system, messages, tools, *, max_tokens):
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         self.calls += 1
         time.sleep(self.delay)
         item = self.turns.pop(0)
+        if isinstance(item, SlowTurn):
+            time.sleep(item.delay)
+            item = item.turn
         if isinstance(item, Exception):
             raise item
         return item
+
+
+class SlowTurn:
+    """A model answer that arrives after `delay` seconds (Scripted sleeps on it)."""
+
+    def __init__(self, turn, delay):
+        self.turn, self.delay = turn, delay
 
 
 class NoTools:
@@ -301,7 +323,7 @@ def test_turn_budget_and_errors_answer_in_the_call_language():
     lookup = Turn(tool_uses=(ToolUse("u1", "get_menu", {}),))
     slow = Scripted([lookup, lookup, Turn(text="[de] Gerne.")], delay=0.05)
     result = agent.run_turn(slow, [], "Hallo", NoTools(), system="s", lang="de", budget_s=0.01)
-    assert result.error and result.reply == copy.ERROR["de"] and slow.calls == 1
+    assert result.cut and not result.error and result.reply == copy.STILL_CHECKING["de"] and slow.calls == 1
     failing = Scripted([AgentModelError("unavailable", True)])
     assert agent.run_turn(failing, [], "Merhaba", NoTools(), system="s", lang="tr").reply == copy.ERROR["tr"]
     looping = Scripted([lookup] * 6)
@@ -309,11 +331,20 @@ def test_turn_budget_and_errors_answer_in_the_call_language():
     assert result.error and looping.calls == agent.MAX_ROUNDS
 
 
-def test_a_booking_in_the_turn_always_gets_its_spoken_answer():
+def test_a_booking_in_the_turn_gets_its_spoken_answer_now_or_in_the_next_turn():
     book = Turn(tool_uses=(ToolUse("u1", "create_reservation", {}),))
-    model = Scripted([book, Turn(text="[sv] Klart, ni är bokade.")], delay=0.05)
-    result = agent.run_turn(model, [], "Ja", NoTools(), system="s", lang="sv", budget_s=0.01)
+    model = Scripted([book, Turn(text="[sv] Klart, ni är bokade.")])
+    result = agent.run_turn(model, [], "Ja", NoTools(), system="s", lang="sv")
     assert not result.error and result.reply == "Klart, ni är bokade."
+    # The model is slow after the write: the write is kept, the caller hears the sentence, the next turn confirms.
+    model = Scripted([book, SlowTurn(Turn(text="[sv] Klart."), 3), Turn(text="[sv] Klart, ni är bokade.")])
+    messages = []
+    started = time.monotonic()
+    result = agent.run_turn(model, messages, "Ja", NoTools(), system="s", lang="sv", budget_s=1.2)
+    assert time.monotonic() - started < 1.5
+    assert result.cut and result.reply == copy.STILL_CHECKING["sv"] and result.tool_calls == [
+        {"name": "create_reservation", "ok": True}]
+    assert agent.run_turn(model, messages, "Okej", NoTools(), system="s", lang="sv").reply == "Klart, ni är bokade."
 
 
 def test_text_beside_a_tool_use_is_spoken():
@@ -369,7 +400,7 @@ def test_tool_results_carry_how_to_say_their_times_and_dates():
             return {"times": ["19:00"]}
 
     class Model(Scripted):
-        def converse(self, system, messages, tools, *, max_tokens):
+        def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
             seen.append(messages[-1])
             return super().converse(system, messages, tools, max_tokens=max_tokens)
     model = Model([Turn(tool_uses=(ToolUse("u1", "get_availability", {}),)), Turn(text="[sv] Klockan sju.")])
@@ -574,3 +605,108 @@ def test_every_session_turn_is_counted_for_the_tools(live):
     phone.say("Hej, jag vill boka ett bord")
     phone.say("Fyra personer")
     assert json.loads(phone.row()["toolState"])["turn"] == 2
+
+
+# --- the turn deadline: the caller never waits in silence, the work is kept ----------------------
+
+HOLD = {"date": TOMORROW, "time": "19:00", "partySize": 2}
+
+
+def _slow_reads(ex, seconds):
+    """get-availability answers after `seconds` while slow["on"]."""
+    slow, real = {"on": True}, ex.invoke
+
+    def invoke(fn, event):
+        if slow["on"] and fn == "get-availability":
+            time.sleep(seconds)
+        return real(fn, event)
+    ex.invoke = invoke
+    return slow
+
+
+def test_a_slow_model_gets_the_still_checking_sentence_within_the_budget_and_the_call_recovers():
+    model = Scripted([SlowTurn(Turn(text="[ru] Поздно."), 3), Turn(text="[ru] Да, завтра есть столик.")])
+    messages, started = [], time.monotonic()
+    result = agent.run_turn(model, messages, "Есть столик на завтра?", NoTools(), system="s", lang="ru",
+                            budget_s=0.5)
+    assert time.monotonic() - started < 0.9
+    assert result.cut and not result.error and result.reply == copy.STILL_CHECKING["ru"] and result.language == "ru"
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    result = agent.run_turn(model, messages, "Хорошо", NoTools(), system="s", lang="ru")
+    assert result.reply == "Да, завтра есть столик." and not result.cut
+    # every fixed-sentence language has the sentence; any other gets the model's own announcement, else English
+    assert set(copy.REVIEWED) <= set(copy.STILL_CHECKING)
+    look = Turn(text="[ta] ஒரு நிமிடம், பார்க்கிறேன்.", tool_uses=(ToolUse("u1", "get_menu", {}),))
+    model = Scripted([look, SlowTurn(Turn(text="[ta] x"), 3)])
+    assert agent.run_turn(model, [], "x", NoTools(), system="s", lang="ta", budget_s=1.2).reply == \
+        "ஒரு நிமிடம், பார்க்கிறேன்."
+    assert agent.run_turn(Scripted([SlowTurn(Turn(text="x"), 3)]), [], "x", NoTools(), system="s", lang="ta",
+                          budget_s=0.3).reply == copy.STILL_CHECKING["en"]
+
+
+def test_a_slow_read_is_cut_its_late_answer_is_dropped_and_the_next_turn_runs_it_again(env):
+    env.availability.set(TOMORROW, ["19:00", "20:00"])
+    ex = _ex(env, state={"turn": 1})
+    slow = _slow_reads(ex, 1.5)
+    hold = Turn(text="[sv] Ett ögonblick.", tool_uses=(ToolUse("u1", "hold_table", HOLD),))
+    model = Scripted([hold, Turn(tool_uses=(ToolUse("u2", "hold_table", HOLD),)),
+                      Turn(tool_uses=(ToolUse("u3", "create_reservation", {"holdId": "p1", "name": "Anna",
+                                                                            "confirmed": True}),)),
+                      Turn(text="[sv] Ett bord för två i morgon klockan sju, stämmer det?"),
+                      Turn(tool_uses=(ToolUse("u4", "create_reservation", {"holdId": "p1", "name": "Anna",
+                                                                            "confirmed": True}),)),
+                      Turn(text="[sv] Klart, du är bokad.")])
+    messages, started = [], time.monotonic()
+    result = agent.run_turn(model, messages, "Bord för två i morgon klockan sju", ex, system="s", lang="sv",
+                            budget_s=0.5)
+    assert time.monotonic() - started < 0.9 and result.cut and result.reply == copy.STILL_CHECKING["sv"]
+    late = json.loads(messages[-2]["content"][0]["content"])
+    assert late["code"] == "timeout" and messages[-2]["content"][0]["tool_use_id"] == "u1"
+    assert ex.state["proposals"] == {} and ex.state["resume"] is True
+    time.sleep(1.2)
+    assert ex.state["proposals"] == {}        # the read that answered late changed only its fork
+    slow["on"] = False
+    # The next turn looks the table up again; the booking waits for the read-back the caller hears.
+    _turn(ex, 2)
+    result = agent.run_turn(model, messages, "Okej", ex, system="s", lang="sv")
+    assert result.reply == "Ett bord för två i morgon klockan sju, stämmer det?" and not env.invoke.reservations
+    _turn(ex, 3)
+    assert agent.run_turn(model, messages, "Ja", ex, system="s", lang="sv").reply == "Klart, du är bokad."
+    assert len(env.invoke.reservations) == 1
+
+
+def test_a_cut_after_a_lookup_never_books_what_the_caller_has_not_heard(env):
+    env.availability.set(TOMORROW, ["19:00", "20:00"])
+    ex = _ex(env, state={"turn": 1})
+    book = Turn(tool_uses=(ToolUse("u2", "create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True}),))
+    model = Scripted([Turn(tool_uses=(ToolUse("u1", "hold_table", HOLD),)), SlowTurn(Turn(text="[sv] x"), 3),
+                      book, Turn(text="[sv] Ett bord i morgon klockan sju för två, stämmer det?"),
+                      book, Turn(text="[sv] Klart.")])
+    messages = []
+    result = agent.run_turn(model, messages, "Bord i morgon klockan sju för två", ex, system="s", lang="sv",
+                            budget_s=1.2)
+    assert result.cut and ex.state["proposals"]["p1"]["turn"] == 2     # looked up where the caller can hear it
+    _turn(ex, 2)
+    # "Okej" to the still-checking sentence is no yes: the read-back comes first.
+    assert agent.run_turn(model, messages, "Okej", ex, system="s", lang="sv").reply.endswith("stämmer det?")
+    assert not env.invoke.reservations
+    _turn(ex, 3)
+    assert agent.run_turn(model, messages, "Ja", ex, system="s", lang="sv").reply == "Klart."
+    assert len(env.invoke.reservations) == 1
+
+
+def test_a_cut_call_turn_is_saved_and_the_next_one_resumes_with_the_note(live, monkeypatch):
+    prompts = []
+
+    class Model(Scripted):
+        def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
+            prompts.append(system)
+            return super().converse(system, messages, tools, max_tokens=max_tokens)
+    monkeypatch.setitem(agent.run_turn.__kwdefaults__, "budget_s", 0.4)
+    live.live._clients["model"] = Model([SlowTurn(Turn(text="[sv] x"), 2), Turn(text="[sv] Vad roligt.")])
+    phone = Phone(live)
+    assert phone.say("Hej, jag vill boka ett bord") == copy.STILL_CHECKING["sv"]
+    assert json.loads(phone.row()["toolState"])["resume"] is True
+    assert phone.say("Okej") == "Vad roligt."
+    assert "# Continue" not in prompts[0] and "# Continue" in prompts[1]
+    assert "resume" not in json.loads(phone.row()["toolState"])

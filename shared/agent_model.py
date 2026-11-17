@@ -42,7 +42,9 @@ class Turn:
 
 
 class AgentModel:
-    def converse(self, system, messages, tools, *, max_tokens) -> Turn:
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None) -> Turn:
+        """`timeout_s`: the time left of the caller's turn (agent.run_turn);
+        an adapter answers or raises AgentModelError within it."""
         raise NotImplementedError
 
 
@@ -334,7 +336,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         self.today = today or date.today()
         self._ids = 0
 
-    def converse(self, system, messages, tools, *, max_tokens):
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         last = messages[-1] if messages else {}
         self._call("converse", _text(last)[:40])
         if self.delay_ms:

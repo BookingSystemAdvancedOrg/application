@@ -25,7 +25,8 @@ Graders (a failure names the grader and a code, never the transcript):
             marks or dashes; at most 25 words per sentence and one question
             per reply
   register  (live) no informal "you" (du/dich, tu, ты, sen, ty) or Swedish slang
-  latency   (live) every turn under agent.TURN_BUDGET_S
+  latency   (live) every turn under agent.TURN_BUDGET_S and none cut by it (the
+            still-checking sentence)
 Scenario fixtures use invented names and test numbers; the report holds
 codes, tool names, pass/fail and timings only.
 """
@@ -164,6 +165,8 @@ def run(e, scenario, key, spec, *, mode, monkeypatch, phone_cls, verbose=False):
         failures += _register(replies, langs)
         failures += [("latency", f"turn{i}:{ms}ms") for i, ms in enumerate(latencies)
                      if ms > agent.TURN_BUDGET_S * 1000]
+        failures += [("latency", f"cut@turn{i}") for i, r in enumerate(replies)
+                     if any(s in r for s in copy.STILL_CHECKING.values())]
     graders = ("safety", "outcome", "language") + (("style", "register", "latency") if mode == "live" else ())
     return {"scenario": scenario["id"], "call": key, "mode": mode, "turns": len(replies),
             "passed": {g: not any(f[0] == g for f in failures) for g in graders},
@@ -253,7 +256,8 @@ def _language(scenario, phone, replies, langs, expected):
     if expect.get("noErrorSentence") and any(s in r for r in replies for s in errors):
         out.append(("language", "error_sentence_spoken"))
     final = langs[-1] if langs else "sv"
-    if final != "en" and any(copy.ERROR["en"] in r or copy.MAX_LENGTH["en"] in r for r in replies):
+    if final != "en" and any(copy.ERROR["en"] in r or copy.MAX_LENGTH["en"] in r or
+                              copy.STILL_CHECKING["en"] in r for r in replies):
         out.append(("language", "english_fixed_sentence"))
     if expect.get("unsupported") and not any(copy.UNSUPPORTED_LANGUAGE["sv"] in r for r in replies):
         out.append(("language", "no_unsupported_sentence"))

@@ -592,6 +592,27 @@ def test_staff_list_shows_the_day_with_contact_details(env):
     assert body_of(staff_list(env, day="2026-09-21"))["items"] == []
 
 
+def test_staff_list_for_one_number_is_one_bounded_range_query(env):
+    guest_booking(env, start="20:00")
+    guest_booking(env, start="12:00", tables=("table-a",), party=2, phone="070-765 43 21")
+
+    def by_phone(query, who=OWNER_A):
+        return env["m"]["get"].handler(event("GET", "/locations/{locationId}/reservations", query=query,
+                                             staff=who), None)
+
+    ok = by_phone({"from": DAY, "to": "2026-10-31", "phone": "+46701234567"})
+    assert ok["statusCode"] == 200
+    items = body_of(ok)["items"]
+    assert [(i["startTime"], i["customerPhone"]) for i in items] == [("20:00", "+46701234567")]
+    assert body_of(by_phone({"from": "2026-09-21", "to": "2026-09-21", "phone": "+46701234567"}))["items"] == []
+    for query in ({"from": DAY, "to": "2027-01-31", "phone": "+46701234567"},      # more than 62 days
+                  {"from": DAY, "to": "2026-09-01", "phone": "+46701234567"},      # backwards
+                  {"from": DAY, "to": DAY, "phone": "0701234567"},                 # not E.164
+                  {"from": DAY, "to": DAY, "phone": "+46701234567", "date": DAY}):
+        assert by_phone(query)["statusCode"] == 400, query
+    assert by_phone({"from": DAY, "to": DAY, "phone": "+46701234567"}, who=OWNER_B)["statusCode"] == 404
+
+
 def test_other_tenant_and_other_location_staff_see_nothing(env):
     rid = body_of(guest_booking(env))["reservationId"]
     assert staff_list(env, who=OWNER_B)["statusCode"] == 404

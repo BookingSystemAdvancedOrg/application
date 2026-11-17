@@ -5,6 +5,7 @@ and Bedrock Converse (shared/agent_model_real.py)."""
 import hashlib
 import hmac
 import json
+import time
 import urllib.parse
 
 import pytest
@@ -323,3 +324,53 @@ def test_real_agent_model_errors():
         with pytest.raises(AgentModelError) as raised:
             RealAgentModel(client=FakeBedrock(error=error), model_id="m").converse("s", [], [], max_tokens=5)
         assert (raised.value.code, raised.value.retryable) == (code, retry)
+
+
+class FlakyBedrock(FakeBedrock):
+    """Fails `failures` times with a throttle, sleeping `delay` seconds first."""
+
+    def __init__(self, failures, delay=0.0):
+        super().__init__([{"contentBlockDelta": {"delta": {"text": "Hej."}}}])
+        self.failures, self.delay, self.calls = failures, delay, 0
+
+    def converse_stream(self, **args):
+        from botocore.exceptions import ClientError
+        self.calls += 1
+        time.sleep(self.delay)
+        if self.calls <= self.failures:
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ConverseStream")
+        return super().converse_stream(**args)
+
+
+def test_real_agent_model_retries_once_only_when_the_turn_has_time_for_it():
+    ok = FlakyBedrock(1)
+    assert RealAgentModel(client=ok, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=8).text == "Hej."
+    assert ok.calls == 2
+    late = FlakyBedrock(1, delay=0.3)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=late, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=2.6)
+    assert raised.value.code == "timeout" and late.calls == 1
+    twice = FlakyBedrock(2)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=twice, model_id="m").converse("s", [], [], max_tokens=5)
+    assert raised.value.code == "unavailable" and twice.calls == 2
+
+
+def test_real_agent_model_timeouts_follow_the_time_left_and_botocore_never_retries(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+    model = RealAgentModel(model_id="m")
+    short, full = model.client_for(3.2), model.client_for(None)
+    assert (short.meta.config.read_timeout, short.meta.config.connect_timeout) == (4, 2)
+    assert full.meta.config.read_timeout == 12 and model.client_for(0.2).meta.config.read_timeout == 1
+    assert short.meta.config.retries["total_max_attempts"] == 1 and model.client_for(3.9) is short
+
+
+def test_reading_the_stream_stops_at_the_deadline():
+    def slow():
+        yield {"contentBlockDelta": {"delta": {"text": "Hej"}}}
+        time.sleep(0.3)
+        yield {"contentBlockDelta": {"delta": {"text": " då."}}}
+    with pytest.raises(AgentModelError) as raised:
+        read_stream(slow(), time.monotonic() + 0.1)
+    assert raised.value.code == "timeout"
+    assert read_stream(slow(), time.monotonic() + 5).text == "Hej då."

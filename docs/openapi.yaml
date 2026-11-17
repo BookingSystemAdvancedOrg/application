@@ -3766,7 +3766,13 @@ paths:
         - Reservations
       summary: A day's bookings (staff)
       operationId: listReservations
-      description: Every booking of the location on `date`, all statuses, sorted by start time.
+      description: |
+        Every booking of the location on `date`, all statuses, sorted by start time.
+
+        With `phone` (and `from`, `to` instead of `date`): one guest's bookings
+        over at most 62 days, earliest first, at most 10 (the phone agent's
+        "my booking" lookup, one query instead of one per day). `date` in the
+        answer is `from`.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -3775,7 +3781,24 @@ paths:
       parameters:
         - name: date
           in: query
-          required: true
+          description: The day (required unless `phone` is given).
+          schema:
+            type: string
+            format: date
+        - name: phone
+          in: query
+          description: E.164 number; lists that guest's bookings from `from` to `to`.
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: First day of the range (with `phone`).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          description: Last day of the range (with `phone`), at most 62 days after `from`.
           schema:
             type: string
             format: date

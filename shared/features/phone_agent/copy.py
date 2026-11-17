@@ -97,6 +97,34 @@ ERROR = {
     "ckb": "داوای لێبوردن دەکەم، هەڵەیەک لە لایەن ئێمەوە ڕوویدا. دەتەوێت چێشتخانەکە پەیوەندیت پێوە بکاتەوە؟",
     "am": "ይቅርታ፣ በእኛ በኩል ስህተት ተፈጥሯል። ምግብ ቤቱ መልሶ እንዲደውልልዎ ይፈልጋሉ?",
 }
+# Said by Booqy when a turn reaches its deadline (agent.TURN_BUDGET_S) before the
+# answer is ready; the next turn continues the work (copy.RESUME).
+STILL_CHECKING = {
+    SV: "Ett ögonblick, jag kollar fortfarande.",
+    EN: "One moment please, I am still checking.",
+    "de": "Einen Moment bitte, ich sehe noch nach.",
+    "fr": "Un instant, s'il vous plaît, je vérifie encore.",
+    "es": "Un momento, por favor, todavía lo estoy comprobando.",
+    "fi": "Hetkinen, tarkistan vielä.",
+    "no": "Et øyeblikk, jeg sjekker fortsatt.",
+    "da": "Et øjeblik, jeg tjekker stadig.",
+    "pl": "Chwileczkę, jeszcze sprawdzam.",
+    "ru": "Одну минуту, я ещё проверяю.",
+    "uk": "Хвилинку, я ще перевіряю.",
+    "tr": "Bir dakika lütfen, hâlâ kontrol ediyorum.",
+    "ar": "لحظة من فضلكم، ما زلت أتحقق.",
+    "fa": "لطفاً یک لحظه صبر کنید، هنوز در حال بررسی هستم.",
+    "so": "Fadlan sug daqiiqad, weli waan hubinayaa.",
+    "bs": "Trenutak, molim, još provjeravam.",
+    "hr": "Trenutak, molim, još provjeravam.",
+    "sr": "Trenutak, molim, još proveravam.",
+    "ckb": "تکایە کەمێک چاوەڕێ بکە، هێشتا دەپشکنم.",
+    "am": "እባክዎ ትንሽ ይጠብቁ፣ አሁንም እያጣራሁ ነው።",
+}
+# Beside the instruction prompt in the turn after a cut one.
+RESUME = ("\n\n# Continue\nYour previous reply was cut short: the caller heard only that you are still checking. "
+          "First finish that work from the conversation above (run a lookup again if its result says timeout), "
+          "then answer the caller. A table or booking looked up then has not been read back yet.")
 MAX_LENGTH = {
     SV: "Samtalet har blivit långt, så jag behöver avsluta nu. Välkommen att ringa igen.",
     EN: "This call has become long, so I need to end it now. You are welcome to call again.",

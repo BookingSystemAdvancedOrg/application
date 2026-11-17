@@ -14,6 +14,7 @@ without writing anything.
 
 from __future__ import annotations
 
+import copy as _copy
 import json
 import os
 import re
@@ -295,6 +296,40 @@ class Executor:
             return {"ok": False, "code": exc.code}
         except (TypeError, ValueError, KeyError):
             return {"ok": False, "code": "invalid_arguments"}
+
+    # -- the turn deadline (agent.run_turn) ---------------------------------------------
+
+    def fork(self):
+        """A copy for a read the turn may stop waiting for: a read still
+        running after the deadline changes only its fork, never the state
+        saved with the call."""
+        twin = _copy.copy(self)
+        twin.state = _copy.deepcopy(self.state)
+        twin._cache = dict(self._cache)
+        return twin
+
+    def join(self, twin):
+        """A fork's read finished in time: its state is the call's."""
+        self.state.clear()
+        self.state.update(twin.state)
+        self._cache.update(twin._cache)
+
+    def not_heard(self):
+        """The reply of this utterance was cut by the deadline (the caller
+        heard only that the agent is still checking): what it looked up
+        counts as looked up in the next utterance, so a write still needs a
+        read-back the caller hears first, and the next turn resumes."""
+        self.state["resume"] = True
+        if self.turn is None:
+            return
+        now, later = int(self.turn), int(self.turn) + 1
+        for proposal in self.state["proposals"].values():
+            if proposal.get("turn") is not None and int(proposal["turn"]) >= now:
+                proposal["turn"] = later
+        turns = self.state.get("foundTurn") or {}
+        for rid, seen in list(turns.items()):
+            if int(seen) >= now:
+                turns[rid] = later
 
     # -- checks before any read ---------------------------------------------------------
 
@@ -653,6 +688,32 @@ class Executor:
             return {"reservations": [], "callerHidden": True}
         phone = self.caller_phone
         start = max(date.fromisoformat(args["fromDate"]), self.today) if args.get("fromDate") else self.today
+        if start > self.last_day:
+            return {"reservations": []}
+        # Only this caller's bookings, in one bounded range query.
+        status, body = self._call("get-reservation", "GET", "/locations/{locationId}/reservations",
+                                  query={"from": start.isoformat(), "to": self.last_day.isoformat(), "phone": phone},
+                                  staff=True)
+        if status == 200:
+            answers = [(start.isoformat(), (status, body))]
+        elif status == 400:
+            answers = self._find_per_day(start)    # a get-reservation from before the range query (rollout)
+        else:
+            return {"ok": False, "code": "lookup_unavailable"}
+        found = []
+        for d, (status, body) in answers:
+            if status != 200:
+                continue
+            for item in body.get("reservations") or body.get("items") or []:
+                if item.get("customerPhone") == phone and item.get("status") in ("reserved", "pending", "held"):
+                    when = item.get("date") or d
+                    found.append({"reservationId": item["reservationId"], "date": when, "weekday": _weekday(when),
+                                  "time": item.get("startTime"), "partySize": item.get("partySize")})
+        found.sort(key=lambda f: (f["date"], f.get("time") or ""))
+        self._remember_found(found)
+        return {"reservations": found[:3]}
+
+    def _find_per_day(self, start):
         days = []
         day = start
         while day <= self.last_day:
@@ -664,18 +725,7 @@ class Executor:
                                  query={"date": d}, staff=True)
 
         with ThreadPoolExecutor(FIND_POOL) as pool:
-            answers = list(pool.map(one, days))
-        found = []
-        for d, (status, body) in answers:
-            if status != 200:
-                continue
-            for item in body.get("reservations") or body.get("items") or []:
-                if item.get("customerPhone") == phone and item.get("status") in ("reserved", "pending", "held"):
-                    when = item.get("date") or d
-                    found.append({"reservationId": item["reservationId"], "date": when, "weekday": _weekday(when),
-                                  "time": item.get("startTime"), "partySize": item.get("partySize")})
-        self._remember_found(found)
-        return {"reservations": found[:3]}
+            return list(pool.map(one, days))
 
     def _remember_found(self, found):
         """The caller's bookings this call may change, with the utterance each was first found in."""

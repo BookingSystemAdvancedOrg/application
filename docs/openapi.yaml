@@ -8794,7 +8794,7 @@ components:
       type: string
       description: An admin area (page) the owner grants staff (application shared/staff_access.py).
       enum: [statistik, bokningar, bestallningar, catering, personalliggare, telefon, meny, layout,
-             personal, gaster, presentkort, webbplats, evenemang, marknadsforing]
+             personal, gaster, presentkort, evenemang, marknadsforing]
 
     StaffAccessPerson:
       type: object
@@ -8818,7 +8818,7 @@ components:
         Staff permissions per admin area. A staff user's areas = (defaults
         + users[sub].add) - users[sub].remove. The owner always has every
         area. Never saved: what staff had before (every area except
-        personal, presentkort, webbplats and marknadsforing; statistik off
+        personal, presentkort and marknadsforing; statistik off
         when insights.staffAccess was none). API routes of an area answer
         staff without it 403 `no_access`.
       required: [areas, defaults, users, version]

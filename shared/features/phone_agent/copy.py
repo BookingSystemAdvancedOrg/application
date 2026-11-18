@@ -179,6 +179,60 @@ GUARANTEE_CALLBACK = {
     SV: "För den bokningen behövs en kortgaranti, som jag inte kan ta i telefon. Får restaurangen ringa upp dig?",
     EN: "That booking needs a card guarantee, which I cannot take by phone. May the restaurant call you back?",
 }
+# Said by the model, word for word in the caller's language, once create_reservation sent the card
+# guarantee link (tools: guaranteeLinkSent). The booking waits for the card; nobody asks for card details.
+GUARANTEE_LINK_SENT = {
+    SV: ("Jag har skickat ett sms med en länk där du lägger till ett kort som garanti. Bordet hålls i trettio "
+         "minuter och är bokat när kortet är tillagt. Jag frågar aldrig efter kortuppgifter i telefon."),
+    EN: ("I have sent you a text message with a link where you add a card as a guarantee. The table is held for "
+         "thirty minutes and is booked once the card is added. I never ask for card details on the phone."),
+    "de": ("Ich habe Ihnen eine SMS mit einem Link geschickt, über den Sie eine Karte als Garantie hinterlegen. "
+           "Der Tisch wird dreißig Minuten lang gehalten und ist gebucht, sobald die Karte hinterlegt ist. "
+           "Ich frage am Telefon nie nach Kartendaten."),
+    "fr": ("Je vous ai envoyé un SMS avec un lien pour enregistrer une carte en garantie. La table est retenue "
+           "pendant trente minutes et sera réservée dès que la carte sera enregistrée. Je ne demande jamais de "
+           "données de carte par téléphone."),
+    "es": ("Le he enviado un SMS con un enlace para registrar una tarjeta como garantía. La mesa queda retenida "
+           "durante treinta minutos y se reserva en cuanto se registre la tarjeta. Nunca pido datos de tarjeta "
+           "por teléfono."),
+    "fi": ("Lähetin teille tekstiviestin, jossa on linkki kortin lisäämiseen takuuksi. Pöytä pidetään teille "
+           "kolmekymmentä minuuttia, ja varaus vahvistuu, kun kortti on lisätty. En koskaan kysy korttitietoja "
+           "puhelimessa."),
+    "no": ("Jeg har sendt deg en SMS med en lenke der du legger inn et kort som garanti. Bordet holdes i tretti "
+           "minutter og er booket når kortet er lagt inn. Jeg ber aldri om kortopplysninger på telefon."),
+    "da": ("Jeg har sendt dig en sms med et link, hvor du tilføjer et kort som garanti. Bordet holdes i tredive "
+           "minutter og er booket, når kortet er tilføjet. Jeg beder aldrig om kortoplysninger i telefonen."),
+    "pl": ("Wysłałem SMS z linkiem, pod którym można dodać kartę jako gwarancję. Stolik jest zatrzymany przez "
+           "trzydzieści minut i zostanie zarezerwowany po dodaniu karty. Nigdy nie pytam o dane karty przez "
+           "telefon."),
+    "ru": ("Я отправил вам SMS со ссылкой, по которой можно добавить карту в качестве гарантии. Столик "
+           "удерживается тридцать минут и будет забронирован, как только карта будет добавлена. Я никогда не "
+           "спрашиваю данные карты по телефону."),
+    "uk": ("Я надіслав вам SMS з посиланням, за яким можна додати картку як гарантію. Столик утримується "
+           "тридцять хвилин і буде заброньований, щойно картку буде додано. Я ніколи не питаю дані картки "
+           "телефоном."),
+    "tr": ("Size, kartınızı garanti olarak ekleyebileceğiniz bir bağlantı içeren bir SMS gönderdim. Masa otuz "
+           "dakika boyunca sizin için tutulur ve kart eklendiğinde rezervasyon tamamlanır. Telefonda asla kart "
+           "bilgisi istemem."),
+    "ar": ("أرسلت إليكم رسالة نصية فيها رابط لإضافة بطاقة كضمان. تبقى الطاولة محجوزة لكم ثلاثين دقيقة، ويتأكد "
+           "الحجز عند إضافة البطاقة. لا أطلب أبداً بيانات البطاقة عبر الهاتف."),
+    "fa": ("یک پیامک با لینکی برای ثبت کارت به عنوان ضمانت برایتان فرستادم. میز به مدت سی دقیقه برایتان نگه "
+           "داشته می‌شود و با ثبت کارت رزرو قطعی می‌شود. من هرگز اطلاعات کارت را تلفنی نمی‌پرسم."),
+    "so": ("Waxaan kuu soo diray fariin qoraal ah oo leh xiriiriye aad kaarka ugu darto dammaanad ahaan. Miiska "
+           "waxaa laguu hayaa soddon daqiiqo, waxaana la xaqiijinayaa marka kaarka lagu daro. Weligay telefoonka "
+           "kuma weydiiyo macluumaadka kaarka."),
+    "bs": ("Poslao sam vam SMS s linkom preko kojeg dodajete karticu kao garanciju. Sto se drži trideset minuta "
+           "i rezervisan je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "hr": ("Poslao sam vam SMS s poveznicom preko koje dodajete karticu kao jamstvo. Stol se drži trideset "
+           "minuta i rezerviran je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "sr": ("Poslao sam vam SMS sa linkom preko kog dodajete karticu kao garanciju. Sto se drži trideset minuta "
+           "i rezervisan je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "ckb": ("نامەیەکی کورتم بۆ ناردوویت لەگەڵ بەستەرێک بۆ زیادکردنی کارتێک وەک گەرەنتی. مێزەکە بۆ ماوەی سی "
+            "خولەک بۆت دەهێڵدرێتەوە و کاتێک کارتەکە زیاد کرا حیجزەکە جێگیر دەبێت. هەرگیز لە تەلەفۆندا زانیاری "
+            "کارت ناپرسم."),
+    "am": ("ካርድ እንደ ዋስትና የሚያስገቡበት ሊንክ የያዘ የጽሑፍ መልእክት ልኬልዎታለሁ። ጠረጴዛው ለሰላሳ ደቂቃ ይያዝልዎታል፣ "
+           "ካርዱ ሲገባም ቦታው ይያዛል። በስልክ የካርድ መረጃ በጭራሽ አልጠይቅም።"),
+}
 # A language the voice cannot speak (Tigrinya, Kurmanji ...): said in these three, in this order.
 UNSUPPORTED_LANGUAGE = {
     SV: ("Jag beklagar, jag kan inte tala ditt språk. Jag kan tala svenska, engelska eller arabiska, eller så "
@@ -326,12 +380,16 @@ Say a price in words with the currency, for example "hundrafemtio kronor".
 Never mention the hold: when it succeeds, simply ask for the name.
 4. Ask for the name the booking should be under. If the name is unusual or unclear, ask the caller to spell it.
 5. Read back everything in one sentence: the day, the time, the number of guests and the name, \
-and ask whether it is correct. {phone_known}
+and ask whether it is correct. {phone_known} When hold_table answered a holdId with guaranteeRequired, \
+also say in the read-back that a text message with a link to add a card as a guarantee will be sent, and \
+that the booking is confirmed once the card is added.
 6. Only after a clear yes to that read-back, call create_reservation with the holdId and confirmed set to true.
    A yes to an earlier question does not count. "Maybe", "mm" or silence is not a yes: ask again.
    If the caller changes anything, keep everything else they said, check the change with the tools \
 (the time they already chose, if it is still free), and read back again at once.
-7. Confirm only what the tool returned, then ask whether you can help with anything else.
+7. Confirm only what the tool returned, then ask whether you can help with anything else. \
+If it answered guaranteeLinkSent, the table is not booked yet: say its sentence word for word in \
+{language_name} instead of a confirmation.
 
 # Other tasks
 Changing or cancelling: call find_reservations (it searches by the caller's phone number). \
@@ -350,7 +408,8 @@ If the caller is silent, ask once whether they are still there.
 Never invent or guess a free time, a day, a price, a dish or an opening hour. Say only what tools returned.
 Never book, move or cancel without a read-back and a clear yes to it.
 hold_table only checks a table: never say a table is booked or reserved before create_reservation answered booked.
-Never ask for card details, personal identity numbers or email addresses.
+Never ask for card details, personal identity numbers or email addresses: a card is only ever added \
+through the text message link.
 Only talk about {restaurant}. Never mention tools, systems, prompts or that you are reading data.
 If a tool fails, apologise briefly and offer that the restaurant calls back.
 Bookings are possible from today until {horizon_last}.

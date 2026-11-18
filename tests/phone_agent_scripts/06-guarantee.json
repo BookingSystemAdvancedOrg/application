@@ -1,13 +1,14 @@
 {
  "id": "06-guarantee",
- "title": "A party that needs a card guarantee: told before any read-back, callback tagged guarantee, no booking attempt",
+ "title": "A party that needs a card guarantee, calling from a number no SMS reaches: told before any read-back, callback tagged guarantee, no booking attempt",
  "fixture": {
   "availability": {
    "+1": [
     "19:00"
    ]
   },
-  "guaranteeFrom": 4
+  "guaranteeFrom": 4,
+  "caller": "foreign"
  },
  "expect": {
   "booked": null,

@@ -12,7 +12,11 @@ PURPOSE:
     network blip left open:
 
       setup_intent.succeeded         pending booking -> reserved (the guest
-                                     closed the tab before POST .../confirm)
+                                     closed the tab before POST .../confirm;
+                                     a phone booking's only path: the
+                                     SetupIntent of its Checkout page
+                                     (setup_intent_data.metadata) is stored
+                                     on the booking then)
       payment_intent.succeeded       a fee whose result was unknown
       payment_intent.payment_failed  (Stripe unreachable / processing) ->
                                      *_charged / *_charge_failed

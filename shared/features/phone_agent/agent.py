@@ -25,7 +25,8 @@ TURN_BUDGET_S = 8.0     # model and tools per caller utterance, from its start: 
 MIN_ROUND_S = 1.0       # no new model round with less left than this
 KEEP_TOOL_ROUNDS = 2    # tool results older than this many rounds are shortened in the history
 MAX_HISTORY_BYTES = 120_000
-WRITES = ("create_reservation", "move_reservation", "cancel_reservation", "request_callback", "transfer_to_staff")
+WRITES = ("create_reservation", "move_reservation", "cancel_reservation", "request_callback", "transfer_to_staff",
+          "send_guarantee_link")
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
@@ -140,7 +141,8 @@ def _tool(executor, use, seconds):
 _LATE = {"ok": False, "code": "timeout", "say": "This did not finish in time. Run it again."}
 
 
-_KEEP_KEYS = ("ok", "code", "holdId", "reservationId", "date", "weekday", "time", "partySize", "reservations")
+_KEEP_KEYS = ("ok", "code", "holdId", "reservationId", "date", "weekday", "time", "partySize", "reservations",
+              "guaranteeRequired", "pending")
 SHORT_RESULT = 400       # bytes: an older tool result above this is shortened
 
 

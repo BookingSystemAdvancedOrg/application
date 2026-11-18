@@ -489,12 +489,30 @@ def run_call_turn(call, text, at):
         return copy.text(copy.MAX_LENGTH, lang), [{"name": "end_call", "arguments": {"reason": "max_length"}}]
     result, updated, state, actions = session.call_turn(
         call, text, model=client("model"), invoke=invoker(), voice=client("voice"), tenant_row=tenant_row,
-        location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)))
+        location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)),
+        send_sms=sms_sender())
     if result.error:
         session.metric("ProviderErrors", 1)
     if (state.get("transfer") or {}).get("answered"):
         finish(updated, at, "transferred")
     return result.reply, actions
+
+
+def sms_sender():
+    """send_sms for the tools: one SMS to the caller (the card guarantee
+    link) as a phone-agent feature notice through notification:live (Event;
+    the Nordic-prefix rule and the restaurant's sender name apply there).
+    None without NOTIFICATION_FUNCTION_NAME: the tools fall back to a callback."""
+    name = os.environ.get("NOTIFICATION_FUNCTION_NAME")
+    if not name:
+        return None
+
+    def send(*, tenant_id, location_id, to, text):
+        notice = {"version": 1, "kind": "phone-agent.guarantee-link", "tenantId": tenant_id,
+                  "locationId": location_id, "channel": "sms", "to": to, "text": text, "replyTo": None}
+        client("lambda").invoke(FunctionName=name, InvocationType="Event",
+                                Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    return send
 
 
 def updated_or(call):

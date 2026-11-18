@@ -294,7 +294,7 @@ def put_location(event, ctx):
     _owner(ctx)
     body = http.body(event, allowed=("enabled", "mode", "agentHours", "greetingExtraSv", "greetingExtraEn",
                                      "transferTo", "maxCallSeconds", "counterOffers", "shareNumberWith",
-                                     "phoneMaxPartySize", "version"))
+                                     "phoneMaxPartySize", "phoneGuarantee", "version"))
     version = _version(body)
     clean = pa.validate_location(body, restaurant_phone=ctx.location.get("phoneNumber"))
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
@@ -439,7 +439,8 @@ def list_calls(event, ctx):
     cursor = base64.urlsafe_b64encode(json.dumps(next_key).encode()).decode() if next_key else None
     return http.respond(200, {"calls": [{k: c[k] for k in ("callId", "startedAt", "durationSec", "language",
                                                              "outcome", "counterOffer", "reservationId",
-                                                             "callbackId", "summary", "refusedReason")}
+                                                             "callbackId", "guaranteePending", "summary",
+                                                             "refusedReason")}
                                         | ({"from": c.get("from")} if ctx.is_owner else {}) for c in out],
                               "cursor": cursor})
 

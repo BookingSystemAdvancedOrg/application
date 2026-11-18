@@ -94,7 +94,8 @@ def _unsupported_reply(executor, state, code, messages):
     return reply
 
 
-def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback):
+def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback,
+              send_sms=None):
     """Runs the caller's utterance through the agent loop and persists the
     conversation, the tool state and the transcript turns on the call.
 
@@ -105,7 +106,9 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     when the prompt asked for it), and the provider is told to switch
     (`actions`: its language_detection system tool). A language the voice
     cannot speak gets copy.UNSUPPORTED_LANGUAGE instead of the reply.
-    Returns (result, updated_call, state, actions)."""
+    `send_sms` texts the caller (the card guarantee link; None: a party
+    that needs a card gets a callback). Returns (result, updated_call,
+    state, actions)."""
     calls.append_turn(call, "caller", caller_text, at)
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     lang = current.get("language") or "sv"
@@ -119,7 +122,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     executor = Executor(tenant_id=call["tenantId"], tenant_row=tenant_row, location=location, loc_config=loc,
                         invoke=invoke, state=state, caller_phone=call.get("from"), voice=voice,
                         call_ref=call.get("callRef"), callbacks=add_callback, today=local_today(location),
-                        now_time=now_clock(location), language=prompt_lang)
+                        now_time=now_clock(location), language=prompt_lang, send_sms=send_sms)
     system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  phone_known=executor.caller_known, unsupported=state.get("unsupported"),

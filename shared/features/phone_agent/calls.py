@@ -245,6 +245,8 @@ def process(call, *, state=None, at=None, notify_cap=None):
         if state.get(key):
             expr += f", {key} = :{key}"
             sets[f":{key}"] = state[key]
+    if state.get("guaranteePending"):  # booked pending: the card link was texted, not yet a sure booking
+        expr += ", guaranteePending = :true"
     if state.get("reservationId"):  # GSI byReservation: the Bokningar badge (L12)
         expr += ", GSI2PK = :g2pk, GSI2SK = :g2sk"
         sets.update({":g2pk": f"{pa.tenant_pk(call['tenantId'])}#RES#{state['reservationId']}",
@@ -270,7 +272,7 @@ def process(call, *, state=None, at=None, notify_cap=None):
                                 "callId": call["callId"], "durationSec": int(call.get("durationSec") or 0),
                                 "billedMinutes": minutes, "outcome": outcome,
                                 "reservationId": state.get("reservationId"), "callbackId": state.get("callbackId"),
-                                "counterOffer": counter})
+                                "guaranteePending": bool(state.get("guaranteePending")), "counterOffer": counter})
     if notify_cap:
         notify_cap(call["tenantId"], end)
     return done

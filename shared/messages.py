@@ -70,6 +70,13 @@ _TEXT = {
         "sms.fee_refunded": "{restaurant}: {greeting}Vi har betalat tillbaka {refund} av avgiften för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
         "sms.greeting": "Hej {first}! ",
+        "sms.guarantee_link": ("{restaurant}: Lägg till ett kort som garanti för ditt bord {when}, {guests}: {link} "
+                               "Bordet hålls i {minutes} minuter och är bokat när kortet är tillagt. Inget dras nu."
+                               "{fees}"),
+        "sms.fee": " Avgift: {items}.",
+        "sms.fees": " Avgifter: {items}.",
+        "sms.fee_no_show": "{amount} vid uteblivet besök",
+        "sms.fee_late": "{amount} vid avbokning senare än {hours} före besöket",
         "when": "{weekday} {day} {month} kl {time}",
         "g.heading": "Kortgaranti (inget har dragits från kortet)",
         "g.no_show": "Uteblivet besök: {fee}.",
@@ -127,6 +134,13 @@ _TEXT = {
         "sms.fee_refunded": "{restaurant}: {greeting}We have refunded {refund} of the fee for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
         "sms.greeting": "Hi {first}! ",
+        "sms.guarantee_link": ("{restaurant}: Add a card as guarantee for your table {when}, {guests}: {link} "
+                               "The table is held for {minutes} minutes and booked once the card is added. "
+                               "Nothing is charged now.{fees}"),
+        "sms.fee": " Fee: {items}.",
+        "sms.fees": " Fees: {items}.",
+        "sms.fee_no_show": "{amount} for a no-show",
+        "sms.fee_late": "{amount} for cancelling less than {hours} before the visit",
         "when": "{weekday} {day} {month} at {time}",
         "g.heading": "Card guarantee (nothing has been charged)",
         "g.no_show": "No-show: {fee}.",
@@ -203,9 +217,17 @@ def guarantee_lines(item, lang=None):
     accepted (the reservation's snapshot), in the same wording as the
     booking site's terms (customer-front-end src/shared/bookingTerms.ts).
     [] = no card on file."""
+    if not item.get("stripePaymentMethodId"):
+        return []
+    return guarantee_terms(item, lang)
+
+
+def guarantee_terms(item, lang=None):
+    """guarantee_lines before the card is added (the phone guest's Checkout
+    page shows what adding the card accepts). [] = no snapshot."""
     lang = lang or _lang(item)
     snap = item.get("guarantee")
-    if not isinstance(snap, dict) or not item.get("stripePaymentMethodId"):
+    if not isinstance(snap, dict):
         return []
     n = int(item.get("partySize") or 0)
     no_show = int(snap.get("noShowFee") or 0)
@@ -356,6 +378,24 @@ def _first_name(full):
         return None
     first = full.strip().split()[0]
     return first[:20]
+
+
+def guarantee_link_sms(item, tenant_row, location, link, minutes):
+    """The phone guest's SMS with the card guarantee link (the AI phone
+    agent): restaurant, day and time, guests, the link, how long the table
+    is held and the fees of the booking's snapshot."""
+    lang = _lang(item)
+    snap = item.get("guarantee") if isinstance(item.get("guarantee"), dict) else {}
+    fees = []
+    if int(snap.get("noShowFee") or 0):
+        fees.append(_t(lang, "sms.fee_no_show", amount=money(snap["noShowFee"])))
+    hours = int(snap.get("cancelCutoffHours") or 0)
+    if int(snap.get("lateCancelFee") or 0) and hours:
+        fees.append(_t(lang, "sms.fee_late", amount=money(snap["lateCancelFee"]),
+                       hours=_t(lang, "g.hour") if hours == 1 else _t(lang, "g.hours", n=hours)))
+    return _t(lang, "sms.guarantee_link", restaurant=restaurant_name(tenant_row, location), when=when(item, lang),
+              guests=_guests(item, lang), link=link, minutes=minutes,
+              fees=_t(lang, "sms.fees" if len(fees) > 1 else "sms.fee", items=", ".join(fees)) if fees else "")
 
 
 def guest_sms(kind, item, tenant_row, location, link):

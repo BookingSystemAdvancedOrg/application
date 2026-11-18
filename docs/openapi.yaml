@@ -3839,7 +3839,8 @@ paths:
       summary: Book a table for a guest (staff)
       operationId: createManualReservation
       description: |
-        Phone bookings and walk-ins. Email and phone are optional. Starts are
+        Phone bookings and walk-ins. Email and phone are optional (a phone
+        booking with `guarantee: link` needs the phone). Starts are
         on the clock's half hours; a phone booking starts at least 30 minutes
         from now. A walk-in (`source: walk_in`) is booked for today only (the
         location's timezone) and may take a slot starting within 30 minutes
@@ -3864,7 +3865,23 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Reservation'
+                allOf:
+                  - $ref: '#/components/schemas/Reservation'
+                  - type: object
+                    properties:
+                      guaranteeLink:
+                        type: object
+                        description: >-
+                          Only for a phone booking created pending with guarantee link: the Stripe page the
+                          guest adds the card on (send it to the guest only), and until when the table is held.
+                        properties:
+                          url:
+                            type: string
+                          expiresAt:
+                            type: string
+                            format: date-time
+                          minutes:
+                            type: integer
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -7800,6 +7817,15 @@ components:
         notifyGuest:
           type: boolean
           description: Send the guest a confirmation (email, and SMS when enabled). Default true, false for walk_in.
+        guarantee:
+          type: string
+          enum: [link]
+          description: >-
+            Phone bookings only (source phone, phone required). When the location's card guarantee covers the
+            party, the booking is created pending (held 30 minutes) with a Stripe Checkout page (mode setup) on
+            the restaurant's account, and the answer carries guaranteeLink {url, expiresAt, minutes} for the
+            caller to text the guest. The booking turns reserved when the card is added (Stripe webhook). Without
+            a card requirement the booking is reserved as usual.
 
     ReservationUpdateRequest:
       type: object

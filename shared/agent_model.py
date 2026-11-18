@@ -556,6 +556,8 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             return self._say("get_availability", lang, times=_joined(times, lang))
         if name in ("hold_table", "create_reservation") and result.get("held") is False:
             return self._counter_offer(result, slots, lang)   # a create refused because the table was taken
+        if name == "create_reservation" and result.get("guaranteeLinkSent") and result.get("sentence"):
+            return Turn(text=str(result["sentence"]))      # held until the card is added (the fixed sentence)
         if name == "create_reservation" and result.get("guaranteeRequired") and result.get("reservationId"):
             return self._use("send_guarantee_link", {"reservationId": result["reservationId"]}, offered, lang)
         if name == "transfer_to_staff" and result.get("answered") is False:

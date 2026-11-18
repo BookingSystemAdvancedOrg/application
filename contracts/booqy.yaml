@@ -11,7 +11,6 @@ features:
   - {key: catering, id: catering, labelSv: Catering, labelEn: Catering, existing: true, siteConfig: true}
   - {key: marketing, id: marketing, labelSv: Marknadsföring, labelEn: Marketing, existing: true, siteConfig: true}
   - {key: metaAds, id: meta-ads, labelSv: Annonser, labelEn: Meta ads, existing: false, siteConfig: false}
-  - {key: siteBuilder, id: site-builder, labelSv: Webbplats, labelEn: Site builder, existing: false, siteConfig: true}
   - {key: guestCrm, id: guest-crm, labelSv: Gäster, labelEn: Guest CRM, existing: false, siteConfig: false}
   - {key: googleBusiness, id: google-business, labelSv: Google-företagsprofil, labelEn: Google Business Profile, existing: false, siteConfig: false}
   - {key: giftCards, id: gift-cards, labelSv: Presentkort, labelEn: Gift cards, existing: false, siteConfig: true}
@@ -25,14 +24,6 @@ features:
   - {key: phoneAgent, id: phone-agent, labelSv: Telefonassistent, labelEn: Phone agent, existing: false, siteConfig: false}
 
 limits:
-  siteBuilderAiEditsPerMonth:
-    feature: siteBuilder
-    type: int
-    min: 0
-    max: 1000
-    default: 0
-    labelSv: AI-ändringar av webbplatsen per månad
-    labelEn: AI site edits per month
   phoneAgentMinutesPerMonth:
     feature: phoneAgent
     type: int
@@ -72,17 +63,6 @@ events:
         month: month
         spendSek: int
         capSek: int
-    booqy.site-builder:
-      SiteVersion.Published:
-        versionNo: int
-        previousNo?: int
-        source: "enum[builder,custom]"
-        kind: "enum[publish,rollback]"
-      SitePublish.Failed:
-        publishId: string
-        code: string
-      SiteRelease.Proposed:
-        commitSha: string
     booqy.guest-crm:
       GuestVisit.Recorded:
         locationId: string
@@ -306,7 +286,7 @@ hooks:
     gate: on or ever on
   tenant.purge:
     caller: tenant-purge
-    targets: [meta-ads, site-builder, guest-crm, google-business, gift-cards, waitlist, social-posting, personalliggare, accounting-sync, dish-margin, events-tickets, phone-agent]
+    targets: [meta-ads, guest-crm, google-business, gift-cards, waitlist, social-posting, personalliggare, accounting-sync, dish-margin, events-tickets, phone-agent]
     gate: always
   stripe.event:
     caller: stripe-webhook
@@ -330,7 +310,7 @@ hooks:
     gate: "audience {type: segment, exportId}"
   platform:
     caller: platform-tenants
-    targets: [meta-ads, site-builder, google-business, personalliggare, phone-agent]
+    targets: [meta-ads, google-business, personalliggare, phone-agent]
     gate: operator route hit
   insights.events:
     caller: insights
@@ -346,9 +326,6 @@ consoleForwardOps:
   meta-ads.settings.put: {route: A15, target: meta-ads, audit: meta_ads_settings_changed}
   meta-ads.tenant.pause: {route: A16, target: meta-ads, audit: meta_ads_paused/meta_ads_resumed}
   meta-ads.tenant.get: {route: A17, target: meta-ads, audit: null}
-  site-builder.get: {route: B11, target: site-builder, audit: null}
-  site-builder.mode.put: {route: B12, target: site-builder, audit: site_mode_changed}
-  site-builder.release.ready: {route: B13, target: site-builder, audit: site_release_proposed}
   google-business.tenant.get: {route: D11, target: google-business, audit: null}
   personalliggare.export: {route: H9, target: personalliggare, audit: staff_ledger_exported}
   phone-agent.tenant.get: {route: L15, target: phone-agent, audit: null}
@@ -367,10 +344,7 @@ clients:
   agent_model: {env: AGENT_MODEL_CLIENT, tfvar: agent_model_client}
 
 siteConfig:
-  tenantFeatures: [reservations, ordering, catering, marketing, siteBuilder, giftCards, waitlist, events]
-  tenant.site:
-    mode: "enum[builder,custom]"
-    version: int
+  tenantFeatures: [reservations, ordering, catering, marketing, giftCards, waitlist, events]
   location.waitlist:
     publicJoin: bool
 
@@ -398,7 +372,6 @@ slots:
   console:
     tenant.integrations.metaAds: {feature: metaAds, ownerOnly: false, host: TenantPage Integrations tab}
     tenant.integrations.googleBusiness: {feature: googleBusiness, ownerOnly: false, host: TenantPage Integrations tab}
-    tenant.website.siteBuilder: {feature: siteBuilder, ownerOnly: false, host: TenantPage Website tab}
     tenant.offboard.personalliggare: {feature: null, ownerOnly: false, host: TenantPage Suspend or offboard tab}
     settings.metaAds: {feature: null, ownerOnly: false, host: SettingsPage}
     tenant.integrations.phoneAgent: {feature: phoneAgent, ownerOnly: false, host: TenantPage}

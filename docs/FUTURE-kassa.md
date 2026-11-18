@@ -95,3 +95,22 @@ the order infrastructure, application, frontends.
   `scripts/gen_contracts.py`.
 - Infrastructure: the tables are still in `module "kassa"`; add the
   function, role and routes back next to them.
+
+## 2026-11-17: researched again, then dropped
+
+The owner looked at bringing Kassa back for counter sales (staff order on an
+iPad, payment on a Stripe reader or by QR on the guest's phone) and at
+certifying Booqy's own control system, then dropped Kassa entirely: Booqy
+stays online only and QR table ordering was removed too (paying on site
+outside a certified register is not allowed). The research is kept for later:
+
+- `docs/parked/kassa-2027/kassaregister-2027-plan.md`: what the rules from
+  1 January 2027 require (SKVFS 2021:17, XML export SKVFS 2021:16, use rules
+  2021:18 and 2025:8), the three options (declared register on a rented
+  certified control system, our own certified control system, or feeding an
+  existing certified POS), build plan and cost estimates. Fact-checked
+  2026-11-17.
+- `docs/parked/kassa-2027/certified-control-systems-top5.md`: the five
+  cheapest certified control systems with an API (Infrasec TCS, fiskaly SIGN
+  SE, Axena Server4POS, efsta, Origum GreenGate), prices and a Swedish quote
+  request. No provider publishes prices; ask for quotes.

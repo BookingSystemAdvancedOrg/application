@@ -23,7 +23,7 @@ def site(monkeypatch):
     for key, value in {
         "ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing",
         "AWS_SESSION_TOKEN": "testing", "AWS_DEFAULT_REGION": REGION,
-        "STRIPE_PUBLISHABLE_KEY": "pk_test_123", "TURNSTILE_SITE_KEY": "0x4AAA",
+        "STRIPE_PUBLISHABLE_KEY": "pk_test_123", "WAF_INTEGRATION_URL": "https://abc.edge.sdk.awswaf.com/abc/def/",
     }.items():
         monkeypatch.setenv(key, value)
     with mock_aws():
@@ -84,7 +84,7 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     assert body["tenant"]["name"] == "Roma" and body["tenant"]["slug"] == "roma"
     assert body["tenant"]["features"] == {"reservations": True, "ordering": True,
                                           "catering": True, "marketing": False,
-                                          "giftCards": False, "waitlist": False, "siteBuilder": False,
+                                          "giftCards": False, "waitlist": False,
                                           "events": False}
     assert body["tenant"]["branding"] == {"primaryColor": "#aa3300",
                                           "logoUrl": "https://cdn.roma.se/logo.png", "tagline": "Pizza"}
@@ -93,7 +93,8 @@ def test_host_resolves_to_the_restaurant_with_public_fields_only(site):
     assert [loc["name"] for loc in body["locations"]] == ["Hagastan", "Södermalm"]
     assert body["locations"][0]["bookingDurationHours"] == 1.5
     assert body["stripe"] == {"publishableKey": "pk_test_123", "accountId": "acct_A"}
-    assert body["turnstile"] == {"siteKey": "0x4AAA"}
+    assert body["botCheck"] == {"integrationUrl": "https://abc.edge.sdk.awswaf.com/abc/def/"}
+    assert "turnstile" not in body
     for secret in ("owner-private", "+46700000000", "boom", "txr_1", "acct_LOC", "chargesEnabled"):
         assert secret not in response["body"]
 
@@ -178,7 +179,7 @@ def test_ordering_is_public_only_when_stripe_can_charge(site):
     shared_tenant.reset_caches()
     body = json.loads(call(module, {"host": "www.roma.se"})["body"])
     by_id = {loc["locationId"]: loc for loc in body["locations"]}
-    assert by_id[LOC_A]["ordering"] == {"pickup": True, "table": True, "prepMinutes": 15}
+    assert by_id[LOC_A]["ordering"] == {"pickup": True, "prepMinutes": 15}
     assert by_id[LOC_A2]["ordering"] is None
 
 

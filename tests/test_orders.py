@@ -1,7 +1,7 @@
 """Food orders end to end: POST /order (prices from the menu, opening hours,
-QR codes, VAT, abuse limits), the Stripe webhook, the guest's status page,
-the restaurant's screen (status moves, ready SMS, cancel with refund, pause,
-table codes) and the guest messages. DynamoDB/Secrets Manager are moto;
+VAT, abuse limits, QR table ordering off), the Stripe webhook, the guest's
+status page, the restaurant's screen (status moves, ready SMS, cancel with
+refund, pause, past table orders) and the guest messages. DynamoDB/Secrets Manager are moto;
 Stripe, SES and SNS are recording fakes."""
 
 from error_body import err
@@ -30,15 +30,14 @@ ROOT = Path(__file__).parents[1] / "functions"
 LOCATION_TABLE = "test-location"
 ORDER_TABLE = "test-order"
 MENU_TABLE = "test-menu"
-SNAPSHOT_TABLE = "test-layout-snapshot"
-# LOC_A's active floor plan: the tables the older tests order at.
-LAYOUT_A = [("t-7", "Bord 7"), ("t-3", "Fönsterbordet"), ("t1", "1"), ("t5", "5")]
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)  # 14:00 in Stockholm, a Tuesday
 TODAY = "2026-09-08"
 WEEK = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 ACCOUNT = "acct_roma"
 WHSEC = "whsec_test_secret"
+# "table": a stored flag from before QR ordering at the table was turned off; ignored.
 POLICY = {"enabled": True, "pickup": True, "table": True, "prepMinutes": 20, "lastOrderMinutes": 15}
+TABLE_OFF = {"error": "table_ordering_off", "message": "Beställ och betala i kassan i restaurangen."}
 _ser = TypeSerializer()
 
 
@@ -129,11 +128,10 @@ def env(monkeypatch):
         "AWS_SESSION_TOKEN": "t", "AWS_DEFAULT_REGION": REGION, "ORDER_TABLE_NAME": ORDER_TABLE,
         "MENU_TABLE_NAME": MENU_TABLE, "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "USER_TABLE_NAME": "test-user",
-        "PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME": SNAPSHOT_TABLE,
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
-    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
+    monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None
@@ -145,7 +143,7 @@ def env(monkeypatch):
         monkeypatch.setenv("ORDER_STRIPE_WEBHOOK_SECRET_ARN",
                            sm.create_secret(Name="whsec", SecretString=WHSEC)["ARN"])
         res = boto3.resource("dynamodb", region_name=REGION)
-        for name in (ORDER_TABLE, MENU_TABLE, SNAPSHOT_TABLE):
+        for name in (ORDER_TABLE, MENU_TABLE):
             res.create_table(
                 TableName=name,
                 KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}, {"AttributeName": "SK", "KeyType": "RANGE"}],
@@ -170,7 +168,6 @@ def env(monkeypatch):
                      menu_item(LOC_A, "old", "Borttagen", "50", active=False),
                      menu_item(LOC_B, "pizza", "Other pizza", "1")):
             menu.put_item(Item=item)
-        publish_layout(LOC_A, LAYOUT_A)
         fake = FakeStripe()
         monkeypatch.setattr(stripe_client, "request", fake)
         monkeypatch.setattr(o, "now_utc", lambda: NOW)
@@ -185,26 +182,6 @@ def env(monkeypatch):
 
 
 # --- helpers --------------------------------------------------------------------------------
-
-def publish_layout(location_id, tables, *, version=1, floors=None):
-    """Make `tables` [(tableId, label or None)] the location's active floor
-    plan (what publish-layout + activate-layout-version store)."""
-    res = boto3.resource("dynamodb", region_name=REGION).Table(SNAPSHOT_TABLE)
-    elements = list(floors or [])
-    for entry in tables:
-        table_id, label = entry[0], entry[1]
-        element = {"elementId": table_id, "type": "table", "shape": "rect", "seats": 4}
-        if label:
-            element["label"] = label
-        if len(entry) > 2:
-            element["floorId"] = entry[2]
-        elements.append(element)
-    pk = f"LOCATION#{location_id}"
-    res.put_item(Item={"PK": pk, "SK": f"LAYOUT#v{version}", "version": version, "isCurrent": True,
-                       "elements": elements})
-    res.put_item(Item={"PK": pk, "SK": "LAYOUT#ACTIVATION", "recordType": "layoutActivationState",
-                       "currentVersion": version, "revision": version})
-
 
 def body_of(response):
     return json.loads(response["body"])
@@ -252,6 +229,20 @@ def paid_session(env, order_id, **extra):
 def place_and_pay(env, **extra):
     created = body_of(post_order(env, **extra))
     webhook(env, stripe_event("checkout.session.completed", paid_session(env, created["orderId"])))
+    return created
+
+
+def past_table_order(env, table_id="t-7", label="Bord 7", **extra):
+    """A paid order stored as QR table orders were before table ordering was
+    turned off (2026-11-17): mode "table", tableId and tableLabel."""
+    created = place_and_pay(env, items=[{"menuItemId": "pizza", "quantity": 1}], **extra)
+    item = stored(env, created["orderId"])
+    lines = [{**line, "vatRate": 12} for line in item["lines"]]
+    env["res"].Table(ORDER_TABLE).update_item(
+        Key={"PK": item["PK"], "SK": item["SK"]},
+        UpdateExpression="SET #m = :m, tableId = :t, tableLabel = :l, #lines = :lines",
+        ExpressionAttributeNames={"#m": "mode", "#lines": "lines"},
+        ExpressionAttributeValues={":m": "table", ":t": table_id, ":l": label, ":lines": lines})
     return created
 
 
@@ -325,10 +316,20 @@ def test_lines_with_notes_stay_apart_and_share_the_dish_cap():
 
 
 def test_policy_validation():
-    assert o.validate_policy({"enabled": True}) == {"enabled": True, "pickup": True, "table": True,
-                                                    "prepMinutes": 20, "lastOrderMinutes": 15}
-    with pytest.raises(ValueError, match="needs pickup or table"):
-        o.validate_policy({"enabled": True, "pickup": False, "table": False})
+    default = {"enabled": True, "pickup": True, "prepMinutes": 20, "lastOrderMinutes": 15}
+    assert o.validate_policy({"enabled": True}) == default
+    # QR ordering at the table is off: "table" from older admin builds or a
+    # stored policy is accepted and ignored (never stored again).
+    assert o.validate_policy({"enabled": True, "table": True}) == default
+    assert o.validate_policy({"enabled": True, "pickup": True, "table": False}) == default
+    with pytest.raises(ValueError, match="ordering.table must be true or false"):
+        o.validate_policy({"enabled": True, "table": "yes"})
+    with pytest.raises(ValueError, match="needs pickup orders"):
+        o.validate_policy({"enabled": True, "pickup": False, "table": True})
+    # A stored table-only policy means ordering is off.
+    assert o.policy_of({"ordering": {"enabled": True, "pickup": False, "table": True}}) is None
+    assert o.availability({"ordering": {"enabled": True, "pickup": False, "table": True}}, {}, NOW) == {
+        "open": False, "reason": "disabled", "pickup": False}
     with pytest.raises(ValueError, match="prepMinutes"):
         o.validate_policy({"enabled": True, "prepMinutes": 2})
     with pytest.raises(ValueError, match="unsupported"):
@@ -423,23 +424,21 @@ def test_embedded_must_be_a_boolean(env):
     assert body_of(response) == err("embedded must be true or false")
 
 
-def test_table_order_needs_this_locations_qr_code(env):
-    code = o.table_code(TENANT_A, LOC_A, "t-7", "Bord 7")
-    created = post_order(env, mode="table", tableCode=code,
-                         items=[{"menuItemId": "pizza", "quantity": 1}, {"menuItemId": "wine", "quantity": 2}])
-    assert created["statusCode"] == 201, created
-    item = stored(env, body_of(created)["orderId"])
-    assert item["tableId"] == "t-7" and item["tableLabel"] == "Bord 7"
-    assert [line["vatRate"] for line in item["lines"]] == [12, 25]
-    assert item["vat"] == [{"rate": 12, "gross": 12500, "net": 11161, "vat": 1339},
-                           {"rate": 25, "gross": 19000, "net": 15200, "vat": 3800}]
-
-    other = o.table_code(TENANT_A, LOC_A2, "t-7", "Bord 7")
-    assert body_of(post_order(env, mode="table", tableCode=other)) == err("table code is invalid")
-    assert body_of(post_order(env, mode="table")) == err("table code is invalid")
-    tampered = code.replace(code.split(".")[0], o._b64(b'{"t":"t-7","n":"VIP"}'))
-    assert post_order(env, mode="table", tableCode=tampered)["statusCode"] == 400
-    assert body_of(post_order(env, tableCode=code)) == err("tableCode is only for table orders")
+def test_table_orders_are_off_and_send_the_guest_to_the_till(env):
+    for extra in ({"mode": "table"}, {"mode": "table", "tableCode": "A" * 22},
+                  {"tableCode": "payload.signature"},
+                  {"mode": "table", "items": [{"menuItemId": "wine", "quantity": 1}]}):
+        response = post_order(env, **extra)
+        assert response["statusCode"] == 410, extra
+        assert body_of(response) == TABLE_OFF
+    assert env["stripe"].calls == []
+    everything = staff_event("GET", query={"date": TODAY, "all": "true"})
+    assert body_of(env["m"]["staff"].handler(everything, None))["orders"] == []
+    # Alcohol still can't be ordered for pickup, so not online at all.
+    wine = post_order(env, items=[{"menuItemId": "wine", "quantity": 1}])
+    assert wine["statusCode"] == 400 and body_of(wine) == err("alcohol_not_for_pickup")
+    # An empty tableCode (older sites sending pickup) is fine.
+    assert post_order(env, tableCode="")["statusCode"] == 201
 
 
 @pytest.mark.parametrize("items, error", [
@@ -463,7 +462,7 @@ def test_another_restaurants_dish_cannot_be_ordered(env):
 @pytest.mark.parametrize("change, error", [
     ({"ordering": None}, "ordering_disabled"),
     ({"ordering": {**POLICY, "enabled": False}}, "ordering_disabled"),
-    ({"ordering": {**POLICY, "pickup": False}}, "ordering_pickup_off"),
+    ({"ordering": {**POLICY, "pickup": False}}, "ordering_disabled"),  # table-only: off
     ({"orderingPausedUntil": "2026-09-08T12:30:00Z"}, "ordering_paused"),
     ({"businessHours": {d: [{"opensAt": "15:00", "closesAt": "22:00"}] for d in WEEK}}, "ordering_closed"),
     ({"businessHours": {d: [{"opensAt": "10:00", "closesAt": "14:10"}] for d in WEEK}}, "ordering_closed"),
@@ -498,7 +497,7 @@ def test_tenant_without_ordering_feature_gets_404(env):
 
 @pytest.mark.parametrize("change, error", [
     ({"acceptTerms": None}, "acceptTerms must be true"),
-    ({"mode": "delivery"}, "mode must be pickup or table"),
+    ({"mode": "delivery"}, "mode must be pickup"),
     ({"phone": None}, "phone is required"),
     ({"email": "nope"}, "email must be a valid email address"),
     ({"price": 1}, "unsupported fields: price"),
@@ -528,13 +527,12 @@ def test_too_many_orders_from_one_address(env):
     assert response["statusCode"] == 429 and int(response["headers"]["Retry-After"]) > 0
 
 
-def test_turnstile_is_checked_with_the_order_action(env):
-    from shared import turnstile
+def test_the_bot_check_is_made_for_the_order_form(env):
+    from shared import bot_check
     seen = []
-    env["monkeypatch"].setenv("TURNSTILE_REQUIRED", "true")
-    env["monkeypatch"].setattr(turnstile, "verify", lambda token, ip, action: seen.append((token, ip, action)))
-    assert post_order(env, turnstileToken="tok")["statusCode"] == 201
-    assert seen == [("tok", "203.0.113.5", "order")]
+    env["monkeypatch"].setattr(bot_check, "verify", lambda event, form: seen.append(form))
+    assert post_order(env)["statusCode"] == 201
+    assert seen == ["order"]
 
 
 # --- webhook ------------------------------------------------------------------------------------
@@ -651,14 +649,16 @@ def test_ordering_follows_hours_past_midnight(env):
     assert body["closesAt"] == "00:10" and body["lastOrderAt"] == "23:55"
 
 
-def test_ordering_state_and_table_label(env):
-    code = o.table_code(TENANT_A, LOC_A, "t-3", "Fönsterbordet")
-    event = {"routeKey": "GET /locations/{locationId}/ordering", "pathParameters": {"locationId": LOC_A},
-             "queryStringParameters": {"table": code}}
+def test_ordering_state_has_no_table_and_old_qr_codes_get_410(env):
+    event = {"routeKey": "GET /locations/{locationId}/ordering", "pathParameters": {"locationId": LOC_A}}
     body = body_of(env["m"]["get"].handler(event, None))
-    assert body == {"open": True, "pickup": True, "table": True, "prepMinutes": 20, "closesAt": "22:00",
-                    "lastOrderAt": "21:45", "forTable": {"label": "Fönsterbordet", "title": "Fönsterbordet"}}
-    event["queryStringParameters"] = {"table": "junk.sig"}
+    assert body == {"open": True, "pickup": True, "prepMinutes": 20, "closesAt": "22:00", "lastOrderAt": "21:45"}
+    # An old printed table QR code (?table= from /bestall?bord=...): the till, never an error page.
+    for code in ("A" * 22, "payload.signature", ""):
+        event["queryStringParameters"] = {"table": code}
+        response = env["m"]["get"].handler(event, None)
+        assert response["statusCode"] == 410 and body_of(response) == TABLE_OFF
+    event["queryStringParameters"] = {"other": "x"}
     assert env["m"]["get"].handler(event, None)["statusCode"] == 400
 
 
@@ -692,11 +692,32 @@ def test_kitchen_flow_and_ready_sms_notice_for_pickup(env):
     assert body_of(set_status(env, oid, "preparing")) == err("cannot_move_completed_to_preparing")
 
 
-def test_table_order_ready_sends_nothing(env):
-    created = place_and_pay(env, mode="table", tableCode=o.table_code(TENANT_A, LOC_A, "t1", "1"),
-                            items=[{"menuItemId": "pizza", "quantity": 1}])
-    set_status(env, created["orderId"], "ready")
-    assert stored(env, created["orderId"])["notice"]["type"] == "order_confirmed"
+def test_past_table_orders_still_show_their_table(env):
+    created = past_table_order(env)
+    (shown,) = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))["orders"]
+    assert (shown["mode"], shown["tableId"], shown["tableLabel"]) == ("table", "t-7", "Bord 7")
+    guest = body_of(env["m"]["get"].handler(status_event(created["orderId"], created["statusToken"]), None))
+    assert (guest["mode"], guest["tableLabel"], guest["status"]) == ("table", "Bord 7", "confirmed")
+    assert "tableId" not in guest
+    # Staff still move it; "ready" on a table order sends no pickup SMS.
+    assert body_of(set_status(env, created["orderId"], "preparing"))["status"] == "preparing"
+    assert body_of(set_status(env, created["orderId"], "ready"))["status"] == "ready"
+    assert stored(env, created["orderId"])["notice"]["type"] == "order_started"
+
+
+def test_past_table_order_can_be_cancelled_and_refunded(env):
+    created = past_table_order(env)
+    env["stripe"].calls.clear()
+    body = body_of(set_status(env, created["orderId"], "cancelled"))
+    assert body["status"] == "cancelled" and body["paymentStatus"] == "refunded"
+    assert body["tableLabel"] == "Bord 7"
+
+
+def test_pickup_order_shows_no_table(env):
+    created = place_and_pay(env)
+    (shown,) = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))["orders"]
+    assert shown["mode"] == "pickup" and "tableLabel" not in shown and "tableId" not in shown
+    assert stored(env, created["orderId"])["status"] == "confirmed"
 
 
 def test_cancel_refunds_and_tells_the_guest(env):
@@ -742,7 +763,7 @@ def test_other_tenant_and_other_location_staff_see_nothing(env):
 def test_pause_and_resume(env):
     body = body_of(env["m"]["staff"].handler(staff_event("PUT", "pause", body={"minutes": 30}), None))
     assert body["ordering"] == {"open": False, "reason": "paused", "pausedUntil": "2026-09-08T12:30:00Z",
-                                "pickup": True, "table": True, "prepMinutes": 20}
+                                "pickup": True, "prepMinutes": 20}
     shared_tenant.reset_caches()
     assert body_of(post_order(env)) == err("ordering_paused")
     body = body_of(env["m"]["staff"].handler(staff_event("PUT", "pause", body={"minutes": 0}), None))
@@ -751,135 +772,13 @@ def test_pause_and_resume(env):
     assert env["m"]["staff"].handler(staff_event("PUT", "pause", body={"minutes": 241}), None)["statusCode"] == 400
 
 
-def staff_codes(env, **kwargs):
-    response = env["m"]["staff"].handler(staff_event("GET", "table-codes", **kwargs), None)
-    assert response["statusCode"] == 200, response
-    return {t["tableId"]: t for t in body_of(response)["tables"]}
-
-
-def ordering_for(env, code, location_id=LOC_A):
-    return env["m"]["get"].handler({"routeKey": "GET /locations/{locationId}/ordering",
-                                    "pathParameters": {"locationId": location_id},
-                                    "queryStringParameters": {"table": code}}, None)
-
-
-def test_table_codes_come_from_the_published_floor_plan(env):
-    codes = staff_codes(env)
-    assert list(codes) == ["t-7", "t-3", "t1", "t5"]
-    seven = codes["t-7"]
-    assert (seven["label"], seven["title"], seven["seats"]) == ("Bord 7", "Bord 7", 4)
-    assert codes["t5"]["title"] == "Bord 5"
-    # Opaque and random: no table id in it, 128 bits.
-    assert "t-7" not in seven["code"] and len(seven["code"]) == 22
-    assert seven["url"] == ("https://dev123.cloudfront.net/bestall?restaurang=roma&bord=" + seven["code"])
-    # Stable: asking again (or with an old admin build's body) gives the same codes.
-    again = body_of(env["m"]["staff"].handler(staff_event("POST", "table-codes", body={
-        "tables": [{"tableId": "t1", "label": "whatever"}]}), None))["tables"]
-    assert {t["tableId"]: t["code"] for t in again} == {k: v["code"] for k, v in codes.items()}
-    assert body_of(ordering_for(env, seven["code"]))["forTable"] == {"label": "Bord 7", "title": "Bord 7"}
-
-
-def test_unpublished_location_has_no_table_codes(env):
-    response = env["m"]["staff"].handler(staff_event("GET", "table-codes", location_id=LOC_A2), None)
-    assert body_of(response) == {"tables": []}
-
-
-def test_renamed_and_moved_table_keeps_its_code(env):
-    code = staff_codes(env)["t-7"]["code"]
-    # Renamed and moved to another floor (a new layout version).
-    publish_layout(LOC_A, [("t-3", "Fönsterbordet"), ("t-7", "Terrassen", "f2")], version=2,
-                   floors=[{"elementId": "f1", "type": "floor", "level": 0, "name": "Inne"},
-                           {"elementId": "f2", "type": "floor", "level": 1, "name": "Ute"}])
-    assert body_of(ordering_for(env, code))["forTable"]["label"] == "Terrassen"
-    created = post_order(env, mode="table", tableCode=code)
-    assert created["statusCode"] == 201
-    item = stored(env, body_of(created)["orderId"])
-    assert (item["tableId"], item["tableLabel"]) == ("t-7", "Terrassen")
-    assert staff_codes(env)["t-7"]["code"] == code
-
-
-def test_deleted_table_code_says_so_and_a_new_table_7_gets_a_new_code(env):
-    old = staff_codes(env)["t-7"]["code"]
-    # Table 7 removed; a new table that is also called "Bord 7" is a new element.
-    publish_layout(LOC_A, [("t-3", "Fönsterbordet"), ("t-new", "Bord 7")], version=2)
-    response = ordering_for(env, old)
-    assert response["statusCode"] == 400 and body_of(response) == err("table removed")
-    assert body_of(post_order(env, mode="table", tableCode=old)) == err("table removed")
-    new = staff_codes(env)["t-new"]["code"]
-    assert new != old
-    assert body_of(ordering_for(env, new))["forTable"]["label"] == "Bord 7"
-
-
-def test_regenerated_code_revokes_the_old_sticker(env):
-    old = staff_codes(env)["t-7"]["code"]
-    response = env["m"]["staff"].handler(staff_event("POST", "table-codes/t-7/regenerate", role="staff_user"), None)
-    assert response["statusCode"] == 200, response
-    fresh = body_of(response)
-    assert fresh["tableId"] == "t-7" and fresh["code"] != old and fresh["url"].endswith(fresh["code"])
-    assert body_of(ordering_for(env, old)) == err("table code revoked")
-    assert body_of(post_order(env, mode="table", tableCode=old)) == err("table code revoked")
-    assert post_order(env, mode="table", tableCode=fresh["code"])["statusCode"] == 201
-    assert staff_codes(env)["t-7"]["code"] == fresh["code"]
-    # Only tables of the active floor plan; GET is not a regeneration.
-    assert env["m"]["staff"].handler(staff_event("POST", "table-codes/t-gone/regenerate"), None)["statusCode"] == 404
-    assert env["m"]["staff"].handler(staff_event("GET", "table-codes/t-7/regenerate"), None)["statusCode"] == 405
-
-
-def test_old_signed_codes_work_until_the_table_is_regenerated(env):
-    legacy = o.table_code(TENANT_A, LOC_A, "t-7", "Gammalt namn")
-    # The name comes from the floor plan now, not from the printed code.
-    assert body_of(ordering_for(env, legacy))["forTable"]["label"] == "Bord 7"
-    staff_codes(env)  # opening the QR codes doesn't kill old stickers
-    assert ordering_for(env, legacy)["statusCode"] == 200
-    env["m"]["staff"].handler(staff_event("POST", "table-codes/t-7/regenerate"), None)
-    assert body_of(ordering_for(env, legacy)) == err("table code revoked")
-    gone = o.table_code(TENANT_A, LOC_A, "t-deleted", "9")
-    assert body_of(ordering_for(env, gone)) == err("table removed")
-
-
-def test_a_tenants_table_code_never_orders_at_another_tenant(env):
-    """Two-tenant isolation: tenant B's code (or a guessed one) is unknown at
-    tenant A's location and the other way round; B's staff can't list or
-    regenerate A's codes."""
-    publish_layout(LOC_B, [("t-7", "Bord 7")])
-    a_code = staff_codes(env)["t-7"]["code"]
-    b_response = env["m"]["staff"].handler(
-        staff_event("GET", "table-codes", tenant_id=TENANT_B, location_id=LOC_B), None)
-    b_code = body_of(b_response)["tables"][0]["code"]
-    assert b_code != a_code
-    # B's sticker at A's location (same table id "t-7"): unknown.
-    assert body_of(ordering_for(env, b_code, LOC_A)) == err("table code is invalid")
-    assert body_of(post_order(env, mode="table", tableCode=b_code)) == err("table code is invalid")
-    # A's sticker at B's location: unknown.
-    assert body_of(ordering_for(env, a_code, LOC_B)) == err("table code is invalid")
-    # A's sticker at A's other location: unknown.
-    assert body_of(ordering_for(env, a_code, LOC_A2)) == err("table code is invalid")
-    # Guessing: right shape, wrong key.
-    assert body_of(ordering_for(env, "A" * 22)) == err("table code is invalid")
-    assert body_of(ordering_for(env, "../../x")) == err("table code is invalid")
-    # B's staff can't see or regenerate A's codes.
-    for method, suffix in (("GET", "table-codes"), ("POST", "table-codes/t-7/regenerate")):
-        response = env["m"]["staff"].handler(
-            staff_event(method, suffix, tenant_id=TENANT_B, location_id=LOC_A), None)
-        assert response["statusCode"] in (403, 404)
-    assert staff_codes(env)["t-7"]["code"] == a_code
-
-
-def test_table_numbers_follow_the_admin_numbering():
-    from shared import table_qr
-    elements = [
-        {"elementId": "f2", "type": "floor", "level": 1},
-        {"elementId": "f1", "type": "floor", "level": 0},
-        {"elementId": "a", "type": "table", "floorId": "f2", "seats": 2},
-        {"elementId": "w", "type": "wall", "floorId": "f1"},
-        {"elementId": "b", "type": "table", "floorId": "f1", "seats": 4},
-        {"elementId": "c", "type": "table", "floorId": "f1", "label": "  Bar  ", "seats": 2},
-        {"elementId": "d", "type": "table", "floorId": "f2"},
-    ]
-    assert [(t["tableId"], t["label"]) for t in table_qr.tables_from_layout(elements)] == [
-        ("b", "1"), ("c", "Bar"), ("a", "3"), ("d", "4")]
-    assert table_qr.table_title("7") == "Bord 7" and table_qr.table_title("Bord 7") == "Bord 7"
-    assert table_qr.table_title("12b") == "Bord 12b" and table_qr.table_title("Bar") == "Bar"
+def test_old_table_code_routes_answer_410(env):
+    """Older admin builds asking for table QR codes get a clear answer."""
+    for method, suffix, role in (("GET", "table-codes", "owner_user"), ("POST", "table-codes", "staff_user"),
+                                 ("POST", "table-codes/t-7/regenerate", "owner_user"),
+                                 ("GET", "table-codes/t-7/regenerate", "staff_user")):
+        response = env["m"]["staff"].handler(staff_event(method, suffix, role=role), None)
+        assert response["statusCode"] == 410 and body_of(response) == TABLE_OFF, (method, suffix)
 
 
 # --- guest messages ------------------------------------------------------------------------------------
@@ -1003,8 +902,7 @@ def test_order_sms_stays_one_part_with_long_names():
 
 def test_table_order_sms_names_the_table_in_english(env, notify):
     module, ses, sns = notify
-    created = place_and_pay(env, mode="table", tableCode=o.table_code(TENANT_A, LOC_A, "t5", "5"),
-                            language="en", items=[{"menuItemId": "pizza", "quantity": 1}])
+    created = past_table_order(env, "t5", "5", language="en")
     module.handler({"Records": [order_record(stored(env, created["orderId"]))]}, None)
     assert sns.calls == []
     assert ses.calls[0]["Message"]["Subject"]["Data"] == "Receipt order #1 - Roma Södermalm"
@@ -1241,3 +1139,28 @@ def test_custom_category_goes_to_the_first_station():
     from shared import routing
     entries = routing.split([{"name": "IPA", "quantity": 1, "category": "c0a1b2c3d4"}], routing.default_config())
     assert list(entries) == ["kok"] and entries["kok"][0]["course"] is None
+
+
+def test_lines_keep_their_categorys_name_for_the_kitchen(env):
+    """The order keeps each dish's category name (one read with the dishes),
+    so a category that sounds like drinks goes to Dryck with no routing
+    choice saved (shared/routing.py)."""
+    from shared import routing
+    menu = env["res"].Table(MENU_TABLE)
+    menu.put_item(Item=menu_item(LOC_A, "ipa", "IPA", "79", category="c0a1b2c3d4"))
+    menu.put_item(Item={"PK": f"LOCATION#{LOC_A}", "SK": "CATEGORIES", "version": 1,
+                        "categories": [{"categoryId": "mains", "name": "Varmrätter"},
+                                       {"categoryId": "c0a1b2c3d4", "name": "Öl"}]})
+    response = post_order(env, mode="pickup", items=[{"menuItemId": "pizza", "quantity": 1},
+                                                     {"menuItemId": "ipa", "quantity": 1}])
+    assert response["statusCode"] == 201, response
+    lines = stored(env, body_of(response)["orderId"])["lines"]
+    assert [(line["name"], line.get("categoryName")) for line in lines] == [("Margherita", "Varmrätter"), ("IPA", "Öl")]
+    assert {k: [e["name"] for e in v] for k, v in routing.split(lines, routing.default_config()).items()} == {
+        "kok": ["Margherita"], "bar": ["IPA"]}
+
+
+def test_lines_without_a_categories_row_get_the_default_names(env):
+    lines = stored(env, body_of(post_order(env))["orderId"])["lines"]
+    assert [line.get("categoryName") for line in lines] == ["Varmrätter", "Drycker"]
+

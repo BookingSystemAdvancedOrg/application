@@ -39,20 +39,24 @@ def query(event):
     return value
 
 
-def edge_header(event, name):
-    """A header set by the admin app's CloudFront, or None.
+def _secret_matches(event, header_name, env_name):
+    secret = os.environ.get(env_name) or ""
+    sent = header(event, header_name) or ""
+    return bool(secret) and bool(sent) and hmac.compare_digest(sent.encode(), secret.encode())
 
-    Behind CloudFront (/api/* on the admin app's address) the edge adds the
-    viewer's IP and host (x-booqy-viewer-ip, x-booqy-viewer-host) plus a
-    shared secret in x-booqy-edge. Those headers are only trusted when the
-    secret matches CLOUDFRONT_EDGE_SECRET, so a caller going straight to API
-    Gateway can't set them itself.
+
+def edge_header(event, name):
+    """A header set by one of our CloudFront distributions, or None.
+
+    Behind CloudFront the edge adds the viewer's IP and host
+    (x-booqy-viewer-ip, x-booqy-viewer-host) plus a shared secret: the admin
+    app's /api/* sends x-booqy-edge (CLOUDFRONT_EDGE_SECRET), the restaurant
+    sites' /api/* send x-booqy-waf (SITE_WAF_SECRET, see shared/bot_check.py).
+    The viewer headers are only trusted with a matching secret, so a caller
+    going straight to API Gateway can't set them itself.
     """
-    secret = os.environ.get("CLOUDFRONT_EDGE_SECRET") or ""
-    if not secret:
-        return None
-    edge = header(event, "x-booqy-edge") or ""
-    if not edge or not hmac.compare_digest(edge.encode(), secret.encode()):
+    if not (_secret_matches(event, "x-booqy-edge", "CLOUDFRONT_EDGE_SECRET")
+            or _secret_matches(event, "x-booqy-waf", "SITE_WAF_SECRET")):
         return None
     value = (header(event, name) or "").strip()
     return value or None
@@ -60,7 +64,8 @@ def edge_header(event, name):
 
 def source_ip(event):
     """The caller's IP address (None if absent): the viewer's when the
-    request came through the admin app's CloudFront, else API Gateway's."""
+    request came through one of our CloudFront distributions, else API
+    Gateway's."""
     viewer = edge_header(event, "x-booqy-viewer-ip")
     if viewer:
         return viewer

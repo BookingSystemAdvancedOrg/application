@@ -107,8 +107,8 @@ ENV_VARS:
     SITE_TEMPLATE_REPO, SITE_TEMPLATE_OWNER (optional, default the repo's
     own org), SITES_BUCKET, DEPLOY_ROLE_PATH, DEPLOY_ROLE_PREFIX,
     DEPLOY_BOUNDARY_ARN, OIDC_PROVIDER_ARN, API_BASE_URL,
-    MENU_IMAGE_BASE_URL, PREVIEW_DOMAIN, STRIPE_PUBLISHABLE_KEY,
-    TURNSTILE_SITE_KEY; prod only: DEV_LINK_ROLE_ARN,
+    MENU_IMAGE_BASE_URL, PREVIEW_DOMAIN, STRIPE_PUBLISHABLE_KEY;
+    prod only: DEV_LINK_ROLE_ARN,
     DEV_PLATFORM_TENANTS_FUNCTION_ARN; dev only (test customers):
     TEST_GITHUB_ORG, TEST_GITHUB_ORG_ID, TEST_SITES_BUCKET,
     TEST_DEPLOY_ROLE_PATH, TEST_DEPLOY_ROLE_PREFIX, TEST_DEPLOY_BOUNDARY_ARN,
@@ -626,7 +626,6 @@ def _public_values(tenant_id):
         "apiBaseUrl": os.environ["API_BASE_URL"].rstrip("/"),
         "menuImageBaseUrl": os.environ.get("MENU_IMAGE_BASE_URL", "").rstrip("/"),
         "stripePublishableKey": os.environ.get("STRIPE_PUBLISHABLE_KEY", ""),
-        "turnstileSiteKey": os.environ.get("TURNSTILE_SITE_KEY", ""),
     }
 
 

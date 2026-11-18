@@ -233,8 +233,7 @@ def test_scenario_book_inside_rules(opening, name_line, lang, booked):
     assert "19:00" in proposal.text and not proposal.tool_uses
     asked = call.say("Ja" if lang == "sv" else "Yes")
     assert asked.text == agent_model.SENTENCES["ask_name"][0 if lang == "sv" else 1]
-    assert _use(call.say(name_line)) == ("create_reservation", {"holdId": "h1", "name": "Anna", "partySize": 4,
-                                                                "language": lang})
+    assert _use(call.say(name_line)) == ("create_reservation", {"holdId": "h1", "name": "Anna", "confirmed": True})
     assert booked in call.tool({"reservationId": "r1", "guaranteeRequired": False}).text
 
 
@@ -264,13 +263,15 @@ def test_scenario_large_party_gets_the_guarantee_link_never_card_details(opening
     assert sent.text == agent_model.CONFIRMATIONS["send_guarantee_link"][0 if lang == "sv" else 1]
 
 
-@pytest.mark.parametrize("opening, lang", [("Jag vill flytta min bokning till fredag klockan 20", "sv"),
-                                           ("I'd like to move my booking to Friday at 8 pm", "en")])
-def test_scenario_move_inside_cutoff(opening, lang):
+@pytest.mark.parametrize("opening, yes, lang", [("Jag vill flytta min bokning till fredag klockan 20", "Ja", "sv"),
+                                                ("I'd like to move my booking to Friday at 8 pm", "Yes", "en")])
+def test_scenario_move_inside_cutoff(opening, yes, lang):
     call = Call()
     assert _use(call.say(opening)) == ("find_reservations", {})
-    assert _use(call.tool({"reservations": [{"reservationId": "r3", "date": "2026-11-04", "time": "19:00"}]})) == (
-        "move_reservation", {"reservationId": "r3", "date": "2026-11-06", "time": "20:00"})
+    found = call.tool({"reservations": [{"reservationId": "r3", "date": "2026-11-04", "time": "19:00"}]})
+    assert ("flytta" if lang == "sv" else "move") in found.text            # read back, never moved at once
+    assert _use(call.say(yes)) == (
+        "move_reservation", {"reservationId": "r3", "date": "2026-11-06", "time": "20:00", "confirmed": True})
     assert call.tool({"ok": True}).text == agent_model.CONFIRMATIONS["move_reservation"][0 if lang == "sv" else 1]
 
 
@@ -281,7 +282,7 @@ def test_scenario_cancel_inside_cutoff(opening, yes, lang):
     assert _use(call.say(opening)) == ("find_reservations", {})
     found = call.tool({"reservations": [{"reservationId": "r4", "date": "2026-11-05", "time": "18:00"}]})
     assert "2026-11-05" in found.text and ("avboka" if lang == "sv" else "cancel") in found.text
-    assert _use(call.say(yes)) == ("cancel_reservation", {"reservationId": "r4"})
+    assert _use(call.say(yes)) == ("cancel_reservation", {"reservationId": "r4", "confirmed": True})
     assert call.tool({"ok": True}).text == agent_model.CONFIRMATIONS["cancel_reservation"][0 if lang == "sv" else 1]
 
 

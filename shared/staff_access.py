@@ -22,7 +22,7 @@ grant works at once).
 An area opens the page and the work staff do there. Actions that were the
 owner's before (refunds, amounts, settings inside a page, exports, roles)
 stay the owner's: an area never makes staff an owner. The pages that were
-owner only (Personal, Presentkort, Webbplats, Marknadsföring) open their own
+owner only (Personal, Presentkort, Marknadsföring) open their own
 work to granted staff, except who may do what (roles, permissions, deleting
 accounts), which is the owner's alone.
 """
@@ -44,10 +44,14 @@ AREAS = (
     "personal",
     "gaster",
     "presentkort",
-    "webbplats",
     "evenemang",
     "marknadsforing",
 )
+
+# Areas of removed pages. Stored grants with them are dropped when read
+# (_clean keeps AREAS only), and an older admin that still sends one gets it
+# accepted and dropped instead of a 400.
+RETIRED_AREAS = ("webbplats",)  # the site builder, removed 2026-11-17
 
 # What staff could open before permissions existed: a restaurant whose owner
 # has never saved a choice keeps working exactly as before.
@@ -104,12 +108,20 @@ def person(tenant_row: Optional[dict], sub: Optional[str]) -> dict:
     return {"add": _clean(entry.get("add")), "remove": _clean(entry.get("remove"))}
 
 
+AGENT_SUB_PREFIX = "agent:"            # = tenant.SYSTEM_SUB_PREFIX (tenant imports this module)
+AGENT_AREAS = ("bokningar", "layout")
+
+
 def areas_for(tenant_row: Optional[dict], role: Optional[str], sub: Optional[str]) -> list:
     """Every area the caller may open, in menu order."""
     if role == "owner_user":
         return list(AREAS)
     if role != "staff_user":
         return []
+    if isinstance(sub, str) and sub.startswith(AGENT_SUB_PREFIX):
+        # The phone agent's system principal (tenant.SYSTEM_SUB_PREFIX, never a
+        # Cognito login) books and reads bookings whatever the staff defaults say.
+        return [a for a in AREAS if a in AGENT_AREAS]
     own = person(tenant_row, sub)
     allowed = (set(defaults(tenant_row)) | set(own["add"])) - set(own["remove"])
     return [a for a in AREAS if a in allowed]
@@ -149,7 +161,7 @@ def owner_view(tenant_row: Optional[dict]) -> dict:
 def _areas_value(value, name: str) -> list:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ValueError(f"{name} must be a list of areas")
-    unknown = sorted(set(value) - set(AREAS))
+    unknown = sorted(set(value) - set(AREAS) - set(RETIRED_AREAS))
     if unknown:
         raise ValueError(f"{name} has unknown areas: {', '.join(unknown)}")
     return _clean(value)

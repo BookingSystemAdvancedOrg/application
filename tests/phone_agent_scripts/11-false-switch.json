@@ -1,0 +1,38 @@
+{
+ "id": "11-false-switch",
+ "title": "A Swedish call with okay, a name and a German street: stays Swedish",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "18:00",
+    "19:00",
+    "20:00"
+   ]
+  }
+ },
+ "expect": {},
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för två imorgon klockan sju på kvällen.",
+    "Okay.",
+    "Ahmed.",
+    "Vi bor på Hauptstraße, förresten.",
+    "Ja, det stämmer.",
+    "Danke, hej då."
+   ],
+   "languages": [
+    "sv",
+    "sv",
+    "sv",
+    "sv",
+    "sv",
+    "sv"
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed"
+   ]
+  }
+ }
+}

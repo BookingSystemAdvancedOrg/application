@@ -11,7 +11,7 @@ the admin app. Code: `shared/reservations.py` (data, locks, views),
 |---|---|---|
 | `POST /locations/{l}/reservations` | none (guest) | create-pending-reservation |
 | `POST /locations/{l}/reservations/manual` | JWT (staff: phone, walk-in) | create-pending-reservation |
-| `POST /locations/{l}/holds` | none (guest) + Turnstile | create-pending-reservation |
+| `POST /locations/{l}/holds` | none (guest) + bot check | create-pending-reservation |
 | `DELETE /locations/{l}/holds/{h}` | none + `X-Manage-Token` | create-pending-reservation |
 | `GET /locations/{l}/reservations?date=` | JWT | get-reservation |
 | `GET /locations/{l}/reservations/{r}` | JWT | get-reservation |
@@ -31,7 +31,7 @@ to their own location.
    tables (or restaurant-defined table combinations) that party may book
    online (see "Online table rules").
 2. The guest picks a start time and one of the options, passes the bot
-   check (Turnstile, see "Abuse protection") and confirms the table(s):
+   check (AWS WAF, see "Abuse protection") and confirms the table(s):
    `POST .../holds` claims them - same engine, locks and slot rows as a
    booking - for 15 minutes ("Table holds" below). The site counts down.
 3. The guest enters name, email, phone (+ notes, language, marketing
@@ -46,7 +46,7 @@ to their own location.
 
 | | |
 |---|---|
-| Create | `POST /locations/{l}/holds` `{date, startTime, tableIds, partySize, turnstileToken}` -> 201 `{holdId, manageToken, expiresAt, holdMinutes: 15, date, startTime, endTime, tableIds, partySize, cardRequired}`; 409 `table_taken` |
+| Create | `POST /locations/{l}/holds` `{date, startTime, tableIds, partySize}` -> 201 `{holdId, manageToken, expiresAt, holdMinutes: 15, date, startTime, endTime, tableIds, partySize, cardRequired}`; 409 `table_taken` |
 | Let go | `DELETE /locations/{l}/holds/{h}` + `X-Manage-Token` -> 200 `{released}` - idempotent, never cancels a booking |
 | Book | `POST .../reservations` with `holdId` -> 201 booking; 409 `hold_expired` after `expiresAt` |
 
@@ -64,7 +64,7 @@ to their own location.
 - Staff never see holds (`list_day` skips `held` and never-booked holds);
   a staff booking of a held table gets `table_taken` until the hold ends.
 - Limits: 8 holds per IP per 15 minutes, API Gateway throttling as for
-  bookings, Turnstile on the hold (not again on the booking).
+  bookings, the bot check on the hold and on the booking.
 
 ## Manage link
 
@@ -300,14 +300,22 @@ the next 60 days of them for the guest site (date list, opening hours), and
 The public booking form must not be a way to fill a restaurant's tables or
 to send messages at the platform's cost:
 
-- **Bot check** (`shared/turnstile.py`): when the platform's Cloudflare
-  Turnstile widget is configured (`turnstile_site_key`, secret in Secrets
-  Manager `<env>-catering/turnstile` as `{"secretKey": "..."}`), every
-  online booking needs the widget's token (single-use, 5 minutes, action
-  `booking`), checked with Cloudflare; 503 `verification_unavailable` when
-  the check can't be made. The free plan allows 10 hostnames per widget -
-  each covers its subdomains, so the platform domain covers every
-  `<slug>.<platform domain>`; each custom domain takes one.
+- **Bot check** (`shared/bot_check.py`): runs in AWS WAF on the
+  CloudFront distributions of the restaurant sites (infrastructure
+  `network/waf-sites`). The site loads the web ACL's JavaScript integration
+  (`botCheck.integrationUrl` in `/site-config`, `<url>challenge.js`) and
+  sends its form posts to `/api/*` on its own domain; the web ACL lets a
+  write through only with a valid token, then CloudFront adds the
+  `x-booqy-waf` origin header (`SITE_WAF_SECRET`). The Lambda only compares
+  that header, so the check costs no time and makes no outside call. With
+  `BOT_CHECK_ENFORCED=true` a hold or booking without it answers 400
+  `bot_check_failed` (503 `verification_unavailable` when enforced but
+  `SITE_WAF_SECRET` is missing). Not enforced: every post passes and the
+  ones that skipped the WAF are logged (`bot_check: not_through_waf`), so
+  the switch can be turned on once no real site posts past the WAF. The
+  same check covers orders, catering requests, the welcome-offer sign-up,
+  gift cards, event tickets and the waiting list. `turnstileToken` is
+  still accepted in the body (ignored) so older sites keep working.
 - **Attempt limits** (`shared/request_guard.py`, table
   `REQUEST_GUARD_TABLE_NAME`): 10 attempts per IP address per 10 minutes, 5
   bookings per phone number and 5 per e-mail per 24 hours; then 429

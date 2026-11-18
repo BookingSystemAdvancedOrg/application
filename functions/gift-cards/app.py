@@ -1,7 +1,7 @@
 """gift-cards
 
 TRIGGER:
-    API Gateway -- Auth: NONE (Turnstile + request guard on the POSTs)
+    API Gateway -- Auth: NONE (bot check + request guard on the POSTs)
     GET  /public/locations/{locationId}/gift-cards/offer           E1
     POST /public/locations/{locationId}/gift-cards/checkout        E2 PaymentIntent on the connected account
     POST /public/locations/{locationId}/gift-cards/balance         E3 any miss 404
@@ -32,8 +32,8 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, GIFT_CARDS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, GIFT_CARD_PEPPER_SECRET_ARN,
-    STRIPE_SECRET_ARN, STRIPE_API_VERSION, TURNSTILE_REQUIRED,
-    TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME,
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION, BOT_CHECK_ENFORCED,
+    SITE_WAF_SECRET, REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME,
     EVENT_BUS_NAME, CLOUDFRONT_EDGE_SECRET
 """
 
@@ -46,7 +46,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, orders, request_guard, tenant, turnstile
+from shared import bot_check, dynamo, events, http, orders, request_guard, tenant
 from shared import stripe_client as stripe
 from shared.features import gift_cards as gc
 
@@ -195,11 +195,10 @@ def checkout(event):
     if recipient_name is not None and (not isinstance(recipient_name, str) or len(recipient_name) > 80):
         raise gc.GiftCardError(400, "recipientName must be at most 80 characters", "recipientName")
     _guard(event, "giftcard-ip", CHECKOUT_IP_LIMIT)
-    if turnstile.required():
-        try:
-            turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
-        except ValueError:
-            raise gc.GiftCardError(400, "turnstile_failed", "turnstileToken")
+    try:
+        bot_check.verify(event, "giftcard")
+    except ValueError:
+        raise gc.GiftCardError(400, bot_check.FAILED)
     account = orders.stripe_account(ctx.tenant, ctx.location)
     if not account:
         raise gc.GiftCardError(409, "no_stripe_account")
@@ -248,11 +247,10 @@ def balance(event):
     ctx = tenant.for_public(location_id, feature=gc.FEATURE_KEY)
     body = http.body(event, allowed=("code", "turnstileToken"))
     _guard(event, "giftcard-balance-ip", BALANCE_IP_LIMIT)
-    if turnstile.required():
-        try:
-            turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
-        except ValueError:
-            raise gc.GiftCardError(400, "turnstile_failed", "turnstileToken")
+    try:
+        bot_check.verify(event, "giftcard-balance")
+    except ValueError:
+        raise gc.GiftCardError(400, bot_check.FAILED)
     card = gc.find_card_by_code(ctx.tenant_id, body.get("code"))
     if not card:
         raise gc.GiftCardError(404, "not found")
@@ -917,7 +915,7 @@ def handler(event, context=None):
         if " " in exc.code:
             return http.respond(exc.status, {"error": exc.code, **({"field": exc.field} if exc.field else {})})
         return _err(exc.status, exc.code, exc.field)
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return _err(503, "service_unavailable")
     except ValueError as exc:
         return http.respond(400, {"error": str(exc)})

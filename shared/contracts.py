@@ -3,14 +3,13 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "2f7fab7165b7"
+CONTRACTS_HASH = "cced507fd2a8"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
  'catering',
  'marketing',
  'metaAds',
- 'siteBuilder',
  'guestCrm',
  'googleBusiness',
  'giftCards',
@@ -22,7 +21,6 @@ FEATURE_KEYS = ('reservations',
  'events',
  'phoneAgent')
 NEW_FEATURE_KEYS = ('metaAds',
- 'siteBuilder',
  'guestCrm',
  'googleBusiness',
  'giftCards',
@@ -33,13 +31,12 @@ NEW_FEATURE_KEYS = ('metaAds',
  'dishMargin',
  'events',
  'phoneAgent')
-FeatureKey = Literal["reservations", "ordering", "catering", "marketing", "metaAds", "siteBuilder", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin", "events", "phoneAgent"]
+FeatureKey = Literal["reservations", "ordering", "catering", "marketing", "metaAds", "guestCrm", "googleBusiness", "giftCards", "waitlist", "socialPosting", "personalliggare", "accountingSync", "dishMargin", "events", "phoneAgent"]
 FEATURE_IDS = {'reservations': 'reservations',
  'ordering': 'ordering',
  'catering': 'catering',
  'marketing': 'marketing',
  'metaAds': 'meta-ads',
- 'siteBuilder': 'site-builder',
  'guestCrm': 'guest-crm',
  'googleBusiness': 'google-business',
  'giftCards': 'gift-cards',
@@ -50,18 +47,10 @@ FEATURE_IDS = {'reservations': 'reservations',
  'dishMargin': 'dish-margin',
  'events': 'events-tickets',
  'phoneAgent': 'phone-agent'}
-SITE_CONFIG_FEATURES = ('reservations',
- 'ordering',
- 'catering',
- 'marketing',
- 'siteBuilder',
- 'giftCards',
- 'waitlist',
- 'events')
+SITE_CONFIG_FEATURES = ('reservations', 'ordering', 'catering', 'marketing', 'giftCards', 'waitlist', 'events')
 
-LIMITS = {'phoneAgentMinutesPerMonth': {'feature': 'phoneAgent', 'min': 0, 'max': 100000, 'default': 0},
- 'siteBuilderAiEditsPerMonth': {'feature': 'siteBuilder', 'min': 0, 'max': 1000, 'default': 0}}
-LimitKey = Literal["phoneAgentMinutesPerMonth", "siteBuilderAiEditsPerMonth"]
+LIMITS = {'phoneAgentMinutesPerMonth': {'feature': 'phoneAgent', 'min': 0, 'max': 100000, 'default': 0}}
+LimitKey = Literal["phoneAgentMinutesPerMonth"]
 
 EVENT_BUS = "booqy-events"
 EVENT_COMMON_FIELDS = {'tenantId': 'string', 'occurredAt': 'datetime', 'version': 'int'}
@@ -74,7 +63,6 @@ EVENT_SOURCES = ('booqy.accounting-sync',
  'booqy.meta-ads',
  'booqy.personalliggare',
  'booqy.phone-agent',
- 'booqy.site-builder',
  'booqy.social-posting',
  'booqy.waitlist')
 EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'provider': 'enum[fortnox,visma]'},
@@ -247,15 +235,6 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                    'optional': {}},
                        'PhoneNumber.Released': {'required': {'locationId': 'string'},
                                                 'optional': {}}},
- 'booqy.site-builder': {'SitePublish.Failed': {'required': {'publishId': 'string',
-                                                            'code': 'string'},
-                                               'optional': {}},
-                        'SiteRelease.Proposed': {'required': {'commitSha': 'string'},
-                                                 'optional': {}},
-                        'SiteVersion.Published': {'required': {'versionNo': 'int',
-                                                               'source': 'enum[builder,custom]',
-                                                               'kind': 'enum[publish,rollback]'},
-                                                  'optional': {'previousNo': 'int'}}},
  'booqy.social-posting': {'SocialPost.Failed': {'required': {'postId': 'string',
                                                              'locationId': 'string',
                                                              'channel': 'enum[facebook,instagram]',
@@ -681,31 +660,6 @@ class PhoneNumberReleasedDetail(TypedDict):
     locationId: str
 
 
-class SitePublishFailedDetail(TypedDict):
-    tenantId: str
-    occurredAt: str
-    version: int
-    publishId: str
-    code: str
-
-
-class SiteReleaseProposedDetail(TypedDict):
-    tenantId: str
-    occurredAt: str
-    version: int
-    commitSha: str
-
-
-class SiteVersionPublishedDetail(TypedDict):
-    tenantId: str
-    occurredAt: str
-    version: int
-    versionNo: int
-    previousNo: NotRequired[int]
-    source: Literal["builder", "custom"]
-    kind: Literal["publish", "rollback"]
-
-
 class SocialPostFailedDetail(TypedDict):
     tenantId: str
     occurredAt: str
@@ -811,11 +765,7 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
                        'targets': ['guest-crm'],
                        'gate': 'audience {type: segment, exportId}'},
  'platform': {'caller': 'platform-tenants',
-              'targets': ['meta-ads',
-                          'site-builder',
-                          'google-business',
-                          'personalliggare',
-                          'phone-agent'],
+              'targets': ['meta-ads', 'google-business', 'personalliggare', 'phone-agent'],
               'gate': 'operator route hit'},
  'privacy.erase': {'caller': 'guest-privacy',
                    'targets': ['guest-crm',
@@ -840,7 +790,6 @@ HOOKS = {'accounting.events': {'caller': 'shared/accounting.location_events',
                           'stripeAccountId on its own purchase, TX or order row'},
  'tenant.purge': {'caller': 'tenant-purge',
                   'targets': ['meta-ads',
-                              'site-builder',
                               'guest-crm',
                               'google-business',
                               'gift-cards',

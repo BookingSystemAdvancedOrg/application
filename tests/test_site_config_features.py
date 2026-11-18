@@ -1,6 +1,5 @@
-"""/site-config Run 0 additions (CONTRACTS.md 7): tenant.site and
-locations[].waitlist, present only when the feature is on and the
-attribute is written."""
+"""/site-config Run 0 additions (CONTRACTS.md 7): locations[].waitlist,
+present only when the feature is on and the attribute is written."""
 
 import json
 
@@ -11,9 +10,6 @@ from shared import tenant as shared_tenant
 from tenant_support import (LOC_A, LOC_B, LOCATION_TABLE_DEFAULT, REGION, TENANT_A, TENANT_B, features_on,
                             location_row, tenant_row)
 from test_tenant_site_config import call, site  # fixture `site` is used by name
-
-SITE = {"mode": "builder", "version": 3}
-
 
 def _set(tenants, tenant_id, slug, features, **extra):
     tenants.put_item(Item=tenant_row(tenant_id, slug=slug, features=features, **extra))
@@ -36,47 +32,47 @@ def _hagastan(body):
     return next(loc for loc in body["locations"] if loc["locationId"] == LOC_A)
 
 
-@pytest.mark.parametrize("features, with_attrs", [(None, True), (features_on(), True),
-                                                   (features_on("siteBuilder", "waitlist"), False)])
-def test_fields_absent_when_off_or_not_written(site, features, with_attrs):
+def test_waitlist_absent_when_off_or_not_written(site):
     module, tenants = site
-    extra = {"site": SITE} if with_attrs else {}
-    _set(tenants, TENANT_A, "roma", features, **extra)
-    if with_attrs:
-        _locations([location_row(TENANT_A, LOC_A, waitlist={"publicJoin": True})])
-    body = _body(module)
-    assert "site" not in body["tenant"]
-    assert all("waitlist" not in loc for loc in body["locations"])
+    _set(tenants, TENANT_A, "roma", features_on())
+    _locations([location_row(TENANT_A, LOC_A, waitlist={"publicJoin": True})])
+    assert all("waitlist" not in loc for loc in _body(module)["locations"])
+    _set(tenants, TENANT_A, "roma", features_on("waitlist"))
+    _locations([location_row(TENANT_A, LOC_A)])
+    assert all("waitlist" not in loc for loc in _body(module)["locations"])
 
 
-def test_fields_present_when_on_and_written(site):
+def test_waitlist_present_when_on_and_written(site):
     module, tenants = site
-    _set(tenants, TENANT_A, "roma", features_on("siteBuilder", "waitlist"), site=SITE)
+    _set(tenants, TENANT_A, "roma", features_on("waitlist"))
     _locations([location_row(TENANT_A, LOC_A, waitlist={"publicJoin": True, "secret": "x"})])
     body = _body(module)
-    assert body["tenant"]["site"] == {"mode": "builder", "version": 3}
     assert _hagastan(body)["waitlist"] == {"publicJoin": True}
     assert "secret" not in json.dumps(body)
 
 
-@pytest.mark.parametrize("bad", [{"mode": "other", "version": 1}, {"mode": "custom", "version": "x"},
-                                 {"mode": "custom", "version": -1}, "builder"])
-def test_malformed_site_is_left_out(site, bad):
+def test_removed_site_builder_leftovers_never_show(site):
+    """The site builder was removed: a stored siteBuilder entitlement and a
+    PROFILE.site pointer from it are ignored, never sent to the guest site."""
     module, tenants = site
-    _set(tenants, TENANT_A, "roma", features_on("siteBuilder"), site=bad)
-    assert "site" not in _body(module)["tenant"]
+    row = tenant_row(TENANT_A, slug="roma", features=features_on(), site={"mode": "builder", "version": 3})
+    row["entitlements"]["features"]["siteBuilder"] = True
+    tenants.put_item(Item=row)
+    shared_tenant.reset_caches()
+    body = _body(module)
+    assert "site" not in body["tenant"] and "siteBuilder" not in body["tenant"]["features"]
 
 
-def test_another_tenants_site_and_waitlist_never_show(site):
+def test_another_tenants_waitlist_never_shows(site):
     module, tenants = site
     _set(tenants, TENANT_A, "roma", features_on())
-    _set(tenants, TENANT_B, "other", features_on("siteBuilder", "waitlist"), site=SITE)
+    _set(tenants, TENANT_B, "other", features_on("waitlist"))
     _locations([location_row(TENANT_B, LOC_B, waitlist={"publicJoin": True})])
     body = _body(module, "roma")
-    assert body["tenant"]["tenantId"] == TENANT_A and "site" not in body["tenant"]
+    assert body["tenant"]["tenantId"] == TENANT_A
     assert all("waitlist" not in loc for loc in body["locations"])
     other = _body(module, "other")
-    assert other["tenant"]["site"] == SITE and other["locations"][0]["waitlist"] == {"publicJoin": True}
+    assert other["locations"][0]["waitlist"] == {"publicJoin": True}
 
 
 @pytest.mark.parametrize("features, expected", [(None, False), (features_on(), False), (features_on("events"), True)])

@@ -5,8 +5,8 @@ Who is who:
 - **Controller:** each restaurant for its own guests' data (bookings, orders,
   catering requests, marketing consent).
 - **Processor:** IT-hjälparna Nordic AB (Booqy), on AWS in eu-north-1 (Stockholm).
-- **Sub-processors:** AWS (hosting, SES e-mail, SMS), Stripe (payments, card
-  guarantees), Cloudflare (Turnstile bot check).
+- **Sub-processors:** AWS (hosting, SES e-mail, SMS, the AWS WAF bot check
+  on the restaurant sites), Stripe (payments, card guarantees).
 - **Booqy as controller:** only for its own customers, meaning the restaurants
   and their staff users, and Booqy's invoicing of them.
 

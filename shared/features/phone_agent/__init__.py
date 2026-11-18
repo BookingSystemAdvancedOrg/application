@@ -46,6 +46,7 @@ MODES = ("after_hours", "overflow", "always")
 OPERATORS = ("telia", "tele2", "telenor", "tre", "telia_fast", "vaxel", "other")
 DEFAULT_AGENT_NAME = "Booqy"
 TONES = ("formal", "friendly")
+DEFAULT_TONE = "formal"   # owner 2026-11-17: polite by default; saved configs keep their own tone
 # The call languages (owner 2026-11-13): Swedish first, then whichever the
 # caller speaks (language.CALL_LANGUAGES). `languages` in CONFIG lists the
 # ones the agent may switch to; Swedish is always on.
@@ -53,6 +54,7 @@ from shared.features.phone_agent.language import VOICE_LANGUAGES as LANGUAGES  #
 BOOKING_LANGUAGES = ("sv", "en")   # what confirmation SMS and emails are written in
 RETENTION_DAYS = (7, 30, 90)  # [NEEDS YOUR OK: options and default 30]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+PHONE_MAX_PARTY = 50       # phoneMaxPartySize: the largest party the agent books itself (None = the online maximum)
 OUTCOMES = ("booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error")
 COUNTER_OFFERS = ("none", "other_time", "next_day", "nearby_table")
 CALL_STATUSES = ("ringing", "answered", "disclosed", "talking", "transferring", "ended", "processed")
@@ -249,7 +251,7 @@ def tenant_cap(tenant_row, config) -> int:
 
 
 def config_view(tenant_row, config) -> dict:
-    return {"agentName": config.get("agentName") or DEFAULT_AGENT_NAME, "tone": config.get("tone") or "friendly",
+    return {"agentName": config.get("agentName") or DEFAULT_AGENT_NAME, "tone": config.get("tone") or DEFAULT_TONE,
             "languages": list(config.get("languages") or LANGUAGES),
             "recording": plain(config.get("recording") or {"enabled": False}),
             "minutesCapPerMonth": tenant_cap(tenant_row, config), "version": int(config.get("version") or 0)}
@@ -361,15 +363,22 @@ def validate_location(body, *, restaurant_phone=None) -> dict:
     if not isinstance(offers, dict) or set(offers) - {"nearbyTables", "phoneOnlyTables"} or \
             any(not isinstance(offers.get(k, True), bool) for k in ("nearbyTables", "phoneOnlyTables")):
         raise PhoneAgentError(400, "invalid_counter_offers", "counterOffers")
+    phone_max = body.get("phoneMaxPartySize")
+    if phone_max is not None and (isinstance(phone_max, bool) or not isinstance(phone_max, (int, Decimal))
+                                  or phone_max != int(phone_max) or not 1 <= phone_max <= PHONE_MAX_PARTY):
+        raise PhoneAgentError(400, "invalid_phone_max_party_size", "phoneMaxPartySize")
     share = body.get("shareNumberWith")
     if share is not None and not valid_id(share):
         raise PhoneAgentError(400, "shareNumberWith must be a location id", "shareNumberWith")
-    return {"enabled": enabled, "mode": mode, "agentHours": hours, "shareNumberWith": share,
+    out = {"enabled": enabled, "mode": mode, "agentHours": hours, "shareNumberWith": share,
             "greetingExtraSv": _text(body.get("greetingExtraSv"), "greetingExtraSv"),
             "greetingExtraEn": _text(body.get("greetingExtraEn"), "greetingExtraEn"),
             "transferTo": transfer, "maxCallSeconds": int(max_call),
             "counterOffers": {"nearbyTables": offers.get("nearbyTables", True),
                               "phoneOnlyTables": offers.get("phoneOnlyTables", True)}}
+    if "phoneMaxPartySize" in body:   # absent (an older admin): the stored value is kept
+        out["phoneMaxPartySize"] = int(phone_max) if phone_max is not None else None
+    return out
 
 
 def validate_setup(body) -> dict:
@@ -417,6 +426,7 @@ def loc_view(loc, *, owner=True, test_number=None) -> dict:
            "greetingExtraEn": loc.get("greetingExtraEn") or "", "maxCallSeconds": int(loc.get("maxCallSeconds")
                                                                                        or MAX_CALL_DEFAULT),
            "counterOffers": plain(loc.get("counterOffers") or {"nearbyTables": True, "phoneOnlyTables": True}),
+           "phoneMaxPartySize": int(loc["phoneMaxPartySize"]) if loc.get("phoneMaxPartySize") is not None else None,
            "number": (loc.get("number") or {}).get("e164"),
            "numberSharedWith": (loc.get("number") or {}).get("ownerLocationId") or None,
            "version": int(loc.get("version") or 0),

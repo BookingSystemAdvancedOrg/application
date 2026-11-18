@@ -126,7 +126,22 @@ class _Epos(_Ticket):
                 + '<feed line="1"/><cut type="feed"/></epos-print>')
 
 
+class _Lines(_Epos):
+    """The same ticket as rows for the simulated printer in Booqy Admin:
+    [{text, bold?, big?, center?}], wrapped like the paper would."""
+
+    def _text(self, text, *, bold=False, big=False, center=False):
+        row = {"text": text}
+        row.update({k: True for k, v in (("bold", bold), ("big", big), ("center", center)) if v})
+        self.parts.append(row)
+
+    def done(self):
+        return list(self.parts)
+
+
 def _new(width, fmt):
+    if fmt == "text":
+        return _Lines(width)
     return _Epos(width) if fmt == "epson" else _Ticket(width)
 
 
@@ -239,7 +254,7 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
         t.line("KAN VARA DUBBLETT", bold=True, center=True)
     if copy:
         t.line("KOPIA", bold=True, center=True)
-    t.line(clean(ticket.get("stationName")).upper() or "KÖK", bold=True, big=True, center=True)
+    t.line(clean(routing.station_name(ticket)).upper() or "KÖK", bold=True, big=True, center=True)
     if ticket.get("number"):
         t.line(f"#{ticket['number']}", bold=True, big=True, center=True)
     t.line(_where(ticket.get("mode"), ticket.get("tableLabel")), bold=True, big=True, center=True)

@@ -5,6 +5,7 @@ and Bedrock Converse (shared/agent_model_real.py)."""
 import hashlib
 import hmac
 import json
+import time
 import urllib.parse
 
 import pytest
@@ -73,9 +74,13 @@ def test_create_agent_builds_a_swedish_first_multilingual_agent_on_booqys_llm(vo
     assert set(llm["built_in_tools"]) == {"end_call", "language_detection", "transfer_to_number"}
     transfer = llm["built_in_tools"]["transfer_to_number"]["params"]["transfers"][0]
     assert transfer["transfer_destination"]["phone_number"] == "+46812345678"
-    assert body["conversation_config"]["tts"] == {"voice_id": "voice-sv-1", "model_id": "eleven_flash_v2_5"}
+    assert body["conversation_config"]["tts"] == {"voice_id": "voice-sv-1", "model_id": "eleven_flash_v2_5",
+                                                  "stability": 0.6, "speed": 0.95}
+    assert body["conversation_config"]["turn"] == {"turn_eagerness": "normal", "turn_timeout": 8}
     presets = body["conversation_config"]["language_presets"]
     assert len(presets) == 31 and {"en", "de", "tr", "ar", "fil"} <= set(presets) and "sv" not in presets
+    assert "so" not in presets                      # flash v2.5 cannot speak Somali
+
     assert body["conversation_config"]["conversation"]["max_duration_seconds"] == 480
     settings = body["platform_settings"]
     assert settings["overrides"]["enable_conversation_initiation_client_data_from_webhook"] is True
@@ -85,6 +90,17 @@ def test_create_agent_builds_a_swedish_first_multilingual_agent_on_booqys_llm(vo
     assert settings["privacy"]["record_voice"] is False
     # keys never travel in plain text inside the agent
     assert "llm-key-value" not in json.dumps(body) and "init-token-value" not in json.dumps(body)
+
+
+def test_v4_voice_model_adds_somali_persian_and_amharic(voice_env, monkeypatch):
+    monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
+    listed = {"secrets": [{"name": "dev-booqy-llm-endpoint-key", "secret_id": "sec-llm"},
+                          {"name": "dev-booqy-webhook-token", "secret_id": "sec-tok"}]}
+    http = Http([("GET", "/v1/convai/secrets", 200, listed), ("GET", "/v1/convai/secrets", 200, listed)])
+    body = provider(http).agent_body(CONFIG)
+    presets = body["conversation_config"]["language_presets"]
+    assert {"so", "fa", "am", "ckb", "ru", "de"} <= set(presets) and "sv" not in presets
+    assert body["conversation_config"]["tts"]["model_id"] == "eleven_v4_turbo"
 
 
 def test_create_agent_is_idempotent_by_name(voice_env):
@@ -283,14 +299,21 @@ class FakeBedrock:
         return {"stream": self.stream}
 
 
-def test_real_agent_model_calls_converse_stream_on_the_configured_model():
+def test_real_agent_model_calls_converse_stream_on_the_configured_model(monkeypatch):
+    monkeypatch.delenv("PHONE_AGENT_THINKING", raising=False)
     bedrock = FakeBedrock([{"contentBlockDelta": {"delta": {"text": "Hej!"}}}, {"messageStop": {"stopReason":
                                                                                                 "end_turn"}}])
     model = RealAgentModel(client=bedrock, model_id="eu.anthropic.claude-haiku")
     turn = model.converse("system", [{"role": "user", "content": "Hej"}], TOOLS, max_tokens=400)
     assert turn.text == "Hej!"
     assert bedrock.args["modelId"] == "eu.anthropic.claude-haiku" and bedrock.args["system"] == [{"text": "system"}]
-    assert bedrock.args["inferenceConfig"]["maxTokens"] == 400 and "toolConfig" in bedrock.args
+    # thinking at effort low (Haiku 5.5 thinks by default): reasoning gets its own room on top of the reply
+    assert bedrock.args["inferenceConfig"]["maxTokens"] == 1900 and "toolConfig" in bedrock.args
+    assert bedrock.args["additionalModelRequestFields"] == {"output_config": {"effort": "low"}}
+    monkeypatch.setenv("PHONE_AGENT_THINKING", "off")
+    model.converse("system", [{"role": "user", "content": "Hej"}], TOOLS, max_tokens=400)
+    assert bedrock.args["additionalModelRequestFields"] == {"thinking": {"type": "disabled"}}
+    assert bedrock.args["inferenceConfig"]["maxTokens"] == 400
 
 
 def test_real_agent_model_errors():
@@ -301,3 +324,61 @@ def test_real_agent_model_errors():
         with pytest.raises(AgentModelError) as raised:
             RealAgentModel(client=FakeBedrock(error=error), model_id="m").converse("s", [], [], max_tokens=5)
         assert (raised.value.code, raised.value.retryable) == (code, retry)
+
+
+class FlakyBedrock(FakeBedrock):
+    """Fails `failures` times with a throttle, sleeping `delay` seconds first."""
+
+    def __init__(self, failures, delay=0.0):
+        super().__init__([{"contentBlockDelta": {"delta": {"text": "Hej."}}}])
+        self.failures, self.delay, self.calls = failures, delay, 0
+
+    def converse_stream(self, **args):
+        from botocore.exceptions import ClientError
+        self.calls += 1
+        self.at = getattr(self, "at", []) + [time.monotonic()]
+        time.sleep(self.delay)
+        if self.calls <= self.failures:
+            raise ClientError({"Error": {"Code": "ThrottlingException"}}, "ConverseStream")
+        return super().converse_stream(**args)
+
+
+def test_real_agent_model_retries_once_only_when_the_turn_has_time_for_it():
+    ok = FlakyBedrock(1)
+    assert RealAgentModel(client=ok, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=8).text == "Hej."
+    assert ok.calls == 2
+    late = FlakyBedrock(1, delay=0.3)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=late, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=2.6)
+    assert raised.value.code == "timeout" and late.calls == 1
+    twice = FlakyBedrock(2)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=twice, model_id="m").converse("s", [], [], max_tokens=5)
+    assert raised.value.code == "unavailable" and twice.calls == 2
+    # a throttle is not retried at once (botocore's own backoff is off): a short jittered pause first,
+    # and only when the attempt still fits after it
+    assert twice.at[1] - twice.at[0] >= 0.1
+    tight = FlakyBedrock(1)
+    with pytest.raises(AgentModelError) as raised:
+        RealAgentModel(client=tight, model_id="m").converse("s", [], [], max_tokens=5, timeout_s=2.55)
+    assert raised.value.code == "timeout" and tight.calls == 1
+
+
+def test_real_agent_model_timeouts_follow_the_time_left_and_botocore_never_retries(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+    model = RealAgentModel(model_id="m")
+    short, full = model.client_for(3.2), model.client_for(None)
+    assert (short.meta.config.read_timeout, short.meta.config.connect_timeout) == (4, 2)
+    assert full.meta.config.read_timeout == 12 and model.client_for(0.2).meta.config.read_timeout == 1
+    assert short.meta.config.retries["total_max_attempts"] == 1 and model.client_for(3.9) is short
+
+
+def test_reading_the_stream_stops_at_the_deadline():
+    def slow():
+        yield {"contentBlockDelta": {"delta": {"text": "Hej"}}}
+        time.sleep(0.3)
+        yield {"contentBlockDelta": {"delta": {"text": " då."}}}
+    with pytest.raises(AgentModelError) as raised:
+        read_stream(slow(), time.monotonic() + 0.1)
+    assert raised.value.code == "timeout"
+    assert read_stream(slow(), time.monotonic() + 5).text == "Hej då."

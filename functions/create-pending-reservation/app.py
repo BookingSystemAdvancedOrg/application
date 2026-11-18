@@ -15,7 +15,7 @@ TRIGGER:
 
 TABLE HOLDS:
     The guest picks their table(s) and confirms them (POST .../holds with
-    date, startTime, tableIds, partySize and the Turnstile token): the
+    date, startTime, tableIds, partySize; bot check as below): the
     tables are claimed exactly like a booking - same locks and slot rows,
     same 409 "table_taken" if someone was faster - as a booking in status
     "held" with no guest data, for HOLD_MINUTES (15). The answer carries
@@ -65,8 +65,8 @@ PURPOSE:
     Abuse protection for online bookings: at most a few attempts per IP
     address (10 minutes) and a few bookings per phone number / e-mail
     (24 hours - an attempt that books nothing is given back)
-    (shared/request_guard.py, 429), and a Cloudflare Turnstile token from
-    the booking form when the sites show the widget (shared/turnstile.py).
+    (shared/request_guard.py, 429), and the bot check: the post came
+    through the site's AWS WAF (shared/bot_check.py).
 
     Notifications: the booking is written with a "confirmed" notice, which
     the Reservation stream turns into the guest's confirmation (email/SMS,
@@ -96,7 +96,7 @@ ENV_VARS:
     RESERVATION_RETENTION_DAYS (optional, default 395),
     RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (card guarantee)
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN (bot check, shared/turnstile.py)
+    BOT_CHECK_ENFORCED, SITE_WAF_SECRET (bot check, shared/bot_check.py)
     REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
 
 Full details: docs/RESERVATIONS.md
@@ -108,7 +108,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import request_guard, tenant, turnstile
+from shared import bot_check, request_guard, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -140,8 +140,7 @@ def _guard_online(event, data, guest, now):
     back if the attempt doesn't end in a booking (the IP address keeps it)."""
     ip = http.source_ip(event)
     request_guard.check([("ip", ip, *IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip)
+    bot_check.verify(event, "booking")
     return request_guard.check([
         ("phone", guest.get("customerPhone"), *CONTACT_LIMIT),
         ("email", guest.get("customerEmail"), *CONTACT_LIMIT),
@@ -366,8 +365,7 @@ def _hold(event):
     now = r.now_utc()
     ip = http.source_ip(event)
     request_guard.check([("hold-ip", ip, *HOLD_IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip)
+    bot_check.verify(event, "hold")
 
     versions, context, slot, seats = _checked_slot(
         ctx, location_id, now, staff=False, source="online", date_str=date_str,
@@ -561,7 +559,7 @@ def handler(event, context):
         return exc.response()
     except request_guard.Limited as exc:
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return http.error(503, "verification_unavailable")
     except r.NotFound:
         return http.error(404, "not found")

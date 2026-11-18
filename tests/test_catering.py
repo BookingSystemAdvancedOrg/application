@@ -159,7 +159,7 @@ def env(monkeypatch):
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
-    monkeypatch.delenv("TURNSTILE_REQUIRED", raising=False)
+    monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
     with mock_aws():
         shared_dynamo._resource = None
         shared_dynamo._client = None

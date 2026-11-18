@@ -48,11 +48,11 @@ def test_owner_always_has_everything():
 def test_staff_areas_are_group_plus_own_minus_removed():
     row = tenant_row(TENANT_A, staffAccess={
         "defaults": ["bokningar", "meny"],
-        "users": {"s1": {"add": ["webbplats"], "remove": ["meny"]}},
+        "users": {"s1": {"add": ["presentkort"], "remove": ["meny"]}},
     })
-    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "webbplats"]
+    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "presentkort"]
     assert sa.areas_for(row, "staff_user", "s2") == ["bokningar", "meny"]
-    assert sa.allows(row, "staff_user", "s1", ("meny", "webbplats"))
+    assert sa.allows(row, "staff_user", "s1", ("meny", "presentkort"))
     assert not sa.allows(row, "staff_user", "s1", "meny")
     assert sa.areas_for(row, None, "s1") == []
 
@@ -65,6 +65,22 @@ def test_unknown_area_raises_instead_of_guessing():
 def test_stored_garbage_is_ignored():
     row = tenant_row(TENANT_A, staffAccess={"defaults": ["bokningar", "kassa", 3], "users": {"s": "x"}})
     assert sa.areas_for(row, "staff_user", "s") == ["bokningar"]
+
+
+def test_retired_webbplats_area_is_harmless():
+    """The site builder (area webbplats) was removed: a stored grant is
+    dropped when read, and an older admin that still sends it is accepted
+    with the area dropped instead of a 400."""
+    assert "webbplats" not in sa.AREAS
+    row = tenant_row(TENANT_A, staffAccess={"defaults": ["bokningar", "webbplats"],
+                                            "users": {"s1": {"add": ["webbplats", "meny"]}}})
+    assert sa.areas_for(row, "staff_user", "s1") == ["bokningar", "meny"]
+    assert sa.owner_view(row)["defaults"] == ["bokningar"]
+    new = sa.apply_edit(tenant_row(TENANT_A), {"version": 0, "defaults": ["webbplats", "meny"],
+                                               "users": {"s1": {"add": ["webbplats"], "remove": []}}}, "t", "o")
+    assert new["defaults"] == ["meny"] and "s1" not in (new.get("users") or {})
+    with pytest.raises(ValueError):
+        sa.apply_edit(tenant_row(TENANT_A), {"version": 0, "defaults": ["kassa"]}, "t", "o")
 
 
 def test_apply_edit_validates_bumps_version_and_tidies():
@@ -127,7 +143,7 @@ def tenancy(monkeypatch):
 
 
 def sa_features():
-    return ("guestCrm", "giftCards", "siteBuilder", "events", "marketing", "metaAds", "googleBusiness",
+    return ("guestCrm", "giftCards", "events", "marketing", "metaAds", "googleBusiness",
             "socialPosting", "personalliggare", "phoneAgent", "waitlist")
 
 
@@ -233,10 +249,12 @@ GUARDED = [
     ("waitlist", "POST /locations/{locationId}/waitlist/{entryId}/seat", {**L, "entryId": "e1"}, "bokningar"),
     ("manage-order", "GET /locations/{locationId}/orders", L, "bestallningar"),
     ("manage-order", "PUT /locations/{locationId}/orders/{proxy+}", {**L, "proxy": "o1/status"}, "bestallningar"),
-    ("manage-order", "GET /locations/{locationId}/orders/{proxy+}", {**L, "proxy": "table-codes"}, "layout"),
     ("print-jobs", "GET /locations/{locationId}/print", L, "bestallningar"),
     ("print-jobs", "GET /locations/{locationId}/print/{proxy+}", {**L, "proxy": "routing"}, "meny"),
     ("print-jobs", "POST /locations/{locationId}/print/{proxy+}", {**L, "proxy": "jobs"}, "bestallningar"),
+    ("print-jobs", "POST /locations/{locationId}/print/{proxy+}", {**L, "proxy": "devices"}, "bestallningar"),
+    ("print-jobs", "PUT /locations/{locationId}/print/{proxy+}", {**L, "proxy": "devices/" + "a" * 32},
+     "bestallningar"),
     ("catering-requests", "GET /locations/{locationId}/catering/requests", L, "catering"),
     ("catering-offer", "GET /locations/{locationId}/catering/requests/{requestId}",
      {**L, "requestId": "q1"}, "catering"),
@@ -260,8 +278,6 @@ GUARDED = [
     ("guest-crm", "POST /locations/{locationId}/guests/lookup", L, "bokningar"),
     ("gift-cards", "GET /tenant/gift-cards", {}, "presentkort"),
     ("gift-cards", "GET /tenant/gift-cards/settings", {}, "presentkort"),
-    ("site-builder", "GET /tenant/site-builder", {}, "webbplats"),
-    ("site-builder", "POST /tenant/site-builder/publish", {}, "webbplats"),
     ("events-tickets", "GET /locations/{locationId}/events", L, "evenemang"),
     ("events-tickets", "POST /locations/{locationId}/events/{eventId}/occurrences/{occurrenceId}/check-ins",
      {**L, "eventId": "e1", "occurrenceId": "o1"}, "evenemang"),
@@ -368,3 +384,15 @@ def test_help_assistant_follows_the_areas():
     assert not help.visible(doc, **staff)
     assert help.visible(owner_page, **staff) and not help.visible(owner_page, **other)
     assert help.visible(doc, **help.caller_view(row, "owner_user", OWNER_A_SUB))
+
+
+def test_staff_with_bestallningar_never_remove_a_printer_or_rotate_its_key(routes):
+    """Beställningar opens adding, renaming, the kind and test prints;
+    removing a printer and a new secret stay the owner's."""
+    _set_access(defaults=["bestallningar"])
+    device = "a" * 32
+    for route_key, proxy in (("DELETE /locations/{locationId}/print/{proxy+}", f"devices/{device}"),
+                             ("POST /locations/{locationId}/print/{proxy+}", f"devices/{device}/rotate")):
+        status, body = _invoke(routes, "print-jobs", route_key, {**L, "proxy": proxy})
+        assert (status, body.get("error")) == (403, "owner_only"), (route_key, body)
+

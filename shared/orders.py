@@ -1,11 +1,15 @@
 """Food orders: the location's ordering policy, pricing from the menu, VAT,
-signed table QR codes and status links, the order record and its views.
+signed status links, the order record and its views.
 
-Two ways to order:
-    pickup  the guest orders from anywhere (the restaurant's site) and
-            collects at the counter when the "ready" SMS arrives
-    table   the guest scans the QR code on a table; staff bring the food
-            to that table
+One way to order online:
+    pickup  the guest orders and pays from anywhere (the restaurant's site)
+            and collects at the counter when the "ready" SMS arrives
+
+QR ordering at the table is off (owner decision 2026-11-17: ordering and
+paying at the table needs a certified register). New orders are pickup
+only; guests on site order and pay in the restaurant's own till. Orders
+placed at a table before that keep mode "table" with tableId/tableLabel,
+and every view, ticket, message and statistic still shows their table.
 
 Order record (order table, one partition per location):
     PK LOCATION#<locationId>   SK ORDER#<date>#<orderId>       the order
@@ -24,14 +28,14 @@ Prices are always read from the menu here - what the browser sent is never
 trusted. Amounts are öre (Stripe's minor unit for SEK).
 
 VAT (Sweden): alcohol 25 %; other food and drink 12 % when served at the
-table (restaurant service) and 6 % for takeaway between 2026-04-01 and
+table (restaurant service, past table orders) and 6 % for takeaway between 2026-04-01 and
 2027-12-31 (temporary food VAT cut), 12 % otherwise. Rates are per line, so
 a receipt shows the split.
 
 Location policy (location item, ``ordering``, edited by the owner):
     enabled          bool
-    pickup           bool  online orders for pickup
-    table            bool  QR orders at the table
+    pickup           bool  online orders for pickup (must be on when enabled)
+    (a stored or sent ``table`` flag from before 2026-11-17 is accepted and ignored)
     prepMinutes      5-180  estimate shown to the guest
     lastOrderMinutes 0-120  stop taking orders this long before closing
 Staff can pause ordering for a while (``orderingPausedUntil`` on the
@@ -41,7 +45,6 @@ location) when the kitchen is full.
 import base64
 import hashlib
 import hmac
-import json
 import os
 import re
 import uuid
@@ -53,7 +56,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
-from shared import booking_rules, dynamo, manage_link, menu, safe_compare
+from shared import booking_rules, dynamo, http, manage_link, menu, safe_compare
 
 _deserializer = TypeDeserializer()
 
@@ -66,8 +69,8 @@ PENDING_TTL_MINUTES = 2 * CHECKOUT_MINUTES
 MAX_PAUSE_MINUTES = 240
 
 PICKUP = "pickup"
-TABLE = "table"
-MODES = (PICKUP, TABLE)
+TABLE = "table"  # past QR table orders only; new orders cannot use it
+MODES = (PICKUP,)
 
 PENDING_PAYMENT = "pending_payment"
 CONFIRMED = "confirmed"
@@ -106,8 +109,18 @@ _REDUCED_UNTIL = date(2027, 12, 31)
 _ID = re.compile(r"[0-9a-f]{32}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MENU_ID_MAX = 128
-_TABLE_ID_MAX = 128
-_TABLE_LABEL_MAX = 40
+
+
+# QR ordering at the table is off: POST /order with mode "table" or a
+# tableCode, and the old table-codes routes, answer 410 with this code and
+# a guest text that sends them to the till (order and pay at the counter).
+TABLE_ORDERING_OFF = "table_ordering_off"
+TABLE_ORDERING_OFF_TEXT = "Beställ och betala i kassan i restaurangen."
+
+
+def table_ordering_off():
+    """410 for anything that would order (or set up ordering) at the table."""
+    return http.respond(410, {"error": TABLE_ORDERING_OFF, "message": TABLE_ORDERING_OFF_TEXT})
 
 
 class NotFound(Exception):
@@ -202,12 +215,16 @@ def validate_policy(raw):
         return None
     if not isinstance(raw, dict):
         raise ValueError("ordering must be an object")
+    # "table" (QR ordering at the table) is accepted from older admin builds
+    # and stored policies, and ignored: it is off for good.
     allowed = {"enabled", "pickup", "table", "prepMinutes", "lastOrderMinutes"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"unsupported ordering fields: {', '.join(unknown)}")
     policy = {}
-    for flag, default in (("enabled", False), ("pickup", True), ("table", True)):
+    if not isinstance(raw.get("table", False), bool):
+        raise ValueError("ordering.table must be true or false")
+    for flag, default in (("enabled", False), ("pickup", True)):
         value = raw.get(flag, default)
         if not isinstance(value, bool):
             raise ValueError(f"ordering.{flag} must be true or false")
@@ -215,8 +232,8 @@ def validate_policy(raw):
     policy["prepMinutes"] = _whole(raw.get("prepMinutes", 20), 5, 180, "ordering.prepMinutes")
     policy["lastOrderMinutes"] = _whole(raw.get("lastOrderMinutes", 15), 0, 120,
                                         "ordering.lastOrderMinutes")
-    if policy["enabled"] and not (policy["pickup"] or policy["table"]):
-        raise ValueError("enabled ordering needs pickup or table orders")
+    if policy["enabled"] and not policy["pickup"]:
+        raise ValueError("enabled ordering needs pickup orders")
     return policy
 
 
@@ -283,14 +300,13 @@ def _spans_today(location, local):
 
 
 def availability(location, tenant_row, now):
-    """What the guest site shows: {open, reason, pickup, table, prepMinutes,
+    """What the guest site shows: {open, reason, pickup, prepMinutes,
     closesAt, pausedUntil}. ``reason`` when closed: disabled | no_payments
     | paused | closed."""
     policy = policy_of(location)
     if not policy:
-        return {"open": False, "reason": "disabled", "pickup": False, "table": False}
-    base = {"pickup": policy["pickup"], "table": policy["table"],
-            "prepMinutes": policy["prepMinutes"]}
+        return {"open": False, "reason": "disabled", "pickup": False}
+    base = {"pickup": policy["pickup"], "prepMinutes": policy["prepMinutes"]}
     if not stripe_account(tenant_row, location):
         return {**base, "open": False, "reason": "no_payments"}
     paused = paused_until(location, now)
@@ -438,16 +454,23 @@ def _price_ore(value):
 
 def price_lines(location_id, wanted, mode, on_date):
     """Reads the dishes from the menu and prices the order. Unknown,
-    inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable")."""
+    inactive or out-of-schedule dishes -> ValueError("menu_item_unavailable").
+    The location's categories row comes in the same read: each line keeps
+    its category's name, so the kitchen routing can send a category that
+    sounds like drinks ("Öl") to Dryck (shared/routing.py)."""
     menu_table = os.environ["MENU_TABLE_NAME"]
     keys = [{"PK": {"S": location_pk(location_id)}, "SK": {"S": f"MENU#{item_id}"}}
             for item_id in dict.fromkeys(w[0] for w in wanted)]
-    found = {}
+    keys.append({"PK": {"S": location_pk(location_id)}, "SK": {"S": menu.CATEGORIES_SK}})
+    found, categories_row = {}, None
     request = {menu_table: {"Keys": keys, "ConsistentRead": True}}
     for _ in range(5):
         response = dynamo.client().batch_get_item(RequestItems=request)
         for raw in (response.get("Responses") or {}).get(menu_table, []):
             item = {k: _deserializer.deserialize(v) for k, v in raw.items()}
+            if item.get("SK") == menu.CATEGORIES_SK:
+                categories_row = item
+                continue
             found[item.get("menuItemId")] = item
         request = response.get("UnprocessedKeys") or {}
         if not request:
@@ -455,6 +478,7 @@ def price_lines(location_id, wanted, mode, on_date):
     else:
         raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException",
                                      "Message": "menu read incomplete"}}, "BatchGetItem")
+    category_names = {c["categoryId"]: c["name"] for c in menu.categories_view(categories_row)["categories"]}
     now = now_utc()
     lines = []
     for item_id, quantity, *rest in wanted:
@@ -494,6 +518,8 @@ def price_lines(location_id, wanted, mode, on_date):
             **({"options": chosen} if chosen else {}),
             # Kitchen ticket routing, as the dish was when ordered (shared/routing.py).
             **({"category": item["category"]} if isinstance(item.get("category"), str) else {}),
+            **({"categoryName": category_names[item["category"]]}
+               if isinstance(item.get("category"), str) and item["category"] in category_names else {}),
             **({k: item[k] for k in menu.ROUTING_FIELDS if item.get(k)}),
         })
     total = sum(line["total"] for line in lines)
@@ -504,14 +530,10 @@ def price_lines(location_id, wanted, mode, on_date):
     return lines, total
 
 
-# --- signed codes (table QR, guest status link) ----------------------------------------------
+# --- signed codes (guest status link) ----------------------------------------------
 
 def _b64(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _unb64(text):
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
 def _sign(*parts):
@@ -519,41 +541,6 @@ def _sign(*parts):
     # The guest-link key (shared/manage_link.py) with its own prefix per use,
     # so a signature made for one purpose never verifies for another.
     return _b64(hmac.new(manage_link._key(), message, hashlib.sha256).digest())
-
-
-def clean_table_label(value):
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("table label is required")
-    value = " ".join(value.split())
-    if len(value) > _TABLE_LABEL_MAX:
-        raise ValueError(f"table label may be at most {_TABLE_LABEL_MAX} characters")
-    return value
-
-
-def table_code(tenant_id, location_id, table_id, label):
-    """The value printed in a table's QR code: payload.signature. The table's
-    label is inside, so it prints on the kitchen ticket without a lookup."""
-    if not isinstance(table_id, str) or not table_id.strip() or len(table_id) > _TABLE_ID_MAX:
-        raise ValueError("tableId is invalid")
-    label = clean_table_label(label)
-    payload = _b64(json.dumps({"t": table_id, "n": label}, ensure_ascii=False,
-                              separators=(",", ":")).encode("utf-8"))
-    return f"{payload}.{_sign('table-qr', 'v1', tenant_id, location_id, payload)}"
-
-
-def read_table_code(tenant_id, location_id, code):
-    """(tableId, label) from a QR code of this location, else ValueError."""
-    if not isinstance(code, str) or len(code) > 512 or code.count(".") != 1:
-        raise ValueError("table code is invalid")
-    payload, signature = code.split(".")
-    expected = _sign("table-qr", "v1", tenant_id, location_id, payload)
-    if not safe_compare.equal(expected, signature):
-        raise ValueError("table code is invalid")
-    try:
-        data = json.loads(_unb64(payload))
-        return data["t"], clean_table_label(data["n"])
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("table code is invalid") from None
 
 
 def status_token(item):

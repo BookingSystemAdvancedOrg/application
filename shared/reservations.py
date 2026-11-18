@@ -558,6 +558,36 @@ def list_day(location_id, date_str):
     return sorted(items, key=lambda i: (i.get("startTime", ""), i.get("customerName") or "", i["reservationId"]))
 
 
+PHONE_RANGE_MAX_DAYS = 62
+PHONE_RANGE_MAX_ITEMS = 10
+PHONE_RANGE_MAX_PAGES = 20
+
+
+def list_for_phone(location_id, from_date, to_date, phone, *, limit=PHONE_RANGE_MAX_ITEMS):
+    """One guest's bookings from `from_date` to `to_date` (the phone agent's
+    "my booking" lookup): one key-range query over the location's days with
+    the number as a filter, never a read per day. Bounded: at most `limit`
+    bookings (earliest first) and PHONE_RANGE_MAX_PAGES pages."""
+    tbl = dynamo.table(reservation_table())
+    from boto3.dynamodb.conditions import Attr, Key
+
+    request = {
+        "KeyConditionExpression": Key("PK").eq(location_pk(location_id))
+        & Key("SK").between(f"RESERVATION#{from_date}#", f"RESERVATION#{to_date}#￿"),
+        "FilterExpression": Attr("customerPhone").eq(phone),
+        "ConsistentRead": True,
+    }
+    items = []
+    for _ in range(PHONE_RANGE_MAX_PAGES):
+        page = tbl.query(**request)
+        items.extend(i for i in page.get("Items") or [] if i.get("status") != HELD and not i.get("holdOnly"))
+        if len(items) >= limit or "LastEvaluatedKey" not in page:
+            break
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    items.sort(key=lambda i: (i.get("date", ""), i.get("startTime", ""), i["reservationId"]))
+    return items[:limit]
+
+
 # --- views ---------------------------------------------------------------------------
 
 _STAFF_FIELDS = (

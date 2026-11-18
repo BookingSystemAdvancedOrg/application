@@ -102,14 +102,13 @@ Svensk lag gäller. Tvister avgörs av allmän domstol med Stockholms tingsrätt
 - Inloggning sker med personliga konton och roller (ägare och personal). Inloggningssessionen lagras i en säker cookie som skript inte kan läsa.
 - Minsta behörighet för systemets egna komponenter; separata AWS-konton för utveckling och produktion.
 - Säkerhetskopiering med återställning till valfri tidpunkt för de viktigaste tabellerna.
-- Skydd mot automatiserade bokningar (Cloudflare Turnstile) och begränsning av SMS till nordiska nummer.
+- Skydd mot automatiserade bokningar (AWS WAF) och begränsning av SMS till nordiska nummer.
 - Notiser till restaurangens gemensamma inkorg innehåller inte gästens kontaktuppgifter eller fritext; de finns bakom inloggning.
 
 ## Bilaga 3. Underbiträden
 
-- Amazon Web Services EMEA SARL (Luxemburg): drift, lagring, e-post (Amazon SES) och SMS (Amazon SNS). Behandling i region Stockholm (eu-north-1). Bolaget ingår i en amerikansk koncern; överföring sker i så fall med stöd av EU-U.S. Data Privacy Framework och standardavtalsklausuler.
+- Amazon Web Services EMEA SARL (Luxemburg): drift, lagring, e-post (Amazon SES), SMS (Amazon SNS) och skydd mot automatiserade bokningar, beställningar och cateringförfrågningar (AWS WAF). Behandling i region Stockholm (eu-north-1). Bolaget ingår i en amerikansk koncern; överföring sker i så fall med stöd av EU-U.S. Data Privacy Framework och standardavtalsklausuler.
 - Stripe Payments Europe Ltd (Irland): kortbetalningar och kortgarantier via Restaurangens eget Stripe-konto. Kortuppgifter går direkt till Stripe. Överföring till Stripe, Inc. (USA) med stöd av EU-U.S. Data Privacy Framework och standardavtalsklausuler.
-- Cloudflare, Inc. (USA): Turnstile, skydd mot automatiserade bokningar, beställningar och cateringförfrågningar (IP-adress och tekniska uppgifter om webbläsaren). Överföring med stöd av EU-U.S. Data Privacy Framework och standardavtalsklausuler.
 - Finansiell ID-Teknik BID AB (Sverige): BankID-signering av cateringofferter.
 
 ## Att granska (för juristen)

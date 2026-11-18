@@ -11,7 +11,8 @@ PURPOSE:
     this hostname belongs to and gets everything it needs to render: name,
     branding, enabled features, the locations (address, contact, opening
     hours and upcoming special days, booking rules), the legal entity for
-    the privacy notice, and the public Stripe / Turnstile keys.
+    the privacy notice, the public Stripe key and the bot check's
+    integration URL.
 
     Resolution: global row DOMAIN#<host>/TENANT -> tenantId, and the
     tenant's own TENANT#<t>/DOMAIN#<host> row must be active (Booqy Console
@@ -30,7 +31,7 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    STRIPE_PUBLISHABLE_KEY, TURNSTILE_SITE_KEY, RETENTION_* (the periods the
+    STRIPE_PUBLISHABLE_KEY, WAF_INTEGRATION_URL, RETENTION_* (the periods the
     privacy notice shows, shared/retention.py)
 
 Full details: infrastructure docs/handoff/BACKEND.md section 6.3
@@ -52,7 +53,6 @@ _TENANT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _CACHE = "public, max-age=300"
 # The guest-facing flags (CONTRACTS.md 7).
 _FEATURES = contracts.SITE_CONFIG_FEATURES
-_SITE_MODES = ("builder", "custom")
 _BRANDING_STRINGS = ("logoUrl", "heroImageUrl", "primaryColor", "accentColor", "tagline",
                      "about", "faviconUrl", "instagramUrl", "facebookUrl")
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -161,19 +161,7 @@ def _ordering(row, tenant_row):
     policy = orders.policy_of(row)
     if not policy or not orders.stripe_account(tenant_row, row):
         return None
-    return {"pickup": policy["pickup"], "table": policy["table"], "prepMinutes": policy["prepMinutes"]}
-
-
-def _site(row):
-    """PROFILE.site {mode, version} (written by site-builder), or None."""
-    site = row.get("site")
-    if not isinstance(site, dict) or site.get("mode") not in _SITE_MODES:
-        return None
-    try:
-        version = int(site.get("version"))
-    except (TypeError, ValueError):
-        return None
-    return {"mode": site["mode"], "version": version} if version >= 0 else None
+    return {"pickup": policy["pickup"], "prepMinutes": policy["prepMinutes"]}
 
 
 def _waitlist(row):
@@ -244,7 +232,6 @@ def _site_config(params):
         tenant.list_locations(tenant_id),
         key=lambda r: (str(r.get("createdAt") or "~"), str(r.get("name") or ""), r.get("SK", "")),
     )
-    site = _site(row) if features.get("siteBuilder") else None
     config = {
         "tenant": {
             "tenantId": tenant_id,
@@ -266,7 +253,10 @@ def _site_config(params):
             "publishableKey": os.environ.get("STRIPE_PUBLISHABLE_KEY") or None,
             "accountId": (row.get("stripe") or {}).get("accountId"),
         },
-        "turnstile": {"siteKey": os.environ.get("TURNSTILE_SITE_KEY") or None},
+        # The sites' bot check (AWS WAF, shared/bot_check.py): with an
+        # integration URL the site loads <url>challenge.js and sends its form
+        # posts to /api/* on its own domain.
+        "botCheck": {"integrationUrl": os.environ.get("WAF_INTEGRATION_URL") or None},
         # The guest notice on the forms, the restaurant's own privacy notice
         # and the marketing checkbox wording (null without marketing).
         "privacy": {
@@ -275,8 +265,6 @@ def _site_config(params):
             "marketingConsent": consent.public_text(row.get("name")) if features.get("marketing") else None,
         },
     }
-    if site is not None:
-        config["tenant"]["site"] = site
     return config
 
 

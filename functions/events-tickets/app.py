@@ -21,7 +21,7 @@ TRIGGER:
     API Gateway -- Auth: NONE (feature off, unknown or foreign -> 404)
     GET    /public/locations/{locationId}/events                                K15
     GET    /public/locations/{locationId}/events/{eventId}                      K16
-    POST   /public/locations/{locationId}/events/checkout                       K17 Turnstile + request guard;
+    POST   /public/locations/{locationId}/events/checkout                       K17 bot check + request guard;
                                                                                 `lines` or `resaleTransferIds`
     GET    /public/tickets/{token}                                              K18
     GET    /public/tickets/{token}/pass                                         K19 Wallet pass (EVENTS_WALLET_MODE,
@@ -67,7 +67,7 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, EVENTS_TICKETS_TABLE_NAME, TENANT_TABLE_NAME, LOCATION_TABLE_NAME,
     LOCATION_ID_INDEX_NAME, USER_TABLE_NAME, EVENTS_TICKETS_PEPPER_SECRET_ARN,
-    STRIPE_SECRET_ARN, STRIPE_API_VERSION, TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN,
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION, BOT_CHECK_ENFORCED, SITE_WAF_SECRET,
     REQUEST_GUARD_TABLE_NAME, NOTIFICATION_FUNCTION_NAME, EVENT_BUS_NAME,
     CLOUDFRONT_EDGE_SECRET, SITE_DOMAIN, CUSTOMER_SITE_URL;
     optional EVENTS_WALLET_MODE (off | simulator | live), EVENTS_TICKETS_APPLE_PASS_SECRET_ARN,
@@ -83,7 +83,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, events, http, orders, request_guard, site, tenant, turnstile
+from shared import bot_check, dynamo, events, http, orders, request_guard, site, tenant
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
 from shared.features.events_tickets import media, passes, qr, series
@@ -1368,11 +1368,10 @@ def checkout(event):
     if claimed is None and et.left(occ) < qty:
         raise et.EventsError(409, "sold_out")
     _guard(event)
-    if turnstile.required():
-        try:
-            turnstile.verify(body.get("turnstileToken"), http.source_ip(event))
-        except ValueError:
-            raise et.EventsError(400, "turnstile_failed", "turnstileToken")
+    try:
+        bot_check.verify(event, "ticket")
+    except ValueError:
+        raise et.EventsError(400, bot_check.FAILED)
     amount = sum(ln["qty"] * ln["priceOre"] for ln in lines)
     account = orders.stripe_account(ctx.tenant, ctx.location) if amount else None
     if amount and not account:
@@ -2420,7 +2419,7 @@ def handler(event, context=None):
         if " " in exc.code:
             return http.respond(exc.status, {"error": exc.code, **({"field": exc.field} if exc.field else {})})
         return _err(exc.status, exc.code, exc.field)
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return _err(503, "service_unavailable")
     except ValueError as exc:
         return http.respond(400, {"error": str(exc)})

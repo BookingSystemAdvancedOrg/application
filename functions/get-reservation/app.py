@@ -3,6 +3,7 @@
 TRIGGER:
     API Gateway
     GET /locations/{locationId}/reservations?date=YYYY-MM-DD   -- Auth: JWT
+    GET /locations/{locationId}/reservations?from=&to=&phone=  -- Auth: JWT (one guest's bookings)
     GET /locations/{locationId}/reservations/{reservationId}   -- Auth: JWT
     GET /locations/{locationId}/reservations/{reservationId}/guest
                                     -- Auth: NONE, header X-Manage-Token
@@ -26,6 +27,9 @@ ENV_VARS:
 Full details: docs/RESERVATIONS.md
 """
 
+import re
+from datetime import date
+
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import http, manage_link, tenant
@@ -34,18 +38,39 @@ from shared import reservations as r
 _LIST = "/locations/{locationId}/reservations"
 _ONE = "/locations/{locationId}/reservations/{reservationId}"
 _GUEST = "/locations/{locationId}/reservations/{reservationId}/guest"
+_E164 = re.compile(r"\+[1-9]\d{7,14}")
 
 
 def _list(event):
     location_id = http.path_id(event, "locationId")
     tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
     params = http.query(event)
+    if "phone" in params:
+        return _for_phone(location_id, params)
     unknown = sorted(set(params) - {"date"})
     if unknown:
         raise ValueError(f"unsupported query parameters: {', '.join(unknown)}")
     date_str = r.validate_date(params.get("date"))
     items = r.list_day(location_id, date_str)
     return http.respond(200, {"locationId": location_id, "date": date_str,
+                              "items": [r.staff_view(i) for i in items]})
+
+
+def _for_phone(location_id, params):
+    """?from=&to=&phone=: one guest's bookings over a date range (the phone
+    agent's lookup, one query instead of one per day)."""
+    unknown = sorted(set(params) - {"from", "to", "phone"})
+    if unknown:
+        raise ValueError(f"unsupported query parameters: {', '.join(unknown)}")
+    start, end = r.validate_date(params.get("from"), "from"), r.validate_date(params.get("to"), "to")
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    if days < 0 or days > r.PHONE_RANGE_MAX_DAYS:
+        raise ValueError(f"to must be from 0 to {r.PHONE_RANGE_MAX_DAYS} days after from")
+    phone = str(params.get("phone") or "")
+    if not _E164.fullmatch(phone):
+        raise ValueError("phone must be E.164")
+    items = r.list_for_phone(location_id, start, end, phone)
+    return http.respond(200, {"locationId": location_id, "date": start, "to": end,
                               "items": [r.staff_view(i) for i in items]})
 
 

@@ -53,7 +53,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -111,7 +111,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -161,7 +161,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -221,7 +221,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -282,7 +282,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -354,7 +354,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -408,7 +408,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -477,7 +477,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -542,7 +542,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -596,7 +596,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -656,7 +656,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -712,7 +712,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -778,7 +778,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -828,7 +828,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -863,7 +863,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -902,7 +902,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -933,7 +933,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventsTicketsCheckout'
         '400':
-          description: Validation error (too_many_tickets, invalid_email, turnstile_failed, table_pick_not_available,
+          description: Validation error (too_many_tickets, invalid_email, bot_check_failed, table_pick_not_available,
             own_listing when the buyer's email is the seller's).
           content:
             application/json:
@@ -960,7 +960,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -995,7 +995,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -1050,7 +1050,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -1103,7 +1103,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -1149,7 +1149,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -1189,7 +1189,7 @@ paths:
             application/json:
               schema: *id002
         '503':
-          description: AWS or Turnstile error.
+          description: AWS error.
           content:
             application/json:
               schema: *id002
@@ -1711,7 +1711,10 @@ components:
         tableIds:
           type: array
           items: *id001
-        turnstileToken: *id001
+        turnstileToken:
+          type: string
+          deprecated: true
+          description: Ignored (was the Cloudflare Turnstile token); still accepted so older sites keep working.
       required:
       - orderId
       - occurrenceId

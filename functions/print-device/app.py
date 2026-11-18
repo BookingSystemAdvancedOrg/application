@@ -100,7 +100,8 @@ def _authenticate(event, device_id, mac):
         secret = http.query(event).get("k")  # fallback for firmware without Basic auth
         user = device_id
     device = p.find_device(device_id)
-    if not device or user != device_id or not p.secret_matches(device, secret):
+    # A simulated printer (dev only) has no secret and never polls.
+    if not device or p.is_sim(device) or user != device_id or not p.secret_matches(device, secret):
         return None, _unauthorized(event, "secret", device_id if p.valid_device_id(device_id) else None)
     if device.get("mac") and mac != device["mac"]:
         return None, _unauthorized(event, "mac", device_id)

@@ -25,16 +25,11 @@ TRIGGER:
          unless notifyGuest is false. Rules: shared/refunds.py.
     PUT  /locations/{locationId}/orders/pause   {"minutes": 0-240}
          Stop taking orders for a while (0 = take orders again).
-    GET|POST /locations/{locationId}/orders/table-codes
-         The QR code of every table in the ACTIVE published floor plan
-         (shared/table_qr.py: a random key per table, created on first use),
-         with the table's current name and the guest-site URL to print in the
-         QR code (null while the restaurant has no site address). A body from
-         older admin builds ({"tables": [...]}) is accepted and ignored: the
-         floor plan decides which tables exist and what they are called.
-    POST /locations/{locationId}/orders/table-codes/{tableId}/regenerate
-         A new code for one table (sticker stolen or worn): the old printed
-         code stops working at once and shows the guest a clear message.
+    ANY  /locations/{locationId}/orders/table-codes[/...]
+         410 table_ordering_off: QR ordering at the table is off (owner
+         decision 2026-11-17), so older admin builds asking for table QR
+         codes get a clear answer. Past table orders are listed, printed and
+         refunded like any other order.
 
 PURPOSE:
     The restaurant's side of food orders. Status writes are conditional on
@@ -47,23 +42,18 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     USER_TABLE_NAME, ORDER_TABLE_NAME, RESERVATION_LINK_KEY_SECRET_ARN,
-    SITE_DOMAIN, CUSTOMER_SITE_URL (dev: QR code URLs with ?restaurang=),
-    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (the tables behind the QR codes),
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (refunds)
 """
 
 import json
 import logging
 import os
-import re
 from datetime import timedelta
-from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dynamo, feature_hooks, http, manage_link, order_payments, refunds, site, tenant
+from shared import dynamo, feature_hooks, http, manage_link, order_payments, refunds, tenant
 from shared import orders as o
-from shared import table_qr
 from shared import stripe_client as stripe
 
 logger = logging.getLogger()
@@ -71,7 +61,6 @@ logger.setLevel(logging.INFO)
 
 _COLLECTION = "/locations/{locationId}/orders"
 _ITEM = "/locations/{locationId}/orders/{proxy+}"
-_TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _ctx(event, area="bestallningar"):
@@ -250,50 +239,16 @@ def _pause(event, location_id, ctx):
     return http.respond(200, {"ordering": o.availability(location, ctx.tenant, now)})
 
 
-def _table_url(base, slug, code):
-    if not base:
-        return None
-    return site.page(base, slug, "/bestall") + ("&" if slug else "?") + "bord=" + quote(code, safe="")
-
-
-def _code_view(table, base, slug):
-    return {"tableId": table["tableId"], "label": table["label"], "title": table_qr.table_title(table["label"]),
-            "seats": table["seats"], "code": table["code"], "url": _table_url(base, slug, table["code"])}
-
-
-def _table_codes(event, location_id, ctx):
-    if event.get("body"):
-        http.body(event, allowed={"tables"})  # older admin builds; the floor plan decides
-    base, slug = site.base(ctx.tenant_id, ctx.tenant)
-    tables = table_qr.codes_for(ctx.tenant_id, location_id, ctx.sub, o.now_utc())
-    return http.respond(200, {"tables": [_code_view(t, base, slug) for t in tables]})
-
-
-def _regenerate(location_id, ctx, table_id):
-    table = table_qr.regenerate(ctx.tenant_id, location_id, table_id, ctx.sub, o.now_utc())
-    logger.info(json.dumps({"tableQr": "regenerated", "locationId": location_id, "tableId": table_id}))
-    base, slug = site.base(ctx.tenant_id, ctx.tenant)
-    return http.respond(200, _code_view(table, base, slug))
-
-
 def _item_route(event, method):
     proxy = ((event.get("pathParameters") or {}).get("proxy") or "").strip("/")
     parts = proxy.split("/") if proxy else []
-    # The table QR codes are shown on Layout too (the floor plan's tables).
-    table_codes = bool(parts) and parts[0] == "table-codes"
-    location_id, ctx = _ctx(event, ("bestallningar", "layout") if table_codes else "bestallningar")
+    if parts and parts[0] == "table-codes":
+        return o.table_ordering_off()
+    location_id, ctx = _ctx(event, "bestallningar")
     if parts == ["pause"]:
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})
         return _pause(event, location_id, ctx)
-    if parts == ["table-codes"]:
-        if method not in ("GET", "POST"):
-            return http.respond(405, {"error": "method not allowed"}, {"Allow": "GET, POST"})
-        return _table_codes(event, location_id, ctx)
-    if len(parts) == 3 and parts[0] == "table-codes" and parts[2] == "regenerate" and _TABLE_ID.fullmatch(parts[1]):
-        if method != "POST":
-            return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
-        return _regenerate(location_id, ctx, parts[1])
     if len(parts) == 2 and parts[1] == "status" and o.valid_order_id(parts[0]):
         if method != "PUT":
             return http.respond(405, {"error": "method not allowed"}, {"Allow": "PUT"})

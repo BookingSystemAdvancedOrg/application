@@ -25,7 +25,7 @@ def _executor(e, caller_phone):
 @pytest.mark.parametrize("caller", [None, "", "anonymous", "Restricted", "070123"])
 def test_hidden_number_cannot_look_up_another_guests_booking(env, caller):
     ex = _executor(env, caller)
-    assert ex.run("find_reservations", {"phone": OTHER}) == {"reservations": []}
+    assert ex.run("find_reservations", {"phone": OTHER}) == {"reservations": [], "callerHidden": True}
     assert ex.run("cancel_reservation", {"reservationId": "theirs"}) == {"ok": False, "code": "not_found"}
     assert not [c for c in env.invoke.calls if c[0] == "mark-arrived"]
 

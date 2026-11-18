@@ -107,14 +107,15 @@ def test_never_stores_secrets_or_form_contents(env):
         assert status == 400 and body["code"] == "unsupported_fields"
     # A query string or fragment (reset codes, searches) never reaches the table,
     # and a long opaque path segment (a token in a path) is replaced.
-    status, _ = report(app, {**BASE, "path": "/reset-password?code=123456#code=999&email=a@b.se"})
+    status, _ = report(app, {**BASE, "path": "/reset-password?code=k8q2reset#code=f9x7frag&email=a@b.se"})
     assert status == 201
     status, _ = report(app, {**BASE, "code": "x_failed", "path": "/m/u/" + "a" * 80 + "/edit"})
     assert status == 201
     paths = sorted(i["path"] for i in stored(app))
     assert paths == ["/m/u/:x/edit", "/reset-password"]
     dumped = json.dumps(stored(app), default=str)
-    for secret in ("123456", "999", "a@b.se", "Bearer", "eyJ", "a" * 80):
+    # Letters in the values: digits alone could turn up in a timestamp or ttl.
+    for secret in ("k8q2reset", "f9x7frag", "a@b.se", "Bearer", "eyJ", "a" * 80):
         assert secret not in dumped
     # The request id and version must look like ids, not carry text.
     assert report(app, {**BASE, "requestId": "has spaces and text"})[0] == 400

@@ -52,12 +52,24 @@ def test_any_of_gate_on_public(aws):
 
 
 def test_limit_default_stored_and_unknown():
-    assert tenant.limit(tenant_row(TENANT_A), "siteBuilderAiEditsPerMonth") == 0
-    assert tenant.limit({}, "siteBuilderAiEditsPerMonth") == 0
-    row = tenant_row(TENANT_A, limits={"siteBuilderAiEditsPerMonth": 10})
-    assert tenant.limit(row, "siteBuilderAiEditsPerMonth") == 10
+    assert tenant.limit(tenant_row(TENANT_A), "phoneAgentMinutesPerMonth") == 0
+    assert tenant.limit({}, "phoneAgentMinutesPerMonth") == 0
+    row = tenant_row(TENANT_A, limits={"phoneAgentMinutesPerMonth": 10})
+    assert tenant.limit(row, "phoneAgentMinutesPerMonth") == 10
     with pytest.raises(KeyError):
         tenant.limit(row, "aiEditsPerMonth")
+
+
+def test_removed_site_builder_entitlement_is_ignored(aws):
+    """The site builder was removed: a stored siteBuilder feature or AI edit
+    limit on a tenant is no key any more, never a gate and never a limit."""
+    row = tenant_row(TENANT_A, limits={"siteBuilderAiEditsPerMonth": 10})
+    row["entitlements"]["features"]["siteBuilder"] = True
+    assert "siteBuilder" not in contracts.FEATURE_KEYS and "siteBuilderAiEditsPerMonth" not in contracts.LIMITS
+    with pytest.raises(KeyError):
+        tenant.limit(row, "siteBuilderAiEditsPerMonth")
+    with pytest.raises(KeyError):
+        features_on("siteBuilder")
 
 
 def test_fixture_defaults_keep_every_new_feature_off():
@@ -72,14 +84,13 @@ def test_fixture_defaults_keep_every_new_feature_off():
 def test_addendum_keys_and_phone_minutes_limit():
     """Run 0 addendum (ADR-K, ADR-L): both keys off in the fixtures, gates
     refuse them, and the minutes limit defaults to 0 like every limit."""
-    assert len(NEW_FEATURES) == 12 and NEW_FEATURES["events"] is False and NEW_FEATURES["phoneAgent"] is False
+    assert len(NEW_FEATURES) == 11 and NEW_FEATURES["events"] is False and NEW_FEATURES["phoneAgent"] is False
     assert features_on("phoneAgent")["phoneAgent"] is True and features_on("phoneAgent")["events"] is False
     assert tenant.limit(tenant_row(TENANT_A), "phoneAgentMinutesPerMonth") == 0
     assert tenant.limit({}, "phoneAgentMinutesPerMonth") == 0
     row = tenant_row(TENANT_A, limits={"phoneAgentMinutesPerMonth": 300})
     assert row["entitlements"]["limits"] == {"phoneAgentMinutesPerMonth": 300}
     assert tenant.limit(row, "phoneAgentMinutesPerMonth") == 300
-    assert tenant.limit(row, "siteBuilderAiEditsPerMonth") == 0
 
 
 def test_addendum_features_refused_when_off(aws):

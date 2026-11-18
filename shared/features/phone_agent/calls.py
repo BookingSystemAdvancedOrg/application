@@ -160,11 +160,19 @@ def disclosed(call, at, spoken=None):
 
 def repeat_disclosure(call, lang, at, *, new_language=False):
     """Interrupted before the disclosure finished, or a language switch: the
-    short form again (counted), in `lang`."""
+    short form again (counted), in `lang`. A new language without a fixed
+    sentence (copy.DISCLOSURE_SHORT) is recorded as said by the model
+    (`disclosure.modelSaid`; agent.system_prompt asked for it in that turn,
+    the reply is the transcript turn) and returns no text."""
     disclosure = pa.plain(call.get("disclosure") or {})
     if new_language and lang in (disclosure.get("languages") or []):
         return call, None
-    text = copy.disclosure_short(lang, call.get("restaurant") or "")
+    text = copy.disclosure_short(lang) if new_language else copy.text(copy.DISCLOSURE_SHORT, lang)
+    if new_language and text is None:
+        _update(call, "SET disclosure.languages = list_append(disclosure.languages, :l), "
+                      "disclosure.modelSaid = list_append(if_not_exists(disclosure.modelSaid, :e), :l)",
+                {":l": [lang], ":e": []}, statuses=list(OPEN))
+        return get_call(call["tenantId"], call["callId"]) or call, None
     if new_language:
         done = _update(call, "SET disclosure.languages = list_append(disclosure.languages, :l)", {":l": [lang]},
                        statuses=list(OPEN))
@@ -175,6 +183,14 @@ def repeat_disclosure(call, lang, at, *, new_language=False):
         return call, None
     append_turn(done, "agent", text, at)
     return get_call(call["tenantId"], call["callId"]), text
+
+
+def remember_turn(call, key, reply, actions, at):
+    """The last answered turn (a hash of the call, the turn number and the
+    caller's text, never the text itself): a provider retry of the same turn
+    within REPEAT_WINDOW_S gets the same reply without running tools again."""
+    _update(call, "SET lastTurn = :t", {":t": {"key": key, "reply": reply, "actions": actions, "at": pa.iso(at)}},
+            statuses=list(OPEN))
 
 
 def set_status(call, status, from_statuses, **fields):
@@ -233,6 +249,7 @@ def process(call, *, state=None, at=None, notify_cap=None):
         expr += ", GSI2PK = :g2pk, GSI2SK = :g2sk"
         sets.update({":g2pk": f"{pa.tenant_pk(call['tenantId'])}#RES#{state['reservationId']}",
                      ":g2sk": call.get("startedAt") or ""})
+    expr += " REMOVE lastTurn"      # the retry memory holds the last reply: never kept past the call
     try:
         dynamo.client().transact_write_items(TransactItems=[
             {"Update": {"TableName": table_name, "Key": _typed({"PK": call["PK"], "SK": call["SK"]}),

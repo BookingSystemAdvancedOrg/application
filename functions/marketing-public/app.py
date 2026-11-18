@@ -9,8 +9,8 @@ TRIGGER:
     POST /m/u/{token}           unsubscribe (the page's button, and RFC 8058
                                 one-click from Gmail/Outlook's own button)
     GET  /m/offer?locationId=   the welcome offer card's settings (or none)
-    POST /m/signup              {locationId, email, name?, consent: true,
-                                turnstileToken} -> subscribed + a single-use
+    POST /m/signup              {locationId, email, name?, consent: true}
+                                -> subscribed + a single-use
                                 discount code by email
     POST /m/code                {locationId, code} -> the code's terms, so the
                                 order page can show the discount before paying
@@ -35,14 +35,13 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     MARKETING_TABLE_NAME, MARKETING_LINK_KEY_SECRET_ARN, MARKETING_LINK_BASE,
     NO_REPLY_EMAIL_ADDRESS, MARKETING_CONFIGURATION_SET, SITE_DOMAIN, CUSTOMER_SITE_URL,
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
+    BOT_CHECK_ENFORCED, SITE_WAF_SECRET, REQUEST_GUARD_TABLE_NAME,
     MAIL_OUTBOX_BUCKET_NAME (dev only), CONSENT_TABLE_NAME (consent log)
 
 AWS RESOURCE ACCESS:
     Query/PutItem on the consent table;
     GetItem/PutItem/UpdateItem/DeleteItem on the marketing table; tenant-context
-    read policy; GetSecretValue on the marketing link key and the Turnstile
-    secret; UpdateItem on the request-guard table; ses:SendRawEmail from the
+    read policy; GetSecretValue on the marketing link key; UpdateItem on the request-guard table; ses:SendRawEmail from the
     no-reply address (the code email); dev only: s3:PutObject on the outbox.
 """
 
@@ -56,7 +55,7 @@ from datetime import datetime, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import consent, dynamo, http, marketing as m, marketing_mail, request_guard, site, tenant, turnstile
+from shared import bot_check, consent, dynamo, http, marketing as m, marketing_mail, request_guard, site, tenant
 from shared import marketing_offer as offer
 
 logger = logging.getLogger()
@@ -297,8 +296,7 @@ def _signup(event):
     ip = http.source_ip(event)
     now = datetime.now(timezone.utc)
     request_guard.check([("signup-ip", ip, *SIGNUP_IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip, turnstile.SIGNUP_ACTION)
+    bot_check.verify(event, "signup")
     request_guard.check([("signup-email", offer.canonical_email(email), *SIGNUP_EMAIL_LIMIT)], now)
 
     # The answer is the same whatever happens below, so nobody can find out
@@ -593,7 +591,7 @@ def handler(event, context):
         return http.error(404, "not found")
     except request_guard.Limited as exc:
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         return http.error(503, "verification_unavailable")
     except m.LinkKeyUnavailable:
         logger.exception("marketing link key unavailable")

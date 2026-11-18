@@ -881,6 +881,12 @@ components:
               type: boolean
             phoneOnlyTables:
               type: boolean
+        phoneMaxPartySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+          nullable: true
+          description: The largest party the agent books itself; null = the online maximum. Above it the restaurant calls back.
         number:
           type: string
           nullable: true
@@ -999,6 +1005,12 @@ components:
               type: boolean
             phoneOnlyTables:
               type: boolean
+        phoneMaxPartySize:
+          type: integer
+          minimum: 1
+          maximum: 50
+          nullable: true
+          description: The largest party the agent books itself; null = the online maximum. Above it the restaurant calls back.
         shareNumberWith:
           type: string
           nullable: true

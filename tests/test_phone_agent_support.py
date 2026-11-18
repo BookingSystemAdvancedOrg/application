@@ -100,6 +100,7 @@ class FakeInvoker:
         self.reservations = {}           # reservationId -> booking (made through the manual route)
         self.taken = set()               # (date, time) the manual route refuses (taken since the proposal)
         self.listed = {}                 # date -> reservations list (get-reservation)
+        self.range_query_missing = False  # a get-reservation from before ?from=&to=&phone= (rollout)
         self.menu = {"items": [{"name": "Vegetarisk lasagne", "price": 189}, {"name": "Entrecôte", "price": 295}]}
         self.menus = {}                  # locationId -> menu (multi-location tests), else `menu`
         self.site = {"locations": [{"locationId": LOC_A, "name": "Bistro A", "address": "Storgatan 1"}]}
@@ -124,6 +125,12 @@ class FakeInvoker:
             self.reservations[rid] = body
             return 201, {"reservationId": rid}
         if fn == "get-reservation":
+            if "phone" in q:      # one guest's bookings over a range (the route filters by number)
+                if self.range_query_missing:
+                    return 400, {"error": "unsupported query parameters: from, phone, to"}
+                return 200, {"items": [{"date": d, **i} for d, items in sorted(self.listed.items())
+                                       if q["from"] <= d <= q["to"] for i in items
+                                       if i.get("customerPhone") == q["phone"]][:10]}
             return 200, {"reservations": self.listed.get(q["date"], [])}
         if fn == "mark-arrived":
             return 200, {"ok": True}

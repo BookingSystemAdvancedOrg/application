@@ -36,12 +36,12 @@ def _credentials():
 CREDENTIALS = _credentials() if MODEL else None   # read before moto patches botocore
 
 
-def converse_outside_moto(credentials, model_id, system, messages, tools, max_tokens):
+def converse_outside_moto(credentials, model_id, system, messages, tools, max_tokens, timeout_s=None):
     """Runs in a fresh process (moto patches botocore in this one)."""
     import boto3
     model = RealAgentModel(model_id=model_id)
     model._client = boto3.client("bedrock-runtime", region_name="eu-north-1", **credentials)
-    return model.converse(system, messages, tools, max_tokens=max_tokens)
+    return model.converse(system, messages, tools, max_tokens=max_tokens, timeout_s=timeout_s)
 
 
 class OutOfProcessModel:
@@ -50,9 +50,9 @@ class OutOfProcessModel:
         import multiprocessing
         self.pool = concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"))
 
-    def converse(self, system, messages, tools, *, max_tokens):
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         return self.pool.submit(converse_outside_moto, CREDENTIALS, MODEL, system, messages, tools,
-                                max_tokens).result()
+                                max_tokens, timeout_s).result()
 
 
 @pytest.fixture

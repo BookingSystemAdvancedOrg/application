@@ -4,15 +4,14 @@ TRIGGER:
     API Gateway -- POST /order -- Auth: NONE (guests)
 
 PURPOSE:
-    A guest orders food: online for pickup, or from a table's QR code. The
-    request names the location, the dishes (menuItemId + quantity 1-20,
+    A guest orders food online for pickup and pays first. The request names the location, the dishes (menuItemId + quantity 1-20,
     at most 30 lines) and the guest (name, mobile, e-mail).
 
       1. Abuse checks: attempts per IP address and per phone/e-mail
-         (shared/request_guard.py) and the Turnstile token (action "order").
+         (shared/request_guard.py) and the bot check (shared/bot_check.py).
       2. The location must take orders now in that mode (shared/orders.py:
          policy on, Stripe ready, not paused, open with time before last
-         order). A table order needs a valid QR code of this location.
+         order).
       3. Prices and VAT come from the menu - never from the request. A
          welcome-offer code (`discountCode`, shared/marketing_offer.py)
          lowers every line by its percent; the code is held for this order
@@ -43,6 +42,11 @@ PURPOSE:
     order is confirmed at once. A refused card is 409 with the feature's
     code; a failure after the reserve gives the amount back (op reverse).
 
+    QR ordering at the table is off (owner decision 2026-11-17: ordering
+    and paying at the table needs a certified register). mode "table" or
+    any tableCode (sites built before that) answers 410 table_ordering_off
+    with a guest text: order and pay in the restaurant's till.
+
     Multi-tenant: the location decides the tenant; tenants without the
     "ordering" feature, or inactive ones, get 404.
 
@@ -50,9 +54,8 @@ ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     ORDER_TABLE_NAME, MENU_TABLE_NAME, SITE_DOMAIN, CUSTOMER_SITE_URL (dev return pages),
     STRIPE_SECRET_ARN, STRIPE_API_VERSION,
-    RESERVATION_LINK_KEY_SECRET_ARN (old QR codes and status links are signed with it),
-    PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME (table QR codes: the active floor plan),
-    TURNSTILE_REQUIRED, TURNSTILE_SECRET_ARN, REQUEST_GUARD_TABLE_NAME,
+    RESERVATION_LINK_KEY_SECRET_ARN (status links are signed with it),
+    BOT_CHECK_ENFORCED, SITE_WAF_SECRET, REQUEST_GUARD_TABLE_NAME,
     MARKETING_TABLE_NAME (discount codes; unset = codes are refused)
 
 Full details: docs/ORDERS.md
@@ -69,9 +72,8 @@ from shared import consent, dynamo, feature_hooks, http, manage_link, marketing,
 from shared import request_guard
 from shared import site
 from shared import marketing_offer as offer
-from shared import tenant, turnstile
+from shared import bot_check, tenant
 from shared import orders as o
-from shared import table_qr
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -90,12 +92,15 @@ _NOTES_MAX = 300
 def _guard(event, data, guest, now):
     ip = http.source_ip(event)
     request_guard.check([("order-ip", ip, *IP_LIMIT)], now)
-    if turnstile.required():
-        turnstile.verify(data.get("turnstileToken"), ip, turnstile.ORDER_ACTION)
+    bot_check.verify(event, "order")
     return request_guard.check([
         ("order-phone", guest["customerPhone"], *CONTACT_LIMIT),
         ("order-email", guest["customerEmail"], *CONTACT_LIMIT),
     ], now)
+
+
+class TableOrderingOff(Exception):
+    """mode "table" or a tableCode: QR ordering at the table is off."""
 
 
 def _guest(data):
@@ -113,6 +118,8 @@ def _guest(data):
 
 def _create(event):
     data = http.body(event, allowed=_FIELDS)
+    if data.get("mode") == o.TABLE or data.get("tableCode") not in (None, ""):
+        raise TableOrderingOff
     location_id = data.get("locationId")
     if not isinstance(location_id, str) or not location_id.strip() or "#" in location_id \
             or len(location_id) > 128:
@@ -120,7 +127,7 @@ def _create(event):
     ctx = tenant.for_public(location_id, feature="ordering")
     mode = data.get("mode")
     if mode not in o.MODES:
-        raise ValueError("mode must be pickup or table")
+        raise ValueError("mode must be pickup")
     if data.get("acceptTerms") is not True:
         raise ValueError("acceptTerms must be true")
     wanted = o.validate_lines(data.get("items"))
@@ -160,11 +167,7 @@ def _create(event):
 
 def _place(ctx, location_id, mode, data, wanted, guest, now):
     policy = o.require_open(ctx.location, ctx.tenant, mode, now)
-    table_id = table_label = None
-    if mode == o.TABLE:
-        table_id, table_label = table_qr.resolve(ctx.tenant_id, location_id, data.get("tableCode"))
-    elif data.get("tableCode") not in (None, ""):
-        raise ValueError("tableCode is only for table orders")
+    table_id = table_label = None  # pickup: no table (past table orders keep theirs)
     account = o.stripe_account(ctx.tenant, ctx.location)
     local_date = o.local_now(ctx.location, now).date()
     lines, total = o.price_lines(location_id, wanted, mode, local_date)
@@ -378,13 +381,16 @@ def handler(event, context):
         return http.respond(405, {"error": "method not allowed"}, {"Allow": "POST"})
     try:
         return _create(event)
+    except TableOrderingOff:
+        _refused(event, 410, o.TABLE_ORDERING_OFF)
+        return o.table_ordering_off()
     except tenant.TenantError as exc:
         _refused(event, exc.status, exc.error)
         return exc.response()
     except request_guard.Limited as exc:
         _refused(event, 429, "too_many_requests")
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
-    except turnstile.Unavailable:
+    except bot_check.Unavailable:
         _refused(event, 503, "verification_unavailable")
         return http.error(503, "verification_unavailable")
     except o.Closed as exc:

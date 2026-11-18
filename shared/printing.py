@@ -1,8 +1,14 @@
 """Kitchen printing: printers (Star CloudPRNT), settings and print jobs.
 
 Print table (PRINT_TABLE_NAME), one partition per location:
-    PK LOCATION#<l>  SK SETTINGS               autoPrint, printerId, paperWidth, version
-    PK LOCATION#<l>  SK DEVICE#<deviceId>      name, secretHash, mac, lastSeenAt, statusCode
+    PK LOCATION#<l>  SK SETTINGS               autoPrint, printerId, paperWidth, version,
+                                               printerSetup ("skipped": "Inga skrivare än"),
+                                               syncRouting (a token: Booqy Console changed the
+                                               printers, the stations follow on the next read)
+    PK LOCATION#<l>  SK DEVICE#<deviceId>      name, kind (kok|dryck|annat), protocol, secretHash,
+                                               mac, lastSeenAt, statusCode
+    PK LOCATION#<l>  SK SIM#<deviceId>#<ms>#<job>  a ticket a simulated printer "printed"
+                                               (dev only, expires after 2 days)
     PK LOCATION#<l>  SK JOB#<orderId>#auto     one per order (conditional put)
     PK LOCATION#<l>  SK JOB#<orderId>#cancel   "MAKULERAD" slip
     PK LOCATION#<l>  SK JOB#<orderId>#m<ms>    "Skriv ut igen"
@@ -41,6 +47,14 @@ Printers log in with HTTP Basic: user = device id, password = a random
 secret shown once in admin; only its SHA-256 is stored. A Star printer's
 MAC address is bound on its first poll. ``protocol`` is "star" (CloudPRNT)
 or "epson" (Server Direct Print).
+
+``kind`` is what the owner picked in setup: "kok" (food), "dryck" (drinks)
+or "annat" (a station of its own, named after the printer);
+routing.apply_kinds turns it into stations. Outside prod a
+printer may be ``protocol`` "sim": a simulated printer with no secret that
+never polls. Its jobs are PRINTED the moment they are made (so the stuck
+and failed alarms never see them) and a SIM row lets Booqy Admin show the
+tickets on screen. Prod refuses "sim" (simulator_allowed).
 """
 
 import hashlib
@@ -65,6 +79,10 @@ OPEN = (PENDING, PRINTING, FAILED)
 AUTO, CANCEL, REPRINT, TEST = "auto", "cancel", "reprint", "test"
 STATION, ALLERGY = "station", "allergy"
 PROTOCOLS = ("star", "epson")
+SIM = "sim"
+KINDS = ("kok", "dryck", "annat")
+SIM_TTL_DAYS = 2
+SIM_FEED = 20
 
 LEASE_SECONDS = 60
 BACKOFF_SECONDS = (15, 30, 60, 120)
@@ -156,10 +174,61 @@ def metric(name, value=1):
 
 # --- settings --------------------------------------------------------------------
 
-def get_settings(location_id):
+def simulator_allowed():
+    """Simulated printers exist only in an environment that says it is not
+    prod; an unset ENVIRONMENT counts as prod (fail closed)."""
+    return (os.environ.get("ENVIRONMENT") or "prod") != "prod"
+
+
+def get_settings(location_id, *, setup=False):
+    """The settings the owner edits; `setup` adds setupSkipped (Kom igång)."""
     item = _table().get_item(Key=_key(location_id, "SETTINGS"), ConsistentRead=True).get("Item") or {}
-    return {"autoPrint": bool(item.get("autoPrint", False)), "printerId": item.get("printerId"),
-            "paperWidth": int(item.get("paperWidth") or 80), "version": int(item.get("version") or 0)}
+    if item.get("syncRouting"):
+        try:
+            sync_routing(location_id, item, now_utc())
+        except Exception as exc:  # noqa: BLE001 - never let the stations sync stop a poll or an order
+            # The token stays, so the next read tries again; printing goes on
+            # with the stations as they were.
+            print(json.dumps({"print": "sync_routing_failed", "locationId": location_id,
+                              "error": type(exc).__name__}))
+    out = {"autoPrint": bool(item.get("autoPrint", False)), "printerId": item.get("printerId"),
+           "paperWidth": int(item.get("paperWidth") or 80), "version": int(item.get("version") or 0)}
+    if setup:
+        out["setupSkipped"] = item.get("printerSetup") == "skipped"
+    return out
+
+
+def sync_routing(location_id, settings_item, now):
+    """Booqy Console adds, renames and removes printers in this table but
+    holds no routing code: it marks SETTINGS with a syncRouting token, and
+    the next read here makes the stations follow the printers (as after a
+    change in admin: removed printers leave every station, the kinds give
+    Kök, Dryck and the Annat stations). The token is removed only if it is
+    still the same, so a second console change in between is not lost."""
+    token = settings_item["syncRouting"]
+    devices = list_devices(location_id)
+    ids = {d["deviceId"] for d in devices}
+    routing.drop_printers(location_id, ids, now)
+    routing.apply_kinds(settings_item.get("tenantId"), location_id, devices, settings_item.get("printerId"), now)
+    try:
+        _table().update_item(Key=_key(location_id, "SETTINGS"), UpdateExpression="REMOVE syncRouting",
+                             ConditionExpression="syncRouting = :t", ExpressionAttributeValues={":t": token})
+    except ClientError as exc:
+        if not _conditional(exc):
+            raise
+
+
+def set_setup_skipped(tenant_id, location_id, skipped, actor, now):
+    """"Inga skrivare än": the setup step stays open (amber) but no longer
+    blocks; false clears it."""
+    if not isinstance(skipped, bool):
+        raise ValueError("skipped must be true or false")
+    if skipped:
+        _table().update_item(Key=_key(location_id, "SETTINGS"),
+                             UpdateExpression="SET printerSetup = :s, tenantId = :t, updatedAt = :now, updatedBy = :by",
+                             ExpressionAttributeValues={":s": "skipped", ":t": tenant_id, ":now": iso(now), ":by": actor})
+    else:
+        _table().update_item(Key=_key(location_id, "SETTINGS"), UpdateExpression="REMOVE printerSetup")
 
 
 def _whole(value, field):
@@ -207,16 +276,19 @@ def put_settings(tenant_id, location_id, settings, actor, now):
     return {**settings, "version": expected + 1}
 
 
-def _set_printer_if_unset(tenant_id, location_id, device_id, now):
-    """The first printer becomes the order printer (auto print stays as it was)."""
+def _set_printer_if_unset(tenant_id, location_id, device_id, now, *, auto=False):
+    """The first printer becomes the order printer. Auto print stays as it
+    was, unless `auto` (a printer set up with a kind in Kom igång: the
+    tickets should simply start printing)."""
     try:
         _table().update_item(
             Key=_key(location_id, "SETTINGS"),
             UpdateExpression=("SET printerId = :p, tenantId = :t, updatedAt = :now, "
-                              "version = if_not_exists(version, :zero) + :one"),
+                              + ("autoPrint = :true, " if auto else "")
+                              + "version = if_not_exists(version, :zero) + :one"),
             ConditionExpression="attribute_not_exists(printerId) OR attribute_type(printerId, :null)",
             ExpressionAttributeValues={":p": device_id, ":t": tenant_id, ":now": iso(now), ":zero": 0,
-                                       ":one": 1, ":null": "NULL"},
+                                       ":one": 1, ":null": "NULL", **({":true": True} if auto else {})},
         )
     except ClientError as exc:
         if not _conditional(exc):
@@ -278,28 +350,73 @@ def clean_name(value):
     return value.strip()
 
 
-def add_device(tenant_id, location_id, name, actor, now, protocol="star"):
-    """-> (device, secret). The secret is returned once and never stored."""
+def clean_kind(value):
+    if value not in KINDS:
+        raise ValueError("kind must be kok, dryck or annat")
+    return value
+
+
+def is_sim(device):
+    return (device or {}).get("protocol") == SIM
+
+
+def add_device(tenant_id, location_id, name, actor, now, protocol="star", kind=None):
+    """-> (device, secret). The secret is returned once and never stored; a
+    simulated printer (not in prod) has none. With a kind the stations
+    follow the printers' kinds (routing.apply_kinds); without one (older
+    clients) the stations are left as they are."""
     name = clean_name(name)
-    if protocol not in PROTOCOLS:
+    kind = None if kind is None else clean_kind(kind)
+    if protocol == SIM:
+        if not simulator_allowed():
+            raise ValueError("simulator_dev_only")
+    elif protocol not in PROTOCOLS:
         raise ValueError("protocol must be star or epson")
-    if len(list_devices(location_id)) >= MAX_DEVICES:
+    devices = list_devices(location_id)
+    if len(devices) >= MAX_DEVICES:
         raise Conflict("too_many_printers")
     device_id = uuid.uuid4().hex
-    secret = secrets.token_urlsafe(32)
+    secret = None if protocol == SIM else secrets.token_urlsafe(32)
     item = {**_key(location_id, f"DEVICE#{device_id}"), "deviceId": device_id, "deviceKey": device_id,
             "tenantId": tenant_id, "locationId": location_id, "name": name, "protocol": protocol,
-            "secretHash": hash_secret(secret),
             "createdAt": iso(now), "createdBy": actor}
+    if kind:
+        item["kind"] = kind
+    if secret:
+        item["secretHash"] = hash_secret(secret)
     _table().put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
-    _set_printer_if_unset(tenant_id, location_id, device_id, now)
+    _set_printer_if_unset(tenant_id, location_id, device_id, now, auto=bool(kind))
+    if kind:
+        routing.apply_kinds(tenant_id, location_id, [*devices, item], get_settings(location_id)["printerId"], now)
     return item, secret
+
+
+def update_device(tenant_id, location_id, device_id, changes, actor, now):
+    """Name and/or kind (Kök, Dryck or Annat); a new kind moves the printer's
+    tickets, a new name renames an Annat printer's station."""
+    device = get_device(location_id, device_id)
+    sets, values = ["updatedAt = :now", "updatedBy = :by"], {":now": iso(now), ":by": actor}
+    if "name" in changes:
+        sets.append("#n = :name")
+        values[":name"] = clean_name(changes["name"])
+    if "kind" in changes:
+        sets.append("kind = :kind")
+        values[":kind"] = clean_kind(changes["kind"])
+    item = _table().update_item(Key=_key(location_id, f"DEVICE#{device_id}"), UpdateExpression="SET " + ", ".join(sets),
+                                ConditionExpression="attribute_exists(PK)",
+                                **({"ExpressionAttributeNames": {"#n": "name"}} if "name" in changes else {}),
+                                ExpressionAttributeValues=values, ReturnValues="ALL_NEW")["Attributes"]
+    new_kind = "kind" in changes and changes["kind"] != device.get("kind")
+    if new_kind or ("name" in changes and item.get("kind") == "annat"):
+        routing.apply_kinds(tenant_id, location_id, list_devices(location_id), get_settings(location_id)["printerId"], now)
+    return item
 
 
 def rotate_device(location_id, device_id, actor, now):
     """New secret; the MAC binding is cleared too, so a replaced printer can
     take over the same entry. The old secret stops working at once."""
-    get_device(location_id, device_id)
+    if is_sim(get_device(location_id, device_id)):
+        raise Conflict("simulated_printer")
     secret = secrets.token_urlsafe(32)
     _table().update_item(
         Key=_key(location_id, f"DEVICE#{device_id}"),
@@ -312,22 +429,36 @@ def rotate_device(location_id, device_id, actor, now):
 
 def remove_device(location_id, device_id, now):
     """Revokes the printer. If it was the order printer, auto print stops.
-    Its open jobs (and, for the order printer, every open job) are closed."""
-    get_device(location_id, device_id)
+    Its open jobs (and, for the order printer, every open job) are closed.
+    A printer set up with a kind hands the order printer role to the next
+    printer, so the other printers keep printing."""
+    removed = get_device(location_id, device_id)
     _table().delete_item(Key=_key(location_id, f"DEVICE#{device_id}"))
+    rest = list_devices(location_id)
+    successor = rest[0]["deviceId"] if rest and removed.get("kind") else None
     try:
-        _table().update_item(
-            Key=_key(location_id, "SETTINGS"),
-            UpdateExpression=("SET printerId = :null, autoPrint = :false, updatedAt = :now, "
-                              "version = if_not_exists(version, :zero) + :one"),
-            ConditionExpression="printerId = :p",
-            ExpressionAttributeValues={":null": None, ":false": False, ":now": iso(now), ":zero": 0, ":one": 1,
-                                       ":p": device_id},
-        )
+        if successor:
+            _table().update_item(
+                Key=_key(location_id, "SETTINGS"),
+                UpdateExpression="SET printerId = :s, updatedAt = :now, version = if_not_exists(version, :zero) + :one",
+                ConditionExpression="printerId = :p",
+                ExpressionAttributeValues={":s": successor, ":now": iso(now), ":zero": 0, ":one": 1, ":p": device_id},
+            )
+        else:
+            _table().update_item(
+                Key=_key(location_id, "SETTINGS"),
+                UpdateExpression=("SET printerId = :null, autoPrint = :false, updatedAt = :now, "
+                                  "version = if_not_exists(version, :zero) + :one"),
+                ConditionExpression="printerId = :p",
+                ExpressionAttributeValues={":null": None, ":false": False, ":now": iso(now), ":zero": 0, ":one": 1,
+                                           ":p": device_id},
+            )
     except ClientError as exc:
         if not _conditional(exc):
             raise
     routing.drop_printer(location_id, device_id, now)
+    if removed.get("kind") or any(d.get("kind") for d in rest):
+        routing.apply_kinds(None, location_id, rest, get_settings(location_id)["printerId"], now)
     tidy(location_id, queue(location_id), get_settings(location_id), list_devices(location_id), now)
 
 
@@ -358,15 +489,19 @@ def seen(device, now, *, mac=None, status_code=None):
 
 
 def online(device, now):
+    if is_sim(device):
+        return True
     last = (device or {}).get("lastSeenAt")
     return bool(last) and (now - parse_iso(last)).total_seconds() < OFFLINE_SECONDS
 
 
 def device_view(device, now, server_url=None):
-    view = {k: device.get(k) for k in ("deviceId", "name", "mac", "lastSeenAt", "statusCode", "createdAt")}
+    view = {k: device.get(k) for k in ("deviceId", "name", "kind", "mac", "lastSeenAt", "statusCode", "createdAt")}
     view["protocol"] = device.get("protocol") or "star"
     view["online"] = online(device, now)
-    if server_url:
+    if is_sim(device):
+        view["simulated"] = True
+    elif server_url:
         if view["protocol"] == "epson":
             server_url = server_url.replace("/print/cloudprnt", "/print/epson")
         view["serverUrl"] = f"{server_url}/{device['deviceId']}"
@@ -400,16 +535,50 @@ def _put_once(item):
         raise
 
 
+def sim_ids(location_id):
+    return {d["deviceId"] for d in list_devices(location_id) if is_sim(d)}
+
+
+def _put_job(item, sims):
+    """_put_once; a job for a simulated printer is PRINTED at once (it never
+    polls) and gets a SIM row for the on-screen printer."""
+    if item.get("deviceId") not in sims:
+        return _put_once(item)
+    now = parse_iso(item["createdAt"])
+    item = {k: v for k, v in item.items() if k not in ("queue", "dueAt")}
+    item.update(status=PRINTED, attempts=1, closedAt=item["createdAt"], simulated=True)
+    if not _put_once(item):
+        return False
+    _put_once({**_key(item["locationId"], f"SIM#{item['deviceId']}#{_ms(now)}#{job_token(item['SK'])}"),
+               "jobSk": item["SK"], "kind": item["kind"], "createdAt": item["createdAt"],
+               "ttl": int((now + timedelta(days=SIM_TTL_DAYS)).timestamp())})
+    return True
+
+
+def simulated(location_id, device_id):
+    """The newest jobs a simulated printer "printed": [(sim row, job)]."""
+    rows = _table().query(KeyConditionExpression=Key("PK").eq(pk(location_id))
+                          & Key("SK").begins_with(f"SIM#{device_id}#"),
+                          ScanIndexForward=False, Limit=SIM_FEED).get("Items") or []
+    out = []
+    for row in rows:
+        job = get_job(location_id, row["jobSk"])
+        if job:
+            out.append((row, job))
+    return out
+
+
 def order_header(order):
     return {"orderId": order["orderId"], "number": order.get("number"), "mode": order.get("mode"),
             "tableLabel": order.get("tableLabel"), "placedAt": order.get("confirmedAt") or order.get("createdAt"),
             "readyEstimate": order.get("readyEstimate")}
 
 
-def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False):
+def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False, sims=None):
     """The ticket on each printer of its station, plus the allergy ticket
     when it has an allergy and the location wants one. Idempotent (a
     reprint is a new job per press). Returns the jobs created."""
+    sims = sim_ids(location_id) if sims is None else sims
     station = next((s for s in config["stations"] if s["stationId"] == ticket["stationId"]), None)
     source, sid = ticket["sourceId"], ticket["stationId"]
     suffix = f"-{_ms(now)}" if copy else ""
@@ -421,7 +590,7 @@ def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False):
         for prefix, kind in kinds:
             item = _new_job(tenant_id, location_id, f"JOB#{source}#{prefix}-{sid}-{device_id}{suffix}", kind, now,
                             order_id=ticket.get("orderId"), device_id=device_id, ticket_sk=ticket["SK"], copy=copy)
-            if _put_once(item):
+            if _put_job(item, sims):
                 jobs.append(item)
     return jobs
 
@@ -436,8 +605,9 @@ def dispatch(tenant_id, location_id, source_id, header, lines, notes, now, *, au
     routing.store(tenant_id, location_id, tickets)
     jobs = []
     if auto_print if auto_print is not None else settings["autoPrint"]:
+        sims = sim_ids(location_id)
         for ticket in tickets:
-            jobs += ticket_jobs(tenant_id, location_id, ticket, config, now)
+            jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, sims=sims)
     return tickets, jobs
 
 
@@ -494,9 +664,10 @@ def on_order_cancelled(order, now):
     printer_id = get_settings(location_id)["printerId"]
     targets = list(dict.fromkeys(j.get("deviceId") or printer_id for j in jobs if _maybe_printed(j)))
     made = False
+    sims = sim_ids(location_id) if targets else set()
     for device_id in filter(None, targets):
-        made |= _put_once(_new_job(order.get("tenantId"), location_id, f"JOB#{order_id}#mk-{device_id}", CANCEL,
-                                   now, order_id=order_id, device_id=device_id))
+        made |= _put_job(_new_job(order.get("tenantId"), location_id, f"JOB#{order_id}#mk-{device_id}", CANCEL,
+                                   now, order_id=order_id, device_id=device_id), sims)
     return made
 
 
@@ -518,18 +689,20 @@ def reprint(tenant_id, location_id, order_id, now, station_id=None):
     if station_id and not tickets:
         raise NotFound
     jobs = []
+    sims = sim_ids(location_id)
     for ticket in tickets:
-        jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, copy=True)
+        jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, copy=True, sims=sims)
     if not jobs:
         raise Conflict("no_printer")
     return jobs
 
 
 def test_job(tenant_id, location_id, device_id, now):
-    get_device(location_id, device_id)
+    device = get_device(location_id, device_id)
     item = _new_job(tenant_id, location_id, f"JOB#test#{_ms(now)}", TEST, now, device_id=device_id)
-    _put_once(item)
-    return item
+    sims = {device_id} if is_sim(device) else set()
+    _put_job(item, sims)
+    return {**item, "status": PRINTED} if sims else item
 
 
 def queue(location_id, *, due_by=None):
@@ -678,6 +851,8 @@ def summary(location_id, settings, devices, now):
     return {
         "autoPrint": settings.get("autoPrint", False),
         "printerConfigured": printer is not None,
+        "printerCount": len(devices),
+        "setupSkipped": bool(settings.get("setupSkipped")),
         "online": online(printer, now) if printer else False,
         "lastSeenAt": (printer or {}).get("lastSeenAt"),
         "unprinted": sum(1 for j in jobs if j["status"] in (PENDING, PRINTING)),
@@ -695,7 +870,8 @@ def order_tickets(location_id, now):
     for ticket in routing.list_tickets(location_id, now):
         if ticket.get("orderId"):
             out.setdefault(ticket["orderId"], []).append(
-                {k: ticket.get(k) for k in ("stationId", "stationName", "status", "allergy")})
+                {**{k: ticket.get(k) for k in ("stationId", "status", "allergy")},
+                 "stationName": routing.station_name(ticket)})
     return out
 
 

@@ -55,8 +55,7 @@ def test_time_taken_offers_closest_times_on_both_sides(opening, yes, name, lang)
     held = call.tool({"holdId": "h2", "date": "2026-11-03", "time": "19:30", "partySize": 4})
     assert "19:30" in held.text
     call.say(yes)
-    assert _use(call.say(name)) == ("create_reservation", {"holdId": "h2", "name": "Anna", "partySize": 4,
-                                                           "language": "sv" if lang == SV else "en"})
+    assert _use(call.say(name)) == ("create_reservation", {"holdId": "h2", "name": "Anna", "confirmed": True})
 
 
 @pytest.mark.parametrize("opening, yes, lang", OPENING_YES)

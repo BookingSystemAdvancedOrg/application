@@ -42,7 +42,9 @@ class Turn:
 
 
 class AgentModel:
-    def converse(self, system, messages, tools, *, max_tokens) -> Turn:
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None) -> Turn:
+        """`timeout_s`: the time left of the caller's turn (agent.run_turn);
+        an adapter answers or raises AgentModelError within it."""
         raise NotImplementedError
 
 
@@ -161,6 +163,21 @@ CONFIRMATIONS = {   # tool -> (sv, en) said after its tool_result
               "Something went wrong, sorry. Would you like someone to call you back?"),
 }
 _ACTION = {"cancel": ("avboka", "cancel"), "move": ("flytta", "move")}
+# Tool results that carry a `code` and a `say` hint (phone agent tools): what the simulator says.
+CODE_SENTENCES = {
+    "pastDate": ("Den dagen har tyvärr redan varit. Vilken dag menar du?",
+                 "I am afraid that day has passed. Which day do you mean?"),
+    "beyondHorizon": ("Så långt fram tar vi tyvärr inte emot bokningar ännu. Vill du att restaurangen ringer upp dig?",
+                      "I am afraid we do not take bookings that far ahead yet. Would you like the restaurant to "
+                      "call you back?"),
+    "largeParty": ("För ett så stort sällskap hjälper restaurangen dig personligen. Får de ringa upp dig?",
+                   "For a party of that size the restaurant will help you personally. May they call you back?"),
+    "guaranteeRequired": ("För den bokningen behövs en kortgaranti, som jag inte kan ta i telefon. Får restaurangen "
+                          "ringa upp dig?",
+                          "That booking needs a card guarantee, which I cannot take by phone. May the restaurant "
+                          "call you back?"),
+}
+CALLBACK_CODES = {"largeParty": "largeParty", "guaranteeRequired": "guarantee", "beyondHorizon": "booking"}
 
 
 def _blocks(message):
@@ -210,6 +227,8 @@ def _joined(times, lang):
 
 
 def _is_full_day(result):
+    if result.get("code"):
+        return False
     if result.get("dayFull") is True or ("times" in result and not result["times"]):
         return True
     return result.get("held") is False and not (result.get("before") or result.get("after") or result.get("nearby"))
@@ -317,7 +336,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         self.today = today or date.today()
         self._ids = 0
 
-    def converse(self, system, messages, tools, *, max_tokens):
+    def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         last = messages[-1] if messages else {}
         self._call("converse", _text(last)[:40])
         if self.delay_ms:
@@ -455,7 +474,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
                 (last_result or {}).get("reservations") and "date" in slots and "time" in slots:
             found = last_result["reservations"][0]
             return self._use("move_reservation", {"reservationId": found["reservationId"], "date": slots["date"],
-                                                  "time": slots["time"]}, offered, lang)
+                                                  "time": slots["time"], "confirmed": True}, offered, lang)
         if intent in ("cancel", "move"):
             payload = {"phone": slots["phone"]} if "phone" in slots else {}
             return self._use("find_reservations", payload, offered, lang)
@@ -475,8 +494,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
     def _create(self, slots, hold, offered, lang):
         if "name" not in slots:
             return self._say("ask_name", lang)
-        payload = {"holdId": hold["holdId"], "name": slots["name"], "partySize": slots.get("partySize"),
-                   "language": lang}
+        payload = {"holdId": hold["holdId"], "name": slots["name"], "confirmed": True}
         payload.update({"phone": slots["phone"]} if "phone" in slots else {})
         return self._use("create_reservation", payload, offered, lang)
 
@@ -484,6 +502,8 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         """A caller's "yes" continues what the agent last proposed."""
         name = (last_use or {}).get("name")
         result = last_result or {}
+        if result.get("code") in CALLBACK_CODES:      # "yes" to the callback a tool's `say` offered
+            return self._callback(slots, CALLBACK_CODES[result["code"]], offered, lang)
         if result.get("ok") is False:     # "yes" to the callback the error sentence offered
             return self._callback(slots, "bokning" if lang == _SV else "booking", offered, lang)
         if name in ("hold_table", "create_reservation") and result.get("held") is False and not \
@@ -505,10 +525,11 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         if name == "find_reservations" and result.get("reservations"):
             found = result["reservations"][0]
             if intent != "move":
-                return self._use("cancel_reservation", {"reservationId": found["reservationId"]}, offered, lang)
+                return self._use("cancel_reservation", {"reservationId": found["reservationId"], "confirmed": True},
+                                 offered, lang)
             if "date" in slots and "time" in slots:
                 return self._use("move_reservation", {"reservationId": found["reservationId"], "date": slots["date"],
-                                                      "time": slots["time"]}, offered, lang)
+                                                      "time": slots["time"], "confirmed": True}, offered, lang)
             return self._say("ask_new_time", lang)
         if (name == "transfer_to_staff" and result.get("answered") is False) or unknown_text:
             return self._callback(slots, unknown_text or "callback", offered, lang)
@@ -518,6 +539,8 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
         intent, slots, _, last_use, _ = self._context(messages[:-1])
         name = (last_use or {}).get("name") if (last_use or {}).get("id") == block.get("tool_use_id") else None
         result = _result(block)
+        if result.get("code") in CODE_SENTENCES:
+            return self._offer(CODE_SENTENCES[result["code"]], lang)
         if name is None or block.get("is_error") or result.get("ok") is False:
             return self._say("error", lang)
         if name == "get_availability":
@@ -541,9 +564,7 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             found = list(result.get("reservations") or [])
             if not found:
                 return self._say("find_reservations_none", lang)
-            if intent == "move" and "date" in slots and "time" in slots:
-                return self._use("move_reservation", {"reservationId": found[0]["reservationId"],
-                                                      "date": slots["date"], "time": slots["time"]}, offered, lang)
+            # Read back and ask, also when the caller named the new time: the yes moves it (_confirm).
             action = _ACTION.get(intent, _ACTION["cancel"])[0 if lang == _SV else 1]
             return self._say("find_reservations", lang, date=found[0].get("date", ""),
                              time=found[0].get("time", ""), action=action)
@@ -551,6 +572,16 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             return self._say("hold_table", lang, date=result.get("date", slots.get("date", "")),
                              time=result.get("time", slots.get("time", "")),
                              partySize=result.get("partySize", slots.get("partySize", "")))
+        if name == "get_menu" and "dishes" in result:
+            summary = ", ".join(f"{d.get('name')} {d.get('price', '')} kr".strip() for d in result["dishes"])
+            return self._say(name, lang, summary=summary)
+        if name == "get_restaurant_info" and "summary" not in result:
+            summary = "; ".join(str(result[k]) for k in ("name", "address") if result.get(k))
+            hours = ", ".join(f"{h.get('weekday')} {h.get('open')}-{h.get('close')}" for h in result.get("hours") or [])
+            special = "; ".join(" ".join(str(x) for x in (d.get("date"), d.get("kind"), d.get("note")) if x) + (
+                " " + ", ".join(f"{h.get('open')}-{h.get('close')}" for h in d["hours"]) if d.get("hours") else "")
+                for d in result.get("specialDays") or [])
+            return self._say(name, lang, summary="; ".join(x for x in (summary, hours, special) if x))
         if name in ("get_restaurant_info", "get_menu"):
             return self._say(name, lang, summary=result.get("summary") or "")
         return self._say(name, lang) if name in CONFIRMATIONS else self._say("yes", lang)

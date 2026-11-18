@@ -486,14 +486,10 @@ def test_entitlement_switch_back_on(env):
     assert walk_in(env)[0] == 201
 
 
-def test_public_join_turnstile_failure_is_turnstile_failed(env, monkeypatch):
-    from shared import turnstile
+def test_public_join_that_skipped_the_waf_is_bot_check_failed(env, monkeypatch):
     settings(env)
-    monkeypatch.setenv("TURNSTILE_REQUIRED", "true")
-
-    def refuse(token, remote_ip=None, action=None):
-        raise ValueError("turnstile verification failed")
-    monkeypatch.setattr(turnstile, "verify", refuse)
-    body = {"entryId": E1, "name": "Sara", "partySize": 2, "phone": "0701234567", "turnstileToken": "bad"}
+    monkeypatch.setenv("BOT_CHECK_ENFORCED", "true")
+    monkeypatch.setenv("SITE_WAF_SECRET", "site-waf-edge-secret")
+    body = {"entryId": E1, "name": "Sara", "partySize": 2, "phone": "0701234567"}
     status, answer = public(env, "POST", "/public/locations/{locationId}/waitlist", body=body)
-    assert status == 400 and answer["code"] == "turnstile_failed" and answer["field"] == "turnstileToken"
+    assert status == 400 and answer["code"] == "bot_check_failed"

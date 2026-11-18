@@ -1,0 +1,166 @@
+{
+ "id": "09-mishearing",
+ "title": "The caller corrects party size and name after the read-back: checked again, read back again, booked as corrected",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "18:00",
+    "19:00",
+    "20:00"
+   ]
+  }
+ },
+ "expect": {
+  "booked": {
+   "date": "+1",
+   "time": "19:00",
+   "partySize": 5
+  }
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag skulle vilja boka ett bord för fyra personer imorgon klockan sju på kvällen.",
+    "Klockan sju, tack.",
+    "Ahmad.",
+    "Nej, vi blir fem personer, och namnet är Ahmed, A H M E D.",
+    "Ja, det stämmer.",
+    "Ja, boka det, tack."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for four people tomorrow at seven in the evening.",
+    "Seven, please.",
+    "Ahmad.",
+    "No, we will be five people, and the name is Ahmed, A H M E D.",
+    "Yes, that is correct.",
+    "Yes, please book it."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte gerne für morgen Abend um sieben Uhr einen Tisch für vier Personen reservieren.",
+    "Um sieben, bitte.",
+    "Ahmad.",
+    "Nein, wir sind fünf Personen, und der Name ist Ahmed, A H M E D.",
+    "Ja, das stimmt.",
+    "Ja, bitte buchen Sie."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хотел бы забронировать столик на четверых на завтра на семь вечера.",
+    "В семь, пожалуйста.",
+    "Ахмад.",
+    "Нет, нас будет пять человек, и имя Ахмед, А Х М Е Д.",
+    "Да, всё верно.",
+    "Да, бронируйте, пожалуйста."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan miis u qabsado afar qof berri fiidkii saacadda toddobada.",
+    "Saacadda toddobada, fadlan.",
+    "Axmad.",
+    "Maya, waxaan nahay shan qof, magacuna waa Axmed, A X M E D.",
+    "Haa, waa sax.",
+    "Haa, fadlan qabso."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لأربعة أشخاص غدا الساعة السابعة مساء.",
+    "السابعة من فضلك.",
+    "سامي.",
+    "لا، سنكون خمسة أشخاص، والاسم سامر وليس سامي.",
+    "نعم، هذا صحيح.",
+    "نعم، احجز من فضلك."
+   ],
+   "confirm": 4,
+   "names": [
+    "سامر",
+    "Samer",
+    "Samir"
+   ]
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän neljälle hengelle huomenna kello seitsemän illalla.",
+    "Seitsemältä, kiitos.",
+    "Ahmad.",
+    "Ei, meitä on viisi, ja nimi on Ahmed, A H M E D.",
+    "Kyllä, se pitää paikkansa.",
+    "Kyllä, varatkaa se, kiitos."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla czterech osób na jutro na godzinę dziewiętnastą.",
+    "Na dziewiętnastą, proszę.",
+    "Ahmad.",
+    "Nie, będzie nas pięć osób, a nazwisko to Ahmed, A H M E D.",
+    "Tak, zgadza się.",
+    "Tak, proszę zarezerwować."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarın akşam saat yedide dört kişilik bir masa ayırtmak istiyorum.",
+    "Saat yedi, lütfen.",
+    "Ahmad.",
+    "Hayır, beş kişi olacağız ve isim Ahmed, A H M E D.",
+    "Evet, doğru.",
+    "Evet, lütfen ayırtın."
+   ],
+   "confirm": 4,
+   "names": [
+    "Ahmed",
+    "Ахмед",
+    "Axmed"
+   ]
+  }
+ }
+}

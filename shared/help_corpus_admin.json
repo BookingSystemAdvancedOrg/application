@@ -15,9 +15,8 @@
   "/telefon",
   "/telefon/samtal/:callId",
   "/layout",
-  "/gaster",
+  "/kunder",
   "/presentkort",
-  "/webbplats",
   "/evenemang",
   "/evenemang/:eventId",
   "/evenemang/:eventId/inslapp/:occurrenceId",
@@ -421,8 +420,8 @@
    "steps": [
     "Öppna Beställningar.",
     "Tryck Påbörja på en ny beställning när köket börjar.",
-    "Tryck Klar när maten är färdig (eller Klar att servera för bordsbeställningar).",
-    "Tryck Hämtad eller Serverad när gästen har fått maten."
+    "Tryck Klar när maten är färdig.",
+    "Tryck Hämtad när gästen har hämtat maten."
    ],
    "actions": [
     {
@@ -492,34 +491,29 @@
   {
    "id": "bestallning-installningar",
    "route": "/installningar",
-   "title": "Slå på beställning och QR-koder",
+   "title": "Slå på beställning online",
    "audience": "owner",
    "feature": "ordering",
    "keywords": [
-    "beställning vid bordet",
-    "qr-kod",
-    "qr",
     "ta emot beställningar",
     "tillagningstid",
     "sista beställning",
     "avhämtning inställning",
-    "beställa vid bordet",
-    "bordsbeställning",
+    "takeaway",
     "gästerna kan beställa",
-    "kan beställa vid bordet"
+    "beställning online"
    ],
-   "answer": "Avhämtning, beställning vid bordet och QR-koderna till borden ställer du in under Inställningar, Beställning, Beställning och QR-koder.",
+   "answer": "Beställning online med avhämtning slår du på under Inställningar, Beställning, Beställning online.",
    "steps": [
-    "Öppna Inställningar, välj Beställning och sedan Beställning och QR-koder.",
-    "Slå på Ta emot beställningar och välj Avhämtning och Beställning vid bordet (QR-kod).",
+    "Öppna Inställningar, välj Beställning och sedan Beställning online.",
+    "Slå på Ta emot beställningar (avhämtning).",
     "Ställ in tillagningstid som gästen ser och sista beställning före stängning.",
-    "Tryck Spara beställning.",
-    "Under QR-koder för borden trycker du Skriv ut eller Ladda ner."
+    "Tryck Spara beställning."
    ],
    "actions": [
     {
      "id": "inst-bestallning-open",
-     "label": "Öppna Beställning och QR-koder",
+     "label": "Öppna Beställning online",
      "to": "/installningar",
      "hash": "bestallning"
     }
@@ -529,31 +523,72 @@
   {
    "id": "skrivare",
    "route": "/installningar",
-   "title": "Koppla en kökskrivare",
+   "title": "Lägga till kvittoskrivare (Kök, Dryck)",
    "audience": "owner",
    "feature": "ordering",
    "keywords": [
     "skrivare",
     "kvittoskrivare",
     "kökskrivare",
+    "bongskrivare",
+    "bong",
     "utskrift",
     "cloudprnt",
     "testutskrift",
-    "pappersbredd"
+    "pappersbredd",
+    "kök",
+    "dryck",
+    "bar",
+    "simulerad skrivare",
+    "kom igång"
    ],
-   "answer": "En kökskrivare som skriver ut beställningarna lägger du till under Inställningar, Beställning, Skrivare och stationer.",
+   "answer": "Kvittoskrivarna lägger du till under Inställningar, Beställning, Kvittoskrivare. Det är också ett steg i Kom igång. Varje skrivare är Kök, Dryck eller Annat. Maten skrivs ut på Kök, drycken på Dryck.",
    "steps": [
-    "Öppna Inställningar, välj Beställning och sedan Skrivare och stationer.",
-    "Tryck Lägg till skrivare och följ stegen. Uppgifterna som visas skriver du in i skrivaren direkt, de visas bara en gång.",
+    "Öppna Inställningar, välj Beställning och sedan Kvittoskrivare.",
+    "Tryck Lägg till skrivare och välj Kök, Dryck eller Annat. Ge den ett namn och tryck Lägg till.",
+    "Skriv in uppgifterna som visas i skrivaren direkt, de visas bara en gång.",
     "Tryck Testutskrift för att se att den fungerar.",
-    "Slå på Skriv ut beställningar automatiskt, välj skrivare och pappersbredd och tryck Spara skrivare."
+    "Under Vad skickas vart? väljer du med ett tryck vilken skrivare varje kategori går till.",
+    "Har ni ingen skrivare än, tryck Inga skrivare än. Steget står kvar i Kom igång tills en skrivare finns."
    ],
    "actions": [
     {
      "id": "inst-skrivare-open",
-     "label": "Öppna Skrivare och stationer",
+     "label": "Öppna Kvittoskrivare",
      "to": "/installningar",
      "hash": "skrivare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "skickas-till",
+   "route": "/meny",
+   "title": "Välja vilken skrivare en rätt skickas till",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "skickas till",
+    "bong",
+    "station",
+    "kök",
+    "dryck",
+    "bar",
+    "drycker till köket",
+    "kategori",
+    "skrivare"
+   ],
+   "answer": "Varje rätt och kategori har Skickas till: Kök, Dryck, en Annat-skrivare eller Ingen bong. Mat går till Kök och dryck till Dryck om inget annat är valt.",
+   "steps": [
+    "Öppna Meny och tryck på rätten (eller Lägg till rätt).",
+    "Under Bong, Skickas till: tryck på skrivaren. Bongen nedanför visar var rätten hamnar.",
+    "För en hel kategori: öppna Kategorier och tryck på skrivaren under kategorin. Det sparas direkt."
+   ],
+   "actions": [
+    {
+     "id": "meny-skickas-till-open",
+     "label": "Öppna Meny",
+     "to": "/meny"
     }
    ],
    "kind": "guide"
@@ -1148,59 +1183,65 @@
   },
   {
    "id": "gaster-sok",
-   "route": "/gaster",
-   "title": "Hitta en gäst",
+   "route": "/kunder",
+   "title": "Hitta en kund",
    "audience": "all",
    "feature": "guestCrm",
    "keywords": [
+    "kunder",
+    "kundregister",
+    "kundregistret",
     "gästregister",
     "gästregistret",
     "stamgäst",
     "stamgäster",
+    "sök kund",
+    "hitta kund",
     "sök gäst",
     "hitta gäst",
     "gästhistorik",
     "historik"
    ],
-   "answer": "Under Gäster ser du vilka som kommer tillbaka och vad de har bokat och beställt.",
+   "answer": "Under Kunder ser du vilka som kommer tillbaka och vad de har bokat och beställt.",
    "steps": [
-    "Öppna Gäster.",
+    "Öppna Kunder.",
     "Välj vad du söker på (namn, e-post eller telefon) och tryck Sök.",
-    "Tryck på gästen för att se historiken."
+    "Tryck på kunden för att se historiken."
    ],
    "actions": [
     {
      "id": "gaster-open",
-     "label": "Öppna Gäster",
-     "to": "/gaster"
+     "label": "Öppna Kunder",
+     "to": "/kunder"
     }
    ],
    "kind": "guide"
   },
   {
    "id": "gaster-anteckning",
-   "route": "/gaster",
-   "title": "Anteckningar och taggar på gäster",
+   "route": "/kunder",
+   "title": "Anteckningar och taggar på kunder",
    "audience": "owner",
    "feature": "guestCrm",
    "keywords": [
+    "anteckning kund",
     "anteckning gäst",
     "taggar",
     "tagg",
     "födelsedag",
     "allergi gäst"
    ],
-   "answer": "Ägaren kan skriva anteckningar, taggar och födelsedag på en gäst.",
+   "answer": "Ägaren kan skriva anteckningar, taggar och födelsedag på en kund.",
    "steps": [
-    "Öppna Gäster och tryck på gästen.",
+    "Öppna Kunder och tryck på kunden.",
     "Fyll i Anteckning, Taggar eller Födelsedag.",
     "Tryck Spara."
    ],
    "actions": [
     {
      "id": "gaster-open",
-     "label": "Öppna Gäster",
-     "to": "/gaster"
+     "label": "Öppna Kunder",
+     "to": "/kunder"
     }
    ],
    "kind": "guide"
@@ -1258,69 +1299,6 @@
      "id": "presentkort-open",
      "label": "Öppna Presentkort",
      "to": "/presentkort"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "webbplats-redigera",
-   "route": "/webbplats",
-   "title": "Ändra hemsidan",
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "keywords": [
-    "webbplats",
-    "hemsida",
-    "hemsidan",
-    "sida",
-    "block",
-    "färger",
-    "typsnitt",
-    "utseende hemsida"
-   ],
-   "answer": "Ägaren ändrar hemsidan under Webbplats: sidor, block och utseende.",
-   "steps": [
-    "Öppna Webbplats.",
-    "Välj sida, eller tryck Ny sida.",
-    "Tryck Lägg till block för text, bild, meny, öppettider, boka bord med mera.",
-    "Under Utseende väljer du färger och typsnitt.",
-    "Tryck Spara utkast."
-   ],
-   "actions": [
-    {
-     "id": "webbplats-open",
-     "label": "Öppna Webbplats",
-     "to": "/webbplats"
-    }
-   ],
-   "kind": "guide"
-  },
-  {
-   "id": "webbplats-publicera",
-   "route": "/webbplats",
-   "title": "Publicera hemsidan",
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "keywords": [
-    "publicera hemsida",
-    "publicera",
-    "förhandsgranska",
-    "förhandsvisning",
-    "versioner hemsida",
-    "återställ"
-   ],
-   "answer": "Ändringar på hemsidan syns för gästerna först när du publicerar. Personuppgiftsbiträdesavtalet måste vara godkänt.",
-   "steps": [
-    "Öppna Webbplats och tryck Spara utkast.",
-    "Tryck Förhandsgranska för att se resultatet.",
-    "Tryck Publicera.",
-    "Vill du gå tillbaka: Versioner, Återställ."
-   ],
-   "actions": [
-    {
-     "id": "webbplats-open",
-     "label": "Öppna Webbplats",
-     "to": "/webbplats"
     }
    ],
    "kind": "guide"
@@ -2277,11 +2255,15 @@
     "gästerna beställer",
     "beställ mat",
     "beställa online",
-    "beställa via qr"
+    "beställa via qr",
+    "beställa vid bordet",
+    "qr-kod på bordet",
+    "betala vid bordet",
+    "bordsbeställning"
    ],
-   "answer": "Gästerna beställer under Beställ på hemsidan: avhämtning, eller vid bordet via QR-koden på bordet. De betalar i förväg.",
+   "answer": "Gästerna beställer och betalar under Beställ på hemsidan och hämtar maten hos er. Beställning och betalning med QR-kod vid bordet finns inte: gäster på plats betalar i er egen kassa.",
    "steps": [
-    "Gästen öppnar Beställ på hemsidan eller scannar QR-koden på bordet.",
+    "Gästen öppnar Beställ på hemsidan.",
     "Gästen väljer rätter och betalar.",
     "Beställningen dyker upp under Beställningar."
    ],
@@ -2898,14 +2880,14 @@
    "area": "personal"
   },
   {
-   "id": "nav:gaster",
+   "id": "nav:kunder",
    "kind": "page",
-   "route": "/gaster",
-   "title": "Gäster",
+   "route": "/kunder",
+   "title": "Kunder",
    "where": "vänstermenyn",
-   "text": "Gäster finns i vänstermenyn.",
+   "text": "Kunder finns i vänstermenyn.",
    "highlight": [
-    "help:nav:/gaster"
+    "help:nav:/kunder"
    ],
    "audience": "all",
    "feature": "guestCrm",
@@ -2924,20 +2906,6 @@
    "audience": "owner",
    "feature": "giftCards",
    "area": "presentkort"
-  },
-  {
-   "id": "nav:webbplats",
-   "kind": "page",
-   "route": "/webbplats",
-   "title": "Webbplats",
-   "where": "vänstermenyn",
-   "text": "Webbplats finns i vänstermenyn.",
-   "highlight": [
-    "help:nav:/webbplats"
-   ],
-   "audience": "owner",
-   "feature": "siteBuilder",
-   "area": "webbplats"
   },
   {
    "id": "nav:evenemang",
@@ -2991,7 +2959,7 @@
    "audience": "all"
   },
   {
-   "id": "nav:installningar:skrivbordsappen:17",
+   "id": "nav:installningar:skrivbordsappen:16",
    "kind": "page",
    "route": "/installningar",
    "hash": "skrivbordsappen",
@@ -3100,9 +3068,9 @@
    "kind": "page",
    "route": "/installningar",
    "hash": "bestallning",
-   "title": "Beställning och QR-koder",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
-   "text": "Beställning och QR-koder finns under Inställningar, Beställning. Avhämtning, beställning vid bordet och QR-koder.",
+   "title": "Beställning online",
+   "where": "Inställningar, Beställning, Beställning online",
+   "text": "Beställning online finns under Inställningar, Beställning. Beställning online med avhämtning, tillagningstid och sista beställning.",
    "highlight": [
     "help:settings-tab:bestallning"
    ],
@@ -3114,9 +3082,9 @@
    "kind": "page",
    "route": "/installningar",
    "hash": "skrivare",
-   "title": "Skrivare och stationer",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Skrivare och stationer finns under Inställningar, Beställning. Skrivaren i köket som skriver ut beställningarna och stationerna.",
+   "title": "Kvittoskrivare",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Kvittoskrivare finns under Inställningar, Beställning. Skrivarna i köket och baren, och vad som skickas vart.",
    "highlight": [
     "help:settings-tab:skrivare"
    ],
@@ -3355,19 +3323,6 @@
    "text": "Borden släpps. Gästen debiteras inte.",
    "highlight": [
     "text:Avboka bokningen"
-   ],
-   "audience": "all",
-   "area": "bokningar"
-  },
-  {
-   "id": "features-bokningar-ReservationModal:aterbetala-avgiften:heading",
-   "kind": "element",
-   "route": "/bokningar",
-   "title": "Återbetala avgiften",
-   "where": "Bokningar",
-   "text": "",
-   "highlight": [
-    "text:Återbetala avgiften"
    ],
    "audience": "all",
    "area": "bokningar"
@@ -4003,9 +3958,9 @@
   {
    "id": "features-guest-crm-GasterPage:historik:heading",
    "kind": "element",
-   "route": "/gaster",
+   "route": "/kunder",
    "title": "Historik",
-   "where": "Gäster",
+   "where": "Kunder",
    "text": "Ingen historik.",
    "highlight": [
     "text:Historik"
@@ -4665,7 +4620,7 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Tillagningstid som gästen ser (min)",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
+   "where": "Inställningar, Beställning, Beställning online",
    "text": "",
    "highlight": [
     "text:Tillagningstid som gästen ser (min)"
@@ -4679,24 +4634,10 @@
    "route": "/installningar",
    "hash": "bestallning",
    "title": "Sista beställning (min före stängning)",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
+   "where": "Inställningar, Beställning, Beställning online",
    "text": "",
    "highlight": [
     "text:Sista beställning (min före stängning)"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-OrderingCard:qr-koder-for-borden:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "bestallning",
-   "title": "QR-koder för borden",
-   "where": "Inställningar, Beställning, Beställning och QR-koder",
-   "text": "Publicera en layout först.",
-   "highlight": [
-    "text:QR-koder för borden"
    ],
    "audience": "owner",
    "feature": "ordering"
@@ -4728,68 +4669,12 @@
    "audience": "owner"
   },
   {
-   "id": "features-installningar-PrinterCard:skriv-in-detta-i-skrivaren-nu:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Skriv in detta i skrivaren nu",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Lösenordet visas bara nu.",
-   "highlight": [
-    "text:Skriv in detta i skrivaren nu"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:lagg-till-skrivare:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till skrivare",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Lägg till skrivare"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:marke:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Märke",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Märke"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-PrinterCard:lagg-till:button",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Lägg till"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
    "id": "features-installningar-PrinterCard:orderskrivare-omtryck-och-makulering:field",
    "kind": "element",
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Orderskrivare (omtryck och makulering)",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Orderskrivare (omtryck och makulering)"
@@ -4803,7 +4688,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Pappersbredd",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Pappersbredd"
@@ -4817,7 +4702,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Om något inte fungerar",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Om något inte fungerar"
@@ -4831,7 +4716,7 @@
    "route": "/installningar",
    "hash": "skrivare",
    "title": "Epson TM-m30III och andra Epson med Server Direct Print",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
    "text": "",
    "highlight": [
     "text:Epson TM-m30III och andra Epson med Server Direct Print"
@@ -5109,62 +4994,6 @@
    ],
    "audience": "owner",
    "area": "personal"
-  },
-  {
-   "id": "features-installningar-StationsCard:bongar-och-stationer:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Bongar och stationer",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "Varje station får sin egen bong: maten till köket, drycken till baren. Allergier och önskemål följer rätten och står i fetstil. En station utan skrivare syns bara på köksskärmen under Beställningar.",
-   "highlight": [
-    "text:Bongar och stationer"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:station:field",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Station",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "",
-   "highlight": [
-    "text:Station"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:lagg-till-station:button",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Lägg till station",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
-   "highlight": [
-    "text:Lägg till station"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
-   "id": "features-installningar-StationsCard:vart-gar-menyns-kategorier:heading",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Vart går menyns kategorier?",
-   "where": "Inställningar, Beställning, Skrivare och stationer",
-   "text": "En enskild rätt kan gå någon annanstans (Meny, rätten, Bong). Välj Ingen bong för det som inte behöver tillagas, som läsk ur kylen.",
-   "highlight": [
-    "text:Vart går menyns kategorier?"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
   },
   {
    "id": "features-installningar-TableRulesCard:kombinationer:heading",
@@ -6031,7 +5860,7 @@
    "route": "/meny",
    "title": "Kategorier",
    "where": "Meny",
-   "text": "",
+   "text": "Skickas till: vilken skrivare hela kategorins bongar hamnar på. Ett tryck sparar direkt. En rätt kan välja egen.",
    "highlight": [
     "text:Kategorier"
    ],
@@ -6138,19 +5967,6 @@
    "text": "",
    "highlight": [
     "text:Pris (kr)"
-   ],
-   "audience": "all",
-   "area": "meny"
-  },
-  {
-   "id": "features-meny-DishModal:vart-gar-ratten:field",
-   "kind": "element",
-   "route": "/meny",
-   "title": "Vart går rätten?",
-   "where": "Meny",
-   "text": "",
-   "highlight": [
-    "text:Vart går rätten?"
    ],
    "audience": "all",
    "area": "meny"
@@ -6378,18 +6194,60 @@
    "area": "telefon"
   },
   {
-   "id": "features-site-builder-WebbplatsPage:block-pa-sidan:heading",
+   "id": "features-printers-PrinterTiles:skriv-in-i-skrivaren:heading",
    "kind": "element",
-   "route": "/webbplats",
-   "title": "Block på sidan",
-   "where": "Webbplats",
-   "text": "Inga block än.",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Skriv in i skrivaren",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Lösenordet visas bara nu.",
    "highlight": [
-    "text:Block på sidan"
+    "text:Skriv in i skrivaren"
    ],
    "audience": "owner",
-   "feature": "siteBuilder",
-   "area": "webbplats"
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:namn:field",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Namn",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "",
+   "highlight": [
+    "text:Namn"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:spara:button",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Spara",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "",
+   "highlight": [
+    "text:Spara"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
+  },
+  {
+   "id": "features-printers-PrinterTiles:vad-ska-den-skriva-ut:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "skrivare",
+   "title": "Vad ska den skriva ut?",
+   "where": "Inställningar, Beställning, Kvittoskrivare",
+   "text": "Kök: maten. Dryck: drinkar och annat från baren. Annat: en egen station, till exempel pizzaugnen eller desserterna.",
+   "highlight": [
+    "text:Vad ska den skriva ut?"
+   ],
+   "audience": "owner",
+   "feature": "ordering"
   },
   {
    "id": "features-statistik-Overview:bokningar-idag:kpi",
@@ -6553,7 +6411,7 @@
    "route": "/statistik",
    "title": "Snittorder",
    "where": "Statistik",
-   "text": "Betalt belopp per onlinebeställning (avhämtning och vid bordet) i perioden.",
+   "text": "Betalt belopp per onlinebeställning i perioden.",
    "highlight": [
     "help:kpi:snittorder"
    ],
@@ -6579,7 +6437,7 @@
    "route": "/statistik",
    "title": "Beställningar",
    "where": "Statistik",
-   "text": "Betalda onlinebeställningar i perioden, avhämtning och vid bordet.",
+   "text": "Betalda onlinebeställningar i perioden.",
    "highlight": [
     "help:kpi:bestallningar"
    ],
@@ -6847,19 +6705,6 @@
    "area": "statistik"
   },
   {
-   "id": "features-table-qr-TableQr:qr-koder-for-borden:heading",
-   "kind": "element",
-   "route": "/layout",
-   "title": "QR-koder för borden",
-   "where": "Layout",
-   "text": "Publicera en layout först.",
-   "highlight": [
-    "text:QR-koder för borden"
-   ],
-   "audience": "all",
-   "area": "layout"
-  },
-  {
    "id": "shared-ChangedNote:anvand:button",
    "kind": "element",
    "route": "/bokningar",
@@ -6911,6 +6756,32 @@
    "audience": "all",
    "feature": "personalliggare",
    "area": "personalliggare"
+  },
+  {
+   "id": "shared-RefundDialog:belopp-kr:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Belopp (kr)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Belopp (kr)"
+   ],
+   "audience": "all",
+   "area": "bokningar"
+  },
+  {
+   "id": "shared-RefundDialog:anledning-valfri:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Anledning (valfri)",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Anledning (valfri)"
+   ],
+   "audience": "all",
+   "area": "bokningar"
   }
  ]
 }

@@ -241,7 +241,7 @@ def voice_config(ctx, config, clean):
             "greetingEn": copy.greeting("en", config.get("agentName"), ctx.location.get("name"),
                                         clean.get("greetingExtraEn")),
             "languages": list(config.get("languages") or pa.LANGUAGES),
-            "tone": config.get("tone") or "friendly",
+            "tone": config.get("tone") or pa.DEFAULT_TONE,
             "transferTo": clean.get("transferTo"),
             "maxDurationSeconds": clean["maxCallSeconds"]}
 
@@ -294,7 +294,7 @@ def put_location(event, ctx):
     _owner(ctx)
     body = http.body(event, allowed=("enabled", "mode", "agentHours", "greetingExtraSv", "greetingExtraEn",
                                      "transferTo", "maxCallSeconds", "counterOffers", "shareNumberWith",
-                                     "version"))
+                                     "phoneMaxPartySize", "version"))
     version = _version(body)
     clean = pa.validate_location(body, restaurant_phone=ctx.location.get("phoneNumber"))
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)

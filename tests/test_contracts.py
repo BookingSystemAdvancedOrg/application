@@ -39,7 +39,7 @@ def test_yaml_is_consistent():
 
 def test_feature_counts():
     from shared import contracts
-    assert len(contracts.FEATURE_KEYS) == 16 and len(contracts.NEW_FEATURE_KEYS) == 12
+    assert len(contracts.FEATURE_KEYS) == 15 and len(contracts.NEW_FEATURE_KEYS) == 11
     assert set(contracts.SITE_CONFIG_FEATURES) <= set(contracts.FEATURE_KEYS)
     assert "kassa" not in contracts.SITE_CONFIG_FEATURES
 
@@ -53,7 +53,7 @@ def test_run0_addendum_entries():
     assert contracts.LIMITS["phoneAgentMinutesPerMonth"] == {"feature": "phoneAgent", "min": 0, "max": 100000,
                                                               "default": 0}
     purge = contracts.HOOKS["tenant.purge"]["targets"]
-    assert len(purge) == len(set(purge)) == 12
+    assert len(purge) == len(set(purge)) == 11
     assert set(purge) == {contracts.FEATURE_IDS[k] for k in contracts.NEW_FEATURE_KEYS}
     for hook in ("privacy.export", "privacy.erase"):
         assert contracts.HOOKS[hook]["targets"][-2:] == ["events-tickets", "phone-agent"]
@@ -124,7 +124,7 @@ def test_validate_catches_bad_contracts():
     assert _broken(lambda d: d["slots"]["admin"]["meny.dish.cost"].__setitem__("feature", "dishMargins"))
     assert _broken(lambda d: d["features"].append(dict(d["features"][0])))
     assert _broken(lambda d: d["siteConfig"]["tenantFeatures"].append("kassa"))
-    assert _broken(lambda d: d["limits"]["siteBuilderAiEditsPerMonth"].__setitem__("feature", "x"))
+    assert _broken(lambda d: d["limits"]["phoneAgentMinutesPerMonth"].__setitem__("feature", "x"))
     assert _broken(lambda d: d["storage"]["admin"]["EVENT_SCAN_KEY_PREFIX"].__setitem__("feature", "event"))
     assert _broken(lambda d: d["storage"].__setitem__("console", {}))
     assert _broken(lambda d: d["storage"]["admin"].__setitem__(

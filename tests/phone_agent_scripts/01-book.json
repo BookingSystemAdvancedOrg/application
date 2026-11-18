@@ -1,0 +1,171 @@
+{
+ "id": "01-book",
+ "title": "Booking success: read-back, a clear yes, then the booking",
+ "fixture": {
+  "availability": {
+   "+1": [
+    "17:30",
+    "18:00",
+    "19:00",
+    "19:30",
+    "20:00"
+   ]
+  }
+ },
+ "expect": {
+  "booked": {
+   "date": "+1",
+   "time": "19:00",
+   "partySize": 4
+  }
+ },
+ "calls": {
+  "sv": {
+   "turns": [
+    "Hej, jag skulle vilja boka ett bord för fyra personer imorgon klockan sju på kvällen.",
+    "Ja, klockan sju passar bra.",
+    "Anna Berg.",
+    "Ja, det stämmer.",
+    "Nej tack, det var allt. Hej då."
+   ],
+   "confirm": 3,
+   "names": [
+    "Anna"
+   ]
+  },
+  "en": {
+   "turns": [
+    "Hello, I would like to book a table for four people tomorrow at seven in the evening.",
+    "Yes, seven o'clock is fine.",
+    "Anna Berg.",
+    "Yes, that is correct.",
+    "No, thank you, that is all. Goodbye."
+   ],
+   "confirm": 3,
+   "names": [
+    "Anna"
+   ]
+  },
+  "de": {
+   "turns": [
+    "Guten Tag, ich möchte gerne für morgen Abend um sieben Uhr einen Tisch für vier Personen reservieren.",
+    "Ja, sieben Uhr passt gut.",
+    "Anna Berg.",
+    "Ja, das stimmt.",
+    "Nein danke, das ist alles. Auf Wiederhören."
+   ],
+   "confirm": 3,
+   "names": [
+    "Anna"
+   ]
+  },
+  "ru": {
+   "turns": [
+    "Здравствуйте, я хотел бы забронировать столик на четверых на завтра на семь вечера.",
+    "Да, семь часов подходит.",
+    "Анна Берг.",
+    "Да, всё верно.",
+    "Нет, спасибо, это всё. До свидания."
+   ],
+   "confirm": 3,
+   "names": [
+    "Анна",
+    "Anna"
+   ]
+  },
+  "so": {
+   "turns": [
+    "Iska warran, waxaan rabaa inaan miis u qabsado afar qof berri fiidkii saacadda toddobada.",
+    "Haa, saacadda toddobada way fiican tahay.",
+    "Axmed Cali.",
+    "Haa, waa sax.",
+    "Maya, mahadsanid, waa intaas. Nabad gelyo."
+   ],
+   "confirm": 3,
+   "names": [
+    "Axmed",
+    "Ahmed",
+    "Akhmed"
+   ]
+  },
+  "ar": {
+   "turns": [
+    "مرحبا، أريد حجز طاولة لأربعة أشخاص غدا الساعة السابعة مساء.",
+    "نعم، الساعة السابعة مناسبة.",
+    "أحمد علي.",
+    "نعم، هذا صحيح.",
+    "لا، شكرا، هذا كل شيء. مع السلامة."
+   ],
+   "confirm": 3,
+   "names": [
+    "أحمد",
+    "Ahmed",
+    "Ahmad"
+   ]
+  },
+  "fi": {
+   "turns": [
+    "Hei, haluaisin varata pöydän neljälle hengelle huomenna kello seitsemän illalla.",
+    "Kyllä, kello seitsemän sopii hyvin.",
+    "Anna Virtanen.",
+    "Kyllä, se pitää paikkansa.",
+    "Ei kiitos, siinä kaikki. Näkemiin."
+   ],
+   "confirm": 3,
+   "names": [
+    "Anna"
+   ]
+  },
+  "pl": {
+   "turns": [
+    "Dzień dobry, chciałbym zarezerwować stolik dla czterech osób na jutro na godzinę dziewiętnastą.",
+    "Tak, dziewiętnasta pasuje.",
+    "Anna Kowalska.",
+    "Tak, zgadza się.",
+    "Nie, dziękuję, to wszystko. Do widzenia."
+   ],
+   "confirm": 3,
+   "names": [
+    "Anna"
+   ]
+  },
+  "tr": {
+   "turns": [
+    "Merhaba, yarın akşam saat yedide dört kişilik bir masa ayırtmak istiyorum.",
+    "Evet, saat yedi uygun.",
+    "Ayşe Yılmaz.",
+    "Evet, doğru.",
+    "Hayır, teşekkür ederim, bu kadar. İyi günler."
+   ],
+   "confirm": 3,
+   "names": [
+    "Ayşe",
+    "Ayse"
+   ]
+  }
+ },
+ "sim": {
+  "sv": {
+   "turns": [
+    "Hej, jag vill boka ett bord för fyra imorgon klockan 19",
+    "Ja",
+    "Jag heter Anna"
+   ],
+   "confirm": 1,
+   "names": [
+    "Anna"
+   ]
+  },
+  "en": {
+   "turns": [
+    "Hi, I'd like to book a table for four tomorrow at 7 pm",
+    "Yes",
+    "My name is Anna"
+   ],
+   "confirm": 1,
+   "names": [
+    "Anna"
+   ]
+  }
+ }
+}

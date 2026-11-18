@@ -4,18 +4,35 @@ tickets ("bongar") one online or QR table order makes.
 Config (print table, PK LOCATION#<l> SK ROUTING, edited by the owner):
     stations      [{stationId, name, printerIds}]   1-12; a printer may serve
                                                    several stations
-    categories    {starters|mains|desserts|drinks: stationId | "none"}
+    categories    {categoryId: stationId | "none"}  the four default courses and
+                                                   any of the location's own menu
+                                                   categories (menu.py CATEGORIES)
     allergyTicket bool   an extra, clearly marked ticket for allergy items
     version       int    optimistic lock
 Without a stored config every location has Kök and Bar, both printing on the
 order printer, food to Kök and drinks to Bar.
 
+Kök/Dryck/Annat (apply_kinds): each printer has a kind from setup. Station
+"kok" prints on the Kök printers and station "bar" (named "Dryck") on the
+Dryck printers; with only one of the two kinds, both stations print there.
+Each Annat printer (a pizza oven, a dessert station) gets its own station
+a<deviceId[:12]> named after the printer, which items and categories can
+choose. A printer from before kinds counts as Dryck when it served only Bar,
+else Kök (infer_kind), so an older setup keeps printing where it did.
+
 An item goes to its dish's station (``station`` on the menu item) or else
 its category's station; "none" means no ticket (a can from the fridge). A
 combo (``components``) splits: each part goes to its own station or the
 dish's. Notes and allergies follow the item to every part. A station id no
-longer in the config falls back to the category's station, then to the
-first station: food is never dropped because a station was removed.
+longer in the config falls back to the category's station, then to Dryck
+for drinks, alcohol and a category whose name sounds like drinks
+(``categoryName`` on the order line, sounds_like_drinks: "Öl", "Rödvin",
+"Te & kaffe", never "Salladsbar" or "Pölsa"), or Kök for everything else:
+food is never dropped because a station was removed, and drinks never fall
+onto the kitchen ticket, even at a location where nobody has opened the
+menu since categories got stations. Booqy Admin uses the same rule and the
+same word list (tests/fixtures/drink_names.json, admin
+src/features/printers/drinkNames.json).
 
 Tickets (print table, SK TICKET#<sourceId>#<stationId>, expire after 2 days)
 are what the kitchen display shows and what a station's printers print:
@@ -37,12 +54,36 @@ COURSES = ("starters", "mains", "desserts", "drinks")
 COURSE_NAMES = {"starters": "Förrätt", "mains": "Varmrätt", "desserts": "Efterrätt", "drinks": "Dryck"}
 SENT, PREPARING, READY, CANCELLED = "sent", "preparing", "ready", "cancelled"
 STATUSES = (SENT, PREPARING, READY)
-MAX_STATIONS = 12
+MAX_STATIONS = 16  # Kök, Dryck and one per Annat printer (12 printers at most)
+MAX_CATEGORIES = 40
+FOOD, DRINK = "kok", "bar"
+KINDS = ("kok", "dryck", "annat")
+OTHER_PREFIX = "a"
+_OTHER = re.compile(r"a[0-9a-f]{12}")
 STATION_NAME_MAX = 30
 TICKET_TTL_DAYS = 2
 # A note that mentions an allergy makes the whole order an allergy order.
 _ALLERGY = re.compile(r"allerg|celiaki|glutenfri|laktosfri|mjölkprotein|jordnöt|nötter|nötfri|skaldjur|"
                       r"anafylax|epipen", re.IGNORECASE)
+
+
+# Hela ord eller ordets början/slut (Fatöl, Rödvin), aldrig mitt i ett
+# matord (Pölsa, Salladsbar, Vinäger). Same pattern as admin's kinds.ts.
+_L = "a-zåäöéü"
+_START = f"(?:^|[^{_L}])"
+_END = f"(?:$|[^{_L}])"
+_DRINKISH = re.compile("|".join([
+    "dryck", "drink", "cocktail", "läsk", "kaffe", "coffee", "juice", "alkohol", "sprit", "cider", "dricka",
+    "mocktail", "lemonad", "beer", "wine", "viner",
+    f"{_START}(?:bar|baren|te|tea|soda|shots?){_END}",
+    f"{_START}öl", f"öl{_END}", f"vin{_END}", f"{_START}vin(?:er|erna|lista|kort|meny){_END}",
+]), re.IGNORECASE)
+
+
+def sounds_like_drinks(name):
+    """A menu category's name that means drinks ("Öl", "Vinlista", "Te &
+    kaffe"); never a food word that only contains one ("Salladsbar")."""
+    return isinstance(name, str) and _DRINKISH.search(name) is not None
 
 
 def default_config(printer_id=None):
@@ -93,7 +134,7 @@ def validate_config(raw, device_ids):
         raise ValueError(f"stations must be a list of 1-{MAX_STATIONS}")
     out, ids, names = [], set(), set()
     for s in stations:
-        if not isinstance(s, dict) or set(s) - {"stationId", "name", "printerIds"}:
+        if not isinstance(s, dict) or set(s) - {"stationId", "name", "printerIds", "kind", "printerNames"}:
             raise ValueError("each station needs name and printerIds")
         sid = s.get("stationId")
         if sid is None:
@@ -110,11 +151,13 @@ def validate_config(raw, device_ids):
         names.add(name.lower())
         out.append({"stationId": sid, "name": name, "printerIds": list(dict.fromkeys(printers))})
     categories = raw["categories"]
-    if not isinstance(categories, dict) or set(categories) - set(COURSES):
-        raise ValueError("categories must map starters, mains, desserts and drinks")
+    if (not isinstance(categories, dict) or len(categories) > MAX_CATEGORIES
+            or any(not menu.valid_category_id(k) for k in categories)):
+        raise ValueError("categories must map menu categories to stations")
     cats = {}
-    for course in COURSES:
-        target = categories.get(course) or out[0]["stationId"]
+    for course in [*COURSES, *(k for k in categories if k not in COURSES)]:
+        fallback = DRINK if course == "drinks" and DRINK in ids else FOOD if FOOD in ids else out[0]["stationId"]
+        target = categories.get(course) or fallback
         if target != NONE and target not in ids:
             raise ValueError(f"categories.{course} must be a station or \"none\"")
         cats[course] = target
@@ -146,14 +189,20 @@ def put_config(tenant_id, location_id, config, actor, now):
 
 # --- routing ---------------------------------------------------------------------
 
-def _resolve(wanted, category, config):
-    """A station id, or None for "no ticket"."""
+def _resolve(wanted, category, config, alcohol=False, drinkish=False):
+    """A station id, or None for "no ticket". A category with no choice of
+    its own goes to Dryck when it is drinks, its name sounds like drinks
+    (`drinkish`) or the item is alcohol, else to Kök: a beer in the owner's
+    own category "Öl" never lands on the kitchen ticket by accident."""
     ids = [s["stationId"] for s in config["stations"]]
     for candidate in (wanted, config["categories"].get(category)):
         if candidate == NONE:
             return None
         if candidate in ids:
             return candidate
+    fallback = DRINK if alcohol or drinkish or category == "drinks" else FOOD
+    if fallback in ids:
+        return fallback
     return ids[0] if ids else None
 
 
@@ -165,7 +214,9 @@ def split(lines, config):
     for line in lines or []:
         category = line.get("category")
         course = category if category in COURSES else None
-        own = _resolve(line.get("station"), category, config)
+        alcohol = line.get("alcohol") is True
+        drinkish = sounds_like_drinks(line.get("categoryName"))
+        own = _resolve(line.get("station"), category, config, alcohol, drinkish)
         extra = {k: line[k] for k in ("note", "allergy") if line.get(k)}
         picks = [f"{p.get('group')}: {p.get('choice')}" for p in line.get("options") or [] if isinstance(p, dict)]
         if picks:
@@ -179,7 +230,7 @@ def split(lines, config):
             continue
         for part in parts:
             wanted = part.get("station") or line.get("station")
-            station = own if not part.get("station") else _resolve(wanted, category, config)
+            station = own if not part.get("station") else _resolve(wanted, category, config, alcohol, drinkish)
             if station:
                 out.setdefault(station, []).append({"name": part.get("name") or "?", "quantity": quantity,
                                                     "course": course, "partOf": line.get("name"), **extra})
@@ -276,21 +327,176 @@ def cancel(location_id, source_id, now):
                                  ExpressionAttributeValues={":c": CANCELLED, ":now": printing.iso(now)})
 
 
+def station_name(ticket):
+    """The station's name on a ticket. A ticket stored before the drinks
+    station was called Dryck says "Bar"; it is shown and reprinted as Dryck,
+    like new orders."""
+    name = (ticket or {}).get("stationName")
+    if ticket and ticket.get("stationId") == DRINK and isinstance(name, str) and name.strip().lower() == "bar":
+        return "Dryck"
+    return name
+
+
 def view(item):
-    return {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
-                                     "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
-                                     "updatedAt") if item.get(k) is not None}
+    out = {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
+                                    "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
+                                    "updatedAt") if item.get(k) is not None}
+    if out.get("stationName") is not None:
+        out["stationName"] = station_name(item)
+    return out
+
+
+def station_kind(station_id):
+    """What the owner sees on a station: kok (Kök), dryck (Dryck) or annat."""
+    return "kok" if station_id == FOOD else "dryck" if station_id == DRINK else "annat"
+
+
+def other_station_id(device_id):
+    return OTHER_PREFIX + device_id[:12]
+
+
+def infer_kind(device, config):
+    """The printer's kind; a printer from before kinds is Dryck when it only
+    serves the Bar station, else Kök (so nothing moves for an old setup)."""
+    if device.get("kind") in KINDS:
+        return device["kind"]
+    did = device["deviceId"]
+    stations = {s["stationId"]: s.get("printerIds") or [] for s in config["stations"]}
+    return "dryck" if did in stations.get(DRINK, []) and did not in stations.get(FOOD, []) else "kok"
+
+
+def kinds_config(config, devices):
+    """The config following the printers' kinds: station kok prints on the
+    Kök printers, bar ("Dryck") on the Dryck printers (with only one kind,
+    both print there), and each Annat printer gets its own station named
+    after it. The owner's own older stations keep their printers. None when
+    there is nothing to manage."""
+    others = [s for s in config["stations"] if _OTHER.fullmatch(s["stationId"])]
+    if not devices and not others:
+        return None
+    kinds = {d["deviceId"]: infer_kind(d, config) for d in devices}
+    food = [d for d, k in kinds.items() if k == "kok"]
+    drink = [d for d, k in kinds.items() if k == "dryck"]
+    other = [d for d, k in kinds.items() if k == "annat"]
+    food_printers, drink_printers = food or drink or other, drink or food or other
+    names = {d["deviceId"]: d.get("name") or "Annat" for d in devices}
+    wanted_other = {other_station_id(d): d for d in other}
+    stations, categories = [], dict(config["categories"])
+    for s in config["stations"]:
+        sid = s["stationId"]
+        if _OTHER.fullmatch(sid) and sid not in wanted_other:
+            continue  # its printer is gone or no longer Annat
+        printers = [p for p in s.get("printerIds") or [] if p in kinds]
+        name = s["name"]
+        if sid == FOOD:
+            printers = food_printers
+        elif sid == DRINK:
+            printers = drink_printers
+            name = "Dryck" if name == "Bar" else name
+        elif sid in wanted_other:
+            printers, name = [wanted_other[sid]], names[wanted_other[sid]][:STATION_NAME_MAX].strip() or "Annat"
+        stations.append({"stationId": sid, "name": name, "printerIds": list(dict.fromkeys(printers))})
+    ids = {s["stationId"] for s in stations}
+    if FOOD not in ids:
+        stations.insert(0, {"stationId": FOOD, "name": "Kök", "printerIds": food_printers})
+    if DRINK not in ids:
+        stations.insert(1, {"stationId": DRINK, "name": "Dryck", "printerIds": drink_printers})
+        categories["drinks"] = DRINK
+    for sid, device_id in wanted_other.items():
+        if sid not in ids and len(stations) < MAX_STATIONS:
+            stations.append({"stationId": sid, "name": names[device_id][:STATION_NAME_MAX].strip() or "Annat",
+                             "printerIds": [device_id]})
+    ids = {s["stationId"] for s in stations}
+    categories = {c: t for c, t in categories.items() if t == NONE or t in ids}
+    return {**config, "stations": _unique_names(stations), "categories": categories}
+
+
+def _unique_names(stations):
+    """Station names stay unique (validate_config needs it, or the next save
+    in settings fails): an Annat printer called "Dryck", or two called
+    "Pizza", become "Dryck 2", "Pizza 2"."""
+    taken, out = set(), []
+    for s in stations:
+        name, n = s["name"], 1
+        while name.lower() in taken:
+            n += 1
+            suffix = f" {n}"
+            name = s["name"][:STATION_NAME_MAX - len(suffix)].rstrip() + suffix
+        taken.add(name.lower())
+        out.append({**s, "name": name})
+    return out
+
+
+def apply_kinds(tenant_id, location_id, devices, printer_id, now):
+    """After a printer is added, removed or changes kind. Conditional on the
+    stored version; one retry when an open settings screen saved first."""
+    from shared import printing
+    for _ in range(2):
+        item = _table().get_item(Key={"PK": f"LOCATION#{location_id}", "SK": "ROUTING"},
+                                 ConsistentRead=True).get("Item")
+        config = get_config(location_id, printer_id) if item else default_config(printer_id)
+        changed = kinds_config(config, devices)
+        if changed is None:
+            return None
+        tenant = tenant_id or (item or {}).get("tenantId")
+        if not tenant:
+            return None
+        try:
+            return put_config(tenant, location_id, changed, "system:printer-kinds", now)
+        except printing.Conflict:
+            continue
+    return None
+
+
+def set_categories(tenant_id, location_id, changes, printer_id, actor, now):
+    """Where whole menu categories go ("Alla i Varmrätt skickas till Kök"):
+    {categoryId: stationId | "none" | null}; null goes back to the default
+    (Dryck for drinks, Kök for the rest). Merged into the stored config,
+    so an open settings screen and the menu never undo each other."""
+    from shared import printing
+    if not isinstance(changes, dict) or not 1 <= len(changes) <= MAX_CATEGORIES \
+            or any(not menu.valid_category_id(k) for k in changes):
+        raise ValueError("categories must map menu categories to stations")
+    for _ in range(2):
+        config = get_config(location_id, printer_id)
+        ids = {s["stationId"] for s in config["stations"]}
+        categories = dict(config["categories"])
+        for cid, target in changes.items():
+            if target is None:
+                categories.pop(cid, None)
+            elif target == NONE or target in ids:
+                categories[cid] = target
+            else:
+                raise ValueError(f"categories.{cid} must be a station or \"none\"")
+        if len(categories) > MAX_CATEGORIES:
+            raise ValueError("too many categories")
+        try:
+            return put_config(tenant_id, location_id, {**config, "categories": categories}, actor, now)
+        except printing.Conflict:
+            continue
+    raise printing.Conflict("changed_retry")
 
 
 def drop_printer(location_id, device_id, now):
     """A removed printer leaves every station (the version moves on, so an
     open settings screen reloads before it saves)."""
-    from shared import printing
     item = _table().get_item(Key={"PK": f"LOCATION#{location_id}", "SK": "ROUTING"}, ConsistentRead=True).get("Item")
-    if not item or not any(device_id in (s.get("printerIds") or []) for s in item.get("stations") or []):
+    _drop(item, lambda d: d != device_id, now)
+
+
+def drop_printers(location_id, keep, now):
+    """Every printer not in `keep` leaves every station (printers removed
+    from Booqy Console)."""
+    item = _table().get_item(Key={"PK": f"LOCATION#{location_id}", "SK": "ROUTING"}, ConsistentRead=True).get("Item")
+    _drop(item, lambda d: d in keep, now)
+
+
+def _drop(item, kept, now):
+    from shared import printing
+    if not item or all(kept(d) for s in item.get("stations") or [] for d in s.get("printerIds") or []):
         return
     for station in item["stations"]:
-        station["printerIds"] = [d for d in station.get("printerIds") or [] if d != device_id]
+        station["printerIds"] = [d for d in station.get("printerIds") or [] if kept(d)]
     version = int(item.get("version") or 0)
     try:
         _table().put_item(Item={**item, "version": version + 1, "updatedAt": printing.iso(now)},

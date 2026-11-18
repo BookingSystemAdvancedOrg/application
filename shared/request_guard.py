@@ -11,7 +11,7 @@ the phone and e-mail limits count bookings, so a guest who loses a table to
 someone else a few times isn't locked out for the day.
 
 Fail open: if the table can't be reached the request goes through - the
-Turnstile check stays the main defence - and the error is logged.
+bot check (shared/bot_check.py) stays the main defence - and the error is logged.
 
 ENV_VARS:
     REQUEST_GUARD_TABLE_NAME -- the counters table. Unset: no limits.

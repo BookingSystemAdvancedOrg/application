@@ -131,7 +131,16 @@ def availability_answer(guest, staff, layout, party_size, time=None, *, nearby_t
         if time not in times:
             out["nearby"] = nearby(guest, staff, layout, time, party_size, nearby_tables=nearby_tables,
                                    phone_only_tables=phone_only_tables)
-    return out
+    return requested_first(out, time)
+
+
+def requested_first(answer, time):
+    """Put the plain verdict on the asked time first (`requestedTimeFree`): a
+    model once told a caller that a listed time was taken (dev, 2026-11-18)."""
+    if not time:
+        return answer
+    return {"requestedTime": time, "requestedTimeFree": time in answer["times"],
+            **{k: v for k, v in answer.items() if k != "requestedTime"}}
 
 
 # --- parties above the online maximum (phoneMaxPartySize) -----------------------------------------

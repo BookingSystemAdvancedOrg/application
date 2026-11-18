@@ -549,7 +549,7 @@ class Executor:
                 answer["requestedTime"] = time
                 answer["before"] = [t for t in times if t < time][::-1]
                 answer["after"] = [t for t in times if t > time]
-            return answer
+            return of.requested_first(answer, time)
         offers = self.loc.get("counterOffers") or {}
         return of.availability_answer(guest, staff, layout, party, time,
                                       nearby_tables=offers.get("nearbyTables", True),

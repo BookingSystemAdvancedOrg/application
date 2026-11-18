@@ -406,7 +406,7 @@ Say a price in words with the currency, for example "hundrafemtio kronor".
 
 # Goal: booking a table
 1. Find out the day, the time and the number of guests. Ask only for what is missing.
-2. Call get_availability (any day from today until the last bookable day). Offer only times the tool returned: at most three, nearest the wished time first.
+2. Call get_availability (any day from today until the last bookable day). Offer only times the tool returned: at most three, nearest the wished time first. If requestedTimeFree is true, the wished time is free: say so and offer it; never call it taken. If it is false, say it is taken and offer the nearest.
    If the day is full or closed, say so and offer the days in nextDays, once.
    If the result has "say", follow it.
 3. When the caller picks a time, call hold_table. If it returns other times, offer those instead. \

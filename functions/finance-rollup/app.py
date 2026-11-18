@@ -11,10 +11,18 @@ PURPOSE:
     Writes the figures behind the Finance page: for every day in the window,
     what the platform cost and how that cost splits between the customers.
 
-      1. Cost Explorer: the account's UnblendedCost per service and day
-         (credits and refunds excluded), converted with USD_TO_SEK and
-         stored as PLATFORM / COST#<day>. The last COST_DAYS days are
-         re-pulled every night because AWS restates recent days.
+      1. Cost Explorer: the account's UnblendedCost per service and day, in
+         USD, every record type (usage, tax, credits, refunds, other), so a
+         month adds up to exactly what AWS Billing and Cost Explorer show.
+         Stored as PLATFORM / COST#<day> with the day's USD/SEK rate
+         (Riksbank's mid rate, series SEKUSDPMI, of that day or the banking
+         day before), which Booqy Console uses only to put cost next to the
+         SEK revenue in the margin. Cost itself is never converted.
+         Every night the last COST_DAYS days and the whole current month are
+         re-pulled (until COST_CLOSE_DAY also the previous month): AWS
+         restates recent days and books the month's tax on its 1st, growing
+         until the bill closes. A day whose cost or rate changed is
+         allocated again.
       2. Usage per customer and day (USAGE_DAYS days back, or the range):
            requests  - one CloudWatch Logs Insights query over the tenant-
                        aware Lambdas' log groups counting the
@@ -33,11 +41,11 @@ PURPOSE:
          used that day falls back to an equal split, so cost never
          disappears.
       4. Per customer and day: TENANT#<id> / DAY#<day> gets requests,
-         bookings, orders, costSek (+ the split per bucket), mrrSek (the
+         bookings, orders, costUsd (+ the split per bucket), mrrSek (the
          subscription that day, from PROFILE.billing), planId and active.
          Per location and day: TENANT#<id> / LOC#<locationId>#DAY#<day> gets
          that location's requests (the log line carries loc=), bookings,
-         orders and its share of the customer's cost (by requests, else by
+         orders and its share of the customer's cost in USD (by requests, else by
          bookings and orders, else equally); the Finance page's location
          filter reads these. The customer row also gets mrrSek = the
          monthly price of a running agreement (own price or the plan's; 0
@@ -52,16 +60,25 @@ PURPOSE:
     A customer is "active on a day" from its createdAt until the day it was
     offboarded (suspended customers count: the platform still serves them).
 
+    A day the Lambda logs no longer cover (older than LOG_RETENTION_DAYS)
+    keeps the request counts an earlier run stored, so allocating it again
+    never loses them.
+
     Every step is idempotent and recomputed fields are simply overwritten:
     a run that stops halfway is finished by the next one. One email through
     the alert topic per run with warnings.
+
+    One-time migration (PLATFORM / MIGRATION#cost-usd): the first nightly
+    run that finds no marker recomputes every day since the first month in
+    the table from Cost Explorer (cost in SEK at a fixed rate before
+    2026-11-18), then writes the marker.
 
 ENV_VARS:
     ENVIRONMENT, FINANCE_TABLE_NAME, TENANT_TABLE_NAME, TENANT_LIST_INDEX_NAME,
     LOCATION_TABLE_NAME, RESERVATION_TABLE_NAME, ORDER_TABLE_NAME,
     LAMBDA_LOG_GROUPS (JSON list of log group names), LOG_RETENTION_DAYS
     (their retention, default 30: older days are not queried), COST_DAYS, USAGE_DAYS,
-    USD_TO_SEK, COST_ALLOCATION (JSON {baseline, email, sms}: service lists),
+    COST_CLOSE_DAY (default 10), COST_ALLOCATION (JSON {baseline, email, sms}: service lists),
     ALERT_TOPIC_ARN
 
 AWS RESOURCE ACCESS:
@@ -69,13 +86,16 @@ AWS RESOURCE ACCESS:
     and logs:GetQueryResults; Query/GetItem on the tenant table (GSI1),
     Query on the location, reservation and order tables; GetItem/Query/
     PutItem/UpdateItem on the finance table; sns:Publish on the alert
-    topic; lambda:InvokeFunction on itself (continuation).
+    topic; lambda:InvokeFunction on itself (continuation). HTTPS to
+    api.riksbank.se (public, no key) for the USD/SEK rate.
 """
 
 import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -98,7 +118,12 @@ NOT_A_BOOKING = ("held", "pending", "expired")
 NOT_AN_ORDER = ("pending_payment", "failed", "cancelled")
 CENTS = Decimal("0.01")
 FREE_PLAN_ID = "free"     # Booqy Console's Free plan: no monthly charge
-MICRO = Decimal("0.0001")
+MICRO = Decimal("0.000001")     # allocated USD per customer, location and day
+NANO = Decimal("0.0000000001")  # Cost Explorer's own precision
+FX_SERIES = "SEKUSDPMI"         # Riksbank: SEK per 1 USD, daily mid rate
+FX_URL = "https://api.riksbank.se/swea/v1/Observations/{series}/{start}/{end}"
+FX_SOURCE = "Riksbank SEKUSDPMI"
+MIGRATION_SK = "MIGRATION#cost-usd"
 
 _clients = {}
 
@@ -123,13 +148,6 @@ def _env_int(name, default):
         return int(os.environ.get(name) or default)
     except ValueError:
         return default
-
-
-def _rate():
-    try:
-        return Decimal(os.environ.get("USD_TO_SEK") or "10.5")
-    except ArithmeticError:
-        return Decimal("10.5")
 
 
 def _allocation():
@@ -174,7 +192,13 @@ def window(event, today):
         return days, days
     yesterday = today - timedelta(days=1)
     usage = _days(yesterday - timedelta(days=_env_int("USAGE_DAYS", 3) - 1), yesterday)
-    cost = _days(yesterday - timedelta(days=_env_int("COST_DAYS", 7) - 1), yesterday)
+    # The whole month so far (and the month before until it closes): its tax
+    # sits on the 1st and AWS keeps updating it.
+    month = date(today.year, today.month, 1)
+    if today.day <= _env_int("COST_CLOSE_DAY", 10):
+        month = (month - timedelta(days=1)).replace(day=1)
+    first = min(yesterday - timedelta(days=_env_int("COST_DAYS", 7) - 1), month)
+    cost = _days(first, yesterday)
     return usage, cost
 
 
@@ -352,17 +376,17 @@ def _logs_unavailable(exc):
 
 
 def count_requests(day, warnings, skipped=None):
-    """{(tenant_id, location_id or None): requests} for the day. A day the
-    logs no longer cover counts as no requests (that day's request-based
-    cost then falls back to an equal split) and goes into `skipped`, which
-    the run reports once instead of one warning per day."""
+    """{(tenant_id, location_id or None): requests} for the day, or None
+    when the logs no longer cover it (process_day then keeps the counts an
+    earlier run stored). Such a day goes into `skipped`, which the run
+    reports once instead of one warning per day."""
     groups = _log_groups()
     if not groups:
         return {}
     if not logs_cover(day):
         if skipped is not None:
             skipped.append(day)
-        return {}
+        return None
     start = int(datetime.combine(_parse_day(day), datetime.min.time(), tzinfo=timezone.utc).timestamp())
     end = start + 86_400
     counts = {}
@@ -373,7 +397,7 @@ def count_requests(day, warnings, skipped=None):
             if _logs_unavailable(exc):
                 if skipped is not None:
                     skipped.append(day)
-                return counts
+                return None
             warnings.append(f"request count failed for {day}: {exc}")
             return counts
         for key, n in part.items():
@@ -384,19 +408,21 @@ def count_requests(day, warnings, skipped=None):
 # --- cost (Cost Explorer) --------------------------------------------------------------
 
 def fetch_cost(days, warnings):
-    """{day: {service: usd}} for the days, from Cost Explorer (us-east-1)."""
+    """{day: {"services": {service: usd}, "recordTypes": {type: usd}}} for the
+    days, from Cost Explorer (us-east-1). Every record type counts (no
+    filter), as in AWS Billing and Cost Explorer's own views, so a service's
+    amount is net of its credits and refunds."""
     if not days:
         return {}
     start, end = days[0], (_parse_day(days[-1]) + timedelta(days=1)).isoformat()
     ce = _client("ce", "us-east-1")
-    out = {d: {} for d in days}
+    out = {d: {"services": {}, "recordTypes": {}} for d in days}
     token = None
     try:
         while True:
             kwargs = {"TimePeriod": {"Start": start, "End": end}, "Granularity": "DAILY",
                       "Metrics": ["UnblendedCost"],
-                      "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
-                      "Filter": {"Not": {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit", "Refund"]}}}}
+                      "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "RECORD_TYPE"}]}
             if token:
                 kwargs["NextPageToken"] = token
             page = ce.get_cost_and_usage(**kwargs)
@@ -405,9 +431,12 @@ def fetch_cost(days, warnings):
                 if day not in out:
                     continue
                 for group in result.get("Groups", []):
-                    service = (group.get("Keys") or ["?"])[0]
-                    amount = ((group.get("Metrics") or {}).get("UnblendedCost") or {}).get("Amount") or "0"
-                    out[day][service] = out[day].get(service, Decimal(0)) + Decimal(amount)
+                    keys = group.get("Keys") or ["?"]
+                    service, record_type = keys[0], (keys[1] if len(keys) > 1 else "Usage")
+                    amount = Decimal(((group.get("Metrics") or {}).get("UnblendedCost") or {}).get("Amount") or "0")
+                    services, types = out[day]["services"], out[day]["recordTypes"]
+                    services[service] = services.get(service, Decimal(0)) + amount
+                    types[record_type] = types.get(record_type, Decimal(0)) + amount
             token = page.get("NextPageToken")
             if not token:
                 break
@@ -417,28 +446,80 @@ def fetch_cost(days, warnings):
     return out
 
 
-def store_cost(day, by_service, rate):
+def _http_json(url):
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "booqy-finance-rollup"})
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed https URL
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_rates(days, warnings):
+    """{day: (usd_sek, rate_day)}: Riksbank's USD/SEK mid rate of each day, or
+    of the last banking day before it (weekends and holidays have none)."""
+    if not days:
+        return {}
+    first, last = min(days), max(days)
+    start = (_parse_day(first) - timedelta(days=10)).isoformat()
+    try:
+        rows = _http_json(FX_URL.format(series=FX_SERIES, start=start, end=last))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        warnings.append(f"USD/SEK rate (Riksbank) unavailable, the margin uses the last stored rate: {exc}")
+        return {}
+    observed = []
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            observed.append((str(row["date"])[:10], Decimal(str(row["value"]))))
+        except (KeyError, TypeError, ArithmeticError):
+            continue
+    observed.sort()
+    out = {}
+    for day in days:
+        before = [o for o in observed if o[0] <= day]
+        if before:
+            out[day] = (before[-1][1], before[-1][0])
+    return out
+
+
+def store_cost(day, cost, fx):
+    """Writes PLATFORM / COST#<day>; returns whether the amount or the rate
+    differs from what was stored (the day is then allocated again)."""
     table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
-    usd = sum(by_service.values(), Decimal(0))
-    table.put_item(Item={
-        "PK": "PLATFORM", "SK": f"COST#{day}", "day": day,
-        "usd": _q(usd, MICRO), "sek": _q(usd * rate), "usdToSek": rate,
-        "byServiceUsd": {s: _q(v, MICRO) for s, v in by_service.items() if v},
-        "updatedAt": _iso(now_utc()),
-    })
+    services = cost.get("services") or {}
+    usd = _q(sum(services.values(), Decimal(0)), NANO)
+    item = {"PK": "PLATFORM", "SK": f"COST#{day}", "day": day, "usd": usd,
+            "byServiceUsd": {s: _q(v, NANO) for s, v in services.items() if v},
+            "byRecordTypeUsd": {t: _q(v, NANO) for t, v in (cost.get("recordTypes") or {}).items() if v},
+            "updatedAt": _iso(now_utc())}
+    if fx:
+        item.update({"usdSek": fx[0], "usdSekDate": fx[1], "usdSekSource": FX_SOURCE})
+    old = table.put_item(Item=item, ReturnValues="ALL_OLD").get("Attributes") or {}
+    return (not old or "usdToSek" in old or Decimal(old.get("usd") or 0) != usd
+            or (fx and Decimal(old.get("usdSek") or 0) != fx[0]))
 
 
 def stored_cost(day):
+    """(by_service_usd, fx) as stored, or (None, None)."""
     item = dynamo.table(os.environ["FINANCE_TABLE_NAME"]).get_item(
         Key={"PK": "PLATFORM", "SK": f"COST#{day}"}).get("Item")
     if not item:
         return None, None
-    return {s: Decimal(v) for s, v in (item.get("byServiceUsd") or {}).items()}, Decimal(item.get("usdToSek") or 0)
+    fx = (Decimal(item["usdSek"]), item.get("usdSekDate") or day) if item.get("usdSek") else None
+    return {s: Decimal(v) for s, v in (item.get("byServiceUsd") or {}).items()}, fx
+
+
+def latest_rate():
+    """The newest stored USD/SEK rate, for a night Riksbank does not answer."""
+    items = dynamo.table(os.environ["FINANCE_TABLE_NAME"]).query(
+        KeyConditionExpression=Key("PK").eq("PLATFORM") & Key("SK").begins_with("COST#"),
+        ScanIndexForward=False, Limit=40).get("Items", [])
+    for item in items:
+        if item.get("usdSek"):
+            return Decimal(item["usdSek"]), item.get("usdSekDate") or item["SK"][5:]
+    return None
 
 
 # --- allocation -------------------------------------------------------------------------
 
-def bucket_totals(by_service_usd, rate, allocation):
+def bucket_totals(by_service_usd, allocation):
     totals = {"baseline": Decimal(0), "requests": Decimal(0), "email": Decimal(0), "sms": Decimal(0)}
     for service, usd in (by_service_usd or {}).items():
         bucket = "requests"
@@ -446,13 +527,13 @@ def bucket_totals(by_service_usd, rate, allocation):
             if service in allocation[name]:
                 bucket = name
                 break
-        totals[bucket] += Decimal(usd) * rate
+        totals[bucket] += Decimal(usd)
     return totals
 
 
 def allocate(totals, usage):
     """usage: {tenant_id: {"requests", "emails", "sms"}} of the customers
-    active that day -> {tenant_id: {bucket: sek, "total": sek}}."""
+    active that day -> {tenant_id: {bucket: usd, "total": usd}}."""
     tenants = list(usage)
     out = {t: {} for t in tenants}
     if not tenants:
@@ -470,7 +551,7 @@ def allocate(totals, usage):
         for t in tenants:
             out[t][bucket] = _q(total * w[t] / denominator, MICRO)
     for t in tenants:
-        out[t]["total"] = _q(sum((out[t][b] for b in totals), Decimal(0)))
+        out[t]["total"] = _q(sum((out[t][b] for b in totals), Decimal(0)), MICRO)
     return out
 
 
@@ -488,7 +569,7 @@ def _day_rows(tenant_ids, day):
 
 def split_by_location(total, usage_by_location):
     """A tenant's cost over its locations: by requests, else by bookings and
-    orders, else equally. {location_id: sek}."""
+    orders, else equally. {location_id: usd}."""
     ids = list(usage_by_location)
     if not ids:
         return {}
@@ -506,11 +587,11 @@ def split_by_location(total, usage_by_location):
 def write_location_day(tenant_id, location_id, day, usage, cost):
     dynamo.table(os.environ["FINANCE_TABLE_NAME"]).update_item(
         Key={"PK": finance.tenant_pk(tenant_id), "SK": finance.location_sk(location_id, day)},
-        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, locationId = :l, "
-                         "#d = :d, computedAt = :now REMOVE smsRevenueSek",
+        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costUsd = :c, locationId = :l, "
+                         "#d = :d, computedAt = :now REMOVE smsRevenueSek, costSek",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
-                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost),
+                                   ":o": Decimal(usage.get("orders") or 0), ":c": _q(cost, MICRO),
                                    ":l": location_id, ":d": day, ":now": _iso(now_utc())})
 
 
@@ -518,8 +599,9 @@ def write_tenant_day(tenant, day, usage, cost, mrr, active):
     table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
     table.update_item(
         Key={"PK": finance.tenant_pk(tenant["tenantId"]), "SK": finance.day_sk(day)},
-        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costSek = :c, costSplitSek = :s, "
-                         "mrrSek = :m, planId = :p, active = :a, computedAt = :now, #d = :d REMOVE smsRevenueSek",
+        UpdateExpression="SET #r = :r, bookings = :b, orders = :o, costUsd = :c, costSplitUsd = :s, "
+                         "mrrSek = :m, planId = :p, active = :a, computedAt = :now, #d = :d "
+                         "REMOVE smsRevenueSek, costSek, costSplitSek",
         ExpressionAttributeNames={"#r": "requests", "#d": "day"},
         ExpressionAttributeValues={
             ":r": Decimal(usage.get("requests") or 0), ":b": Decimal(usage.get("bookings") or 0),
@@ -544,7 +626,19 @@ def write_job(started, days, warnings, done):
 
 # --- one day --------------------------------------------------------------------------------
 
-def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipped=None, plans=None):
+def _location_requests(tenant_id, location_ids, day):
+    """The request counts an earlier run stored on the location rows."""
+    table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
+    out = {}
+    for loc in location_ids:
+        item = table.get_item(Key={"PK": finance.tenant_pk(tenant_id), "SK": finance.location_sk(loc, day)}).get("Item") or {}
+        out[loc] = int(item.get("requests") or 0)
+    return out
+
+
+def process_day(day, tenants, cost_by_service, fx, allocation, warnings, skipped=None, plans=None):
+    """Usage, allocation and the day rows for one day. Amounts are USD as
+    Cost Explorer reports them; `fx` (usd_sek, rate_day) is only recorded."""
     plans = plans if plans is not None else list_plans()
     active = [t for t in tenants if active_on(t, day)]
     ids = [t["tenantId"] for t in active]
@@ -560,7 +654,12 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
             warnings.append(f"bookings/orders for {tenant_id} on {day}: {exc}")
             location_ids, per_location = [], {}
         row = rows.get(tenant_id) or {}
-        tenant_requests = sum(n for (tid, _loc), n in requests.items() if tid == tenant_id)
+        if requests is None:     # the logs no longer cover the day: keep what an earlier run counted
+            tenant_requests = int(row.get("requests") or 0)
+            loc_requests = _location_requests(tenant_id, list(per_location), day)
+        else:
+            tenant_requests = sum(n for (tid, _loc), n in requests.items() if tid == tenant_id)
+            loc_requests = {loc: int(requests.get((tenant_id, loc), 0)) for loc in per_location}
         usage[tenant_id] = {
             "requests": int(tenant_requests),
             "bookings": sum(b for b, _o in per_location.values()), "orders": sum(o for _b, o in per_location.values()),
@@ -569,21 +668,23 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
             "marketingEmails": int(row.get("marketingEmails") or 0),
         }
         by_location[tenant_id] = {
-            loc: {"requests": int(requests.get((tenant_id, loc), 0)), "bookings": b, "orders": o}
+            loc: {"requests": loc_requests.get(loc, 0), "bookings": b, "orders": o}
             for loc, (b, o) in per_location.items()}
-    totals = bucket_totals(cost_by_service, rate, allocation)
+    totals = bucket_totals(cost_by_service, allocation)
     split = allocate(totals, usage)
     platform = {"activeTenants": len(active),
                 "newTenants": sum(1 for t in tenants if (t.get("createdAt") or "")[:10] == day),
                 "churnedTenants": sum(1 for t in tenants if (t.get("offboardedAt") or "")[:10] == day),
-                "mrrSek": Decimal(0), "costSek": _q(sum(totals.values(), Decimal(0))),
-                "costSplitSek": {k: _q(v) for k, v in totals.items()},
-                "unallocatedSek": Decimal(0),
+                "mrrSek": Decimal(0), "costUsd": _q(sum(totals.values(), Decimal(0)), NANO),
+                "costSplitUsd": {k: _q(v, NANO) for k, v in totals.items()},
+                "unallocatedUsd": Decimal(0),
                 "requests": 0, "bookings": 0, "orders": 0, "emails": 0, "sms": 0, "smsParts": 0, "marketingEmails": 0,
                 "invoicedSek": Decimal(0), "paidSek": Decimal(0), "creditedSek": Decimal(0),
                 "refundedSek": Decimal(0)}
+    if fx:
+        platform.update({"usdSek": fx[0], "usdSekDate": fx[1], "usdSekSource": FX_SOURCE})
     if not active:
-        platform["unallocatedSek"] = platform["costSek"]
+        platform["unallocatedUsd"] = platform["costUsd"]
     for t in active:
         tenant_id = t["tenantId"]
         mrr = mrr_on(t, plans, day)
@@ -601,6 +702,30 @@ def process_day(day, tenants, cost_by_service, rate, allocation, warnings, skipp
     return platform
 
 
+# --- one-time migration to USD ------------------------------------------------------------
+
+def migration_done():
+    return bool(dynamo.table(os.environ["FINANCE_TABLE_NAME"]).get_item(
+        Key={"PK": "PLATFORM", "SK": MIGRATION_SK}).get("Item"))
+
+
+def first_stored_day():
+    """The first day of the month of the oldest COST# or DAY# row, or None."""
+    table = dynamo.table(os.environ["FINANCE_TABLE_NAME"])
+    days = []
+    for prefix in ("COST#", "DAY#"):
+        items = table.query(KeyConditionExpression=Key("PK").eq("PLATFORM") & Key("SK").begins_with(prefix),
+                            Limit=1).get("Items", [])
+        if items:
+            days.append(items[0]["SK"][len(prefix):len(prefix) + 10])
+    return _parse_day(min(days)).replace(day=1).isoformat() if days else None
+
+
+def mark_migrated(first, last):
+    dynamo.table(os.environ["FINANCE_TABLE_NAME"]).put_item(Item={
+        "PK": "PLATFORM", "SK": MIGRATION_SK, "from": first, "to": last, "doneAt": _iso(now_utc())})
+
+
 # --- entry point ----------------------------------------------------------------------------
 
 def _remaining_ms(context):
@@ -610,10 +735,13 @@ def _remaining_ms(context):
         return 10 ** 9
 
 
-def _continue(context, days, round_no):
+def _continue(context, days, round_no, migration=False):
+    payload = {"from": days[0], "to": days[-1], "round": round_no + 1}
+    if migration:
+        payload["migration"] = True
     _client("lambda").invoke(
         FunctionName=context.invoked_function_arn, InvocationType="Event",
-        Payload=json.dumps({"from": days[0], "to": days[-1], "round": round_no + 1}).encode())
+        Payload=json.dumps(payload).encode())
 
 
 def _notify(subject, lines):
@@ -629,34 +757,52 @@ def _notify(subject, lines):
 def handler(event, context):
     event = event if isinstance(event, dict) else {}
     started = now_utc()
+    migration = bool(event.get("migration"))
+    if not event.get("from") and not event.get("to") and not migration_done():
+        first = first_stored_day()
+        if first:
+            event, migration = {"from": first, "to": (started.date() - timedelta(days=1)).isoformat()}, True
+        else:                    # a new table: nothing in SEK to migrate
+            mark_migrated(None, None)
     usage_days, cost_days = window(event, started.date())
     round_no = int(event.get("round") or 0)
     warnings, done, skipped = [], [], []
-    rate, allocation = _rate(), _allocation()
+    allocation = _allocation()
 
+    rates = fetch_rates(sorted(set(usage_days) | set(cost_days)), warnings)
+    fallback_rate = None
     cost = fetch_cost(cost_days, warnings)
+    changed = set()
     if cost is not None:
         for day in cost_days:
-            store_cost(day, cost[day], rate)
+            if store_cost(day, cost[day], rates.get(day)):
+                changed.add(day)
 
     tenants = list_tenants()
     plans = list_plans()
+    days = sorted(set(usage_days) | (changed if not event.get("from") else set()))
     handed_over = None
-    for i, day in enumerate(usage_days):
+    for i, day in enumerate(days):
         if i and _remaining_ms(context) < HANDOVER_MS:
-            handed_over = usage_days[i:]
-            _continue(context, handed_over, round_no)
+            handed_over = days[i:]
+            _continue(context, handed_over, round_no, migration)
             warnings.append(f"continued in a new run for {handed_over[0]}..{handed_over[-1]}")
             break
+        fx = rates.get(day)
         if cost is not None and day in cost:
-            by_service, day_rate = cost[day], rate
+            by_service = cost[day]["services"]
         else:
-            by_service, day_rate = stored_cost(day)
+            by_service, stored_fx = stored_cost(day)
+            fx = fx or stored_fx
             if by_service is None:
                 warnings.append(f"no cost known for {day} (Cost Explorer unavailable); cost set to 0")
-                by_service, day_rate = {}, rate
+                by_service = {}
+        if fx is None:
+            if fallback_rate is None:
+                fallback_rate = latest_rate() or False
+            fx = fallback_rate or None
         try:
-            process_day(day, tenants, by_service, day_rate, allocation, warnings, skipped, plans)
+            process_day(day, tenants, by_service, fx, allocation, warnings, skipped, plans)
             done.append(day)
         except (BotoCoreError, ClientError) as exc:
             warnings.append(f"{day}: {exc}")
@@ -667,9 +813,12 @@ def handler(event, context):
         span = skipped[0] if len(skipped) == 1 else f"{skipped[0]} to {skipped[-1]}"
         warnings.append(f"request counts not available for {span} ({len(skipped)} day(s)): older than the "
                         f"{_env_int('LOG_RETENTION_DAYS', 30)}-day log retention or before the logs existed; "
-                        "cost, bookings and orders for those days are complete")
-    write_job(started, usage_days, warnings, done)
-    summary = {"days": done, "warnings": warnings, "round": round_no, "handedOver": handed_over}
+                        "the counts an earlier run stored are kept, cost, bookings and orders are complete")
+    if migration and not handed_over and cost is not None and done:
+        mark_migrated(event.get("from") or done[0], done[-1])
+    write_job(started, days, warnings, done)
+    summary = {"days": done, "warnings": warnings, "round": round_no, "handedOver": handed_over,
+               "migration": migration}
     logger.info(json.dumps(summary, default=str))
     if warnings and not handed_over:
         _notify(f"[{os.environ.get('ENVIRONMENT', 'dev')}] finance-rollup: {len(warnings)} warning(s)",

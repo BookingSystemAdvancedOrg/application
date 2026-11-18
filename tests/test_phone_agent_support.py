@@ -156,6 +156,13 @@ def phone_table(ddb):
                            {"AttributeName": "GSI2SK", "KeyType": "RANGE"}]}])
 
 
+class FakeBus:
+    """EventBridge put_events: accepts every entry."""
+
+    def put_events(self, Entries):
+        return {"FailedEntryCount": 0, "Entries": [{"EventId": "id"} for _ in Entries]}
+
+
 @pytest.fixture
 def env(monkeypatch):
     for key, value in {"ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing",
@@ -177,7 +184,12 @@ def env(monkeypatch):
         monkeypatch.setattr(pa, "now", clock)
         monkeypatch.setattr(session, "local_today", lambda location: TODAY)
         published = []
-        monkeypatch.setattr(events, "publish", lambda f, t, d: published.append((t, d)) or "id")
+        # the real contract check (shared.events.publish), only the bus is fake: an event with a field
+        # the contract does not list is refused there and never reaches `published`
+        checked = events.publish
+        monkeypatch.setenv("EVENT_BUS_NAME", "test-bus")
+        monkeypatch.setattr(events, "client", lambda: FakeBus())
+        monkeypatch.setattr(events, "publish", lambda f, t, d: (checked(f, t, d), published.append((t, d)))[0])
         api, live = load("phone-agent"), load("phone-agent-call")
         availability = Availability()
         invoke = FakeInvoker(availability)

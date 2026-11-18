@@ -99,22 +99,46 @@ def refuse(call, reason, at):
     return done or get_call(call["tenantId"], call["callId"])
 
 
-def append_turn(call, role, text, at, *, tool_name=None, tool_ok=None):
-    """A transcript turn (24 months); the counter on the call row orders them."""
+TRANSLATED_ROLES = ("caller", "agent")
+
+
+def append_turn(call, role, text, at, *, tool_name=None, tool_ok=None, lang=None, asr_locale=None):
+    """A transcript turn (24 months); the counter on the call row orders them.
+
+    `lang` is the call's language of that turn (the call row's language when
+    not given); `asr_locale` the speech recognizer's locale of a caller turn
+    (the Lex locale on the Connect line), so a turn the Swedish recognizer
+    transcribed from another language can be told. Caller and agent turns
+    start with translation "pending" (phone-agent-translate adds textSv and
+    textEn after the call); `text` itself never changes."""
     updated = None
     for _ in range(5):
         current = get_call(call["tenantId"], call["callId"]) or call
         seq = int(current.get("turnCount") or 0) + 1
         updated = _update(current, "SET turnCount = :seq", {":seq": seq})
         if updated:
+            body = str(text)[:2000]
             item = {**pa.turn_key(call["tenantId"], call["callId"], seq), "tenantId": call["tenantId"],
-                    "role": role, "text": str(text)[:2000], "at": pa.iso(at),
+                    "role": role, "text": body, "at": pa.iso(at),
                     "ttl": int((at + timedelta(days=pa.TURN_TTL_DAYS)).timestamp())}
             if tool_name:
                 item.update({"toolName": tool_name, "toolOk": bool(tool_ok)})
+            if role in TRANSLATED_ROLES:
+                item.update({"lang": lang or current.get("language") or "sv",
+                             "translation": "pending" if body.strip() else "skipped"})
+                if asr_locale and role == "caller":
+                    item["asrLocale"] = str(asr_locale)[:16]
             pa.table().put_item(Item=item)
             return updated
     return updated
+
+
+def set_turn_language(call, seq, lang):
+    """The language of an earlier turn, once the turn decided it (the
+    caller's sentence that switched the call is in the new language)."""
+    pa.table().update_item(Key=pa.turn_key(call["tenantId"], call["callId"], seq),
+                           UpdateExpression="SET #l = :l", ConditionExpression="attribute_exists(PK)",
+                           ExpressionAttributeNames={"#l": "lang"}, ExpressionAttributeValues={":l": lang})
 
 
 def answer(call, *, greeting, lang, at, restaurant=""):
@@ -181,7 +205,7 @@ def repeat_disclosure(call, lang, at, *, new_language=False):
                        statuses=["answered", "disclosed", "talking"])
     if not done:
         return call, None
-    append_turn(done, "agent", text, at)
+    append_turn(done, "agent", text, at, lang=lang)
     return get_call(call["tenantId"], call["callId"]), text
 
 
@@ -272,7 +296,7 @@ def process(call, *, state=None, at=None, notify_cap=None):
                                 "callId": call["callId"], "durationSec": int(call.get("durationSec") or 0),
                                 "billedMinutes": minutes, "outcome": outcome,
                                 "reservationId": state.get("reservationId"), "callbackId": state.get("callbackId"),
-                                "guaranteePending": bool(state.get("guaranteePending")), "counterOffer": counter})
+                                "counterOffer": counter})   # guaranteePending is on the call row, not in the contract
     if notify_cap:
         notify_cap(call["tenantId"], end)
     return done

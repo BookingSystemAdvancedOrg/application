@@ -1199,10 +1199,47 @@ components:
         turns:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/PhoneAgentCallTurn'
         recordingUrl:
           type: string
+    PhoneAgentCallTurn:
+      type: object
+      description: One transcript turn. text is the original and never changes; textSv and textEn are added
+        after the call (null where the turn already is in that language, or not translated yet).
+      properties:
+        role:
+          type: string
+          enum:
+          - caller
+          - agent
+          - tool
+        text:
+          type: string
+        at:
+          type: string
+        lang:
+          type: string
+          nullable: true
+          description: Language of the turn (our code, e.g. sv, en, ar); null on tool turns and older calls.
+        textSv:
+          type: string
+          nullable: true
+        textEn:
+          type: string
+          nullable: true
+        translation:
+          type: string
+          nullable: true
+          enum:
+          - pending
+          - done
+          - failed
+          - skipped
+          - null
+        toolName:
+          type: string
+        toolOk:
+          type: boolean
     PhoneAgentCallback:
       type: object
       properties:

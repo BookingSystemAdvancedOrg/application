@@ -289,7 +289,7 @@ def test_live_call_books_pending_and_texts_the_link_through_notification(live, l
     row = phone.row()
     assert row["outcome"] == "booked" and row["guaranteePending"] is True
     (ended,) = [d for t, d in live.published if t == "PhoneCall.Ended"]
-    assert ended["guaranteePending"] is True
+    assert "guaranteePending" not in ended          # not a contract field: events.publish would refuse it
 
 
 # --- the location switch -------------------------------------------------------------------------------

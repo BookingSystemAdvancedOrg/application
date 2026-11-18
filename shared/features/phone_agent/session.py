@@ -41,13 +41,21 @@ def now_clock(location):
     return now.strftime("%H:%M") if now.date() == local_today(location) else None
 
 
-def allowed_languages(config):
-    """The languages a call may switch to: every language the configured
-    voice model speaks (owner 2026-11-13 and 2026-11-17: whatever the caller
-    speaks). CONFIG `languages` is not a filter yet: the admin has no
-    language picker, so every saved config lists the full list of the day it
-    was saved, and honouring it would shut out languages added since."""
-    return language.voice_languages()
+def allowed_languages(config, call=None):
+    """The languages a call may switch to (owner 2026-11-13 and 2026-11-17:
+    whatever the caller speaks): on the Amazon Connect line (callRef
+    connect-...) the AWS list (a Lex locale and a Polly voice each), else
+    every language the configured ElevenLabs voice model speaks. CONFIG
+    `languages` is not a filter yet: the admin has no language picker, so
+    every saved config lists the full list of the day it was saved, and
+    honouring it would shut out languages added since."""
+    return language.call_languages((call or {}).get("callRef"))
+
+
+def language_locked(call) -> bool:
+    """A Connect call that used its language switches stays in its language."""
+    return language.is_connect((call or {}).get("callRef")) and \
+        int((call or {}).get("languageSwitches") or 0) >= language.MAX_CONNECT_SWITCHES
 
 
 def _turn_setup(lang, caller_text, state, disclosed, allowed):
@@ -60,12 +68,13 @@ def _turn_setup(lang, caller_text, state, disclosed, allowed):
     return prompt_lang, hint, disclose_now
 
 
-def _after_turn(lang, hint, result, caller_text, state, allowed):
-    """(the call's language now, a language the voice cannot speak or None)."""
+def _after_turn(lang, hint, result, caller_text, state, allowed, locked=False):
+    """(the call's language now, a language the voice cannot speak or None).
+    A locked call (language_locked) keeps its language whatever was said."""
     new_lang, unsupported = language.decide(lang, hint, result.language, caller_text, allowed=allowed,
                                             previous_tag=state.get("lastTag"))
     state["lastTag"] = result.language
-    if result.error:
+    if result.error or locked:
         return lang, None
     return new_lang, unsupported
 
@@ -79,15 +88,16 @@ def _after_cut(result, state, disclose_now):
             state["discloseNext"] = True
 
 
-def _unsupported_reply(executor, state, code, messages):
+def _unsupported_reply(executor, state, code, messages, connect=False):
     """A language the voice cannot speak: the fixed sentences in Swedish,
-    English and Arabic; the second time the caller still cannot continue,
-    Booqy asks the restaurant to call back (topic language:<code>) and ends."""
+    English and Arabic (Swedish and English on the Connect line); the second
+    time the caller still cannot continue, Booqy asks the restaurant to call
+    back (topic language:<code>) and ends."""
     again = state.get("unsupported") == code
     state["unsupported"] = code
     if again and not state.get("callbackId"):
         executor.request_callback({"topic": f"language:{code}"})
-    reply = copy.unsupported_language(callback=again)
+    reply = copy.unsupported_language(callback=again, connect=connect)
     if again:
         state.setdefault("providerActions", []).append({"name": "end_call", "arguments": {"reason": "callback"}})
     agent.replace_last_reply(messages, reply)
@@ -95,7 +105,7 @@ def _unsupported_reply(executor, state, code, messages):
 
 
 def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback,
-              send_sms=None):
+              send_sms=None, asr_locale=None):
     """Runs the caller's utterance through the agent loop and persists the
     conversation, the tool state and the transcript turns on the call.
 
@@ -107,15 +117,20 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     (`actions`: its language_detection system tool). A language the voice
     cannot speak gets copy.UNSUPPORTED_LANGUAGE instead of the reply.
     `send_sms` texts the caller (the card guarantee link; None: a party
-    that needs a card gets a callback). Returns (result, updated_call,
-    state, actions)."""
-    calls.append_turn(call, "caller", caller_text, at)
+    that needs a card gets a callback). `asr_locale` is the recognizer's
+    locale of the caller's turn (the Connect line). On the Connect line a
+    switch is counted (`languageSwitches`); after MAX_CONNECT_SWITCHES the
+    call keeps its language. Returns (result, updated_call, state, actions)."""
+    current = calls.append_turn(call, "caller", caller_text, at, asr_locale=asr_locale)
+    caller_seq = int((current or {}).get("turnCount") or 0)
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     lang = current.get("language") or "sv"
     actions, spoken = [], []
     state = json.loads(current.get("toolState") or "{}")
     state["turn"] = int(state.get("turn") or 0) + 1       # tools.Executor: a write needs an earlier read-back
-    allowed = allowed_languages(config)
+    locked = language_locked(current)
+    allowed = (lang,) if locked else allowed_languages(config, current)
+    connect = language.is_connect(current.get("callRef"))
     disclosed = list(pa.plain(current.get("disclosure") or {}).get("languages") or [lang])
     prompt_lang, hint, disclose_now = _turn_setup(lang, caller_text, state, disclosed, allowed)
     messages = agent.loads(current.get("agentMessages"))
@@ -130,14 +145,17 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang,
                             keep_preamble=disclose_now)
     _after_cut(result, state, disclose_now)
-    new_lang, unsupported = _after_turn(lang, hint, result, caller_text, state, allowed)
+    new_lang, unsupported = _after_turn(lang, hint, result, caller_text, state, allowed, locked)
     if unsupported:
-        result.reply = _unsupported_reply(executor, state, unsupported, messages)
+        result.reply = _unsupported_reply(executor, state, unsupported, messages, connect=connect)
     elif new_lang != lang:
+        if caller_seq:
+            calls.set_turn_language(current, caller_seq, new_lang)   # the caller spoke the new language
         current, said = calls.repeat_disclosure(current, new_lang, at, new_language=True)
         if said is None and not (disclose_now and prompt_lang == new_lang):
             state["discloseNext"] = True    # the model says it in the next turn
-        current = calls.set_status(current, current["status"], [current["status"]], language=new_lang) or current
+        current = calls.set_status(current, current["status"], [current["status"]], language=new_lang,
+                                   languageSwitches=int(current.get("languageSwitches") or 0) + 1) or current
         actions.append({"name": "language_detection", "arguments": {
             "reason": f"The caller speaks {language.name(new_lang)}", "language": new_lang}})
         if said:
@@ -148,7 +166,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     metric("TurnRounds", result.rounds)
     for tool in result.tool_calls:
         calls.append_turn(call, "tool", tool["name"], at, tool_name=tool["name"], tool_ok=tool["ok"])
-    calls.append_turn(call, "agent", result.reply, at)
+    calls.append_turn(call, "agent", result.reply, at, lang=lang if unsupported else new_lang)
     result.reply = " ".join(spoken + [result.reply]).strip()
     current = calls.get_call(call["tenantId"], call["callId"])
     fields = {"agentMessages": agent.dumps(messages), "toolState": json.dumps(state, default=str),

@@ -311,9 +311,24 @@ def disclosure_short(lang, restaurant=None):
     return pick(DISCLOSURE_SHORT, lang)
 
 
-def unsupported_language(callback=False):
+def unsupported_language(callback=False, *, connect=False):
+    """The fixed "I cannot speak your language" sentences: Swedish, then
+    English, then Arabic. On the Connect line (connect=True) Swedish and
+    English only: Elin speaks them and cannot read Arabic script."""
     sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_LANGUAGE
-    return " ".join(sentences[x] for x in UNSUPPORTED_ORDER)
+    return " ".join(sentences[x] for x in (UNSUPPORTED_ORDER[:2] if connect else UNSUPPORTED_ORDER))
+
+
+# The Connect line: a caller the Swedish recognizer could not make out and no language could be
+# told from; asked once, in Swedish then English, which language they speak.
+ASK_LANGUAGE = {
+    SV: "Förlåt, jag uppfattade inte vad du sa. Vilket språk talar du?",
+    EN: "Sorry, I did not catch that. Which language do you speak? For example English, Arabic or German.",
+}
+
+
+def ask_language():
+    return f"{ASK_LANGUAGE[SV]} {ASK_LANGUAGE[EN]}"
 
 
 # A shared number (one number for several locations): the location is asked first.

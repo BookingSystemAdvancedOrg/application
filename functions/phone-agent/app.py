@@ -452,13 +452,23 @@ def _own_call(event, ctx):
     return call
 
 
+def _turn_view(t):
+    """One transcript turn: the original text, the language it was spoken in
+    and, after the call, the Swedish and English translations
+    (phone-agent-translate; null where the turn already is in that
+    language, translation pending|done|failed|skipped)."""
+    out = {"role": t.get("role"), "text": t.get("text") or "", "at": t.get("at"), "lang": t.get("lang"),
+           "textSv": t.get("textSv"), "textEn": t.get("textEn"), "translation": t.get("translation")}
+    if t.get("toolName"):
+        out.update({"toolName": t["toolName"], "toolOk": bool(t.get("toolOk"))})
+    return out
+
+
 def get_call(event, ctx):
     call = _own_call(event, ctx)
     turns = pa.query_all(pa.tenant_pk(ctx.tenant_id), call["SK"] + "#T#", ConsistentRead=True)
     out = {**pa.call_view(call, owner=ctx.is_owner),
-           "turns": [{"role": t.get("role"), "text": t.get("text") or "", "at": t.get("at"),
-                      **({"toolName": t["toolName"], "toolOk": bool(t.get("toolOk"))} if t.get("toolName") else {})}
-                     for t in turns]}
+           "turns": [_turn_view(t) for t in turns]}
     recording = pa.plain(call.get("recording") or {})
     if ctx.is_owner and recording.get("key") and os.environ.get("RECORDINGS_BUCKET"):
         out["recordingUrl"] = client("s3").generate_presigned_url(
@@ -620,7 +630,7 @@ def privacy_export(tenant_id, phone):
 
 def privacy_erase(tenant_id, phone):
     """Removes the caller's number, name, summary, every turn's text (kept as
-    "[raderad]") and the recording; keeps minutes and the disclosure evidence."""
+    "[raderad]") with its translations and the recording; keeps minutes and the disclosure evidence."""
     found_calls, found_callbacks = _guest_rows(tenant_id, phone)
     turns = 0
     for c in found_calls:
@@ -631,7 +641,8 @@ def privacy_erase(tenant_id, phone):
                                UpdateExpression="REMOVE #f, fromHash, summary, recording, agentMessages, toolState",
                                ExpressionAttributeNames={"#f": "from"})
         for t in pa.query_all(pa.tenant_pk(tenant_id), c["SK"] + "#T#"):
-            pa.table().update_item(Key={"PK": t["PK"], "SK": t["SK"]}, UpdateExpression="SET #x = :r",
+            pa.table().update_item(Key={"PK": t["PK"], "SK": t["SK"]},
+                                   UpdateExpression="SET #x = :r REMOVE textSv, textEn",
                                    ExpressionAttributeNames={"#x": "text"},
                                    ExpressionAttributeValues={":r": "[raderad]"})
             turns += 1

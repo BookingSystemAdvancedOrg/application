@@ -12,7 +12,8 @@ import pytest
 from shared import bankid, signing
 from shared import catering as c
 from test_catering import (BUCKET, COMPANY, LOC_A, LOCATION_TABLE, OFFER, REGION, SETTINGS, TENANT_A, body_of, create,
-                           env, guest, location_item, restaurant_signs, sent_offer, staff)  # noqa: F401 - env fixture
+                           env, guest, location_item, restaurant_signs, sends_to_customer, sent_offer,
+                           staff)  # noqa: F401 - env fixture
 
 
 def allow_acceptance(env):  # noqa: F811
@@ -93,7 +94,7 @@ def test_a_new_version_and_a_decline_cancel_the_open_order(env):  # noqa: F811
     env.monkeypatch.setattr(signing, "cancel", lambda order: cancelled.append(order and order["ref"]))
     rid, _ = sent_offer(env)
     first = c.load(LOC_A, rid)["signing"]["order"]["ref"]
-    staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
+    staff(env, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert cancelled[-1] == first
     second = c.load(LOC_A, rid)["signing"]["order"]["ref"]
     staff(env, "POST", "/decline", body={"reason": "Fullt"}, request_id=rid)
@@ -107,6 +108,7 @@ def test_redirect_provider_both_parties(env):  # noqa: F811
     assert start == {"kind": "redirect", "url": f"https://admin.example.se/catering/{LOC_A}/{rid}?signering=klar"}
     assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
     assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 409  # already signed
+    sends_to_customer(env, rid)
     start = body_of(guest(env, "POST", "/sign", rid, token))
     assert start["kind"] == "redirect" and start["url"].endswith(f"/catering/{LOC_A}/{rid}?restaurang=roma&signering=klar")
     assert body_of(guest(env, "POST", "/sign/status", rid, token))["status"] == "complete"
@@ -118,6 +120,7 @@ def test_signing_webhook_verifies_dedupes_and_refetches(env):  # noqa: F811
     rid, token = sent_offer(env, sign=False)
     staff(env, "POST", "/restaurant-sign", request_id=rid)
     staff(env, "POST", "/restaurant-sign/status", request_id=rid)
+    sends_to_customer(env, rid)
     guest(env, "POST", "/sign", rid, token)
     order = c.load(LOC_A, rid)["signing"]["order"]
     assert webhook(env, rid, "wrong")["statusCode"] == 401
@@ -281,7 +284,7 @@ def test_restaurant_evidence_stays_unlocked_until_the_contract_is_binding(env): 
 def test_webhook_for_a_replaced_version_is_refused(env):  # noqa: F811
     rid, token = sent_offer(env)
     old = c.load(LOC_A, rid)["signing"]["order"]["callbackToken"]
-    staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
+    staff(env, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert webhook(env, rid, old)["statusCode"] == 401
     new = c.load(LOC_A, rid)["signing"]["order"]["callbackToken"]
     assert body_of(webhook(env, rid, new, {"eventId": "evt-v2"})) == {"result": "handled", "recorded": []}
@@ -320,7 +323,7 @@ def test_a_failed_send_keeps_the_open_order(env):  # noqa: F811
     rid, _ = sent_offer(env)
     first = c.load(LOC_A, rid)["signing"]["order"]["ref"]
     big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
-    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == err("capacity_full")
+    assert body_of(staff(env, "POST", "/offer/version", body=big, request_id=rid)) == err("capacity_full")
     assert first not in cancelled and c.load(LOC_A, rid)["signing"]["order"]["ref"] == first
 
 
@@ -329,3 +332,63 @@ def guest_document(env, rid, token, doc_id):  # noqa: F811
              "pathParameters": {"locationId": LOC_A, "requestId": rid, "docId": doc_id},
              "headers": {"X-Order-Token": token}, "requestContext": {"http": {"sourceIp": "203.0.113.9"}}}
     return env.m["customer"].handler(event, None)
+
+
+# --- the order: 1 lock, 2 the restaurant signs, 3 send ----------------------------------------
+
+def restaurant_signs_only(env, rid):  # noqa: F811
+    assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
+    states = [body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] for _ in range(2)]
+    assert states[-1] == "signed"
+
+
+def test_send_refuses_a_version_the_restaurant_has_not_signed(env):  # noqa: F811
+    rid, token = sent_offer(env, sign=False)
+    for body in ({"version": 1}, OFFER, None):
+        response = staff(env, "POST", "/offer/send", body=body, request_id=rid)
+        assert response["statusCode"] == 409 and body_of(response) == err("restaurant_signature_required")
+    assert staff(env, "POST", "/offer/send", body={"version": 1}, request_id=rid, role="staff_user")["statusCode"] == 403
+    item = c.load(LOC_A, rid)
+    assert "sentToCustomerAt" not in item and item["notice"]["type"] != "catering_offer_sent"
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == err("awaiting_restaurant")
+
+
+def test_a_signed_version_stays_with_the_restaurant_until_it_is_sent(env):  # noqa: F811
+    rid, token = sent_offer(env, sign=False)
+    restaurant_signs_only(env, rid)
+    item = c.load(LOC_A, rid)
+    assert item["restaurantSignedAt"] and item["notice"]["type"] != "catering_offer_sent"
+    assert "sentToCustomerAt" not in body_of(staff(env, "GET", request_id=rid))
+    before = body_of(guest(env, "GET", "", rid, token))
+    assert "restaurantSignedAt" not in before and before["canSign"] is False and before["documents"] == []
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == err("awaiting_restaurant")
+    assert guest_document(env, rid, token, "offer")["statusCode"] == 404
+    assert body_of(staff(env, "POST", "/offer/send", body={"version": 2}, request_id=rid)) == err("not_current_version")
+    sent = sends_to_customer(env, rid)
+    assert sent["sentToCustomerAt"] and c.load(LOC_A, rid)["notice"]["type"] == "catering_offer_sent"
+    assert sends_to_customer(env, rid)["sentToCustomerAt"] == sent["sentToCustomerAt"]  # twice: no second message
+    assert body_of(guest(env, "GET", "", rid, token))["restaurantSignedAt"]
+    assert guest(env, "POST", "/sign", rid, token)["statusCode"] == 200
+
+
+def test_a_new_version_needs_a_new_restaurant_signature(env):  # noqa: F811
+    rid, token = sent_offer(env)  # v1 signed and sent
+    v2 = body_of(staff(env, "POST", "/offer/version", body=OFFER, request_id=rid))
+    assert v2["currentOfferVersion"] == 2 and "restaurant" not in v2["signing"]
+    assert "restaurantSignedAt" not in v2 and "sentToCustomerAt" not in v2
+    assert body_of(staff(env, "POST", "/offer/send", body={"version": 2}, request_id=rid)) == \
+        err("restaurant_signature_required")
+    assert body_of(guest(env, "POST", "/sign", rid, token)) == err("awaiting_restaurant")
+    restaurant_signs(env, rid)
+    assert c.load(LOC_A, rid)["sentToCustomerAt"]
+    assert guest(env, "POST", "/sign", rid, token)["statusCode"] == 200
+
+
+def test_a_version_locked_before_the_send_step_goes_out_on_the_signature(env):  # noqa: F811
+    rid, token = sent_offer(env, sign=False)
+    env.res.Table("test-catering-requests").update_item(
+        Key=c.request_key(LOC_A, rid), UpdateExpression="REMOVE signing.sendRequired")
+    restaurant_signs_only(env, rid)
+    assert c.load(LOC_A, rid)["notice"]["type"] == "catering_offer_sent"
+    assert body_of(staff(env, "GET", request_id=rid))["sentToCustomerAt"]
+    assert guest(env, "POST", "/sign", rid, token)["statusCode"] == 200

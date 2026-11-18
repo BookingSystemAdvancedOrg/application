@@ -228,7 +228,7 @@ def _change(event):
     signing.cancel((item.get("signing") or {}).get("order"))
     c.transact([
         c.head_update(item, to_status=c.CHANGE_REQUESTED, sets=[
-            "changeMessage = :m", "notice = :n", "updatedAt = :now"], removes=["signing", "restaurantSignedAt"],
+            "changeMessage = :m", "notice = :n", "updatedAt = :now"], removes=["signing", "restaurantSignedAt", "sentToCustomerAt"],
             values={":m": message, ":n": c.notice(c.N_CHANGE_REQUESTED, now), ":now": c.iso(now)}),
         c.audit_put(item["requestId"], "change_requested", "guest", now, message=message),
     ])
@@ -257,7 +257,7 @@ def _reject(event):
 def _document(event):
     ctx, item = _context(event)
     doc_id = http.path_id(event, "docId")
-    if doc_id == "offer" and not sign.restaurant_signed(item):
+    if doc_id == "offer" and not c.offer_at_customer(item):
         raise c.NotFound  # the guest sees a version only once the restaurant has signed it
     key, version = sign.document_ref(item, doc_id)
     if not key:

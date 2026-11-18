@@ -134,7 +134,7 @@ def test_lead_time_counts_calendar_days_across_dst():
 
 def test_offer_takes_the_reduced_rate_without_service_and_stripe_gets_that_rate(menu):
     rid = body_of(create(menu))["requestId"]
-    sent = body_of(staff(menu, "POST", "/offer/send", body={**OFFER, "serviceIncluded": False}, request_id=rid))
+    sent = body_of(staff(menu, "POST", "/offer/version", body={**OFFER, "serviceIncluded": False}, request_id=rid))
     assert sent["offer"]["totals"]["vatRate"] == 6 and sent["offer"]["lines"][0]["vatRate"] == 6
     bad = staff(menu, "PUT", "/offer", body={**OFFER, "serviceIncluded": "nej"}, request_id=rid)
     assert bad["statusCode"] == 400

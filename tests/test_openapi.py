@@ -150,6 +150,7 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/catering/requests/{requestId}": frozenset({'get'}),
     "/locations/{locationId}/catering/requests/{requestId}/documents/{docId}": frozenset({'get'}),
     "/locations/{locationId}/catering/requests/{requestId}/offer": frozenset({'put'}),
+    "/locations/{locationId}/catering/requests/{requestId}/offer/version": frozenset({'post'}),
     "/locations/{locationId}/catering/requests/{requestId}/offer/send": frozenset({'post'}),
     "/locations/{locationId}/catering/requests/{requestId}/restaurant-sign": frozenset({'post'}),
     "/locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status": frozenset({'post'}),

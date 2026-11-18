@@ -4,9 +4,10 @@ TRIGGER:
     API Gateway -- Auth: JWT (owner; staff may read)
     GET  /locations/{locationId}/catering/requests/{requestId}
     PUT  /locations/{locationId}/catering/requests/{requestId}/offer        save a draft
-    POST /locations/{locationId}/catering/requests/{requestId}/offer/send   send version N
+    POST /locations/{locationId}/catering/requests/{requestId}/offer/version  lock version N (not sent yet)
     POST /locations/{locationId}/catering/requests/{requestId}/restaurant-sign         owner signs version N
     POST /locations/{locationId}/catering/requests/{requestId}/restaurant-sign/status  poll / after the return
+    POST /locations/{locationId}/catering/requests/{requestId}/offer/send   {"version"} send signed version N
     POST /locations/{locationId}/catering/requests/{requestId}/decline      {"reason"}
     POST /locations/{locationId}/catering/requests/{requestId}/cancel       {"reason"}
     POST /locations/{locationId}/catering/requests/{requestId}/refund       {"amount"?, "reason"?, "notifyGuest"?}
@@ -20,12 +21,16 @@ PURPOSE:
 
     - The owner adjusts the offer freely (lines, prices, discount, delivery
       fee, equipment return and cleaning fee, message, valid-until) and
-      sends it: every send is a new, immutable OFFER#vN in the history; the
-      guest can only sign the latest. Sending renders the offer PDF
-      (catering-document), cancels the previous version's signing order and
-      opens a new one (shared/signing.py). The restaurant signs first
-      (restaurant-sign, BankID or the provider's page); only then is the
-      guest told and may sign (shared/catering_signing.py).
+      locks it as a version: every version is a new, immutable OFFER#vN in
+      the history; the guest can only sign the latest. Locking renders the
+      offer PDF (catering-document), cancels the previous version's signing
+      order and opens a new one (shared/signing.py). Three steps, always in
+      this order: 1. lock (offer/version), 2. the restaurant signs it
+      (restaurant-sign, BankID or the provider's page), 3. send: only a
+      version the restaurant has signed reaches the guest (offer/send, 409
+      restaurant_signature_required otherwise); then the guest is told and
+      may sign (shared/catering_signing.py). Every new version needs a new
+      restaurant signature.
       The version keeps its own copy of the
       return choice and the fee, so changing the location's cleaning fee
       never touches an offer already sent or signed.
@@ -85,6 +90,7 @@ _BASE = "/locations/{locationId}/catering/requests/{requestId}"
 _ROUTES = {
     ("GET", _BASE): "view",
     ("PUT", _BASE + "/offer"): "draft",
+    ("POST", _BASE + "/offer/version"): "version",
     ("POST", _BASE + "/offer/send"): "send",
     ("POST", _BASE + "/restaurant-sign"): "restaurant_sign",
     ("POST", _BASE + "/restaurant-sign/status"): "restaurant_sign_status",
@@ -244,6 +250,37 @@ def _draft(event):
 
 
 def _send(event):
+    """POST .../offer/send {"version"}: step 3, the signed version to the
+    guest (notice catering_offer_sent). Never an unsigned one."""
+    location_id, ctx = _ctx(event, owner=True)
+    item = _load(event, location_id, ctx)
+    data = http.body(event, required=False)
+    if set(data) - {"version"} or not isinstance(data.get("version"), int) or isinstance(data["version"], bool):
+        # An offer body here is an older admin trying to send an unsigned version in one go.
+        raise c.InvalidState(sign.RESTAURANT_SIGNATURE_REQUIRED)
+    version = data["version"]
+    s = item.get("signing") or {}
+    if item["status"] != c.OFFER_SENT or version != int(item.get("currentOfferVersion") or 0) \
+            or int(s.get("offerVersion") or 0) != version:
+        raise c.InvalidState("not_current_version")
+    if not sign.restaurant_signed(item):
+        raise c.InvalidState(sign.RESTAURANT_SIGNATURE_REQUIRED)
+    if c.offer_at_customer(item):
+        return http.respond(200, c.staff_view(item))
+    now = c.now_utc()
+    _check_valid_until(item.get("validUntil"), item, ctx.location, now)
+    c.transact([
+        c.head_update(item, sets=["sentToCustomerAt = :now", "notice = :n", "updatedAt = :now"],
+                      values={":now": c.iso(now), ":n": c.notice(c.N_OFFER_SENT, now, version=version)}),
+        c.audit_put(item["requestId"], "offer_sent_to_customer", ctx.sub, now, version=version),
+    ])
+    logger.info(json.dumps({"catering": "offer_sent_to_customer", "requestId": item["requestId"], "version": version}))
+    return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
+
+
+def _version(event):
+    """POST .../offer/version: step 1, locks the offer as version N. The
+    guest does not get it until the restaurant has signed and sent it."""
     location_id, ctx = _ctx(event, owner=True)
     item = _load(event, location_id, ctx)
     if item["status"] not in _EDITABLE:
@@ -272,7 +309,7 @@ def _send(event):
          "returnUrl": sign.customer_return_url(ctx.tenant_id, ctx.tenant, item)},
     ], _callback_url(item))
     signing_record = {"offerVersion": version, "pdfKey": pdf["key"], "pdfVersionId": pdf["versionId"],
-                      "pdfSha256": pdf["sha256"], "order": order, "signatures": {}}
+                      "pdfSha256": pdf["sha256"], "order": order, "signatures": {}, "sendRequired": True}
     held = int(item.get("capacityHeld") or 0)
     delta = int(offer["portions"]) - held
     offer_item = {**c.offer_key(item["requestId"], version), **offer, "documentHash": doc_hash,
@@ -284,7 +321,7 @@ def _send(event):
     summary["pdfSha256"] = pdf["sha256"]
     equipment = offer.get("equipmentReturn") or c.equipment_return(item.get("equipmentReturn"))
     summary["equipmentReturn"] = equipment
-    # The guest hears about it (notice catering_offer_sent) once the restaurant has signed.
+    # The guest hears about it (notice catering_offer_sent) once the restaurant has signed and sent it.
     try:
         c.transact([
             {"Put": {"TableName": c.history_table(), "Item": c.serialize(offer_item),
@@ -293,18 +330,18 @@ def _send(event):
                 "currentOfferVersion = :v", "offer = :o", "validUntil = :valid", "capacityHeld = :held",
                 "updatedAt = :now", "offerSentAt = :now", "equipmentReturn = :eq", "signing = :sg",
                 "reviewedAt = if_not_exists(reviewedAt, :now)"],
-                removes=["draft", "changeMessage", "expiresAt", "restaurantSignedAt"],
+                removes=["draft", "changeMessage", "expiresAt", "restaurantSignedAt", "sentToCustomerAt"],
                 values={":v": version, ":o": summary, ":valid": offer["validUntil"], ":held": int(offer["portions"]),
                         ":eq": equipment, ":sg": signing_record, ":now": c.iso(now)}),
             c.capacity_change(location_id, settings, item["deliveryDate"], delta),
-            c.audit_put(item["requestId"], "offer_sent", ctx.sub, now, version=version,
+            c.audit_put(item["requestId"], "offer_version", ctx.sub, now, version=version,
                         total=offer["totals"]["total"], documentHash=doc_hash, pdfSha256=pdf["sha256"]),
         ])
     except Exception:
         signing.cancel(order)
         raise
     signing.cancel((item.get("signing") or {}).get("order"))  # only now: the new version replaced the open order
-    logger.info(json.dumps({"catering": "offer_sent", "requestId": item["requestId"], "version": version}))
+    logger.info(json.dumps({"catering": "offer_version", "requestId": item["requestId"], "version": version}))
     return http.respond(200, c.staff_view(c.load(location_id, item["requestId"])))
 
 
@@ -498,7 +535,7 @@ def _mark_paid(event):
     return http.respond(202, {"status": "marking_paid"})
 
 
-_HANDLERS = {"view": _view, "draft": _draft, "send": _send, "decline": _decline, "cancel": _cancel,
+_HANDLERS = {"view": _view, "draft": _draft, "version": _version, "send": _send, "decline": _decline, "cancel": _cancel,
              "refund": _refund,
              "delivered": _delivered, "document": _document, "invoices": _invoices, "mark_paid": _mark_paid,
              "restaurant_sign": _restaurant_sign, "restaurant_sign_status": _restaurant_sign_status}

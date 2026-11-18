@@ -276,12 +276,21 @@ def restaurant_signs(env, rid):
     assert staff(env, "POST", "/restaurant-sign", request_id=rid)["statusCode"] == 200
     assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "pending"
     assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+    sends_to_customer(env, rid)
+
+
+def sends_to_customer(env, rid):
+    """Step 3: the signed version goes to the guest."""
+    version = int(c.load(LOC_A, rid)["currentOfferVersion"])
+    response = staff(env, "POST", "/offer/send", body={"version": version}, request_id=rid)
+    assert response["statusCode"] == 200, response["body"]
+    return body_of(response)
 
 
 def sent_offer(env, sign=True, **extra):
     created = body_of(create(env, **extra))
     rid = created["requestId"]
-    assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)["statusCode"] == 200
+    assert staff(env, "POST", "/offer/version", body=OFFER, request_id=rid)["statusCode"] == 200
     if sign:
         restaurant_signs(env, rid)
     return rid, created["token"]
@@ -417,7 +426,7 @@ def test_send_offer_versions_and_capacity(env):
     assert staff(env, "PUT", "/offer", body=OFFER, request_id=rid)["statusCode"] == 200
     assert c.load(LOC_A, rid)["draft"]["totals"]["total"] == 20 * 14000 + 15 * 12000 + 2 * 45000 \
         - round((20 * 14000 + 15 * 12000 + 2 * 45000) * 0.05) + 39500
-    sent = body_of(staff(env, "POST", "/offer/send", request_id=rid))
+    sent = body_of(staff(env, "POST", "/offer/version", request_id=rid))
     assert sent["status"] == "offer_sent" and sent["currentOfferVersion"] == 1 and "draft" not in sent
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 65
     item = c.load(LOC_A, rid)
@@ -426,27 +435,29 @@ def test_send_offer_versions_and_capacity(env):
     assert item["signing"]["pdfKey"] == f"{TENANT_A}/offers/{rid}/v0001.pdf" and len(item["signing"]["pdfSha256"]) == 64
     restaurant_signs(env, rid)
     item = c.load(LOC_A, rid)
-    assert item["notice"]["type"] == "catering_offer_sent" and item["restaurantSignedAt"]
+    assert item["notice"]["type"] == "catering_offer_sent" and item["restaurantSignedAt"] and item["sentToCustomerAt"]
     smaller = {**OFFER, "lines": [{"name": "Laxtallrik", "unitPrice": 140, "quantity": 20, "menuItemId": "lax"}]}
-    assert body_of(staff(env, "POST", "/offer/send", body=smaller, request_id=rid))["currentOfferVersion"] == 2
+    assert body_of(staff(env, "POST", "/offer/version", body=smaller, request_id=rid))["currentOfferVersion"] == 2
     assert c.capacity_left(LOC_A, c.settings_of(location_item(TENANT_A, LOC_A)), DAY) == 80
     view = body_of(staff(env, "GET", request_id=rid))
     assert [o["version"] for o in view["offers"]] == [1, 2]
-    assert [h["action"] for h in view["history"]][:3] == ["offer_sent", "signed_restaurant", "signing_started_restaurant"]
+    assert [h["action"] for h in view["history"]][:4] == ["offer_version", "offer_sent_to_customer", "signed_restaurant",
+                                                          "signing_started_restaurant"]
+    assert "sentToCustomerAt" not in view and "restaurantSignedAt" not in view
     assert "restaurant" not in view["signing"] and view["signing"]["offerVersion"] == 2
 
 
 def test_offer_capacity_full_and_validation(env):
     rid = body_of(create(env))["requestId"]
     big = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 140, "quantity": 101, "menuItemId": "lax"}]}
-    assert body_of(staff(env, "POST", "/offer/send", body=big, request_id=rid)) == err("capacity_full")
+    assert body_of(staff(env, "POST", "/offer/version", body=big, request_id=rid)) == err("capacity_full")
     pricey = {**OFFER, "lines": [{"name": "Lax", "unitPrice": 10000.01, "quantity": 1}]}
     assert body_of(staff(env, "PUT", "/offer", body=pricey, request_id=rid)) == err("price may be at most 10000 kr")
     at_limit = {**OFFER, "lines": [{"name": "Tårta", "unitPrice": 10000, "quantity": 1}]}
     assert staff(env, "PUT", "/offer", body=at_limit, request_id=rid)["statusCode"] == 200
     late = {**OFFER, "validUntil": "2026-10-25"}
-    assert "after the delivery date" in body_of(staff(env, "POST", "/offer/send", body=late, request_id=rid))["error"]
-    assert staff(env, "POST", "/offer/send", body=OFFER, request_id=rid, role="staff_user")["statusCode"] == 403
+    assert "after the delivery date" in body_of(staff(env, "POST", "/offer/version", body=late, request_id=rid))["error"]
+    assert staff(env, "POST", "/offer/version", body=OFFER, request_id=rid, role="staff_user")["statusCode"] == 403
 
 
 def test_default_valid_until_never_passes_the_delivery_day():
@@ -514,14 +525,14 @@ def test_simulator_is_refused_in_prod(env):
     env.monkeypatch.setenv("ENVIRONMENT", "prod")
     bankid.reset_cache()
     rid = body_of(create(env))["requestId"]
-    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)) == err("signing_unavailable")
+    assert body_of(staff(env, "POST", "/offer/version", body=OFFER, request_id=rid)) == err("signing_unavailable")
     assert c.load(LOC_A, rid)["status"] == "requested"
 
 
 def test_a_new_offer_version_during_signing_is_not_signed(env):
     rid, token = sent_offer(env)
     guest(env, "POST", "/sign", rid, token)
-    staff(env, "POST", "/offer/send", body=OFFER, request_id=rid)
+    staff(env, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert body_of(guest(env, "POST", "/sign/status", rid, token))["status"] == "none"
     assert c.load(LOC_A, rid)["status"] == "offer_sent"
     # v2 needs the restaurant's signature again before the guest can sign
@@ -615,7 +626,7 @@ def test_guest_asks_for_changes_and_owner_sends_a_new_version(env):
     body = body_of(guest(env, "POST", "/change", rid, token, {"message": "Kan ni lägga till dessert?"}))
     assert body["status"] == "change_requested" and body["canSign"] is False
     assert c.load(LOC_A, rid)["notice"]["type"] == "catering_change_requested"
-    assert body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))["currentOfferVersion"] == 2
+    assert body_of(staff(env, "POST", "/offer/version", body=OFFER, request_id=rid))["currentOfferVersion"] == 2
     assert body_of(guest(env, "GET", "", rid, token))["canSign"] is False
     restaurant_signs(env, rid)
     assert body_of(guest(env, "GET", "", rid, token))["canSign"] is True
@@ -775,6 +786,7 @@ def test_bankid_rp_api_calls(env, monkeypatch):
     assert body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
     restaurant_text = base64.b64decode(calls[0][1]["userVisibleData"]).decode()
     assert "Restaurangen godkänner offerten." in restaurant_text
+    sends_to_customer(env, rid)
     calls.clear()
     start = body_of(guest(env, "POST", "/sign", rid, token))
     assert start["autoStartToken"] == "ast" and start["qrData"].startswith("bankid.qst.")
@@ -871,12 +883,12 @@ def test_offer_carries_the_choice_and_its_own_fee(env):
     row = body_of(env.m["requests"].handler(with_tenant_claims(rows_event), None))["requests"][0]
     assert row["equipmentReturn"] == "not_cleaned"
     # no fee in the body: the location's fee in force when the owner sends
-    sent = body_of(staff(env, "POST", "/offer/send", body=OFFER, request_id=rid))
+    sent = body_of(staff(env, "POST", "/offer/version", body=OFFER, request_id=rid))
     assert sent["offer"]["totals"]["cleaningFee"] == 30000 and sent["offer"]["equipmentReturn"] == "not_cleaned"
     # the owner sets a fee for this offer, or switches to cleaned (no fee whatever the body says)
-    v2 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "cleaningFee": 250}, request_id=rid))
+    v2 = body_of(staff(env, "POST", "/offer/version", body={**OFFER, "cleaningFee": 250}, request_id=rid))
     assert v2["offer"]["totals"]["cleaningFee"] == 25000
-    v3 = body_of(staff(env, "POST", "/offer/send", body={**OFFER, "equipmentReturn": "cleaned", "cleaningFee": 250},
+    v3 = body_of(staff(env, "POST", "/offer/version", body={**OFFER, "equipmentReturn": "cleaned", "cleaningFee": 250},
                        request_id=rid))
     assert v3["offer"]["totals"]["cleaningFee"] == 0 and v3["equipmentReturn"] == "cleaned"
     assert staff(env, "PUT", "/offer", body={**OFFER, "equipmentReturn": "x"}, request_id=rid)["statusCode"] == 400

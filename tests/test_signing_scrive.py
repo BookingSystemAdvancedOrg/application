@@ -142,7 +142,11 @@ def restaurant_signs_at_scrive(env, rid):  # noqa: F811
     start = body_of(staff(env, "POST", "/restaurant-sign", request_id=rid))
     assert start["kind"] == "redirect"
     env.scrive.sign(RESTAURANT_PARTY, "Maria Rossi")
-    return body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))
+    status = body_of(staff(env, "POST", "/restaurant-sign/status", request_id=rid))
+    if status.get("state") == "signed":
+        version = int(c.load(LOC_A, rid)["currentOfferVersion"])
+        assert staff(env, "POST", "/offer/send", body={"version": version}, request_id=rid)["statusCode"] == 200
+    return status
 
 
 # --- create -----------------------------------------------------------------------------------
@@ -199,7 +203,7 @@ def test_a_failed_update_trashes_the_draft_and_answers_503(scrive):
     scrive.scrive.fail["update"] = (401, "error_invalid_authorisation.json")
     from test_catering import create
     rid = body_of(create(scrive))["requestId"]
-    response = staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
+    response = staff(scrive, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert response["statusCode"] == 503 and body_of(response) == err("signing_unavailable")
     assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
 
@@ -208,7 +212,7 @@ def test_a_sign_method_scrive_has_not_enabled_is_named_in_the_error(scrive):
     scrive.scrive.fail["start"] = (409, "error_sign_method_disabled.json")
     from test_catering import create
     rid = body_of(create(scrive))["requestId"]
-    response = staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
+    response = staff(scrive, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert response["statusCode"] == 409
     assert body_of(response) == err("signing_authentication_to_sign_method_disabled")
     assert scrive.scrive.paths("trash") and c.load(LOC_A, rid)["status"] == "requested"
@@ -236,6 +240,8 @@ def test_start_redirects_to_scrive_and_the_restaurant_signs_first(scrive):
         {"state": "pending", "hint": "outstandingTransaction", "qrData": None}
     scrive.scrive.sign(RESTAURANT_PARTY, "Maria Rossi")
     assert body_of(staff(scrive, "POST", "/restaurant-sign/status", request_id=rid))["state"] == "signed"
+    assert guest(scrive, "POST", "/sign", rid, token)["statusCode"] == 409  # signed, not sent yet
+    assert staff(scrive, "POST", "/offer/send", body={"version": 1}, request_id=rid)["statusCode"] == 200
     item = c.load(LOC_A, rid)
     restaurant = item["signing"]["signatures"]["restaurant"]
     assert restaurant["method"] == "scrive_se_bankid" and restaurant["name"] == "Maria Rossi"
@@ -373,7 +379,7 @@ def test_the_guest_coming_back_while_the_callback_records_still_sees_complete(sc
 def test_a_new_version_cancels_the_old_document(scrive):
     rid, _ = sent_offer(scrive, sign=False)
     first = c.load(LOC_A, rid)["signing"]["order"]["documentId"]
-    staff(scrive, "POST", "/offer/send", body=OFFER, request_id=rid)
+    staff(scrive, "POST", "/offer/version", body=OFFER, request_id=rid)
     assert scrive.scrive.paths("cancel") == [f"documents/{first}/cancel"]
     assert c.load(LOC_A, rid)["signing"]["order"]["documentId"] != first
 

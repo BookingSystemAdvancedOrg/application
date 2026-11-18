@@ -5760,16 +5760,16 @@ paths:
         '503':
           description: The catering service (or a provider it needs) is unavailable.
 
-  /locations/{locationId}/catering/requests/{requestId}/offer/send:
+  /locations/{locationId}/catering/requests/{requestId}/offer/version:
     parameters:
       - $ref: '#/components/parameters/LocationId'
       - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
     post:
       tags:
         - Catering
-      summary: Send offer version N
-      operationId: sendCateringOffer
-      description: 'Renders the PDF, cancels the previous signing order and opens a new one, holds the day''s capacity. The guest is told once the restaurant has signed. Without a body the saved draft is sent.'
+      summary: Lock offer version N (step 1)
+      operationId: createCateringOfferVersion
+      description: 'Step 1 of 3. Locks the offer as version N: renders the PDF, cancels the previous signing order and opens a new one, holds the day''s capacity. The guest does not get it yet: the restaurant signs it with BankID (restaurant-sign, step 2) and then sends it (offer/send, step 3). Every new version needs a new restaurant signature. Without a body the saved draft is locked.'
       security:
         - bearerAuth: []
       x-required-groups: [owner_user]
@@ -5791,6 +5791,41 @@ paths:
           description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
         '409': {description: 'not_editable, capacity_full or changed_retry.'}
         '503': {description: 'document_unavailable, signing_unavailable or the catering service is unavailable.'}
+  /locations/{locationId}/catering/requests/{requestId}/offer/send:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - {name: requestId, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}
+    post:
+      tags:
+        - Catering
+      summary: Send the signed offer version N to the guest (step 3)
+      operationId: sendCateringOffer
+      description: 'Step 3 of 3. Only a version the restaurant has signed (restaurant-sign) reaches the guest; then the guest is told (email and SMS) and may sign. Sending the same version again changes nothing.'
+      security:
+        - bearerAuth: []
+      x-required-groups: [owner_user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version: {type: integer, minimum: 1, description: 'The current offer version.'}
+      responses:
+        '200':
+          description: OK (sentToCustomerAt is set)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CateringRequest'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/GatewayUnauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404':
+          description: Unknown location (or another tenant's), catering not in the plan, unknown request or wrong link token.
+        '409': {description: 'restaurant_signature_required (the restaurant has not signed this version with BankID; also any offer body: an offer is never sent unsigned), not_current_version or changed_retry.'}
 
   /locations/{locationId}/catering/requests/{requestId}/restaurant-sign:
     parameters:
@@ -7449,7 +7484,7 @@ components:
     CateringRequest:
       type: object
       additionalProperties: true
-      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, capacityLeft, settings).
+      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, restaurantSignedAt, sentToCustomerAt (the signed version reached the guest), capacityLeft, settings).
     CateringGuestView:
       type: object
       additionalProperties: true

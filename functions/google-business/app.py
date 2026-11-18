@@ -42,7 +42,7 @@ from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import events, http, tenant
+from shared import console_invoke, events, http, tenant
 from shared.features import google_business as gbp
 from shared import google_business as google_port
 from shared.google_business import GoogleBusinessError
@@ -461,6 +461,9 @@ ROUTES = {
 }
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

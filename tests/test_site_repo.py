@@ -277,7 +277,9 @@ def world(monkeypatch):
         # One table for both accounts (ids never collide). PLAIN: a prod
         # customer; TEST: a dev console test customer (its slug host claimed
         # by onboarding); LEGACY: a dev customer from before test sites.
-        _profile(table, PLAIN, "roma", primaryDomain="roma.booqy.se")
+        # The restaurant's own details never cross to dev (only name, slug, plan).
+        _profile(table, PLAIN, "roma", primaryDomain="roma.booqy.se", ownerEmail="anna@roma.se",
+                 ownerName="Anna", orgNumber="556677-8899", contactPhone="+46701740605", address="Via 1")
         _profile(table, TEST, "pasta", "test", primaryDomain="pasta.test.booqy.se")
         _profile(table, LEGACY, "gamla", primaryDomain="gamla.dev.booqy.se")
         _claim(table, "pasta", TEST)

@@ -458,4 +458,16 @@ def test_console_reads_and_edits_staff_permissions_only(app):
     assert stored["users"]["staff-1"]["add"] == ["personal"] and stored["updatedBy"] == "operator:lamo"
     # nothing else of the account
     assert module.handler(_console("PATCH", {"senderName": "X"}), None)["statusCode"] == 403
-    assert module.handler(_console("POST", {}, "/tenant/dpa/accept"), None)["statusCode"] == 403
+    assert module.handler(_console("POST", {}, "/tenant/terms/accept"), None)["statusCode"] == 403
+
+
+def test_console_accepts_the_dpa_for_a_dev_twin_outside_prod_only(app, monkeypatch):
+    module, tenants = app
+    accept = _console("POST", {"version": module.dpa.CURRENT_VERSION}, "/tenant/dpa/accept")
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    assert module.handler(accept, None)["statusCode"] == 403
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    response = module.handler(accept, None)
+    assert response["statusCode"] == 200, response
+    stored = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]["dpa"]
+    assert stored["acceptedBySub"] == "operator:lamo"

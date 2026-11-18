@@ -686,8 +686,10 @@ def _dispatch(gh, name, branch, org=None):
 
 
 # ---------------------------------------------------------- dev side (prod)
-_MIRROR_FIELDS = ("name", "slug", "ownerEmail", "ownerName", "planId", "legalName", "orgNumber", "contactEmail",
-                  "contactPhone", "address")
+# Only these cross to dev: the dev twin is Booqy's own test restaurant
+# (booqy-console docs/DEV-TWINS.md), never the restaurant's personal data
+# (no owner, contact, legal name, org number or address).
+_MIRROR_FIELDS = ("name", "slug", "planId")
 # The dev side's repo variables, the only ones prod takes from dev's answer.
 DEV_VARIABLES = ("DEV_AWS_ROLE_ARN", "DEV_SITE_BUCKET", "DEV_TENANT_ID", "DEV_API_BASE_URL")
 _ARN = re.compile(r"arn:aws:iam::\d{12}:role/[\w+=,.@/-]{1,512}")

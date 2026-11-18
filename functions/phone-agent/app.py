@@ -43,7 +43,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import agent_model, dynamo, http, telephony, tenant, voice_provider
+from shared import agent_model, console_invoke, dynamo, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import calls, copy, session
 from shared.features.phone_agent.tools import lambda_invoker
@@ -730,6 +730,9 @@ ROUTES = {
 }
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

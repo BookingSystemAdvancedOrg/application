@@ -22,12 +22,27 @@ own token can't pass for an operator.
 
 manage-user additionally treats this caller as able to manage owners
 (is_operator()), which no restaurant user can.
+
+Dev twins (dev only, booqy-console docs/DEV-TWINS.md): the console sets up a
+customer's twin in dev through the admin's own functions (create-location,
+get-menu, manage-menu, the layout functions, google-business, phone-agent,
+tenant-account's DPA). Those call unwrap(event, dev_only=True): in prod such
+a call is refused, so prod keeps the Users tab and nothing more. A call for a
+route with path parameters names its API Gateway route template:
+
+    {"booqyConsole": {..., "method": "PUT", "path": "/locations/01abc",
+                      "route": "/locations/{locationId}"}}
+
+and gets the routeKey and pathParameters API Gateway would give
+({proxy+} takes the rest of the path).
 """
 
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
+import os
 import re
 from typing import Optional
 
@@ -43,14 +58,48 @@ class Refused(ValueError):
     """A malformed console call (never reaches the route code)."""
 
 
-def unwrap(event: dict, *, prefix: str = "") -> dict:
+_PARAM = re.compile(r"^\{([A-Za-z]+)(\+?)\}$")
+_SEGMENT = re.compile(r"^[A-Za-z0-9._~@:-]{1,200}$")
+
+
+def _route_params(route, path: str) -> dict:
+    """pathParameters for `path` under the route template `route`
+    ("/locations/{locationId}/menu/{proxy+}"); Refused when it doesn't match."""
+    if not isinstance(route, str) or not route.startswith("/"):
+        raise Refused("route must be a route template")
+    want, got = route.strip("/").split("/"), path.strip("/").split("/")
+    params = {}
+    for i, part in enumerate(want):
+        match = _PARAM.match(part)
+        if match and match.group(2):
+            if i != len(want) - 1 or len(got) <= i or not all(_SEGMENT.match(g) for g in got[i:]):
+                raise Refused("path does not match route")
+            params[match.group(1)] = "/".join(got[i:])
+            return params
+        if i >= len(got):
+            raise Refused("path does not match route")
+        if match:
+            if not _SEGMENT.match(got[i]):
+                raise Refused("path does not match route")
+            params[match.group(1)] = got[i]
+        elif part != got[i]:
+            raise Refused("path does not match route")
+    if len(got) != len(want):
+        raise Refused("path does not match route")
+    return params
+
+
+def unwrap(event: dict, *, prefix: str = "", dev_only: bool = False) -> dict:
     """The API Gateway event for a console call, else `event` unchanged.
 
     prefix: the route prefix the function's own paths carry in API Gateway
-    ("" for tenant-account's /tenant, the proxy path for manage-user)."""
+    ("" for tenant-account's /tenant, the proxy path for manage-user).
+    dev_only: refuse console calls in prod (the dev twin seeder's functions)."""
     _OPERATOR.set(None)
     if not isinstance(event, dict) or KEY not in event:
         return event
+    if dev_only and os.environ.get("ENVIRONMENT") == "prod":
+        raise Refused("console calls are dev only here")
     if "requestContext" in event or "routeKey" in event or "rawPath" in event:
         raise Refused("console call mixed with API Gateway fields")
     call = event[KEY]
@@ -66,6 +115,14 @@ def unwrap(event: dict, *, prefix: str = "") -> dict:
         raise Refused("method and path are required")
     if body is not None and not isinstance(body, dict):
         raise Refused("body must be an object")
+    route = call.get("route")
+    if route is not None:
+        params = _route_params(route, path)
+        route_key = f"{method} {route}"
+    else:
+        route_path = path[len(prefix):] if prefix and path.startswith(prefix) else path
+        params = {"proxy": route_path.lstrip("/")} if prefix else {}
+        route_key = f"{method} {path}"
     _OPERATOR.set(operator)
     claims = {
         "sub": f"{SUB_PREFIX}{operator}",
@@ -74,12 +131,11 @@ def unwrap(event: dict, *, prefix: str = "") -> dict:
         "cognito:groups": "[owner_user]",
         "token_use": "access",
     }
-    route_path = path[len(prefix):] if prefix and path.startswith(prefix) else path
     return {
         "version": "2.0",
-        "routeKey": f"{method} {path}",
+        "routeKey": route_key,
         "rawPath": path,
-        "pathParameters": {"proxy": route_path.lstrip("/")} if prefix else {},
+        "pathParameters": params,
         "requestContext": {"http": {"method": method, "path": path},
                            "authorizer": {"jwt": {"claims": claims}}},
         "body": json.dumps(body) if body is not None else None,
@@ -94,3 +150,17 @@ def is_operator() -> bool:
 
 def operator() -> Optional[str]:
     return _OPERATOR.get()
+
+
+def dev_twin_entry(handler):
+    """Lets a function's Lambda handler take the dev twin seeder's console
+    calls (dev only; prod answers 400). API Gateway events pass unchanged."""
+    @functools.wraps(handler)
+    def wrapped(event, context=None):
+        try:
+            event = unwrap(event, dev_only=True)
+        except Refused as exc:
+            return {"statusCode": 400, "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({"error": "console_refused", "message": str(exc)})}
+        return handler(event, context)
+    return wrapped

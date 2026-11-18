@@ -39,7 +39,7 @@ from http import HTTPStatus
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import image_focus, menu, prices, tenant
+from shared import console_invoke, image_focus, menu, prices, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -722,6 +722,9 @@ def _delete_item(location_id, menu_item_id):
     return _empty_response(HTTPStatus.NO_CONTENT.value)
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     try:
         get_claims(event)

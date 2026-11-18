@@ -53,7 +53,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import console_invoke, tenant
 from shared.availability import BOOKING_HORIZON_DAYS, earliest_layout_change_date
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
@@ -3368,6 +3368,9 @@ def _request_operation(event):
     return "activate"
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     try:
         get_claims(event)

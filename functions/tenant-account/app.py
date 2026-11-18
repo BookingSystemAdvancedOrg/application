@@ -704,8 +704,11 @@ def handler(event, context):
     if console_invoke.is_operator():
         method, path = _route(event)
         body = json.loads(event.get("body") or "null")
-        if path != "/tenant" or method not in ("GET", "PATCH") or (
-                method == "PATCH" and (not isinstance(body, dict) or set(body) != {"staffAccess"})):
+        # Dev twins (dev only): the seeder accepts the DPA for Booqy's own twin.
+        dev_twin_dpa = (method, path) == ("POST", "/tenant/dpa/accept") and \
+            os.environ.get("ENVIRONMENT") != "prod"
+        if not dev_twin_dpa and (path != "/tenant" or method not in ("GET", "PATCH") or (
+                method == "PATCH" and (not isinstance(body, dict) or set(body) != {"staffAccess"}))):
             return _error(HTTPStatus.FORBIDDEN.value, "console may only read the account and edit staffAccess")
     method, path = _route(event)
     if (method, path) not in _ROUTES:

@@ -2454,3 +2454,49 @@ def test_avatar_route_only_takes_delete(app_state):
     app, _, _ = app_state
     response = app.handler(make_event(method="PUT", proxy=f"{TARGET_SUB}/avatar"), None)
     assert response["statusCode"] == 405
+
+
+# ------------------------------------------------- Booqy Console (direct invoke)
+def console_event(method, path, body=None, tenant_id=TENANT_A):
+    call = {"operator": "lamo", "tenantId": tenant_id, "method": method, "path": path}
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+def test_console_invites_an_owner_which_an_owner_token_cannot(app_state):
+    app, user_table, cognito = app_state
+    denied = app.handler(make_event(body=invite_body("owner_user", None)), None)
+    assert denied["statusCode"] == 403
+    response = app.handler(console_event("POST", "/users/invite", invite_body("owner_user", None)), None)
+    assert response["statusCode"] == 201, response
+    item = get_user(user_table)
+    assert item["role"] == "owner_user" and item["createdBy"] == "operator:lamo"
+
+
+def test_console_deletes_and_regroups_an_owner(app_state):
+    app, user_table, cognito = app_state
+    put_user(user_table, user_item(role="owner_user", location_id=""))
+    cognito.admin_list_groups_for_user.return_value = {"Groups": [{"GroupName": "owner_user"}]}
+    response = app.handler(console_event("PUT", f"/users/{TARGET_SUB}/group",
+                                         {"group": "staff_user", "locationId": "location-id"}), None)
+    assert response["statusCode"] == 200, response
+    assert get_user(user_table)["role"] == "staff"
+    cognito.admin_list_groups_for_user.return_value = {"Groups": [{"GroupName": "staff_user"}]}
+    assert app.handler(console_event("DELETE", f"/users/{TARGET_SUB}"), None)["statusCode"] == 204
+    assert get_user(user_table) is None
+
+
+def test_console_stays_inside_the_named_restaurant(app_state):
+    app, user_table, cognito = app_state
+    put_user(user_table, user_item())
+    response = app.handler(console_event("PUT", f"/users/{TARGET_SUB}", {"name": "X"}, tenant_id=TENANT_B), None)
+    assert response["statusCode"] == 404
+
+
+def test_console_call_mixed_with_api_gateway_fields_is_refused(app_state):
+    app, user_table, cognito = app_state
+    event = {**make_event(body=invite_body("owner_user", None)), "booqyConsole": console_event("POST", "/users/invite")["booqyConsole"]}
+    assert app.handler(event, None)["statusCode"] == 400
+    # and an ordinary owner token afterwards is an owner again, not an operator
+    assert app.handler(make_event(body=invite_body("owner_user", None)), None)["statusCode"] == 403

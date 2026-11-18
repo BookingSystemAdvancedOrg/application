@@ -437,3 +437,25 @@ def test_dpa_accept_rejects_extra_fields(app):
     response = module.handler(make_event("POST", "/tenant/dpa/accept",
                                          body={"version": module.dpa.CURRENT_VERSION, "acceptedBy": "x"}), None)
     assert response["statusCode"] == 400
+
+
+def _console(method, body=None, path="/tenant"):
+    call = {"operator": "lamo", "tenantId": TENANT_A, "method": method, "path": path}
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+def test_console_reads_and_edits_staff_permissions_only(app):
+    module, tenants = app
+    got = module.handler(_console("GET"), None)
+    assert got["statusCode"] == 200
+    version = body_of(got)["staffAccess"]["version"]
+    edit = {"staffAccess": {"version": version, "users": {"staff-1": {"add": ["personal"], "remove": []}}}}
+    response = module.handler(_console("PATCH", edit), None)
+    assert response["statusCode"] == 200, response
+    stored = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]["staffAccess"]
+    assert stored["users"]["staff-1"]["add"] == ["personal"] and stored["updatedBy"] == "operator:lamo"
+    # nothing else of the account
+    assert module.handler(_console("PATCH", {"senderName": "X"}), None)["statusCode"] == 403
+    assert module.handler(_console("POST", {}, "/tenant/dpa/accept"), None)["statusCode"] == 403

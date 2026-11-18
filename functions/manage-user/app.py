@@ -10,6 +10,12 @@ PURPOSE:
     manage staff accounts and themselves; other owners are managed from the
     operator console (Booqy Console). super_user no longer exists.
 
+    Booqy Console invokes this function directly for its Users tab
+    (shared/console_invoke.py): the same routes and rules, as an owner of
+    the restaurant named in the call, who may also manage owners (invite,
+    edit, role, deactivate, delete). Last-owner and contact-owner rules for
+    that are the console's (booqy-console api/src/app/users.py).
+
     Multi-tenant: the tenant is the token's tenant_id claim. Users are listed
     with the byTenant index (never a Scan), every target user must carry the
     caller's tenantId (else 404), invited users get custom:tenant_id set to
@@ -90,7 +96,7 @@ from shared.auth import (
 )
 from boto3.dynamodb.conditions import Key
 
-from shared import tenant
+from shared import console_invoke, tenant
 from shared.dynamo import table
 from shared.responses import json_response
 
@@ -900,9 +906,9 @@ def _profile_rollback_attributes(attributes, fields):
 
 
 def _is_super_user(caller_groups):
-    # super_user is gone: platform operators work in Booqy Console, and tokens
-    # without a tenant never get here (shared/tenant.py).
-    return False
+    # super_user is gone. Only a Booqy Console operator (a direct invoke,
+    # shared/console_invoke.py, never a token) manages owners too.
+    return console_invoke.is_operator()
 
 
 def _authorize_invite(caller_groups, group, location_id=None):
@@ -1428,6 +1434,10 @@ def _guide(event, caller_sub, method):
 
 
 def handler(event, context):
+    try:
+        event = console_invoke.unwrap(event, prefix="/users")
+    except console_invoke.Refused as exc:
+        return _user_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     try:
         get_claims(event)
         caller_sub = get_sub(event)

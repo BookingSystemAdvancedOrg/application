@@ -1862,7 +1862,7 @@ def test_menu_image_upload_contract_uses_cloudfront_key_prefix(
 FRAGMENT_DIR = SPEC_PATH.parent / "openapi"
 FUNCTIONS_DIR = Path(__file__).parents[1] / "functions"
 # Fragments for Lambdas that are not plan features (same rules otherwise).
-NON_FEATURE_FRAGMENTS = frozenset({"help-assistant", "support-reports"})
+NON_FEATURE_FRAGMENTS = frozenset({"help-assistant", "support-reports", "tenant-setup"})
 
 
 def handler_routes(feature_id, functions_dir=FUNCTIONS_DIR):

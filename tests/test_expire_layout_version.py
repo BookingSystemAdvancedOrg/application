@@ -803,7 +803,7 @@ def test_archived_snapshot_makes_cutover_state_inconsistent(
     ("environment", "created_at"),
     [
         ("dev", "2026-10-05T14:32:00Z"),
-        ("prod", "2026-09-07T14:37:00Z"),
+        ("prod", "2026-09-14T14:37:00Z"),  # cutover - 21 days
     ],
 )
 def test_replacement_cutover_at_exact_eligibility_is_allowed(
@@ -860,7 +860,7 @@ def test_whole_minute_cutover_may_ceil_exact_eligibility(
     ("environment", "created_at"),
     [
         ("dev", "2026-10-05T14:32:00.000001Z"),
-        ("prod", "2026-09-07T14:37:00.000001Z"),
+        ("prod", "2026-09-14T14:37:00.000001Z"),
     ],
 )
 def test_cutover_before_exact_replacement_eligibility_fails_closed(

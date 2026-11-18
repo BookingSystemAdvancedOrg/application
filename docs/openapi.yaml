@@ -2451,9 +2451,16 @@ paths:
         optional. Omitting it, sending a zero-length body, or sending `{}` uses
         the default timing. A first activation is immediate. A replacement is
         not eligible until the target snapshot's `createdAt` plus five minutes
-        in `dev` or 28 days in `prod`. If already eligible, the replacement is
-        immediate; otherwise it is scheduled for the earliest safe whole UTC
-        minute at or after both eligibility and the 60-second scheduler lead.
+        in `dev`. In `prod` it is not eligible before local midnight (location
+        timezone) of the day after the guest booking horizon, counted from
+        today's local date (21 bookable days, so today + 22 days), so no
+        booking that exists when the switch is booked lands on a changed
+        layout; a prod replacement is therefore never immediate. If already
+        eligible (dev), the replacement is immediate; otherwise it is
+        scheduled for the earliest safe whole UTC minute at or after both
+        eligibility and the 60-second scheduler lead (prod: that midnight).
+        A cutover before eligibility returns `409` with code `too_early` and
+        `earliestCutoverAt`.
 
         Set `effectiveFrom` to a timezone-aware ISO 8601 timestamp to control
         the transition. A timestamp at or before the server's captured request
@@ -9018,6 +9025,25 @@ components:
           type: string
           description: The request field a validation error is about, when it names one (e.g. `partySize`, `notifications.reminderHours`).
 
+    LayoutActivationTooEarly:
+      type: object
+      additionalProperties: false
+      description: The requested cutover precedes the earliest allowed one.
+      required:
+        - error
+        - code
+        - earliestCutoverAt
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - too_early
+        earliestCutoverAt:
+          type: string
+          format: date-time
+
     LayoutActivationBookingsConflict:
       type: object
       additionalProperties: false
@@ -11926,16 +11952,35 @@ components:
           description: Complete snapshots ordered by numeric version descending.
           items:
             $ref: '#/components/schemas/PublishedLayoutVersion'
+        earliestChangeDate:
+          type: string
+          format: date
+          description: >-
+            First local date a replacement may take effect if scheduled now:
+            today in dev, today + booking horizon + 1 day in prod.
+        bookingHorizonDays:
+          type: integer
+          minimum: 1
+          description: How many days ahead guests can book.
 
     LayoutActivationRequest:
       type: object
       additionalProperties: false
       description: |
-        Optional activation timing. With no `effectiveFrom` property, the
-        handler immediately performs a first activation. A replacement is
-        immediate when eligible, or scheduled for the earliest safe whole
-        minute after its five-minute dev or 28-day prod publication delay.
+        Optional activation timing. With neither `effectiveFrom` nor
+        `effectiveDate`, the handler immediately performs a first activation.
+        A replacement is immediate when eligible, or scheduled for the
+        earliest safe whole minute after the dev delay or the prod booking
+        horizon rule. Send at most one of the two fields.
       properties:
+        effectiveDate:
+          type: string
+          format: date
+          description: |
+            Local date (location timezone) the replacement takes effect, at
+            local midnight. A date whose midnight has passed (today, only
+            useful in dev) means the earliest allowed cutover; an older date
+            is `400`. A date before eligibility is `409` `too_early`.
         effectiveFrom:
           type: string
           format: date-time
@@ -11952,13 +11997,16 @@ components:
     LayoutActivationRescheduleRequest:
       type: object
       additionalProperties: false
-      required:
-        - effectiveFrom
       description: |
-        Required timing for moving an existing pending activation. The value
+        Required timing (`effectiveFrom` or `effectiveDate`) for moving an existing pending activation. The value
         cannot request immediate activation and cannot change the pending
-        target version.
+        target version. `effectiveDate` (local midnight) may replace
+        `effectiveFrom`.
       properties:
+        effectiveDate:
+          type: string
+          format: date
+          description: Local date of the new cutoff, at local midnight.
         effectiveFrom:
           type: string
           format: date-time
@@ -12831,6 +12879,7 @@ components:
             oneOf:
               - $ref: '#/components/schemas/ErrorResponse'
               - $ref: '#/components/schemas/LayoutActivationBookingsConflict'
+              - $ref: '#/components/schemas/LayoutActivationTooEarly'
           examples:
             archived:
               summary: The requested version was archived.
@@ -12851,7 +12900,9 @@ components:
             tooEarly:
               summary: The requested replacement precedes its eligibility boundary.
               value:
-                error: layout version cannot activate before 2026-10-21T10:01:00Z
+                error: layout version cannot activate before 2026-10-21T22:00:00Z
+                code: too_early
+                earliestCutoverAt: '2026-10-21T22:00:00Z'
             state:
               summary: Stored state and snapshots disagree.
               value:
@@ -12894,6 +12945,7 @@ components:
             oneOf:
               - $ref: '#/components/schemas/ErrorResponse'
               - $ref: '#/components/schemas/LayoutActivationBookingsConflict'
+              - $ref: '#/components/schemas/LayoutActivationTooEarly'
           examples:
             overdue:
               summary: The pending transition reached or passed its cutoff.
@@ -12902,7 +12954,9 @@ components:
             tooEarly:
               summary: The requested cutoff precedes target eligibility.
               value:
-                error: layout version cannot activate before 2026-10-21T10:01:00Z
+                error: layout version cannot activate before 2026-10-21T22:00:00Z
+                code: too_early
+                earliestCutoverAt: '2026-10-21T22:00:00Z'
             state:
               summary: State cannot be restored or is otherwise inconsistent.
               value:

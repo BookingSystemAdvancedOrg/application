@@ -1481,14 +1481,14 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert activation_request["type"] == "object"
     assert activation_request["additionalProperties"] is False
     assert "required" not in activation_request
-    assert set(activation_request["properties"]) == {"effectiveFrom"}
+    assert set(activation_request["properties"]) == {"effectiveFrom", "effectiveDate"}
     effective_from = activation_request["properties"]["effectiveFrom"]
     assert effective_from["type"] == "string"
     assert effective_from["format"] == "date-time"
     assert effective_from["minLength"] == 1
     assert effective_from["maxLength"] == 64
-    assert "five-minute dev" in activation_request["description"]
-    assert "28-day prod" in activation_request["description"]
+    assert "dev delay" in activation_request["description"]
+    assert "prod booking" in activation_request["description"]
     effective_description = " ".join(
         effective_from["description"].split()
     )
@@ -1499,7 +1499,8 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert "zero-length body" in description
     assert "first activation is immediate" in description
     assert "`createdAt` plus five minutes" in description
-    assert "28 days" in description
+    assert "day after the guest booking horizon" in description
+    assert "too_early" in description
     assert "earliest safe whole UTC" in description
     assert "at or before" in description
     assert "only once" in description
@@ -1593,10 +1594,11 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert conflict_examples["pending"]["value"] == err("another layout activation is pending")
     assert conflict_examples["overdue"]["value"] == err("layout activation cutover is overdue")
     assert conflict_examples["futureWithoutCurrent"]["value"] == err("future activation requires a current layout version")
-    assert conflict_examples["tooEarly"]["value"] == err((
-            "layout version cannot activate before "
-            "2026-10-21T10:01:00Z"
-        ))
+    assert conflict_examples["tooEarly"]["value"] == {
+        "error": "layout version cannot activate before 2026-10-21T22:00:00Z",
+        "code": "too_early",
+        "earliestCutoverAt": "2026-10-21T22:00:00Z",
+    }
 
     service_unavailable = document["components"]["responses"][
         "LayoutActivationServiceUnavailable"
@@ -1660,8 +1662,8 @@ def test_pending_layout_activation_contract_matches_handler(
     ]
     assert request_schema["type"] == "object"
     assert request_schema["additionalProperties"] is False
-    assert request_schema["required"] == ["effectiveFrom"]
-    assert set(request_schema["properties"]) == {"effectiveFrom"}
+    assert "required" not in request_schema  # effectiveFrom or effectiveDate
+    assert set(request_schema["properties"]) == {"effectiveFrom", "effectiveDate"}
     effective_from = request_schema["properties"]["effectiveFrom"]
     assert effective_from["type"] == "string"
     assert effective_from["format"] == "date-time"
@@ -1766,7 +1768,7 @@ def test_pending_layout_activation_contract_matches_handler(
         example["value"]["error"] for example in conflict_examples.values()
     } == {
         "layout activation cutover is overdue",
-        "layout version cannot activate before 2026-10-21T10:01:00Z",
+        "layout version cannot activate before 2026-10-21T22:00:00Z",
         "layout activation state is inconsistent",
         "published layout record is inconsistent",
         "layout activation changed; retry request",

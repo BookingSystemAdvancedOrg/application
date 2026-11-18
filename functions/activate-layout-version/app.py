@@ -12,8 +12,12 @@ PURPOSE:
     Activates a published layout snapshot, reschedules an existing pending
     activation, or cancels it. The first layout activates immediately. A
     replacement cannot activate until five minutes after it was published in
-    dev or 28 days after publication in prod. An optional ``effectiveFrom``
-    can select a later whole-UTC-minute cutover.
+    dev; in prod not before local midnight of the day after the booking
+    horizon (shared/availability.earliest_layout_change_date), so no booking
+    made before the switch lands on a changed layout. An optional
+    ``effectiveFrom`` selects a later whole-UTC-minute cutover, or
+    ``effectiveDate`` (YYYY-MM-DD) local midnight of that date. Too early is
+    409 with code ``too_early`` and ``earliestCutoverAt``.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -50,6 +54,7 @@ from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import tenant
+from shared.availability import BOOKING_HORIZON_DAYS, earliest_layout_change_date
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
@@ -87,7 +92,7 @@ _PENDING_TARGET_PREVIOUS_LIFECYCLE = (
 _LIFECYCLE_FIELDS = frozenset(
     {"effectiveFrom", "effectiveTo", "expiresAt"}
 )
-_ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom"})
+_ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom", "effectiveDate"})
 _MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
 # A default (no effectiveFrom) cutover in prod moves to the next local
 # midnight: a booking always ends on the date it starts (shared/availability
@@ -97,7 +102,9 @@ _CLOSED_CUTOVER_MIN_DELAY = timedelta(days=1)
 _DEFAULT_LOCATION_TIMEZONE = "Europe/Stockholm"
 _REPLACEMENT_DELAYS = {
     "dev": timedelta(minutes=5),
-    "prod": timedelta(days=28),
+    # Prod: the booking horizon plus one day, counted from the local date of
+    # the request (see _replacement_eligibility), not from publication.
+    "prod": timedelta(days=BOOKING_HORIZON_DAYS + 1),
 }
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
@@ -152,6 +159,14 @@ class _BookingsOnRemovedTables(Exception):
         self.reservations = reservations
 
 
+class _TooEarly(Exception):
+    """The requested cutover is before the earliest allowed one."""
+
+    def __init__(self, earliest):
+        super().__init__(f"layout version cannot activate before {earliest}")
+        self.earliest = earliest
+
+
 class _PendingActivationNotFound(Exception):
     """The location has no pending activation to update."""
 
@@ -187,6 +202,17 @@ def _removed_tables_response(exc):
             "error": _REMOVED_TABLES_MESSAGE,
             "code": "bookings_on_removed_tables",
             "reservations": exc.reservations,
+        },
+    )
+
+
+def _too_early_response(exc):
+    return _activation_response(
+        HTTPStatus.CONFLICT.value,
+        {
+            "error": str(exc),
+            "code": "too_early",
+            "earliestCutoverAt": exc.earliest,
         },
     )
 
@@ -285,11 +311,39 @@ def _optional_json_body(event):
     return body
 
 
-def _activation_timing(event, now):
+def _effective_date_timing(value, now, zone):
+    """Local midnight of a YYYY-MM-DD date. A date whose midnight has passed
+    (today, possible only in dev) means the earliest allowed cutover."""
+    try:
+        if not isinstance(value, str) or len(value) != 10:
+            raise ValueError
+        day = datetime.strptime(value, "%Y-%m-%d").date()
+        midnight = datetime(
+            day.year, day.month, day.day, tzinfo=zone or ZoneInfo(_DEFAULT_LOCATION_TIMEZONE)
+        ).astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        raise ValueError("effectiveDate must be a date (YYYY-MM-DD)") from None
+    now = now.astimezone(timezone.utc)
+    if midnight <= now:
+        if midnight.date() < (now - timedelta(days=1)).date():
+            raise ValueError("effectiveDate must not be in the past")
+        return {"mode": "default"}
+    return {
+        "mode": "future",
+        "effectiveFrom": _isoformat(midnight),
+        "hasMinimumLead": midnight - now >= _MINIMUM_SCHEDULE_LEAD,
+    }
+
+
+def _activation_timing(event, now, zone=None):
     body = _optional_json_body(event)
     unsupported = sorted(set(body) - _ACTIVATION_REQUEST_FIELDS)
     if unsupported:
         raise ValueError(f"unsupported fields: {', '.join(unsupported)}")
+    if "effectiveDate" in body:
+        if "effectiveFrom" in body:
+            raise ValueError("send effectiveFrom or effectiveDate, not both")
+        return _effective_date_timing(body.get("effectiveDate"), now, zone)
     if "effectiveFrom" not in body:
         return {"mode": "default"}
 
@@ -344,8 +398,8 @@ def _activation_timing(event, now):
     }
 
 
-def _reschedule_timing(event, now):
-    timing = _activation_timing(event, now)
+def _reschedule_timing(event, now, zone=None):
+    timing = _activation_timing(event, now, zone)
     if timing["mode"] == "default":
         raise ValueError("effectiveFrom is required")
     if timing["mode"] != "future":
@@ -879,8 +933,17 @@ def _replacement_delay():
     return delay
 
 
-def _replacement_eligibility(target):
+def _replacement_eligibility(target, now, location=None):
     delay = _replacement_delay()
+    if delay >= _CLOSED_CUTOVER_MIN_DELAY:
+        zone = _location_zone(location)
+        day = earliest_layout_change_date(now.astimezone(zone).date())
+        try:
+            return datetime(
+                day.year, day.month, day.day, tzinfo=zone
+            ).astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            raise _ActivationServiceFailure from None
 
     try:
         created_at = datetime.fromisoformat(
@@ -1998,7 +2061,12 @@ def _resume_pending_activation(
         except OverflowError:
             raise _ActivationServiceFailure from None
         if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
-            renewed = _next_local_midnight(renewed, _location_zone(location))
+            # Bookings kept landing on the current layout meanwhile, so the
+            # renewed cutover keeps the booking-horizon rule too.
+            renewed = max(
+                _next_local_midnight(renewed, _location_zone(location)),
+                _replacement_eligibility(target, now, location),
+            )
         renewed_cutover = _isoformat(renewed)
         # Bookings made while the intent looked abandoned may sit on tables
         # the target drops: check them as for a new activation.
@@ -2781,6 +2849,8 @@ def _reschedule_pending_activation(
     caller_sub,
     timing,
     now,
+    *,
+    location=None,
 ):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     state = _read_state(snapshot_table, location_id)
@@ -2858,23 +2928,14 @@ def _reschedule_pending_activation(
             caller_sub,
             timing,
             now,
+            location=location,
         )
 
     if not same_cutover:
-        _replacement_transition(timing, target, now)
+        _replacement_transition(timing, target, now, location=location)
         _bookings_on_removed_tables(location_id, target, requested_cutover)
-    else:
-        earliest = _ceil_to_whole_minute(
-            _replacement_eligibility(target)
-        )
-        requested = datetime.fromisoformat(
-            requested_cutover.replace("Z", "+00:00")
-        )
-        if requested < earliest:
-            raise _ActivationConflict(
-                "layout version cannot activate before "
-                f"{_isoformat(earliest)}"
-            )
+    # The same cutover again was checked when it was booked; in prod the
+    # earliest date moves with today, so it is not checked a second time.
 
     next_pending, next_revision = _rescheduled_pending(
         location_id,
@@ -3054,7 +3115,7 @@ def _bookings_on_removed_tables(location_id, target, cutover):
 
 
 def _replacement_transition(timing, target, now, *, location=None):
-    eligible_at = _replacement_eligibility(target)
+    eligible_at = _replacement_eligibility(target, now, location)
     now = now.astimezone(timezone.utc)
 
     if timing["mode"] == "default":
@@ -3077,10 +3138,7 @@ def _replacement_transition(timing, target, now, *, location=None):
 
     if timing["mode"] == "immediate":
         if now < eligible_at:
-            raise _ActivationConflict(
-                "layout version cannot activate before "
-                f"{_isoformat(eligible_at)}"
-            )
+            raise _TooEarly(_isoformat(eligible_at))
         return {"mode": "immediate"}
 
     if timing["mode"] != "future":
@@ -3095,10 +3153,7 @@ def _replacement_transition(timing, target, now, *, location=None):
         timing["effectiveFrom"].replace("Z", "+00:00")
     )
     if requested_at < earliest_scheduled:
-        raise _ActivationConflict(
-            "layout version cannot activate before "
-            f"{_isoformat(earliest_scheduled)}"
-        )
+        raise _TooEarly(_isoformat(earliest_scheduled))
     return timing
 
 
@@ -3390,8 +3445,9 @@ def handler(event, context):
 
     if operation == "reschedule":
         now = _utc_now()
+        location = getattr(location_context, "location", None)
         try:
-            timing = _reschedule_timing(event, now)
+            timing = _reschedule_timing(event, now, _location_zone(location))
             _replacement_delay()
         except ValueError as exc:
             return _activation_error(
@@ -3410,7 +3466,10 @@ def handler(event, context):
                 caller_sub,
                 timing,
                 now,
+                location=location,
             )
+        except _TooEarly as exc:
+            return _too_early_response(exc)
         except _ActivationCompleted as completed:
             return _active_response(
                 completed.version,
@@ -3442,8 +3501,9 @@ def handler(event, context):
             )
 
     now = _utc_now()
+    location = getattr(location_context, "location", None)
     try:
-        timing = _activation_timing(event, now)
+        timing = _activation_timing(event, now, _location_zone(location))
         _replacement_delay()
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
@@ -3460,8 +3520,10 @@ def handler(event, context):
             caller_sub,
             timing,
             now,
-            location=getattr(location_context, "location", None),
+            location=location,
         )
+    except _TooEarly as exc:
+        return _too_early_response(exc)
     except _ActivationCompleted as completed:
         return _active_response(
             completed.version,

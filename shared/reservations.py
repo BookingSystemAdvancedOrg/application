@@ -654,6 +654,9 @@ def guest_view(item, location=None, *, now=None):
             "cardOnFile": _card_on_file(item),
             "noShowFee": int(snap.get("noShowFee") or 0),
             "lateCancelFee": int(snap.get("lateCancelFee") or 0),
+            # Kronor per guest (the totals above are öre for the whole party).
+            "noShowFeePerPerson": int(snap.get("noShowFeePerPerson") or 0),
+            "lateCancelFeePerPerson": int(snap.get("lateCancelFeePerPerson") or 0),
             "cancelCutoffHours": int(snap.get("cancelCutoffHours") or 0),
             # Last moment to cancel for free (UTC) - the late-cancellation fee applies after it.
             "freeCancelUntil": guarantee.free_cancel_until(item),

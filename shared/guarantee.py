@@ -327,13 +327,46 @@ def start_checkout(item, account, *, return_url, lang, now, success_url=None):
 
 
 def phone_pending_expires(now):
-    """pendingExpiresAt of a phone booking: the Checkout page closes first."""
+    """pendingExpiresAt of a phone booking: the Checkout page closes first
+    (the same window for the restaurant's own card page)."""
     return now + timedelta(minutes=PHONE_PENDING_MINUTES) + 2 * CHECKOUT_MARGIN
 
 
 def retrieve_setup(item):
     return stripe.request("GET", f"/v1/setup_intents/{item['setupIntentId']}",
                           account=item["stripeAccountId"])
+
+
+def card_hold_open(item, now):
+    """A pending booking with a card step (SetupIntent) whose hold has not
+    run out: the guest can still add the card, even when card_step could
+    not read the form from Stripe just now."""
+    expires = item.get("pendingExpiresAt")
+    return (item.get("status") == r.PENDING and bool(item.get("setupIntentId"))
+            and bool(item.get("stripeAccountId")) and bool(expires) and r.parse_iso(expires) > now)
+
+
+def card_step(item, now):
+    """The card form of a pending booking for its manage page (the guest's
+    GET with a valid manage token): {clientSecret, stripeAccount, expiresAt},
+    the shape the online booking answers with. Read from Stripe, never
+    stored. None when the booking is not pending, has no SetupIntent (a
+    Checkout-page phone booking), its hold ran out, the SetupIntent is no
+    longer open or Stripe cannot be asked."""
+    if item.get("status") != r.PENDING or not item.get("setupIntentId") or not item.get("stripeAccountId"):
+        return None
+    expires = item.get("pendingExpiresAt")
+    if not expires or r.parse_iso(expires) <= now:
+        return None
+    try:
+        intent = retrieve_setup(item)
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        return None
+    secret = (intent or {}).get("client_secret")
+    if (not isinstance(secret, str) or not secret or intent.get("status") in ("succeeded", "canceled")
+            or not setup_matches(intent, item)):
+        return None
+    return {"clientSecret": secret, "stripeAccount": item["stripeAccountId"], "expiresAt": expires}
 
 
 def checkout_setup(item):

@@ -179,6 +179,39 @@ GUARANTEE_CALLBACK = {
     SV: "För den bokningen behövs en kortgaranti, som jag inte kan ta i telefon. Får restaurangen ringa upp dig?",
     EN: "That booking needs a card guarantee, which I cannot take by phone. May the restaurant call you back?",
 }
+# The card guarantee's terms for the party, said once before the read-back (tools: guaranteeTerms.sentence).
+# Built from the location's policy for the party size (shared/guarantee.snapshot): the amounts are totals
+# for the party in words, a fee that is 0 is left out. Other languages translate the English one.
+GUARANTEE_TERMS = {
+    SV: {"intro": "För den bokningen behövs ett kort som garanti, men inget dras nu.",
+         # Commas at the clause ends: Polly pauses there (no "Kommer ni inte?" question).
+         "both": "Om ni inte kommer, tar restaurangen {no_show}. Avbokar ni senare än {hours} före besöket, "
+                 "tar restaurangen {late}.",
+         "no_show": "Om ni inte kommer, tar restaurangen {no_show}.",
+         "late": "Avbokar ni senare än {hours} före besöket, tar restaurangen {late}."},
+    EN: {"intro": "That booking needs a card as a guarantee, but nothing is charged now.",
+         "both": "If you do not come, the restaurant charges {no_show}, and if you cancel later than {hours} "
+                 "before the visit, it charges {late}.",
+         "no_show": "If you do not come, the restaurant charges {no_show}.",
+         "late": "If you cancel later than {hours} before the visit, the restaurant charges {late}."},
+}
+
+
+def guarantee_terms(lang, *, no_show=None, late=None, hours=None):
+    """The one or two short sentences on the card guarantee's terms (`no_show`,
+    `late`, `hours`: the spoken words, None = not charged / not said)."""
+    words = GUARANTEE_TERMS.get(lang) or GUARANTEE_TERMS[EN]
+    if no_show and late and hours:
+        rest = words["both"].format(no_show=no_show, late=late, hours=hours)
+    elif no_show:
+        rest = words["no_show"].format(no_show=no_show)
+    elif late and hours:
+        rest = words["late"].format(late=late, hours=hours)
+    else:
+        return words["intro"]
+    return f"{words['intro']} {rest}"
+
+
 # Said by the model, word for word in the caller's language, once create_reservation sent the card
 # guarantee link (tools: guaranteeLinkSent). The booking waits for the card; nobody asks for card details.
 GUARANTEE_LINK_SENT = {
@@ -381,8 +414,12 @@ Never mention the hold: when it succeeds, simply ask for the name.
 4. Ask for the name the booking should be under. If the name is unusual or unclear, ask the caller to spell it.
 5. Read back everything in one sentence: the day, the time, the number of guests and the name, \
 and ask whether it is correct. {phone_known} When hold_table answered a holdId with guaranteeRequired, \
-also say in the read-back that a text message with a link to add a card as a guarantee will be sent, and \
-that the booking is confirmed once the card is added.
+first explain the terms in guaranteeTerms briefly, in one or two short sentences (its sentence): nothing is \
+charged now, and the fees for the whole party. Explain more (amounts per person, free cancellation before \
+the cutoff through the link in the text message or by calling, the card is handled securely by Stripe, \
+nothing is charged if they come) only if the caller asks. Never say an amount that is not in guaranteeTerms. \
+Then the read-back also says that a text message with a link to add a card as a guarantee will be sent, and \
+that the booking is confirmed once the card is added; in Swedish end it with "Stämmer det?".
 6. Only after a clear yes to that read-back, call create_reservation with the holdId and confirmed set to true.
    A yes to an earlier question does not count. "Maybe", "mm" or silence is not a yes: ask again.
    If the caller changes anything, keep everything else they said, check the change with the tools \

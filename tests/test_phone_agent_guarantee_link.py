@@ -14,6 +14,7 @@ import pytest
 from shared import guarantee as shared_guarantee
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import copy
+from shared.features.phone_agent import tools
 from shared.features.phone_agent.tools import Executor
 from test_phone_agent_calls import LINES, Phone, live  # noqa: F401 (fixture)
 from test_phone_agent_support import CALLER, L, LOC_A as PA_LOC, TENANT_A, TODAY, call, enable, env  # noqa: F401
@@ -224,6 +225,25 @@ def test_the_booking_just_made_pending_keeps_its_party_in_the_same_call(needs_ca
     assert moved["code"] == "guaranteeRequired" and not _moves(needs_card)
 
 
+def test_a_new_booking_after_a_lookup_hears_the_terms_before_it_is_made(needs_card):
+    _found(needs_card, 2)
+    texts = Texts()
+    state = {"turn": 1}
+    ex = _ex(needs_card, sms=texts, state=state)
+    ex.run("find_reservations", {})
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 6})
+    assert "guaranteeRequired" not in hold       # maybe a move: no card talk yet
+    ex.turn = 2
+    first = ex.run("create_reservation", {"holdId": hold["holdId"], "name": "Anna", "confirmed": True})
+    assert first["ok"] is False and first["code"] == "readBackFirst" and first["guaranteeRequired"] is True
+    assert "create_reservation again" in first["say"] and not _booked(needs_card) and texts.sent == []
+    assert ex.run("create_reservation", {"holdId": hold["holdId"], "name": "Anna", "confirmed": True})["code"] == \
+        "readBackFirst"           # the yes must come in a later utterance than the terms
+    ex.turn = 3
+    done = ex.run("create_reservation", {"holdId": hold["holdId"], "name": "Anna", "confirmed": True})
+    assert done["guaranteeLinkSent"] is True and len(texts.sent) == 1
+
+
 def test_simulator_dry_run_answers_the_link_without_writing(needs_card):
     ex = Executor(tenant_id=TENANT_A, tenant_row={"tenantId": TENANT_A}, location={"locationId": PA_LOC},
                   loc_config={}, invoke=needs_card.invoke, state={}, dry_run=True, today=TODAY)
@@ -295,3 +315,95 @@ def test_validate_location_accepts_only_link_and_skip():
         pa.validate_location({**base, "phoneGuarantee": True})
     assert exc.value.code == "invalid_phone_guarantee"
     assert pa.phone_guarantee({}) == "link" and pa.phone_guarantee({"phoneGuarantee": "skip"}) == "skip"
+
+
+# --- the terms said before the read-back, from the location's real policy (owner 2026-11-18) ----------
+
+POLICY = {"enabled": True, "minPartySize": 2, "noShowFeePerPerson": 200, "lateCancelFeePerPerson": 100,
+          "cancelCutoffHours": 24}
+
+
+def _with_policy(e, policy=None, language="sv"):
+    location = {"locationId": PA_LOC, "name": "Bistro", "stripeAccountId": "acct_bistro",
+                "guarantee": dict(policy or POLICY)}
+    return Executor(tenant_id=TENANT_A, tenant_row={"tenantId": TENANT_A, "name": "Bistro"}, location=location,
+                    loc_config={}, invoke=PendingInvoke(e.invoke), state={}, caller_phone=CALLER, today=TODAY,
+                    send_sms=Texts(), language=language), location
+
+
+@pytest.mark.parametrize("party", [2, 3, 4])
+def test_terms_in_availability_and_hold_are_the_policy_for_the_party(env, party):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex, location = _with_policy(env)
+    snap = shared_guarantee.snapshot(location, party)
+    for result in (ex.run("get_availability", {"date": TOMORROW, "partySize": party, "time": "19:00"}),
+                   ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": party})):
+        terms = result["guaranteeTerms"]
+        assert result["guaranteeRequired"] is True and result["say"] == tools.SAY["guaranteeLink"]
+        assert terms["chargedNow"] == 0 and terms["currency"] == "SEK"
+        assert terms["noShowFee"] == 200 * party == snap["noShowFee"] // 100
+        assert terms["lateCancelFee"] == 100 * party == snap["lateCancelFee"] // 100
+        assert terms["noShowFeePerPerson"] == 200 and terms["lateCancelFeePerPerson"] == 100
+        assert terms["cancelCutoffHours"] == 24
+        said = terms["readAs"]
+        assert said["noShowFee"] == tools.kronor_words(200 * party) and said["chargedNow"] == "zero kronor"
+        assert said["noShowFeePerPerson"] == "two hundred kronor per person"
+        assert said["cancelCutoffHours"] == "twenty-four hours"
+        assert terms["sentence"].startswith("För den bokningen behövs ett kort som garanti, men inget dras nu.")
+        assert tools.kronor_words(200 * party, "sv") in terms["sentence"]
+        assert tools.kronor_words(100 * party, "sv") in terms["sentence"] and "tjugofyra timmar" in terms["sentence"]
+
+
+def test_terms_sentence_for_four_reads_naturally():
+    ex_terms = copy.guarantee_terms("sv", no_show="åttahundra kronor", late="fyrahundra kronor",
+                                    hours="tjugofyra timmar")
+    assert ex_terms == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Om ni inte kommer, "
+                        "tar restaurangen åttahundra kronor. Avbokar ni senare än tjugofyra timmar före besöket, "
+                        "tar restaurangen fyrahundra kronor.")
+    assert "kortgarantierat" not in ex_terms and not DASHES.search(ex_terms)
+    assert " du " not in ex_terms        # one form of address: ni
+    late = copy.guarantee_terms("sv", late="fyrahundra kronor", hours="tjugofyra timmar")
+    assert late.endswith(" Avbokar ni senare än tjugofyra timmar före besöket, tar restaurangen fyrahundra kronor.")
+
+
+@pytest.mark.parametrize("policy", [{**POLICY, "lateCancelFeePerPerson": 0}, {**POLICY, "cancelCutoffHours": 0}])
+def test_a_fee_that_never_applies_is_not_said(env, policy):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex, _ = _with_policy(env, policy)
+    terms = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})["guaranteeTerms"]
+    assert terms["noShowFee"] == 800
+    assert not {"lateCancelFee", "lateCancelFeePerPerson", "cancelCutoffHours"} & set(terms)
+    assert terms["sentence"] == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Om ni inte "
+                                 "kommer, tar restaurangen åttahundra kronor.")
+
+
+def test_only_a_late_cancellation_fee_is_said_alone(env):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex, _ = _with_policy(env, {**POLICY, "noShowFeePerPerson": 0}, language="en")
+    terms = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 3})["guaranteeTerms"]
+    assert "noShowFee" not in terms and terms["lateCancelFee"] == 300
+    assert terms["sentence"] == ("That booking needs a card as a guarantee, but nothing is charged now. If you "
+                                 "cancel later than twenty-four hours before the visit, the restaurant charges "
+                                 "three hundred kronor.")
+
+
+def test_without_a_readable_policy_no_amount_is_given(needs_card):
+    ex = _ex(needs_card, sms=Texts())
+    hold = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})
+    assert "guaranteeTerms" not in hold and hold["say"] == tools.SAY["guaranteeLinkNoTerms"]
+    assert "kronor" not in hold["say"]
+
+
+def test_the_say_hints_give_natural_swedish_and_the_order():
+    say = tools.SAY["guaranteeLink"]
+    assert "För den bokningen behövs ett kort som garanti" in say and "Stämmer det?" in say
+    assert say.index("Before the read-back") < say.index("Then the read-back")
+    assert "Stripe" in say and "per person" in say and "Never say an amount" in say
+    assert not DASHES.search(say) and not DASHES.search(tools.SAY["guaranteeLinkNoTerms"])
+
+
+def test_number_words():
+    assert tools.number_words(1250) == "one thousand two hundred fifty"
+    assert tools.number_words(1250, "sv") == "tusen tvåhundrafemtio"
+    assert tools.number_words(2400, "sv") == "tvåtusen fyrahundra"
+    assert tools.kronor_words(1, "sv") == "en krona" and tools.hours_words(1, "sv") == "en timme"

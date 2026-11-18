@@ -43,6 +43,7 @@ import json
 import logging
 import os
 from datetime import timedelta
+from xml.sax.saxutils import escape
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -535,7 +536,17 @@ def _lex_answer(event, text, *, close=False, attributes=None):
         state.update({"dialogAction": {"type": "Close"}, "intent": intent})
     else:
         state["dialogAction"] = {"type": "ElicitIntent"}
-    return {"sessionState": state, "messages": [{"contentType": "PlainText", "content": text or "..."}]}
+    return {"sessionState": state, "messages": [{"contentType": "SSML", "content": _ssml(text or "...")}]}
+
+
+# Polly (neural Elin) on the Connect test line: a little slower than its default, which sounded hurried.
+LEX_SPEECH_RATE = "92%"
+
+
+def _ssml(text):
+    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE."""
+    said = escape(str(text), {'"': "&quot;", "'": "&apos;"})
+    return f'<speak><prosody rate="{LEX_SPEECH_RATE}">{said}</prosody></speak>'
 
 
 def lex_turn(event):

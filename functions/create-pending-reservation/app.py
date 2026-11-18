@@ -99,6 +99,13 @@ PURPOSE:
     so does the guest's return to the booking's manage page (Checkout's
     success_url), whose POST .../confirm reads the completed Checkout
     Session. Without a card requirement the booking is reserved as usual.
+    PHONE_CARD_PAGE "site" instead texts the booking's manage link on the
+    restaurant's own site: the booking gets a SetupIntent exactly like an
+    online one (guaranteeLink.page "site"), the manage page's GET hands it
+    the card form (get-reservation) and POST .../confirm or the webhook
+    confirms it. Only for a tenant whose row has cardStepOnManagePage true
+    (its live site runs site-kit 0.4.0 or later, which has the card step);
+    without it, or without a site address or link key: the Stripe page.
 
     Multi-tenant: the location decides the tenant (public route) or the
     token does (staff route, staff limited to their own location). Tenants
@@ -111,15 +118,17 @@ ENV_VARS:
     RESERVATION_RETENTION_DAYS (optional, default 395),
     RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (card guarantee)
+    PHONE_CARD_PAGE (optional: "site" or "stripe", default "stripe"; a phone guest's card page)
     BOT_CHECK_ENFORCED, SITE_WAF_SECRET (bot check, shared/bot_check.py)
     REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
 
 Full details: docs/RESERVATIONS.md
 """
 
-from botocore.exceptions import BotoCoreError, ClientError
-
+import os
 from datetime import timedelta
+
+from botocore.exceptions import BotoCoreError, ClientError
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
@@ -306,6 +315,31 @@ def _return_urls(ctx, item):
         return home, home
 
 
+def phone_card_page():
+    """PHONE_CARD_PAGE: where a phone guest adds the card - "site" (the
+    booking's manage page on the restaurant's site) or "stripe" (a
+    Stripe-hosted Checkout page, the default; also for any other value)."""
+    return "site" if (os.environ.get("PHONE_CARD_PAGE") or "").strip().lower() == "site" else "stripe"
+
+
+def _site_card_page(ctx, item):
+    """The booking's manage link on the restaurant's site, or None (then the
+    Stripe page) when the tenant's live site has no card step yet (tenant
+    row cardStepOnManagePage, set once its site runs site-kit 0.4.0 or
+    later; an older manage page tells the guest the booking failed), or the
+    site's address or the link key is unknown."""
+    if (ctx.tenant or {}).get("cardStepOnManagePage") is not True:
+        return None
+    try:
+        base, slug = site.base(ctx.tenant_id, ctx.tenant)
+    except (BotoCoreError, ClientError, KeyError):
+        return None
+    try:
+        return manage_link.url(base, item, slug=slug) if base else None
+    except manage_link.LinkKeyUnavailable:
+        return None
+
+
 def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
           party_size, guest, source, notify, link=False):
     versions, context, slot, seats = _checked_slot(
@@ -356,13 +390,22 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
             "stripeAccountId": account,
             "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
         })
-        success_url, cancel_url = _return_urls(ctx, item)
-        customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
-                                                        success_url=success_url, lang=item.get("language"),
-                                                        now=now)
-        item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
-        checkout = {"url": session["url"], "minutes": guarantee.PHONE_PENDING_MINUTES,
-                    "expiresAt": r.iso(expires)}
+        page = _site_card_page(ctx, item) if phone_card_page() == "site" else None
+        if page:
+            # The restaurant's own card page: the booking's manage page shows
+            # the card form, exactly as after an online booking (SetupIntent).
+            customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
+            item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
+            url = page
+        else:
+            success_url, cancel_url = _return_urls(ctx, item)
+            customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
+                                                            success_url=success_url, lang=item.get("language"),
+                                                            now=now)
+            item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
+            url = session["url"]
+        checkout = {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
+                    "page": "site" if page else "stripe"}
     elif not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
         # Card guarantee: pending until the guest confirms the card; the
         # confirmation (notice) is sent then, not now.

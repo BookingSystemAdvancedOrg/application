@@ -206,6 +206,20 @@ too; before expiring one, the expiry job asks Stripe the same way (when
 it has `STRIPE_SECRET_ARN`; Stripe down: it waits up to an hour). Unconfirmed
 ones expire as above, without a message. If the SMS cannot be sent the
 agent cancels the booking at once (no message) and offers the callback.
+`PHONE_CARD_PAGE=site` (create-pending-reservation; default `stripe`)
+texts the booking's manage link on the restaurant's own site instead: the
+booking gets a Customer + SetupIntent exactly like an online one
+(`guaranteeLink.page` `site`), the manage page's guest GET returns `setup`
+{clientSecret, stripeAccount, expiresAt} while it is `pending` (read from
+Stripe, never stored) and `POST .../confirm` or the webhook confirms it.
+Only for tenants whose row has `cardStepOnManagePage` true: set it once
+the tenant's live site runs site-kit 0.4.0 or later (0.3.x has no card
+step: its manage page tells the guest the booking failed). Without the
+flag, a site address or the link key: the Stripe page as before. A
+pending booking whose card form cannot be read from Stripe right now
+returns `setupUnavailable` true with `pendingExpiresAt` (the page asks the
+guest to reload and says how long the table is held). The expiry job
+asks Stripe for both kinds (`setupIntentId` and `checkoutSessionId`).
 A move never texts a link: a party change into a card size, or any party
 change of a booking waiting for its card, is a callback. The phone
 agent's location setting `phoneGuarantee` (`link` default, `skip` = phone

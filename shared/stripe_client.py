@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 _API = "https://api.stripe.com"
 _TIMEOUT = 20
@@ -54,7 +55,11 @@ def _api_key():
         arn = os.environ.get("STRIPE_SECRET_ARN")
         if not arn:
             raise StripeUnavailable("STRIPE_SECRET_ARN is not set")
-        raw = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
+        try:
+            raw = boto3.client("secretsmanager").get_secret_value(SecretId=arn)["SecretString"]
+        except (BotoCoreError, ClientError, KeyError):
+            # Access denied, throttling, a cold-start network error: nothing reached Stripe.
+            raise StripeUnavailable("platform Stripe secret could not be read") from None
         try:
             key = json.loads(raw)["apiKey"]
         except (ValueError, KeyError, TypeError):

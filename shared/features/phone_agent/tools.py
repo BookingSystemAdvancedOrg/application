@@ -37,13 +37,15 @@ TOOLS = [
      "description": "Free start times for a party on one day. `suggest` holds the (at most three) free times "
                     "nearest the wished time: offer those. A full day lists `nextDays` with free times. A result "
                     "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`. "
-                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` in the read-back.",
+                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the terms in "
+                    "`guaranteeTerms` before the read-back).",
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
      "description": "Check that a table can be booked at a time; writes nothing. Returns `holdId`, or other times "
                     "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
-                    "`guaranteeRequired` with a holdId: the read-back also says the card link is texted.",
+                    "`guaranteeRequired` with a holdId: first say the terms in `guaranteeTerms` briefly, then the "
+                    "read-back also says the card link is texted.",
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": _DATE, "time": _TIME, "partySize": _PARTY,
          "tableIds": {"type": "array", "items": {"type": "string"},
@@ -117,10 +119,26 @@ SAY = {
                           copy.GUARANTEE_CALLBACK["en"] + "\" Do not read back or book. If yes, call "
                           "request_callback with topic guarantee."),
     # The card is added on a Stripe page the caller gets by text message (create_reservation sends it).
-    "guaranteeLink": ("This party needs a card guarantee. Offer the times as usual. In the read-back also say "
-                      "that a text message with a link to add a card as a guarantee will be sent to the number "
-                      "the caller is calling from, and that the booking is confirmed once the card is added. "
+    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds its real terms for this party. "
+                      "Offer the times as usual. Before the read-back, explain the terms briefly in one or two "
+                      "short sentences: say `guaranteeTerms.sentence` (in the caller's language, the amounts as "
+                      "in its readAs). In Swedish it starts \"För den bokningen behövs ett kort som garanti\". "
+                      "Only if the caller asks for more, explain further: the amounts per person, free "
+                      "cancellation until the cutoff through the link in the text message or by calling the "
+                      "restaurant, the card is handled securely by Stripe, nothing is charged if they come. "
+                      "Never say an amount or a fee that is not in `guaranteeTerms`. Then the read-back: day, "
+                      "time, number of guests and name, that a text message with a link to add a card as a "
+                      "guarantee will be sent to the number the caller is calling from, and that the booking is "
+                      "confirmed once the card is added; in Swedish end it with \"Stämmer det?\". "
                       "Never ask for card details."),
+    # The same without terms (the location's policy could not be read): no amounts at all.
+    "guaranteeLinkNoTerms": ("This party needs a card guarantee. Offer the times as usual. Before the read-back say "
+                             "that the booking needs a card as a guarantee and that nothing is charged now (in "
+                             "Swedish: \"För den bokningen behövs ett kort som garanti, men inget dras nu.\"); "
+                             "never name an amount. In the read-back also say that a text message with a link to "
+                             "add a card as a guarantee will be sent to the number the caller is calling from, and "
+                             "that the booking is confirmed once the card is added; in Swedish end it with "
+                             "\"Stämmer det?\". Never ask for card details."),
     "guaranteeLinkSent": ("The table is held, not booked, until the caller adds the card through the text "
                           "message. Say the sentence in `sentence` word for word, in the caller's language, "
                           "instead of a booking confirmation. Then ask whether you can help with anything else."),
@@ -435,13 +453,50 @@ class Executor:
         self.state["needsCallback"] = "guarantee"
         return {"partySize": party, "guaranteeRequired": True, **_say("guaranteeRequired")}
 
-    def _guarantee_note(self, party):
+    def _guarantee_note(self, party, *, new_booking=False):
         """Beside times and a hold when the card link will be texted at
-        booking; not while moving one of the caller's bookings (a move never
-        texts a link)."""
-        if not self.state.get("found") and self._guarantee_mode(party) == "link":
-            return {"guaranteeRequired": True, "say": SAY["guaranteeLink"]}
+        booking; not while the caller's own bookings are found (a move never
+        texts a link), unless `new_booking` (create_reservation: the terms a
+        new booking after a lookup still needs said first)."""
+        if (new_booking or not self.state.get("found")) and self._guarantee_mode(party) == "link":
+            terms = self._guarantee_terms(party)
+            if not terms:
+                return {"guaranteeRequired": True, "say": SAY["guaranteeLinkNoTerms"]}
+            return {"guaranteeRequired": True, "guaranteeTerms": terms, "say": SAY["guaranteeLink"]}
         return {}
+
+    def _guarantee_terms(self, party):
+        """The card guarantee's terms for this party, computed as the booking
+        will snapshot them (shared/guarantee.snapshot): totals and per-person
+        amounts in kronor, the free-cancellation cutoff, nothing charged now,
+        each with its spoken English form (readAs) and the short sentence in
+        the caller's language (Swedish or English; others translate the
+        English one). A fee that is 0 is left out; None without a policy."""
+        if not guarantee.policy_of(self.location):
+            return None
+        snap = guarantee.snapshot(self.location, party)
+        no_show, late = int(snap["noShowFee"]) // 100, int(snap["lateCancelFee"]) // 100
+        hours = int(snap["cancelCutoffHours"])
+        terms = {"chargedNow": 0, "currency": "SEK"}
+        said = {"chargedNow": kronor_words(0)}
+        if no_show:
+            terms.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
+            said.update({"noShowFee": kronor_words(no_show),
+                         "noShowFeePerPerson": kronor_words(snap["noShowFeePerPerson"]) + " per person"})
+        if late and hours:     # no cutoff: cancelling is never late, the fee is not said
+            terms.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"]),
+                          "cancelCutoffHours": hours})
+            said.update({"lateCancelFee": kronor_words(late),
+                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person",
+                         "cancelCutoffHours": hours_words(hours)})
+        lang = "sv" if self.language == "sv" else "en"
+        late_said = bool(late and hours)
+        terms["sentence"] = copy.guarantee_terms(
+            lang, no_show=kronor_words(no_show, lang) if no_show else None,
+            late=kronor_words(late, lang) if late_said else None,
+            hours=hours_words(hours, lang) if late_said else None)
+        terms["readAs"] = said
+        return terms
 
     # -- reads ------------------------------------------------------------------------
 
@@ -628,8 +683,11 @@ class Executor:
         if not same:
             self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party,
                                                 "tableIds": table_ids, "nearby": bool(kind), "turn": self.turn}
+        note = self._guarantee_note(party)
+        if note:     # the caller is told the card terms with this hold's read-back
+            self.state["proposals"][hold_id]["guaranteeNoted"] = True
         held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party,
-                **self._guarantee_note(party)}
+                **note}
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
         return held
@@ -670,6 +728,14 @@ class Executor:
             return {"ok": False, "code": "guaranteeLinkFailed", "say": SAY["guaranteeLinkFailed"]}
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
+        party = int(proposal["partySize"])
+        if not proposal.get("guaranteeNoted") and self._guarantee_mode(party) == "link":
+            # Held while the caller's bookings were found (no card terms then): the terms and the
+            # card link are said in a new read-back before the pending booking is made.
+            proposal.update({"guaranteeNoted": True, "turn": self.turn})
+            note = self._guarantee_note(party, new_booking=True)
+            return {"ok": False, "code": "readBackFirst", "holdId": str(args["holdId"]), **note,
+                    "say": "Not booked yet. " + note["say"] + " After a clear yes, call create_reservation again."}
         if not self._heard_before(proposal.get("turn")):
             return {"ok": False, **_say("readBackFirst")}
         booked = next((p for p in self.state["proposals"].values()
@@ -1024,6 +1090,78 @@ _MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augu
            "November", "December")
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+_EN_TEENS = ("ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+             "nineteen")
+_EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+_SV_ONES = ("noll", "ett", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio", "tio", "elva", "tolv",
+            "tretton", "fjorton", "femton", "sexton", "sjutton", "arton", "nitton")
+_SV_TENS = ("", "", "tjugo", "trettio", "fyrtio", "femtio", "sextio", "sjuttio", "åttio", "nittio")
+
+
+def number_words(n, lang="en"):
+    """A whole number 0 to 999 999 in words: 1250 -> "one thousand two hundred
+    fifty" / "tusen tvåhundrafemtio"."""
+    n = int(n)
+    if not 0 <= n < 1_000_000:
+        return str(n)
+    if lang == "sv":
+        def below(k):          # 1..999, one word
+            out = ""
+            if k >= 100:
+                out += ("" if k // 100 == 1 else _SV_ONES[k // 100]) + "hundra"
+                k %= 100
+            if k >= 20:
+                out += _SV_TENS[k // 10] + (_SV_ONES[k % 10] if k % 10 else "")
+            elif k:
+                out += _SV_ONES[k]
+            return out
+        if n == 0:
+            return "noll"
+        thousands, rest = divmod(n, 1000)
+        parts = []
+        if thousands:
+            parts.append(("" if thousands == 1 else below(thousands)) + "tusen")
+        if rest:
+            parts.append(below(rest))
+        return " ".join(parts)
+
+    def below_en(k):
+        out = []
+        if k >= 100:
+            out.append(f"{_ONES[k // 100]} hundred")
+            k %= 100
+        if k >= 20:
+            out.append(_EN_TENS[k // 10] + (f"-{_ONES[k % 10]}" if k % 10 else ""))
+        elif k >= 10:
+            out.append(_EN_TEENS[k - 10])
+        elif k:
+            out.append(_ONES[k])
+        return " ".join(out)
+    if n == 0:
+        return "zero"
+    thousands, rest = divmod(n, 1000)
+    parts = [f"{below_en(thousands)} thousand"] if thousands else []
+    if rest:
+        parts.append(below_en(rest))
+    return " ".join(parts)
+
+
+def kronor_words(amount, lang="en"):
+    """Whole kronor in words: 800 -> "eight hundred kronor" / "åttahundra kronor"."""
+    amount = int(amount)
+    if lang == "sv":
+        return "en krona" if amount == 1 else f"{number_words(amount, 'sv')} kronor"
+    return "one krona" if amount == 1 else f"{number_words(amount)} kronor"
+
+
+def hours_words(hours, lang="en"):
+    """24 -> "twenty-four hours" / "tjugofyra timmar"."""
+    hours = int(hours)
+    if lang == "sv":
+        return "en timme" if hours == 1 else f"{number_words(hours, 'sv')} timmar"
+    return "one hour" if hours == 1 else f"{number_words(hours)} hours"
 
 
 def clock_words(value):

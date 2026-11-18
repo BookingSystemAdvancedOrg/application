@@ -3872,8 +3872,11 @@ paths:
                       guaranteeLink:
                         type: object
                         description: >-
-                          Only for a phone booking created pending with guarantee link: the Stripe page the
-                          guest adds the card on (send it to the guest only), and until when the table is held.
+                          Only for a phone booking created pending with guarantee link: the page the guest
+                          adds the card on (send it to the guest only), and until when the table is held.
+                          PHONE_CARD_PAGE "site": the booking's manage link on the restaurant's site (page
+                          site, a SetupIntent like an online booking); otherwise a Stripe Checkout page
+                          (page stripe).
                         properties:
                           url:
                             type: string
@@ -3882,6 +3885,9 @@ paths:
                             format: date-time
                           minutes:
                             type: integer
+                          page:
+                            type: string
+                            enum: [site, stripe]
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -4041,7 +4047,12 @@ paths:
       description: |
         Public, with the `X-Manage-Token` from the booking confirmation. A
         wrong or missing token answers 404, exactly like an unknown booking.
-        No email/phone in the response.
+        No email/phone in the response. While the booking is `pending` with
+        a card still to add (online, or a phone booking texted the
+        restaurant's own card page) the answer also carries `setup`, the
+        same card form the online booking answered with (read from Stripe;
+        absent if Stripe cannot be asked, the hold ran out or the card is in;
+        while the hold still runs then `setupUnavailable` and `pendingExpiresAt`).
       security: []
       x-required-groups: []
       responses:
@@ -7858,8 +7869,9 @@ components:
           description: >-
             Phone bookings only (source phone, phone required). When the location's card guarantee covers the
             party, the booking is created pending (held 30 minutes) with a Stripe Checkout page (mode setup) on
-            the restaurant's account, and the answer carries guaranteeLink {url, expiresAt, minutes} for the
-            caller to text the guest. The booking turns reserved when the card is added (Stripe webhook). Without
+            the restaurant's account (or, with PHONE_CARD_PAGE "site", a SetupIntent and the booking's manage
+            link on the restaurant's site), and the answer carries guaranteeLink {url, expiresAt, minutes, page}
+            for the caller to text the guest. The booking turns reserved when the card is added (Stripe webhook). Without
             a card requirement the booking is reserved as usual.
 
     ReservationUpdateRequest:
@@ -8087,6 +8099,12 @@ components:
               type: integer
             lateCancelFee:
               type: integer
+            noShowFeePerPerson:
+              type: integer
+              description: Kronor per guest.
+            lateCancelFeePerPerson:
+              type: integer
+              description: Kronor per guest.
             cancelCutoffHours:
               type: integer
             freeCancelUntil:
@@ -8099,6 +8117,17 @@ components:
             cancellationFee:
               type: integer
               description: What cancelling NOW costs (0 = free) - show it before the guest confirms.
+        setup:
+          $ref: '#/components/schemas/GuaranteeSetup'
+        setupUnavailable:
+          type: boolean
+          description: >-
+            Pending with a card step whose form Stripe could not give just now while the table is still
+            held: ask the guest to reload (never say the booking failed).
+        pendingExpiresAt:
+          type: string
+          format: date-time
+          description: Only with setupUnavailable - until when the table is held.
         fee:
           type: object
           description: A charged / attempted fee.
@@ -8124,20 +8153,24 @@ components:
               type: string
               description: Shown once - the guest's link to view or cancel the booking.
             setup:
-              type: object
-              description: |
-                Only for card-guarantee bookings (status `pending`): confirm
-                the SetupIntent with Stripe.js (publishable key from
-                /site-config, `stripeAccount`), then POST .../confirm before
-                `expiresAt`.
-              properties:
-                clientSecret:
-                  type: string
-                stripeAccount:
-                  type: string
-                expiresAt:
-                  type: string
-                  format: date-time
+              $ref: '#/components/schemas/GuaranteeSetup'
+
+    GuaranteeSetup:
+      type: object
+      description: |
+        Only for card-guarantee bookings (status `pending`): confirm
+        the SetupIntent with Stripe.js (publishable key from
+        /site-config, `stripeAccount`), then POST .../confirm before
+        `expiresAt`. Returned by the online booking and, with a valid
+        manage token, by the guest GET while the booking is pending.
+      properties:
+        clientSecret:
+          type: string
+        stripeAccount:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
 
     GuaranteePolicy:
       type: object

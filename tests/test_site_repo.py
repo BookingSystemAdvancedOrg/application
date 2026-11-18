@@ -331,6 +331,8 @@ def world(monkeypatch):
             if task["action"] == "archive":
                 return as_dev(lambda fn: {"tenantId": dev_tid, **fn.handler({"action": "archive", "tenantId": dev_tid},
                                                                               None)})
+            if task["action"] == "content":
+                return {"tenantId": dev_tid, "status": "queued"}
             assert task["action"] == "mirror"
             item = table.get_item(Key={"PK": f"TENANT#{dev_tid}", "SK": "PROFILE"}).get("Item")
             if not item:
@@ -1077,3 +1079,15 @@ def test_dev_domain_ops_for_the_own_domain_pipeline(world, monkeypatch):
     for op in ("setCanonical", "unmount"):
         prod.handler({"action": "devDomain", "tenantId": PLAIN, "op": op, "host": "dev.roma.se"}, None)
     assert [t["op"] for t in seen] == ["setCanonical", "unmount"]
+
+
+def test_setup_completed_tells_the_dev_twin_to_copy_public_content(world):
+    """Tenant.SetupCompleted in prod -> {action: twinContent}: only the slug and
+    the tenant id cross; dev reads the public content from prod's public API."""
+    prod = world["use"]("prod")
+    world["links"].clear()
+    assert prod.handler({"action": "twinContent", "tenantId": PLAIN}, None) == {"status": "queued"}
+    assert world["links"] == [{"action": "content", "slug": "roma", "prodTenantId": PLAIN}]
+    # dev has no link to anything: nothing happens there
+    dev = world["use"]("dev")
+    assert dev.handler({"action": "twinContent", "tenantId": PLAIN}, None) == {"status": "no_dev_link"}

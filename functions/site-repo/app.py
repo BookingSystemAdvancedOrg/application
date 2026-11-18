@@ -5,6 +5,8 @@ TRIGGER:
       tenant-onboarding   provision   after the tenant is active
       tenant-offboarding  archive
       tenant-purge        delete
+      EventBridge rule    twinContent (prod: Tenant.SetupCompleted -> dev twin
+                          copies the restaurant's public content)
       platform-tenants    status | provision (Retry) | invite {username} |
                           redeploy {branch} | archive | devDomain {op, host} |
                           domainLive (an own domain went live)
@@ -1121,6 +1123,22 @@ def dev_domain(tenant_id, op, host=None):
     return _dev_link(task)
 
 
+def twin_content(tenant_id):
+    """Prod: the restaurant finished its Kom igång setup (Tenant.SetupCompleted,
+    an EventBridge rule hands {action: twinContent, tenantId} here). Dev is
+    told to copy the restaurant's PUBLIC content to its dev twin; dev reads it
+    from prod's public API itself, so only the slug and tenant id cross
+    (booqy-console docs/DEV-TWINS.md)."""
+    if not _linked():
+        return {"status": "no_dev_link"}
+    profile = _profile(tenant_id)
+    if profile.get("status") not in ("active",):
+        return {"status": "skipped", "reason": f"customer is {profile.get('status')}"}
+    out = _dev_link({"action": "content", "slug": profile["slug"], "prodTenantId": tenant_id})
+    log.info(json.dumps({"action": "twinContent", "tenantId": tenant_id, "dev": out.get("status")}))
+    return {"status": out.get("status") or "sent"}
+
+
 def domain_live(tenant_id, gh=None):
     """An own domain went live (domain-provision's UpdateSite): booqy.json's
     prod section (its domain from this environment's primary domain) and
@@ -1152,7 +1170,8 @@ def domain_live(tenant_id, gh=None):
     return {"repo": name, "result": "done", "committed": committed}
 
 
-ACTIONS = {"provision": provision, "archive": archive, "delete": delete, "status": status, "domainLive": domain_live}
+ACTIONS = {"provision": provision, "archive": archive, "delete": delete, "status": status, "domainLive": domain_live,
+           "twinContent": twin_content}
 
 
 def handler(event, context):

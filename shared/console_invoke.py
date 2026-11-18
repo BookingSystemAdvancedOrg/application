@@ -25,8 +25,8 @@ manage-user additionally treats this caller as able to manage owners
 
 Dev twins (dev only, booqy-console docs/DEV-TWINS.md): the console sets up a
 customer's twin in dev through the admin's own functions (create-location,
-get-menu, manage-menu, the layout functions, google-business, phone-agent,
-tenant-account's DPA). Those call unwrap(event, dev_only=True): in prod such
+get-menu, manage-menu, pre-signed-url, the layout functions, google-business,
+phone-agent, tenant-account's DPA). Those call unwrap(event, dev_only=True): in prod such
 a call is refused, so prod keeps the Users tab and nothing more. A call for a
 route with path parameters names its API Gateway route template:
 
@@ -34,7 +34,8 @@ route with path parameters names its API Gateway route template:
                       "route": "/locations/{locationId}"}}
 
 and gets the routeKey and pathParameters API Gateway would give
-({proxy+} takes the rest of the path).
+({proxy+} takes the rest of the path); "query" ({str: str}) becomes
+queryStringParameters.
 """
 
 from __future__ import annotations
@@ -115,6 +116,10 @@ def unwrap(event: dict, *, prefix: str = "", dev_only: bool = False) -> dict:
         raise Refused("method and path are required")
     if body is not None and not isinstance(body, dict):
         raise Refused("body must be an object")
+    query = call.get("query")
+    if query is not None and (not isinstance(query, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in query.items())):
+        raise Refused("query must be an object of strings")
     route = call.get("route")
     if route is not None:
         params = _route_params(route, path)
@@ -136,6 +141,7 @@ def unwrap(event: dict, *, prefix: str = "", dev_only: bool = False) -> dict:
         "routeKey": route_key,
         "rawPath": path,
         "pathParameters": params,
+        "queryStringParameters": query or None,
         "requestContext": {"http": {"method": method, "path": path},
                            "authorizer": {"jwt": {"claims": claims}}},
         "body": json.dumps(body) if body is not None else None,

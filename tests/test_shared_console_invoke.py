@@ -71,3 +71,13 @@ def test_dev_twin_entry_answers_400_in_prod_and_passes_api_events(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
     assert handler(_call(route="/locations/{locationId}"), None) == {"statusCode": 200}
     assert seen[-1]["pathParameters"] == {"locationId": "loc-1"}
+
+
+def test_query_becomes_query_string_parameters(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    event = console_invoke.unwrap(_call(method="GET", path="/menu-images/presigned-url",
+                                        query={"locationId": "loc-1", "contentType": "image/jpeg"}), dev_only=True)
+    assert event["queryStringParameters"] == {"locationId": "loc-1", "contentType": "image/jpeg"}
+    assert console_invoke.unwrap(_call(), dev_only=True)["queryStringParameters"] is None
+    with pytest.raises(console_invoke.Refused):
+        console_invoke.unwrap(_call(query={"size": 12}), dev_only=True)

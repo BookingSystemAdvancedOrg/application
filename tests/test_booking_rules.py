@@ -190,7 +190,7 @@ def test_bot_check_refuses_a_missing_or_wrong_header_when_enforced(monkeypatch):
 def test_bot_check_lets_everything_through_until_enforced(monkeypatch, caplog):
     monkeypatch.setenv("SITE_WAF_SECRET", "edge-secret")
     monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
-    with caplog.at_level("INFO", logger="shared.bot_check"):
+    with caplog.at_level("WARNING", logger="shared.bot_check"):
         bot_check.verify(_ev(), "order")
     assert "not_through_waf" in caplog.text and '"order"' in caplog.text
 

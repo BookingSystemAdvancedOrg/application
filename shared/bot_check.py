@@ -65,7 +65,9 @@ def verify(event, form):
     if passed(event):
         return
     if not enforced():
-        logger.info(json.dumps({"bot_check": "not_through_waf", "form": form}))
+        # WARNING, not INFO: Lambda's Python logger drops INFO, and this line
+        # is how we see that no real site still skips the WAF.
+        logger.warning(json.dumps({"bot_check": "not_through_waf", "form": form}))
         return
     if not os.environ.get("SITE_WAF_SECRET"):
         raise Unavailable("SITE_WAF_SECRET is not set")

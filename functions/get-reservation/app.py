@@ -13,7 +13,12 @@ PURPOSE:
     and one booking with full details and its change history.
     Guests: their own booking through the manage link - only with the token
     from the booking confirmation; a wrong/missing token looks exactly like
-    an unknown booking (404).
+    an unknown booking (404). A pending booking whose card is still to be
+    added (online, or a phone booking texted the restaurant's own card
+    page) also carries `setup` {clientSecret, stripeAccount, expiresAt}
+    for the card form, read from Stripe (shared/guarantee.card_step): only
+    with a valid token, only while pending. When Stripe cannot be asked
+    and the hold still runs: `setupUnavailable` true and `pendingExpiresAt`.
 
     Multi-tenant: staff routes check the token's tenant (staff limited to
     their own location); the guest route resolves the tenant from the
@@ -22,7 +27,8 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
     RESERVATION_TABLE_NAME, USER_TABLE_NAME (staff location check),
-    RESERVATION_LINK_KEY_SECRET_ARN (guest route: verifies the manage token)
+    RESERVATION_LINK_KEY_SECRET_ARN (guest route: verifies the manage token),
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION (guest route: a pending booking's card form)
 
 Full details: docs/RESERVATIONS.md
 """
@@ -32,7 +38,7 @@ from datetime import date
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import http, manage_link, tenant
+from shared import guarantee, http, manage_link, tenant
 from shared import reservations as r
 
 _LIST = "/locations/{locationId}/reservations"
@@ -87,7 +93,16 @@ def _guest(event):
     item = r.load(location_id, http.path_id(event, "reservationId"))
     if not manage_link.matches(item, http.header(event, "x-manage-token")):
         raise r.NotFound
-    return http.respond(200, r.guest_view(item, ctx.location))
+    now = r.now_utc()
+    view = r.guest_view(item, ctx.location, now=now)
+    setup = guarantee.card_step(item, now) if item.get("status") == r.PENDING else None
+    if setup:
+        view["setup"] = setup
+    elif guarantee.card_hold_open(item, now):
+        # Stripe could not be asked just now, the table is still held: the page
+        # asks the guest to reload, it does not say the booking failed.
+        view.update({"setupUnavailable": True, "pendingExpiresAt": item["pendingExpiresAt"]})
+    return http.respond(200, view)
 
 
 _ROUTES = {_LIST: _list, _ONE: _one, _GUEST: _guest}

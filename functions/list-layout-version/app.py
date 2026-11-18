@@ -14,7 +14,10 @@ PURPOSE:
     including floor areas, cash registers, optional table and cash-register
     ``label`` values, and an optional persisted door ``kind``, and
     deliberately performs no JWT validation. A location without an active
-    layout gets an empty plan (200, no floors, no elements).
+    layout gets an empty plan (200, no floors, no elements). The version list
+    also carries ``earliestChangeDate`` (the first local date a replacement
+    may take effect: today in dev, the day after the booking horizon in prod)
+    and ``bookingHorizonDays``.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -31,6 +34,7 @@ import hashlib
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import Decimal
 from http import HTTPStatus
 
@@ -38,7 +42,8 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import staff_token, tenant
+from shared import console_invoke, staff_token, tenant
+from shared.availability import BOOKING_HORIZON_DAYS, earliest_layout_change_date
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
@@ -516,7 +521,19 @@ def _valid_last_key(last_key, location_id):
     )
 
 
-def _list_versions(location_id):
+def _earliest_change_date(location, now):
+    name = (location or {}).get("timezone") or "Europe/Stockholm"
+    try:
+        zone = ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("Europe/Stockholm")
+    today = now.astimezone(zone).date()
+    if ENVIRONMENT == "dev":
+        return today.isoformat()
+    return earliest_layout_change_date(today).isoformat()
+
+
+def _list_versions(location_id, location=None):
     snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
     request = {
         "KeyConditionExpression": (
@@ -560,7 +577,11 @@ def _list_versions(location_id):
     snapshots.sort(key=lambda item: item["version"], reverse=True)
     return _version_response(
         HTTPStatus.OK.value,
-        {"items": snapshots},
+        {
+            "items": snapshots,
+            "earliestChangeDate": _earliest_change_date(location, _utc_now()),
+            "bookingHorizonDays": BOOKING_HORIZON_DAYS,
+        },
     )
 
 
@@ -1259,6 +1280,9 @@ def _get_active_layout(event):
         )
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     if _route_key(event) == _PUBLIC_ACTIVE_ROUTE:
         return _get_active_layout(event)
@@ -1332,7 +1356,7 @@ def handler(event, context):
 
     try:
         location_id = _location_id(event)
-        tenant.for_jwt(event, location_id=location_id)
+        location_context = tenant.for_jwt(event, location_id=location_id)
     except tenant.TenantError as exc:
         return exc.response()
     except ValueError as exc:
@@ -1344,7 +1368,9 @@ def handler(event, context):
         )
 
     try:
-        return _list_versions(location_id)
+        return _list_versions(
+            location_id, getattr(location_context, "location", None)
+        )
     except _SnapshotConflict as exc:
         return _version_error(HTTPStatus.CONFLICT.value, str(exc))
     except (BotoCoreError, ClientError, _SnapshotServiceFailure):

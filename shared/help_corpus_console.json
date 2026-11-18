@@ -10,6 +10,7 @@
   "/finance",
   "/website",
   "/reports",
+  "/notifications",
   "/settings",
   "/profile",
   "/download",
@@ -537,6 +538,39 @@
    "kind": "guide"
   },
   {
+   "id": "setup-notifications",
+   "route": "/notifications",
+   "title": "Setup finished notifications",
+   "audience": "all",
+   "keywords": [
+    "notifications",
+    "bell",
+    "setup finished",
+    "setup klar",
+    "kom igång",
+    "onboarding done",
+    "website build",
+    "setup progress"
+   ],
+   "answer": "Notifications under Platform lists each restaurant that finished Kom igång in Booqy Admin: every step done or skipped at every location. That is when we build its website. Each restaurant is announced once, with an email to the operators too. The badge counts new ones; opening the page marks them seen. The Setup column on Customers shows progress such as 7/9, and the Setup card on a customer's Overview shows each step.",
+   "steps": [
+    "Open Notifications in the menu.",
+    "Press a restaurant to open its customer page.",
+    "Check the Setup card, then start the website."
+   ],
+   "actions": [
+    {
+     "id": "setup-notifications-open",
+     "label": "Open Notifications",
+     "to": "/notifications",
+     "highlight": [
+      "help:nav:/notifications"
+     ]
+    }
+   ],
+   "kind": "guide"
+  },
+  {
    "id": "operator-add",
    "route": "/operators",
    "title": "Add an operator",
@@ -852,7 +886,7 @@
     "profit",
     "export csv"
    ],
-   "answer": "Finance shows MRR, paying customers, collected and outstanding money, gross margin, revenue, AWS cost and unit economics per billing period (a calendar month), in SEK ex VAT. Pick a customer to see just them, and export the rows as CSV.",
+   "answer": "Finance shows MRR, paying customers, collected and outstanding money, gross margin, revenue, AWS cost and unit economics per billing period (a calendar month). Revenue is in SEK ex VAT; every cost is in USD, exactly as AWS Billing shows it, and the margin converts it at Riksbank's USD/SEK rate of each day. Pick a customer to see just them, and export the rows as CSV.",
    "steps": [
     "Open Finance in the menu.",
     "Pick the Billing period and how many periods.",
@@ -1387,6 +1421,18 @@
    "audience": "all"
   },
   {
+   "id": "nav:notifications",
+   "kind": "page",
+   "route": "/notifications",
+   "title": "Notifications",
+   "where": "the menu",
+   "text": "Notifications is in the menu.",
+   "highlight": [
+    "help:nav:/notifications"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "nav:finance",
    "kind": "page",
    "route": "/finance",
@@ -1652,19 +1698,6 @@
    "audience": "all"
   },
   {
-   "id": "settings-branch:profile",
-   "kind": "page",
-   "route": "/settings",
-   "hash": "profile",
-   "title": "Profile",
-   "where": "Settings, You",
-   "text": "Profile is under Settings, You.",
-   "highlight": [
-    "help:settings-branch:profile"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "settings-branch:appearance",
    "kind": "page",
    "route": "/settings",
@@ -1713,19 +1746,6 @@
    "text": "Phone agent limits is under Settings, Platform.",
    "highlight": [
     "help:settings-branch:phone-agent"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "settings-branch:mail-brand",
-   "kind": "page",
-   "route": "/settings",
-   "hash": "mail-brand",
-   "title": "Email brand template",
-   "where": "Settings, Platform",
-   "text": "Email brand template is under Settings, Platform.",
-   "highlight": [
-    "help:settings-branch:mail-brand"
    ],
    "audience": "all"
   },
@@ -2031,18 +2051,6 @@
    "audience": "all"
   },
   {
-   "id": "components-DomainWizard:domains:other-ways:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "← Other ways",
-   "where": "a customer's page, Domains tab",
-   "text": "",
-   "highlight": [
-    "text:← Other ways"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "components-DomainWizard:domains:name:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -2051,18 +2059,6 @@
    "text": "e.g. arya or arya.se",
    "highlight": [
     "text:Name"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "components-DomainWizard:domains:search-again:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "← Search again",
-   "where": "a customer's page, Domains tab",
-   "text": "",
-   "highlight": [
-    "text:← Search again"
    ],
    "audience": "all"
   },
@@ -2307,6 +2303,102 @@
    "audience": "all"
   },
   {
+   "id": "components-UsersTab:users:sign-in-accounts:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Sign-in accounts",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "help:card:sign-in-accounts"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:invite-a-user:heading",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Invite a user",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "help:card:invite-a-user"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:role:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Role",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Role"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:name:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Name",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Name"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:business-email:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Business email",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Business email"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:mobile-number:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Mobile number",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Mobile number"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:location:field",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Location",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Location"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "components-UsersTab:users:cancel:button",
+   "kind": "element",
+   "route": "/tenants/:tenantId",
+   "title": "Cancel",
+   "where": "a customer's page, Users tab",
+   "text": "",
+   "highlight": [
+    "text:Cancel"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "components-WebsiteTab:website:website-repo:heading",
    "kind": "element",
    "route": "/tenants/:tenantId",
@@ -2375,18 +2467,6 @@
    "text": "",
    "highlight": [
     "text:GitHub username"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "components-WebsiteTab:website:invite:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Invite",
-   "where": "a customer's page, Website tab",
-   "text": "",
-   "highlight": [
-    "text:Invite"
    ],
    "audience": "all"
   },
@@ -2623,6 +2703,18 @@
    "audience": "all"
   },
   {
+   "id": "pages-FinancePage:gross-margin:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Gross margin",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:gross-margin"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "pages-FinancePage:paying-customers:kpi",
    "kind": "element",
    "route": "/finance",
@@ -2631,6 +2723,18 @@
    "text": "",
    "highlight": [
     "help:kpi:paying-customers"
+   ],
+   "audience": "all"
+  },
+  {
+   "id": "pages-FinancePage:revenue:kpi",
+   "kind": "element",
+   "route": "/finance",
+   "title": "Revenue",
+   "where": "Finance",
+   "text": "",
+   "highlight": [
+    "help:kpi:revenue"
    ],
    "audience": "all"
   },
@@ -2655,18 +2759,6 @@
    "text": "",
    "highlight": [
     "help:kpi:outstanding"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-FinancePage:revenue:kpi",
-   "kind": "element",
-   "route": "/finance",
-   "title": "Revenue",
-   "where": "Finance",
-   "text": "",
-   "highlight": [
-    "help:kpi:revenue"
    ],
    "audience": "all"
   },
@@ -2943,18 +3035,6 @@
    "text": "Reply-to is added after it",
    "highlight": [
     "text:Footer line"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-MailPage:brand-template:save-template:button",
-   "kind": "element",
-   "route": "/mail",
-   "title": "Save template",
-   "where": "Mail, Brand template tab",
-   "text": "",
-   "highlight": [
-    "text:Save template"
    ],
    "audience": "all"
   },
@@ -3271,6 +3351,18 @@
    "audience": "all"
   },
   {
+   "id": "pages-NotificationsPage:notifications:page",
+   "kind": "page",
+   "route": "/notifications",
+   "title": "Notifications",
+   "where": "Notifications",
+   "text": "",
+   "highlight": [
+    "text:Notifications"
+   ],
+   "audience": "all"
+  },
+  {
    "id": "pages-OperatorsPage:operators:page",
    "kind": "page",
    "route": "/operators",
@@ -3319,18 +3411,6 @@
    "audience": "all"
   },
   {
-   "id": "pages-OperatorsPage:send-invite:button",
-   "kind": "element",
-   "route": "/operators",
-   "title": "Send invite",
-   "where": "Operators",
-   "text": "",
-   "highlight": [
-    "text:Send invite"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "pages-OperatorsPage:cancel:button",
    "kind": "element",
    "route": "/operators",
@@ -3351,18 +3431,6 @@
    "text": "",
    "highlight": [
     "text:Edit operator"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-OperatorsPage:save:button",
-   "kind": "element",
-   "route": "/operators",
-   "title": "Save",
-   "where": "Operators",
-   "text": "",
-   "highlight": [
-    "text:Save"
    ],
    "audience": "all"
   },
@@ -3463,18 +3531,6 @@
    "audience": "all"
   },
   {
-   "id": "pages-ProfilePage:save:button",
-   "kind": "element",
-   "route": "/profile",
-   "title": "Save",
-   "where": "My profile",
-   "text": "",
-   "highlight": [
-    "text:Save"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "pages-ReportsPage:reports:page",
    "kind": "page",
    "route": "/reports",
@@ -3495,32 +3551,6 @@
    "text": "",
    "highlight": [
     "text:Settings"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-SettingsPage:your-profile:heading",
-   "kind": "element",
-   "route": "/settings",
-   "hash": "profile",
-   "title": "Your profile",
-   "where": "Settings, You, Profile",
-   "text": "",
-   "highlight": [
-    "text:Your profile"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-SettingsPage:open-my-profile:button",
-   "kind": "element",
-   "route": "/settings",
-   "hash": "profile",
-   "title": "Open my profile",
-   "where": "Settings, You, Profile",
-   "text": "",
-   "highlight": [
-    "help:settings:profile"
    ],
    "audience": "all"
   },
@@ -3577,45 +3607,6 @@
    "audience": "all"
   },
   {
-   "id": "pages-SettingsPage:email-brand-template:heading",
-   "kind": "element",
-   "route": "/settings",
-   "hash": "mail-brand",
-   "title": "Email brand template",
-   "where": "Settings, Platform, Email brand template",
-   "text": "",
-   "highlight": [
-    "text:Email brand template"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-SettingsPage:brand-template:heading",
-   "kind": "element",
-   "route": "/settings",
-   "hash": "mail-brand",
-   "title": "Brand template",
-   "where": "Settings, Platform, Email brand template",
-   "text": "",
-   "highlight": [
-    "help:settings:mail-brand"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-SettingsPage:open-in-mail:button",
-   "kind": "element",
-   "route": "/settings",
-   "hash": "mail-brand",
-   "title": "Open in Mail",
-   "where": "Settings, Platform, Email brand template",
-   "text": "",
-   "highlight": [
-    "help:settings:mail-brand"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "pages-TenantPage:customer:page",
    "kind": "page",
    "route": "/tenants/:tenantId",
@@ -3624,18 +3615,6 @@
    "text": "",
    "highlight": [
     "text:Customer"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:back-to-customers:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Back to Customers",
-   "where": "a customer's page",
-   "text": "",
-   "highlight": [
-    "text:Back to Customers"
    ],
    "audience": "all"
   },
@@ -3736,11 +3715,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:plan:button",
+   "id": "pages-TenantPage:plan:button",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Plan",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Plan"
@@ -3748,11 +3727,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:raise-limit-and-add:button",
+   "id": "pages-TenantPage:raise-limit-and-add:button",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Raise limit and add",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Raise limit and add"
@@ -3760,11 +3739,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:name:field",
+   "id": "pages-TenantPage:name:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Name",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Name"
@@ -3772,11 +3751,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:address:field",
+   "id": "pages-TenantPage:address:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Address",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Address"
@@ -3784,11 +3763,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:phone:field",
+   "id": "pages-TenantPage:phone:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Phone",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "Only for a different company. Empty = the customer's account.",
    "highlight": [
     "text:Phone"
@@ -3796,11 +3775,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:email:field",
+   "id": "pages-TenantPage:email:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Email",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "Only for a different company. Empty = the customer's account.",
    "highlight": [
     "text:Email"
@@ -3808,11 +3787,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:separate-stripe-account:field",
+   "id": "pages-TenantPage:separate-stripe-account:field",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Separate Stripe account",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "Only for a different company. Empty = the customer's account.",
    "highlight": [
     "text:Separate Stripe account"
@@ -3820,11 +3799,11 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:cancel:button",
+   "id": "pages-TenantPage:cancel:button",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Cancel",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Cancel"
@@ -3832,74 +3811,14 @@
    "audience": "all"
   },
   {
-   "id": "pages-TenantPage:locations:delete-location:button",
+   "id": "pages-TenantPage:delete-location:button",
    "kind": "element",
    "route": "/tenants/:tenantId",
    "title": "Delete location",
-   "where": "a customer's page, Locations tab",
+   "where": "a customer's page",
    "text": "",
    "highlight": [
     "text:Delete location"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:users:sign-in-accounts:heading",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Sign-in accounts",
-   "where": "a customer's page, Users tab",
-   "text": "",
-   "highlight": [
-    "help:card:sign-in-accounts"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:users:invite-another-owner:heading",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Invite another owner",
-   "where": "a customer's page, Users tab",
-   "text": "",
-   "highlight": [
-    "help:card:invite-another-owner"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:users:name:field",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Name",
-   "where": "a customer's page, Users tab",
-   "text": "",
-   "highlight": [
-    "text:Name"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:users:business-email:field",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Business email",
-   "where": "a customer's page, Users tab",
-   "text": "",
-   "highlight": [
-    "text:Business email"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:users:send-invite:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Send invite",
-   "where": "a customer's page, Users tab",
-   "text": "",
-   "highlight": [
-    "text:Send invite"
    ],
    "audience": "all"
   },
@@ -3936,18 +3855,6 @@
    "text": "",
    "highlight": [
     "text:Apply anyway"
-   ],
-   "audience": "all"
-  },
-  {
-   "id": "pages-TenantPage:plan:save-plan:button",
-   "kind": "element",
-   "route": "/tenants/:tenantId",
-   "title": "Save plan",
-   "where": "a customer's page, Plan tab",
-   "text": "",
-   "highlight": [
-    "text:Save plan"
    ],
    "audience": "all"
   },

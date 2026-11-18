@@ -126,6 +126,9 @@ def customer_return_url(tenant_id, tenant_row, item):
     return f"{page}{'&' if slug else '?'}signering=klar"
 
 
+RESTAURANT_SIGNATURE_REQUIRED = "restaurant_signature_required"
+
+
 def restaurant_signed(item):
     return bool(((item.get("signing") or {}).get("signatures") or {}).get(RESTAURANT))
 
@@ -143,7 +146,7 @@ def _order_update(item, s, order):
 
 def begin(item, role, ip, return_url=None):
     s = _current(item)
-    if role == CUSTOMER and not restaurant_signed(item):
+    if role == CUSTOMER and not c.offer_at_customer(item):
         raise NotReady("awaiting_restaurant")
     if (s.get("signatures") or {}).get(role):
         raise NotReady("already_signed")
@@ -188,7 +191,7 @@ def accept(item, signer, ip, user_agent):
     """Simple acceptance by the customer (C8): name (+ role and authority for
     a company), the exact PDF hash, time, IP and user agent."""
     s = _current(item)
-    if not restaurant_signed(item):
+    if not c.offer_at_customer(item):
         raise NotReady("awaiting_restaurant")
     now = c.now_utc()
     evidence = {"customer-acceptance.json": json.dumps({
@@ -228,8 +231,10 @@ def record(item, role, signer, evidence, ip, order, provider_seal=True):
                         version=version, pdfSha256=s["pdfSha256"], ip=ip, method=signer.get("method"),
                         evidence=keys[0] if keys else None)
     if role == RESTAURANT:
-        sets += ["restaurantSignedAt = :now", "notice = :n"]
-        values[":n"] = c.notice(c.N_OFFER_SENT, now, version=version)
+        sets.append("restaurantSignedAt = :now")
+        if not s.get("sendRequired"):  # locked before the send step: goes out on the signature
+            sets.append("notice = :n")
+            values[":n"] = c.notice(c.N_OFFER_SENT, now, version=version)
         c.transact([c.head_update(item, sets=sets, values=values, names=names), audit])
         return
     signed_key, signed_version, signatures, sealed = _finalize(item, s, signatures, prefix, pdf, provider_seal)

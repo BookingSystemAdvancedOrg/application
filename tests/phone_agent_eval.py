@@ -46,6 +46,7 @@ from tenant_support import LOCATION_TABLE_DEFAULT
 
 SCRIPTS = Path(__file__).parent / "phone_agent_scripts"
 HIDDEN = "anonymous"
+FOREIGN = "+12025550123"     # no SMS outside the Nordic prefixes: a card guarantee becomes a callback
 RESTAURANT = "Bistro Lindgården"
 _STYLE = (("digits", re.compile(r"\d")), ("symbols", re.compile(r"[#*_`\[\]{}<>|/\\]")),
           ("exclamation", re.compile(r"!")), ("dashes", re.compile("[\u2013\u2014]")),
@@ -130,7 +131,7 @@ def setup(e, scenario, monkeypatch):
     if model:
         monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", model)
     e.live._clients["invoke"] = _refusing_patch(e.invoke, e.availability)
-    return HIDDEN if fixture.get("caller") == "hidden" else CALLER
+    return {"hidden": HIDDEN, "foreign": FOREIGN}.get(fixture.get("caller"), CALLER)
 
 
 # --- one call ----------------------------------------------------------------------------------

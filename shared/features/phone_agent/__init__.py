@@ -55,6 +55,11 @@ BOOKING_LANGUAGES = ("sv", "en")   # what confirmation SMS and emails are writte
 RETENTION_DAYS = (7, 30, 90)  # [NEEDS YOUR OK: options and default 30]
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 PHONE_MAX_PARTY = 50       # phoneMaxPartySize: the largest party the agent books itself (None = the online maximum)
+# phoneGuarantee: a party the location's card guarantee covers, booked by phone.
+# "link": the agent books it pending and texts the caller a Stripe link to add the card;
+# "skip": phone bookings never need a card (booked reserved at once).
+PHONE_GUARANTEE = ("link", "skip")
+PHONE_GUARANTEE_DEFAULT = "link"
 OUTCOMES = ("booked", "moved", "cancelled", "info", "transferred", "callback", "abandoned", "refused", "error")
 COUNTER_OFFERS = ("none", "other_time", "next_day", "nearby_table")
 CALL_STATUSES = ("ringing", "answered", "disclosed", "talking", "transferring", "ended", "processed")
@@ -367,6 +372,9 @@ def validate_location(body, *, restaurant_phone=None) -> dict:
     if phone_max is not None and (isinstance(phone_max, bool) or not isinstance(phone_max, (int, Decimal))
                                   or phone_max != int(phone_max) or not 1 <= phone_max <= PHONE_MAX_PARTY):
         raise PhoneAgentError(400, "invalid_phone_max_party_size", "phoneMaxPartySize")
+    guarantee_mode = body.get("phoneGuarantee")
+    if guarantee_mode is not None and guarantee_mode not in PHONE_GUARANTEE:
+        raise PhoneAgentError(400, "invalid_phone_guarantee", "phoneGuarantee")
     share = body.get("shareNumberWith")
     if share is not None and not valid_id(share):
         raise PhoneAgentError(400, "shareNumberWith must be a location id", "shareNumberWith")
@@ -378,7 +386,15 @@ def validate_location(body, *, restaurant_phone=None) -> dict:
                               "phoneOnlyTables": offers.get("phoneOnlyTables", True)}}
     if "phoneMaxPartySize" in body:   # absent (an older admin): the stored value is kept
         out["phoneMaxPartySize"] = int(phone_max) if phone_max is not None else None
+    if "phoneGuarantee" in body:      # absent (an older admin): the stored value is kept
+        out["phoneGuarantee"] = guarantee_mode or PHONE_GUARANTEE_DEFAULT
     return out
+
+
+def phone_guarantee(loc) -> str:
+    """The location's phoneGuarantee (default "link")."""
+    value = (loc or {}).get("phoneGuarantee")
+    return value if value in PHONE_GUARANTEE else PHONE_GUARANTEE_DEFAULT
 
 
 def validate_setup(body) -> dict:
@@ -427,6 +443,7 @@ def loc_view(loc, *, owner=True, test_number=None) -> dict:
                                                                                        or MAX_CALL_DEFAULT),
            "counterOffers": plain(loc.get("counterOffers") or {"nearbyTables": True, "phoneOnlyTables": True}),
            "phoneMaxPartySize": int(loc["phoneMaxPartySize"]) if loc.get("phoneMaxPartySize") is not None else None,
+           "phoneGuarantee": phone_guarantee(loc),
            "number": (loc.get("number") or {}).get("e164"),
            "numberSharedWith": (loc.get("number") or {}).get("ownerLocationId") or None,
            "version": int(loc.get("version") or 0),
@@ -531,6 +548,7 @@ def call_view(call, *, owner) -> dict:
            "language": call.get("language") or "sv", "outcome": call.get("outcome"),
            "refusedReason": call.get("refusedReason"), "counterOffer": call.get("counterOffer") or "none",
            "reservationId": call.get("reservationId"), "callbackId": call.get("callbackId"),
+           "guaranteePending": bool(call.get("guaranteePending")),
            "summary": call.get("summary") or "", "status": call.get("status"),
            "disclosure": plain(call.get("disclosure") or {})}
     if owner:

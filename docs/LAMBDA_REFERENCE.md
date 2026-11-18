@@ -302,7 +302,7 @@ requested table; clients must handle a booking-time conflict.
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` waits out the booking horizon (switch at local midnight, today + 22 days) |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Activation state and current/pending published tables and seat counts |
@@ -468,7 +468,7 @@ return `405` with `Allow: POST`.
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` uses 28 days |
+| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` waits out the booking horizon (switch at local midnight, today + 22 days) |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `USER_TABLE_NAME` | Caller role, status, and assigned location |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Where the manual block is written/deleted |
@@ -649,14 +649,14 @@ Malformed paths return `400`. A recognized request with the wrong method returns
 - API Gateway - `PUT /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
 - API Gateway - `DELETE /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
 
-**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev` or 28 days in `prod`; the caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev`; in `prod` from local midnight of the day after the guest booking horizon, counted from today (today + 22 days, `shared/availability.earliest_layout_change_date`), so no existing booking lands on a changed layout. The caller may also send `effectiveDate` (YYYY-MM-DD, local midnight); too early is `409` `too_early` with `earliestCutoverAt`. The caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
 
 **Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. Dispatch uses the exact API Gateway route and method: `POST` activates a selected version, `PUT` reschedules the singleton pending activation, and `DELETE` cancels it. `locationId` must be non-empty and at most 128 characters. On `POST`, `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
 
 The `POST` body is optional. An omitted body, an API Gateway `null` body, an empty
 string, or `{}` selects the default timing. For a replacement, define
-`eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev` or
-28 days in `prod`. The default activates immediately when server now is at or
+`eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev`, or
+local midnight of today + booking horizon + 1 day in `prod`. The default activates immediately when server now is at or
 after `eligibleAt`; otherwise it schedules the earliest whole UTC minute at or
 after both `eligibleAt` and `now + 60 seconds`; in `prod` that minute then
 moves to the next local midnight (location `timezone`, default
@@ -716,7 +716,7 @@ Malformed paths, malformed/unsupported `POST` or `PUT` bodies, invalid timestamp
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces 28 days |
+| `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces local midnight after the booking horizon (today + 22 days) |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read/update |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` - the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
@@ -809,7 +809,7 @@ earlier lifecycle.
 
 Before writing, the worker independently revalidates that `cutoverAt` is not
 earlier than the target snapshot's `createdAt` plus five minutes in `dev` or
-28 days in `prod`. The transaction also binds each snapshot's immutable
+21 days (the booking horizon, a floor under activate's rule) in `prod`. The transaction also binds each snapshot's immutable
 `createdAt` to the value that was read, so a concurrent or corrupt timestamp
 cannot bypass the policy. An invalid environment or a transition violating
 that delay raises for retry and does not activate the target.
@@ -821,7 +821,7 @@ A missing state item, a state item with no pending transition, or a different au
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 28 days |
+| `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 21 days (the booking horizon) as a floor |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own - this function is the schedule's *target*, not the one creating/deleting schedules.

@@ -246,6 +246,14 @@ def pending_activation_state(
     )
 
 
+def too_early(earliest):
+    return {
+        "error": f"layout version cannot activate before {earliest}",
+        "code": "too_early",
+        "earliestCutoverAt": earliest,
+    }
+
+
 def response_body(response):
     return json.loads(response["body"])
 
@@ -2172,14 +2180,7 @@ def test_reschedule_cannot_bypass_target_eligibility(
         None,
     )
 
-    assert_response(
-        response,
-        409,
-        err((
-                "layout version cannot activate before "
-                "2026-09-09T10:06:00Z"
-            )),
-    )
+    assert_response(response, 409, too_early("2026-09-09T10:06:00Z"))
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
     scheduler_factory.assert_not_called()
 
@@ -3067,10 +3068,10 @@ def test_empty_optional_body_uses_publication_delay(
             "2026-09-07T10:31:00Z",
         ),
         (
-            # prod: next local midnight (audit #25), 00:00 CEST
+            # prod: local midnight after the 21-day booking horizon
             "prod",
             "2026-08-10T10:31:15Z",
-            "2026-09-07T22:00:00Z",
+            "2026-09-28T22:00:00Z",
         ),
     ],
 )
@@ -3112,7 +3113,6 @@ def test_default_replacement_uses_safe_whole_minute_cutover(
     [
         ("dev", "2026-09-07T10:25:00Z"),
         ("dev", "2026-09-07T10:24:00Z"),
-        ("prod", "2026-08-10T10:30:00Z"),
     ],
 )
 def test_default_replacement_is_immediate_once_eligible(
@@ -3182,14 +3182,7 @@ def test_ineligible_replacement_request_is_rejected_without_writes(
         None,
     )
 
-    assert_response(
-        response,
-        409,
-        err((
-                "layout version cannot activate before "
-                "2026-09-07T10:32:00Z"
-            )),
-    )
+    assert_response(response, 409, too_early("2026-09-07T10:32:00Z"))
     scheduler_factory.assert_not_called()
     transaction_factory.assert_not_called()
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
@@ -3665,7 +3658,8 @@ def test_unstaged_current_with_cutoff_returns_409(app_and_table, field):
     ("environment", "expected"),
     [
         ("dev", "2026-09-07T10:31:45.123456Z"),
-        ("prod", "2026-10-05T10:26:45.123456Z"),
+        # prod: from today's local date, not publication: 2026-09-29 00:00
+        ("prod", "2026-09-28T22:00:00Z"),
     ],
 )
 def test_replacement_eligibility_uses_publication_time_and_environment(
@@ -3678,7 +3672,8 @@ def test_replacement_eligibility_uses_publication_time_and_environment(
     monkeypatch.setattr(app, "ENVIRONMENT", environment)
     target = snapshot_item(createdAt="2026-09-07T10:26:45.123456Z")
 
-    assert app._isoformat(app._replacement_eligibility(target)) == expected
+    now = datetime(2026, 9, 7, 10, 30, tzinfo=timezone.utc)
+    assert app._isoformat(app._replacement_eligibility(target, now)) == expected
 
 
 def test_whole_minute_ceiling_normalizes_to_utc(app_and_table):

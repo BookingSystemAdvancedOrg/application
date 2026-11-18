@@ -1,0 +1,202 @@
+# Kom igång, functions/tenant-setup. Not a plan feature. The rule:
+# docs/SETUP-CHECKLIST.md (shared/setup_checklist.py).
+paths:
+  /tenant/setup:
+    get:
+      tags:
+      - TenantSetup
+      summary: The Kom igång checklist for every location (owner)
+      operationId: tenantSetupGet
+      description: |
+        Every applicable step with its state (`done`, `skipped` or `open`),
+        per location for location steps, and the rule's answer: `complete`
+        when no step is open. Each call stores the result on the tenant
+        (Booqy Console reads it); the first complete result sets
+        `completedAt` once and notifies Booqy's operators.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      responses:
+        '200':
+          description: The checklist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupChecklist'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '403':
+          description: no_tenant, owner_only or tenant_inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+  /tenant/setup/skips:
+    put:
+      tags:
+      - TenantSetup
+      summary: Skip a Kom igång step, or undo the skip (owner)
+      operationId: tenantSetupSkip
+      description: |
+        `skipped: true` marks the step skipped ("Hoppa över"), for a location
+        step at `locationId`; `false` undoes it. Every step except `dpa` can
+        be skipped. Answers with the checklist after the change.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantSetupSkip'
+      responses:
+        '200':
+          description: The checklist after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupChecklist'
+        '400':
+          description: 'step is invalid, step can not be skipped, skipped must be true or false, locationId is invalid,
+            locationId is not used for this step, unsupported fields.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '403':
+          description: no_tenant, owner_only or tenant_inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '404':
+          description: 'not_found: the location is not this restaurant''s.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+        '503':
+          description: 'service_unavailable: AWS error.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetupError'
+components:
+  schemas:
+    TenantSetupError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    TenantSetupSkip:
+      type: object
+      additionalProperties: false
+      required: [step, skipped]
+      properties:
+        step:
+          type: string
+          example: stripe
+        locationId:
+          type: string
+          description: Required for a location step, not allowed for a tenant step.
+        skipped:
+          type: boolean
+    TenantSetupState:
+      type: string
+      enum: [done, skipped, open]
+    TenantSetupPlace:
+      type: object
+      required: [locationId, name, state, known, skippedHere]
+      properties:
+        locationId:
+          type: string
+        name:
+          type: string
+        state:
+          $ref: '#/components/schemas/TenantSetupState'
+        known:
+          type: boolean
+          description: false when the step's data could not be read (counts as open).
+        skippedHere:
+          type: boolean
+          description: Skipped with "Hoppa över" (the step's own skips, such as "Inga skrivare än", are not).
+        sub:
+          type: array
+          description: The phone assistant's five sub-steps.
+          items:
+            type: object
+            required: [id, done]
+            properties:
+              id:
+                type: string
+              done:
+                type: boolean
+    TenantSetupStep:
+      type: object
+      required: [id, label, labelEn, scope, skippable, state, known]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+          description: Swedish, as Booqy Admin shows it.
+        labelEn:
+          type: string
+        scope:
+          type: string
+          enum: [tenant, location]
+        skippable:
+          type: boolean
+        state:
+          $ref: '#/components/schemas/TenantSetupState'
+        known:
+          type: boolean
+        skippedHere:
+          type: boolean
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantSetupPlace'
+    TenantSetupChecklist:
+      type: object
+      required: [complete, total, done, skipped, open, steps, completedAt]
+      properties:
+        complete:
+          type: boolean
+        total:
+          type: integer
+        done:
+          type: integer
+        skipped:
+          type: integer
+        open:
+          type: integer
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the rule was first true; kept if a step is reopened later.
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantSetupStep'

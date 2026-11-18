@@ -83,7 +83,29 @@ PURPOSE:
     setup_intent.succeeded webhook, whichever is first) checks the
     SetupIntent with Stripe and turns the booking "reserved" - that is
     when the confirmation goes out. Unconfirmed bookings expire
-    (reservation-reminders). Staff bookings never ask for a card.
+    (reservation-reminders). Staff bookings never ask for a card, except
+    a phone booking that asks for the guarantee link (below).
+
+    Phone guarantee link (the AI phone agent, POST .../reservations/manual
+    with source "phone", a phone number and "guarantee": "link"): when the
+    location's policy asks a card for the party, the booking is created
+    "pending" like an online one (same tables claimed, snapshot, marker),
+    held for guarantee.PHONE_PENDING_MINUTES (30) plus a small margin, with
+    a Stripe Customer + Checkout Session (mode setup) on the restaurant's
+    account instead of a SetupIntent. The answer carries
+    guaranteeLink {url, expiresAt, minutes}; the caller sends the SMS. The
+    Checkout page's SetupIntent carries the booking's metadata: the
+    setup_intent.succeeded webhook turns it reserved (confirmation then);
+    so does the guest's return to the booking's manage page (Checkout's
+    success_url), whose POST .../confirm reads the completed Checkout
+    Session. Without a card requirement the booking is reserved as usual.
+    PHONE_CARD_PAGE "site" instead texts the booking's manage link on the
+    restaurant's own site: the booking gets a SetupIntent exactly like an
+    online one (guaranteeLink.page "site"), the manage page's GET hands it
+    the card form (get-reservation) and POST .../confirm or the webhook
+    confirms it. Only for a tenant whose row has cardStepOnManagePage true
+    (its live site runs site-kit 0.4.0 or later, which has the card step);
+    without it, or without a site address or link key: the Stripe page.
 
     Multi-tenant: the location decides the tenant (public route) or the
     token does (staff route, staff limited to their own location). Tenants
@@ -96,19 +118,21 @@ ENV_VARS:
     RESERVATION_RETENTION_DAYS (optional, default 395),
     RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (card guarantee)
+    PHONE_CARD_PAGE (optional: "site" or "stripe", default "stripe"; a phone guest's card page)
     BOT_CHECK_ENFORCED, SITE_WAF_SECRET (bot check, shared/bot_check.py)
     REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
 
 Full details: docs/RESERVATIONS.md
 """
 
-from botocore.exceptions import BotoCoreError, ClientError
-
+import os
 from datetime import timedelta
+
+from botocore.exceptions import BotoCoreError, ClientError
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import bot_check, request_guard, tenant
+from shared import bot_check, request_guard, site, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -125,8 +149,10 @@ _ONLINE_FIELDS = {
 }
 _MANUAL_FIELDS = (_ONLINE_FIELDS - {"acceptTerms", "marketingOptIn", "turnstileToken", "holdId",
                                     "attribution", "marketingConsent"}) | {
-    "source", "notifyGuest",
+    "source", "notifyGuest", "guarantee",
 }
+# Where a phone guest lands after the Stripe page when the site's address is unknown.
+FALLBACK_RETURN_URL = "https://booqy.se"
 # Online booking attempts: (max attempts, window seconds) per client.
 IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
@@ -179,6 +205,13 @@ def _create(event, *, staff):
         if source not in r.SOURCES - {"online"}:
             raise ValueError("source must be phone, walk_in or staff")
         notify = r.notify_flag({"notifyGuest": data.get("notifyGuest", source != "walk_in")})
+        link = data.get("guarantee")
+        if link not in (None, "link"):
+            raise ValueError("guarantee must be link")
+        if link and source != "phone":
+            raise ValueError("guarantee link is for phone bookings")
+        if link and not guest.get("customerPhone"):
+            raise ValueError("guarantee link needs the guest's phone number")
     else:
         notify = True
         source = "online"
@@ -197,7 +230,7 @@ def _create(event, *, staff):
         "party_size": party_size, "guest": guest, "source": source, "notify": notify,
     }
     if staff:
-        return _book(ctx, location_id, now, staff=True, **booking)
+        return _book(ctx, location_id, now, staff=True, link=bool(link), **booking)
     if data.get("holdId") is not None:
         # The tables are already the guest's (held); the bot check was done
         # when they were held - only the per-guest limits apply here. As in
@@ -265,8 +298,50 @@ def _checked_slot(ctx, location_id, now, *, staff, source, date_str, start_time,
     return versions, context, slot, seats
 
 
+def _return_urls(ctx, item):
+    """(success, cancel) of a phone guest's Stripe page: the booking's
+    manage page (it confirms the booking and shows it booked) and the
+    restaurant's public site (shared/site.py); booqy.se when unknown."""
+    try:
+        base, slug = site.base(ctx.tenant_id, ctx.tenant)
+    except (BotoCoreError, ClientError, KeyError):
+        base, slug = None, None
+    if not base:
+        return FALLBACK_RETURN_URL, FALLBACK_RETURN_URL
+    home = site.page(base, slug, "/")
+    try:
+        return manage_link.url(base, item, slug=slug) or home, home
+    except manage_link.LinkKeyUnavailable:
+        return home, home
+
+
+def phone_card_page():
+    """PHONE_CARD_PAGE: where a phone guest adds the card - "site" (the
+    booking's manage page on the restaurant's site) or "stripe" (a
+    Stripe-hosted Checkout page, the default; also for any other value)."""
+    return "site" if (os.environ.get("PHONE_CARD_PAGE") or "").strip().lower() == "site" else "stripe"
+
+
+def _site_card_page(ctx, item):
+    """The booking's manage link on the restaurant's site, or None (then the
+    Stripe page) when the tenant's live site has no card step yet (tenant
+    row cardStepOnManagePage, set once its site runs site-kit 0.4.0 or
+    later; an older manage page tells the guest the booking failed), or the
+    site's address or the link key is unknown."""
+    if (ctx.tenant or {}).get("cardStepOnManagePage") is not True:
+        return None
+    try:
+        base, slug = site.base(ctx.tenant_id, ctx.tenant)
+    except (BotoCoreError, ClientError, KeyError):
+        return None
+    try:
+        return manage_link.url(base, item, slug=slug) if base else None
+    except manage_link.LinkKeyUnavailable:
+        return None
+
+
 def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
-          party_size, guest, source, notify):
+          party_size, guest, source, notify, link=False):
     versions, context, slot, seats = _checked_slot(
         ctx, location_id, now, staff=staff, source=source, date_str=date_str,
         start_time=start_time, table_ids=table_ids, party_size=party_size)
@@ -302,8 +377,36 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
-    setup = None
-    if not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
+    setup = checkout = None
+    if staff and link and guarantee.required(ctx.location, ctx.tenant, party_size):
+        # A phone booking with the card guarantee: pending until the guest
+        # adds the card on the Stripe page the SMS links to.
+        account = guarantee.stripe_account(ctx.tenant, ctx.location)
+        expires = guarantee.phone_pending_expires(now)
+        item.update({
+            "status": r.PENDING,
+            "pendingExpiresAt": r.iso(expires),
+            "guarantee": guarantee.snapshot(ctx.location, party_size),
+            "stripeAccountId": account,
+            "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
+        })
+        page = _site_card_page(ctx, item) if phone_card_page() == "site" else None
+        if page:
+            # The restaurant's own card page: the booking's manage page shows
+            # the card form, exactly as after an online booking (SetupIntent).
+            customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
+            item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
+            url = page
+        else:
+            success_url, cancel_url = _return_urls(ctx, item)
+            customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
+                                                            success_url=success_url, lang=item.get("language"),
+                                                            now=now)
+            item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
+            url = session["url"]
+        checkout = {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
+                    "page": "site" if page else "stripe"}
+    elif not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
         # Card guarantee: pending until the guest confirms the card; the
         # confirmation (notice) is sent then, not now.
         account = guarantee.stripe_account(ctx.tenant, ctx.location)
@@ -340,11 +443,14 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
             {"Put": {"TableName": r.reservation_table(), "Item": r.serialize(pointer),
                      "ConditionExpression": "attribute_not_exists(PK)"}},
         ]
-        + ([guarantee.marker_put(item)] if setup else [])
+        + ([guarantee.marker_put(item)] if setup or checkout else [])
     )
 
     if staff:
-        return http.respond(201, r.staff_view(item))
+        body = r.staff_view(item)
+        if checkout:
+            body["guaranteeLink"] = checkout
+        return http.respond(201, body)
     body = r.guest_view(item, ctx.location, now=now)
     if manage_token:
         body["manageToken"] = manage_token

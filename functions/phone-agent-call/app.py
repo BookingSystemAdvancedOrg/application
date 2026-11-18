@@ -43,6 +43,7 @@ import json
 import logging
 import os
 from datetime import timedelta
+from xml.sax.saxutils import escape
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -50,7 +51,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import agent_model, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
-from shared.features.phone_agent import calls, copy, session
+from shared.features.phone_agent import calls, copy, language, session
 from shared.features.phone_agent import locations as locations_mod
 from shared.features.phone_agent.tools import lambda_invoker
 
@@ -471,8 +472,9 @@ def _turn_key(call, messages, text):
     return digest.hexdigest()[:32]
 
 
-def run_call_turn(call, text, at):
-    """One caller utterance -> (reply, provider actions)."""
+def run_call_turn(call, text, at, asr_locale=None):
+    """One caller utterance -> (reply, provider actions). `asr_locale`: the
+    recognizer's locale (the Connect line), stored on the caller's turn."""
     lang = call.get("language") or "sv"
     if call.get("locationPending"):
         options = [{**(tenant.get_location(call["tenantId"], x) or {}), "locationId": x}
@@ -489,12 +491,30 @@ def run_call_turn(call, text, at):
         return copy.text(copy.MAX_LENGTH, lang), [{"name": "end_call", "arguments": {"reason": "max_length"}}]
     result, updated, state, actions = session.call_turn(
         call, text, model=client("model"), invoke=invoker(), voice=client("voice"), tenant_row=tenant_row,
-        location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)))
+        location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)),
+        send_sms=sms_sender(), asr_locale=asr_locale)
     if result.error:
         session.metric("ProviderErrors", 1)
     if (state.get("transfer") or {}).get("answered"):
         finish(updated, at, "transferred")
     return result.reply, actions
+
+
+def sms_sender():
+    """send_sms for the tools: one SMS to the caller (the card guarantee
+    link) as a phone-agent feature notice through notification:live (Event;
+    the Nordic-prefix rule and the restaurant's sender name apply there).
+    None without NOTIFICATION_FUNCTION_NAME: the tools fall back to a callback."""
+    name = os.environ.get("NOTIFICATION_FUNCTION_NAME")
+    if not name:
+        return None
+
+    def send(*, tenant_id, location_id, to, text):
+        notice = {"version": 1, "kind": "phone-agent.guarantee-link", "tenantId": tenant_id,
+                  "locationId": location_id, "channel": "sms", "to": to, "text": text, "replyTo": None}
+        client("lambda").invoke(FunctionName=name, InvocationType="Event",
+                                Payload=json.dumps({"notice": notice}).encode("utf-8"))
+    return send
 
 
 def updated_or(call):
@@ -503,21 +523,101 @@ def updated_or(call):
 
 # --- Amazon Connect + Lex V2 (the AWS-only test line, owner 2026-11-13) -----------------------
 
-LEX_CALL_PREFIX = "connect-"
+LEX_CALL_PREFIX = language.CONNECT_PREFIX
+# Session attributes the relay sets for the Connect flow; dropped again on an ordinary turn.
+_FLOW_ATTRIBUTES = ("next", "say", "connectLanguage", "voice", "engine")
 
 
-def _lex_answer(event, text, *, close=False, attributes=None):
+def _lex_answer(event, text, *, close=False, attributes=None, nxt=None, speak=True):
     """A Lex V2 code hook response: say `text`, then listen again (ElicitIntent)
-    or end the conversation (Close; the Connect flow hangs up)."""
-    state = {"sessionAttributes": {**((event.get("sessionState") or {}).get("sessionAttributes") or {}),
-                                   **(attributes or {})}}
+    or end the conversation (Close, intent Fulfilled; the Connect flow hangs
+    up unless `next` is "switch"). `nxt` sets the `next` session attribute
+    ("end", "switch"); speak=False sends no message (a language switch: the
+    flow speaks the reply in the new voice from the `say` attribute)."""
+    attrs = dict((event.get("sessionState") or {}).get("sessionAttributes") or {})
+    for key in _FLOW_ATTRIBUTES:
+        attrs.pop(key, None)
+    state = {"sessionAttributes": {**attrs, **(attributes or {}), **({"next": nxt} if nxt else {})}}
     if close:
         intent = dict((event.get("sessionState") or {}).get("intent") or {"name": "FallbackIntent"})
         intent["state"] = "Fulfilled"
         state.update({"dialogAction": {"type": "Close"}, "intent": intent})
     else:
         state["dialogAction"] = {"type": "ElicitIntent"}
-    return {"sessionState": state, "messages": [{"contentType": "PlainText", "content": text or "..."}]}
+    messages = [{"contentType": "SSML", "content": _ssml(text or "...")}] if speak else []
+    return {"sessionState": state, "messages": messages}
+
+
+# Polly on the Connect test line: a little slower than its default, which sounded hurried.
+LEX_SPEECH_RATE = "92%"
+
+
+def _ssml(text):
+    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE."""
+    said = escape(str(text), {'"': "&quot;", "'": "&apos;"})
+    return f'<speak><prosody rate="{LEX_SPEECH_RATE}">{said}</prosody></speak>'
+
+
+def _lex_switch(event, reply, lang, ids, *, end=False):
+    """The handshake to the Connect flow on a language switch: Close (intent
+    Fulfilled) with no message, next=switch and what the flow needs to set
+    the language and voice and start the bot again in that locale; `say` is
+    the reply (with the short disclosure in the new language) that the new
+    voice speaks first. end=True (the same turn also ended the call) sends
+    next=switchEnd: the flow sets the voice, speaks `say` and hangs up.
+    `engine` is Connect's spelling (Neural, Standard); the JSON keeps Lex's
+    lowercase for the bot template."""
+    spec = language.AWS_LANGUAGES[lang]
+    attrs = (event.get("sessionState") or {}).get("sessionAttributes") or {}
+    switch = {**ids, "say": _ssml(reply or "..."), "connectLanguage": spec["connectLanguage"],
+              "voice": spec["voice"], "engine": spec["engine"].capitalize(),
+              **{k: attrs[k] for k in ("callerNumber", "dialedNumber") if attrs.get(k)}}
+    return _lex_answer(event, "", close=True, attributes=switch, nxt="switchEnd" if end else "switch",
+                       speak=False)
+
+
+# The Swedish recognizer's confidence below which an utterance counts as not made out (Lex V2
+# `transcriptions[].transcriptionConfidence`) [VERIFY ON A REAL CALL: the threshold].
+GARBLED_CONFIDENCE = 0.4
+
+
+def _confidence(event):
+    """The best transcription confidence Lex reports for the utterance, else None."""
+    found = [t.get("transcriptionConfidence") for t in event.get("transcriptions") or [] if isinstance(t, dict)]
+    found = [float(x) for x in found if isinstance(x, (int, float))]
+    return max(found) if found else None
+
+
+def _garbled(call, event, text):
+    """A caller the Swedish recognizer could not make out, in a Swedish call
+    that never switched, and no language could be told from the words: the
+    call asks once (Swedish, then English) which language they speak."""
+    if call.get("language", "sv") != "sv" or call.get("languageAsked") or call.get("languageSwitches"):
+        return False
+    if (event.get("bot") or {}).get("localeId", "sv_SE") != "sv_SE":
+        return False
+    confidence = _confidence(event)
+    return confidence is not None and confidence < GARBLED_CONFIDENCE and language.words(text) >= 3 and \
+        language.hint(text) is None and not language.asked_for_language(text)
+
+
+def _ask_language(call, text, at, locale):
+    calls.append_turn(call, "caller", text, at, asr_locale=locale)
+    reply = copy.ask_language()
+    calls.append_turn(call, "agent", reply, at, lang="sv")
+    current = calls.get_call(call["tenantId"], call["callId"]) or call
+    calls.set_status(current, "talking", ["answered", "disclosed", "talking"], languageAsked=True)
+    return reply
+
+
+def _sync_locale(call, locale):
+    """The bot runs in another locale than the call's language (the flow fell
+    back to Swedish after a failed switch): the call follows the locale, so
+    the voice and the language the agent answers in agree."""
+    found = language.locale_language(locale)
+    if found and found != (call.get("language") or "sv"):
+        return calls.set_status(call, call["status"], [call["status"]], language=found) or call
+    return call
 
 
 def lex_turn(event):
@@ -525,13 +625,25 @@ def lex_turn(event):
 
     Amazon Connect plays the greeting with the art. 50 disclosure (the flow's
     first prompt) and starts the Lex bot with the called and calling numbers
-    as session attributes; Lex (sv_SE) transcribes, this answers with the
-    agent's reply, which Connect speaks with Polly (Elin). The first utterance
-    starts the call row like a provider's call_started; the greeting the flow
-    played is the disclosure evidence."""
+    as session attributes; Lex transcribes in the locale of the call's
+    language, this answers with the agent's reply, which Connect speaks with
+    that language's Polly voice. The first utterance starts the call row like
+    a provider's call_started; the greeting the flow played is the
+    disclosure evidence.
+
+    The responses (the handshake with the flow):
+      * an ordinary turn: ElicitIntent with the reply;
+      * a language switch: Close with no message, next=switch, say (the
+        reply as SSML), connectLanguage, voice, engine, tenantId, callId,
+        lang, callerNumber, dialedNumber; the flow sets the language and
+        voice and starts the bot again in the new locale (at most
+        language.MAX_CONNECT_SWITCHES per call);
+      * the end: Close with the goodbye and next=end; a switch in the
+        same turn sends the switch attributes with next=switchEnd instead."""
     attrs = (event.get("sessionState") or {}).get("sessionAttributes") or {}
     session_id = event.get("sessionId") or ""
     text = " ".join(str(event.get("inputTranscript") or "").split())
+    locale = (event.get("bot") or {}).get("localeId")
     at = pa.now()
     call_ref = LEX_CALL_PREFIX + session_id
     call = None
@@ -540,24 +652,37 @@ def lex_turn(event):
     if call is None:
         call = start_call(call_ref=call_ref, caller=attrs.get("callerNumber"), to=attrs.get("dialedNumber"), at=at)
         if call is None:
-            return _lex_answer(event, copy.REFUSED["sv"], close=True)
+            return _lex_answer(event, copy.REFUSED["sv"], close=True, nxt="end")
         if call.get("status") == "answered":
             calls.disclosed(call, at, spoken=(call.get("disclosure") or {}).get("text"))
             call = calls.get_call(call["tenantId"], call["callId"]) or call
     ids = {"tenantId": call["tenantId"], "callId": call["callId"]}
     if call.get("status") not in ("answered", "disclosed", "talking", "transferring"):
         return _lex_answer(event, copy.REFUSED["sv"] if call.get("outcome") == "refused" else "", close=True,
-                           attributes=ids)
+                           attributes=ids, nxt="end")
+    call = _sync_locale(call, locale)
+    lang = call.get("language") or "sv"
     if not text:
-        return _lex_answer(event, copy.text(copy.STILL_THERE, call.get("language") or "sv"), attributes=ids)
-    reply, actions = run_call_turn(call, text, at)
+        return _lex_answer(event, copy.text(copy.STILL_THERE, lang), attributes={**ids, "lang": lang})
+    if _garbled(call, event, text):
+        return _lex_answer(event, _ask_language(call, text, at, locale), attributes={**ids, "lang": lang})
+    reply, actions = run_call_turn(call, text, at, asr_locale=locale)
     names = {a["name"] for a in actions}
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     done = "end_call" in names or current.get("status") in ("ended", "processed")
     if done and current.get("status") != "processed":
         # Lex Close makes the Connect flow hang up: the call ends here, not at the sweep.
         finish(current, at, "agent_end")
-    return _lex_answer(event, reply, close=done, attributes=ids)
+    now_lang = current.get("language") or lang
+    ids["lang"] = now_lang
+    switched = now_lang != lang and now_lang in language.AWS_LANGUAGES
+    if switched:
+        # also when the turn ended the call: the goodbye is in the new language, so the new voice says it
+        session.metric("LanguageSwitches", 1)
+        return _lex_switch(event, reply, now_lang, ids, end=done)
+    if done:
+        return _lex_answer(event, reply, close=True, attributes=ids, nxt="end")
+    return _lex_answer(event, reply, attributes=ids)
 
 
 # --- dispatch ----------------------------------------------------------------------------
@@ -574,7 +699,8 @@ def handler(event, context=None):
             return lex_turn(event["lexV2"])
         except (BotoCoreError, ClientError) as exc:
             logger.error(json.dumps({"route": "lex", "aws": type(exc).__name__}))
-            return _lex_answer(event["lexV2"], "Förlåt, något gick fel. Ring gärna igen om en stund.", close=True)
+            return _lex_answer(event["lexV2"], "Förlåt, något gick fel. Ring gärna igen om en stund.", close=True,
+                               nxt="end")
     method, path = http.route(event)
     try:
         if event.get("routeKey") in (None, "$default"):  # the Function URL: route by path

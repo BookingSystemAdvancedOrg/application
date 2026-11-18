@@ -72,14 +72,17 @@
     "nystartad",
     "uppstart"
    ],
-   "answer": "Checklistan Kom igång på Översikten tar dig igenom det som behövs innan gästerna kan boka och beställa.",
+   "answer": "Checklistan Kom igång på Översikten visar det som är kvar innan gästerna kan boka och beställa, för den plats som är vald. Bara ägaren ser den. Tryck på ? vid ett steg för att fråga om just det steget.",
    "steps": [
     "Godkänn personuppgiftsbiträdesavtalet under Avtal.",
     "Lägg in öppettider under Inställningar, Restaurangen, Öppettider och avvikande dagar.",
     "Lägg upp menyn under Meny.",
-    "Rita, publicera och aktivera en bordslayout under Layout.",
-    "Slutför Stripe under Inställningar, Ekonomi, Betalningar, så att ni kan ta betalt med kort.",
-    "Bjud in personalen under Personal."
+    "Lägg till kvittoskrivare under Inställningar, Beställning, Kvittoskrivare. Steget finns när ni har beställningar.",
+    "Publicera och aktivera en bordslayout under Layout.",
+    "Slutför Stripe under Inställningar, Ekonomi, Betalningar.",
+    "Bjud in personalen under Personal.",
+    "Koppla Google-profilen (valfritt) under Inställningar, Restaurangen, Google-profil.",
+    "Ställ in telefonassistenten under Telefon (när den ingår i er plan)."
    ],
    "actions": [
     {
@@ -89,6 +92,628 @@
     }
    ],
    "suggestion": "Vad behöver jag göra för att komma igång?",
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-dpa",
+   "route": "/avtal",
+   "title": "Kom igång: Godkänn personuppgiftsbiträdesavtalet",
+   "audience": "owner",
+   "setup": "dpa",
+   "keywords": [
+    "personuppgiftsbiträdesavtalet",
+    "avtal",
+    "godkänn avtalet",
+    "biträdesavtal",
+    "ny version av avtalet",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när restaurangens ägare har godkänt personuppgiftsbiträdesavtalet under Avtal. Avtalet beskriver hur Booqy behandlar era gästers personuppgifter för er räkning. Er webbplats publiceras först när det är godkänt. Kommer en ny version behöver den godkännas igen.",
+   "steps": [
+    "Tryck på steget i Kom igång, eller öppna Avtal.",
+    "Läs avtalet.",
+    "Kryssa i Jag har läst avtalet och har rätt att godkänna det.",
+    "Tryck Godkänn avtalet. Steget blir Klart direkt.",
+    "Bara ägaren kan godkänna. Personal ser inte steget och får be ägaren logga in.",
+    "Står det Avtalet godkändes inte: försök igen om en stund. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-dpa-open",
+     "label": "Öppna avtalet",
+     "to": "/avtal"
+    }
+   ],
+   "questions": [
+    "Hur godkänner jag avtalet?",
+    "Varför behövs avtalet?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-menu",
+   "route": "/meny",
+   "title": "Kom igång: Lägg upp menyn",
+   "audience": "owner",
+   "setup": "menu",
+   "keywords": [
+    "menyn",
+    "lägg upp menyn",
+    "meny",
+    "rätt",
+    "rätter",
+    "aktiv rätt",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när platsen har minst en aktiv rätt i Meny. En rätt som är avslagen (dold för gästerna) räknas inte. Aktiva rätter syns för gästerna på webbplatsen.",
+   "steps": [
+    "Öppna Meny.",
+    "Tryck Lägg till rätt.",
+    "Fyll i Namn, Kategori och Pris (kr) och välj en bild. Beskrivning är frivillig.",
+    "Låt Aktiv vara påslagen och tryck Lägg till rätt.",
+    "Står steget kvar? Kontrollera att rätt plats är vald och att minst en rätt har reglaget påslaget.",
+    "Ägaren och personal med behörighet till Meny kan lägga upp rätter. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-menu-open",
+     "label": "Lägg till rätt",
+     "to": "/meny",
+     "pageAction": "new-dish"
+    }
+   ],
+   "questions": [
+    "Hur lägger jag upp menyn?",
+    "Varför räknas inte mina rätter?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-printers",
+   "route": "/installningar",
+   "title": "Kom igång: Kvittoskrivare",
+   "audience": "owner",
+   "feature": "ordering",
+   "setup": "printers",
+   "keywords": [
+    "vad skickas vart",
+    "kök och dryck",
+    "välja vad som går till kök",
+    "kvittoskrivare",
+    "skrivare",
+    "kökskrivare",
+    "bong",
+    "kök",
+    "dryck",
+    "annat",
+    "inga skrivare än",
+    "testutskrift",
+    "skickas till",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när platsen har minst en kvittoskrivare. Varje skrivare är Kök, Dryck eller Annat. Maten skrivs ut på Kök och drycken på Dryck; finns bara Kök skrivs drycken där, och tvärtom. Har ni ingen skrivare än: tryck Inga skrivare än. Steget står då kvar som gult men stoppar inget.",
+   "steps": [
+    "Öppna Inställningar, välj Beställning och sedan Kvittoskrivare.",
+    "Tryck Lägg till skrivare, välj Kök, Dryck eller Annat, ge den ett namn och tryck Lägg till.",
+    "Skriv in Server-URL, användarnamn och lösenord i skrivaren direkt. Lösenordet visas bara en gång.",
+    "Tryck Testutskrift. Lappen kommer ut inom några sekunder.",
+    "Under Vad skickas vart? väljer du med ett tryck vilken skrivare varje kategori går till. En enskild rätt väljer egen under Skickas till i Meny.",
+    "Ägaren, personal med behörighet till Beställningar och Booqy kan lägga till skrivare. Att ta bort en skrivare gör ägaren."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-printers-open",
+     "label": "Öppna Kvittoskrivare",
+     "to": "/installningar",
+     "hash": "skrivare"
+    }
+   ],
+   "questions": [
+    "Hur lägger jag till en kvittoskrivare?",
+    "Vad gör jag om skrivaren inte skriver ut?",
+    "Hur väljer jag vad som går till Kök och Dryck?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-printers-fel",
+   "route": "/installningar",
+   "title": "Kvittoskrivaren skriver inte ut",
+   "audience": "owner",
+   "feature": "ordering",
+   "setup": "printers",
+   "keywords": [
+    "skrivaren svarar inte",
+    "skriver inte ut",
+    "utskriften gick inte",
+    "kvittoskrivare fungerar inte",
+    "ingen bong",
+    "cloudprnt",
+    "server direct print",
+    "kvittoskrivare",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Står det Svarar inte är skrivaren inte i kontakt med Booqy. Notor som väntar skrivs ut så fort skrivaren är tillbaka. Booqy fungerar med Star (CloudPRNT, till exempel mC-Print3) och Epson (Server Direct Print, till exempel TM-m30III) som har internet.",
+   "steps": [
+    "Kontrollera kabeln och att skrivaren har internet.",
+    "Star: kontrollera att CloudPRNT är på och att Server-URL är exakt rätt.",
+    "Epson: fyll i användarnamn (ID) och lösenord under autentisering, spara och starta om skrivaren.",
+    "Tryck Testutskrift igen.",
+    "Skrivs bara vissa rätter inte ut? Kolla Skickas till: Ingen bong betyder att inget skrivs ut.",
+    "En obetald eller avbruten beställning skrivs aldrig ut.",
+    "Fungerar det ändå inte: Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-printers-fel-open",
+     "label": "Öppna Kvittoskrivare",
+     "to": "/installningar",
+     "hash": "skrivare"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-layout",
+   "route": "/layout",
+   "title": "Kom igång: Publicera och aktivera en bordslayout",
+   "audience": "owner",
+   "setup": "layout",
+   "keywords": [
+    "bordslayout",
+    "layout",
+    "publicera",
+    "aktivera",
+    "bord",
+    "matsalen",
+    "version",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när platsen har en publicerad layout som gäller nu. Publicera layout sparar utkastet, publicerar det och aktiverar versionen. Gästerna väljer bord på planritningen när de bokar online.",
+   "steps": [
+    "Öppna Layout och rita matsalen med borden.",
+    "Tryck Spara utkast.",
+    "Tryck Publicera layout. Versionen aktiveras direkt.",
+    "Under Versioner ser du vilken version som gäller nu och vilken som tar över, med datum.",
+    "Röda bord står ovanpå varandra: flytta isär dem och publicera igen.",
+    "En ny version tar över tidigast dagen efter bokningsfönstret (gäster bokar 21 dagar fram), så ingen bokning hamnar på en ändrad ritning. Välj datum under Versioner.",
+    "Bara ägaren (och Booqy) kan publicera och aktivera. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-layout-open",
+     "label": "Öppna Layout",
+     "to": "/layout"
+    }
+   ],
+   "questions": [
+    "Hur publicerar jag bordslayouten?",
+    "Varför står steget kvar efter att jag publicerat?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-stripe",
+   "route": "/installningar",
+   "title": "Kom igång: Slutför Stripe för kortbetalningar",
+   "audience": "owner",
+   "setup": "stripe",
+   "keywords": [
+    "stripe",
+    "kortbetalningar",
+    "betalningar",
+    "utbetalningar",
+    "bankuppgifter",
+    "slutför stripe",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när Stripe har aktiverat kortbetalningar för restaurangen. Kontot skapas av Booqy när restaurangen registreras; ägaren fyller i företags- och bankuppgifter hos Stripe. Granskar Stripe uppgifterna kan det ta en stund innan steget blir klart.",
+   "steps": [
+    "Öppna Inställningar, välj Ekonomi och sedan Betalningar.",
+    "Tryck Slutför Stripe-konfigurationen (eller Komplettera uppgifter hos Stripe).",
+    "Fyll i uppgifterna hos Stripe och kom tillbaka till Booqy.",
+    "Står det Stripe granskar uppgifterna: vänta, Stripe kan be om fler uppgifter.",
+    "När det står Redo att ta emot betalningar är steget klart.",
+    "Står det Inget Stripe-konto än eller Ert Stripe-konto hittas inte: det ordnar Booqy. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det.",
+    "Bara ägaren hanterar Stripe."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-stripe-open",
+     "label": "Öppna Betalningar",
+     "to": "/installningar",
+     "hash": "betalningar"
+    }
+   ],
+   "questions": [
+    "Hur slutför jag Stripe?",
+    "Varför är Stripe inte klart än?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-staff",
+   "route": "/personal",
+   "title": "Kom igång: Bjud in personal",
+   "audience": "owner",
+   "setup": "staff",
+   "keywords": [
+    "bjud in personal",
+    "personal",
+    "medarbetare",
+    "inbjudan",
+    "anställd",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget blir klart när minst en person med rollen personal finns under Personal. Den som bjuds in får ett mejl och loggar in med egen inloggning. Fler ägare läggs till av Booqy.",
+   "steps": [
+    "Öppna Personal.",
+    "Tryck Bjud in personal.",
+    "Fyll i Namn, E-post, Telefon, Roll och Plats, och välj Behörigheter.",
+    "Tryck Skicka inbjudan.",
+    "Kom inget mejl? Be personen titta i skräpposten och kontrollera e-postadressen.",
+    "Bara ägaren bjuder in personal. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-staff-open",
+     "label": "Bjud in personal",
+     "to": "/personal",
+     "pageAction": "invite-staff"
+    }
+   ],
+   "questions": [
+    "Hur bjuder jag in personal?",
+    "Personen fick inget mejl, vad gör jag?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-google",
+   "route": "/installningar",
+   "title": "Kom igång: Google-profil (valfritt)",
+   "audience": "owner",
+   "feature": "googleBusiness",
+   "setup": "google",
+   "keywords": [
+    "google-profil",
+    "google",
+    "företagsprofil",
+    "google maps",
+    "koppla google",
+    "hoppa över",
+    "vi har ingen google-profil",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Steget är valfritt. Det blir klart när platsen är kopplad till sin Google-plats, eller när ni trycker Vi har ingen Google-profil. Kopplad skickar Booqy era öppettider till Google, så ändra öppettiderna i Booqy, inte i Google.",
+   "steps": [
+    "Öppna Inställningar, välj Restaurangen och sedan Google-profil.",
+    "Tryck Koppla Google.",
+    "Välj det Google-konto som äger restaurangens Google-profil (det ni använder i Google Maps).",
+    "Tryck Tillåt (ibland Fortsätt).",
+    "Välj er restaurang i listan och tryck Koppla platsen.",
+    "Google har inte verifierat appen: tryck Avancerat och sedan Gå till Booqy (osäkert). Det är säkert.",
+    "Restaurangen finns inte i listan: välj rätt konto, Skapa en gratis profil, eller tryck Vi har ingen Google-profil.",
+    "Bara ägaren kopplar Google. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-google-open",
+     "label": "Öppna Google-profil",
+     "to": "/installningar",
+     "hash": "google"
+    }
+   ],
+   "questions": [
+    "Hur kopplar jag Google-profilen?",
+    "Vad händer om vi hoppar över Google?",
+    "Vår restaurang finns inte i listan"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone",
+   "route": "/telefon",
+   "title": "Kom igång: Telefonassistent",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone",
+   "keywords": [
+    "telefonassistent",
+    "telefonassistenten",
+    "telefon",
+    "assistenten",
+    "samtal",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Telefonassistenten svarar i telefon åt restaurangen. Steget blir klart när alla fem delsteg är klara: Namn, Tider, Booqy-nummer, Vidarekoppling och Provsamtal. Steget öppnar guiden på första delsteget som inte är klart.",
+   "steps": [
+    "Tryck på Telefonassistent i Kom igång, eller öppna Telefon och fliken Inställningar.",
+    "Namn: vad assistenten ska heta.",
+    "Tider: när assistenten ska svara.",
+    "Booqy-nummer: skaffa numret samtalen går till.",
+    "Vidarekoppling: koppla restaurangens nummer till Booqy-numret.",
+    "Provsamtal: ring och prova.",
+    "Bara ägaren ställer in assistenten. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-open",
+     "label": "Öppna Telefon",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar"
+     }
+    }
+   ],
+   "questions": [
+    "Hur ställer jag in telefonassistenten?",
+    "Vilka delsteg har telefonassistenten?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone-namn",
+   "route": "/telefon",
+   "title": "Telefonassistent, delsteg Namn",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone:namn",
+   "keywords": [
+    "namn",
+    "assistentens namn",
+    "vad ska assistenten heta",
+    "ton",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Namn är klart när assistentens inställningar har sparats första gången. Assistenten presenterar sig med namnet i telefon. Behåll Booqy eller skriv ett eget.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar. Det är steg 1 av 5.",
+    "Skriv ett namn, eller behåll Booqy.",
+    "Tryck Nästa. Då sparas namnet och delsteget blir klart.",
+    "Står det Skriv ett namn på assistenten: fältet är tomt, skriv till exempel Booqy.",
+    "Står det att någon annan ändrade samtidigt: gör ändringen igen."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-namn-open",
+     "label": "Öppna Namn",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar",
+      "steg": "namn"
+     }
+    }
+   ],
+   "questions": [
+    "Vad ska assistenten heta?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone-tider",
+   "route": "/telefon",
+   "title": "Telefonassistent, delsteg Tider",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone:tider",
+   "keywords": [
+    "lägg in öppettider först",
+    "öppettider först",
+    "assistentens tider",
+    "tider",
+    "när ska assistenten svara",
+    "när ni har stängt",
+    "när ni inte hinner svara",
+    "alltid",
+    "läge",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Tider är klart när assistenten vet när den ska svara: När ni har stängt, När ni inte hinner svara eller Alltid. De två första följer platsens öppettider, Alltid svarar dygnet runt.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar. Det är steg 2 av 5.",
+    "Tryck på det som passar er och tryck Nästa.",
+    "Står det Lägg in öppettider först: platsen saknar öppettider. Lägg in dem under Inställningar, Restaurangen, Öppettider och avvikande dagar. Eller välj Alltid.",
+    "Tiderna kan ändras senare under Fler inställningar."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-tider-open",
+     "label": "Öppna Tider",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar",
+      "steg": "tider"
+     }
+    }
+   ],
+   "questions": [
+    "När ska assistenten svara?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone-nummer",
+   "route": "/telefon",
+   "title": "Telefonassistent, delsteg Booqy-nummer",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone:nummer",
+   "keywords": [
+    "booqy-nummer",
+    "skaffa nummer",
+    "nummer",
+    "eget nummer",
+    "testnummer",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Booqy-nummer är klart när platsen har ett eget Booqy-nummer och assistenten är påslagen. Numret ingår i er plan. Restaurangens vanliga nummer ändras inte; samtal kopplas vidare till Booqy-numret i nästa steg.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar. Det är steg 3 av 5.",
+    "Tryck Skaffa nummer. Det tar några sekunder.",
+    "Har ni flera platser kan de dela nummer. Då frågar assistenten först vilken restaurang det gäller.",
+    "Tryck Nästa.",
+    "Står det att det inte finns något ledigt nummer just nu: det är Booqys fel, inte ert. Försök igen om en stund. Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-nummer-open",
+     "label": "Öppna Booqy-nummer",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar",
+      "steg": "nummer"
+     }
+    }
+   ],
+   "questions": [
+    "Hur skaffar jag ett Booqy-nummer?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone-koppla",
+   "route": "/telefon",
+   "title": "Telefonassistent, delsteg Vidarekoppling",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone:koppla",
+   "keywords": [
+    "vidarekoppling",
+    "vidarekoppla",
+    "koppla ert nummer",
+    "operatör",
+    "kod",
+    "telia",
+    "tele2",
+    "telenor",
+    "tre",
+    "växel",
+    "fast telefon",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Vidarekoppling är klart när ni har kopplat restaurangens nummer till Booqy-numret och tryckt Klart. Samtal ni inte svarar på går då till assistenten (med Alltid går alla samtal dit). Ert nummer är detsamma.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar. Det är steg 4 av 5. Skaffa Booqy-numret först.",
+    "Tryck på er operatör: Telia, Tele2, Telenor, Tre eller Annan. Fast telefon eller växel finns längre ned.",
+    "Slå koderna som visas, en i taget, på restaurangens telefon och tryck på den gröna lur-knappen efter varje. Först stängs gammal vidarekoppling av.",
+    "Tryck Klart.",
+    "Hör du ett felmeddelande: lägg på och slå koden igen. Prova samma kod med 00 i stället för +.",
+    "Växel eller IP-telefoni: be den som sköter växeln koppla numret till Booqy-numret.",
+    "Fungerar det ändå inte: ring operatörens kundtjänst och be dem slå på vidarekoppling till Booqy-numret.",
+    "I testläget behöver du inte koppla om."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-koppla-open",
+     "label": "Öppna Vidarekoppling",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar",
+      "steg": "koppla"
+     }
+    }
+   ],
+   "questions": [
+    "Hur vidarekopplar jag vårt nummer?",
+    "Koden fungerar inte, vad gör jag?"
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "kom-igang-phone-prova",
+   "route": "/telefon",
+   "title": "Telefonassistent, delsteg Provsamtal",
+   "audience": "owner",
+   "feature": "phoneAgent",
+   "setup": "phone:prova",
+   "keywords": [
+    "provsamtal",
+    "prova",
+    "ring och prova",
+    "testsamtal",
+    "inget samtal",
+    "kom igång",
+    "checklista",
+    "steg",
+    "klart",
+    "att göra"
+   ],
+   "answer": "Provsamtal är klart när Booqy har sett ett samtal till assistenten. Ring restaurangens nummer, låt det ringa utan att svara, och prata med assistenten. Samtalet syns sedan under Samtal.",
+   "steps": [
+    "Öppna Telefon och fliken Inställningar. Det är steg 5 av 5.",
+    "Ring restaurangens nummer från en annan telefon. Svara inte i restaurangens telefon, assistenten svarar efter en stund.",
+    "Säg hej och fråga till exempel När har ni öppet?, och lägg på.",
+    "Inget samtal ännu: ringde du rätt nummer, och svarade någon i restaurangens telefon? Tryck Vänta igen och ring en gång till.",
+    "Svarar inte assistenten: kontrollera Vidarekoppling (steg 4). Står det Booqys fel i felrutan: tryck Rapportera till Booqy, så tar vi det."
+   ],
+   "actions": [
+    {
+     "id": "kom-igang-phone-prova-open",
+     "label": "Öppna Provsamtal",
+     "to": "/telefon",
+     "query": {
+      "flik": "installningar",
+      "steg": "prova"
+     }
+    }
+   ],
+   "questions": [
+    "Hur gör jag provsamtalet?",
+    "Assistenten svarar inte, vad gör jag?"
+   ],
    "kind": "guide"
   },
   {
@@ -526,23 +1151,8 @@
    "title": "Lägga till kvittoskrivare (Kök, Dryck)",
    "audience": "owner",
    "feature": "ordering",
-   "keywords": [
-    "skrivare",
-    "kvittoskrivare",
-    "kökskrivare",
-    "bongskrivare",
-    "bong",
-    "utskrift",
-    "cloudprnt",
-    "testutskrift",
-    "pappersbredd",
-    "kök",
-    "dryck",
-    "bar",
-    "simulerad skrivare",
-    "kom igång"
-   ],
-   "answer": "Kvittoskrivarna lägger du till under Inställningar, Beställning, Kvittoskrivare. Det är också ett steg i Kom igång. Varje skrivare är Kök, Dryck eller Annat. Maten skrivs ut på Kök, drycken på Dryck.",
+   "area": "bestallningar",
+   "answer": "Kvittoskrivarna lägger du till under Inställningar, Beställning, Kvittoskrivare. Det är också ett steg i Kom igång. Varje skrivare är Kök, Dryck eller Annat. Maten skrivs ut på Kök, drycken på Dryck. Personal med Beställningar kan också lägga till skrivare, byta namn och sort och testa; att ta bort en skrivare och ny nyckel gör ägaren.",
    "steps": [
     "Öppna Inställningar, välj Beställning och sedan Kvittoskrivare.",
     "Tryck Lägg till skrivare och välj Kök, Dryck eller Annat. Ge den ett namn och tryck Lägg till.",
@@ -559,6 +1169,23 @@
      "hash": "skrivare"
     }
    ],
+   "setup": "printers",
+   "keywords": [
+    "skrivare",
+    "kvittoskrivare",
+    "kökskrivare",
+    "bongskrivare",
+    "bong",
+    "utskrift",
+    "cloudprnt",
+    "testutskrift",
+    "pappersbredd",
+    "kök",
+    "dryck",
+    "bar",
+    "simulerad skrivare",
+    "kom igång"
+   ],
    "kind": "guide"
   },
   {
@@ -567,18 +1194,7 @@
    "title": "Välja vilken skrivare en rätt skickas till",
    "audience": "all",
    "feature": "ordering",
-   "keywords": [
-    "skickas till",
-    "bong",
-    "station",
-    "kök",
-    "dryck",
-    "bar",
-    "drycker till köket",
-    "kategori",
-    "skrivare"
-   ],
-   "answer": "Varje rätt och kategori har Skickas till: Kök, Dryck, en Annat-skrivare eller Ingen bong. Mat går till Kök och dryck till Dryck om inget annat är valt.",
+   "answer": "Varje rätt och kategori har Skickas till: Kök, Dryck, en Annat-skrivare eller Ingen bong. Mat går till Kök och dryck till Dryck om inget annat är valt, även en egen kategori som heter till exempel Öl, Vin eller Te och kaffe.",
    "steps": [
     "Öppna Meny och tryck på rätten (eller Lägg till rätt).",
     "Under Bong, Skickas till: tryck på skrivaren. Bongen nedanför visar var rätten hamnar.",
@@ -590,6 +1206,18 @@
      "label": "Öppna Meny",
      "to": "/meny"
     }
+   ],
+   "setup": "printers",
+   "keywords": [
+    "skickas till",
+    "bong",
+    "station",
+    "kök",
+    "dryck",
+    "bar",
+    "drycker till köket",
+    "kategori",
+    "skrivare"
    ],
    "kind": "guide"
   },
@@ -764,7 +1392,9 @@
     "Öppna Catering och tryck på förfrågan.",
     "Justera raderna, rabatt, leverans och moms. Lägg till från cateringmenyn vid behov.",
     "Välj Giltig till och med och skriv ett meddelande till kunden.",
-    "Tryck Skicka offert (eller Spara utkast) och signera med BankID.",
+    "Tryck Nästa: signera (eller Spara utkast).",
+    "Signera med BankID. Kunden får inget innan ni har signerat.",
+    "Tryck Skicka till kunden. En ny version måste signeras igen innan den kan skickas.",
     "Vill du säga nej: tryck Neka förfrågan."
    ],
    "actions": [
@@ -1169,8 +1799,8 @@
    "answer": "Ändringar sparas som utkast. Ägaren publicerar dem och väljer vilken version som gäller.",
    "steps": [
     "Öppna Layout och tryck Spara utkast.",
-    "Tryck Publicera layout.",
-    "Under Versioner trycker du Aktivera på den version gästerna ska se."
+    "Tryck Publicera layout. Den första versionen gäller direkt. En ny version tar över tidigast dagen efter bokningsfönstret (gäster bokar 21 dagar fram).",
+    "Under Versioner ser du vad som gäller nu och vad som tar över, och väljer datum för en annan version."
    ],
    "actions": [
     {
@@ -1702,22 +2332,13 @@
    "route": "/installningar",
    "title": "Öppettider och restaurangens uppgifter",
    "audience": "owner",
-   "keywords": [
-    "öppettider",
-    "öppet",
-    "adress",
-    "telefonnummer",
-    "restaurangens namn",
-    "e-post restaurang",
-    "grace period",
-    "väntetid",
-    "sen gäst"
-   ],
-   "answer": "Adress och kontaktuppgifter ändrar ägaren under Inställningar, Restaurangen, Profil och kontakt, och öppettiderna under Inställningar, Restaurangen, Öppettider och avvikande dagar.",
+   "answer": "Adress och kontaktuppgifter ändrar ägaren under Inställningar, Restaurangen, Profil och kontakt, och öppettiderna under Inställningar, Restaurangen, Öppettider och avvikande dagar. I Kom igång blir steget klart när platsen har öppettider för minst en veckodag.",
    "steps": [
     "Öppna Inställningar, välj Restaurangen och sedan Öppettider och avvikande dagar.",
     "Ändra öppettiderna här, eller namn, telefon, adress och e-post under Profil och kontakt.",
-    "Tryck Spara ändringar."
+    "Tryck Spara ändringar.",
+    "Varje plats har egna öppettider: kontrollera att rätt plats är vald uppe till vänster.",
+    "Står steget kvar? Kontrollera att du tryckte Spara ändringar och att varje period slutar efter att den börjar."
    ],
    "actions": [
     {
@@ -1734,6 +2355,24 @@
     }
    ],
    "suggestion": "Hur ändrar jag öppettiderna?",
+   "setup": "hours",
+   "keywords": [
+    "öppettider",
+    "öppet",
+    "adress",
+    "telefonnummer",
+    "restaurangens namn",
+    "e-post restaurang",
+    "grace period",
+    "väntetid",
+    "sen gäst",
+    "lägg in öppettider",
+    "kom igång"
+   ],
+   "questions": [
+    "Hur lägger jag in öppettider?",
+    "Varför står steget kvar fast jag har sparat?"
+   ],
    "kind": "guide"
   },
   {
@@ -3367,19 +4006,6 @@
    "area": "bokningar"
   },
   {
-   "id": "features-bokningar-ReservationModal:tillbaka:button",
-   "kind": "element",
-   "route": "/bokningar",
-   "title": "Tillbaka",
-   "where": "Bokningar",
-   "text": "",
-   "highlight": [
-    "text:Tillbaka"
-   ],
-   "audience": "all",
-   "area": "bokningar"
-  },
-  {
    "id": "features-bokningar-ReservationModal:intern-anteckning-valfri:field",
    "kind": "element",
    "route": "/bokningar",
@@ -3982,18 +4608,6 @@
    "audience": "all"
   },
   {
-   "id": "features-guide-Guide:tillbaka:button",
-   "kind": "element",
-   "route": "/hjalp",
-   "title": "Tillbaka",
-   "where": "Hjälp",
-   "text": "",
-   "highlight": [
-    "text:Tillbaka"
-   ],
-   "audience": "all"
-  },
-  {
    "id": "features-guide-HjalpPage:guiden:heading",
    "kind": "element",
    "route": "/hjalp",
@@ -4412,7 +5026,7 @@
    "hash": "avbokning",
    "title": "Avgift sen avbokning (kr per person)",
    "where": "Inställningar, Gäster, Avbokning och kortgaranti",
-   "text": "Nu: avstängd.",
+   "text": "",
    "highlight": [
     "text:Avgift sen avbokning (kr per person)"
    ],
@@ -4911,7 +5525,7 @@
    "hash": "dagar",
    "title": "Lägg till",
    "where": "Inställningar, Restaurangen, Öppettider och avvikande dagar",
-   "text": "",
+   "text": "Bara ägaren kan ändra.",
    "highlight": [
     "text:Lägg till"
    ],
@@ -5054,7 +5668,7 @@
    "hash": "bord",
    "title": "Lägg till kombination",
    "where": "Inställningar, Restaurangen, Bokning",
-   "text": "",
+   "text": "Bara ägaren kan ändra.",
    "highlight": [
     "text:Lägg till kombination"
    ],
@@ -5165,14 +5779,14 @@
    "area": "layout"
   },
   {
-   "id": "features-layout-editor-LayoutEditorPage:tillbaka-till-utkastet:button",
+   "id": "features-layout-editor-LayoutEditorPage:angra-andringar:button",
    "kind": "element",
    "route": "/layout",
-   "title": "Tillbaka till utkastet",
+   "title": "Ångra ändringar",
    "where": "Layout",
    "text": "",
    "highlight": [
-    "text:Tillbaka till utkastet"
+    "text:Ångra ändringar"
    ],
    "audience": "all",
    "area": "layout"
@@ -5217,14 +5831,14 @@
    "area": "layout"
   },
   {
-   "id": "features-layout-editor-LayoutVersionsModal:publicerade-versioner:heading",
+   "id": "features-layout-editor-LayoutVersionsModal:versioner:heading",
    "kind": "element",
    "route": "/layout",
-   "title": "Publicerade versioner",
+   "title": "Versioner",
    "where": "Layout",
-   "text": "",
+   "text": "Inga versioner än. Tryck Publicera layout först.",
    "highlight": [
-    "text:Publicerade versioner"
+    "text:Versioner"
    ],
    "audience": "all",
    "area": "layout"
@@ -6222,20 +6836,6 @@
    "feature": "ordering"
   },
   {
-   "id": "features-printers-PrinterTiles:spara:button",
-   "kind": "element",
-   "route": "/installningar",
-   "hash": "skrivare",
-   "title": "Spara",
-   "where": "Inställningar, Beställning, Kvittoskrivare",
-   "text": "",
-   "highlight": [
-    "text:Spara"
-   ],
-   "audience": "owner",
-   "feature": "ordering"
-  },
-  {
    "id": "features-printers-PrinterTiles:vad-ska-den-skriva-ut:heading",
    "kind": "element",
    "route": "/installningar",
@@ -6782,6 +7382,19 @@
    ],
    "audience": "all",
    "area": "bokningar"
+  },
+  {
+   "id": "shared-SaveBar:angra-andringar:button",
+   "kind": "element",
+   "route": "/cateringkalkyl",
+   "title": "Ångra ändringar",
+   "where": "Cateringinställningar",
+   "text": "",
+   "highlight": [
+    "text:Ångra ändringar"
+   ],
+   "audience": "owner",
+   "feature": "catering"
   }
  ]
 }

@@ -196,18 +196,19 @@ def test_table_taken_before_booking_is_re_offered(live, lang):
 
 
 @BOTH
-def test_guarantee_size_party_gets_a_callback(live, lang, monkeypatch):
+def test_guarantee_size_party_from_a_foreign_number_gets_a_callback(live, lang, monkeypatch):
+    # A Nordic caller gets the card link by SMS (tests/test_phone_guarantee_link.py); no SMS goes abroad.
     from shared import guarantee
     monkeypatch.setattr(guarantee, "required", lambda location, tenant_row, party: party >= 4)
     live.availability.set(TOMORROW, ["19:00"])
-    phone = Phone(live)
+    phone = Phone(live, caller="+12025550123")
     phone.say(LINES[lang]["book"])
     phone.say(LINES[lang]["yes"])
     phone.say(LINES[lang]["name"])                                       # refused: guarantee -> callback offer
     phone.say(LINES[lang]["yes"])
     phone.hang_up()
     assert phone.row()["outcome"] == "callback" and not live.invoke.reservations
-    assert not any(c[0] == "send_guarantee_link" for c in live.lam.calls)     # no card data, no link in v1
+    assert not [c for c in live.lam.calls if "notice" in c]                 # no card data, no SMS link
 
 
 # --- move, cancel, info, callback, transfer ---------------------------------------------------------

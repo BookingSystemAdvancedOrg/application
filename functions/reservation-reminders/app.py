@@ -19,7 +19,10 @@ PURPOSE:
     turned into a booking (status held - availability already shows those
     tables free; this tidies the rows): found through their PENDING#
     marker rows, set to "expired" with their tables released in one
-    transaction (shared/guarantee.py).
+    transaction (shared/guarantee.py). A card booking (SetupIntent or a
+    phone booking's Checkout page) whose guest added the card but whose
+    webhook is late is confirmed instead: Stripe is asked first when
+    STRIPE_SECRET_ARN is set.
 
     Scale: locations are worked through in parallel (WORKERS threads), and
     the run stops taking new locations when the Lambda is close to its
@@ -36,13 +39,15 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    RESERVATION_TABLE_NAME, SLOT_OCCUPANCY_TABLE_NAME
+    RESERVATION_TABLE_NAME, SLOT_OCCUPANCY_TABLE_NAME,
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION (optional: the card check before expiring)
 
 AWS RESOURCE ACCESS:
     Scan on the location table (list locations), GetItem on the tenant
     table (tenant-context policy), Query/GetItem/UpdateItem/DeleteItem on
     the reservation table, BatchGetItem/UpdateItem/DeleteItem on the slot
-    occupancy table (releasing expired holds).
+    occupancy table (releasing expired holds); with STRIPE_SECRET_ARN,
+    secretsmanager:GetSecretValue on that secret (Stripe, read only).
 """
 
 import json
@@ -58,6 +63,7 @@ from botocore.exceptions import ClientError
 
 from shared import dynamo, guarantee, tenant
 from shared import reservations as r
+from shared import stripe_client as stripe
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -67,6 +73,7 @@ STOP_MARGIN_MS = 30_000  # stop starting locations this long before the deadline
 DEFAULT_HOURS = 24
 ALLOWED_HOURS = (0, 2, 3, 6, 12, 24, 48)
 _MIN_LEAD = timedelta(hours=1)
+STRIPE_RETRY = timedelta(hours=1)  # Stripe down: a phone booking waits this long past its hold
 
 
 def reminder_hours(tenant_row):
@@ -141,6 +148,28 @@ def _mark(item, now):
         raise
 
 
+def _card_added(item, now):
+    """A pending card booking whose guest added the card but whose webhook
+    has not arrived: confirm it instead of expiring it. Both kinds are
+    asked: a SetupIntent booking (online, or a phone booking on the
+    restaurant's own card page: setupIntentId) and a Checkout-page phone
+    booking (checkoutSessionId, its SetupIntent not stored yet). True =
+    confirmed, or Stripe could not be asked (the next run asks again, at
+    most STRIPE_RETRY past the hold). Only with STRIPE_SECRET_ARN set
+    (otherwise the booking expires)."""
+    if (item["status"] != r.PENDING or not (item.get("checkoutSessionId") or item.get("setupIntentId"))
+            or not item.get("stripeAccountId") or not os.environ.get("STRIPE_SECRET_ARN")):
+        return False
+    try:
+        guarantee.confirm_if_ready(item, now, "system")
+        return True
+    except (r.InvalidState, r.Conflict, stripe.StripeError):
+        return False
+    except stripe.StripeUnavailable:
+        logger.warning("stripe unavailable for pending booking %s", item["reservationId"])
+        return now < r.parse_iso(item["pendingExpiresAt"]) + STRIPE_RETRY
+
+
 def expire_pending(location_id, now):
     """Expire this location's pending bookings past their hold. Returns the count."""
     table = dynamo.table(r.reservation_table())
@@ -159,6 +188,8 @@ def expire_pending(location_id, now):
                 table.delete_item(Key={"PK": marker["PK"], "SK": marker["SK"]})
                 continue
             if r.parse_iso(item["pendingExpiresAt"]) > now:
+                continue
+            if _card_added(item, now):
                 continue
             try:
                 r.transact(guarantee.expire_items(item, now))

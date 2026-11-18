@@ -46,6 +46,14 @@ CURRENCY = "sek"
 MAX_FEE_PER_PERSON = 5000
 MAX_CUTOFF_HOURS = 168
 PENDING_MINUTES = 20
+# A phone booking (the AI phone agent, source "phone"): the guest gets an SMS
+# link to a Stripe-hosted Checkout page (mode setup) and has this long to add
+# the card. Stripe needs a Checkout Session to live at least 30 minutes, so
+# the page closes CHECKOUT_MARGIN after the window the guest is told, and the
+# booking (its tables) is held CHECKOUT_MARGIN after the page closes: a card
+# added in the last second still finds its booking.
+PHONE_PENDING_MINUTES = 30
+CHECKOUT_MARGIN = timedelta(minutes=1)
 
 # payment.status
 PAY_PENDING = "pending"          # charge started / outcome unknown - retry is safe
@@ -250,17 +258,26 @@ def expire_items(item, now, *, action="expired", actor="system"):
 
 # --- Stripe: card on file ------------------------------------------------------------------
 
-def start_setup(item, account):
-    """Customer + SetupIntent on the restaurant's account. Idempotent per booking."""
-    rid = item["reservationId"]
-    metadata = {"reservationId": rid, "locationId": item["locationId"],
-                "tenantId": item["tenantId"], "date": item["date"]}
-    customer = stripe.request("POST", "/v1/customers", {
+def _metadata(item):
+    """What the webhook (setup_intent.succeeded) finds the booking by."""
+    return {"reservationId": item["reservationId"], "locationId": item["locationId"],
+            "tenantId": item["tenantId"], "date": item["date"]}
+
+
+def _customer(item, account):
+    return stripe.request("POST", "/v1/customers", {
         "name": item.get("customerName"),
         "email": item.get("customerEmail"),
         "phone": item.get("customerPhone"),
-        "metadata": metadata,
-    }, account=account, idempotency_key=f"customer-{rid}")
+        "metadata": _metadata(item),
+    }, account=account, idempotency_key=f"customer-{item['reservationId']}")
+
+
+def start_setup(item, account):
+    """Customer + SetupIntent on the restaurant's account. Idempotent per booking."""
+    rid = item["reservationId"]
+    metadata = _metadata(item)
+    customer = _customer(item, account)
     intent = stripe.request("POST", "/v1/setup_intents", {
         "customer": customer["id"],
         "usage": "off_session",
@@ -271,36 +288,136 @@ def start_setup(item, account):
     return customer["id"], intent["id"], intent["client_secret"]
 
 
+def _checkout_fee_text(item, lang):
+    """The fees the guest accepts, shown above the button on the Checkout page."""
+    from shared import messages  # local: messages is a leaf module, keep guarantee's imports small
+    lines = messages.guarantee_terms(item, lang)
+    return " ".join(lines)[:1200]
+
+
+def start_checkout(item, account, *, return_url, lang, now, success_url=None):
+    """Customer + Checkout Session (mode setup) on the restaurant's account:
+    the Stripe-hosted page a phone guest opens from the SMS. The SetupIntent
+    Checkout creates carries the booking's metadata, so the webhook's
+    setup_intent.succeeded turns the booking reserved exactly like an online
+    one. `success_url` (default `return_url`): where the guest lands after
+    adding the card (the booking's manage page, which confirms it).
+    Idempotent per booking. Returns (customer id, session)."""
+    rid = item["reservationId"]
+    customer = _customer(item, account)
+    session = stripe.request("POST", "/v1/checkout/sessions", {
+        "mode": "setup",
+        "customer": customer["id"],
+        "payment_method_types": ["card"],
+        "locale": "en" if lang == "en" else "sv",
+        "expires_at": int((now + timedelta(minutes=PHONE_PENDING_MINUTES) + CHECKOUT_MARGIN).timestamp()),
+        "success_url": success_url or return_url,
+        "cancel_url": return_url,
+        "client_reference_id": rid,
+        "metadata": _metadata(item),
+        "setup_intent_data": {
+            "description": f"Kortgaranti bordsbokning {item['date']} {item['startTime']}",
+            "metadata": _metadata(item),
+        },
+        "custom_text": {"submit": {"message": _checkout_fee_text(item, lang)}},
+    }, account=account, idempotency_key=f"checkout-{rid}")
+    if not isinstance(session.get("url"), str) or not session.get("id"):
+        raise stripe.StripeUnavailable("checkout session without url")
+    return customer["id"], session
+
+
+def phone_pending_expires(now):
+    """pendingExpiresAt of a phone booking: the Checkout page closes first
+    (the same window for the restaurant's own card page)."""
+    return now + timedelta(minutes=PHONE_PENDING_MINUTES) + 2 * CHECKOUT_MARGIN
+
+
 def retrieve_setup(item):
     return stripe.request("GET", f"/v1/setup_intents/{item['setupIntentId']}",
                           account=item["stripeAccountId"])
 
 
+def card_hold_open(item, now):
+    """A pending booking with a card step (SetupIntent) whose hold has not
+    run out: the guest can still add the card, even when card_step could
+    not read the form from Stripe just now."""
+    expires = item.get("pendingExpiresAt")
+    return (item.get("status") == r.PENDING and bool(item.get("setupIntentId"))
+            and bool(item.get("stripeAccountId")) and bool(expires) and r.parse_iso(expires) > now)
+
+
+def card_step(item, now):
+    """The card form of a pending booking for its manage page (the guest's
+    GET with a valid manage token): {clientSecret, stripeAccount, expiresAt},
+    the shape the online booking answers with. Read from Stripe, never
+    stored. None when the booking is not pending, has no SetupIntent (a
+    Checkout-page phone booking), its hold ran out, the SetupIntent is no
+    longer open or Stripe cannot be asked."""
+    if item.get("status") != r.PENDING or not item.get("setupIntentId") or not item.get("stripeAccountId"):
+        return None
+    expires = item.get("pendingExpiresAt")
+    if not expires or r.parse_iso(expires) <= now:
+        return None
+    try:
+        intent = retrieve_setup(item)
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        return None
+    secret = (intent or {}).get("client_secret")
+    if (not isinstance(secret, str) or not secret or intent.get("status") in ("succeeded", "canceled")
+            or not setup_matches(intent, item)):
+        return None
+    return {"clientSecret": secret, "stripeAccount": item["stripeAccountId"], "expiresAt": expires}
+
+
+def checkout_setup(item):
+    """The SetupIntent of a phone booking's completed Checkout page, else None."""
+    if not item.get("checkoutSessionId"):
+        return None
+    session = stripe.request("GET", f"/v1/checkout/sessions/{item['checkoutSessionId']}",
+                             {"expand": ["setup_intent"]}, account=item["stripeAccountId"])
+    intent = session.get("setup_intent")
+    return intent if session.get("status") == "complete" and isinstance(intent, dict) else None
+
+
 def setup_matches(intent, item):
+    """The SetupIntent is this booking's: the one created at booking, or for
+    a phone booking (Checkout creates its SetupIntent only when the guest
+    submits the page) any SetupIntent of the booking's own customer that
+    carries its reservationId."""
     meta = (intent or {}).get("metadata") or {}
-    return (intent.get("id") == item.get("setupIntentId")
-            and meta.get("reservationId") == item.get("reservationId")
+    own = item.get("setupIntentId")
+    if own:
+        same = intent.get("id") == own
+    else:
+        same = bool(item.get("checkoutSessionId")) and str(intent.get("id") or "").startswith("seti_")
+    return (same and meta.get("reservationId") == item.get("reservationId")
             and intent.get("customer") == item.get("stripeCustomerId"))
 
 
-def confirm_items(item, payment_method, now, actor):
+def confirm_items(item, payment_method, now, actor, setup_intent_id=None):
     """Transaction item: pending -> reserved with the card stored + the
-    guest's confirmation notice."""
+    guest's confirmation notice. `setup_intent_id`: a phone booking's
+    Checkout SetupIntent, stored now (the booking had none)."""
     entry = r.history_entry("guarantee_confirmed", actor, now, status=r.RESERVED)
+    expression = ("SET #s = :reserved, stripePaymentMethodId = :pm, updatedAt = :now, "
+                  "updatedBy = :by, notice = :notice, "
+                  "history = list_append(if_not_exists(history, :empty), :entry), "
+                  "version = if_not_exists(version, :zero) + :one")
+    if setup_intent_id:
+        expression += ", setupIntentId = :seti"
+        condition = "#s = :pending AND attribute_not_exists(setupIntentId)"
+    else:
+        condition = "#s = :pending AND setupIntentId = :seti"
     return {
         "Update": {
             "TableName": r.reservation_table(),
             "Key": r.serialize(r.reservation_key(item["locationId"], item["date"], item["reservationId"])),
-            "UpdateExpression": ("SET #s = :reserved, stripePaymentMethodId = :pm, updatedAt = :now, "
-                                 "updatedBy = :by, notice = :notice, "
-                                 "history = list_append(if_not_exists(history, :empty), :entry), "
-                                 "version = if_not_exists(version, :zero) + :one "
-                                 "REMOVE pendingExpiresAt"),
-            "ConditionExpression": "#s = :pending AND setupIntentId = :seti",
+            "UpdateExpression": expression + " REMOVE pendingExpiresAt",
+            "ConditionExpression": condition,
             "ExpressionAttributeNames": {"#s": "status"},
             "ExpressionAttributeValues": r.serialize({
                 ":reserved": r.RESERVED, ":pending": r.PENDING, ":pm": payment_method,
-                ":now": r.iso(now), ":by": actor, ":seti": item["setupIntentId"],
+                ":now": r.iso(now), ":by": actor, ":seti": setup_intent_id or item["setupIntentId"],
                 ":notice": r.notice(r.NOTICE_CONFIRMED, now), ":entry": [entry], ":empty": [],
                 ":zero": 0, ":one": 1,
             }),
@@ -321,6 +438,13 @@ def confirm_if_ready(item, now, actor, *, intent=None):
     # once it ran out the tables may already be someone else's.
     if item.get("fromHold") and item.get("pendingExpiresAt") and r.parse_iso(item["pendingExpiresAt"]) <= now:
         raise r.InvalidState("expired")
+    if intent is None and not item.get("setupIntentId"):
+        # A phone booking: the SetupIntent of its Checkout page, once the
+        # guest submitted it (the return page and the expiry job ask; the
+        # webhook brings it).
+        intent = checkout_setup(item)
+        if not isinstance(intent, dict):
+            raise r.InvalidState("card_not_confirmed")
     intent = intent or retrieve_setup(item)
     if not setup_matches(intent, item) or intent.get("status") != "succeeded":
         raise r.InvalidState("card_not_confirmed")
@@ -329,8 +453,9 @@ def confirm_if_ready(item, now, actor, *, intent=None):
         payment_method = payment_method.get("id")
     if not isinstance(payment_method, str):
         raise r.InvalidState("card_not_confirmed")
+    adopted = None if item.get("setupIntentId") else intent["id"]
     try:
-        r.transact([confirm_items(item, payment_method, now, actor)] + marker_delete_ops(item)
+        r.transact([confirm_items(item, payment_method, now, actor, adopted)] + marker_delete_ops(item)
                    + (r.keep_hold_items(item) if item.get("fromHold") else []))
     except r.Conflict:
         fresh = r.load(item["locationId"], item["reservationId"])
@@ -339,7 +464,10 @@ def confirm_if_ready(item, now, actor, *, intent=None):
         if fresh["status"] == r.EXPIRED:
             raise r.InvalidState("expired") from None
         raise
-    return {**item, "status": r.RESERVED, "stripePaymentMethodId": payment_method}
+    done = {**item, "status": r.RESERVED, "stripePaymentMethodId": payment_method}
+    if adopted:
+        done["setupIntentId"] = adopted
+    return done
 
 
 # --- Stripe: fees -----------------------------------------------------------------------------

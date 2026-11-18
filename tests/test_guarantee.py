@@ -141,6 +141,7 @@ def test_guarantee_booking_is_pending_with_a_setup_intent_on_the_restaurants_acc
     assert body["setup"] == {"clientSecret": "seti_1_secret_abc", "stripeAccount": ACCOUNT,
                              "expiresAt": "2026-09-08T12:20:00Z"}
     assert body["guarantee"] == {"cardOnFile": False, "noShowFee": 60000, "lateCancelFee": 30000,
+                                 "noShowFeePerPerson": 200, "lateCancelFeePerPerson": 100,
                                  "cancelCutoffHours": 24, "freeCancelUntil": "2026-09-19T16:00:00Z",
                                  "currency": "sek", "cancellationFee": 0}
     item = stored(g, body["reservationId"])

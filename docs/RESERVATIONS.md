@@ -190,6 +190,42 @@ fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 `authentication_required` - the restaurant settles those with the guest
 (a pay-by-link flow is a later addition).
 
+Phone bookings (the AI phone agent): `POST .../reservations/manual` with
+`source: phone`, a phone number and `guarantee: link` books a party the
+policy covers `pending` the same way (tables, snapshot, PENDING# marker),
+held 30 minutes plus a 2 minute margin, with a Customer + Checkout Session
+(mode setup, `locale` sv/en, `expires_at` 31 minutes) on the restaurant's
+account instead of a SetupIntent. The answer carries `guaranteeLink`
+{url, expiresAt, minutes}; the agent texts it to the caller ID (Nordic
+numbers only, a `phone-agent.guarantee-link` notice). The Checkout page's
+SetupIntent carries the booking's metadata: `setup_intent.succeeded` stores
+it as `setupIntentId` and turns the booking `reserved` (confirmation
+then). The page's `success_url` is the booking's manage page, whose
+`POST .../confirm` reads the completed Checkout Session and confirms it
+too; before expiring one, the expiry job asks Stripe the same way (when
+it has `STRIPE_SECRET_ARN`; Stripe down: it waits up to an hour). Unconfirmed
+ones expire as above, without a message. If the SMS cannot be sent the
+agent cancels the booking at once (no message) and offers the callback.
+`PHONE_CARD_PAGE=site` (create-pending-reservation; default `stripe`)
+texts the booking's manage link on the restaurant's own site instead: the
+booking gets a Customer + SetupIntent exactly like an online one
+(`guaranteeLink.page` `site`), the manage page's guest GET returns `setup`
+{clientSecret, stripeAccount, expiresAt} while it is `pending` (read from
+Stripe, never stored) and `POST .../confirm` or the webhook confirms it.
+Only for tenants whose row has `cardStepOnManagePage` true: set it once
+the tenant's live site runs site-kit 0.4.0 or later (0.3.x has no card
+step: its manage page tells the guest the booking failed). Without the
+flag, a site address or the link key: the Stripe page as before. A
+pending booking whose card form cannot be read from Stripe right now
+returns `setupUnavailable` true with `pendingExpiresAt` (the page asks the
+guest to reload and says how long the table is held). The expiry job
+asks Stripe for both kinds (`setupIntentId` and `checkoutSessionId`).
+A move never texts a link: a party change into a card size, or any party
+change of a booking waiting for its card, is a callback. The phone
+agent's location setting `phoneGuarantee` (`link` default, `skip` = phone
+bookings never need a card) and hidden or foreign numbers (restaurant
+calls back) decide whether the agent asks for it.
+
 ## Admin
 
 The admin app's Bokningar page uses these staff routes: the day list,

@@ -78,7 +78,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import dpa, staff_access, tenant, terms
+from shared import console_invoke, dpa, staff_access, tenant, terms
 from shared import stripe_client
 from shared.dynamo import table
 from shared.responses import json_response
@@ -695,6 +695,21 @@ def _account_link(ctx):
 # --- handler ------------------------------------------------------------------------
 
 def handler(event, context):
+    # Booqy Console (shared/console_invoke.py): the operator edits a staff
+    # user's permissions (Users tab) with the owner's rules, nothing else.
+    try:
+        event = console_invoke.unwrap(event)
+    except console_invoke.Refused as exc:
+        return _error(HTTPStatus.BAD_REQUEST.value, str(exc))
+    if console_invoke.is_operator():
+        method, path = _route(event)
+        body = json.loads(event.get("body") or "null")
+        # Dev twins (dev only): the seeder accepts the DPA for Booqy's own twin.
+        dev_twin_dpa = (method, path) == ("POST", "/tenant/dpa/accept") and \
+            os.environ.get("ENVIRONMENT") != "prod"
+        if not dev_twin_dpa and (path != "/tenant" or method not in ("GET", "PATCH") or (
+                method == "PATCH" and (not isinstance(body, dict) or set(body) != {"staffAccess"}))):
+            return _error(HTTPStatus.FORBIDDEN.value, "console may only read the account and edit staffAccess")
     method, path = _route(event)
     if (method, path) not in _ROUTES:
         allowed = sorted(m for m, p in _ROUTES if p == path)

@@ -19,12 +19,20 @@ the call may switch to any of them. The list depends on the model
 (PHONE_AGENT_TTS_MODEL): flash v2.5 speaks 32, v4 Turbo and v3 conversational
 also speak Somali, Persian, Amharic and more [VERIFY IN SANDBOX: the v4 and
 v3 lists come from ElevenLabs' release notes, not from the account].
+
+`AWS_LANGUAGES` are the languages of the Amazon Connect + Lex V2 line (calls
+whose callRef starts with CONNECT_PREFIX): one Lex locale and one Polly voice
+each, from aws_languages.json (Terraform keeps an identical copy in
+infrastructure/phone-test-line/languages.json). `call_languages(call_ref)`
+picks the list for a call.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 
 NAMES = {   # every language the model may tag, for the prompt ("answer in <name>") and the provider
     "sv": "Swedish", "en": "English", "no": "Norwegian", "da": "Danish", "fi": "Finnish", "de": "German",
@@ -41,6 +49,8 @@ NAMES = {   # every language the model may tag, for the prompt ("answer in <name
     "az": "Azerbaijani", "kk": "Kazakh", "uz": "Uzbek", "pa": "Punjabi",
     # languages the model may recognise but no voice model speaks: the call does not switch
     "ti": "Tigrinya", "kmr": "Northern Kurdish (Kurmanji)", "om": "Oromo",
+    # the Connect + Lex line only (AWS_LANGUAGES)
+    "ca": "Catalan",
 }
 # ElevenLabs eleven_flash_v2_5 / eleven_turbo_v2_5 (the default until the sandbox test).
 FLASH_LANGUAGES = ("sv", "en", "no", "da", "fi", "de", "fr", "es", "it", "pl", "ar", "pt", "nl", "tr", "ru",
@@ -61,6 +71,35 @@ LOW_ASR = ("so", "am", "ckb", "ps", "ti", "kmr", "om", "sw", "ur", "pa")
 _ALIASES = {"nb": "no", "nn": "no", "tl": "fil", "ku": "kmr", "iw": "he", "prs": "fa", "zh-cn": "zh",
             "pt-br": "pt", "sh": "sr"}
 _TAG = re.compile(r"^\s*\[([A-Za-z]{2,3})(?:[-_][A-Za-z]{2,4})?\]\s*")
+
+
+# The Amazon Connect + Lex V2 line: our code -> {lexLocale, connectLanguage, voice, engine}.
+# Verified 2026-11-18 against the Lex V2 locale list, Polly's voice list and the Connect Set voice
+# docs [VERIFY ON A REAL CALL: the pairing, design risk 1]. Norwegian, Chinese and Cantonese are
+# not on the line (the bot has no locale for them). The file must stay byte-identical to
+# infrastructure/phone-test-line/languages.json (tests pin the key set).
+AWS_LANGUAGES = json.loads((Path(__file__).with_name("aws_languages.json")).read_text("utf-8"))["languages"]
+AWS_CALL_LANGUAGES = tuple(AWS_LANGUAGES)
+CONNECT_PREFIX = "connect-"     # callRef of a call on the Connect + Lex line
+# A Connect call switches language at most this often (each switch restarts the Lex session in the
+# flow); after that it stays in its language (`languageSwitches` on the call row).
+MAX_CONNECT_SWITCHES = 3
+_LOCALE_LANGUAGE = {spec["lexLocale"]: code for code, spec in AWS_LANGUAGES.items()}
+
+
+def is_connect(call_ref) -> bool:
+    return str(call_ref or "").startswith(CONNECT_PREFIX)
+
+
+def call_languages(call_ref=None, model=None):
+    """The languages a call may switch to: the AWS list on the Connect line,
+    else what the ElevenLabs TTS model speaks."""
+    return AWS_CALL_LANGUAGES if is_connect(call_ref) else voice_languages(model)
+
+
+def locale_language(locale):
+    """Our code for a Lex locale (sv_SE -> sv), else None."""
+    return _LOCALE_LANGUAGE.get(str(locale or ""))
 
 
 def voice_languages(model=None):

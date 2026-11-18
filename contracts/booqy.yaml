@@ -39,7 +39,15 @@ events:
     tenantId: string
     occurredAt: datetime
     version: int
+  # Platform producers that are not a plan feature (booqy.<id> like the rest).
+  platform: [tenant-setup]
   sources:
+    booqy.tenant-setup:
+      # Kom igång: every step done or skipped, first time only (functions/tenant-setup).
+      Tenant.SetupCompleted:
+        completedAt: datetime
+        stepsDone: int
+        stepsSkipped: int
     booqy.meta-ads:
       MetaConnection.Connected:
         adAccountId: string

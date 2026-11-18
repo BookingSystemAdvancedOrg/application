@@ -21,7 +21,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
-from shared import agent_model, availability as shared_availability, booking_rules, guarantee
+from shared import agent_model, availability as shared_availability, booking_rules, guarantee, messages
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import copy
 from shared.features.phone_agent import offers as of
@@ -36,26 +36,34 @@ TOOLS = [
     {"name": "get_availability",
      "description": "Free start times for a party on one day. `suggest` holds the (at most three) free times "
                     "nearest the wished time: offer those. A full day lists `nextDays` with free times. A result "
-                    "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`.",
+                    "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`. "
+                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the terms in "
+                    "`guaranteeTerms` before the read-back).",
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
      "description": "Check that a table can be booked at a time; writes nothing. Returns `holdId`, or other times "
-                    "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`.",
+                    "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
+                    "`guaranteeRequired` with a holdId: first say the terms in `guaranteeTerms` briefly, then the "
+                    "read-back also says the card link is texted.",
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": _DATE, "time": _TIME, "partySize": _PARTY,
          "tableIds": {"type": "array", "items": {"type": "string"},
                       "description": "only the tableIds of a `nearby` option the caller accepted"}}}},
     {"name": "create_reservation",
      "description": "Book a held table, only after the caller said a clear yes to your read-back of day, time, "
-                    "number of guests and name.",
+                    "number of guests and name. When the party needs a card guarantee it texts the caller a link "
+                    "to add the card and answers `guaranteeLinkSent` with the `sentence` to say: the table is "
+                    "then held, not booked, until the card is added.",
      "input_schema": {"type": "object", "required": ["holdId", "name", "confirmed"], "properties": {
          "holdId": {"type": "string"}, "name": {"type": "string", "description": "the name as the caller gave it"},
          "confirmed": _CONFIRMED,
          "phone": {"type": "string", "description": "only when the caller's number is hidden: the number they "
                                                    "gave and confirmed"},
          "note": {"type": "string", "description": "a short note for the restaurant, for example an allergy"}}}},
-    {"name": "send_guarantee_link", "description": "Send the card guarantee link by SMS.",
+    {"name": "send_guarantee_link",
+     "description": "Send the card guarantee text message again, once, only when the caller says the text "
+                    "from create_reservation did not arrive. Never ask for card details.",
      "input_schema": {"type": "object", "required": ["reservationId"],
                       "properties": {"reservationId": {"type": "string"}}}},
     {"name": "find_reservations", "description": "The caller's upcoming bookings, found by the number they call "
@@ -98,6 +106,8 @@ _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 _DAY_KEYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6, "monday": 0, "tuesday": 1,
              "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 CALLBACK_TOPICS = ("booking", "largeParty", "guarantee", "language:", "other")
+# The numbers an SMS goes to (the notification Lambda's rule, SMS_ALLOWED_PREFIXES): Nordic only.
+SMS_PREFIXES = ("+46", "+45", "+47", "+358", "+354")
 # What the model is told to say (English; it speaks the caller's language).
 SAY = {
     "pastDate": "That day has already passed. Ask politely which day the caller means.",
@@ -108,6 +118,33 @@ SAY = {
     "guaranteeRequired": ("This booking needs a card guarantee, which cannot be taken by phone. Say: \"" +
                           copy.GUARANTEE_CALLBACK["en"] + "\" Do not read back or book. If yes, call "
                           "request_callback with topic guarantee."),
+    # The card is added on a Stripe page the caller gets by text message (create_reservation sends it).
+    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds its real terms for this party. "
+                      "Offer the times as usual. Before the read-back, explain the terms briefly in one or two "
+                      "short sentences: say `guaranteeTerms.sentence` (in the caller's language, the amounts as "
+                      "in its readAs). In Swedish it starts \"För den bokningen behövs ett kort som garanti\". "
+                      "Only if the caller asks for more, explain further: the amounts per person, free "
+                      "cancellation until the cutoff through the link in the text message or by calling the "
+                      "restaurant, the card is handled securely by Stripe, nothing is charged if they come. "
+                      "Never say an amount or a fee that is not in `guaranteeTerms`. Then the read-back: day, "
+                      "time, number of guests and name, that a text message with a link to add a card as a "
+                      "guarantee will be sent to the number the caller is calling from, and that the booking is "
+                      "confirmed once the card is added; in Swedish end it with \"Stämmer det?\". "
+                      "Never ask for card details."),
+    # The same without terms (the location's policy could not be read): no amounts at all.
+    "guaranteeLinkNoTerms": ("This party needs a card guarantee. Offer the times as usual. Before the read-back say "
+                             "that the booking needs a card as a guarantee and that nothing is charged now (in "
+                             "Swedish: \"För den bokningen behövs ett kort som garanti, men inget dras nu.\"); "
+                             "never name an amount. In the read-back also say that a text message with a link to "
+                             "add a card as a guarantee will be sent to the number the caller is calling from, and "
+                             "that the booking is confirmed once the card is added; in Swedish end it with "
+                             "\"Stämmer det?\". Never ask for card details."),
+    "guaranteeLinkSent": ("The table is held, not booked, until the caller adds the card through the text "
+                          "message. Say the sentence in `sentence` word for word, in the caller's language, "
+                          "instead of a booking confirmation. Then ask whether you can help with anything else."),
+    "guaranteeLinkFailed": ("The text message with the card link could not be sent. Apologise, say: \"" +
+                            copy.GUARANTEE_CALLBACK["en"] + "\" If yes, call request_callback with topic "
+                            "guarantee."),
     "notConfirmed": "Read back the day, time, number of guests and name, and wait for a clear yes first.",
     # The caller has not yet heard a read-back of this: the table, the booking or the new day was only
     # looked up in this reply (a change, or a yes to something else). The check stays valid.
@@ -223,7 +260,8 @@ class Executor:
     furthest counter-offer, and what the call achieved."""
 
     def __init__(self, *, tenant_id, tenant_row, location, loc_config, invoke, state, caller_phone=None, dry_run=False,
-                 voice=None, call_ref=None, callbacks=None, today=None, language="sv", now_time=None):
+                 voice=None, call_ref=None, callbacks=None, today=None, language="sv", now_time=None,
+                 send_sms=None):
         self.tenant_id = tenant_id
         self.tenant_row = tenant_row
         self.location = location
@@ -237,6 +275,9 @@ class Executor:
         self.voice = voice
         self.call_ref = call_ref
         self.callbacks = callbacks
+        # send_sms(tenant_id=, location_id=, to=, text=): one SMS to the caller (the notification
+        # Lambda's feature notice); None: no SMS possible, a card guarantee becomes a callback.
+        self.send_sms = send_sms
         self.today = today or date.today()
         self.now_time = now_time      # "HH:MM" local: today's started times are never offered (staff view)
         self.last_day = shared_availability.last_bookable_date(self.today, location)
@@ -376,16 +417,86 @@ class Executor:
                            lastDate=self.last_day.isoformat())}
         return None
 
-    def _party_problem(self, party):
+    @property
+    def sms_reachable(self) -> bool:
+        """The caller ID is a number an SMS goes to (Nordic, as the notification Lambda sends)."""
+        raw = os.environ.get("SMS_ALLOWED_PREFIXES") or ",".join(SMS_PREFIXES)
+        prefixes = tuple(p.strip() for p in raw.split(",") if p.strip().startswith("+"))
+        return self.caller_known and self.caller_phone.startswith(prefixes)
+
+    def _guarantee_mode(self, party):
+        """How a card guarantee the location asks for this party is taken by
+        phone: None (no card: none required, or phoneGuarantee "skip"),
+        "link" (create_reservation books it pending and texts the caller a
+        Stripe link) or "callback" (hidden or foreign number, no SMS: the
+        restaurant calls back)."""
+        if not guarantee.required(self.location, self.tenant_row, party):
+            return None
+        if pa.phone_guarantee(self.loc) == "skip":
+            return None
+        if self.dry_run or (self.send_sms is not None and self.sms_reachable):
+            return "link"
+        return "callback"
+
+    def _party_problem(self, party, *, moving=False):
+        """`moving`: a booking's party changed by move_reservation, which
+        edits it in place (no pending state, no link, no new fee snapshot):
+        any party the card guarantee covers is the restaurant's callback."""
         if party > self.phone_max:
             self.state["needsCallback"] = "largeParty"
             return {"partySize": party, "largeParty": True, **_say("largeParty")}
-        if guarantee.required(self.location, self.tenant_row, party):
-            # The manual route never asks a card guarantee (ADR-L 13): a party the
-            # online rules would guarantee gets a callback until the hotspot upgrade.
-            self.state["needsCallback"] = "guarantee"
-            return {"partySize": party, "guaranteeRequired": True, **_say("guaranteeRequired")}
+        if self._guarantee_mode(party) in (("link", "callback") if moving else ("callback",)):
+            return self._guarantee_callback(party)
         return None
+
+    def _guarantee_callback(self, party):
+        self.state["needsCallback"] = "guarantee"
+        return {"partySize": party, "guaranteeRequired": True, **_say("guaranteeRequired")}
+
+    def _guarantee_note(self, party, *, new_booking=False):
+        """Beside times and a hold when the card link will be texted at
+        booking; not while the caller's own bookings are found (a move never
+        texts a link), unless `new_booking` (create_reservation: the terms a
+        new booking after a lookup still needs said first)."""
+        if (new_booking or not self.state.get("found")) and self._guarantee_mode(party) == "link":
+            terms = self._guarantee_terms(party)
+            if not terms:
+                return {"guaranteeRequired": True, "say": SAY["guaranteeLinkNoTerms"]}
+            return {"guaranteeRequired": True, "guaranteeTerms": terms, "say": SAY["guaranteeLink"]}
+        return {}
+
+    def _guarantee_terms(self, party):
+        """The card guarantee's terms for this party, computed as the booking
+        will snapshot them (shared/guarantee.snapshot): totals and per-person
+        amounts in kronor, the free-cancellation cutoff, nothing charged now,
+        each with its spoken English form (readAs) and the short sentence in
+        the caller's language (Swedish or English; others translate the
+        English one). A fee that is 0 is left out; None without a policy."""
+        if not guarantee.policy_of(self.location):
+            return None
+        snap = guarantee.snapshot(self.location, party)
+        no_show, late = int(snap["noShowFee"]) // 100, int(snap["lateCancelFee"]) // 100
+        hours = int(snap["cancelCutoffHours"])
+        terms = {"chargedNow": 0, "currency": "SEK"}
+        said = {"chargedNow": kronor_words(0)}
+        if no_show:
+            terms.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
+            said.update({"noShowFee": kronor_words(no_show),
+                         "noShowFeePerPerson": kronor_words(snap["noShowFeePerPerson"]) + " per person"})
+        if late and hours:     # no cutoff: cancelling is never late, the fee is not said
+            terms.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"]),
+                          "cancelCutoffHours": hours})
+            said.update({"lateCancelFee": kronor_words(late),
+                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person",
+                         "cancelCutoffHours": hours_words(hours)})
+        lang = "sv" if self.language == "sv" else "en"
+        late_said = bool(late and hours)
+        terms["sentence"] = copy.guarantee_terms(
+            lang, no_show=kronor_words(no_show, lang) if no_show else None,
+            late=kronor_words(late, lang) if late_said else None,
+            hours=hours_words(hours, lang) if late_said else None)
+        terms["readAs"] = said
+        return terms
 
     # -- reads ------------------------------------------------------------------------
 
@@ -438,7 +549,7 @@ class Executor:
                 answer["requestedTime"] = time
                 answer["before"] = [t for t in times if t < time][::-1]
                 answer["after"] = [t for t in times if t > time]
-            return answer
+            return of.requested_first(answer, time)
         offers = self.loc.get("counterOffers") or {}
         return of.availability_answer(guest, staff, layout, party, time,
                                       nearby_tables=offers.get("nearbyTables", True),
@@ -530,7 +641,7 @@ class Executor:
             answer["suggest"] = agent_model.nearest_times(time, answer["times"], ())
         answer["before"], answer["after"] = answer["before"][:3], answer["after"][:3]
         answer["times"] = of.spread(answer["times"], time, MAX_TIMES)
-        answer.update({"date": day, "weekday": _weekday(day), "partySize": party})
+        answer.update({"date": day, "weekday": _weekday(day), "partySize": party, **self._guarantee_note(party)})
         if self.state.get("found"):
             answer["next"] = MOVE_NEXT
         if not answer["times"] and not answer.get("nearby"):
@@ -572,7 +683,11 @@ class Executor:
         if not same:
             self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party,
                                                 "tableIds": table_ids, "nearby": bool(kind), "turn": self.turn}
-        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party}
+        note = self._guarantee_note(party)
+        if note:     # the caller is told the card terms with this hold's read-back
+            self.state["proposals"][hold_id]["guaranteeNoted"] = True
+        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party,
+                **note}
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
         return held
@@ -604,9 +719,23 @@ class Executor:
         if not proposal:
             return {"ok": False, "code": "unknown_hold"}
         if proposal.get("reservationId"):  # a retry of the same booking
+            if proposal.get("pending"):
+                return {"reservationId": proposal["reservationId"], "booked": False, "pending": True,
+                        "guaranteeLinkSent": True, "sentence": copy.text(copy.GUARANTEE_LINK_SENT, self.language),
+                        "say": SAY["guaranteeLinkSent"]}
             return {"reservationId": proposal["reservationId"], "booked": True}
+        if proposal.get("linkFailed"):     # the card link could not be sent: the restaurant calls back
+            return {"ok": False, "code": "guaranteeLinkFailed", "say": SAY["guaranteeLinkFailed"]}
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
+        party = int(proposal["partySize"])
+        if not proposal.get("guaranteeNoted") and self._guarantee_mode(party) == "link":
+            # Held while the caller's bookings were found (no card terms then): the terms and the
+            # card link are said in a new read-back before the pending booking is made.
+            proposal.update({"guaranteeNoted": True, "turn": self.turn})
+            note = self._guarantee_note(party, new_booking=True)
+            return {"ok": False, "code": "readBackFirst", "holdId": str(args["holdId"]), **note,
+                    "say": "Not booked yet. " + note["say"] + " After a clear yes, call create_reservation again."}
         if not self._heard_before(proposal.get("turn")):
             return {"ok": False, **_say("readBackFirst")}
         booked = next((p for p in self.state["proposals"].values()
@@ -625,8 +754,11 @@ class Executor:
             phone = self._booking_phone(args.get("phone"))
         except pa.PhoneAgentError:
             return {"ok": False, **_say("phoneInvalid")}
+        link = self._guarantee_mode(int(proposal["partySize"])) == "link"
         if self.dry_run:
             reservation_id = f"sim-{args['holdId']}"
+            if link:
+                return self._held_for_card(proposal, reservation_id, None)
         else:
             body = {"date": proposal["date"], "startTime": proposal["time"], "tableIds": proposal["tableIds"],
                     "partySize": proposal["partySize"], "name": name, "source": "phone", "notifyGuest": True,
@@ -634,6 +766,8 @@ class Executor:
                     "language": self._booking_language()}
             if phone:
                 body["phone"] = phone
+            if link:     # the caller ID (sms_reachable): the link goes to the number calling
+                body["guarantee"] = "link"
             if args.get("note"):
                 body["notes"] = " ".join(str(args["note"]).split())[:200]
             status, answer = self._call("create-pending-reservation", "POST",
@@ -654,18 +788,13 @@ class Executor:
             if status not in (200, 201) or not answer.get("reservationId"):
                 return {"ok": False, "code": "booking_failed"}
             reservation_id = answer["reservationId"]
+            if isinstance(answer.get("guaranteeLink"), dict) and answer.get("status") == "pending":
+                return self._held_for_card(proposal, reservation_id, answer)
         proposal["reservationId"] = reservation_id
         # The caller's own booking: it may be moved or cancelled in this call (also with a hidden number).
         self._remember_found([{"reservationId": reservation_id, "partySize": int(proposal["partySize"])}])
-        first = self.state.get("first") or {}
-        accepted = "none"
-        if proposal.get("nearby"):
-            accepted = "nearby_table"
-        elif first.get("date") and proposal["date"] != first["date"]:
-            accepted = "next_day"
-        elif first.get("time") and proposal["time"] != first["time"]:
-            accepted = "other_time"
-        self.state.update({"outcome": "booked", "reservationId": reservation_id, "accepted": accepted})
+        self.state.update({"outcome": "booked", "reservationId": reservation_id,
+                           "accepted": self._accepted(proposal)})
         return {"reservationId": reservation_id, "booked": True, "date": proposal["date"],
                 "weekday": _weekday(proposal["date"]), "time": proposal["time"], "partySize": proposal["partySize"],
                 "confirmationBy": "sms" if phone else None}
@@ -675,10 +804,72 @@ class Executor:
         lang = "sv" if self.language in ("sv", "no", "da", "fi") else "en"
         return lang if lang in pa.BOOKING_LANGUAGES else "en"
 
+    def _sms(self, text):
+        self.send_sms(tenant_id=self.tenant_id, location_id=self.location_id, to=self.caller_phone, text=text)
+
+    def _held_for_card(self, proposal, reservation_id, answer):
+        """The booking is pending until the card is added: text the caller
+        the Stripe link (their own caller ID only) and tell the model the
+        fixed sentence. `answer` None: the simulator (nothing sent)."""
+        if answer is not None:
+            link = answer["guaranteeLink"]
+            text = messages.guarantee_link_sms(answer, self.tenant_row, self.location, link["url"],
+                                               int(link.get("minutes") or guarantee.PHONE_PENDING_MINUTES))
+            try:
+                self._sms(text)
+            except Exception:  # noqa: BLE001 - no SMS: release the tables now, the restaurant calls back
+                self.state["needsCallback"] = "guarantee"
+                proposal["linkFailed"] = reservation_id
+                self._release_unlinked(reservation_id)
+                return {"ok": False, "code": "guaranteeLinkFailed", "say": SAY["guaranteeLinkFailed"]}
+            self.state.setdefault("guaranteeLinks", {})[reservation_id] = {"text": text}
+        proposal.update({"reservationId": reservation_id, "pending": True})
+        self._remember_found([{"reservationId": reservation_id, "partySize": int(proposal["partySize"]),
+                               "pending": True}])
+        self.state.update({"outcome": "booked", "reservationId": reservation_id, "guaranteePending": True,
+                           "accepted": self._accepted(proposal)})
+        return {"reservationId": reservation_id, "booked": False, "pending": True, "guaranteeLinkSent": True,
+                "date": proposal["date"], "weekday": _weekday(proposal["date"]), "time": proposal["time"],
+                "partySize": proposal["partySize"], "heldMinutes": guarantee.PHONE_PENDING_MINUTES,
+                "sentence": copy.text(copy.GUARANTEE_LINK_SENT, self.language), "say": SAY["guaranteeLinkSent"]}
+
+    def _release_unlinked(self, reservation_id):
+        """Cancel the pending booking whose link could not be texted (no
+        guest message): nobody has its Stripe page, so it must not hold the
+        tables until the expiry job. A failed cancel still expires by itself."""
+        try:
+            self._call("mark-arrived", "POST", "/locations/{locationId}/reservations/{reservationId}/status",
+                       {"reservationId": reservation_id},
+                       body={"status": "cancelled", "reason": "Kortlänken kunde inte skickas", "notifyGuest": False},
+                       staff=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _accepted(self, proposal):
+        first = self.state.get("first") or {}
+        if proposal.get("nearby"):
+            return "nearby_table"
+        if first.get("date") and proposal["date"] != first["date"]:
+            return "next_day"
+        if first.get("time") and proposal["time"] != first["time"]:
+            return "other_time"
+        return "none"
+
     def send_guarantee_link(self, args):
-        # Only after create_reservation answers guaranteeRequired, which the
-        # manual route does not do in v1 (ADR-L 13, hotspot upgrade pending).
-        return {"ok": False, "code": "guarantee_not_available"}
+        """The card link of a booking create_reservation made in this call,
+        texted again once (the caller says it did not arrive)."""
+        sent = (self.state.get("guaranteeLinks") or {}).get(str(args.get("reservationId") or ""))
+        if not sent:
+            return {"ok": False, "code": "guarantee_not_available"}
+        if sent.get("resent"):
+            return {"ok": False, "code": "already_resent"}
+        if not self.dry_run:
+            try:
+                self._sms(sent["text"])
+            except Exception:  # noqa: BLE001
+                return {"ok": False, "code": "guaranteeLinkFailed", "say": SAY["guaranteeLinkFailed"]}
+        sent["resent"] = True
+        return {"sent": True, "sentence": copy.text(copy.GUARANTEE_LINK_SENT, self.language)}
 
     def find_reservations(self, args):
         # Only the number the network gave us: a number the caller says could
@@ -708,7 +899,8 @@ class Executor:
                 if item.get("customerPhone") == phone and item.get("status") in ("reserved", "pending", "held"):
                     when = item.get("date") or d
                     found.append({"reservationId": item["reservationId"], "date": when, "weekday": _weekday(when),
-                                  "time": item.get("startTime"), "partySize": item.get("partySize")})
+                                  "time": item.get("startTime"), "partySize": item.get("partySize"),
+                                  **({"pending": True} if item.get("status") == "pending" else {})})
         found.sort(key=lambda f: (f["date"], f.get("time") or ""))
         self._remember_found(found)
         return {"reservations": found[:3]}
@@ -738,6 +930,8 @@ class Executor:
                 ids.append(rid)
             if isinstance(f.get("partySize"), int) and not isinstance(f["partySize"], bool):
                 party[rid] = int(f["partySize"])
+            if f.get("pending") and rid not in self.state.setdefault("foundPending", []):
+                self.state["foundPending"].append(rid)   # waiting for the card: its party stays
             if self.turn is not None:
                 turns.setdefault(rid, self.turn)
 
@@ -755,7 +949,17 @@ class Executor:
             return {"ok": False, **_say("notConfirmed")}
         day, time = self._day(args["date"]), self._time(args["time"])
         party = self._party(args["partySize"]) if args.get("partySize") else None
-        problem = self._date_problem(day) or (self._party_problem(party) if party else None)
+        known = (self.state.get("foundParty") or {}).get(args["reservationId"])
+        problem = self._date_problem(day)
+        if not problem and party and party != known:
+            # A new party size: a booking still waiting for its card keeps the
+            # fees it was texted; any other may not grow into a card party.
+            if args["reservationId"] in (self.state.get("foundPending") or []):
+                problem = self._guarantee_callback(party)
+            else:
+                problem = self._party_problem(party, moving=True)
+        elif not problem and party:
+            problem = self._party_problem(party)
         if problem:
             return {"ok": False, **problem}
         if not self._heard(args["reservationId"]):
@@ -764,7 +968,6 @@ class Executor:
             body = {"date": day, "startTime": time}
             if party:
                 body["partySize"] = party
-            known = (self.state.get("foundParty") or {}).get(args["reservationId"])
             size = party or (int(known) if known else None)
             check = self._offers(day, time, size) if size else None
             if check and check.get("bookable"):
@@ -887,6 +1090,78 @@ _MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augu
            "November", "December")
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+_EN_TEENS = ("ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+             "nineteen")
+_EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+_SV_ONES = ("noll", "ett", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio", "tio", "elva", "tolv",
+            "tretton", "fjorton", "femton", "sexton", "sjutton", "arton", "nitton")
+_SV_TENS = ("", "", "tjugo", "trettio", "fyrtio", "femtio", "sextio", "sjuttio", "åttio", "nittio")
+
+
+def number_words(n, lang="en"):
+    """A whole number 0 to 999 999 in words: 1250 -> "one thousand two hundred
+    fifty" / "tusen tvåhundrafemtio"."""
+    n = int(n)
+    if not 0 <= n < 1_000_000:
+        return str(n)
+    if lang == "sv":
+        def below(k):          # 1..999, one word
+            out = ""
+            if k >= 100:
+                out += ("" if k // 100 == 1 else _SV_ONES[k // 100]) + "hundra"
+                k %= 100
+            if k >= 20:
+                out += _SV_TENS[k // 10] + (_SV_ONES[k % 10] if k % 10 else "")
+            elif k:
+                out += _SV_ONES[k]
+            return out
+        if n == 0:
+            return "noll"
+        thousands, rest = divmod(n, 1000)
+        parts = []
+        if thousands:
+            parts.append(("" if thousands == 1 else below(thousands)) + "tusen")
+        if rest:
+            parts.append(below(rest))
+        return " ".join(parts)
+
+    def below_en(k):
+        out = []
+        if k >= 100:
+            out.append(f"{_ONES[k // 100]} hundred")
+            k %= 100
+        if k >= 20:
+            out.append(_EN_TENS[k // 10] + (f"-{_ONES[k % 10]}" if k % 10 else ""))
+        elif k >= 10:
+            out.append(_EN_TEENS[k - 10])
+        elif k:
+            out.append(_ONES[k])
+        return " ".join(out)
+    if n == 0:
+        return "zero"
+    thousands, rest = divmod(n, 1000)
+    parts = [f"{below_en(thousands)} thousand"] if thousands else []
+    if rest:
+        parts.append(below_en(rest))
+    return " ".join(parts)
+
+
+def kronor_words(amount, lang="en"):
+    """Whole kronor in words: 800 -> "eight hundred kronor" / "åttahundra kronor"."""
+    amount = int(amount)
+    if lang == "sv":
+        return "en krona" if amount == 1 else f"{number_words(amount, 'sv')} kronor"
+    return "one krona" if amount == 1 else f"{number_words(amount)} kronor"
+
+
+def hours_words(hours, lang="en"):
+    """24 -> "twenty-four hours" / "tjugofyra timmar"."""
+    hours = int(hours)
+    if lang == "sv":
+        return "en timme" if hours == 1 else f"{number_words(hours, 'sv')} timmar"
+    return "one hour" if hours == 1 else f"{number_words(hours)} hours"
 
 
 def clock_words(value):

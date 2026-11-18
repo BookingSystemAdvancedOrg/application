@@ -151,6 +151,13 @@ def last_bookable_date(today, location=None):
     return today + timedelta(days=BOOKING_HORIZON_DAYS)
 
 
+def earliest_layout_change_date(today):
+    """The first local date a replacement floor plan may take effect: the day
+    after the last bookable date, so no booking that can exist today lands on
+    a layout that changed under it."""
+    return last_bookable_date(today) + timedelta(days=1)
+
+
 # Start times sit on the clock's half hours (14:00, 14:30 - never 14:02),
 # and a booking must start at least LEAD_TIME from now - online and by staff
 # alike. Only staff walk-ins (the guest is standing there) skip the lead time.

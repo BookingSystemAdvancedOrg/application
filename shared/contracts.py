@@ -3,7 +3,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-CONTRACTS_HASH = "cced507fd2a8"
+CONTRACTS_HASH = "01df8a9bc7dc"
 
 FEATURE_KEYS = ('reservations',
  'ordering',
@@ -64,6 +64,7 @@ EVENT_SOURCES = ('booqy.accounting-sync',
  'booqy.personalliggare',
  'booqy.phone-agent',
  'booqy.social-posting',
+ 'booqy.tenant-setup',
  'booqy.waitlist')
 EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'provider': 'enum[fortnox,visma]'},
                                                         'optional': {}},
@@ -251,6 +252,10 @@ EVENTS = {'booqy.accounting-sync': {'AccountingSync.Connected': {'required': {'p
                                                                 'scheduledAt': 'datetime',
                                                                 'channels': 'list[enum[facebook,instagram]]'},
                                                    'optional': {}}},
+ 'booqy.tenant-setup': {'Tenant.SetupCompleted': {'required': {'completedAt': 'datetime',
+                                                               'stepsDone': 'int',
+                                                               'stepsSkipped': 'int'},
+                                                  'optional': {}}},
  'booqy.waitlist': {'Waitlist.Converted': {'required': {'locationId': 'string',
                                                         'entryId': 'string',
                                                         'date': 'date',
@@ -689,6 +694,15 @@ class SocialPostScheduledDetail(TypedDict):
     locationId: str
     scheduledAt: str
     channels: list[Literal["facebook", "instagram"]]
+
+
+class TenantSetupCompletedDetail(TypedDict):
+    tenantId: str
+    occurredAt: str
+    version: int
+    completedAt: str
+    stepsDone: int
+    stepsSkipped: int
 
 
 class WaitlistConvertedDetail(TypedDict):

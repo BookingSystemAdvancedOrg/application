@@ -145,7 +145,7 @@ def test_default_prod_cutover_is_next_local_midnight(app_and_table, monkeypatch)
     app, snapshot_table = app_and_table
     monkeypatch.setattr(app, "ENVIRONMENT", "prod")
     current = snapshot_item(1, is_current=True)
-    # published Monday 2026-08-10 19:10 Stockholm; eligible four weeks later
+    # published long ago: the earliest switch still counts from today
     target = snapshot_item(2, createdAt="2026-08-10T17:10:00Z")
     for item in (current, target, activation_state()):
         snapshot_table.put_item(Item=item)
@@ -154,7 +154,7 @@ def test_default_prod_cutover_is_next_local_midnight(app_and_table, monkeypatch)
 
     response = app.handler(make_event(version_id="2"), None)
 
-    # 2026-09-08 00:00 Stockholm (CEST) == 2026-09-07 22:00Z, not 17:10Z
+    # today 2026-09-07 + 21 bookable days + 1: 2026-09-29 00:00 CEST
     assert_response(
         response,
         202,
@@ -162,7 +162,7 @@ def test_default_prod_cutover_is_next_local_midnight(app_and_table, monkeypatch)
             "status": "pending",
             "version": 2,
             "currentVersion": 1,
-            "cutoverAt": "2026-09-07T22:00:00Z",
+            "cutoverAt": "2026-09-28T22:00:00Z",
         },
     )
 
@@ -179,8 +179,8 @@ def test_default_prod_cutover_follows_location_timezone(app_and_table, monkeypat
         {"mode": "default"}, target, NOW, location={"timezone": "Not/AZone"}
     )
 
-    assert london == {"mode": "future", "effectiveFrom": "2026-09-07T23:00:00Z"}
-    assert unknown == {"mode": "future", "effectiveFrom": "2026-09-07T22:00:00Z"}
+    assert london == {"mode": "future", "effectiveFrom": "2026-09-28T23:00:00Z"}
+    assert unknown == {"mode": "future", "effectiveFrom": "2026-09-28T22:00:00Z"}
 
 
 def test_next_local_midnight_keeps_exact_midnight(app_and_table):
@@ -353,7 +353,8 @@ def test_overdue_scheduling_renewal_in_prod_lands_on_local_midnight(
 
     response = app.handler(make_event(version_id="2"), None)
 
-    # NOW is 2026-09-07 10:30Z; next Stockholm midnight is 22:00Z
+    # NOW is 2026-09-07 10:30Z: bookings kept landing on the current
+    # layout, so the renewal also waits out the booking horizon
     assert_response(
         response,
         202,
@@ -361,7 +362,7 @@ def test_overdue_scheduling_renewal_in_prod_lands_on_local_midnight(
             "status": "pending",
             "version": 2,
             "currentVersion": 1,
-            "cutoverAt": "2026-09-07T22:00:00Z",
+            "cutoverAt": "2026-09-28T22:00:00Z",
         },
     )
 

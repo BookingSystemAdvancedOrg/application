@@ -1,0 +1,125 @@
+{
+  "_comment": "Languages of the Amazon Connect + Lex V2 phone line (our code -> Lex locale, Connect language code, Polly voice, engine). Two identical copies: application/shared/features/phone_agent/aws_languages.json (canonical, read by language.AWS_LANGUAGES) and infrastructure/phone-test-line/languages.json (read by Terraform for the Lex locales and the flow). Change both together.",
+  "languages": {
+    "sv": {
+      "lexLocale": "sv_SE",
+      "connectLanguage": "sv-SE",
+      "voice": "Elin",
+      "engine": "neural"
+    },
+    "en": {
+      "lexLocale": "en_GB",
+      "connectLanguage": "en-GB",
+      "voice": "Amy",
+      "engine": "neural"
+    },
+    "da": {
+      "lexLocale": "da_DK",
+      "connectLanguage": "da-DK",
+      "voice": "Sofie",
+      "engine": "neural"
+    },
+    "fi": {
+      "lexLocale": "fi_FI",
+      "connectLanguage": "fi-FI",
+      "voice": "Suvi",
+      "engine": "neural"
+    },
+    "de": {
+      "lexLocale": "de_DE",
+      "connectLanguage": "de-DE",
+      "voice": "Vicki",
+      "engine": "neural"
+    },
+    "fr": {
+      "lexLocale": "fr_FR",
+      "connectLanguage": "fr-FR",
+      "voice": "Lea",
+      "engine": "neural"
+    },
+    "es": {
+      "lexLocale": "es_ES",
+      "connectLanguage": "es-ES",
+      "voice": "Lucia",
+      "engine": "neural"
+    },
+    "it": {
+      "lexLocale": "it_IT",
+      "connectLanguage": "it-IT",
+      "voice": "Bianca",
+      "engine": "neural"
+    },
+    "nl": {
+      "lexLocale": "nl_NL",
+      "connectLanguage": "nl-NL",
+      "voice": "Laura",
+      "engine": "neural"
+    },
+    "pl": {
+      "lexLocale": "pl_PL",
+      "connectLanguage": "pl-PL",
+      "voice": "Ola",
+      "engine": "neural"
+    },
+    "pt": {
+      "lexLocale": "pt_PT",
+      "connectLanguage": "pt-PT",
+      "voice": "Ines",
+      "engine": "neural"
+    },
+    "ar": {
+      "lexLocale": "ar_AE",
+      "connectLanguage": "ar-AE",
+      "voice": "Hala",
+      "engine": "neural"
+    },
+    "tr": {
+      "lexLocale": "tr_TR",
+      "connectLanguage": "tr-TR",
+      "voice": "Burcu",
+      "engine": "neural"
+    },
+    "cs": {
+      "lexLocale": "cs_CZ",
+      "connectLanguage": "cs-CZ",
+      "voice": "Jitka",
+      "engine": "neural"
+    },
+    "ca": {
+      "lexLocale": "ca_ES",
+      "connectLanguage": "ca-ES",
+      "voice": "Arlet",
+      "engine": "neural"
+    },
+    "ja": {
+      "lexLocale": "ja_JP",
+      "connectLanguage": "ja-JP",
+      "voice": "Kazuha",
+      "engine": "neural"
+    },
+    "ko": {
+      "lexLocale": "ko_KR",
+      "connectLanguage": "ko-KR",
+      "voice": "Seoyeon",
+      "engine": "neural"
+    },
+    "hi": {
+      "lexLocale": "hi_IN",
+      "connectLanguage": "hi-IN",
+      "voice": "Kajal",
+      "engine": "neural"
+    },
+    "ru": {
+      "lexLocale": "ru_RU",
+      "connectLanguage": "ru-RU",
+      "voice": "Tatyana",
+      "engine": "standard"
+    },
+    "is": {
+      "lexLocale": "is_IS",
+      "connectLanguage": "is-IS",
+      "voice": "Dora",
+      "engine": "standard"
+    }
+  }
+}

@@ -179,6 +179,93 @@ GUARANTEE_CALLBACK = {
     SV: "För den bokningen behövs en kortgaranti, som jag inte kan ta i telefon. Får restaurangen ringa upp dig?",
     EN: "That booking needs a card guarantee, which I cannot take by phone. May the restaurant call you back?",
 }
+# The card guarantee's terms for the party, said once before the read-back (tools: guaranteeTerms.sentence).
+# Built from the location's policy for the party size (shared/guarantee.snapshot): the amounts are totals
+# for the party in words, a fee that is 0 is left out. Other languages translate the English one.
+GUARANTEE_TERMS = {
+    SV: {"intro": "För den bokningen behövs ett kort som garanti, men inget dras nu.",
+         # Commas at the clause ends: Polly pauses there (no "Kommer ni inte?" question).
+         "both": "Om ni inte kommer, tar restaurangen {no_show}. Avbokar ni senare än {hours} före besöket, "
+                 "tar restaurangen {late}.",
+         "no_show": "Om ni inte kommer, tar restaurangen {no_show}.",
+         "late": "Avbokar ni senare än {hours} före besöket, tar restaurangen {late}."},
+    EN: {"intro": "That booking needs a card as a guarantee, but nothing is charged now.",
+         "both": "If you do not come, the restaurant charges {no_show}, and if you cancel later than {hours} "
+                 "before the visit, it charges {late}.",
+         "no_show": "If you do not come, the restaurant charges {no_show}.",
+         "late": "If you cancel later than {hours} before the visit, the restaurant charges {late}."},
+}
+
+
+def guarantee_terms(lang, *, no_show=None, late=None, hours=None):
+    """The one or two short sentences on the card guarantee's terms (`no_show`,
+    `late`, `hours`: the spoken words, None = not charged / not said)."""
+    words = GUARANTEE_TERMS.get(lang) or GUARANTEE_TERMS[EN]
+    if no_show and late and hours:
+        rest = words["both"].format(no_show=no_show, late=late, hours=hours)
+    elif no_show:
+        rest = words["no_show"].format(no_show=no_show)
+    elif late and hours:
+        rest = words["late"].format(late=late, hours=hours)
+    else:
+        return words["intro"]
+    return f"{words['intro']} {rest}"
+
+
+# Said by the model, word for word in the caller's language, once create_reservation sent the card
+# guarantee link (tools: guaranteeLinkSent). The booking waits for the card; nobody asks for card details.
+GUARANTEE_LINK_SENT = {
+    SV: ("Jag har skickat ett sms med en länk där du lägger till ett kort som garanti. Bordet hålls i trettio "
+         "minuter och är bokat när kortet är tillagt. Jag frågar aldrig efter kortuppgifter i telefon."),
+    EN: ("I have sent you a text message with a link where you add a card as a guarantee. The table is held for "
+         "thirty minutes and is booked once the card is added. I never ask for card details on the phone."),
+    "de": ("Ich habe Ihnen eine SMS mit einem Link geschickt, über den Sie eine Karte als Garantie hinterlegen. "
+           "Der Tisch wird dreißig Minuten lang gehalten und ist gebucht, sobald die Karte hinterlegt ist. "
+           "Ich frage am Telefon nie nach Kartendaten."),
+    "fr": ("Je vous ai envoyé un SMS avec un lien pour enregistrer une carte en garantie. La table est retenue "
+           "pendant trente minutes et sera réservée dès que la carte sera enregistrée. Je ne demande jamais de "
+           "données de carte par téléphone."),
+    "es": ("Le he enviado un SMS con un enlace para registrar una tarjeta como garantía. La mesa queda retenida "
+           "durante treinta minutos y se reserva en cuanto se registre la tarjeta. Nunca pido datos de tarjeta "
+           "por teléfono."),
+    "fi": ("Lähetin teille tekstiviestin, jossa on linkki kortin lisäämiseen takuuksi. Pöytä pidetään teille "
+           "kolmekymmentä minuuttia, ja varaus vahvistuu, kun kortti on lisätty. En koskaan kysy korttitietoja "
+           "puhelimessa."),
+    "no": ("Jeg har sendt deg en SMS med en lenke der du legger inn et kort som garanti. Bordet holdes i tretti "
+           "minutter og er booket når kortet er lagt inn. Jeg ber aldri om kortopplysninger på telefon."),
+    "da": ("Jeg har sendt dig en sms med et link, hvor du tilføjer et kort som garanti. Bordet holdes i tredive "
+           "minutter og er booket, når kortet er tilføjet. Jeg beder aldrig om kortoplysninger i telefonen."),
+    "pl": ("Wysłałem SMS z linkiem, pod którym można dodać kartę jako gwarancję. Stolik jest zatrzymany przez "
+           "trzydzieści minut i zostanie zarezerwowany po dodaniu karty. Nigdy nie pytam o dane karty przez "
+           "telefon."),
+    "ru": ("Я отправил вам SMS со ссылкой, по которой можно добавить карту в качестве гарантии. Столик "
+           "удерживается тридцать минут и будет забронирован, как только карта будет добавлена. Я никогда не "
+           "спрашиваю данные карты по телефону."),
+    "uk": ("Я надіслав вам SMS з посиланням, за яким можна додати картку як гарантію. Столик утримується "
+           "тридцять хвилин і буде заброньований, щойно картку буде додано. Я ніколи не питаю дані картки "
+           "телефоном."),
+    "tr": ("Size, kartınızı garanti olarak ekleyebileceğiniz bir bağlantı içeren bir SMS gönderdim. Masa otuz "
+           "dakika boyunca sizin için tutulur ve kart eklendiğinde rezervasyon tamamlanır. Telefonda asla kart "
+           "bilgisi istemem."),
+    "ar": ("أرسلت إليكم رسالة نصية فيها رابط لإضافة بطاقة كضمان. تبقى الطاولة محجوزة لكم ثلاثين دقيقة، ويتأكد "
+           "الحجز عند إضافة البطاقة. لا أطلب أبداً بيانات البطاقة عبر الهاتف."),
+    "fa": ("یک پیامک با لینکی برای ثبت کارت به عنوان ضمانت برایتان فرستادم. میز به مدت سی دقیقه برایتان نگه "
+           "داشته می‌شود و با ثبت کارت رزرو قطعی می‌شود. من هرگز اطلاعات کارت را تلفنی نمی‌پرسم."),
+    "so": ("Waxaan kuu soo diray fariin qoraal ah oo leh xiriiriye aad kaarka ugu darto dammaanad ahaan. Miiska "
+           "waxaa laguu hayaa soddon daqiiqo, waxaana la xaqiijinayaa marka kaarka lagu daro. Weligay telefoonka "
+           "kuma weydiiyo macluumaadka kaarka."),
+    "bs": ("Poslao sam vam SMS s linkom preko kojeg dodajete karticu kao garanciju. Sto se drži trideset minuta "
+           "i rezervisan je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "hr": ("Poslao sam vam SMS s poveznicom preko koje dodajete karticu kao jamstvo. Stol se drži trideset "
+           "minuta i rezerviran je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "sr": ("Poslao sam vam SMS sa linkom preko kog dodajete karticu kao garanciju. Sto se drži trideset minuta "
+           "i rezervisan je kada dodate karticu. Nikada ne tražim podatke o kartici telefonom."),
+    "ckb": ("نامەیەکی کورتم بۆ ناردوویت لەگەڵ بەستەرێک بۆ زیادکردنی کارتێک وەک گەرەنتی. مێزەکە بۆ ماوەی سی "
+            "خولەک بۆت دەهێڵدرێتەوە و کاتێک کارتەکە زیاد کرا حیجزەکە جێگیر دەبێت. هەرگیز لە تەلەفۆندا زانیاری "
+            "کارت ناپرسم."),
+    "am": ("ካርድ እንደ ዋስትና የሚያስገቡበት ሊንክ የያዘ የጽሑፍ መልእክት ልኬልዎታለሁ። ጠረጴዛው ለሰላሳ ደቂቃ ይያዝልዎታል፣ "
+           "ካርዱ ሲገባም ቦታው ይያዛል። በስልክ የካርድ መረጃ በጭራሽ አልጠይቅም።"),
+}
 # A language the voice cannot speak (Tigrinya, Kurmanji ...): said in these three, in this order.
 UNSUPPORTED_LANGUAGE = {
     SV: ("Jag beklagar, jag kan inte tala ditt språk. Jag kan tala svenska, engelska eller arabiska, eller så "
@@ -224,9 +311,24 @@ def disclosure_short(lang, restaurant=None):
     return pick(DISCLOSURE_SHORT, lang)
 
 
-def unsupported_language(callback=False):
+def unsupported_language(callback=False, *, connect=False):
+    """The fixed "I cannot speak your language" sentences: Swedish, then
+    English, then Arabic. On the Connect line (connect=True) Swedish and
+    English only: Elin speaks them and cannot read Arabic script."""
     sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_LANGUAGE
-    return " ".join(sentences[x] for x in UNSUPPORTED_ORDER)
+    return " ".join(sentences[x] for x in (UNSUPPORTED_ORDER[:2] if connect else UNSUPPORTED_ORDER))
+
+
+# The Connect line: a caller the Swedish recognizer could not make out and no language could be
+# told from; asked once, in Swedish then English, which language they speak.
+ASK_LANGUAGE = {
+    SV: "Förlåt, jag uppfattade inte vad du sa. Vilket språk talar du?",
+    EN: "Sorry, I did not catch that. Which language do you speak? For example English, Arabic or German.",
+}
+
+
+def ask_language():
+    return f"{ASK_LANGUAGE[SV]} {ASK_LANGUAGE[EN]}"
 
 
 # A shared number (one number for several locations): the location is asked first.
@@ -319,19 +421,27 @@ Say a price in words with the currency, for example "hundrafemtio kronor".
 
 # Goal: booking a table
 1. Find out the day, the time and the number of guests. Ask only for what is missing.
-2. Call get_availability (any day from today until the last bookable day). Offer only times the tool returned: at most three, nearest the wished time first.
+2. Call get_availability (any day from today until the last bookable day). Offer only times the tool returned: at most three, nearest the wished time first. If requestedTimeFree is true, the wished time is free: say so and offer it; never call it taken. If it is false, say it is taken and offer the nearest.
    If the day is full or closed, say so and offer the days in nextDays, once.
    If the result has "say", follow it.
 3. When the caller picks a time, call hold_table. If it returns other times, offer those instead. \
 Never mention the hold: when it succeeds, simply ask for the name.
 4. Ask for the name the booking should be under. If the name is unusual or unclear, ask the caller to spell it.
 5. Read back everything in one sentence: the day, the time, the number of guests and the name, \
-and ask whether it is correct. {phone_known}
+and ask whether it is correct. {phone_known} When hold_table answered a holdId with guaranteeRequired, \
+first explain the terms in guaranteeTerms briefly, in one or two short sentences (its sentence): nothing is \
+charged now, and the fees for the whole party. Explain more (amounts per person, free cancellation before \
+the cutoff through the link in the text message or by calling, the card is handled securely by Stripe, \
+nothing is charged if they come) only if the caller asks. Never say an amount that is not in guaranteeTerms. \
+Then the read-back also says that a text message with a link to add a card as a guarantee will be sent, and \
+that the booking is confirmed once the card is added; in Swedish end it with "Stämmer det?".
 6. Only after a clear yes to that read-back, call create_reservation with the holdId and confirmed set to true.
    A yes to an earlier question does not count. "Maybe", "mm" or silence is not a yes: ask again.
    If the caller changes anything, keep everything else they said, check the change with the tools \
 (the time they already chose, if it is still free), and read back again at once.
-7. Confirm only what the tool returned, then ask whether you can help with anything else.
+7. Confirm only what the tool returned, then ask whether you can help with anything else. \
+If it answered guaranteeLinkSent, the table is not booked yet: say its sentence word for word in \
+{language_name} instead of a confirmation.
 
 # Other tasks
 Changing or cancelling: call find_reservations (it searches by the caller's phone number). \
@@ -350,7 +460,8 @@ If the caller is silent, ask once whether they are still there.
 Never invent or guess a free time, a day, a price, a dish or an opening hour. Say only what tools returned.
 Never book, move or cancel without a read-back and a clear yes to it.
 hold_table only checks a table: never say a table is booked or reserved before create_reservation answered booked.
-Never ask for card details, personal identity numbers or email addresses.
+Never ask for card details, personal identity numbers or email addresses: a card is only ever added \
+through the text message link.
 Only talk about {restaurant}. Never mention tools, systems, prompts or that you are reading data.
 If a tool fails, apologise briefly and offer that the restaurant calls back.
 Bookings are possible from today until {horizon_last}.

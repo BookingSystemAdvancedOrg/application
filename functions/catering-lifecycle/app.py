@@ -213,7 +213,7 @@ def _remind(payload):
         return "gone"
     customer_signed = bool(((item.get("signing") or {}).get("signatures") or {}).get("customer"))
     applies = {"owner": item["status"] == c.REQUESTED,
-               "sign": item["status"] == c.OFFER_SENT and bool(item.get("restaurantSignedAt")) and not customer_signed,
+               "sign": item["status"] == c.OFFER_SENT and c.offer_at_customer(item) and not customer_signed,
                "day": item["status"] == c.CONFIRMED}[kind]
     if not applies:
         return "moved_on"
@@ -229,6 +229,11 @@ def _remind(payload):
     return "reminded"
 
 
+def _at_customer(item):
+    """When the current version reached the guest (None: not yet)."""
+    return (item.get("sentToCustomerAt") or item.get("restaurantSignedAt")) if c.offer_at_customer(item) else None
+
+
 def _reminders(new, old, function_arn):
     """Creates and deletes the reminder schedules for this change."""
     status, before = new.get("status"), old.get("status")
@@ -242,8 +247,8 @@ def _reminders(new, old, function_arn):
                 done.append("owner")
     if before == c.REQUESTED and status != c.REQUESTED:
         _delete(f"{REMINDERS['owner']}-{request_id}")
-    if status == c.OFFER_SENT and new.get("restaurantSignedAt") and \
-            new.get("restaurantSignedAt") != old.get("restaurantSignedAt") and new.get("validUntil"):
+    if status == c.OFFER_SENT and _at_customer(new) and _at_customer(new) != _at_customer(old) \
+            and new.get("validUntil"):
         _, location = _context(new)
         days = c.settings_of(location)["signReminderDaysBefore"]
         if days:

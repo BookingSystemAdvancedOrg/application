@@ -40,7 +40,7 @@ from http import HTTPStatus
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import image_focus, menu, tenant
+from shared import console_invoke, image_focus, menu, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -460,6 +460,9 @@ def _handle_protected(event):
         )
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     if _has_proxy_path(event):
         return _handle_protected(event)

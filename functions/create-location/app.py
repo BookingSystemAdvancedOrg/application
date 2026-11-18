@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import booking_rules, dynamo, guarantee, orders, tenant
+from shared import booking_rules, console_invoke, dynamo, guarantee, orders, tenant
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import table
 from shared.responses import json_response
@@ -907,6 +907,9 @@ def _delete_location(ctx):
     return _empty_response(HTTPStatus.NO_CONTENT.value)
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     method = _request_method(event)
     item_route = _has_item_route(event)

@@ -98,7 +98,8 @@ def validate(data: dict) -> list[str]:
     if not _type_ok(data["events"]["common"]):
         errors.append("events.common: bad field type")
     for source, types in data["events"]["sources"].items():
-        if not source.startswith("booqy.") or source[len("booqy."):] not in new_ids:
+        if not source.startswith("booqy.") or source[len("booqy."):] not in (
+                set(new_ids) | set(data["events"].get("platform") or [])):
             errors.append(f"event source {source} is not booqy.<feature-id>")
         for detail_type, fields in types.items():
             if not DETAIL_TYPE_RE.match(detail_type):

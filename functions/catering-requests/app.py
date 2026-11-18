@@ -290,10 +290,15 @@ def _list(event):
     items.sort(key=lambda i: i.get("createdAt") or "", reverse=True)
     summary = ("requestId", "status", "customerType", "customerName", "companyName", "deliveryDate",
                "deliveryTime", "fulfilment", "createdAt", "updatedAt", "currentOfferVersion", "paid",
-               "validUntil", "invoiceStatus", "equipmentReturn", "guests", "reviewedAt", "restaurantSignedAt")
+               "validUntil", "invoiceStatus", "equipmentReturn", "guests", "reviewedAt", "restaurantSignedAt",
+               "sentToCustomerAt")
     out = []
     for item in items:
         row = {k: item.get(k) for k in summary if item.get(k) is not None}
+        if c.offer_at_customer(item):  # older versions went out on the restaurant's signature
+            row["sentToCustomerAt"] = item.get("sentToCustomerAt") or item["restaurantSignedAt"]
+        else:
+            row.pop("sentToCustomerAt", None)
         row["portions"] = (item.get("request") or {}).get("portions")
         row["total"] = ((item.get("offer") or {}).get("totals") or {}).get("total") \
             or (item.get("request") or {}).get("total")

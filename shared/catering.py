@@ -1076,8 +1076,20 @@ def _signing_view(item):
                for role in ("restaurant", "customer") if sigs.get(role)}}
 
 
+def offer_at_customer(item):
+    """The current version has reached the guest: the restaurant signed it and
+    sent it. Versions locked before the send step existed went out on the
+    restaurant's signature (no signing.sendRequired)."""
+    if not item.get("restaurantSignedAt"):
+        return False
+    return bool(item.get("sentToCustomerAt")) or not (item.get("signing") or {}).get("sendRequired")
+
+
 def guest_view(item, offer=None, location=None, settings=None):
     view = {k: item.get(k) for k in _GUEST_FIELDS if item.get(k) is not None}
+    if not offer_at_customer(item):
+        # To the guest the restaurant has not signed until it sent the version.
+        view.pop("restaurantSignedAt", None)
     signer = (item.get("signature") or {}).get("name")
     if signer:
         view["signedBy"] = signer
@@ -1100,9 +1112,10 @@ def guest_view(item, offer=None, location=None, settings=None):
         view["paymentTermsDays"] = settings.get("paymentTermsDays")
     signing_view = _signing_view(item)
     current = bool(signing_view) and signing_view["offerVersion"] == int(item.get("currentOfferVersion") or 0)
-    # The guest signs after the restaurant, the current version only (offers sent before
-    # issue 5 M4 have no signing order: the restaurant sends them again).
-    view["canSign"] = item.get("status") == OFFER_SENT and current and "restaurant" in signing_view
+    # The guest signs after the restaurant has signed and sent it, the current version only
+    # (offers sent before issue 5 M4 have no signing order: the restaurant sends them again).
+    view["canSign"] = item.get("status") == OFFER_SENT and current and "restaurant" in signing_view \
+        and offer_at_customer(item)
     view["canAccept"] = view["canSign"] and bool((settings or {}).get("allowSimpleAcceptance"))
     view["canPay"] = item.get("status") == SIGNED and item.get("customerType") == PRIVATE
     view["documents"] = [d for d, ok in (("offer", view["canSign"] or bool(item.get("signedPdfKey"))),
@@ -1120,4 +1133,9 @@ def staff_view(item):
     signing_view = _signing_view(item)
     if signing_view:
         view["signing"] = signing_view
+    if offer_at_customer(item):
+        # Versions from before the send step went out on the restaurant's signature.
+        view["sentToCustomerAt"] = item.get("sentToCustomerAt") or item["restaurantSignedAt"]
+    else:
+        view.pop("sentToCustomerAt", None)
     return view

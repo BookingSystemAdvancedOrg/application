@@ -9,7 +9,7 @@ PURPOSE:
     At or after the stored cutover time, atomically retires the outgoing
     layout snapshot, activates the pending target, advances activation state,
     and removes its pending fields. Before writing, it revalidates that the
-    target's publication time satisfies the five-minute dev or 28-day prod
+    target's publication time satisfies the five-minute dev or booking-horizon (21-day) prod
     replacement delay. It also recovers a due ``scheduling`` intent left after
     Scheduler creation but before lifecycle staging, but only within 10
     minutes of its cutover (later it is abandoned: a no-op). Missing state and stale
@@ -37,6 +37,7 @@ from decimal import Decimal
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
+from shared.availability import BOOKING_HORIZON_DAYS
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
 
@@ -68,7 +69,9 @@ _VERSION_SK_PATTERN = re.compile(r"LAYOUT#v([1-9][0-9]{0,37})\Z")
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _REPLACEMENT_ACTIVATION_DELAYS = {
     "dev": timedelta(minutes=5),
-    "prod": timedelta(days=28),
+    # A floor: activate schedules prod cutovers at local midnight after the
+    # booking horizon from the day it is booked, so always later than this.
+    "prod": timedelta(days=BOOKING_HORIZON_DAYS),
 }
 _EVENT_FIELDS = frozenset(
     {

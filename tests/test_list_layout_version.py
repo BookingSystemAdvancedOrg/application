@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import boto3
 import pytest
@@ -39,6 +39,10 @@ ARCHIVE_ROUTE = (
     "DELETE /locations/{locationId}/layout/versions/{versionId}"
 )
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
+def listed(items):
+    return {"items": items, "earliestChangeDate": ANY, "bookingHorizonDays": 21}
 
 
 def make_event(
@@ -2347,7 +2351,7 @@ def test_allowed_groups_can_list_empty_partition(app_and_table, group):
 
     response = app.handler(make_event(groups=f'["{group}"]'), None)
 
-    assert_response(response, 200, {"items": []})
+    assert_response(response, 200, listed([]))
 
 
 def test_lists_only_requested_location_newest_version_first(app_and_table):
@@ -2373,12 +2377,7 @@ def test_lists_only_requested_location_newest_version_first(app_and_table):
     assert_response(
         response,
         200,
-        {
-            "items": [
-                public_snapshot(version_ten),
-                public_snapshot(version_two),
-            ]
-        },
+        listed([public_snapshot(version_ten), public_snapshot(version_two)]),
     )
     assert all(
         "PK" not in item and "SK" not in item
@@ -2399,7 +2398,7 @@ def test_list_omits_archived_snapshots(app_and_table):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 200, {"items": [public_snapshot(visible)]})
+    assert_response(response, 200, listed([public_snapshot(visible)]))
     assert "archivedAt" not in response["body"]
     assert "archivedBy" not in response["body"]
 
@@ -2413,7 +2412,7 @@ def test_list_keeps_legacy_snapshot_without_archive_metadata(app_and_table):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 200, {"items": [public_snapshot(legacy)]})
+    assert_response(response, 200, listed([public_snapshot(legacy)]))
 
 
 @pytest.mark.parametrize(
@@ -2458,7 +2457,7 @@ def test_list_query_is_strongly_consistent(app_and_table, monkeypatch):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 200, {"items": []})
+    assert_response(response, 200, listed([]))
     assert query_spy.call_args.kwargs["ConsistentRead"] is True
 
 
@@ -2485,12 +2484,7 @@ def test_list_follows_every_page_and_sorts_all_versions_numerically(
     assert_response(
         response,
         200,
-        {
-            "items": [
-                public_snapshot(version_ten),
-                public_snapshot(version_two),
-            ]
-        },
+        listed([public_snapshot(version_ten), public_snapshot(version_two)]),
     )
     assert query_table.query.call_count == 2
     first_request = query_table.query.call_args_list[0].kwargs
@@ -3067,7 +3061,7 @@ def test_allows_nullable_lifecycle_timestamps(app_and_table):
 
     response = app.handler(make_event(), None)
 
-    assert_response(response, 200, {"items": [public_snapshot(snapshot)]})
+    assert_response(response, 200, listed([public_snapshot(snapshot)]))
 
 
 def test_unknown_snapshot_and_element_fields_are_not_returned(
@@ -3153,3 +3147,19 @@ def test_public_active_before_the_dpa_only_own_staff_see_the_plan(
     assert response["statusCode"] == status
     if status == 200:
         assert response_body(response) == {"floors": [], "elements": []}
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [("dev", "2026-09-08"), ("prod", "2026-09-30")],
+)
+def test_list_reports_earliest_change_date(app_and_table, monkeypatch, environment, expected):
+    """Prod: today (2026-09-08) + 21 bookable days + 1 = 2026-09-30."""
+    app = app_and_table[0]
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    monkeypatch.setattr(app, "_utc_now", lambda: NOW)
+
+    body = response_body(app.handler(make_event(), None))
+
+    assert body["earliestChangeDate"] == expected
+    assert body["bookingHorizonDays"] == 21

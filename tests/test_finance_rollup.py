@@ -47,8 +47,10 @@ class FakeCE:
             raise self.error
         results = []
         for day, services in self.by_day.items():
+            # (service, record type) keys; a plain service is usage
             results.append({"TimePeriod": {"Start": day}, "Groups": [
-                {"Keys": [s], "Metrics": {"UnblendedCost": {"Amount": str(v), "Unit": "USD"}}} for s, v in services.items()]})
+                {"Keys": list(s) if isinstance(s, tuple) else [s, "Usage"],
+                 "Metrics": {"UnblendedCost": {"Amount": str(v), "Unit": "USD"}}} for s, v in services.items()]})
         return {"ResultsByTime": results}
 
 
@@ -103,7 +105,7 @@ def env(monkeypatch):
               "TENANT_LIST_INDEX_NAME": "GSI1", "LOCATION_TABLE_NAME": "test-location",
               "RESERVATION_TABLE_NAME": "test-reservation", "ORDER_TABLE_NAME": "test-order",
               "LAMBDA_LOG_GROUPS": json.dumps(["/aws/lambda/dev-a", "/aws/lambda/dev-b"]),
-              "COST_DAYS": "3", "USAGE_DAYS": "2", "USD_TO_SEK": "10", "COST_ALLOCATION": json.dumps(ALLOCATION),
+              "COST_DAYS": "3", "USAGE_DAYS": "2", "COST_ALLOCATION": json.dumps(ALLOCATION),
               "ALERT_TOPIC_ARN": "arn:aws:sns:eu-north-1:123456789012:alerts"}
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -156,7 +158,17 @@ def env(monkeypatch):
         module._clients[("sns", None)] = fakes["sns"]
         module._clients[("lambda", None)] = fakes["lambda"]
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
-        yield {"app": module, "t": tables, **fakes}
+        # Riksbank USD/SEK: Friday the 16th and Monday the 19th (none at the weekend)
+        fx = {"urls": [], "rows": [{"date": "2026-10-16", "value": 10.2}, {"date": "2026-10-19", "value": 10.4}],
+              "error": None}
+
+        def http_json(url):
+            fx["urls"].append(url)
+            if fx["error"]:
+                raise fx["error"]
+            return fx["rows"]
+        monkeypatch.setattr(module, "_http_json", http_json)
+        yield {"app": module, "t": tables, "fx": fx, **fakes}
         shared_dynamo._resource = None
         shared_dynamo._client = None
 
@@ -165,14 +177,22 @@ def _row(env, pk, sk):
     return env["t"]["finance"].get_item(Key={"PK": pk, "SK": sk}).get("Item")
 
 
+MONTH_SO_FAR = [f"2026-10-{d:02d}" for d in range(1, 20)]
+
+
 def test_nightly_run_allocates_cost_and_counts_usage(env):
     out = env["app"].handler({}, Context())
-    assert out["days"] == ["2026-10-18", "2026-10-19"] and out["warnings"] == []
-    # Cost Explorer: last 3 days, daily, by service, credits and refunds out
+    # every cost day is new, so the whole month so far is allocated (usage days included)
+    assert out["days"] == MONTH_SO_FAR and out["warnings"] == []
+    # Cost Explorer: the month so far, daily, by service and record type, nothing filtered out
     call = env["ce"].calls[0]
-    assert call["TimePeriod"] == {"Start": "2026-10-17", "End": "2026-10-20"} and call["Granularity"] == "DAILY"
+    assert call["TimePeriod"] == {"Start": "2026-10-01", "End": "2026-10-20"} and call["Granularity"] == "DAILY"
+    assert "Filter" not in call and [g["Key"] for g in call["GroupBy"]] == ["SERVICE", "RECORD_TYPE"]
     cost = _row(env, "PLATFORM", "COST#2026-10-18")
-    assert cost["usd"] == Decimal("9.5") and cost["sek"] == Decimal("95.00") and cost["byServiceUsd"]["AWS Lambda"] == Decimal("6")
+    assert cost["usd"] == Decimal("9.5") and cost["byServiceUsd"]["AWS Lambda"] == Decimal("6")
+    assert cost["byRecordTypeUsd"] == {"Usage": Decimal("9.5")} and "sek" not in cost and "usdToSek" not in cost
+    # the rate is the Friday's on a Sunday, and only recorded
+    assert cost["usdSek"] == Decimal("10.2") and cost["usdSekDate"] == "2026-10-16" and cost["usdSekSource"] == "Riksbank SEKUSDPMI"
     assert _row(env, "PLATFORM", "COST#2026-10-17")["usd"] == Decimal("0")
 
     a = _row(env, f"TENANT#{A}", "DAY#2026-10-18")
@@ -180,11 +200,12 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     # usage
     assert a["requests"] == 300 and a["bookings"] == 3 and a["orders"] == 2 and a["emails"] == 30
     assert b["requests"] == 100 and b["bookings"] == 0 and b["orders"] == 0 and b["sms"] == 5
-    # allocation in SEK: Lambda 60 by requests (45 / 15), Route 53 20 equally (10 / 10),
-    # SES 10 by emails (7.5 / 2.5), SNS 5 by sms (0 / 5)
-    assert a["costSplitSek"] == {"requests": Decimal("45"), "baseline": Decimal("10"), "email": Decimal("7.5"), "sms": Decimal("0")}
-    assert b["costSplitSek"] == {"requests": Decimal("15"), "baseline": Decimal("10"), "email": Decimal("2.5"), "sms": Decimal("5")}
-    assert a["costSek"] == Decimal("62.50") and b["costSek"] == Decimal("32.50")
+    # allocation in USD: Lambda 6 by requests (4.5 / 1.5), Route 53 2 equally (1 / 1),
+    # SES 1 by emails (0.75 / 0.25), SNS 0.5 by sms (0 / 0.5)
+    assert a["costSplitUsd"] == {"requests": Decimal("4.5"), "baseline": Decimal("1"), "email": Decimal("0.75"), "sms": Decimal("0")}
+    assert b["costSplitUsd"] == {"requests": Decimal("1.5"), "baseline": Decimal("1"), "email": Decimal("0.25"), "sms": Decimal("0.5")}
+    assert a["costUsd"] == Decimal("6.25") and b["costUsd"] == Decimal("3.25")
+    assert "costSek" not in a and "costSplitSek" not in a
     assert a["mrrSek"] == Decimal("1990") and b["mrrSek"] == Decimal("890") and a["planId"] == "growth"
     # SMS are included in the monthly price: counted and costed, never revenue
     assert "smsRevenueSek" not in a and "smsRevenueSek" not in b and a["smsParts"] == 10 and b["smsParts"] == 7
@@ -192,7 +213,7 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     # whole tenant cost lands on it (only location); the senders' counter on the row is kept
     loc = _row(env, f"TENANT#{A}", f"LOC#{LOC_A}#DAY#2026-10-18")
     assert loc["requests"] == 240 and loc["bookings"] == 3 and loc["orders"] == 2 and loc["emails"] == 30
-    assert loc["costSek"] == Decimal("62.50") and loc["locationId"] == LOC_A
+    assert loc["costUsd"] == Decimal("6.25") and loc["locationId"] == LOC_A
     assert loc["smsParts"] == 4 and "smsRevenueSek" not in loc
     assert a["invoicedSek"] == Decimal("1990")  # untouched revenue field
     # the offboarded and the provisioning tenants are not customers on the 18th
@@ -200,13 +221,98 @@ def test_nightly_run_allocates_cost_and_counts_usage(env):
     assert _row(env, f"TENANT#{NEW}", "DAY#2026-10-18") is None
 
     platform = _row(env, "PLATFORM", "DAY#2026-10-18")
-    assert platform["activeTenants"] == 2 and platform["costSek"] == Decimal("95.00")
+    assert platform["activeTenants"] == 2 and platform["costUsd"] == Decimal("9.5") and "costSek" not in platform
+    assert platform["usdSek"] == Decimal("10.2") and platform["usdSekDate"] == "2026-10-16"
     assert platform["mrrSek"] == Decimal("2880") and platform["requests"] == 400 and platform["bookings"] == 3
     assert platform["invoicedSek"] == Decimal("1990") and platform["emails"] == 40
     assert platform["smsParts"] == 17 and "smsRevenueSek" not in platform
     job = _row(env, "PLATFORM", "JOB#latest")
-    assert job["done"] == ["2026-10-18", "2026-10-19"] and job["warnings"] == []
+    assert job["done"] == MONTH_SO_FAR and job["warnings"] == []
     assert env["sns"].calls == []
+    # an empty table has nothing to migrate
+    assert _row(env, "PLATFORM", "MIGRATION#cost-usd") is not None
+
+
+def test_only_days_whose_cost_changed_are_allocated_again(env):
+    env["app"].handler({}, Context())
+    # the next night AWS has restated the 1st (the month's tax grows there) and nothing else
+    env["ce"].by_day["2026-10-01"] = {("Tax", "Tax"): "1.2"}
+    out = env["app"].handler({}, Context())
+    assert out["days"] == ["2026-10-01", "2026-10-18", "2026-10-19"]
+    cost = _row(env, "PLATFORM", "COST#2026-10-01")
+    assert cost["usd"] == Decimal("1.2") and cost["byRecordTypeUsd"] == {"Tax": Decimal("1.2")}
+    # Tax is baseline: equally over the three customers active on the 1st (A, B and GONE)
+    assert _row(env, f"TENANT#{A}", "DAY#2026-10-01")["costUsd"] == Decimal("0.4")
+    assert _row(env, "PLATFORM", "DAY#2026-10-01")["costUsd"] == Decimal("1.2")
+
+
+def test_credits_and_refunds_count_like_in_aws_billing(env):
+    env["ce"].by_day["2026-10-19"] = {"AWS Lambda": "3", ("AWS Lambda", "Credit"): "-1", ("Tax", "Tax"): "0.5"}
+    env["app"].handler({"from": "2026-10-19", "to": "2026-10-19"}, Context())
+    cost = _row(env, "PLATFORM", "COST#2026-10-19")
+    assert cost["usd"] == Decimal("2.5") and cost["byServiceUsd"]["AWS Lambda"] == Decimal("2")
+    assert cost["byRecordTypeUsd"] == {"Usage": Decimal("3"), "Credit": Decimal("-1"), "Tax": Decimal("0.5")}
+    assert _row(env, "PLATFORM", "DAY#2026-10-19")["costUsd"] == Decimal("2.5")
+
+
+def test_whole_previous_month_is_pulled_until_it_closes(env):
+    app = env["app"]
+    usage, cost = app.window({}, app.date(2026, 11, 5))
+    assert usage == ["2026-11-03", "2026-11-04"] and cost[0] == "2026-10-01" and cost[-1] == "2026-11-04"
+    usage, cost = app.window({}, app.date(2026, 11, 11))
+    assert cost[0] == "2026-11-01" and cost[-1] == "2026-11-10"
+    usage, cost = app.window({}, app.date(2026, 11, 1))
+    assert cost[0] == "2026-10-01" and cost[-1] == "2026-10-31"
+
+
+def test_rate_falls_back_to_the_last_stored_one(env):
+    env["t"]["finance"].put_item(Item={"PK": "PLATFORM", "SK": "COST#2026-09-30", "usd": Decimal("1"),
+                                       "usdSek": Decimal("9.9"), "usdSekDate": "2026-09-30"})
+    from urllib.error import URLError
+    env["fx"]["error"] = URLError("down")
+    out = env["app"].handler({"from": "2026-10-19", "to": "2026-10-19"}, Context())
+    assert any("Riksbank" in w for w in out["warnings"])
+    platform = _row(env, "PLATFORM", "DAY#2026-10-19")
+    assert platform["costUsd"] == Decimal("1") and platform["usdSek"] == Decimal("9.9")
+    assert "usdSek" not in _row(env, "PLATFORM", "COST#2026-10-19")   # never recorded as that day's rate
+
+
+def test_migration_recomputes_the_sek_history_in_usd_once(env):
+    # a day the old code wrote in SEK at the fixed rate, older than the log retention
+    t = env["t"]["finance"]
+    t.put_item(Item={"PK": "PLATFORM", "SK": "COST#2026-09-02", "usd": Decimal("1"), "sek": Decimal("10.50"),
+                     "usdToSek": Decimal("10.5"), "byServiceUsd": {"AWS Lambda": Decimal("1")}})
+    t.put_item(Item={"PK": "PLATFORM", "SK": "DAY#2026-09-02", "costSek": Decimal("10.50")})
+    t.put_item(Item={"PK": f"TENANT#{A}", "SK": "DAY#2026-09-02", "requests": 120, "costSek": Decimal("10.50"),
+                     "costSplitSek": {"requests": Decimal("10.50")}})
+    t.put_item(Item={"PK": f"TENANT#{A}", "SK": f"LOC#{LOC_A}#DAY#2026-09-02", "requests": 100, "costSek": Decimal("10.50")})
+    env["ce"].by_day["2026-09-02"] = {"AWS Lambda": "1.1"}       # AWS restated it since
+    out = env["app"].handler({}, Context())
+    assert out["migration"] is True and out["days"][0] == "2026-09-01" and out["days"][-1] == "2026-10-19"
+    assert env["ce"].calls[0]["TimePeriod"] == {"Start": "2026-09-01", "End": "2026-10-20"}
+    row = _row(env, f"TENANT#{A}", "DAY#2026-09-02")
+    # exact USD from Cost Explorer; the request count stored earlier is kept (logs expired)
+    assert row["costUsd"] == Decimal("1.1") and row["requests"] == 120
+    assert "costSek" not in row and "costSplitSek" not in row
+    loc = _row(env, f"TENANT#{A}", f"LOC#{LOC_A}#DAY#2026-09-02")
+    assert loc["requests"] == 100 and loc["costUsd"] == Decimal("1.1") and "costSek" not in loc
+    cost = _row(env, "PLATFORM", "COST#2026-09-02")
+    assert cost["usd"] == Decimal("1.1") and "usdToSek" not in cost and "sek" not in cost
+    assert "costSek" not in _row(env, "PLATFORM", "DAY#2026-09-02")
+    assert _row(env, "PLATFORM", "MIGRATION#cost-usd")["from"] == "2026-09-01"
+    # the next night is an ordinary one
+    out = env["app"].handler({}, Context())
+    assert out["migration"] is False and out["days"] == ["2026-10-18", "2026-10-19"]
+
+
+def test_migration_continues_across_runs(env):
+    env["t"]["finance"].put_item(Item={"PK": "PLATFORM", "SK": "DAY#2026-10-02", "costSek": Decimal("1")})
+    out = env["app"].handler({}, Context([10_000]))
+    assert out["handedOver"] and _row(env, "PLATFORM", "MIGRATION#cost-usd") is None
+    payload = json.loads(env["lambda"].calls[0]["Payload"])
+    assert payload["migration"] is True and payload["from"] == "2026-10-02"
+    out = env["app"].handler(payload, Context())
+    assert not out["handedOver"] and _row(env, "PLATFORM", "MIGRATION#cost-usd") is not None
 
 
 def test_offboarded_tenant_counts_until_its_last_day(env):
@@ -223,15 +329,16 @@ def test_offboarded_tenant_counts_until_its_last_day(env):
 
 
 def test_cost_explorer_failure_is_a_warning_and_uses_stored_cost(env):
-    env["t"]["finance"].put_item(Item={"PK": "PLATFORM", "SK": "COST#2026-10-19", "usdToSek": Decimal("9"),
-                                       "byServiceUsd": {"AWS Lambda": Decimal("2")}})
+    env["t"]["finance"].put_item(Item={"PK": "PLATFORM", "SK": "COST#2026-10-19", "usdSek": Decimal("9"),
+                                       "usdSekDate": "2026-10-19", "byServiceUsd": {"AWS Lambda": Decimal("2")}})
+    env["fx"]["rows"] = []
     from botocore.exceptions import ClientError
     env["ce"].error = ClientError({"Error": {"Code": "AccessDeniedException",
                                              "Message": "User not enabled for cost explorer access"}}, "GetCostAndUsage")
     out = env["app"].handler({"from": "2026-10-19", "to": "2026-10-19"}, Context())
     assert any("Cost Explorer" in w for w in out["warnings"])
     platform = _row(env, "PLATFORM", "DAY#2026-10-19")
-    assert platform["costSek"] == Decimal("18.00")  # stored 2 USD at the stored rate 9
+    assert platform["costUsd"] == Decimal("2") and platform["usdSek"] == Decimal("9")  # as stored
     assert env["sns"].calls and "warning" in env["sns"].calls[0]["Subject"]
 
 
@@ -257,7 +364,7 @@ def test_no_customers_leaves_cost_unallocated(env):
         env["t"]["tenant"].delete_item(Key={"PK": f"TENANT#{tenant_id}", "SK": "PROFILE"})
     env["app"].handler({"from": "2026-10-18", "to": "2026-10-18"}, Context())
     platform = _row(env, "PLATFORM", "DAY#2026-10-18")
-    assert platform["activeTenants"] == 0 and platform["unallocatedSek"] == Decimal("95.00")
+    assert platform["activeTenants"] == 0 and platform["unallocatedUsd"] == Decimal("9.5")
 
 
 def test_cost_split_by_location(env):
@@ -273,10 +380,10 @@ def test_cost_split_by_location(env):
 
 def test_allocation_falls_back_to_equal_split_without_usage(env):
     app = env["app"]
-    totals = app.bucket_totals({"AWS Lambda": Decimal("1"), "Tax": Decimal("1")}, Decimal(10), app._allocation())
-    assert totals == {"baseline": Decimal("10"), "requests": Decimal("10"), "email": Decimal("0"), "sms": Decimal("0")}
+    totals = app.bucket_totals({"AWS Lambda": Decimal("1"), "Tax": Decimal("1")}, app._allocation())
+    assert totals == {"baseline": Decimal("1"), "requests": Decimal("1"), "email": Decimal("0"), "sms": Decimal("0")}
     split = app.allocate(totals, {A: {"requests": 0}, B: {"requests": 0}})
-    assert split[A]["total"] == Decimal("10.00") and split[B]["requests"] == Decimal("5")
+    assert split[A]["total"] == Decimal("1") and split[B]["requests"] == Decimal("0.5")
 
 
 def test_days_older_than_the_log_retention_are_not_queried(env):

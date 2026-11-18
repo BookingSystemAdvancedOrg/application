@@ -43,7 +43,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import agent_model, dynamo, http, telephony, tenant, voice_provider
+from shared import agent_model, console_invoke, dynamo, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import calls, copy, session
 from shared.features.phone_agent.tools import lambda_invoker
@@ -294,7 +294,7 @@ def put_location(event, ctx):
     _owner(ctx)
     body = http.body(event, allowed=("enabled", "mode", "agentHours", "greetingExtraSv", "greetingExtraEn",
                                      "transferTo", "maxCallSeconds", "counterOffers", "shareNumberWith",
-                                     "phoneMaxPartySize", "version"))
+                                     "phoneMaxPartySize", "phoneGuarantee", "version"))
     version = _version(body)
     clean = pa.validate_location(body, restaurant_phone=ctx.location.get("phoneNumber"))
     loc = pa.get_loc(ctx.tenant_id, ctx.location_id)
@@ -439,7 +439,8 @@ def list_calls(event, ctx):
     cursor = base64.urlsafe_b64encode(json.dumps(next_key).encode()).decode() if next_key else None
     return http.respond(200, {"calls": [{k: c[k] for k in ("callId", "startedAt", "durationSec", "language",
                                                              "outcome", "counterOffer", "reservationId",
-                                                             "callbackId", "summary", "refusedReason")}
+                                                             "callbackId", "guaranteePending", "summary",
+                                                             "refusedReason")}
                                         | ({"from": c.get("from")} if ctx.is_owner else {}) for c in out],
                               "cursor": cursor})
 
@@ -451,13 +452,23 @@ def _own_call(event, ctx):
     return call
 
 
+def _turn_view(t):
+    """One transcript turn: the original text, the language it was spoken in
+    and, after the call, the Swedish and English translations
+    (phone-agent-translate; null where the turn already is in that
+    language, translation pending|done|failed|skipped)."""
+    out = {"role": t.get("role"), "text": t.get("text") or "", "at": t.get("at"), "lang": t.get("lang"),
+           "textSv": t.get("textSv"), "textEn": t.get("textEn"), "translation": t.get("translation")}
+    if t.get("toolName"):
+        out.update({"toolName": t["toolName"], "toolOk": bool(t.get("toolOk"))})
+    return out
+
+
 def get_call(event, ctx):
     call = _own_call(event, ctx)
     turns = pa.query_all(pa.tenant_pk(ctx.tenant_id), call["SK"] + "#T#", ConsistentRead=True)
     out = {**pa.call_view(call, owner=ctx.is_owner),
-           "turns": [{"role": t.get("role"), "text": t.get("text") or "", "at": t.get("at"),
-                      **({"toolName": t["toolName"], "toolOk": bool(t.get("toolOk"))} if t.get("toolName") else {})}
-                     for t in turns]}
+           "turns": [_turn_view(t) for t in turns]}
     recording = pa.plain(call.get("recording") or {})
     if ctx.is_owner and recording.get("key") and os.environ.get("RECORDINGS_BUCKET"):
         out["recordingUrl"] = client("s3").generate_presigned_url(
@@ -619,7 +630,7 @@ def privacy_export(tenant_id, phone):
 
 def privacy_erase(tenant_id, phone):
     """Removes the caller's number, name, summary, every turn's text (kept as
-    "[raderad]") and the recording; keeps minutes and the disclosure evidence."""
+    "[raderad]") with its translations and the recording; keeps minutes and the disclosure evidence."""
     found_calls, found_callbacks = _guest_rows(tenant_id, phone)
     turns = 0
     for c in found_calls:
@@ -630,7 +641,8 @@ def privacy_erase(tenant_id, phone):
                                UpdateExpression="REMOVE #f, fromHash, summary, recording, agentMessages, toolState",
                                ExpressionAttributeNames={"#f": "from"})
         for t in pa.query_all(pa.tenant_pk(tenant_id), c["SK"] + "#T#"):
-            pa.table().update_item(Key={"PK": t["PK"], "SK": t["SK"]}, UpdateExpression="SET #x = :r",
+            pa.table().update_item(Key={"PK": t["PK"], "SK": t["SK"]},
+                                   UpdateExpression="SET #x = :r REMOVE textSv, textEn",
                                    ExpressionAttributeNames={"#x": "text"},
                                    ExpressionAttributeValues={":r": "[raderad]"})
             turns += 1
@@ -729,6 +741,9 @@ ROUTES = {
 }
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

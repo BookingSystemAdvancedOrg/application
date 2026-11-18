@@ -1,0 +1,2 @@
+# boto3 is already present in the public.ecr.aws/lambda/python base image.
+# Nothing else: DynamoDB, EventBridge, SNS and the shared modules only.

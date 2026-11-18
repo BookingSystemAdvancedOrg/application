@@ -123,7 +123,7 @@ def test_a_stale_draft_is_not_sent_expired(env):
     assert staff(env, "PUT", "/offer", body=OFFER, request_id=rid)["statusCode"] == 200
     assert c.load(LOC_A, rid)["draft"]["validUntil"] == "2026-10-08"
     env.monkeypatch.setattr(c, "now_utc", lambda: NOW + timedelta(days=10))
-    response = staff(env, "POST", "/offer/send", request_id=rid)
+    response = staff(env, "POST", "/offer/version", request_id=rid)
     assert response["statusCode"] == 400
     assert c.load(LOC_A, rid)["status"] == "requested"
 
@@ -131,7 +131,7 @@ def test_a_stale_draft_is_not_sent_expired(env):
 def test_a_fresh_draft_is_sent(env):
     rid = body_of(create(env))["requestId"]
     staff(env, "PUT", "/offer", body=OFFER, request_id=rid)
-    assert staff(env, "POST", "/offer/send", request_id=rid)["statusCode"] == 200
+    assert staff(env, "POST", "/offer/version", request_id=rid)["statusCode"] == 200
 
 
 # --- #49 payment terms ----------------------------------------------------------------------------

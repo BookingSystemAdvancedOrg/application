@@ -887,6 +887,13 @@ components:
           maximum: 50
           nullable: true
           description: The largest party the agent books itself; null = the online maximum. Above it the restaurant calls back.
+        phoneGuarantee:
+          type: string
+          enum: [link, skip]
+          description: >-
+            A party the location's card guarantee covers, booked by phone. link (default): the agent books it
+            pending and texts the caller a link to add the card on a Stripe page (booked when the card is added,
+            released after 30 minutes); skip: phone bookings never need a card.
         number:
           type: string
           nullable: true
@@ -1011,6 +1018,13 @@ components:
           maximum: 50
           nullable: true
           description: The largest party the agent books itself; null = the online maximum. Above it the restaurant calls back.
+        phoneGuarantee:
+          type: string
+          enum: [link, skip]
+          description: >-
+            A party the location's card guarantee covers, booked by phone. link (default): the agent books it
+            pending and texts the caller a link to add the card on a Stripe page (booked when the card is added,
+            released after 30 minutes); skip: phone bookings never need a card.
         shareNumberWith:
           type: string
           nullable: true
@@ -1109,6 +1123,9 @@ components:
         callbackId:
           type: string
           nullable: true
+        guaranteePending:
+          type: boolean
+          description: Booked pending; the card guarantee link was texted and the booking expires without the card.
         summary:
           type: string
         refusedReason:
@@ -1165,6 +1182,9 @@ components:
         callbackId:
           type: string
           nullable: true
+        guaranteePending:
+          type: boolean
+          description: Booked pending; the card guarantee link was texted and the booking expires without the card.
         summary:
           type: string
         refusedReason:
@@ -1179,10 +1199,47 @@ components:
         turns:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/PhoneAgentCallTurn'
         recordingUrl:
           type: string
+    PhoneAgentCallTurn:
+      type: object
+      description: One transcript turn. text is the original and never changes; textSv and textEn are added
+        after the call (null where the turn already is in that language, or not translated yet).
+      properties:
+        role:
+          type: string
+          enum:
+          - caller
+          - agent
+          - tool
+        text:
+          type: string
+        at:
+          type: string
+        lang:
+          type: string
+          nullable: true
+          description: Language of the turn (our code, e.g. sv, en, ar); null on tool turns and older calls.
+        textSv:
+          type: string
+          nullable: true
+        textEn:
+          type: string
+          nullable: true
+        translation:
+          type: string
+          nullable: true
+          enum:
+          - pending
+          - done
+          - failed
+          - skipped
+          - null
+        toolName:
+          type: string
+        toolOk:
+          type: boolean
     PhoneAgentCallback:
       type: object
       properties:

@@ -35,7 +35,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import tenant
+from shared import console_invoke, tenant
 from shared.auth import (
     Unauthorized,
     get_claims,
@@ -200,6 +200,9 @@ def _presigned_put_url(image_key, content_type, size=None):
     return upload_url
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py); everything else is API Gateway as before.
+@console_invoke.dev_twin_entry
 def handler(event, context):
     try:
         get_claims(event)

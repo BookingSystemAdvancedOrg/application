@@ -120,6 +120,7 @@ def _guest(event):
 # --- the SMS card link: GET /k/{code} -------------------------------------------------------
 
 _BOOKED = (r.RESERVED, r.ARRIVED)
+_CANCELLED = (r.CANCELLED_BY_GUEST, r.CANCELLED_BY_RESTAURANT, r.CANCELLED_CHARGED, r.CANCELLED_CHARGE_FAILED)
 _PAGE = """<!doctype html><html lang="sv"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <meta name="robots" content="noindex"></head>
@@ -141,7 +142,7 @@ def _redirect(target):
     return {"statusCode": 302, "headers": {"Location": target, **_SECURITY}, "body": ""}
 
 
-def _expired(ctx=None):
+def _expired(ctx=None, cancelled=False):
     """The link no longer leads to a card page: what the guest can do now."""
     if ctx is None:
         return _html(404, "Länken har gått ut",
@@ -151,6 +152,8 @@ def _expired(ctx=None):
     contact = messages.contact_line(ctx.tenant, ctx.location)
     call = f"Ring {name} på {contact} så hjälper vi dig att boka bordet." if contact else \
         f"Ring {name} igen så hjälper vi dig att boka bordet."
+    if cancelled:
+        return _html(404, "Bokningen är avbokad", [call])
     return _html(404, "Länken har gått ut",
                  ["Bordet hölls bara en kort stund och kortet hann inte läggas till.", call])
 
@@ -184,7 +187,7 @@ def _short(event):
         return _html(200, "Ditt bord är bokat",
                      [f"Kortet är tillagt och bordet hos {messages.restaurant_name(ctx.tenant, ctx.location)} "
                       "är bokat. Bekräftelsen kommer i ett sms."])
-    return _expired(ctx)
+    return _expired(ctx, cancelled=status in _CANCELLED)
 
 
 _ROUTES = {_LIST: _list, _ONE: _one, _GUEST: _guest, _SHORT: _short}

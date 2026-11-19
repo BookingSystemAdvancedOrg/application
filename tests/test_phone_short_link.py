@@ -65,7 +65,9 @@ def test_phone_booking_answers_a_short_plain_link_stored_with_the_booking(sl):
     assert row["tenantId"] == item["tenantId"] == TENANT_A
     assert row["locationId"] == LOC_A and row["reservationId"] == rid
     assert row["expiresAt"] == item["pendingExpiresAt"] == "2026-09-08T12:32:00Z"
-    assert int(row["ttl"]) == int(short_link.datetime.fromisoformat("2026-09-08T12:32:00+00:00").timestamp())
+    # Kept until the visit has ended, so a booked guest who taps the SMS again reaches the booking.
+    assert int(row["ttl"]) == int(short_link.datetime.fromisoformat(item["endsAt"].replace("Z", "+00:00")).timestamp())
+    assert int(row["ttl"]) > int(short_link.datetime.fromisoformat("2026-09-08T12:32:00+00:00").timestamp())
     assert "notice" not in row and "status" not in row                   # no stream consumer picks it up
 
 
@@ -189,6 +191,29 @@ def test_cancelled_booking_link_is_expired(sl):
         UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":s": "expired"})
     assert open_link(sl, code)["statusCode"] == 404
+
+
+def test_cancelled_by_the_guest_says_cancelled_not_expired(sl):
+    rid, code = short_booking(sl)
+    sl["res"].Table(RESERVATION_TABLE).update_item(
+        Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{stored(sl, rid)['date']}#{rid}"},
+        UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "cancelled_no_charge"})
+    response = open_link(sl, code)
+    assert response["statusCode"] == 404 and "Location" not in response["headers"]
+    assert "Bokningen är avbokad" in response["body"] and "kortet hann inte" not in response["body"]
+
+
+def test_booked_guest_tapping_the_sms_after_the_hold_still_reaches_the_booking(sl, hook):
+    rid, code = short_booking(sl)
+    obj = {"id": "seti_checkout", "object": "setup_intent", "status": "succeeded", "customer": "cus_1",
+           "payment_method": "pm_phone", "metadata": {"reservationId": rid, "locationId": LOC_A}}
+    assert body_of(hook(stripe_event("setup_intent.succeeded", obj)))["result"] == "confirmed"
+    sl["clock"].value = sl["clock"].value + timedelta(hours=3)
+
+    response = open_link(sl, code)
+
+    assert response["statusCode"] == 200 and "Ditt bord är bokat" in response["body"]
 
 
 def test_link_of_another_tenant_never_redirects(sl):

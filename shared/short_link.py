@@ -13,9 +13,11 @@ about 45 characters.
     read   GET /k/{code} (get-reservation): redirects only to the stored
            target, never to anything in the request (no open redirect)
 
-The item is written in the same transaction as the booking it points to and
-lives no longer than the booking's hold: ttl = expiresAt (DynamoDB removes
-it later; the reader checks expiresAt itself).
+The item is written in the same transaction as the booking it points to.
+It leads to the card page only until expiresAt (the booking's hold; the
+reader checks it itself), but is kept until the booked visit has ended
+(ttl): a guest who taps the SMS again after adding the card reaches the
+booking, not a page telling them to call and book again.
 
 ENV_VARS:
     SHORT_LINK_BASE   writers: e.g. https://restaurang.booqy.se/api/k (unset:
@@ -65,9 +67,10 @@ def _https(value):
     return isinstance(value, str) and value.startswith("https://") and len(value) <= 4096
 
 
-def put_op(code, *, table, target, item, expires, serialize, done_url=None):
+def put_op(code, *, table, target, item, expires, serialize, done_url=None, keep_until=None):
     """TransactWriteItems Put of the link to `target` for booking `item`
-    (tenantId, locationId, reservationId), valid until `expires`."""
+    (tenantId, locationId, reservationId), valid until `expires`; the row
+    itself is kept until `keep_until` (the visit's end) when that is later."""
     if not valid_code(code):
         raise ValueError("invalid short link code")
     if not _https(target):
@@ -80,7 +83,7 @@ def put_op(code, *, table, target, item, expires, serialize, done_url=None):
         "locationId": item["locationId"],
         "reservationId": item["reservationId"],
         "expiresAt": expires_at,
-        "ttl": int(expires.timestamp()),
+        "ttl": int(max(expires, keep_until or expires).timestamp()),
     }
     if _https(done_url):
         row["doneUrl"] = done_url

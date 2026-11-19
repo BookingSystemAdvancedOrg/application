@@ -226,12 +226,13 @@ The SMS never carries the long page URL (phones stop a link at `#` or
 `https://restaurang.<domain>/api/k`) `guaranteeLink.url` is a short plain
 link `<base>/<10 random letters/digits>` (`shared/short_link.py`), stored
 in the booking's transaction as `LINK#<code>` / `LINK` {target, doneUrl,
-tenantId, locationId, reservationId, expiresAt, ttl = the hold's end}.
+tenantId, locationId, reservationId, expiresAt = the hold's end, ttl = the
+visit's end}.
 get-reservation's public `GET /k/{code}` redirects (302) to the stored
 target only while the booking is pending and held, to the manage page
 (`doneUrl`, or a short "booked" page) once the card is in, and otherwise
-answers a Swedish "Länken har gått ut" page with the restaurant's name and
-phone number. The target never comes from the request. The SMS names the
+answers a Swedish page with the restaurant's name and phone number
+("Länken har gått ut", or "Bokningen är avbokad" for a cancelled booking). The target never comes from the request. The SMS names the
 restaurant as guests know it (`messages.restaurant_name`: never a tenant
 name ending in a company form such as AB, so "Restaurant 1", not
 "RADIN DJ AB Restaurant 1").

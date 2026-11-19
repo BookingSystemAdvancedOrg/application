@@ -417,7 +417,8 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         if link_base:
             code = short_link.new_code()
             short_put = short_link.put_op(code, table=r.reservation_table(), target=url, item=item,
-                                          expires=expires, serialize=r.serialize, done_url=done_url)
+                                          expires=expires, serialize=r.serialize, done_url=done_url,
+                                          keep_until=ends_at)
             url = short_link.url(code, link_base)
         checkout = {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
                     "page": "site" if page else "stripe"}

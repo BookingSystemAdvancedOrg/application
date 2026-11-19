@@ -809,7 +809,8 @@ class Executor:
 
     def _held_for_card(self, proposal, reservation_id, answer):
         """The booking is pending until the card is added: text the caller
-        the Stripe link (their own caller ID only) and tell the model the
+        the card link (guaranteeLink.url, a short plain link; their own caller
+        ID only) and tell the model the
         fixed sentence. `answer` None: the simulator (nothing sent)."""
         if answer is not None:
             link = answer["guaranteeLink"]

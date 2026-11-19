@@ -3876,7 +3876,8 @@ paths:
                           adds the card on (send it to the guest only), and until when the table is held.
                           PHONE_CARD_PAGE "site": the booking's manage link on the restaurant's site (page
                           site, a SetupIntent like an online booking); otherwise a Stripe Checkout page
-                          (page stripe).
+                          (page stripe). With SHORT_LINK_BASE set, url is the short plain link to that page
+                          (GET /k/{code}, e.g. https://restaurang.booqy.se/api/k/Ab3dE5fG7h), safe to text.
                         properties:
                           url:
                             type: string
@@ -4034,6 +4035,51 @@ paths:
         '503':
           $ref: '#/components/responses/ReservationServiceUnavailable'
 
+  /k/{code}:
+    get:
+      tags: [Reservations]
+      summary: The phone guest's card link (short SMS link)
+      operationId: openCardShortLink
+      x-required-groups: []
+      description: >-
+        Served through the admin app's /api. Redirects (302) to the card page stored with the code (Stripe
+        Checkout or the booking's manage page on the restaurant's site) while the booking is pending and its
+        hold runs; once the card is added, to the booking's manage page (or a short "booked" page). Otherwise a
+        Swedish HTML page (404) saying the link has expired and how to reach the restaurant. The target is never
+        read from the request. Code: 10 letters or digits.
+      security: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9]{10}$'
+      responses:
+        '200':
+          description: The booking is already confirmed (HTML).
+          content:
+            text/html:
+              schema:
+                type: string
+        '302':
+          description: To the card page (or the booking's manage page once booked).
+          headers:
+            Location:
+              schema:
+                type: string
+        '404':
+          description: Unknown or expired link (HTML, Swedish).
+          content:
+            text/html:
+              schema:
+                type: string
+        '503':
+          description: The link could not be read right now (HTML, Swedish).
+          content:
+            text/html:
+              schema:
+                type: string
   /locations/{locationId}/reservations/{reservationId}/guest:
     parameters:
       - $ref: '#/components/parameters/LocationId'

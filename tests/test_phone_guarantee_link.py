@@ -252,7 +252,7 @@ def test_guarantee_link_sms_names_the_booking_fees_and_the_window():
                          "före besöket.")
     english = messages.guarantee_link_sms({**item, "language": "en"}, {"name": "Bistro"}, {}, CHECKOUT_URL, 30)
     assert "Sunday 20 September at 18:00" in english and "30 minutes" in english
-    assert english.endswith(" Fees: 600 kr for a no-show, 300 kr for cancelling less than 24 hours before "
+    assert english.endswith(" Fees: 600 kr for a no-show, 300 kr if you cancel less than 24 hours before "
                             "the visit.")
     one = messages.guarantee_link_sms({**item, "guarantee": {"noShowFee": 60000}}, {"name": "B"}, {}, "x", 30)
     assert one.endswith(" Avgift: 600 kr vid uteblivet besök.")

@@ -220,6 +220,21 @@ pending booking whose card form cannot be read from Stripe right now
 returns `setupUnavailable` true with `pendingExpiresAt` (the page asks the
 guest to reload and says how long the table is held). The expiry job
 asks Stripe for both kinds (`setupIntentId` and `checkoutSessionId`).
+The SMS never carries the long page URL (phones stop a link at `#` or
+`%`, and a Stripe Checkout URL has a long `#` fragment, so the guest got
+"This link is incomplete"): with `SHORT_LINK_BASE` (infrastructure:
+`https://restaurang.<domain>/api/k`) `guaranteeLink.url` is a short plain
+link `<base>/<10 random letters/digits>` (`shared/short_link.py`), stored
+in the booking's transaction as `LINK#<code>` / `LINK` {target, doneUrl,
+tenantId, locationId, reservationId, expiresAt, ttl = the hold's end}.
+get-reservation's public `GET /k/{code}` redirects (302) to the stored
+target only while the booking is pending and held, to the manage page
+(`doneUrl`, or a short "booked" page) once the card is in, and otherwise
+answers a Swedish "Länken har gått ut" page with the restaurant's name and
+phone number. The target never comes from the request. The SMS names the
+restaurant as guests know it (`messages.restaurant_name`: never a tenant
+name ending in a company form such as AB, so "Restaurant 1", not
+"RADIN DJ AB Restaurant 1").
 A move never texts a link: a party change into a card size, or any party
 change of a booking waiting for its card, is a callback. The phone
 agent's location setting `phoneGuarantee` (`link` default, `skip` = phone

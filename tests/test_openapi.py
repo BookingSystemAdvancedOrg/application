@@ -99,6 +99,7 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/reservations/{reservationId}/guest": frozenset(
         {"get"}
     ),
+    "/k/{code}": frozenset({"get"}),
     "/locations/{locationId}/reservations/{reservationId}/cancel": frozenset(
         {"post"}
     ),
@@ -200,6 +201,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/site-config", "get"),
         ("/locations/{locationId}/reservations", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
+        ("/k/{code}", "get"),
         ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/confirm", "post"),
         ("/locations/{locationId}/holds", "post"),

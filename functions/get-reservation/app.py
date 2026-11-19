@@ -7,6 +7,7 @@ TRIGGER:
     GET /locations/{locationId}/reservations/{reservationId}   -- Auth: JWT
     GET /locations/{locationId}/reservations/{reservationId}/guest
                                     -- Auth: NONE, header X-Manage-Token
+    GET /k/{code}                   -- Auth: NONE (the SMS card link, below)
 
 PURPOSE:
     Staff: the day's bookings of a location (every status, sorted by time)
@@ -19,6 +20,15 @@ PURPOSE:
     for the card form, read from Stripe (shared/guarantee.card_step): only
     with a valid token, only while pending. When Stripe cannot be asked
     and the hold still runs: `setupUnavailable` true and `pendingExpiresAt`.
+
+    The phone guest's card link (shared/short_link.py): GET /k/{code}
+    (through the admin app's /api) answers 302 to the page stored with the
+    code - the Stripe page or the booking's manage page - only while the
+    booking is pending and the link's time runs; once the card is in, the
+    booking's manage page (or a short "Ditt bord är bokat" page). Anything
+    else is a Swedish page saying the link has expired and how to reach the
+    restaurant. The target is never taken from the request (no open
+    redirect); the link's tenant must own its location.
 
     Multi-tenant: staff routes check the token's tenant (staff limited to
     their own location); the guest route resolves the tenant from the
@@ -33,17 +43,19 @@ ENV_VARS:
 Full details: docs/RESERVATIONS.md
 """
 
+import html
 import re
 from datetime import date
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import guarantee, http, manage_link, tenant
+from shared import guarantee, http, manage_link, messages, short_link, tenant
 from shared import reservations as r
 
 _LIST = "/locations/{locationId}/reservations"
 _ONE = "/locations/{locationId}/reservations/{reservationId}"
 _GUEST = "/locations/{locationId}/reservations/{reservationId}/guest"
+_SHORT = "/k/{code}"
 _E164 = re.compile(r"\+[1-9]\d{7,14}")
 
 
@@ -105,7 +117,77 @@ def _guest(event):
     return http.respond(200, view)
 
 
-_ROUTES = {_LIST: _list, _ONE: _one, _GUEST: _guest}
+# --- the SMS card link: GET /k/{code} -------------------------------------------------------
+
+_BOOKED = (r.RESERVED, r.ARRIVED)
+_PAGE = """<!doctype html><html lang="sv"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
+<meta name="robots" content="noindex"></head>
+<body style="margin:0;background:#f4f2ee;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a">
+<main style="max-width:460px;margin:12vh auto;padding:32px 28px;background:#fdfaf6;border-radius:10px;line-height:1.5">
+<h1 style="font-size:20px;margin:0 0 8px">{title}</h1>{body}</main></body></html>"""
+_SECURITY = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"}
+
+
+def _html(status, title, paragraphs):
+    body = "".join(f"<p style='margin:0 0 8px'>{html.escape(p)}</p>" for p in paragraphs)
+    return {"statusCode": status,
+            "headers": {"Content-Type": "text/html; charset=utf-8", **_SECURITY,
+                        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"},
+            "body": _PAGE.format(title=html.escape(title), body=body)}
+
+
+def _redirect(target):
+    return {"statusCode": 302, "headers": {"Location": target, **_SECURITY}, "body": ""}
+
+
+def _expired(ctx=None):
+    """The link no longer leads to a card page: what the guest can do now."""
+    if ctx is None:
+        return _html(404, "Länken har gått ut",
+                     ["Länken gäller bara en kort stund efter samtalet.",
+                      "Ring restaurangen igen så hjälper vi dig att boka bordet."])
+    name = messages.restaurant_name(ctx.tenant, ctx.location)
+    contact = messages.contact_line(ctx.tenant, ctx.location)
+    call = f"Ring {name} på {contact} så hjälper vi dig att boka bordet." if contact else \
+        f"Ring {name} igen så hjälper vi dig att boka bordet."
+    return _html(404, "Länken har gått ut",
+                 ["Bordet hölls bara en kort stund och kortet hann inte läggas till.", call])
+
+
+def _short(event):
+    params = event.get("pathParameters") if isinstance(event, dict) else None
+    code = (params or {}).get("code") if isinstance(params, dict) else None
+    row = short_link.load(code, r.reservation_table()) if short_link.valid_code(code) else None
+    if row is None:
+        return _expired()
+    try:
+        ctx = tenant.for_public(row["locationId"], feature="reservations")
+    except tenant.TenantError:
+        return _expired()
+    if ctx.tenant_id != row["tenantId"]:
+        return _expired()
+    try:
+        item = r.load(row["locationId"], row["reservationId"])
+    except r.NotFound:
+        return _expired(ctx)
+    if item.get("tenantId") != row["tenantId"]:
+        return _expired()
+    now = r.now_utc()
+    status = item.get("status")
+    held = isinstance(item.get("pendingExpiresAt"), str) and r.parse_iso(item["pendingExpiresAt"]) > now
+    if status == r.PENDING and held and short_link.open_at(row, now):
+        return _redirect(row["target"])
+    if status in _BOOKED:
+        if row.get("doneUrl"):
+            return _redirect(row["doneUrl"])
+        return _html(200, "Ditt bord är bokat",
+                     [f"Kortet är tillagt och bordet hos {messages.restaurant_name(ctx.tenant, ctx.location)} "
+                      "är bokat. Bekräftelsen kommer i ett sms."])
+    return _expired(ctx)
+
+
+_ROUTES = {_LIST: _list, _ONE: _one, _GUEST: _guest, _SHORT: _short}
 
 
 def handler(event, context):
@@ -122,8 +204,13 @@ def handler(event, context):
     except r.NotFound:
         return http.error(404, "not found")
     except ValueError as exc:
+        if path == _SHORT:
+            return _expired()
         if path == _GUEST:
             return http.error(404, "not found")
         return http.error(400, str(exc))
     except (BotoCoreError, ClientError, manage_link.LinkKeyUnavailable):
+        if path == _SHORT:
+            return _html(503, "Försök igen om en stund",
+                         ["Sidan kunde inte öppnas just nu (Booqys fel). Öppna länken igen om en minut."])
         return http.error(503, "reservation service unavailable")

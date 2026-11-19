@@ -70,8 +70,9 @@ _TEXT = {
         "sms.fee_refunded": "{restaurant}: {greeting}Vi har betalat tillbaka {refund} av avgiften för bokningen {when}.",
         "sms.manage": "Se/avboka: {link}",
         "sms.greeting": "Hej {first}! ",
-        "sms.guarantee_link": ("{restaurant}: Lägg till ett kort som garanti för ditt bord {when}, {guests}: {link} "
-                               "Bordet hålls i {minutes} minuter och är bokat när kortet är tillagt. Inget dras nu."
+        # The link is short and plain (shared/short_link.py); two SMS parts with the fees.
+        "sms.guarantee_link": ("{restaurant}: Ditt bord {when}, {guests}, hålls i {minutes} minuter. "
+                               "Lägg till kort för din bokning: {link} Bokat när kortet är tillagt. Inget dras nu."
                                "{fees}"),
         "sms.fee": " Avgift: {items}.",
         "sms.fees": " Avgifter: {items}.",
@@ -134,13 +135,13 @@ _TEXT = {
         "sms.fee_refunded": "{restaurant}: {greeting}We have refunded {refund} of the fee for your booking {when}.",
         "sms.manage": "View/cancel: {link}",
         "sms.greeting": "Hi {first}! ",
-        "sms.guarantee_link": ("{restaurant}: Add a card as guarantee for your table {when}, {guests}: {link} "
-                               "The table is held for {minutes} minutes and booked once the card is added. "
+        "sms.guarantee_link": ("{restaurant}: Your table {when}, {guests}, is held for {minutes} minutes. "
+                               "Add a card for your booking: {link} Booked once the card is added. "
                                "Nothing is charged now.{fees}"),
         "sms.fee": " Fee: {items}.",
         "sms.fees": " Fees: {items}.",
         "sms.fee_no_show": "{amount} for a no-show",
-        "sms.fee_late": "{amount} for cancelling less than {hours} before the visit",
+        "sms.fee_late": "{amount} if you cancel less than {hours} before the visit",
         "when": "{weekday} {day} {month} at {time}",
         "g.heading": "Card guarantee (nothing has been charged)",
         "g.no_show": "No-show: {fee}.",
@@ -252,12 +253,50 @@ def guarantee_terms(item, lang=None):
     return lines
 
 
+# Company forms: a tenant name ending in one is the legal company ("RADIN DJ AB"),
+# never shown to guests (owner 2026-11-19).
+_LEGAL_FORMS = frozenset((
+    "ab", "hb", "kb", "ef", "aktiebolag", "handelsbolag", "kommanditbolag", "publ", "ekonomisk förening",
+    "ek för", "enskild firma", "ltd", "limited", "oy", "oyj", "as", "asa", "aps", "a/s", "gmbh", "inc", "llc", "plc",
+))
+_PUNCT = re.compile(r"[.,()]")
+
+
+def _legal_form_at_end(name):
+    """The words before a trailing company form ("Bistro Nord AB" -> "Bistro
+    Nord"), or None when the name does not end in one."""
+    words = _PUNCT.sub(" ", name).split()
+    for size in (2, 1):
+        if len(words) > size and " ".join(words[-size:]).casefold() in _LEGAL_FORMS:
+            rest = words[:-size]
+            while rest and rest[-1].casefold() in _LEGAL_FORMS:      # "Bistro AB (publ)"
+                rest = rest[:-1]
+            return " ".join(rest)
+    return None
+
+
+def brand_name(tenant_row):
+    """The tenant's own name as guests know it, or "" when it is the legal
+    company name (ends in AB, HB, Oy, Ltd ...)."""
+    name = " ".join(str((tenant_row or {}).get("name") or "").split())
+    return "" if not name or _legal_form_at_end(name) is not None else name
+
+
 def restaurant_name(tenant_row, location):
-    tenant_name = (tenant_row or {}).get("name") or ""
-    location_name = (location or {}).get("name") or ""
+    """The restaurant as guests know it: the brand plus the location when that
+    adds something ("Bistro Södermalm"), the location alone when the tenant's
+    name is its company name ("Restaurant 1", never "RADIN DJ AB Restaurant 1").
+    Read from each restaurant's own rows, never set by hand."""
+    tenant_name = brand_name(tenant_row)
+    location_name = " ".join(str((location or {}).get("name") or "").split())
     if tenant_name and location_name and location_name.lower() not in tenant_name.lower():
+        if tenant_name.lower() in location_name.lower():                # "Anar" + "Anar Södermalm"
+            return location_name
         return f"{tenant_name} {location_name}"
-    return tenant_name or location_name or "Restaurangen"
+    if tenant_name or location_name:
+        return tenant_name or location_name
+    stripped = _legal_form_at_end(" ".join(str((tenant_row or {}).get("name") or "").split()))
+    return stripped or "Restaurangen"
 
 
 def contact_line(tenant_row, location):

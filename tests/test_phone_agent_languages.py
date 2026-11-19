@@ -52,9 +52,10 @@ def test_aws_language_table_is_complete_and_known_to_the_model():
     # the exact list Terraform's byte-identical copy (infrastructure/phone-test-line/languages.json) has:
     # a locale here that the bot lacks fails every switch to it
     assert list(language.AWS_LANGUAGES) == ["sv", "en", "da", "fi", "de", "fr", "es", "it", "nl", "pl", "pt", "ar",
-                                            "tr", "cs", "ca", "ja", "ko", "hi", "ru", "is"]
+                                            "tr", "cs", "ca", "ja", "ko", "hi", "ru", "is", "no", "zh", "yue", "ro", "cy"]
     for code, spec in language.AWS_LANGUAGES.items():
-        assert set(spec) == {"lexLocale", "connectLanguage", "voice", "engine"}, code
+        assert set(spec) - {"assistedNlu"} == {"lexLocale", "connectLanguage", "voice", "engine"}, code
+        assert spec.get("assistedNlu", "Primary") == "Primary", code
         assert spec["engine"] in ("neural", "standard"), code
         assert code in language.NAMES, code
     assert language.AWS_LANGUAGES["sv"] == {"lexLocale": "sv_SE", "connectLanguage": "sv-SE", "voice": "Elin",
@@ -66,7 +67,7 @@ def test_connect_calls_get_the_aws_list_and_other_calls_the_elevenlabs_list():
     assert session.allowed_languages({}, {"callRef": "connect-abc"}) == language.AWS_CALL_LANGUAGES
     assert session.allowed_languages({}, {"callRef": "conv-1"}) == language.voice_languages()
     assert session.allowed_languages({}) == language.voice_languages()
-    assert "so" not in language.AWS_CALL_LANGUAGES and "no" not in language.AWS_CALL_LANGUAGES
+    assert "so" not in language.AWS_CALL_LANGUAGES and "no" in language.AWS_CALL_LANGUAGES
     assert "ca" in language.AWS_CALL_LANGUAGES
 
 

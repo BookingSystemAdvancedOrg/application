@@ -50,7 +50,7 @@ NAMES = {   # every language the model may tag, for the prompt ("answer in <name
     # languages the model may recognise but no voice model speaks: the call does not switch
     "ti": "Tigrinya", "kmr": "Northern Kurdish (Kurmanji)", "om": "Oromo",
     # the Connect + Lex line only (AWS_LANGUAGES)
-    "ca": "Catalan",
+    "ca": "Catalan", "yue": "Cantonese", "cy": "Welsh",
 }
 # ElevenLabs eleven_flash_v2_5 / eleven_turbo_v2_5 (the default until the sandbox test).
 FLASH_LANGUAGES = ("sv", "en", "no", "da", "fi", "de", "fr", "es", "it", "pl", "ar", "pt", "nl", "tr", "ru",
@@ -68,15 +68,14 @@ CALL_LANGUAGES = VOICE_LANGUAGES   # kept for callers of the old name
 # Languages where speech recognition is weak (ElevenLabs' own ratings): the prompt
 # asks the model to repeat every detail and to have names spelled.
 LOW_ASR = ("so", "am", "ckb", "ps", "ti", "kmr", "om", "sw", "ur", "pa")
-_ALIASES = {"nb": "no", "nn": "no", "tl": "fil", "ku": "kmr", "iw": "he", "prs": "fa", "zh-cn": "zh",
+_ALIASES = {"nb": "no", "nn": "no", "tl": "fil", "ku": "kmr", "iw": "he", "prs": "fa", "zh-cn": "zh", "zh-hk": "yue",
             "pt-br": "pt", "sh": "sr"}
 _TAG = re.compile(r"^\s*\[([A-Za-z]{2,3})(?:[-_][A-Za-z]{2,4})?\]\s*")
 
 
 # The Amazon Connect + Lex V2 line: our code -> {lexLocale, connectLanguage, voice, engine}.
 # Verified 2026-11-18 against the Lex V2 locale list, Polly's voice list and the Connect Set voice
-# docs [VERIFY ON A REAL CALL: the pairing, design risk 1]. Norwegian, Chinese and Cantonese are
-# not on the line (the bot has no locale for them). The file must stay byte-identical to
+# docs [VERIFY ON A REAL CALL: the pairing, design risk 1]. The file must stay byte-identical to
 # infrastructure/phone-test-line/languages.json (tests pin the key set).
 AWS_LANGUAGES = json.loads((Path(__file__).with_name("aws_languages.json")).read_text("utf-8"))["languages"]
 AWS_CALL_LANGUAGES = tuple(AWS_LANGUAGES)

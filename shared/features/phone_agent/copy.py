@@ -23,10 +23,11 @@ REVIEWED = ("sv", "en", "de", "fr", "es", "fi", "no", "da", "pl", "ru", "uk", "t
 # Every language the phone line serves (owner 2026-11-20): the twelve target languages plus every
 # language of the Connect line (aws_languages.json). Every fixed sentence said without the model
 # exists in each of these (tests pin it). [NEEDS YOUR OK: native review] for the sentences added
-# 2026-11-20 (it, id, nl, pt, cs, ca, ja, ko, hi, is and the new STILL_THERE, ASK_CONTINUE,
+# 2026-11-20 (it, id, nl, pt, cs, ca, ja, ko, hi, is, zh, yue, ro, cy, and some no, and the new STILL_THERE, ASK_CONTINUE,
 # UNSUPPORTED_LANGUAGE and backchannel lines).
 TARGET_LANGUAGES = ("sv", "en", "ar", "fa", "bs", "es", "id", "de", "fr", "it", "tr", "pl")
-LINE_LANGUAGES = TARGET_LANGUAGES + ("da", "fi", "nl", "pt", "cs", "ca", "ja", "ko", "hi", "ru", "is")
+LINE_LANGUAGES = TARGET_LANGUAGES + ("da", "fi", "nl", "pt", "cs", "ca", "ja", "ko", "hi", "ru", "is", "no", "zh", "yue",
+                                     "ro", "cy")
 
 # The greeting (always Swedish at call start; English for the provider's preset). Owner 2026-11-19:
 # "Hej och välkommen till <restaurangens namn>. Du pratar med vår digitala assistent." The name is
@@ -793,3 +794,53 @@ PHONE_KNOWN = "The booking uses the number the caller is calling from; mention t
 PHONE_HIDDEN = ("The caller's number is hidden. Ask for a phone number for the confirmation, read it back in "
                 "groups of two or three digits in words and get a yes, then pass it as phone. If the caller "
                 "declines, book without a number.")
+
+
+# The five languages added to the Connect line on 2026-11-20 (no, zh, yue, ro, cy): the fixed sentences
+# they lack. [NEEDS YOUR OK: native review]
+DISCLOSURE_SHORT.update({"yue": "我係餐廳嘅數碼助理。", "cy": "Fi yw cynorthwyydd digidol y bwyty."})
+ERROR.update({
+    "ro": "Ne cerem scuze, a apărut o problemă la noi. Doriți ca restaurantul să vă sune înapoi?",
+    "cy": "Mae'n ddrwg gennym, aeth rhywbeth o'i le ar ein hochr ni. Hoffech chi i'r bwyty eich ffonio'n ôl?",
+    "zh": "抱歉，我们这边出了点问题。需要餐厅给您回电话吗？",
+    "yue": "唔好意思，我哋呢邊出咗啲問題。使唔使餐廳回電話畀你？",
+})
+STILL_CHECKING.update({
+    "ro": "Un moment, vă rog, încă verific.",
+    "cy": "Eiliad, os gwelwch yn dda, rwy'n dal i wirio.",
+    "zh": "请稍等，我还在查询。",
+    "yue": "請等一等，我仲喺度查緊。",
+})
+MAX_LENGTH.update({
+    "ro": "Convorbirea s-a prelungit, așa că trebuie să închei acum. Puteți suna din nou oricând.",
+    "cy": "Mae'r alwad wedi mynd yn hir, felly mae'n rhaid i mi orffen nawr. Croeso i chi ffonio eto.",
+    "zh": "通话时间有点长，我需要先结束了。欢迎您随时再打来。",
+    "yue": "通話時間有啲長，我要先結束喇。歡迎你隨時再打嚟。",
+})
+TRANSFERRING.update({
+    "ro": "Vă conectez cu restaurantul, un moment, vă rog.",
+    "cy": "Rwy'n eich trosglwyddo i'r bwyty, eiliad os gwelwch yn dda.",
+    "zh": "我为您转接餐厅，请稍等。",
+    "yue": "我幫你轉駁去餐廳，請等一等。",
+})
+STILL_THERE.update({
+    "no": "Er du der fortsatt? Jeg hørte ikke helt.",
+    "ro": "Mai sunteți acolo? Nu am auzit bine.",
+    "cy": "Ydych chi yno o hyd? Wnes i ddim clywed yn iawn.",
+    "zh": "您还在吗？我刚才没听清。",
+    "yue": "你仲喺度嗎？我啱啱聽唔清楚。",
+})
+ASK_CONTINUE.update({
+    "no": "Skal vi fortsette på norsk?",
+    "ro": "Continuăm în limba română?",
+    "cy": "Ydyn ni'n parhau yn Gymraeg?",
+    "zh": "我们继续用中文吗？",
+    "yue": "我哋繼續用廣東話好嗎？",
+})
+OPENERS.update({
+    "no": '"Greit", "Selvfølgelig", "Gjerne"',
+    "ro": '"Bine", "Desigur", "Foarte bine"',
+    "cy": '"Iawn", "Wrth gwrs", "Da iawn"',
+    "zh": '"好的", "没问题", "明白了"',
+    "yue": '"好嘅", "冇問題", "明白"',
+})

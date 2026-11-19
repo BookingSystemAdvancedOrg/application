@@ -172,7 +172,9 @@ def disclosed(call, at, spoken=None):
     (ElevenLabs' post-call webhook) records the same evidence on a later
     status, the status itself unchanged."""
     spoken = str(spoken or "")[:2000]
-    verbatim = normalized_text(spoken) == normalized_text((call.get("disclosure") or {}).get("text"))
+    sent = str((call.get("disclosure") or {}).get("text") or "")
+    # A plain-text voice was sent Booqy written as it is said (copy.spoken_plain).
+    verbatim = normalized_text(spoken) in (normalized_text(sent), normalized_text(copy.spoken_plain(sent)))
     values = {":at": pa.iso(at), ":sp": spoken, ":vb": verbatim, ":nul": "NULL"}
     evidence = "disclosure.playedAt = :at, disclosure.spoken = :sp, disclosure.verbatim = :vb"
     if call.get("status") == "answered":

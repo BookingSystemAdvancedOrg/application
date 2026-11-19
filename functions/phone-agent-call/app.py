@@ -323,8 +323,8 @@ def telephony_webhook(event):
 def _first_message(call):
     """What the caller hears first: the greeting with the disclosure, or the refusal."""
     if call.get("outcome") == "refused":
-        return copy.REFUSED["sv"]
-    return (call.get("disclosure") or {}).get("text") or ""
+        return copy.spoken_plain(copy.REFUSED["sv"])
+    return copy.spoken_plain((call.get("disclosure") or {}).get("text") or "")
 
 
 def voice_webhook(event):

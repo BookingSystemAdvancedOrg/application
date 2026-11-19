@@ -68,7 +68,7 @@ def test_every_language_says_it_is_the_restaurants_digital_assistant():
     assert copy.DISCLOSURE_SHORT["en"] == "I am the restaurant's digital assistant."
     for lang, text in copy.DISCLOSURE_SHORT.items():
         assert text and not AI_WORDS.search(text), lang
-        assert "–" not in text and "—" not in text
+        assert "\u2013" not in text and "\u2014" not in text
 
 
 @pytest.mark.parametrize("lang", ["sv", "en", "de", "so", "sw"])
@@ -137,7 +137,9 @@ def test_a_call_is_greeted_with_the_locations_name_never_the_company(live, monke
 def test_booqy_is_read_as_bookie_by_polly_and_written_out_for_plain_text_voices():
     assert copy.ssml_names("Jag heter Booqy-assistenten.") == (
         'Jag heter <sub alias="Bookie">Booqy</sub>-assistenten.')
-    assert copy.ssml_names("booqys bord") == '<sub alias="Bookie">booqy</sub>s bord'
+    assert copy.ssml_names("booqys bord") == '<sub alias="Bookies">booqys</sub> bord'
+    assert copy.ssml_names("Booqys fel.") == '<sub alias="Bookies">Booqys</sub> fel.'
+    assert copy.spoken_plain("Booqys fel") == "Bookies fel"
     assert copy.ssml_names("Booqyx") == "Booqyx"
     assert copy.spoken_plain("Du pratar med Booqy-assistenten.") == "Du pratar med Bookie-assistenten."
 
@@ -170,3 +172,15 @@ def test_the_connect_line_greeting_comes_from_the_restaurants_data(live):
                                       "Du pratar med vår digitala assistent.")
     assert live.live.handler({"connectGreeting": {"dialedNumber": "+46100000999"}}) == {"ok": "false"}
     assert live.live.handler({"connectGreeting": {}}) == {"ok": "false"}
+
+
+def test_a_plain_text_voice_hearing_bookie_still_counts_as_the_verbatim_disclosure(monkeypatch):
+    from shared.features import phone_agent as pa
+    from shared.features.phone_agent import calls
+    seen = {}
+    monkeypatch.setattr(calls, "_update", lambda call, expr, values, **kw: seen.update(values) or call)
+    call = {"status": "answered", "disclosure": {"text": "Hej och välkommen till Booqy Testkrog."}}
+    calls.disclosed(call, pa.now(), spoken="Hej och välkommen till Bookie Testkrog.")
+    assert seen[":vb"] is True
+    calls.disclosed(call, pa.now(), spoken="Hej och välkommen till Annan krog.")
+    assert seen[":vb"] is False

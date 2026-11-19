@@ -325,18 +325,19 @@ def agent_name(name):
     return DEFAULT_AGENT_NAME if not name or name.casefold() == BOOQY.casefold() else name
 
 
-_BOOQY_WORD = re.compile(r"\bbooqy(?=s?\b)", re.I)
+_BOOQY_WORD = re.compile(r"\b(booqy)(s?)\b", re.I)
 
 
 def ssml_names(escaped):
     """XML-escaped text for Polly with every Booqy read as "Bookie" (an SSML
-    alias; "Booqys" keeps its s)."""
-    return _BOOQY_WORD.sub(lambda m: f'<sub alias="{BOOQY_SAID}">{m.group(0)}</sub>', str(escaped))
+    alias; "Booqys" is read "Bookies": the s sits inside the alias, a lone
+    "s" after the element could be spelled out as a letter)."""
+    return _BOOQY_WORD.sub(lambda m: f'<sub alias="{BOOQY_SAID}{m.group(2)}">{m.group(0)}</sub>', str(escaped))
 
 
 def spoken_plain(text):
     """Text for a voice that takes plain text (no SSML): Booqy written as it is said."""
-    return _BOOQY_WORD.sub(BOOQY_SAID, str(text or ""))
+    return _BOOQY_WORD.sub(lambda m: BOOQY_SAID + m.group(2), str(text or ""))
 
 
 def _restaurant(name):

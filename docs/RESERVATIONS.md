@@ -224,7 +224,11 @@ The SMS never carries the long page URL (phones stop a link at `#` or
 `%`, and a Stripe Checkout URL has a long `#` fragment, so the guest got
 "This link is incomplete"): with `SHORT_LINK_BASE` (infrastructure:
 `https://restaurang.<domain>/api/k`) `guaranteeLink.url` is a short plain
-link `<base>/<10 random letters/digits>` (`shared/short_link.py`), stored
+link `<base>/<10 random letters/digits>` (`shared/short_link.py`). The
+base is the restaurant's own site when it is live (own domain, else its
+slug address, `shared/site.py`; restaurant sites send `/api/*` to this
+API), so guests see `https://example.se/api/k/<code>`; `SHORT_LINK_BASE`
+only without one (the shared dev site, or no site). Stored
 in the booking's transaction as `LINK#<code>` / `LINK` {target, doneUrl,
 tenantId, locationId, reservationId, expiresAt = the hold's end, ttl = the
 visit's end}.

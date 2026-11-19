@@ -328,6 +328,22 @@ def phone_card_page():
     return "site" if (os.environ.get("PHONE_CARD_PAGE") or "").strip().lower() == "site" else "stripe"
 
 
+def _short_link_base(ctx):
+    """Where the SMS card link points: <restaurant's own domain or slug
+    address>/api/k when its site is live (restaurant sites send /api/* to this
+    API), else SHORT_LINK_BASE (Booqy's admin host). None when short links
+    are off (SHORT_LINK_BASE unset)."""
+    default = short_link.base()
+    if not default:
+        return None
+    try:
+        host = site.canonical_host(ctx.tenant_id, ctx.tenant)
+    except (BotoCoreError, ClientError, KeyError):
+        host = None
+    own = f"https://{host}/api/k" if host else None
+    return own if own and short_link.PLAIN_URL.fullmatch(own) else default
+
+
 def _site_card_page(ctx, item):
     """The booking's manage link on the restaurant's site, or None (then the
     Stripe page) when the tenant's live site has no card step yet (tenant
@@ -413,7 +429,7 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
             done_url = success_url if success_url != FALLBACK_RETURN_URL else None
         # The SMS carries a short plain link (shared/short_link.py), never the
         # long URL: phones cut a link at # or %, which broke the Stripe page.
-        link_base = short_link.base()
+        link_base = _short_link_base(ctx)
         if link_base:
             code = short_link.new_code()
             short_put = short_link.put_op(code, table=r.reservation_table(), target=url, item=item,

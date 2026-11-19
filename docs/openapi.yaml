@@ -3880,7 +3880,8 @@ paths:
                           PHONE_CARD_PAGE "site": the booking's manage link on the restaurant's site (page
                           site, a SetupIntent like an online booking); otherwise a Stripe Checkout page
                           (page stripe). With SHORT_LINK_BASE set, url is the short plain link to that page
-                          (GET /k/{code}, e.g. https://restaurang.booqy.se/api/k/Ab3dE5fG7h), safe to text.
+                          (GET /k/{code} on the restaurant's own site when live, e.g. https://example.se/api/k/Ab3dE5fG7h, else
+                          https://restaurang.booqy.se/api/k/Ab3dE5fG7h), safe to text.
                         properties:
                           url:
                             type: string

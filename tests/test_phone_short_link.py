@@ -3,7 +3,8 @@
 A real test call texted the long Stripe Checkout URL; the iPhone stopped
 the link inside its #fragment (at %2F) and Stripe said "This link is
 incomplete". Every guarantee SMS now carries
-https://restaurang.<domain>/api/k/<10 random characters> (shared/short_link.py),
+https://<restaurant's own domain, else restaurang.<domain>>/api/k/<10 random
+characters> (shared/short_link.py),
 stored with the booking and served by get-reservation's GET /k/{code}.
 The SMS names the restaurant as guests know it, never the company."""
 
@@ -21,6 +22,7 @@ from test_reservations import LOC_A, LOC_B, RESERVATION_TABLE, body_of, env  # n
 
 BASE = "https://restaurang.booqy.se/api/k"
 SHORT = re.compile(r"https://restaurang\.booqy\.se/api/k/([A-Za-z0-9]{10})")
+ANY_SHORT = re.compile(r"https://(?:restaurang\.booqy\.se|bistro\.se)/api/k/([A-Za-z0-9]{10})")
 # GSM 03.38 basic set (no escape characters): one SMS part is 160, two are 306.
 GSM7 = set("@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZ"
            "ÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà")
@@ -46,7 +48,7 @@ def open_link(env, code, query=None):
 
 def short_booking(env):
     _, body = phone_book(env)
-    match = SHORT.fullmatch(body["guaranteeLink"]["url"])
+    match = ANY_SHORT.fullmatch(body["guaranteeLink"]["url"])
     assert match, body["guaranteeLink"]
     return body["reservationId"], match.group(1)
 
@@ -292,3 +294,35 @@ def test_only_get_is_served(sl):
     e = {"routeKey": "POST /k/{code}", "pathParameters": {"code": code},
          "requestContext": {"http": {"method": "POST"}}, "headers": {}}
     assert sl["m"]["get"].handler(e, None)["statusCode"] == 405
+
+
+# --- the link on the restaurant's own domain (owner 2026-11-19) ----------------------------------
+
+@pytest.mark.parametrize("site_base,expected", [
+    (("https://bistro.se", None), "https://bistro.se/api/k/"),                 # own domain live
+    (("https://bistro.dev.booqy.se", None), "https://bistro.dev.booqy.se/api/k/"),  # slug address
+    (("https://d1.cloudfront.net", "bistro"), BASE + "/"),                    # shared dev site: Booqy's host
+    ((None, None), BASE + "/"),                                               # no site
+])
+def test_the_sms_link_uses_the_restaurants_own_site_when_live(sl, monkeypatch, site_base, expected):
+    monkeypatch.setattr(sl["m"]["create"].site, "base", lambda tenant_id, row: site_base)
+    _, body = phone_book(sl)
+    url = body["guaranteeLink"]["url"]
+    assert url.startswith(expected) and short_link.PLAIN_URL.fullmatch(url)
+    code = url.rsplit("/", 1)[1]
+    assert short_link.valid_code(code) and link_row(sl, code)["target"] == CHECKOUT_URL
+
+
+def test_a_failing_site_lookup_falls_back_to_booqys_host(sl, monkeypatch):
+    def boom(tenant_id, row):
+        raise KeyError("TENANT_TABLE_NAME")
+    monkeypatch.setattr(sl["m"]["create"].site, "base", boom)
+    _, body = phone_book(sl)
+    assert SHORT.fullmatch(body["guaranteeLink"]["url"])
+
+
+def test_without_short_links_the_own_domain_changes_nothing(gc, monkeypatch):
+    monkeypatch.delenv("SHORT_LINK_BASE", raising=False)
+    monkeypatch.setattr(gc["m"]["create"].site, "base", lambda tenant_id, row: ("https://bistro.se", None))
+    _, body = phone_book(gc)
+    assert body["guaranteeLink"]["url"] == CHECKOUT_URL

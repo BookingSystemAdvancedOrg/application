@@ -720,5 +720,78 @@
   "expect": {
    "live": null
   }
+ },
+ {
+  "question": "Hur tar jag en beställning vid bordet på surfplattan?",
+  "role": "staff_user",
+  "features": [
+   "ordering"
+  ],
+  "expect": {
+   "source": "bord-ny",
+   "route": "/bestallningar/bord/ny"
+  }
+ },
+ {
+  "question": "Hur skickar jag varmrätten senare när förrätten är klar?",
+  "role": "staff_user",
+  "features": [
+   "ordering"
+  ],
+  "expect": {
+   "source": "bord-skicka-senare",
+   "route": "/bestallningar",
+   "query": {
+    "vy": "bord"
+   }
+  }
+ },
+ {
+  "question": "Hur makulerar jag en rätt som gästen ändrade sig om?",
+  "role": "staff_user",
+  "features": [
+   "ordering"
+  ],
+  "expect": {
+   "source": "bord-makulera"
+  }
+ },
+ {
+  "question": "Gästerna vill byta bord, hur flyttar jag dem?",
+  "role": "staff_user",
+  "features": [
+   "ordering"
+  ],
+  "expect": {
+   "source": "bord-flytta"
+  }
+ },
+ {
+  "question": "Gästen har betalat i kassan, hur stänger jag bordet?",
+  "role": "staff_user",
+  "features": [
+   "ordering"
+  ],
+  "expect": {
+   "source": "bord-stang",
+   "route": "/bestallningar"
+  }
+ },
+ {
+  "question": "Baren har ingen skrivare, var hamnar dryckesbongen?",
+  "role": "owner_user",
+  "features": "all",
+  "expect": {
+   "source": "bord-bar-utan-skrivare"
+  }
+ },
+ {
+  "question": "Hur gör jag kategorin Pizzor till varmrätt?",
+  "role": "owner_user",
+  "features": "all",
+  "expect": {
+   "source": "bord-ratt-per-kategori",
+   "route": "/meny"
+  }
  }
 ]

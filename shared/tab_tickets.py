@@ -154,9 +154,17 @@ def _line(item):
     return line
 
 
+def _ticketed(item):
+    """False for an item resolved to no station when it was added
+    (stationId null, spec 3.2): it never makes a ticket, even if the
+    category's routing changed since. A dish with components may still
+    send its parts to their own stations."""
+    return not ("stationId" in item and item["stationId"] is None and not item.get("components"))
+
+
 def _items(tab, round_):
     wanted = set(round_.get("itemIds") or [])
-    return [i for i in tab.get("items") or [] if i.get("itemId") in wanted]
+    return [i for i in tab.get("items") or [] if i.get("itemId") in wanted and _ticketed(i)]
 
 
 def _header(tab, round_, kind):
@@ -170,11 +178,12 @@ def source_id(tab, round_):
     return f"{tab['tabId']}r{int(round_['round'])}"
 
 
-def _waiting(tab, config):
-    """{stationId: [{course, quantity}]} of the tab's held items, in serving order."""
+def _waiting(tab, config, sent=()):
+    """{stationId: [{course, quantity}]} of the tab's held items (not the
+    ones this round sends), in serving order."""
     counts = {}
     for item in tab.get("items") or []:
-        if item.get("state") != "held":
+        if item.get("state") != "held" or item.get("itemId") in sent or not _ticketed(item):
             continue
         line = _line(item)
         for station_id in routing.split([line], config):
@@ -218,7 +227,7 @@ def dispatch_round(tenant_id, location_id, tab, round_, now):
     items = [i for i in _items(tab, round_) if i.get("state") != "void"]
     header = _header(tab, round_, "tab")
     tickets = routing.tickets(source_id(tab, round_), header, [_line(i) for i in items], tab.get("note"), config, now)
-    waiting = _waiting(tab, config)
+    waiting = _waiting(tab, config, {i.get("itemId") for i in items})
     fire = round_.get("kind") == "fire"
     for ticket in tickets:
         if waiting.get(ticket["stationId"]):

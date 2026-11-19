@@ -157,6 +157,27 @@ def test_station_chosen_at_add_time_wins_and_none_makes_no_ticket(env):
     assert list(got) == ["kok"] and [e["name"] for e in got["kok"]["entries"]] == ["Lemonad"]
 
 
+def test_item_with_no_station_at_add_time_stays_off_tickets_after_routing_changes(env):
+    kitchen_only_printer(env, auto_print=False)
+    # added while its category went nowhere (stationId null); the category now routes to Kök
+    items = [item("n1", "Bröd", "other", category="mains", stationId=None),
+             item("n2", "Bröd", "other", category="mains", state="held", stationId=None),
+             item("n3", "Toast Skagen", "starters", stationId="kok")]
+    tt.dispatch_round(TENANT_A, LOC_A, tab(items), round_(1, "order", ["n1", "n3"]), NOW)
+    got = tickets_of(f"{TAB_ID}r1")
+    assert list(got) == ["kok"] and [e["name"] for e in got["kok"]["entries"]] == ["Toast Skagen"]
+    assert "waiting" not in got["kok"]
+    voided = [{**items[0], "state": "void"}]
+    assert tt.dispatch_void(TENANT_A, LOC_A, tab(voided), round_(2, "void", ["n1"]), NOW)["stations"] == []
+
+
+def test_items_sent_by_the_round_are_never_listed_as_waiting(env):
+    kitchen_only_printer(env, auto_print=False)
+    items = [item("h1", "Oxfilé", "mains", state="held"), item("h2", "Crème brûlée", "desserts", state="held")]
+    tt.dispatch_round(TENANT_A, LOC_A, tab(items), round_(2, "fire", ["h1"]), NOW)
+    assert tickets_of(f"{TAB_ID}r2")["kok"]["waiting"] == [{"course": "desserts", "quantity": 1}]
+
+
 def test_explicit_course_wins_over_category_and_other_is_ovrigt(env):
     lines = [{"name": "Toast Skagen", "category": "starters", "course": "mains"},
              {"name": "Bröd", "category": "starters", "course": "other"},

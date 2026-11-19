@@ -38,6 +38,12 @@ Tickets (print table, SK TICKET#<sourceId>#<stationId>, expire after 2 days)
 are what the kitchen display shows and what a station's printers print:
 header (number, table, time), entries grouped by course, the order's note,
 and an allergy flag. Status: sent -> preparing -> ready (or cancelled).
+
+Staff table orders (shared/tab_tickets.py) make tickets too: source id
+<tabId>r<round>, header kind "tab", "tab_void" or "tab_move" with the
+table, round, covers and waiter, and no orderId or number. Their lines may
+carry an explicit ``course`` (the waiter's choice) that wins over the
+category's.
 """
 
 import re
@@ -62,6 +68,12 @@ OTHER_PREFIX = "a"
 _OTHER = re.compile(r"a[0-9a-f]{12}")
 STATION_NAME_MAX = 30
 TICKET_TTL_DAYS = 2
+TAB_KINDS = ("tab", "tab_void", "tab_move")
+VIEW_FIELDS = ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes", "orderId", "number",
+               "mode", "tableLabel", "placedAt", "createdAt", "updatedAt",
+               # staff table orders (shared/tab_tickets.py)
+               "tableId", "kind", "tabId", "round", "covers", "waiter", "fire", "waiting", "fromLabel", "toLabel",
+               "voidReason")
 # A note that mentions an allergy makes the whole order an allergy order.
 _ALLERGY = re.compile(r"allerg|celiaki|glutenfri|laktosfri|mjölkprotein|jordnöt|nötter|nötfri|skaldjur|"
                       r"anafylax|epipen", re.IGNORECASE)
@@ -206,6 +218,14 @@ def _resolve(wanted, category, config, alcohol=False, drinkish=False):
     return ids[0] if ids else None
 
 
+def _course(line, category):
+    """An explicit line course (a table order's) wins; "other" is no course
+    (printed "Övrigt" when the ticket has several)."""
+    if "course" in line:
+        return line["course"] if line["course"] in COURSES else None
+    return category if category in COURSES else None
+
+
 def split(lines, config):
     """Order/bill lines -> {stationId: [entry]} in station order. An entry is
     {name, quantity, course, note?, allergy?, options?, partOf?}; options
@@ -213,7 +233,7 @@ def split(lines, config):
     out = {}
     for line in lines or []:
         category = line.get("category")
-        course = category if category in COURSES else None
+        course = _course(line, category)
         alcohol = line.get("alcohol") is True
         drinkish = sounds_like_drinks(line.get("categoryName"))
         own = _resolve(line.get("station"), category, config, alcohol, drinkish)
@@ -299,6 +319,35 @@ def source_tickets(location_id, source_id):
                           & Key("SK").begins_with(f"TICKET#{source_id}#"), ConsistentRead=True).get("Items") or []
 
 
+def relabel(location_id, source_prefix, table_id, table_label, now):
+    """A table order moved: its tickets that the kitchen still works on
+    (not ready, not cancelled) name the new table. Returns how many."""
+    from shared import printing
+    changed = 0
+    kwargs = {"KeyConditionExpression": Key("PK").eq(printing.pk(location_id))
+              & Key("SK").begins_with(f"TICKET#{source_prefix}"), "ConsistentRead": True}
+    while True:
+        page = _table().query(**kwargs)
+        for item in page.get("Items") or []:
+            if item.get("status") in (READY, CANCELLED) or item.get("kind") == "tab_move":
+                continue
+            try:
+                _table().update_item(
+                    Key={"PK": item["PK"], "SK": item["SK"]},
+                    UpdateExpression="SET tableId = :t, tableLabel = :l, updatedAt = :now",
+                    ConditionExpression="attribute_exists(PK) AND NOT #s IN (:ready, :cancelled)",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={":t": table_id, ":l": table_label, ":now": printing.iso(now),
+                                               ":ready": READY, ":cancelled": CANCELLED})
+                changed += 1
+            except ClientError as exc:
+                if not printing._conditional(exc):
+                    raise
+        if "LastEvaluatedKey" not in page:
+            return changed
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 def set_status(location_id, source_id, station_id, status, actor, now):
     from shared import printing
     if status not in STATUSES:
@@ -338,9 +387,7 @@ def station_name(ticket):
 
 
 def view(item):
-    out = {k: item.get(k) for k in ("sourceId", "stationId", "stationName", "entries", "allergy", "status", "notes",
-                                    "orderId", "number", "mode", "tableLabel", "placedAt", "createdAt",
-                                    "updatedAt") if item.get(k) is not None}
+    out = {k: item.get(k) for k in VIEW_FIELDS if item.get(k) is not None}
     if out.get("stationName") is not None:
         out["stationName"] = station_name(item)
     return out

@@ -253,7 +253,11 @@ def choose_options(item, picked):
 # --- categories (Menu table, PK LOCATION#<l> SK CATEGORIES) -------------------------
 # A location's own categories in display order. Without a stored row a
 # location has the four defaults, whose ids match the old fixed enum (and
-# the kitchen routing's courses, shared/routing.py).
+# the kitchen routing's courses, shared/routing.py). ``course`` (optional)
+# says when a category is served at the table (staff table orders,
+# shared/tab_tickets.py): a custom "Pizza" can be a main course. The four
+# defaults are their own course unless the owner picked another
+# (category_course); only a chosen course is stored and returned.
 
 CATEGORIES_SK = "CATEGORIES"
 CATEGORIES_MAX = 30
@@ -261,6 +265,7 @@ CATEGORY_NAME_MAX = 40
 DEFAULT_CATEGORIES = (("starters", "Förrätter"), ("mains", "Varmrätter"), ("desserts", "Efterrätter"),
                       ("drinks", "Drycker"))
 _CATEGORY_ID = re.compile(r"[a-z0-9]{2,32}")
+CATEGORY_COURSES = ("starters", "mains", "desserts", "drinks", "other")
 
 
 def valid_category_id(value):
@@ -271,6 +276,25 @@ def default_categories():
     return [{"categoryId": cid, "name": name} for cid, name in DEFAULT_CATEGORIES]
 
 
+def category_course(category):
+    """The category's course: its own ``course``, else a default category's
+    id (starters, mains, desserts, drinks), else None."""
+    course = (category or {}).get("course")
+    if course in CATEGORY_COURSES:
+        return course
+    cid = (category or {}).get("categoryId")
+    return cid if cid in CATEGORY_COURSES and cid != "other" else None
+
+
+def _category_view(category):
+    """Only a course the owner chose is returned; a default category's
+    course is its id (category_course), so its view stays as before."""
+    out = {"categoryId": category["categoryId"], "name": category["name"]}
+    if category.get("course") in CATEGORY_COURSES:
+        out["course"] = category["course"]
+    return out
+
+
 def categories_key(location_id):
     return {"PK": f"LOCATION#{location_id}", "SK": CATEGORIES_SK}
 
@@ -279,13 +303,14 @@ def categories_view(row):
     """The stored row (or None) -> {categories, version}."""
     if not row:
         return {"categories": default_categories(), "version": 0}
-    return {"categories": [{"categoryId": c["categoryId"], "name": c["name"]} for c in row.get("categories") or []],
+    return {"categories": [_category_view(c) for c in row.get("categories") or []],
             "version": int(row.get("version") or 0)}
 
 
 def validate_categories(raw):
-    """PUT body {categories: [{categoryId?, name}], version} -> (list, version).
-    A new category has no categoryId and gets one here."""
+    """PUT body {categories: [{categoryId?, name, course?}], version} ->
+    (list, version). A new category has no categoryId and gets one here;
+    course is one of CATEGORY_COURSES or null (no course of its own)."""
     if not isinstance(raw, dict) or set(raw) - {"categories", "version"} or "categories" not in raw:
         raise ValueError("body needs categories and version")
     version = _whole(raw.get("version", 0), 0, 10**9, "version")
@@ -294,7 +319,7 @@ def validate_categories(raw):
         raise ValueError(f"categories must be a list of 1-{CATEGORIES_MAX}")
     out, ids, names = [], set(), set()
     for cat in cats:
-        if not isinstance(cat, dict) or set(cat) - {"categoryId", "name"}:
+        if not isinstance(cat, dict) or set(cat) - {"categoryId", "name", "course"}:
             raise ValueError("each category needs a name")
         cid = cat.get("categoryId")
         if cid is None:
@@ -310,5 +335,8 @@ def validate_categories(raw):
             raise ValueError("category names must be unique")
         ids.add(cid)
         names.add(name.lower())
-        out.append({"categoryId": cid, "name": name})
+        course = cat.get("course")
+        if course is not None and course not in CATEGORY_COURSES:
+            raise ValueError(f"course must be one of {', '.join(CATEGORY_COURSES)} or null")
+        out.append({"categoryId": cid, "name": name, **({"course": course} if course else {})})
     return out, version

@@ -9,7 +9,9 @@ Columns with font A: 48 on 80 mm paper, 32 on 58 mm.
 The ticket is a kitchen note, never a receipt: no prices, "Köksnota, ej
 kvitto" at the top. The guest's phone number only on pickup orders (the
 counter may need to call); notes in bold; times in the location's time
-zone.
+zone. A staff table order's ticket (kind tab, tab_void, tab_move from
+shared/tab_tickets.py) names the table, round, waiter and covers, never
+the guest.
 """
 
 import textwrap
@@ -237,13 +239,136 @@ def _where(mode, table_label):
     return "AVHÄMTNING"
 
 
+def _entries(t, ticket, allergy):
+    """The station's entries grouped by course (the allergy ticket: only
+    the entries with an allergy, unless the note names one)."""
+    from shared import routing
+    entries = ticket.get("entries") or []
+    order_allergy = routing.mentions_allergy(ticket.get("notes"))
+    if allergy and not order_allergy:
+        entries = [e for e in entries if e.get("allergy") or routing.mentions_allergy(e.get("note"))]
+    for course, group in routing.by_course(entries):
+        t.rule()
+        if course:
+            t.line(f"-- {course.upper()} --", bold=True)
+        for entry in group:
+            t.item(int(entry.get("quantity") or 1), clean(entry.get("name")))
+            if entry.get("partOf"):
+                t.line(f"     ({clean(entry['partOf'])})")
+            for option in entry.get("options") or []:
+                t.line(f"     + {clean(option)}", bold=True)
+            if entry.get("note"):
+                t.line(f"     {clean(entry['note'])}", bold=True)
+            if entry.get("allergy"):
+                text = entry["allergy"] if isinstance(entry["allergy"], str) else "se notering"
+                t.line(f"ALLERGI: {clean(text)}", bold=True, big=allergy)
+
+
+TAB_COURSE_NAMES = {"drinks": "Dryck", "starters": "Förrätt", "mains": "Varmrätt", "desserts": "Efterrätt",
+                    "other": "Övrigt"}
+TAB_COURSE_ORDER = ("drinks", "starters", "mains", "desserts", "other")
+VOID_REASON_TEXT = {"wrong": "Fel registrerad", "guest_changed": "Gästen ändrade sig", "other": "Annat"}
+
+
+def _covers(value):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return f"{n} gäst" if n == 1 else f"{n} gäster" if n > 1 else None
+
+
+def _tab_ticket(ticket, location, *, width, copy, retry, allergy, fmt):
+    """A staff table order's ticket: station and table big, then round,
+    waiter, time and covers; a fired course ("SKICKA NU: VARMRÄTT"); the
+    entries by course; what the table still has waiting at this station.
+    tab_void says MAKULERAD with the reason, tab_move FLYTTAD with both
+    tables. No prices, no guest name, no phone."""
+    from shared import routing
+    tz = _tz(location)
+    kind = ticket.get("kind")
+    t = _new(width, fmt)
+    t.line("Köksnota, ej kvitto", center=True)
+    if allergy:
+        t.line("!! ALLERGI !!", bold=True, big=True, center=True)
+    if retry:
+        t.line("KAN VARA DUBBLETT", bold=True, center=True)
+    if copy:
+        t.line("KOPIA", bold=True, center=True)
+    t.line(clean(routing.station_name(ticket)).upper() or "KÖK", bold=True, big=True, center=True)
+    if kind == "tab_void":
+        t.line("MAKULERAD", bold=True, big=True, center=True)
+    elif kind == "tab_move":
+        t.line("FLYTTAD", bold=True, big=True, center=True)
+    t.line(_where("table", ticket.get("tableLabel")), bold=True, big=True, center=True)
+    placed = _local(ticket.get("placedAt") or ticket.get("createdAt"), tz)
+    meta = [f"Runda {ticket['round']}"] if ticket.get("round") is not None else []
+    if ticket.get("waiter"):
+        meta.append(clean(ticket["waiter"]))
+    if placed:
+        meta.append(f"{placed:%H:%M}")
+    covers = _covers(ticket.get("covers"))
+    if covers and kind != "tab_move":
+        meta.append(covers)
+    if meta:
+        t.line(" · ".join(meta), center=True)
+    if kind == "tab_move":
+        t.rule()
+        moved = f"{_label(ticket.get('fromLabel'))} -> {_label(ticket.get('toLabel') or ticket.get('tableLabel'))}"
+        t.line(moved, bold=True, big=True, center=True)
+        t.line("Servera till det nya bordet.", bold=True, center=True)
+    else:
+        if kind == "tab" and ticket.get("fire"):
+            fired = [c for c in TAB_COURSE_ORDER if c in _ticket_courses(ticket)] or [ticket["fire"]]
+            text = ", ".join(TAB_COURSE_NAMES.get(c, "Övrigt") for c in fired).upper()
+            t.rule()
+            t.line(f"SKICKA NU: {text}", bold=True, big=True, center=True)
+        if kind == "tab_void":
+            t.rule()
+            t.line("Laga inte, servera inte:", bold=True)
+        _entries(t, ticket, allergy and kind == "tab")
+        if kind == "tab_void":
+            reason = VOID_REASON_TEXT.get(ticket.get("voidReason"))
+            if reason:
+                t.line(f"Orsak: {reason}", bold=True)
+        waiting = [w for w in ticket.get("waiting") or [] if isinstance(w, dict) and int(w.get("quantity") or 0) > 0]
+        if waiting and kind == "tab":
+            t.rule()
+            t.line("Väntar: " + ", ".join(f"{TAB_COURSE_NAMES.get(w.get('course'), 'Övrigt')} {int(w['quantity'])}"
+                                         for w in waiting), bold=True)
+        notes = clean(ticket.get("notes"))
+        if notes:
+            t.rule()
+            t.line("NOTERING:", bold=True)
+            t.line(notes, bold=True)
+        if allergy:
+            t.rule()
+            t.line("Kontrollera allergin innan maten går ut.", bold=True)
+    t.rule()
+    t.line(f"Bord {str(ticket.get('tabId') or '')[:6]} r{ticket.get('round') or '?'}", center=True)
+    return t.done()
+
+
+def _label(table_label):
+    label = clean(table_label) or "?"
+    return f"Bord {label}" if label[0].isdigit() or label == "?" else label
+
+
+def _ticket_courses(ticket):
+    """The courses on a tab ticket's entries ("other" for none)."""
+    return {e.get("course") or "other" for e in ticket.get("entries") or [] if isinstance(e, dict)}
+
+
 def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False, allergy=False, fmt="star"):
     """One station's ticket ("bong", shared/routing.py): only that station's
     items, grouped by course, notes and allergies in bold. `allergy`: the
     separate allergy ticket, only the items with an allergy (all of them
     when the order's note names one). `order`: the online order for the
-    guest's name (and phone on pickup)."""
+    guest's name (and phone on pickup). A staff table order's ticket
+    (kind tab*) has no order and prints as _tab_ticket."""
     from shared import routing
+    if str((ticket or {}).get("kind") or "").startswith("tab"):
+        return _tab_ticket(ticket, location, width=width, copy=copy, retry=retry, allergy=allergy, fmt=fmt)
     tz = _tz(location)
     order = order or {}
     t = _new(width, fmt)
@@ -267,24 +392,7 @@ def station_ticket(ticket, order, location, *, width=80, copy=False, retry=False
         t.line(", ".join(when))
     if placed:
         t.line(f"{placed:%Y-%m-%d}")
-    entries = ticket.get("entries") or []
-    order_allergy = routing.mentions_allergy(ticket.get("notes"))
-    if allergy and not order_allergy:
-        entries = [e for e in entries if e.get("allergy") or routing.mentions_allergy(e.get("note"))]
-    for course, group in routing.by_course(entries):
-        t.rule()
-        if course:
-            t.line(f"-- {course.upper()} --", bold=True)
-        for entry in group:
-            t.item(int(entry.get("quantity") or 1), clean(entry.get("name")))
-            if entry.get("partOf"):
-                t.line(f"     ({clean(entry['partOf'])})")
-            for option in entry.get("options") or []:
-                t.line(f"     + {clean(option)}", bold=True)
-            if entry.get("note"):
-                t.line(f"     {clean(entry['note'])}", bold=True)
-            if entry.get("allergy"):
-                t.line(f"ALLERGI: {clean(entry['allergy'])}", bold=True, big=allergy)
+    _entries(t, ticket, allergy)
     notes = clean(ticket.get("notes"))
     if notes:
         t.rule()

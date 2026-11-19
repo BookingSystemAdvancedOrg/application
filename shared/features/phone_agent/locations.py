@@ -66,3 +66,28 @@ def rest_of(text, location, locations) -> list:
     """The caller's words besides the ones that named the location."""
     own = distinctive(locations).get(location["locationId"], set())
     return [w for w in words(text) if w not in own]
+
+
+# A legal company form at the end of a name ("Radin DJ AB", "Pizzeria Roma HB"): the company,
+# not the restaurant guests know.
+_COMPANY = re.compile(r"(?:^|\s)(ab|hb|kb|aktiebolag|handelsbolag|kommanditbolag|enskild\s+firma|"
+                      r"ek\.?\s*för\.?|ekonomisk\s+förening|\(publ\)|ltd|limited|llc|inc|gmbh|oy|oyj|as|asa|"
+                      r"aps|a/s)\.?$", re.I)
+
+
+def is_company_name(name) -> bool:
+    return bool(_COMPANY.search(" ".join(str(name or "").split())))
+
+
+def public_name(tenant_row, location=None) -> str:
+    """The restaurant's guest-facing name for the greeting and the prompt
+    (owner 2026-11-19): the location's own name (what its site shows), else
+    the restaurant's name; never a legal company name (a name ending in AB,
+    HB ...); "" when neither is usable (the greeting then
+    welcomes without a name). Read from each restaurant's own data: nothing
+    to set up per restaurant."""
+    for raw in ((location or {}).get("name"), (tenant_row or {}).get("name")):
+        name = " ".join(str(raw or "").split())
+        if name and not is_company_name(name):
+            return name
+    return ""

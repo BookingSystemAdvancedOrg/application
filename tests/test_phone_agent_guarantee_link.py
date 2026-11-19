@@ -340,30 +340,56 @@ def test_terms_in_availability_and_hold_are_the_policy_for_the_party(env, party)
                    ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": party})):
         terms = result["guaranteeTerms"]
         assert result["guaranteeRequired"] is True and result["say"] == tools.SAY["guaranteeLink"]
-        assert terms["chargedNow"] == 0 and terms["currency"] == "SEK"
-        assert terms["noShowFee"] == 200 * party == snap["noShowFee"] // 100
-        assert terms["lateCancelFee"] == 100 * party == snap["lateCancelFee"] // 100
-        assert terms["noShowFeePerPerson"] == 200 and terms["lateCancelFeePerPerson"] == 100
-        assert terms["cancelCutoffHours"] == 24
-        said = terms["readAs"]
+        assert terms["chargedNow"] == 0 and terms["fees"] == ["noShow", "lateCancel"]
+        assert terms["cancelCutoffHours"] == 24 and terms["readAs"] == {"cancelCutoffHours": "twenty-four hours"}
+        # by default: the rule with the restaurant's cutoff, no amount, then the question
+        assert terms["sentence"] == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Restaurangen "
+                                     "tar ut en avgift om bokningen avbokas senare än tjugofyra timmar före "
+                                     "besöket, eller om ni inte kommer.")
+        assert terms["question"] == "Vill du ha mer information om det?"
+        default = {k: v for k, v in terms.items() if k != "ifAsked"}
+        assert "kronor" not in json.dumps(default, ensure_ascii=False) and "Fee" not in json.dumps(default)
+        # only when the caller asks: the amounts for the party
+        more = terms["ifAsked"]
+        assert more["currency"] == "SEK"
+        assert more["noShowFee"] == 200 * party == snap["noShowFee"] // 100
+        assert more["lateCancelFee"] == 100 * party == snap["lateCancelFee"] // 100
+        assert more["noShowFeePerPerson"] == 200 and more["lateCancelFeePerPerson"] == 100
+        said = more["readAs"]
         assert said["noShowFee"] == tools.kronor_words(200 * party) and said["chargedNow"] == "zero kronor"
         assert said["noShowFeePerPerson"] == "two hundred kronor per person"
-        assert said["cancelCutoffHours"] == "twenty-four hours"
-        assert terms["sentence"].startswith("För den bokningen behövs ett kort som garanti, men inget dras nu.")
-        assert tools.kronor_words(200 * party, "sv") in terms["sentence"]
-        assert tools.kronor_words(100 * party, "sv") in terms["sentence"] and "tjugofyra timmar" in terms["sentence"]
+        assert tools.kronor_words(200 * party, "sv") in more["details"]
+        assert tools.kronor_words(100 * party, "sv") in more["details"] and "tjugofyra timmar" in more["details"]
 
 
 def test_terms_sentence_for_four_reads_naturally():
     ex_terms = copy.guarantee_terms("sv", no_show="åttahundra kronor", late="fyrahundra kronor",
                                     hours="tjugofyra timmar")
-    assert ex_terms == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Om ni inte kommer, "
-                        "tar restaurangen åttahundra kronor. Avbokar ni senare än tjugofyra timmar före besöket, "
-                        "tar restaurangen fyrahundra kronor.")
-    assert "kortgarantierat" not in ex_terms and not DASHES.search(ex_terms)
-    assert " du " not in ex_terms        # one form of address: ni
+    assert ex_terms["sentence"] == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Restaurangen "
+                                    "tar ut en avgift om bokningen avbokas senare än tjugofyra timmar före besöket, "
+                                    "eller om ni inte kommer.")
+    assert ex_terms["question"] == "Vill du ha mer information om det?"
+    assert ex_terms["details"] == ("Om ni inte kommer, tar restaurangen åttahundra kronor. Avbokar ni senare än "
+                                   "tjugofyra timmar före besöket, tar restaurangen fyrahundra kronor.")
+    for text in ex_terms.values():
+        assert "kortgarantierat" not in text and not DASHES.search(text)
+    assert " du " not in ex_terms["sentence"] + ex_terms["details"]    # one form of address for the party: ni
     late = copy.guarantee_terms("sv", late="fyrahundra kronor", hours="tjugofyra timmar")
-    assert late.endswith(" Avbokar ni senare än tjugofyra timmar före besöket, tar restaurangen fyrahundra kronor.")
+    assert late["sentence"].endswith(" Restaurangen tar ut en avgift om bokningen avbokas senare än tjugofyra "
+                                     "timmar före besöket.")
+    assert late["details"] == "Avbokar ni senare än tjugofyra timmar före besöket, tar restaurangen fyrahundra kronor."
+    none = copy.guarantee_terms("sv")
+    assert none == {"sentence": "För den bokningen behövs ett kort som garanti, men inget dras nu.", "question": None,
+                    "details": None}
+
+
+@pytest.mark.parametrize("lang", ["sv", "en"])
+def test_the_default_terms_never_say_an_amount_in_any_combination(lang):
+    for no_show, late, hours in [("x kronor", "y kronor", "z"), ("x kronor", None, None), (None, "y kronor", "z"),
+                                 ("x kronor", "y kronor", None)]:
+        terms = copy.guarantee_terms(lang, no_show=no_show, late=late, hours=hours)
+        assert "kronor" not in terms["sentence"] + (terms["question"] or "")
+        assert "kronor" in terms["details"]
 
 
 @pytest.mark.parametrize("policy", [{**POLICY, "lateCancelFeePerPerson": 0}, {**POLICY, "cancelCutoffHours": 0}])
@@ -371,20 +397,34 @@ def test_a_fee_that_never_applies_is_not_said(env, policy):
     env.availability.set(TOMORROW, ["19:00"])
     ex, _ = _with_policy(env, policy)
     terms = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})["guaranteeTerms"]
-    assert terms["noShowFee"] == 800
-    assert not {"lateCancelFee", "lateCancelFeePerPerson", "cancelCutoffHours"} & set(terms)
-    assert terms["sentence"] == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Om ni inte "
-                                 "kommer, tar restaurangen åttahundra kronor.")
+    assert terms["fees"] == ["noShow"] and terms["ifAsked"]["noShowFee"] == 800
+    assert not {"lateCancelFee", "lateCancelFeePerPerson"} & set(terms["ifAsked"])
+    assert "cancelCutoffHours" not in terms and "avboka" not in terms["sentence"]
+    assert terms["sentence"] == ("För den bokningen behövs ett kort som garanti, men inget dras nu. Restaurangen "
+                                 "tar ut en avgift om ni inte kommer.")
+    assert terms["ifAsked"]["details"] == "Om ni inte kommer, tar restaurangen åttahundra kronor."
 
 
 def test_only_a_late_cancellation_fee_is_said_alone(env):
     env.availability.set(TOMORROW, ["19:00"])
-    ex, _ = _with_policy(env, {**POLICY, "noShowFeePerPerson": 0}, language="en")
+    ex, _ = _with_policy(env, {**POLICY, "noShowFeePerPerson": 0, "cancelCutoffHours": 48}, language="en")
     terms = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 3})["guaranteeTerms"]
-    assert "noShowFee" not in terms and terms["lateCancelFee"] == 300
-    assert terms["sentence"] == ("That booking needs a card as a guarantee, but nothing is charged now. If you "
-                                 "cancel later than twenty-four hours before the visit, the restaurant charges "
-                                 "three hundred kronor.")
+    assert terms["fees"] == ["lateCancel"] and terms["cancelCutoffHours"] == 48
+    assert "noShowFee" not in terms["ifAsked"] and terms["ifAsked"]["lateCancelFee"] == 300
+    assert terms["sentence"] == ("That booking needs a card as a guarantee, but nothing is charged now. The "
+                                 "restaurant charges a fee if the booking is cancelled later than forty-eight hours "
+                                 "before the visit.")
+    assert terms["question"] == "Would you like more information about that?"
+    assert terms["ifAsked"]["details"] == ("If you cancel later than forty-eight hours before the visit, the "
+                                           "restaurant charges three hundred kronor.")
+
+
+def test_a_policy_without_any_fee_asks_nothing(env):
+    env.availability.set(TOMORROW, ["19:00"])
+    ex, _ = _with_policy(env, {**POLICY, "noShowFeePerPerson": 0, "lateCancelFeePerPerson": 0})
+    terms = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4}).get("guaranteeTerms")
+    if terms is not None:     # a policy that charges nothing may need no card at all
+        assert terms["fees"] == [] and "question" not in terms and "ifAsked" not in terms
 
 
 def test_without_a_readable_policy_no_amount_is_given(needs_card):

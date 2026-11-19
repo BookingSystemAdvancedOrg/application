@@ -60,7 +60,7 @@ def language_locked(call) -> bool:
 
 def _turn_setup(lang, caller_text, state, disclosed, allowed):
     """(language the prompt asks for, the fast hint, whether the model must
-    say the AI sentence itself) before the model runs."""
+    say the disclosure sentence itself) before the model runs."""
     hint = language.hint(caller_text)
     prompt_lang = hint if hint in allowed else lang
     disclose_now = bool(state.pop("discloseNext", None)) or (
@@ -80,7 +80,7 @@ def _after_turn(lang, hint, result, caller_text, state, allowed, locked=False):
 
 
 def _after_cut(result, state, disclose_now):
-    """A turn cut by the deadline: the AI sentence the model was to say is
+    """A turn cut by the deadline: the disclosure sentence the model was to say is
     said in the next turn (the resume flag is set by the executor)."""
     if result.cut:
         metric("TurnCut", 1)
@@ -138,7 +138,8 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
                         invoke=invoke, state=state, caller_phone=call.get("from"), voice=voice,
                         call_ref=call.get("callRef"), callbacks=add_callback, today=local_today(location),
                         now_time=now_clock(location), language=prompt_lang, send_sms=send_sms)
-    system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
+    restaurant = locations_mod.public_name(tenant_row, location)
+    system = agent.system_prompt(prompt_lang, config.get("agentName"), restaurant, executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  phone_known=executor.caller_known, unsupported=state.get("unsupported"),
                                  resume=bool(state.pop("resume", None)))
@@ -233,7 +234,8 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     executor = Executor(tenant_id=tenant_id, tenant_row=tenant_row, location=location, loc_config=loc,
                         invoke=invoke, state=state, dry_run=True, today=local_today(location),
                         now_time=now_clock(location), language=prompt_lang)
-    system = agent.system_prompt(prompt_lang, config.get("agentName"), location.get("name"), executor.today,
+    restaurant = locations_mod.public_name(tenant_row, location)
+    system = agent.system_prompt(prompt_lang, config.get("agentName"), restaurant, executor.today,
                                  config.get("tone"), last_day=executor.last_day, disclose_now=disclose_now,
                                  unsupported=state.get("unsupported"), resume=bool(state.pop("resume", None)))
     result = agent.run_turn(model, messages, text, executor, system=system, lang=prompt_lang,
@@ -251,7 +253,7 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
     state["disclosed"] = disclosed
     reply = result.reply
     if first:  # the simulator shows the greeting with the disclosure first, like a call
-        greeting = copy.greeting(start_lang, config.get("agentName"), location.get("name"),
+        greeting = copy.greeting(start_lang, config.get("agentName"), restaurant,
                                  loc.get("greetingExtraSv" if start_lang == "sv" else "greetingExtraEn"),
                                  recording=bool((config.get("recording") or {}).get("enabled")))
         reply = " ".join(x for x in (greeting, switched, reply) if x)

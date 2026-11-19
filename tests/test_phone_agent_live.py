@@ -93,17 +93,17 @@ def test_caller_in_english_gets_the_disclosure_in_english_and_the_provider_switc
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "Hi, I'd like to book a table for four tomorrow at 7 pm"}]})
     assert status == 200
-    assert text.startswith("I am the restaurant's AI assistant.")
+    assert text.startswith("I am the restaurant's digital assistant.")
     assert {"name": "language_detection", "arguments": {"reason": "The caller speaks English", "language": "en"}} \
         in tools
     row = phone.row()
     assert row["language"] == "en" and row["disclosure"]["languages"] == ["sv", "en"]
     turns = [t["text"] for t in phone.turns()]
-    assert "AI-assistent" in turns[0] and turns[2] == "I am the restaurant's AI assistant."   # greeting, caller, disclosure
+    assert "digitala assistent" in turns[0] and turns[2] == "I am the restaurant's digital assistant."   # greeting, caller, disclosure
     # the second English sentence: no second disclosure, no second switch
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "My name is Anna"}]})
-    assert "AI assistant" not in text and not [t for t in tools if t["name"] == "language_detection"]
+    assert "digital assistant" not in text and not [t for t in tools if t["name"] == "language_detection"]
 
 
 def test_any_language_reaches_the_model_and_the_disclosure_follows(live):
@@ -118,7 +118,7 @@ def test_any_language_reaches_the_model_and_the_disclosure_follows(live):
     live.model.responses = [Turn(text="Gerne. Für wie viele Personen?")]
     phone = Phone(live)
     reply = phone.say("Hallo, ich möchte einen Tisch für morgen reservieren")
-    assert reply == "Ich bin der KI-Assistent des Restaurants. Gerne. Für wie viele Personen?"
+    assert reply == "Ich bin der digitale Assistent des Restaurants. Gerne. Für wie viele Personen?"
     assert "answer only in German" in seen[0]
     assert phone.row()["language"] == "de"
 
@@ -130,7 +130,7 @@ def test_any_language_the_model_answers_in_is_followed(live):
     phone = Phone(live)
     status, text, tools = turn(live, {"booqy": phone.ids, "tools": TOOLS, "messages": [
         {"role": "user", "content": "Merhaba, yarın akşam için masa ayırtmak istiyorum"}]})
-    assert text == "Ben restoranın yapay zekâ asistanıyım. Tabii, kaç kişi için?"
+    assert text == "Ben restoranın dijital asistanıyım. Tabii, kaç kişi için?"
     assert tools == [{"name": "language_detection", "arguments": {"reason": "The caller speaks Turkish",
                                                                   "language": "tr"}}]
     assert phone.row()["language"] == "tr" and phone.row()["disclosure"]["languages"] == ["sv", "tr"]
@@ -340,9 +340,9 @@ def test_simulator_counter_offer_end_to_end(live, lang):
         replies.append(body)
     for body, expected in zip(replies, EXPECT[lang]):
         assert expected in body["reply"], body["reply"]
-    assert replies[0]["disclosure"] and "AI-assistent" in replies[0]["reply"]
+    assert replies[0]["disclosure"] and "digitala assistent" in replies[0]["reply"]
     if lang == "en":   # the simulator starts in Swedish and switches, like a call
-        assert "I am the restaurant's AI assistant." in replies[0]["reply"] and replies[0]["language"] == "en"
+        assert "I am the restaurant's digital assistant." in replies[0]["reply"] and replies[0]["language"] == "en"
     assert replies[-1]["state"]["counterOffer"] == "other_time" and replies[-1]["state"]["outcome"] == "booked"
     assert live.invoke.reservations == {}      # dry run: nothing booked
     assert not [c for c in live.invoke.calls if c[0] == "create-pending-reservation"]
@@ -386,7 +386,7 @@ def test_elevenlabs_call_from_initiation_to_post_call(live, monkeypatch):
                           {"x-booqy-webhook-token": INIT_TOKEN})
     assert status == 200 and init["type"] == "conversation_initiation_client_data"
     first = init["conversation_config_override"]["agent"]["first_message"]
-    assert "AI-assistent" in first and init["conversation_config_override"]["agent"]["language"] == "sv"
+    assert "digitala assistent" in first and init["conversation_config_override"]["agent"]["language"] == "sv"
     ids = init["dynamic_variables"]
     assert init["custom_llm_extra_body"] == {"booqy": ids} and ids["tenantId"] == TENANT_A
 
@@ -396,7 +396,7 @@ def test_elevenlabs_call_from_initiation_to_post_call(live, monkeypatch):
         {"role": "system", "content": marker}, {"role": "assistant", "content": first},
         {"role": "user", "content": "Hi, can I speak to a person please"}]},
         auth={"Authorization": f"Bearer {KEY}"})
-    assert status == 200 and text.startswith("I am the restaurant's AI assistant.")
+    assert status == 200 and text.startswith("I am the restaurant's digital assistant.")
     names = [t["name"] for t in tools]
     assert names == ["language_detection", "transfer_to_number"]
     transfer = tools[1]["arguments"]
@@ -493,7 +493,7 @@ def test_connect_lex_call_books_a_table_in_swedish(live):
     assert "Klart, du är bokad" in out["messages"][0]["content"]
     assert len(live.invoke.reservations) == 1
     turns = pa.query_all(pa.tenant_pk(TENANT_A), call_row["SK"] + "#T#")
-    assert "AI-assistent" in turns[0]["text"]                       # the greeting the flow played comes first
+    assert "digitala assistent" in turns[0]["text"]                       # the greeting the flow played comes first
 
 
 def test_connect_lex_call_ends_when_the_agent_ends_it(live):

@@ -13,59 +13,68 @@ Wording **[NEEDS YOUR OK: lawyer]** for the disclosure, the recording notice
 and the refusal; **[NEEDS YOUR OK: native review]** for so, ar, fa, ckb, am.
 """
 
+import re
+
 SV, EN = "sv", "en"
 LANGUAGES = (SV, EN)
 # The priority set: every fixed sentence said without the model exists in these.
 REVIEWED = ("sv", "en", "de", "fr", "es", "fi", "no", "da", "pl", "ru", "uk", "tr", "ar", "fa", "so", "bs", "hr",
             "sr", "ckb", "am")
 
-# The greeting (always Swedish at call start; English for the provider's preset).
+# The greeting (always Swedish at call start; English for the provider's preset). Owner 2026-11-19:
+# "Hej och välkommen till <restaurangens namn>. Du pratar med vår digitala assistent." The name is
+# the guest-facing one (locations.public_name), never the legal company name; without one the
+# welcome has no name. The assistant never calls itself AI, a bot or artificial intelligence.
 DISCLOSURE = {
-    SV: "Hej och välkommen till {restaurant}. Du talar med {agent}, restaurangens AI-assistent.",
-    EN: "Hello and welcome to {restaurant}. You are speaking with {agent}, the restaurant's AI assistant.",
+    SV: "Hej och välkommen till {restaurant}. Du pratar med vår digitala assistent.",
+    EN: "Hello and welcome to {restaurant}. You are speaking with our digital assistant.",
+}
+DISCLOSURE_NO_NAME = {
+    SV: "Hej och välkommen. Du pratar med vår digitala assistent.",
+    EN: "Hello and welcome. You are speaking with our digital assistant.",
 }
 # Said by Booqy once in every new language the call switches to, and again when
 # the caller interrupts the greeting. No restaurant name: a Swedish name inside a
 # Somali or Arabic sentence is mispronounced, and the greeting already said it.
 DISCLOSURE_SHORT = {
-    SV: "Jag är restaurangens AI-assistent.",
-    EN: "I am the restaurant's AI assistant.",
-    "de": "Ich bin der KI-Assistent des Restaurants.",
-    "fr": "Je suis l'assistant IA du restaurant.",
-    "es": "Soy el asistente de inteligencia artificial del restaurante.",
-    "fi": "Olen ravintolan tekoälyavustaja.",
-    "no": "Jeg er restaurantens KI-assistent.",
-    "da": "Jeg er restaurantens AI-assistent.",
-    "pl": "Jestem asystentem AI restauracji.",
-    "ru": "Я ассистент ресторана на основе искусственного интеллекта.",
-    "uk": "Я асистент ресторану на основі штучного інтелекту.",
-    "tr": "Ben restoranın yapay zekâ asistanıyım.",
-    "ar": "أنا المساعد الآلي للمطعم، وأعمل بالذكاء الاصطناعي.",
-    "fa": "من دستیار هوش مصنوعی رستوران هستم.",
-    "so": "Waxaan ahay kaaliyaha AI-ga ee makhaayadda.",
-    "bs": "Ja sam AI asistent restorana.",
-    "hr": "Ja sam AI asistent restorana.",
-    "sr": "Ja sam AI asistent restorana.",
-    "ckb": "من یاریدەدەری زیرەکی دەستکردی چێشتخانەکەم.",
-    "am": "እኔ የምግብ ቤቱ የሰው ሰራሽ አስተውሎት ረዳት ነኝ።",
-    "it": "Sono l'assistente IA del ristorante.",
-    "pt": "Sou o assistente de IA do restaurante.",
-    "nl": "Ik ben de AI-assistent van het restaurant.",
-    "cs": "Jsem AI asistent restaurace.",
-    "sk": "Som AI asistent reštaurácie.",
-    "hu": "Az étterem mesterséges intelligencia asszisztense vagyok.",
-    "ro": "Sunt asistentul AI al restaurantului.",
-    "bg": "Аз съм AI асистентът на ресторанта.",
-    "el": "Είμαι ο βοηθός τεχνητής νοημοσύνης του εστιατορίου.",
-    "ja": "私はこのレストランのAIアシスタントです。",
-    "zh": "我是这家餐厅的AI助手。",
-    "ko": "저는 이 레스토랑의 AI 어시스턴트입니다.",
-    "hi": "मैं इस रेस्टोरेंट का एआई सहायक हूँ।",
-    "id": "Saya asisten AI restoran ini.",
-    "ms": "Saya pembantu AI restoran ini.",
-    "fil": "Ako ang AI assistant ng restawran.",
-    "vi": "Tôi là trợ lý AI của nhà hàng.",
-    "ta": "நான் இந்த உணவகத்தின் AI உதவியாளர்.",
+    SV: "Jag är restaurangens digitala assistent.",
+    EN: "I am the restaurant's digital assistant.",
+    "de": "Ich bin der digitale Assistent des Restaurants.",
+    "fr": "Je suis l'assistant numérique du restaurant.",
+    "es": "Soy el asistente digital del restaurante.",
+    "fi": "Olen ravintolan digitaalinen avustaja.",
+    "no": "Jeg er restaurantens digitale assistent.",
+    "da": "Jeg er restaurantens digitale assistent.",
+    "pl": "Jestem cyfrowym asystentem restauracji.",
+    "ru": "Я цифровой ассистент ресторана.",
+    "uk": "Я цифровий асистент ресторану.",
+    "tr": "Ben restoranın dijital asistanıyım.",
+    "ar": "أنا المساعد الرقمي للمطعم.",
+    "fa": "من دستیار دیجیتال رستوران هستم.",
+    "so": "Waxaan ahay kaaliyaha dijitaalka ah ee makhaayadda.",
+    "bs": "Ja sam digitalni asistent restorana.",
+    "hr": "Ja sam digitalni asistent restorana.",
+    "sr": "Ja sam digitalni asistent restorana.",
+    "ckb": "من یاریدەدەری دیجیتاڵی چێشتخانەکەم.",
+    "am": "እኔ የምግብ ቤቱ ዲጂታል ረዳት ነኝ።",
+    "it": "Sono l'assistente digitale del ristorante.",
+    "pt": "Sou o assistente digital do restaurante.",
+    "nl": "Ik ben de digitale assistent van het restaurant.",
+    "cs": "Jsem digitální asistent restaurace.",
+    "sk": "Som digitálny asistent reštaurácie.",
+    "hu": "Az étterem digitális asszisztense vagyok.",
+    "ro": "Sunt asistentul digital al restaurantului.",
+    "bg": "Аз съм дигиталният асистент на ресторанта.",
+    "el": "Είμαι ο ψηφιακός βοηθός του εστιατορίου.",
+    "ja": "私はこのレストランのデジタルアシスタントです。",
+    "zh": "我是这家餐厅的数字助手。",
+    "ko": "저는 이 레스토랑의 디지털 어시스턴트입니다.",
+    "hi": "मैं इस रेस्टोरेंट का डिजिटल सहायक हूँ।",
+    "id": "Saya asisten digital restoran ini.",
+    "ms": "Saya pembantu digital restoran ini.",
+    "fil": "Ako ang digital assistant ng restawran.",
+    "vi": "Tôi là trợ lý kỹ thuật số của nhà hàng.",
+    "ta": "நான் இந்த உணவகத்தின் டிஜிட்டல் உதவியாளர்.",
 }
 RECORDING_NOTICE = {SV: "Samtalet spelas in.", EN: "This call is recorded."}
 DEFAULT_EXTRA = {SV: "Vad kan jag hjälpa dig med?", EN: "How may I help you?"}
@@ -179,37 +188,53 @@ GUARANTEE_CALLBACK = {
     SV: "För den bokningen behövs en kortgaranti, som jag inte kan ta i telefon. Får restaurangen ringa upp dig?",
     EN: "That booking needs a card guarantee, which I cannot take by phone. May the restaurant call you back?",
 }
-# The card guarantee's terms for the party, said once before the read-back (tools: guaranteeTerms.sentence).
-# Built from the location's policy for the party size (shared/guarantee.snapshot): the amounts are totals
-# for the party in words, a fee that is 0 is left out. Other languages translate the English one.
+# The card guarantee's terms for the party, said before the read-back (tools: guaranteeTerms).
+# Owner 2026-11-19: by default only the rule, never an amount: a fee if the booking is cancelled
+# later than the restaurant's own cutoff before the visit, or if the guests do not come (only the
+# fees this restaurant charges), then the question whether the caller wants more information.
+# The amounts (shared/guarantee.snapshot: totals for the party in words, a fee that is 0 is left
+# out) only when the caller asks. Other languages translate the English one.
 GUARANTEE_TERMS = {
     SV: {"intro": "För den bokningen behövs ett kort som garanti, men inget dras nu.",
-         # Commas at the clause ends: Polly pauses there (no "Kommer ni inte?" question).
-         "both": "Om ni inte kommer, tar restaurangen {no_show}. Avbokar ni senare än {hours} före besöket, "
-                 "tar restaurangen {late}.",
-         "no_show": "Om ni inte kommer, tar restaurangen {no_show}.",
-         "late": "Avbokar ni senare än {hours} före besöket, tar restaurangen {late}."},
+         # Commas at the clause ends: Polly pauses there.
+         "both": "Restaurangen tar ut en avgift om bokningen avbokas senare än {hours} före besöket, "
+                 "eller om ni inte kommer.",
+         "no_show": "Restaurangen tar ut en avgift om ni inte kommer.",
+         "late": "Restaurangen tar ut en avgift om bokningen avbokas senare än {hours} före besöket.",
+         "ask": "Vill du ha mer information om det?",
+         "details_both": "Om ni inte kommer, tar restaurangen {no_show}. Avbokar ni senare än {hours} före "
+                         "besöket, tar restaurangen {late}.",
+         "details_no_show": "Om ni inte kommer, tar restaurangen {no_show}.",
+         "details_late": "Avbokar ni senare än {hours} före besöket, tar restaurangen {late}."},
     EN: {"intro": "That booking needs a card as a guarantee, but nothing is charged now.",
-         "both": "If you do not come, the restaurant charges {no_show}, and if you cancel later than {hours} "
-                 "before the visit, it charges {late}.",
-         "no_show": "If you do not come, the restaurant charges {no_show}.",
-         "late": "If you cancel later than {hours} before the visit, the restaurant charges {late}."},
+         "both": "The restaurant charges a fee if the booking is cancelled later than {hours} before the visit, "
+                 "or if you do not come.",
+         "no_show": "The restaurant charges a fee if you do not come.",
+         "late": "The restaurant charges a fee if the booking is cancelled later than {hours} before the visit.",
+         "ask": "Would you like more information about that?",
+         "details_both": "If you do not come, the restaurant charges {no_show}, and if you cancel later than "
+                         "{hours} before the visit, it charges {late}.",
+         "details_no_show": "If you do not come, the restaurant charges {no_show}.",
+         "details_late": "If you cancel later than {hours} before the visit, the restaurant charges {late}."},
 }
 
 
 def guarantee_terms(lang, *, no_show=None, late=None, hours=None):
-    """The one or two short sentences on the card guarantee's terms (`no_show`,
-    `late`, `hours`: the spoken words, None = not charged / not said)."""
+    """The card guarantee's terms in `lang` (Swedish or English) as
+    {"sentence", "question", "details"}: `sentence` is said by default (that a
+    card is needed, nothing is charged now, and when a fee is charged, with
+    no amount), `question` asks whether the caller wants more information,
+    `details` holds the amounts, said only when the caller asks. `no_show`,
+    `late`, `hours`: the spoken words, None = not charged (a late fee needs
+    its cutoff). Without any fee there is no question and no details."""
     words = GUARANTEE_TERMS.get(lang) or GUARANTEE_TERMS[EN]
-    if no_show and late and hours:
-        rest = words["both"].format(no_show=no_show, late=late, hours=hours)
-    elif no_show:
-        rest = words["no_show"].format(no_show=no_show)
-    elif late and hours:
-        rest = words["late"].format(late=late, hours=hours)
-    else:
-        return words["intro"]
-    return f"{words['intro']} {rest}"
+    late = late if late and hours else None
+    kind = "both" if no_show and late else "no_show" if no_show else "late" if late else None
+    if kind is None:
+        return {"sentence": words["intro"], "question": None, "details": None}
+    rule = words[kind].format(hours=hours)
+    details = words["details_" + kind].format(no_show=no_show, late=late, hours=hours)
+    return {"sentence": f"{words['intro']} {rule}", "question": words["ask"], "details": details}
 
 
 # Said by the model, word for word in the caller's language, once create_reservation sent the card
@@ -283,11 +308,39 @@ UNSUPPORTED_CALLBACK = {
     "ar": "سيعاود المطعم الاتصال بكم في أقرب وقت ممكن. شكراً لاتصالكم.",
 }
 
-DEFAULT_AGENT_NAME = "Booqy-assistenten"  # [NEEDS YOUR OK: default name]
+# The assistant's name when it names itself (owner 2026-11-19): Booqy-assistenten. The
+# restaurant's own agentName (admin) is used when it set one; the plain default "Booqy" (the
+# config default) becomes Booqy-assistenten.
+DEFAULT_AGENT_NAME = "Booqy-assistenten"
+# Booqy is pronounced "Bookie" (owner 2026-11-19): Polly reads it through an SSML alias
+# (`<sub>`, supported by the standard and neural engines the call voices use); a provider
+# that takes plain text gets the alias written out (spoken_plain).
+BOOQY = "Booqy"
+BOOQY_SAID = "Bookie"
+
+
+def agent_name(name):
+    """The name the assistant uses for itself: the restaurant's own, else Booqy-assistenten."""
+    name = " ".join(str(name or "").split())
+    return DEFAULT_AGENT_NAME if not name or name.casefold() == BOOQY.casefold() else name
+
+
+_BOOQY_WORD = re.compile(r"\bbooqy(?=s?\b)", re.I)
+
+
+def ssml_names(escaped):
+    """XML-escaped text for Polly with every Booqy read as "Bookie" (an SSML
+    alias; "Booqys" keeps its s)."""
+    return _BOOQY_WORD.sub(lambda m: f'<sub alias="{BOOQY_SAID}">{m.group(0)}</sub>', str(escaped))
+
+
+def spoken_plain(text):
+    """Text for a voice that takes plain text (no SSML): Booqy written as it is said."""
+    return _BOOQY_WORD.sub(BOOQY_SAID, str(text or ""))
 
 
 def _restaurant(name):
-    return " ".join(str(name or "restaurangen").split())
+    return " ".join(str(name or "").split())
 
 
 def pick(sentences, lang):
@@ -302,8 +355,12 @@ def text(sentences, lang):
 
 
 def disclosure(lang, agent_name, restaurant):
-    return text(DISCLOSURE, lang).format(agent=" ".join(str(agent_name or DEFAULT_AGENT_NAME).split()),
-                                         restaurant=_restaurant(restaurant))
+    """The greeting's disclosure with the guest-facing restaurant name (or
+    none); `agent_name` is not said: the owner's greeting names no assistant."""
+    name = _restaurant(restaurant)
+    if not name:
+        return text(DISCLOSURE_NO_NAME, lang)
+    return text(DISCLOSURE, lang).format(restaurant=name)
 
 
 def disclosure_short(lang, restaurant=None):
@@ -378,8 +435,11 @@ def greeting(lang, agent_name, restaurant, extra=None, *, recording=False):
 # book only after a read-back and a clear yes) are stated twice on purpose.
 
 SYSTEM_PROMPT = """# Role
-You are {agent}, the AI phone assistant of the restaurant {restaurant}. You are not a human.
-If anyone asks whether you are a person or a machine, say plainly that you are an AI assistant.
+You are the digital phone assistant of the restaurant {restaurant}. You are not a human.
+When you name yourself, you are {agent}.
+Never call yourself AI, an AI assistant, artificial intelligence, a bot, a robot or a computer, in any language.
+If anyone asks whether you are a person or a machine, say honestly that you are the restaurant's digital \
+assistant, not a person.
 Your words are spoken aloud by a voice on a phone call. Nothing you write is ever shown as text.
 
 # Language
@@ -429,10 +489,12 @@ Never mention the hold: when it succeeds, simply ask for the name.
 4. Ask for the name the booking should be under. If the name is unusual or unclear, ask the caller to spell it.
 5. Read back everything in one sentence: the day, the time, the number of guests and the name, \
 and ask whether it is correct. {phone_known} When hold_table answered a holdId with guaranteeRequired, \
-first explain the terms in guaranteeTerms briefly, in one or two short sentences (its sentence): nothing is \
-charged now, and the fees for the whole party. Explain more (amounts per person, free cancellation before \
-the cutoff through the link in the text message or by calling, the card is handled securely by Stripe, \
-nothing is charged if they come) only if the caller asks. Never say an amount that is not in guaranteeTerms. \
+first, in its own reply before the read-back, say guaranteeTerms.sentence (a card is needed, nothing is \
+charged now, and when the restaurant charges a fee) and end that reply with guaranteeTerms.question, \
+whether the caller wants more information. Never say an amount there. Only if the caller wants more \
+information, say guaranteeTerms.ifAsked.details (the amounts for the whole party) and answer their questions \
+from guaranteeTerms.ifAsked; otherwise go on at once. A yes or no to that question is never a yes to the \
+read-back. Never say an amount, a fee or a cutoff that is not in guaranteeTerms. \
 Then the read-back also says that a text message with a link to add a card as a guarantee will be sent, and \
 that the booking is confirmed once the card is added; in Swedish end it with "Stämmer det?".
 6. Only after a clear yes to that read-back, call create_reservation with the holdId and confirmed set to true.
@@ -478,8 +540,8 @@ REGISTER = {
                  "to address a guest (Swedish, Norwegian, Danish, Finnish, English). In every other language use "
                  "the polite form. Stay courteous and a little warm."),
 }
-DISCLOSE_NOW = ("In this reply only, first say in one short sentence, in {language_name}, that you are the AI "
-                "assistant of the restaurant.\n")
+DISCLOSE_NOW = ("In this reply only, first say in one short sentence, in {language_name}, that you are the "
+                "restaurant's digital assistant (never the words AI, artificial intelligence or bot).\n")
 LOW_ASR = ("Speech recognition is weak in {language_name}: repeat every name, number, day and time you understood "
            "in your next reply, and in the one read-back before booking spell the name letter by letter. "
            "Do not ask a separate yes or no question for the name: the read-back is the only confirmation.\n")

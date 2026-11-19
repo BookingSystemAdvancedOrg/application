@@ -8,6 +8,8 @@ TRIGGER:
         (CONTRACTS.md lists L13/L14 as API Gateway routes; feature-routes.tf sends a feature's
         routes to its API Lambda only, so until that hotspot allows a second integration the
         providers call these paths on this function's URL; reported in STATUS.md.)
+    Direct invoke {"connectGreeting": {"dialedNumber"}} from the same relay (the Connect flow's
+                                                     first prompt): {"ok", "greeting" (SSML)}
     Direct invoke {"lexV2": <Lex V2 code hook event>} from the relay Lambda next to
                                                      the Amazon Connect test line (Frankfurt): one caller
                                                      utterance -> the Lex response with the reply
@@ -170,6 +172,41 @@ def _candidates(tenant_row, config, row, at):
     return found, reason or "entitlement"
 
 
+def _greeting_for(tenant_row, config, candidates, lang="sv"):
+    """(greeting, restaurant): the first sentence of a call that is answered,
+    with the guest-facing name from the restaurant's own data
+    (locations.public_name); on a shared number it asks which location."""
+    recording = bool((config.get("recording") or {}).get("enabled"))
+    if len(candidates) == 1:
+        location, loc = candidates[0]
+        restaurant = locations_mod.public_name(tenant_row, location)
+        extra = loc.get("greetingExtraSv")
+    else:
+        restaurant = locations_mod.public_name(tenant_row)
+        extra = copy.which_location(lang, [locations_mod.label(x) for x, _ in candidates])
+    return copy.greeting(lang, config.get("agentName"), restaurant, extra, recording=recording), restaurant
+
+
+def connect_greeting(params, at=None):
+    """The Connect test line's first prompt (the flow's InvokeLambdaFunction
+    through the relay, before the Lex bot starts): the same greeting the
+    call row will store as the disclosure at the first utterance, as SSML
+    for Polly. {"ok": "false"} (the flow then plays its fixed greeting
+    without a name) when the number is unknown or the call would be
+    refused. A flat string map: what Connect accepts from a Lambda."""
+    at = at or pa.now()
+    row = number_row(str((params or {}).get("dialedNumber") or ""))
+    if not row:
+        return {"ok": "false"}
+    tenant_row = tenant.get_tenant(row["tenantId"], fresh=True) or {}
+    config = pa.get_config(row["tenantId"])
+    candidates, _ = _candidates(tenant_row, config, row, at)
+    if not candidates:
+        return {"ok": "false"}
+    greeting, _ = _greeting_for(tenant_row, config, candidates)
+    return {"ok": "true", "greeting": _ssml(greeting)}
+
+
 def start_call(*, call_ref, caller, to, at):
     """A new call on a Booqy number: the row, then the guards; refused calls
     hear the refusal sentence and end (0 minutes, counted in the list). On a
@@ -197,19 +234,12 @@ def start_call(*, call_ref, caller, to, at):
                 logger.warning(json.dumps({"voice": "refuse_failed", "code": exc.code}))
         return calls.process(calls.end(call, at, "refused"), at=at)
     lang = "sv"
-    recording = bool((config.get("recording") or {}).get("enabled"))
+    greeting, restaurant = _greeting_for(tenant_row, config, candidates, lang)
     if len(candidates) == 1:
-        location, loc = candidates[0]
-        restaurant = location.get("name") or ""
-        greeting = copy.greeting(lang, config.get("agentName"), restaurant, loc.get("greetingExtraSv"),
-                                 recording=recording)
+        location, _ = candidates[0]
         if location["locationId"] != call["locationId"]:
             call = calls.set_status(call, "ringing", ["ringing"], locationId=location["locationId"]) or call
     else:
-        restaurant = tenant_row.get("name") or ""
-        names = [locations_mod.label(x) for x, _ in candidates]
-        greeting = copy.greeting(lang, config.get("agentName"), restaurant, copy.which_location(lang, names),
-                                 recording=recording)
         call = calls.set_status(call, "ringing", ["ringing"], locationPending=True,
                                 candidateLocations=[x["locationId"] for x, _ in candidates]) or call
     call, _ = calls.answer(call, greeting=greeting, lang=lang, at=at, restaurant=restaurant)
@@ -399,7 +429,8 @@ def _sse(text, status=200, tool_calls=()):
             "created": int(time.time()), "model": "booqy-phone-agent"}
     chunks = []
     if text or not tool_calls:
-        chunks.append({**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": text},
+        chunks.append({**base, "choices": [{"index": 0, "delta": {"role": "assistant",
+                                                                   "content": copy.spoken_plain(text)},
                                             "finish_reason": None if tool_calls else "stop"}]})
     for i, use in enumerate(tool_calls):
         chunks.append({**base, "choices": [{"index": 0, "delta": {"tool_calls": [{
@@ -553,8 +584,9 @@ LEX_SPEECH_RATE = "92%"
 
 
 def _ssml(text):
-    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE."""
-    said = escape(str(text), {'"': "&quot;", "'": "&apos;"})
+    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE,
+    Booqy said "Bookie" (copy.ssml_names)."""
+    said = copy.ssml_names(escape(str(text), {'"': "&quot;", "'": "&apos;"}))
     return f'<speak><prosody rate="{LEX_SPEECH_RATE}">{said}</prosody></speak>'
 
 
@@ -694,6 +726,12 @@ ROUTES = {
 
 
 def handler(event, context=None):
+    if isinstance(event, dict) and isinstance(event.get("connectGreeting"), dict):   # the flow's first prompt
+        try:
+            return connect_greeting(event["connectGreeting"])
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(json.dumps({"route": "connect-greeting", "aws": type(exc).__name__}))
+            return {"ok": "false"}
     if isinstance(event, dict) and isinstance(event.get("lexV2"), dict):  # the relay in Connect's region
         try:
             return lex_turn(event["lexV2"])

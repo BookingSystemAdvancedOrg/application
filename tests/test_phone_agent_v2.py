@@ -105,7 +105,7 @@ def test_prompt_is_english_names_the_language_and_lists_every_bookable_day():
     hidden = agent.system_prompt("so", "Sara", "Bistro A", today, "friendly", disclose_now=True, phone_known=False,
                                  unsupported="ti")
     assert "answer only in Somali" in hidden and "Speech recognition is weak in Somali" in hidden
-    assert "first say in one short sentence, in Somali, that you are the AI" in hidden
+    assert "first say in one short sentence, in Somali, that you are the restaurant's digital assistant" in hidden
     assert "number is hidden" in hidden and 'language:ti' in hidden and "Tigrinya" in hidden
     assert "Use du in Swedish" in hidden
 
@@ -434,7 +434,7 @@ def test_a_somali_caller_hears_somali_when_the_voice_speaks_it(live, monkeypatch
         seen.append(system), Turn(text="[so] Haa, immisa qof?"))[1]
     phone = Phone(live)
     reply = phone.say("Waxaan rabaa miis berri fadlan")
-    assert reply == "Waxaan ahay kaaliyaha AI-ga ee makhaayadda. Haa, immisa qof?"
+    assert reply == "Waxaan ahay kaaliyaha dijitaalka ah ee makhaayadda. Haa, immisa qof?"
     assert "answer only in Somali" in seen[0] and "Speech recognition is weak in Somali" in seen[0]
     assert phone.row()["language"] == "so"
 
@@ -456,13 +456,13 @@ def test_somali_on_a_voice_that_cannot_speak_it_gets_the_fixed_sentences_then_a_
 def test_a_language_without_a_fixed_sentence_is_disclosed_by_the_model(live, monkeypatch):
     monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
     seen = []
-    replies = iter([Turn(text="[sw] Habari, mimi ni msaidizi wa AI. Watu wangapi?"), Turn(text="[sw] Sawa.")])
+    replies = iter([Turn(text="[sw] Habari, mimi ni msaidizi wa kidijitali wa mgahawa. Watu wangapi?"), Turn(text="[sw] Sawa.")])
     live.model.converse = lambda system, messages, tools, *, max_tokens: (seen.append(system), next(replies))[1]
     phone = Phone(live)
     phone.say("Habari, nataka kuhifadhi meza kesho jioni tafadhali")
     assert phone.row()["language"] == "sw"
     assert phone.row()["disclosure"]["modelSaid"] == ["sw"] and phone.row()["disclosure"]["languages"] == ["sv", "sw"]
-    assert "that you are the AI" not in seen[0]                   # the hint did not know Swahili: next turn
+    assert "first say in one short sentence" not in seen[0]                   # the hint did not know Swahili: next turn
     phone.say("Watu wanne")
     assert "first say in one short sentence, in Swahili" in seen[1]
 

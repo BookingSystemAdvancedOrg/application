@@ -46,6 +46,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import agent_model, console_invoke, dynamo, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import calls, copy, session
+from shared.features.phone_agent import locations as locations_mod
 from shared.features.phone_agent.tools import lambda_invoker
 
 logger = logging.getLogger()
@@ -235,11 +236,12 @@ def _unshare(tenant_id, location_id, number):
 def voice_config(ctx, config, clean):
     """What the voice provider's agent for the location is made of (ADR-L 3):
     the greeting with the disclosure, the languages, the tone, the length."""
+    restaurant = locations_mod.public_name(ctx.tenant, ctx.location)
     return {"name": f"{_prefix()}phone-agent-{ctx.location_id}",
-            "greetingSv": copy.greeting("sv", config.get("agentName"), ctx.location.get("name"),
-                                        clean.get("greetingExtraSv")),
-            "greetingEn": copy.greeting("en", config.get("agentName"), ctx.location.get("name"),
-                                        clean.get("greetingExtraEn")),
+            "greetingSv": copy.spoken_plain(copy.greeting("sv", config.get("agentName"), restaurant,
+                                                          clean.get("greetingExtraSv"))),
+            "greetingEn": copy.spoken_plain(copy.greeting("en", config.get("agentName"), restaurant,
+                                                          clean.get("greetingExtraEn"))),
             "languages": list(config.get("languages") or pa.LANGUAGES),
             "tone": config.get("tone") or pa.DEFAULT_TONE,
             "transferTo": clean.get("transferTo"),

@@ -91,7 +91,7 @@ def test_switch_closes_without_a_message_and_hands_the_reply_to_the_flow(live):
     assert attrs["next"] == "switch" and attrs["lang"] == "de"
     assert (attrs["connectLanguage"], attrs["voice"], attrs["engine"]) == ("de-DE", "Vicki", "Neural")
     assert attrs["callerNumber"] == CALLER and attrs["dialedNumber"] == NUMBER
-    assert attrs["say"] == ('<speak><prosody rate="92%">Ich bin der KI-Assistent des Restaurants. '
+    assert attrs["say"] == ('<speak><prosody rate="92%">Ich bin der digitale Assistent des Restaurants. '
                             'Gerne. Für wie viele Personen?</prosody></speak>')
     row, turns = turns_of(live, attrs)
     assert row["language"] == "de" and row["languageSwitches"] == 1 and row["status"] == "talking"

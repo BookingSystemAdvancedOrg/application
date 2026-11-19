@@ -37,15 +37,16 @@ TOOLS = [
      "description": "Free start times for a party on one day. `suggest` holds the (at most three) free times "
                     "nearest the wished time: offer those. A full day lists `nextDays` with free times. A result "
                     "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`. "
-                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the terms in "
-                    "`guaranteeTerms` before the read-back).",
+                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the fee rule "
+                    "in `guaranteeTerms` before the read-back, amounts only if the caller asks).",
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
      "description": "Check that a table can be booked at a time; writes nothing. Returns `holdId`, or other times "
                     "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
-                    "`guaranteeRequired` with a holdId: first say the terms in `guaranteeTerms` briefly, then the "
-                    "read-back also says the card link is texted.",
+                    "`guaranteeRequired` with a holdId: first say `guaranteeTerms.sentence` and ask "
+                    "`guaranteeTerms.question` (no amounts unless the caller asks), then the read-back also says "
+                    "the card link is texted.",
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": _DATE, "time": _TIME, "partySize": _PARTY,
          "tableIds": {"type": "array", "items": {"type": "string"},
@@ -119,23 +120,28 @@ SAY = {
                           copy.GUARANTEE_CALLBACK["en"] + "\" Do not read back or book. If yes, call "
                           "request_callback with topic guarantee."),
     # The card is added on a Stripe page the caller gets by text message (create_reservation sends it).
-    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds its real terms for this party. "
-                      "Offer the times as usual. Before the read-back, explain the terms briefly in one or two "
-                      "short sentences: say `guaranteeTerms.sentence` (in the caller's language, the amounts as "
-                      "in its readAs). In Swedish it starts \"För den bokningen behövs ett kort som garanti\". "
-                      "Only if the caller asks for more, explain further: the amounts per person, free "
+    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds this restaurant's real terms for "
+                      "this party. Offer the times as usual. Before the read-back, in a reply of its own, say "
+                      "`guaranteeTerms.sentence` in the caller's language: a card is needed, nothing is charged "
+                      "now, and when a fee is charged (only the fees and the cutoff it names), with no amount. In "
+                      "Swedish it starts \"För den bokningen behövs ett kort som garanti\". End that reply with "
+                      "`guaranteeTerms.question` (whether the caller wants more information). Only if the caller "
+                      "wants more information, say `guaranteeTerms.ifAsked.details` (the amounts as in its readAs) "
+                      "and answer further questions from `guaranteeTerms.ifAsked`: the amounts per person, free "
                       "cancellation until the cutoff through the link in the text message or by calling the "
                       "restaurant, the card is handled securely by Stripe, nothing is charged if they come. "
-                      "Never say an amount or a fee that is not in `guaranteeTerms`. Then the read-back: day, "
-                      "time, number of guests and name, that a text message with a link to add a card as a "
-                      "guarantee will be sent to the number the caller is calling from, and that the booking is "
-                      "confirmed once the card is added; in Swedish end it with \"Stämmer det?\". "
-                      "Never ask for card details."),
+                      "Otherwise never say an amount. Never say an amount, a fee or a cutoff that is not in "
+                      "`guaranteeTerms`. Then the read-back: day, time, number of guests and name, that a text "
+                      "message with a link to add a card as a guarantee will be sent to the number the caller is "
+                      "calling from, and that the booking is confirmed once the card is added; in Swedish end it "
+                      "with \"Stämmer det?\". The answer to the information question is never a yes to the "
+                      "read-back. Never ask for card details."),
     # The same without terms (the location's policy could not be read): no amounts at all.
     "guaranteeLinkNoTerms": ("This party needs a card guarantee. Offer the times as usual. Before the read-back say "
                              "that the booking needs a card as a guarantee and that nothing is charged now (in "
                              "Swedish: \"För den bokningen behövs ett kort som garanti, men inget dras nu.\"); "
-                             "never name an amount. In the read-back also say that a text message with a link to "
+                             "never name an amount, a fee or a cutoff: the restaurant's terms are in the text "
+                             "message. In the read-back also say that a text message with a link to "
                              "add a card as a guarantee will be sent to the number the caller is calling from, and "
                              "that the booking is confirmed once the card is added; in Swedish end it with "
                              "\"Stämmer det?\". Never ask for card details."),
@@ -467,35 +473,45 @@ class Executor:
 
     def _guarantee_terms(self, party):
         """The card guarantee's terms for this party, computed as the booking
-        will snapshot them (shared/guarantee.snapshot): totals and per-person
-        amounts in kronor, the free-cancellation cutoff, nothing charged now,
-        each with its spoken English form (readAs) and the short sentence in
-        the caller's language (Swedish or English; others translate the
-        English one). A fee that is 0 is left out; None without a policy."""
+        will snapshot them (shared/guarantee.snapshot). By default the model
+        says `sentence` (a card is needed, nothing is charged now, and when a
+        fee is charged: only the fees this restaurant charges, its own
+        cutoff, no amount) and asks `question`; `ifAsked` holds the totals
+        and per-person amounts in kronor with their spoken English form
+        (readAs) and `details`, the amounts sentence, said only when the
+        caller wants more information. Sentences in the caller's language
+        (Swedish or English; others translate the English one). A fee that
+        is 0 is left out, a late fee without a cutoff too; None without a
+        policy."""
         if not guarantee.policy_of(self.location):
             return None
         snap = guarantee.snapshot(self.location, party)
         no_show, late = int(snap["noShowFee"]) // 100, int(snap["lateCancelFee"]) // 100
         hours = int(snap["cancelCutoffHours"])
-        terms = {"chargedNow": 0, "currency": "SEK"}
+        late_said = bool(late and hours)     # no cutoff: cancelling is never late, the fee is not said
+        fees = [x for x, on in (("noShow", no_show), ("lateCancel", late_said)) if on]
+        terms = {"chargedNow": 0, "fees": fees}
+        if late_said:
+            terms.update({"cancelCutoffHours": hours, "readAs": {"cancelCutoffHours": hours_words(hours)}})
+        details = {"currency": "SEK"}
         said = {"chargedNow": kronor_words(0)}
         if no_show:
-            terms.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
+            details.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
             said.update({"noShowFee": kronor_words(no_show),
                          "noShowFeePerPerson": kronor_words(snap["noShowFeePerPerson"]) + " per person"})
-        if late and hours:     # no cutoff: cancelling is never late, the fee is not said
-            terms.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"]),
-                          "cancelCutoffHours": hours})
+        if late_said:
+            details.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"])})
             said.update({"lateCancelFee": kronor_words(late),
-                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person",
-                         "cancelCutoffHours": hours_words(hours)})
+                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person"})
         lang = "sv" if self.language == "sv" else "en"
-        late_said = bool(late and hours)
-        terms["sentence"] = copy.guarantee_terms(
+        words = copy.guarantee_terms(
             lang, no_show=kronor_words(no_show, lang) if no_show else None,
             late=kronor_words(late, lang) if late_said else None,
             hours=hours_words(hours, lang) if late_said else None)
-        terms["readAs"] = said
+        terms["sentence"] = words["sentence"]
+        if words["question"]:
+            terms["question"] = words["question"]
+            terms["ifAsked"] = {**details, "details": words["details"], "readAs": said}
         return terms
 
     # -- reads ------------------------------------------------------------------------

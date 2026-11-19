@@ -53,6 +53,15 @@ def calendar(today: date, last: date) -> str:
     return "\n".join(lines)
 
 
+def _self_name(agent_name):
+    """How the model names itself: the restaurant's own agent name, else
+    Booqy-assistenten (translated in other languages)."""
+    name = copy.agent_name(agent_name)
+    if name == copy.DEFAULT_AGENT_NAME:
+        return f"{name} (in other languages: the Booqy assistant, translated)"
+    return name
+
+
 def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, last_day=None, disclose_now=False,
                   phone_known=True, unsupported=None, resume=False) -> str:
     """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT);
@@ -61,7 +70,7 @@ def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, l
     last_day = last_day or today + timedelta(days=21)
     register = copy.REGISTER.get(tone or "formal", copy.REGISTER["formal"]).format(language_name=name)
     return copy.SYSTEM_PROMPT.format(
-        agent=" ".join(str(agent_name or copy.DEFAULT_AGENT_NAME).split()),
+        agent=_self_name(agent_name),
         restaurant=" ".join(str(restaurant or "restaurangen").split()),
         language_name=name, register=register,
         disclose_now=copy.DISCLOSE_NOW.format(language_name=name) if disclose_now else "",
@@ -142,7 +151,7 @@ _LATE = {"ok": False, "code": "timeout", "say": "This did not finish in time. Ru
 
 
 _KEEP_KEYS = ("ok", "code", "holdId", "reservationId", "date", "weekday", "time", "partySize", "reservations",
-              "guaranteeRequired", "pending")
+              "guaranteeRequired", "guaranteeTerms", "pending")   # the terms: amounts are said only when asked
 SHORT_RESULT = 400       # bytes: an older tool result above this is shortened
 
 
@@ -199,7 +208,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     checking") is left out when a later round answers: the caller hears the
     whole reply only once the turn ends, so it would only repeat. The
     goodbye written with end_call is kept; `keep_preamble` keeps it all
-    (the model was asked to say the AI sentence itself in this reply)."""
+    (the model was asked to say the disclosure sentence itself in this reply)."""
     started = time.monotonic()
     deadline = started + budget_s
     compact(messages)

@@ -125,7 +125,7 @@ def test_simulate_is_a_dry_run_and_idempotent(env):
     env.availability.set("2026-11-03", ["19:00"])
     body = {"sessionId": "sess-0001", "text": "Hej, jag vill boka ett bord för fyra imorgon klockan 19"}
     status, out = call(env, "POST", L + "/simulate", body=body)
-    assert status == 200 and out["disclosure"] is True and "AI-assistent" in out["reply"]
+    assert status == 200 and out["disclosure"] is True and "digitala assistent" in out["reply"]
     assert out["toolCalls"] == [{"name": "hold_table", "ok": True}]
     assert call(env, "POST", L + "/simulate", body=body)[1] == out                      # same session + text
     call(env, "POST", L + "/simulate", body={"sessionId": "sess-0001", "text": "Ja"})
@@ -153,7 +153,7 @@ def test_calls_list_detail_and_staff_view(env):
     staff = call(env, "GET", L + "/calls", as_=STAFF_A)[1]["calls"][0]
     assert "from" not in staff
     status, detail = call(env, "GET", L + "/calls/{callId}", callId=call_id)
-    assert status == 200 and detail["turns"][0]["role"] == "agent" and "AI-assistent" in detail["turns"][0]["text"]
+    assert status == 200 and detail["turns"][0]["role"] == "agent" and "digitala assistent" in detail["turns"][0]["text"]
     assert "from" not in call(env, "GET", L + "/calls/{callId}", as_=STAFF_A, callId=call_id)[1]
     assert call(env, "GET", L + "/calls", query={"from": "2026-11-05", "to": "2026-11-01"})[1]["code"] == \
         "invalid_range"

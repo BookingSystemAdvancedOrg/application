@@ -71,6 +71,9 @@ tags:
   - name: Catering
     description: Catering (plan feature "catering") - settings, tiers, menu, the public quote and request, the owner's offers and signing, the guest's magic-link routes and the signing webhook (infrastructure docs/CATERING-FLOW.md).
 
+  - name: Bordsbeställningar
+    description: Staff table orders (docs/TABLE_ORDERS.md) - the table's tab, courses sent to the kitchen and bar as tickets, closed when the guest paid in the restaurant's own till. No payment in Booqy.
+
 paths:
   /auth/login:
     post:
@@ -4818,6 +4821,1050 @@ paths:
         '404':
           $ref: '#/components/responses/OrderNotFound'
 
+  /locations/{locationId}/table-orders:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+      - Bordsbeställningar
+      summary: Open tabs, tables and today's closed tabs
+      operationId: listTableOrders
+      description: 'Open tabs (oldest first) with ticket states, tabs closed in the last 12 hours (newest first, at
+        most 30) and every table of the active published layout with its open tab and today''s guest. With `version`
+        equal to the location''s current version the answer is `{unchanged: true, version}` (one read): screens poll
+        this every 5 s.'
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: Tabs and tables, or unchanged.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/TableOrderList'
+                - type: object
+                  additionalProperties: false
+                  properties:
+                    unchanged:
+                      type: boolean
+                      enum:
+                      - true
+                    version:
+                      type: integer
+                  required:
+                  - unchanged
+                  - version
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Open a tab for a table (and send its first round)
+      operationId: openTableOrder
+      description: 'One open tab per table: a second open on the same table answers 409 `table_has_open_order` with
+        that tab, so the client adds to it instead. The guest of the table''s booking now (or `reservationId`) is
+        snapshotted. Items with `hold` true wait for their course; without `hold` mains wait while starters are sent
+        and desserts while starters or mains are on the tab. Prices come from the menu. No payment: the guest pays
+        in the restaurant''s own till.'
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                tableId:
+                  type: string
+                  maxLength: 128
+                covers:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                guestName:
+                  type: string
+                  maxLength: 60
+                reservationId:
+                  type: string
+                  pattern: ^[0-9a-f]{32}$
+                note:
+                  type: string
+                  maxLength: 200
+                items:
+                  type: array
+                  maxItems: 30
+                  items:
+                    $ref: '#/components/schemas/NewTableOrderItem'
+              required:
+              - requestId
+              - tableId
+      responses:
+        '201':
+          description: Opened (200 when the requestId was replayed).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '413':
+          description: 'tab_full: 150 items or 60 rounds.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/menu:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+      - Bordsbeställningar
+      summary: The menu staff order from
+      operationId: getTableOrderMenu
+      description: Available dishes now (active and in schedule) with course, station and option prices in öre, the
+        categories with their course and the stations.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: The menu.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderMenu'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/closed:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    get:
+      tags:
+      - Bordsbeställningar
+      summary: Tabs closed on a day
+      operationId: listClosedTableOrders
+      description: Newest first. `date` is the location's local day (default today).
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: Closed tabs.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  tabs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableOrder'
+                required:
+                - tabs
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+  /locations/{locationId}/table-orders/{tabId}:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    get:
+      tags:
+      - Bordsbeställningar
+      summary: One tab
+      operationId: getTableOrder
+      description: With ticket states per round.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: The tab.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  tab:
+                    $ref: '#/components/schemas/TableOrder'
+                required:
+                - tab
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+    patch:
+      tags:
+      - Bordsbeställningar
+      summary: Change held items, covers, guest name or note
+      operationId: editTableOrder
+      description: 'Only held items change; `remove` voids a held item without a ticket and `hold: false` sends it
+        now (a fire round). 409 `changed_retry` when `expectedVersion` is not the tab''s version.'
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                  description: The tab version the screen showed.
+                covers:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  nullable: true
+                guestName:
+                  type: string
+                  maxLength: 60
+                  nullable: true
+                note:
+                  type: string
+                  maxLength: 200
+                  nullable: true
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TableOrderHeldEdit'
+              required:
+              - requestId
+              - expectedVersion
+      responses:
+        '200':
+          description: The tab.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  tab:
+                    $ref: '#/components/schemas/TableOrder'
+                  round:
+                    allOf:
+                    - $ref: '#/components/schemas/TableOrderRound'
+                    nullable: true
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableOrderWarning'
+                  replayed:
+                    type: boolean
+                required:
+                - tab
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/items:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Add items to an open tab
+      operationId: addTableOrderItems
+      description: Items that go now are one round (kind order); held ones wait. Retried on a concurrent change (no
+        expectedVersion).
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 30
+                  items:
+                    $ref: '#/components/schemas/NewTableOrderItem'
+              required:
+              - requestId
+              - items
+      responses:
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '413':
+          description: 'tab_full: 150 items or 60 rounds.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/send:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Send held courses (Skicka varmrätt)
+      operationId: sendHeldTableOrderItems
+      description: Held items of `courses` (or `itemIds`; every held item when both are left out) become one round
+        kind fire. `round` is null when nothing was held.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                courses:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/TableOrderCourse'
+                itemIds:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+              required:
+              - requestId
+      responses:
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '413':
+          description: 'tab_full: 150 items or 60 rounds.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/void:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Void sent items (Makulera)
+      operationId: voidTableOrderItems
+      description: Whole or part of sent items; a part splits the item. The stations get a void ticket.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                  description: The tab version the screen showed.
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      itemId:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1
+                        maximum: 20
+                    required:
+                    - itemId
+                    - quantity
+                reason:
+                  type: string
+                  enum:
+                  - wrong
+                  - guest_changed
+                  - other
+                note:
+                  type: string
+                  maxLength: 140
+              required:
+              - requestId
+              - expectedVersion
+              - items
+              - reason
+      responses:
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '413':
+          description: 'tab_full: 150 items or 60 rounds.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/move:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Move the tab to another table (Flytta)
+      operationId: moveTableOrder
+      description: The target must be free (409 `table_has_open_order`). Open tickets are relabelled and the stations
+        get a moved slip.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                  description: The tab version the screen showed.
+                tableId:
+                  type: string
+                  maxLength: 128
+              required:
+              - requestId
+              - expectedVersion
+              - tableId
+      responses:
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '413':
+          description: 'tab_full: 150 items or 60 rounds.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/close:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: 'Close: paid in the restaurant''s own till'
+      operationId: closeTableOrder
+      description: 'Records that the guest paid in the restaurant''s own system (`closeReason: paid_elsewhere`); Booqy
+        takes no payment. Held items: 409 `held_items` unless `dropHeld`, which voids them. Frees the table.'
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                  description: The tab version the screen showed.
+                dropHeld:
+                  type: boolean
+              required:
+              - requestId
+              - expectedVersion
+      responses:
+        '200':
+          description: The tab.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  tab:
+                    $ref: '#/components/schemas/TableOrder'
+                  round:
+                    allOf:
+                    - $ref: '#/components/schemas/TableOrderRound'
+                    nullable: true
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableOrderWarning'
+                  replayed:
+                    type: boolean
+                required:
+                - tab
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/reopen:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Undo a close (Ångra)
+      operationId: reopenTableOrder
+      description: Within 15 minutes of the close (409 `reopen_expired`) and only while the table is free.
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requestId:
+                  type: string
+                  description: Client generated, 32 hex (or a UUID). The same id again replays the first answer and
+                    never makes a second round or ticket.
+                  pattern: ^[0-9a-fA-F-]{32,36}$
+              required:
+              - requestId
+      responses:
+        '200':
+          description: The tab.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  tab:
+                    $ref: '#/components/schemas/TableOrder'
+                  round:
+                    allOf:
+                    - $ref: '#/components/schemas/TableOrderRound'
+                    nullable: true
+                  warnings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TableOrderWarning'
+                  replayed:
+                    type: boolean
+                required:
+                - tab
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '409':
+          description: table_has_open_order, table_not_found, no_tables, menu_item_unavailable, changed_retry, held_items,
+            tab_closed, reopen_expired or booking_not_found (with `tab` where it helps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+  /locations/{locationId}/table-orders/{tabId}/rounds/{round}/dispatch:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    - name: tabId
+      in: path
+      required: true
+      description: Tab id (32 lowercase hex).
+      schema:
+        type: string
+        pattern: ^[0-9a-f]{32}$
+    - name: round
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    post:
+      tags:
+      - Bordsbeställningar
+      summary: Send a round's tickets again (Skicka igen)
+      operationId: dispatchTableOrderRound
+      description: For a round that was saved but not dispatched (tickets are put once).
+      security:
+      - bearerAuth: []
+      x-required-groups:
+      - staff_user
+      - owner_user
+      responses:
+        '200':
+          description: The tab, the round this request made (null when nothing was sent) and print warnings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderSendResult'
+        '400':
+          description: invalid_request, option_required or option_invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '403':
+          description: No access to Beställningar, or the plan has no ordering.
+        '404':
+          description: 'not_found: unknown location or tab (another tenant''s looks the same).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+        '500':
+          description: 'internal: Booqys fel.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableOrderError'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+
   /t:
     post:
       tags:
@@ -7214,6 +8261,526 @@ components:
           - no-store
 
   schemas:
+    TableOrderCourse:
+      type: string
+      enum:
+      - drinks
+      - starters
+      - mains
+      - desserts
+      - other
+      description: Dryck, Förrätt, Varmrätt, Efterrätt, Övrigt.
+    TableOrderError:
+      type: object
+      required:
+      - error
+      - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+          description: Swedish, for staff.
+        tab:
+          $ref: '#/components/schemas/TableOrder'
+        menuItemId:
+          type: string
+        detail:
+          type: string
+    TableOrderOption:
+      type: object
+      additionalProperties: false
+      properties:
+        group:
+          type: string
+        choice:
+          type: string
+      required:
+      - group
+      - choice
+    NewTableOrderItem:
+      type: object
+      additionalProperties: false
+      properties:
+        menuItemId:
+          type: string
+          maxLength: 128
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderOption'
+        note:
+          type: string
+          maxLength: 140
+        allergy:
+          type: boolean
+        course:
+          $ref: '#/components/schemas/TableOrderCourse'
+        hold:
+          type: boolean
+          description: true = Vänta (no ticket until the course is sent).
+      required:
+      - menuItemId
+      - quantity
+    TableOrderHeldEdit:
+      type: object
+      additionalProperties: false
+      properties:
+        itemId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+        note:
+          type: string
+          maxLength: 140
+          nullable: true
+        allergy:
+          type: boolean
+        course:
+          $ref: '#/components/schemas/TableOrderCourse'
+        hold:
+          type: boolean
+        remove:
+          type: boolean
+      required:
+      - itemId
+    TableOrderItem:
+      type: object
+      required:
+      - itemId
+      - menuItemId
+      - name
+      - unitPrice
+      - quantity
+      - options
+      - course
+      - stationId
+      - stationName
+      - state
+      - addedAt
+      - addedByName
+      properties:
+        itemId:
+          type: string
+        menuItemId:
+          type: string
+        name:
+          type: string
+        unitPrice:
+          type: integer
+          description: öre, options included
+        quantity:
+          type: integer
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderOption'
+        note:
+          type: string
+        allergy:
+          type: boolean
+        alcohol:
+          type: boolean
+        course:
+          $ref: '#/components/schemas/TableOrderCourse'
+        stationId:
+          type: string
+          nullable: true
+        stationName:
+          type: string
+          nullable: true
+        state:
+          type: string
+          enum:
+          - held
+          - sent
+          - void
+        round:
+          type: integer
+        addedAt:
+          type: string
+          format: date-time
+        addedByName:
+          type: string
+        voidedAt:
+          type: string
+          format: date-time
+        voidedByName:
+          type: string
+        voidReason:
+          type: string
+          enum:
+          - wrong
+          - guest_changed
+          - other
+          - before_send
+          - closed
+        voidRound:
+          type: integer
+        splitFrom:
+          type: string
+    TableOrderRound:
+      type: object
+      required:
+      - round
+      - kind
+      - at
+      - byName
+      - courses
+      - itemIds
+      - dispatched
+      - stations
+      properties:
+        round:
+          type: integer
+        kind:
+          type: string
+          enum:
+          - order
+          - fire
+          - void
+          - move
+        at:
+          type: string
+          format: date-time
+        byName:
+          type: string
+        sourceId:
+          type: string
+          description: '<tabId>r<round>: the tickets'' source id'
+        courses:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderCourse'
+        itemIds:
+          type: array
+          items:
+            type: string
+        dispatched:
+          type: boolean
+        stations:
+          type: array
+          items:
+            type: object
+            properties:
+              stationId:
+                type: string
+              stationName:
+                type: string
+              printers:
+                type: integer
+              fallback:
+                type: boolean
+                description: printed on the Kök printers (station has none)
+        tickets:
+          type: array
+          items:
+            type: object
+            properties:
+              stationId:
+                type: string
+              stationName:
+                type: string
+              status:
+                type: string
+                enum:
+                - sent
+                - preparing
+                - ready
+                - cancelled
+        reason:
+          type: string
+        note:
+          type: string
+        fromTable:
+          type: string
+        toTable:
+          type: string
+        fromLabel:
+          type: string
+        toLabel:
+          type: string
+    TableOrder:
+      type: object
+      required:
+      - tabId
+      - status
+      - tableId
+      - tableLabel
+      - covers
+      - guestName
+      - reservationId
+      - items
+      - rounds
+      - referenceTotal
+      - openedAt
+      - openedByName
+      - version
+      - updatedAt
+      properties:
+        tabId:
+          type: string
+        locationId:
+          type: string
+        status:
+          type: string
+          enum:
+          - open
+          - closed
+        tableId:
+          type: string
+        tableLabel:
+          type: string
+        floorName:
+          type: string
+        openedDate:
+          type: string
+          format: date
+        covers:
+          type: integer
+          nullable: true
+        guestName:
+          type: string
+          nullable: true
+        reservationId:
+          type: string
+          nullable: true
+        note:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderItem'
+        rounds:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderRound'
+        nextRound:
+          type: integer
+        referenceTotal:
+          type: integer
+          description: 'öre: what staff key into the restaurant''s own till (Att slå in). Never printed, not a bill.'
+        openedAt:
+          type: string
+          format: date-time
+        openedByName:
+          type: string
+        closedAt:
+          type: string
+          format: date-time
+        closedByName:
+          type: string
+        closeReason:
+          type: string
+          enum:
+          - paid_elsewhere
+        version:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              action:
+                type: string
+              at:
+                type: string
+                format: date-time
+              byName:
+                type: string
+    TableOrderTable:
+      type: object
+      required:
+      - tableId
+      - label
+      - seats
+      - floorId
+      - floorName
+      - tabId
+      - guest
+      properties:
+        tableId:
+          type: string
+        label:
+          type: string
+        seats:
+          type: integer
+        floorId:
+          type: string
+          nullable: true
+        floorName:
+          type: string
+          nullable: true
+        tabId:
+          type: string
+          nullable: true
+        guest:
+          type: object
+          nullable: true
+          properties:
+            reservationId:
+              type: string
+            name:
+              type: string
+            partySize:
+              type: integer
+            startTime:
+              type: string
+            endTime:
+              type: string
+            status:
+              type: string
+              enum:
+              - arrived
+              - reserved
+              - pending
+            upcoming:
+              type: boolean
+    TableOrderList:
+      type: object
+      required:
+      - version
+      - serverTime
+      - tabs
+      - closedToday
+      - tables
+      properties:
+        version:
+          type: integer
+        serverTime:
+          type: string
+          format: date-time
+        tabs:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrder'
+        closedToday:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrder'
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderTable'
+    TableOrderMenu:
+      type: object
+      required:
+      - categories
+      - items
+      - stations
+      properties:
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              categoryId:
+                type: string
+              name:
+                type: string
+              course:
+                $ref: '#/components/schemas/TableOrderCourse'
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              menuItemId:
+                type: string
+              name:
+                type: string
+              description:
+                type: string
+              price:
+                type: integer
+                description: öre
+              categoryId:
+                type: string
+              alcohol:
+                type: boolean
+              allergens:
+                type: array
+                items:
+                  type: string
+              options:
+                type: array
+                items:
+                  type: object
+              imageKey:
+                type: string
+                nullable: true
+              imageFocus:
+                type: object
+                nullable: true
+              course:
+                $ref: '#/components/schemas/TableOrderCourse'
+              stationId:
+                type: string
+                nullable: true
+              stationName:
+                type: string
+                nullable: true
+        stations:
+          type: array
+          items:
+            type: object
+            properties:
+              stationId:
+                type: string
+              name:
+                type: string
+              kind:
+                type: string
+                enum:
+                - kok
+                - dryck
+                - annat
+              printers:
+                type: integer
+    TableOrderWarning:
+      type: object
+      required:
+      - code
+      - text
+      properties:
+        code:
+          type: string
+          enum:
+          - station_no_printer
+          - dispatch_failed
+        stationId:
+          type: string
+        text:
+          type: string
+          description: Swedish, says who acts.
+    TableOrderSendResult:
+      type: object
+      required:
+      - tab
+      - round
+      - warnings
+      properties:
+        tab:
+          $ref: '#/components/schemas/TableOrder'
+        round:
+          allOf:
+          - $ref: '#/components/schemas/TableOrderRound'
+          nullable: true
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableOrderWarning'
+        replayed:
+          type: boolean
     PrintSettings:
       type: object
       additionalProperties: false

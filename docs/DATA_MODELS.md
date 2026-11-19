@@ -496,3 +496,53 @@ One record per failed charge, keyed by phone number so you can look up "does thi
 **Phone number normalization matters here** - `PK` is keyed on a *normalized* phone number, so `create-pending-reservation`'s delinquency check and whatever writes this table on charge failure (`no-show-check` / `stripe-webhook`) both need to normalize the same way (e.g. E.164) before building the key, or lookups will silently miss real matches.
 
 `reason` values (`no_show`\|`late_cancellation`) map onto the Reservation `status` values that create a delinquency record: `no_show_charge_failed` → `reason="no_show"`; `cancelled_charge_failed` → `reason="late_cancellation"`.
+
+---
+
+## Table Orders
+
+Staff table orders ("Bordsbeställning", docs/TABLE_ORDERS.md): one open tab per table, items by course, rounds of kitchen and bar tickets. Its own table (`TABLE_ORDER_TABLE_NAME`) with no stream and no index, so accounting, Statistik, finance-rollup, guest CRM, marketing, notification and data-retention never see it. Read and written only by `table-order` (`shared/table_orders.py`). Amounts are öre and only a reference for the restaurant's own till: no payment is taken or recorded.
+
+All rows of a location share `PK` = `LOCATION#<locationId>`.
+
+| `SK` | Row |
+|---|---|
+| `TAB#<openedDate>#<tabId>` | The tab (`openedDate` = location-local YYYY-MM-DD at open) |
+| `TID#<tabId>` | Pointer `{date, ttl}`, so a tab loads by id |
+| `OPEN#<tableId>` | Lock `{tabId, date, ttl}` while the table has an open tab |
+| `REQ#<requestId>` | Idempotency `{tabId, round?, action, at, ttl}` |
+| `STATE` | `{version}`, ADD 1 on every write (cheap poll) |
+
+Tab row:
+
+| Attribute | Type |
+|---|---|
+| `tabId`, `tenantId`, `locationId` | String (`tabId` 32 lowercase hex) |
+| `status` | String (`open`\|`closed`) |
+| `tableId`, `tableLabel`, `floorName` | String (layout element id; label and floor snapshotted at open and move) |
+| `openedDate` | String (YYYY-MM-DD) |
+| `covers` | Number (1-50, optional) |
+| `reservationId`, `guestName` | String (optional; the booking's guest snapshotted at open, or typed for walk-ins) |
+| `note` | String (optional, max 200) |
+| `items` | List of Map: `itemId` (12 hex), `menuItemId`, `name`, `unitPrice` (öre, options included), `quantity`, `options` [{group, choice}], `note?`, `allergy`, `alcohol`, `course` (`drinks`\|`starters`\|`mains`\|`desserts`\|`other`), `category?`, `categoryName?`, `station?`, `components?`, `stationId`, `stationName`, `state` (`held`\|`sent`\|`void`), `round?`, `addedAt`, `addedBy`, `addedByName`, `voidedAt?`, `voidedBy?`, `voidedByName?`, `voidReason?` (`wrong`\|`guest_changed`\|`other`\|`before_send`\|`closed`), `voidRound?`, `splitFrom?`; max 150 |
+| `rounds` | List of Map: `round`, `kind` (`order`\|`fire`\|`void`\|`move`), `at`, `by`, `byName`, `sourceId` (`<tabId>r<round>`), `courses`, `itemIds`, `dispatched`, `stations` [{stationId, stationName, printers, fallback}], `reason?`, `note?`, `fromTable?`, `toTable?`, `fromLabel?`, `toLabel?`; max 60 |
+| `nextRound` | Number |
+| `referenceTotal` | Number (öre, non-void items) |
+| `openedAt`, `openedBy`, `openedByName` | String |
+| `closedAt`, `closedBy`, `closedByName`, `closeReason` | String (`closeReason` = `paid_elsewhere`) |
+| `version` | Number (optimistic lock, +1 per write) |
+| `updatedAt` | String (ISO8601) |
+| `history` | List of Map `{action, at, by, byName, ...}`, last 100 |
+| `ttl` | Number (Unix epoch) |
+
+### Retention
+
+| Row | Kept |
+|---|---|
+| Closed tab (guest name) | 14 days after close (`ttl`) |
+| Open tab, `OPEN#` lock | 48 hours after its last write |
+| `REQ#` | 24 hours |
+| `TID#` | A day longer than its tab |
+| `STATE` | Stays (a counter, no personal data) |
+
+tenant-purge does not delete these rows: TTL clears a closed restaurant's tabs within 14 days (accepted trade-off). data-retention does not read this table.

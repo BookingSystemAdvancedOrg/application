@@ -1,0 +1,3 @@
+# boto3 is already present in the public.ecr.aws/lambda/python base image.
+# Location time zones (shared/orders.py local_now) need the zone database.
+tzdata

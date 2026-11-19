@@ -22,7 +22,8 @@ location and forwards the restaurant's number.
 ## Rules that matter
 
 - **Disclosure by construction.** The greeting is `[Samtalet spelas in.] + "Hej och välkommen till
-  <restaurang>. Du talar med <namn>, restaurangens AI-assistent." + the owner's text`; it is the first agent
+  <restaurang>. Du pratar med vår digitala assistent." + the owner's text` (the guest-facing name, company
+  forms never; the assistant calls itself Booqy-assistenten, said "Bookie", and never AI); it is the first agent
   turn, said with `say()` before the model gets a turn. `disclosure.playedAt` is set when the provider's
   agent transcript of it arrives; an interruption before then says the short form again (`repeats`), a new
   language says it once in that language (`languages`): Booqy's fixed sentence (`copy.DISCLOSURE_SHORT`,
@@ -36,14 +37,42 @@ location and forwards the restaurant's number.
   caller utterance: the caller cannot have said yes to a read-back of it; review
   2026-11-17). A second booking on the same day in one call is refused (`alreadyBooked`: a correction is
   a move of the first, which the call may change also with a hidden number). Above the online maximum
-  the staff view never offers a time that already started today. The call starts in Swedish; `language.hint()` sets the prompt's language before the
-  model runs, the model's `[xx]` tag decides after it (`language.decide()`: one word, a name or a street
-  never switches; a caller asking for a language does). The call may switch to every language the voice
-  model speaks (`language.voice_languages(PHONE_AGENT_TTS_MODEL)`: 32 with flash v2.5, Somali, Persian,
-  Amharic, Sorani and more with `eleven_v4_turbo`). A language the voice cannot speak hears
-  `copy.UNSUPPORTED_LANGUAGE` in Swedish, English and Arabic; the second time Booqy asks the restaurant to
-  call back (`topic language:<code>`) and ends the call. The Connect test line stays Swedish (Lex and Polly
-  cannot switch).
+  the staff view never offers a time that already started today.
+- **Language switching (owner 2026-11-20, `language.decision`).** The call starts in Swedish. A switch
+  needs an explicit request the reply follows ("can we speak English", "auf Deutsch", "بالعربي"), the
+  caller's yes to Booqy's own "shall we continue in ...?", strong evidence (3 content words or more, the
+  word hint and the model's `[xx]` tag agree) or the same tag twice. Never on fewer than 3 content words
+  (restaurant, location and company names do not count, `session.proper_names`), never within 2 caller
+  turns after a switch, at most 3 switches per call (every line, `language.MAX_SWITCHES`). The hint sets
+  the prompt's language before the model runs only when it already is strong evidence
+  (`language.pre_switch`). Arabic, Persian, Urdu and Sorani are told apart by letters and common words.
+  A reply in a language the call did not switch to is replaced by `copy.ask_switch` ("Shall we continue
+  in English? Ska vi fortsätta på svenska?"; `askedSwitch` in the tool state); a caller's yes then
+  switches. On a switch whatever was read back before counts as unheard (`session._read_back_again`):
+  create, move or cancel answers `readBackFirst` until the read-back is said in the new language and the
+  caller says a clear yes in a later utterance; date, time, party and holds are kept. A language the line
+  cannot speak (Persian, Bosnian, Indonesian on the Connect line) hears `copy.UNSUPPORTED_LANGUAGE` in that
+  language when the call's voice can read its script, then in English, offering English, Swedish or a
+  callback; the second time Booqy asks the restaurant to call back (`topic language:<code>`) and ends the
+  call. Never a silent Swedish answer. Restaurant facts are stored in Swedish (`sourceLanguage: sv` on
+  `get_restaurant_info` and `get_menu`): the prompt's grounding rule says names as stored, descriptions
+  translated, every time, day, price and party from a tool result or the caller. `get_menu` asks for
+  Swedish search words and also maps common food words in the line's languages to the Swedish stem
+  (`tools.MENU_WORDS`). Fixed sentences exist for every language in `copy.LINE_LANGUAGES` (the 12 target
+  languages plus every Connect language) [NEEDS YOUR OK: native review of the lines added 2026-11-20].
+- **Hesitation guard (no model call, `hesitation.py`).** An utterance that ends in a pause filler
+  ("ehm", "öh", "um"), an open comma or a word that cannot end a sentence in the call's or the hinted
+  language ("för", "och", "till", "klockan", "for", "and", "für") gets only a short backchannel ("Mm?",
+  "Ja?", per language, varied) and is kept on the call row (`heldFragment`); the next utterance is joined
+  to it before the agent runs. At most 2 in a row, a fragment older than 30 s is dropped, verb particles
+  ("lägga till", "boka om") and questions ("who am I speaking with") are finished. A held turn writes
+  nothing else (the read-back guard counts agent turns). Metric `HesitationHold`.
+- **Natural phrasing.** The prompt offers short acknowledgements per language (`copy.OPENERS`, "Okej",
+  "Precis", "Sure"), at most every second reply and never the same twice in a row, and host-like
+  questions ("Sure, how many people will be joining you?"). The model never announces a lookup itself
+  (the reply is spoken only when the turn ends; the line's own wait lines cover the lookup). The
+  still-checking sentence of a cut turn varies per turn (`copy.STILL_CHECKING_MORE`) and is only said
+  while a lookup or the model is still working.
 - **Guards at call start**, in order: entitlement and location enabled (`entitlement`), tenant pause
   (`paused`), location or platform kill switch (`kill_switch`), agent hours unless mode `always`
   (`hours`), the period's minutes against the cap (`cap`). A refused call hears the refusal sentence,
@@ -65,7 +94,7 @@ location and forwards the restaurant's number.
   hidden); 409 re-offers from fresh availability, a 400 is never called a taken time.
   `find_reservations` reads the whole horizon (parallel) and only the caller's number; move (checked
   against availability first) and cancel act only on a booking found that way.
-- **Turn engine**: at most 4 model rounds and a 9 s budget per caller utterance (a booking that succeeded
+- **Turn engine**: at most 4 model rounds and an 8 s budget per caller utterance (`agent.TURN_BUDGET_S`) (a booking that succeeded
   always gets its spoken answer), the goodbye beside end_call is spoken but an announcement before a
   lookup ("one moment") is dropped when the answer follows, inner language tags, English self-corrections,
   dashes and exclamation marks never reach the voice (`agent.spoken_text`), every tool result carries
@@ -80,6 +109,18 @@ location and forwards the restaurant's number.
   offer, else the furthest step reached.
 - **No phone numbers, names or transcript text in events or logs.** Callers are found for privacy hooks by
   `fromHash = sha256(tenant|phone)`.
+
+- **Prompt caching (Bedrock, `agent_model_real`).** Three `cachePoint`s: after the tool specs, after the
+  static system prompt (the per-turn notes follow `copy.TURN_SECTION`) and after the last message.
+  Checked 2026-11-20 in the Bedrock user guide: Claude Haiku 5.5 supports explicit caching in tools,
+  system and messages, minimum 512 tokens, up to 4 checkpoints, 5 minute TTL; a checkpoint under the
+  minimum is accepted and not cached. `PHONE_AGENT_PROMPT_CACHE=off` sends none; a ValidationException on
+  a request with checkpoints is retried at once without them and caching stays off in that container.
+- **Per-turn log line** (`session.turn_log`, EMF, no transcript text): metrics `TurnLatencyMs` and
+  `TurnRounds` as before; as plain fields (no new metric) `modelMs`, `toolMs`, `agentMs`, `totalMs`,
+  `rounds`, `cacheReadTokens`, `cacheWriteTokens`, `cut`, `error`, `tools`, `held`, `lang`, `from`,
+  `switched`, `reason` (same, explicit, asked, strong, repeated, hint, short, dwell, uncertain,
+  unsupported, capped, error), `ask`, `unsupported`. Logs Insights: `filter event = "phoneTurn"`.
 
 ## Deviations and open findings
 

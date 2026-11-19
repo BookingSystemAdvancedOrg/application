@@ -81,8 +81,11 @@ TOOLS = [
      "input_schema": {"type": "object", "required": ["reservationId", "confirmed"], "properties": {
          "reservationId": {"type": "string"}, "reason": {"type": "string"}, "confirmed": _CONFIRMED}}},
     {"name": "get_menu", "description": "Dishes on today's menu matching a question, with prices. A dish that is "
-                                        "not listed is not available today.",
-     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                                        "not listed is not available today. The menu is stored in Swedish: say "
+                                        "dish names exactly as returned.",
+     "input_schema": {"type": "object", "properties": {"query": {
+         "type": "string", "description": "search words in Swedish (translate the caller's words, for example "
+                                          "chicken: kyckling, fish: fisk)"}}}},
     {"name": "transfer_to_staff", "description": "Transfer the caller to a person at the restaurant.",
      "input_schema": {"type": "object", "required": ["reason"], "properties": {"reason": {"type": "string"}}}},
     {"name": "request_callback",
@@ -611,6 +614,7 @@ class Executor:
         if loc.get("bookingDurationHours") is not None:
             out["bookingLengthMinutes"] = int(float(loc["bookingDurationHours"]) * 60)
         out["lastBookableDate"] = self.last_day.isoformat()
+        out["sourceLanguage"] = "sv"      # names as stored; descriptions translated by the model
         return out
 
     def _next_days(self, day, party, time):
@@ -1026,12 +1030,12 @@ class Executor:
             return {"ok": False, "code": "menu_unavailable"}
         query = str(args.get("query") or "").lower()
         items = body.get("items") or body.get("menu") or []
-        words = [w for w in query.split() if len(w) > 3]
+        words = menu_words(query)
         hits = [i for i in items if any(w[:5] in json.dumps(i, ensure_ascii=False).lower() for w in words)] or items
         dishes = [{"name": i.get("name"), "price": i.get("price"), "currency": "SEK"}
                   for i in hits[:5] if i.get("name")]
         self.state.setdefault("outcome", "info")
-        return {"dishes": dishes}
+        return {"dishes": dishes, "sourceLanguage": "sv"}
 
     def transfer_to_staff(self, args):
         to = self.loc.get("transferTo")
@@ -1115,6 +1119,50 @@ _EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "e
 _SV_ONES = ("noll", "ett", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio", "tio", "elva", "tolv",
             "tretton", "fjorton", "femton", "sexton", "sjutton", "arton", "nitton")
 _SV_TENS = ("", "", "tjugo", "trettio", "fyrtio", "femtio", "sextio", "sjuttio", "åttio", "nittio")
+
+
+# Common food words in the line's languages -> the Swedish stem the menu uses, so a dish asked for in
+# another language still matches when the model passes the caller's own word (the tool asks for
+# Swedish; this is the cheap fallback, no translation call). Matching is on the first five letters.
+MENU_WORDS = {
+    "kyckl": "chicken poulet pollo hähnchen huhn kurczak tavuk ayam piletina pile دجاج مرغ".split(),
+    "fisk": "fish poisson pescado pesce fisch ryba balık ikan riba سمك ماهی".split(),
+    "lax": "salmon saumon salmón salmone lachs łosoś somon salmon losos سلمون".split(),
+    "räk": "shrimp shrimps prawn prawns crevette crevettes gamba gambas gamberi garnelen krewetki karides udang "
+           "škampi روبيان میگو".split(),
+    "nöt": "beef boeuf bœuf ternera carne manzo rind rindfleisch wołowina dana sapi govedina لحم گوشت".split(),
+    "fläsk": "pork porc cerdo maiale schwein schweinefleisch wieprzowina babi svinjetina".split(),
+    "lamm": "lamb agneau cordero agnello lammfleisch jagnięcina kuzu domba janjetina خروف بره".split(),
+    "veget": "vegetarian végétarien vegetariano vegetarisch wegetariańskie wegetariański vejetaryen "
+             "vegetarijansko نباتي گیاهی".split(),
+    "vegan": "vegan végane vegano wegańskie vegansko".split(),
+    "salla": "salad salade ensalada insalata salat sałatka salata سلطة سالاد".split(),
+    "soppa": "soup soupe sopa zuppa suppe zupa çorba sup supa حساء شوربة سوپ".split(),
+    "potat": "potato potatoes pomme patata patate kartoffel ziemniaki patates kentang krompir بطاطس سیب".split(),
+    "ris": "rice riz arroz riso reis ryż pirinç nasi riža أرز برنج".split(),
+    "ost": "cheese fromage queso formaggio käse ser peynir keju sir جبن پنیر".split(),
+    "bröd": "bread pain pan pane brot chleb ekmek roti kruh خبز نان".split(),
+    "glass": "ice cream glace helado gelato eis lody dondurma es sladoled بستنی".split(),
+    "dess": "dessert desserts postre dolce nachtisch deser tatlı pencuci desert حلوى دسر".split(),
+    "glute": "gluten glutenfree glutenfrei bezglutenowe glutensiz".split(),
+    "lakto": "lactose lactosa lattosio laktose laktoza laktoz".split(),
+    "barn": "kids children child enfant enfants niños bambini kinder dzieci çocuk anak djeca".split(),
+    "svamp": "mushroom mushrooms champignon champignons setas funghi pilze grzyby mantar jamur gljive قارچ".split(),
+}
+_MENU_STEMS = {word: stem for stem, words in MENU_WORDS.items() for word in words}
+
+
+def menu_words(query):
+    """The search words of a menu question (more than three letters), each
+    caller word with the Swedish stem of a known food word added."""
+    out = []
+    for word in str(query or "").lower().split():
+        word = word.strip(".,?!:;\"'")
+        if word in _MENU_STEMS:
+            out.append(_MENU_STEMS[word])
+        if len(word) > 3:
+            out.append(word)
+    return list(dict.fromkeys(out))
 
 
 def number_words(n, lang="en"):

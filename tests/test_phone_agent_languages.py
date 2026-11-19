@@ -70,13 +70,17 @@ def test_connect_calls_get_the_aws_list_and_other_calls_the_elevenlabs_list():
     assert "ca" in language.AWS_CALL_LANGUAGES
 
 
-def test_unsupported_language_says_english_after_swedish():
-    said = copy.unsupported_language()
-    sv, en = copy.UNSUPPORTED_LANGUAGE["sv"], copy.UNSUPPORTED_LANGUAGE["en"]
-    assert said.startswith(sv + " " + en)
-    assert copy.unsupported_language(connect=True) == f"{sv} {en}"          # Elin cannot read Arabic script
-    assert copy.unsupported_language(callback=True, connect=True) == \
-        f"{copy.UNSUPPORTED_CALLBACK['sv']} {copy.UNSUPPORTED_CALLBACK['en']}"
+def test_unsupported_language_is_said_in_the_callers_language_then_english():
+    en = copy.UNSUPPORTED_LANGUAGE["en"]
+    assert "English or Swedish" in en and "call you back" in en and "Arabic" not in en
+    assert copy.unsupported_language() == en
+    # Bosnian on the Connect line: Elin can read the Latin script, so Bosnian first, then English
+    assert copy.unsupported_language("bs", connect=True) == f"{copy.UNSUPPORTED_LANGUAGE['bs']} {en}"
+    # Persian on the Connect line: Elin cannot read the Arabic script, English only (never silent Swedish)
+    assert copy.unsupported_language("fa", connect=True, current="sv") == en
+    assert copy.unsupported_language("fa") == f"{copy.UNSUPPORTED_LANGUAGE['fa']} {en}"   # a multilingual voice
+    assert copy.unsupported_language("bs", callback=True, connect=True) == \
+        f"{copy.UNSUPPORTED_CALLBACK['bs']} {copy.UNSUPPORTED_CALLBACK['en']}"
 
 
 # --- the Connect line: switching ------------------------------------------------------------------
@@ -125,14 +129,15 @@ def test_switching_back_to_swedish_uses_the_same_handshake(live):
 
 def test_a_connect_call_switches_at_most_three_times(live):
     out, attrs = lex(live, "contact-l3", "Hej")
-    for tagged, said in (("[en] Sure.", "Hi, I would like to book a table please"),
-                         ("[de] Gerne.", "Hallo, ich möchte bitte einen Tisch reservieren"),
+    # explicit requests (a switch right after a switch needs one)
+    for tagged, said in (("[en] Sure.", "Hi, can we speak English please, I would like a table"),
+                         ("[de] Gerne.", "Hallo, können wir bitte Deutsch sprechen"),
                          ("[en] Sure.", "Sorry, can we speak English, I want a table")):
         live.model.responses = [Turn(text=tagged)]
         out, attrs = lex(live, "contact-l3", said, flow(attrs))
         assert attrs["next"] == "switch"
     live.model.responses = [Turn(text="[de] Gerne.")]
-    out, attrs = lex(live, "contact-l3", "Hallo, ich möchte bitte einen Tisch reservieren", flow(attrs))
+    out, attrs = lex(live, "contact-l3", "Hallo, können wir bitte Deutsch sprechen", flow(attrs))
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"} and "next" not in attrs
     row, _ = turns_of(live, attrs)
     assert row["language"] == "en" and row["languageSwitches"] == 3

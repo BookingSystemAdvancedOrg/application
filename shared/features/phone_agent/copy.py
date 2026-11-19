@@ -20,6 +20,13 @@ LANGUAGES = (SV, EN)
 # The priority set: every fixed sentence said without the model exists in these.
 REVIEWED = ("sv", "en", "de", "fr", "es", "fi", "no", "da", "pl", "ru", "uk", "tr", "ar", "fa", "so", "bs", "hr",
             "sr", "ckb", "am")
+# Every language the phone line serves (owner 2026-11-20): the twelve target languages plus every
+# language of the Connect line (aws_languages.json). Every fixed sentence said without the model
+# exists in each of these (tests pin it). [NEEDS YOUR OK: native review] for the sentences added
+# 2026-11-20 (it, id, nl, pt, cs, ca, ja, ko, hi, is and the new STILL_THERE, ASK_CONTINUE,
+# UNSUPPORTED_LANGUAGE and backchannel lines).
+TARGET_LANGUAGES = ("sv", "en", "ar", "fa", "bs", "es", "id", "de", "fr", "it", "tr", "pl")
+LINE_LANGUAGES = TARGET_LANGUAGES + ("da", "fi", "nl", "pt", "cs", "ca", "ja", "ko", "hi", "ru", "is")
 
 # The greeting (always Swedish at call start; English for the provider's preset). Owner 2026-11-19:
 # "Hej och välkommen till <restaurangens namn>. Du pratar med vår digitala assistent." The name is
@@ -75,6 +82,8 @@ DISCLOSURE_SHORT = {
     "fil": "Ako ang digital assistant ng restawran.",
     "vi": "Tôi là trợ lý kỹ thuật số của nhà hàng.",
     "ta": "நான் இந்த உணவகத்தின் டிஜிட்டல் உதவியாளர்.",
+    "ca": "Sóc l'assistent digital del restaurant.",
+    "is": "Ég er stafrænn aðstoðarmaður veitingastaðarins.",
 }
 RECORDING_NOTICE = {SV: "Samtalet spelas in.", EN: "This call is recorded."}
 DEFAULT_EXTRA = {SV: "Vad kan jag hjälpa dig med?", EN: "How may I help you?"}
@@ -82,7 +91,31 @@ REFUSED = {
     SV: "Tyvärr kan vi inte ta emot bokningar per telefon just nu. Välkommen att boka på vår webbplats.",
     EN: "Unfortunately we cannot take bookings by phone at the moment. You are welcome to book on our website.",
 }
-STILL_THERE = {SV: "Är du kvar i samtalet? Jag hörde inte riktigt.", EN: "Are you still there? I did not quite hear you."}
+STILL_THERE = {
+    SV: "Är du kvar i samtalet? Jag hörde inte riktigt.",
+    EN: "Are you still there? I did not quite hear you.",
+    "ar": "هل ما زلتم معي؟ لم أسمعكم جيداً.",
+    "fa": "هنوز پشت خط هستید؟ صدایتان را خوب نشنیدم.",
+    "bs": "Jeste li još tu? Nisam vas dobro čuo.",
+    "es": "¿Sigue ahí? No le he oído bien.",
+    "id": "Apakah Anda masih di sana? Saya kurang mendengar Anda.",
+    "de": "Sind Sie noch da? Ich habe Sie nicht richtig verstanden.",
+    "fr": "Êtes-vous toujours là ? Je ne vous ai pas bien entendu.",
+    "it": "È ancora in linea? Non l'ho sentita bene.",
+    "tr": "Hâlâ orada mısınız? Sizi tam duyamadım.",
+    "pl": "Czy nadal mnie Państwo słyszą? Nie dosłyszałem.",
+    "da": "Er du der stadig? Jeg hørte dig ikke helt.",
+    "fi": "Oletteko vielä linjoilla? En kuullut aivan.",
+    "nl": "Bent u er nog? Ik heb u niet goed gehoord.",
+    "pt": "Ainda está aí? Não o ouvi bem.",
+    "cs": "Jste tam ještě? Neslyšel jsem vás dobře.",
+    "ca": "Encara hi és? No l'he sentit bé.",
+    "ja": "もしもし、聞こえていますか？よく聞き取れませんでした。",
+    "ko": "아직 통화 중이신가요? 잘 듣지 못했습니다.",
+    "hi": "क्या आप अभी भी लाइन पर हैं? मैं ठीक से सुन नहीं पाया।",
+    "ru": "Вы ещё на линии? Я вас не расслышал.",
+    "is": "Ertu enn þarna? Ég heyrði ekki alveg í þér.",
+}
 ERROR = {
     SV: "Ursäkta, något gick fel hos oss. Vill du att restaurangen ringer upp dig?",
     EN: "I apologise, something went wrong on our side. Would you like the restaurant to call you back?",
@@ -105,6 +138,16 @@ ERROR = {
     "sr": "Izvinite, došlo je do greške kod nas. Da li želite da vas restoran pozove?",
     "ckb": "داوای لێبوردن دەکەم، هەڵەیەک لە لایەن ئێمەوە ڕوویدا. دەتەوێت چێشتخانەکە پەیوەندیت پێوە بکاتەوە؟",
     "am": "ይቅርታ፣ በእኛ በኩል ስህተት ተፈጥሯል። ምግብ ቤቱ መልሶ እንዲደውልልዎ ይፈልጋሉ?",
+    "it": "Mi scusi, si è verificato un errore da parte nostra. Desidera che il ristorante la richiami?",
+    "id": "Mohon maaf, terjadi kesalahan di pihak kami. Apakah Anda ingin restoran menelepon Anda kembali?",
+    "nl": "Excuses, er ging iets mis bij ons. Wilt u dat het restaurant u terugbelt?",
+    "pt": "Peço desculpa, ocorreu um erro do nosso lado. Deseja que o restaurante lhe ligue de volta?",
+    "cs": "Omlouvám se, u nás došlo k chybě. Přejete si, aby vám restaurace zavolala zpět?",
+    "ca": "Disculpi, hi ha hagut un error per part nostra. Vol que el restaurant li torni la trucada?",
+    "ja": "申し訳ございません、こちらで問題が発生しました。レストランから折り返しお電話しましょうか？",
+    "ko": "죄송합니다, 저희 쪽에 문제가 생겼습니다. 레스토랑에서 다시 전화드릴까요?",
+    "hi": "क्षमा कीजिए, हमारी ओर से कोई गड़बड़ी हुई है। क्या आप चाहेंगे कि रेस्टोरेंट आपको वापस कॉल करे?",
+    "is": "Afsakið, eitthvað fór úrskeiðis hjá okkur. Viljið þið að veitingastaðurinn hringi til baka?",
 }
 # Said by Booqy when a turn reaches its deadline (agent.TURN_BUDGET_S) before the
 # answer is ready; the next turn continues the work (copy.RESUME).
@@ -129,9 +172,44 @@ STILL_CHECKING = {
     "sr": "Trenutak, molim, još proveravam.",
     "ckb": "تکایە کەمێک چاوەڕێ بکە، هێشتا دەپشکنم.",
     "am": "እባክዎ ትንሽ ይጠብቁ፣ አሁንም እያጣራሁ ነው።",
+    "it": "Un momento, per favore, sto ancora controllando.",
+    "id": "Mohon tunggu sebentar, saya masih memeriksanya.",
+    "nl": "Een ogenblik alstublieft, ik ben nog aan het kijken.",
+    "pt": "Um momento, por favor, ainda estou a verificar.",
+    "cs": "Okamžik, prosím, ještě to ověřuji.",
+    "ca": "Un moment, si us plau, encara ho estic comprovant.",
+    "ja": "少々お待ちください、まだ確認しております。",
+    "ko": "잠시만 기다려 주세요, 아직 확인하고 있습니다.",
+    "hi": "कृपया एक क्षण रुकिए, मैं अभी भी जाँच कर रहा हूँ।",
+    "is": "Augnablik, ég er enn að athuga.",
 }
+# More ways to say it (owner 2026-11-20: varied, never the same line every time). Said only while a
+# lookup or the model is really still working (a turn cut by the deadline); one is picked per turn.
+STILL_CHECKING_MORE = {
+    SV: ("Jag tittar fortfarande på det, ett ögonblick.", "Strax, jag kollar det åt dig."),
+    EN: ("I am still looking into it, one moment.", "Just a moment, I am checking that for you."),
+    "de": ("Ich schaue noch nach, einen Augenblick.", "Gleich, ich prüfe das für Sie."),
+    "fr": ("Je regarde encore, un instant.", "Juste un instant, je vérifie pour vous."),
+    "es": ("Sigo mirándolo, un momento.", "Un segundo, lo compruebo para usted."),
+    "it": ("Sto ancora verificando, un attimo.", "Solo un momento, controllo per lei."),
+    "pl": ("Wciąż sprawdzam, chwileczkę.", "Momencik, już to sprawdzam."),
+    "tr": ("Hâlâ bakıyorum, bir saniye lütfen.", "Bir saniye, sizin için kontrol ediyorum."),
+    "ar": ("ما زلت أتحقق من ذلك، لحظة من فضلكم.", "لحظة واحدة، أتحقق من ذلك لكم."),
+    "fa": ("هنوز در حال بررسی هستم، یک لحظه.", "یک لحظه، برایتان بررسی می‌کنم."),
+    "bs": ("Još gledam, samo trenutak.", "Samo trenutak, provjeravam to za vas."),
+    "id": ("Saya masih mengeceknya, sebentar ya.", "Sebentar, saya periksa untuk Anda."),
+}
+
+
+def still_checking_line(lang, n=0):
+    """The still-checking sentence in `lang`, varied by `n` (the caller turn), else None."""
+    if lang not in STILL_CHECKING:
+        return None
+    options = (STILL_CHECKING[lang],) + STILL_CHECKING_MORE.get(lang, ())
+    return options[max(0, int(n or 0)) % len(options)]
+
 # Beside the instruction prompt in the turn after a cut one.
-RESUME = ("\n\n# Continue\nYour previous reply was cut short: the caller heard only that you are still checking. "
+RESUME = ("# Continue\nYour previous reply was cut short: the caller heard only that you are still checking. "
           "First finish that work from the conversation above (run a lookup again if its result says timeout), "
           "then answer the caller. A table or booking looked up then has not been read back yet.")
 MAX_LENGTH = {
@@ -155,6 +233,16 @@ MAX_LENGTH = {
     "sr": "Razgovor je postao dug, pa moram sada da ga završim. Slobodno pozovite ponovo.",
     "ckb": "پەیوەندییەکە درێژ بووەوە، بۆیە دەبێت ئێستا کۆتایی پێ بهێنم. تکایە دووبارە پەیوەندی بکەرەوە.",
     "am": "ጥሪው ረጅም ሆኗል፣ ስለዚህ አሁን ማቋረጥ አለብኝ። እባክዎ እንደገና ይደውሉ።",
+    "it": "La chiamata è diventata lunga, quindi devo terminarla ora. La invitiamo a richiamare.",
+    "id": "Panggilan ini sudah cukup lama, jadi saya harus mengakhirinya sekarang. Silakan menelepon kembali.",
+    "nl": "Dit gesprek is lang geworden, dus ik moet het nu beëindigen. U bent welkom om opnieuw te bellen.",
+    "pt": "A chamada ficou longa, por isso tenho de a terminar agora. Pode voltar a ligar quando quiser.",
+    "cs": "Hovor se protáhl, proto ho teď musím ukončit. Neváhejte zavolat znovu.",
+    "ca": "La trucada s'ha allargat, així que l'he d'acabar ara. Pot tornar a trucar quan vulgui.",
+    "ja": "通話が長くなりましたので、ここで終了させていただきます。またお電話ください。",
+    "ko": "통화가 길어져서 이제 종료해야 합니다. 언제든지 다시 전화해 주세요.",
+    "hi": "कॉल काफ़ी लंबी हो गई है, इसलिए मुझे इसे अभी समाप्त करना होगा। आप फिर से कॉल कर सकते हैं।",
+    "is": "Símtalið er orðið langt, svo ég þarf að ljúka því núna. Verið velkomin að hringja aftur.",
 }
 TRANSFERRING = {
     SV: "Jag kopplar dig till restaurangen, ett ögonblick.",
@@ -177,6 +265,16 @@ TRANSFERRING = {
     "sr": "Povezujem vas sa restoranom, trenutak molim.",
     "ckb": "پەیوەندیت دەکەم بە چێشتخانەکەوە، تکایە کەمێک چاوەڕێ بکە.",
     "am": "ከምግብ ቤቱ ጋር አገናኝዎታለሁ፣ እባክዎ ትንሽ ይጠብቁ።",
+    "it": "La metto in contatto con il ristorante, un momento per favore.",
+    "id": "Saya sambungkan Anda ke restoran, mohon tunggu sebentar.",
+    "nl": "Ik verbind u door met het restaurant, een ogenblik alstublieft.",
+    "pt": "Vou passar a chamada para o restaurante, um momento, por favor.",
+    "cs": "Přepojuji vás do restaurace, okamžik, prosím.",
+    "ca": "El passo amb el restaurant, un moment, si us plau.",
+    "ja": "レストランにおつなぎします、少々お待ちください。",
+    "ko": "레스토랑으로 연결해 드리겠습니다, 잠시만 기다려 주세요.",
+    "hi": "मैं आपको रेस्टोरेंट से जोड़ रहा हूँ, कृपया एक क्षण रुकिए।",
+    "is": "Ég gef þér samband við veitingastaðinn, augnablik.",
 }
 TRANSFER_UNANSWERED = {
     SV: "Ingen på restaurangen kunde svara just nu. Vill du att de ringer upp dig?",
@@ -291,22 +389,124 @@ GUARANTEE_LINK_SENT = {
     "am": ("ካርድ እንደ ዋስትና የሚያስገቡበት ሊንክ የያዘ የጽሑፍ መልእክት ልኬልዎታለሁ። ጠረጴዛው ለሰላሳ ደቂቃ ይያዝልዎታል፣ "
            "ካርዱ ሲገባም ቦታው ይያዛል። በስልክ የካርድ መረጃ በጭራሽ አልጠይቅም።"),
 }
-# A language the voice cannot speak (Tigrinya, Kurmanji ...): said in these three, in this order.
+# A language the line cannot speak (owner 2026-11-20: never silently Swedish): said in the caller's own
+# language when the voice can read it, then in English, offering English or Swedish or a callback.
 UNSUPPORTED_LANGUAGE = {
-    SV: ("Jag beklagar, jag kan inte tala ditt språk. Jag kan tala svenska, engelska eller arabiska, eller så "
-         "ringer restaurangen upp dig."),
-    EN: ("I am sorry, I cannot speak your language. I can speak Swedish, English or Arabic, or the restaurant "
-         "can call you back."),
-    "ar": ("عذراً، لا أستطيع التحدث بلغتكم. يمكنني التحدث بالسويدية أو الإنجليزية أو العربية، أو يمكن للمطعم "
-           "معاودة الاتصال بكم."),
+    SV: ("Jag beklagar, jag kan inte tala ditt språk på den här linjen ännu. Vi kan fortsätta på svenska eller "
+         "engelska, eller så ringer restaurangen upp dig."),
+    EN: ("I am sorry, I cannot speak your language on this line yet. We can continue in English or Swedish, or "
+         "the restaurant can call you back."),
+    "ar": ("عذراً، لا أستطيع التحدث بلغتكم على هذا الخط بعد. يمكننا المتابعة بالإنجليزية أو السويدية، أو يمكن "
+           "للمطعم معاودة الاتصال بكم."),
+    "fa": ("متأسفم، هنوز نمی‌توانم در این خط به زبان شما صحبت کنم. می‌توانیم به انگلیسی یا سوئدی ادامه دهیم، "
+           "یا رستوران با شما تماس بگیرد."),
+    "bs": ("Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo nastaviti na engleskom ili "
+           "švedskom, ili vas restoran može nazvati."),
+    "hr": ("Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo nastaviti na engleskom ili "
+           "švedskom, ili vas restoran može nazvati."),
+    "sr": ("Žao mi je, na ovoj liniji još ne mogu da govorim vaš jezik. Možemo da nastavimo na engleskom ili "
+           "švedskom, ili vas restoran može pozvati."),
+    "id": ("Mohon maaf, saya belum bisa berbicara dalam bahasa Anda di saluran ini. Kita bisa melanjutkan dalam "
+           "bahasa Inggris atau Swedia, atau restoran dapat menelepon Anda kembali."),
+    "no": ("Beklager, jeg kan ikke snakke språket ditt på denne linjen ennå. Vi kan fortsette på engelsk eller "
+           "svensk, eller restauranten kan ringe deg tilbake."),
+    "uk": ("Перепрошую, на цій лінії я поки не можу говорити вашою мовою. Ми можемо продовжити англійською або "
+           "шведською, або ресторан вам передзвонить."),
+    "so": ("Waan ka xumahay, weli kuma hadli karo luqaddaada khadkan. Waxaan ku sii wadi karnaa Ingiriis ama "
+           "Iswiidhish, ama makhaayaddu way kuu soo wici kartaa."),
+    "ur": ("معذرت، میں ابھی اس لائن پر آپ کی زبان نہیں بول سکتا۔ ہم انگریزی یا سویڈش میں بات جاری رکھ سکتے "
+           "ہیں، یا ریسٹورنٹ آپ کو واپس کال کر سکتا ہے۔"),
 }
-UNSUPPORTED_ORDER = (SV, EN, "ar")
 # Said when the caller still cannot continue: Booqy has asked the restaurant to call back.
 UNSUPPORTED_CALLBACK = {
     SV: "Restaurangen ringer upp dig så snart som möjligt. Tack för samtalet.",
     EN: "The restaurant will call you back as soon as possible. Thank you for calling.",
     "ar": "سيعاود المطعم الاتصال بكم في أقرب وقت ممكن. شكراً لاتصالكم.",
+    "fa": "رستوران در اسرع وقت با شما تماس می‌گیرد. از تماس شما سپاسگزاریم.",
+    "bs": "Restoran će vas nazvati što je prije moguće. Hvala na pozivu.",
+    "hr": "Restoran će vas nazvati što je prije moguće. Hvala na pozivu.",
+    "sr": "Restoran će vas pozvati što je pre moguće. Hvala na pozivu.",
+    "id": "Restoran akan menelepon Anda kembali secepatnya. Terima kasih atas panggilan Anda.",
+    "no": "Restauranten ringer deg tilbake så snart som mulig. Takk for samtalen.",
+    "uk": "Ресторан передзвонить вам якнайшвидше. Дякуємо за дзвінок.",
+    "so": "Makhaayaddu way kuu soo wici doontaa sida ugu dhakhsaha badan. Waad ku mahadsan tahay wicitaanka.",
+    "ur": "ریسٹورنٹ جلد از جلد آپ کو واپس کال کرے گا۔ کال کرنے کا شکریہ۔",
 }
+# Booqy's own question when the reply came in another language but no switch rule allowed the switch
+# (language.decision `ask`): "Shall we continue in <this language>?", each in its own language.
+ASK_CONTINUE = {
+    SV: "Ska vi fortsätta på svenska?",
+    EN: "Shall we continue in English?",
+    "ar": "هل نكمل بالعربية؟",
+    "fa": "به فارسی ادامه بدهیم؟",
+    "bs": "Da li da nastavimo na bosanskom?",
+    "es": "¿Seguimos en español?",
+    "id": "Apakah kita lanjutkan dalam bahasa Indonesia?",
+    "de": "Sollen wir auf Deutsch weitermachen?",
+    "fr": "Voulez-vous que nous continuions en français ?",
+    "it": "Continuiamo in italiano?",
+    "tr": "Türkçe devam edelim mi?",
+    "pl": "Czy mamy kontynuować po polsku?",
+    "da": "Skal vi fortsætte på dansk?",
+    "fi": "Jatketaanko suomeksi?",
+    "nl": "Zullen we in het Nederlands verdergaan?",
+    "pt": "Continuamos em português?",
+    "cs": "Máme pokračovat česky?",
+    "ca": "Continuem en català?",
+    "ja": "日本語で続けましょうか？",
+    "ko": "한국어로 계속할까요?",
+    "hi": "क्या हम हिंदी में बात जारी रखें?",
+    "ru": "Продолжим по-русски?",
+    "is": "Eigum við að halda áfram á íslensku?",
+}
+
+_NON_LATIN = (("arabic", re.compile(r"[؀-ۿݐ-ݿ]")), ("cyrillic", re.compile(r"[Ѐ-ӿ]")),
+              ("other", re.compile(r"[Ͱ-Ͽ֐-׿ऀ-ॿ஀-௿฀-๿ሀ-፿぀-ヿ一-鿿가-힯]")))
+
+
+def script(text):
+    """"latin", "arabic", "cyrillic" or "other": what a voice must be able to read."""
+    for name, pattern in _NON_LATIN:
+        if pattern.search(str(text or "")):
+            return name
+    return "latin"
+
+
+def _readable(text, voice_lang):
+    """The voice of `voice_lang` (the Connect line: one Polly voice per language) can read `text`."""
+    sample = ASK_CONTINUE.get(voice_lang) or DISCLOSURE_SHORT.get(voice_lang) or "a"
+    return script(text) == script(sample)
+
+
+def unsupported_language(code=None, callback=False, *, connect=False, current=SV):
+    """The fixed "I cannot speak your language yet" sentences: in the
+    caller's language `code` when there is one and the call's voice can read
+    it (on the Connect line the voice of `current`), then in English."""
+    sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_LANGUAGE
+    own = sentences.get(code) if code not in (None, EN) else None
+    if own and connect and not _readable(own, current):
+        own = None
+    return " ".join(x for x in (own, sentences[EN]) if x)
+
+
+def ask_switch(current, candidate, *, connect=False, candidate_name=None):
+    """Booqy's question whether to continue in `candidate`, asked in that
+    language and then in the call's: "Shall we continue in English? Ska vi
+    fortsätta på svenska?". A language without its own sentence is asked
+    about in English by name (`candidate_name`); when the voice cannot read
+    the candidate's sentence, the call's question and "Which language would
+    you like to speak?"."""
+    theirs, ours = ASK_CONTINUE.get(candidate), ASK_CONTINUE.get(current) or ASK_CONTINUE[EN]
+    if not theirs and candidate_name:
+        theirs = ASK_CONTINUE_BY_NAME.format(name=candidate_name)
+    if not theirs or (connect and not _readable(theirs, current)):
+        return f"{ours} {WHICH_LANGUAGE[EN]}"
+    return f"{theirs} {ours}"
+
+
+ASK_CONTINUE_BY_NAME = "Shall we continue in {name}?"
+WHICH_LANGUAGE = {SV: "Vilket språk vill du prata?", EN: "Which language would you like to speak?"}
+
 
 # The assistant's name when it names itself (owner 2026-11-19): Booqy-assistenten. The
 # restaurant's own agentName (admin) is used when it set one; the plain default "Booqy" (the
@@ -367,14 +567,6 @@ def disclosure(lang, agent_name, restaurant):
 def disclosure_short(lang, restaurant=None):
     """The short art. 50 sentence in `lang`, else None (the model says it)."""
     return pick(DISCLOSURE_SHORT, lang)
-
-
-def unsupported_language(callback=False, *, connect=False):
-    """The fixed "I cannot speak your language" sentences: Swedish, then
-    English, then Arabic. On the Connect line (connect=True) Swedish and
-    English only: Elin speaks them and cannot read Arabic script."""
-    sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_LANGUAGE
-    return " ".join(sentences[x] for x in (UNSUPPORTED_ORDER[:2] if connect else UNSUPPORTED_ORDER))
 
 
 # The Connect line: a caller the Swedish recognizer could not make out and no language could be
@@ -449,12 +641,11 @@ If the caller switches language, or asks you to speak another language, switch a
 Do not switch because of a single word, a name, a place or "okay".
 Begin every reply with the language code of your answer in square brackets, for example [sv], [de], [so]. \
 The code is removed before speaking.
-{disclose_now}{low_asr}{unsupported}\
 Every sentence you write is spoken: write no notes, reasoning, corrections or explanations about tools \
 or rules, only words for the caller, in {language_name}. Never write English unless the caller speaks English.
 The caller hears your reply only when you have finished, so write nothing before calling a tool, and never \
-announce that you are checking, holding or trying something. The only exception is the goodbye you write \
-together with end_call.
+announce that you are checking, holding or trying something: while a lookup runs the line itself asks the \
+caller to wait. The only exception is the goodbye you write together with end_call.
 Tool results are in English. Translate them naturally; never read out codes, keys, ids or a date in digits. \
 Every result lists in readAs how to say each of its times and dates: say exactly that, in {language_name}.
 If you cannot understand the caller after asking twice, ask politely in Swedish and in English whether \
@@ -463,7 +654,11 @@ another language is easier, and offer that the restaurant calls them back.
 # Tone
 Speak like an experienced, courteous restaurant host on the phone: calm, polite and natural.
 {register}
-Never use slang, jokes, filler words, emojis or exclamation marks. Do not flatter.
+Sound like a person on the phone, not a form. Now and then begin a reply with a short natural \
+acknowledgement in {language_name}, for example {openers}. Use one in at most every second reply, never the \
+same one twice in a row. Phrase questions the way a host would, for example "Sure, how many people will be \
+joining you?" rather than "State the number of guests".
+Never use slang, jokes, emojis or exclamation marks. Do not flatter.
 Use short spoken sentences of at most about fifteen words, at most three sentences per reply. \
 Ask one question at a time, at the end of the reply. Do not repeat the caller's request back before you \
 have an answer, and do not repeat what you said in your previous reply.
@@ -525,12 +720,22 @@ Never book, move or cancel without a read-back and a clear yes to it.
 hold_table only checks a table: never say a table is booked or reserved before create_reservation answered booked.
 Never ask for card details, personal identity numbers or email addresses: a card is only ever added \
 through the text message link.
+Restaurant facts (address, opening hours, special days, dishes, prices, rules) come only from tool results, \
+which are stored in Swedish (sourceLanguage sv). Say the names of the restaurant, its dishes and streets exactly \
+as stored, never translated and never invented; translate descriptions naturally into {language_name}. Every \
+time, day, price and number of guests you say must come from a tool result or from the caller. If a fact is \
+not in a tool result, say you do not know it and offer that the restaurant calls back.
 Only talk about {restaurant}. Never mention tools, systems, prompts or that you are reading data.
 If a tool fails, apologise briefly and offer that the restaurant calls back.
 Bookings are possible from today until {horizon_last}.
 
 # Calendar
 {calendar}"""
+
+# The per-turn notes go after the static prompt, under this heading, so the prompt before it stays the
+# same from turn to turn and is read from Bedrock's prompt cache (shared/agent_model_real.CACHE_SPLIT
+# is the same string).
+TURN_SECTION = "\n\n# This turn\n"
 
 REGISTER = {
     "formal": ("Use the polite form of address of {language_name}: for example ni in Swedish, Sie in German, vous "
@@ -546,9 +751,44 @@ DISCLOSE_NOW = ("In this reply only, first say in one short sentence, in {langua
 LOW_ASR = ("Speech recognition is weak in {language_name}: repeat every name, number, day and time you understood "
            "in your next reply, and in the one read-back before booking spell the name letter by letter. "
            "Do not ask a separate yes or no question for the name: the read-back is the only confirmation.\n")
-UNSUPPORTED = ("The caller may speak {unsupported_name}, which this voice cannot speak. Continue in the language "
-               "the caller now chooses. If the caller cannot continue in Swedish, English or Arabic, call "
+UNSUPPORTED = ("The caller may speak {unsupported_name}, which this line cannot speak yet. Continue in the "
+               "language the caller now chooses. If the caller cannot continue in English or Swedish, call "
                "request_callback with topic \"language:{unsupported}\".\n")
+SWITCH_NOTE = ("The caller has just switched to {language_name}. Continue the same conversation and keep every "
+               "detail already agreed (day, time, number of guests, name). Anything you read back before was "
+               "heard in another language: read it back again in {language_name} and get a clear yes to that "
+               "before any booking, move or cancellation.\n")
+ASKED_NOTE = ("In your previous reply you asked whether to continue in {asked_name}. If the caller agreed, "
+              "answer in {asked_name} and begin with [{asked}]; otherwise continue in {language_name}.\n")
+LOCKED_NOTE = ("The language of this call can no longer change: answer only in {language_name}, even if the "
+               "caller uses another language.\n")
+# Short natural acknowledgements per language, offered to the model in the Tone section.
+OPENERS = {
+    SV: '"Okej", "Precis", "Absolut", "Gärna", "Mm", "Då ska vi se"',
+    EN: '"Sure", "Perfect", "Of course", "Right", "Okay"',
+    "de": '"Gerne", "Gut", "Alles klar", "Natürlich", "Genau"',
+    "fr": '"Très bien", "D\'accord", "Bien sûr", "Parfait"',
+    "es": '"Claro", "Perfecto", "Muy bien", "De acuerdo"',
+    "it": '"Certo", "Perfetto", "Va bene", "D\'accordo"',
+    "pl": '"Oczywiście", "Dobrze", "Jasne", "Świetnie"',
+    "tr": '"Tabii", "Peki", "Elbette", "Tamam"',
+    "ar": '"حسناً", "تمام", "بالتأكيد", "طيب"',
+    "fa": '"حتماً", "بسیار خب", "باشه", "چشم"',
+    "bs": '"Naravno", "Dobro", "U redu", "Važi"',
+    "id": '"Baik", "Tentu", "Siap", "Oke"',
+    "da": '"Ja", "Fint", "Selvfølgelig", "Godt"',
+    "fi": '"Selvä", "Hyvä", "Totta kai"',
+    "nl": '"Prima", "Goed", "Natuurlijk", "Zeker"',
+    "pt": '"Claro", "Perfeito", "Muito bem"',
+    "cs": '"Jistě", "Dobře", "Výborně"',
+    "ca": '"Molt bé", "D\'acord", "És clar"',
+    "ja": '"かしこまりました", "承知しました", "はい"',
+    "ko": '"네", "알겠습니다", "좋습니다"',
+    "hi": '"जी", "ठीक है", "बिल्कुल"',
+    "ru": '"Конечно", "Хорошо", "Отлично"',
+    "is": '"Já", "Gott", "Auðvitað"',
+}
+OPENERS_OTHER = "the short natural acknowledgements a polite host uses in that language"
 PHONE_KNOWN = "The booking uses the number the caller is calling from; mention that in the read-back."
 PHONE_HIDDEN = ("The caller's number is hidden. Ask for a phone number for the confirmation, read it back in "
                 "groups of two or three digits in words and get a yes, then pass it as phone. If the caller "

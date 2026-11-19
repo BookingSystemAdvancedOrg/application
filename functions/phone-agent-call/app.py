@@ -53,7 +53,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import agent_model, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
-from shared.features.phone_agent import calls, copy, language, session
+from shared.features.phone_agent import calls, copy, hesitation, language, session
 from shared.features.phone_agent import locations as locations_mod
 from shared.features.phone_agent.tools import lambda_invoker
 
@@ -503,10 +503,45 @@ def _turn_key(call, messages, text):
     return digest.hexdigest()[:32]
 
 
+def _held(call, text, at):
+    """The hesitation guard (shared/features/phone_agent/hesitation.py), no
+    model call: (backchannel, None) when the utterance ends unfinished (the
+    fragment is kept on the call row, `heldFragment`), else (None, the text
+    to answer: a kept fragment joined with this utterance, and how many
+    fragments were joined)."""
+    lang = call.get("language") or "sv"
+    kept = call.get("heldFragment") if isinstance(call.get("heldFragment"), dict) else None
+    if kept and (at - (pa.parse_iso(kept.get("at")) or at)).total_seconds() > hesitation.MAX_AGE_S:
+        kept = None
+    joined = hesitation.joined((kept or {}).get("text"), text)
+    count = int((kept or {}).get("count") or 0)
+    langs = (lang, language.hint(text))
+    if count < hesitation.MAX_HOLDS and hesitation.unfinished(joined, langs):
+        holds = int(call.get("heldTotal") or 0)
+        calls.set_status(call, call["status"], [call["status"]], heldTotal=holds + 1,
+                         heldFragment={"text": joined[-500:], "at": pa.iso(at), "count": count + 1})
+        session.metric("HesitationHold", 1)
+        return hesitation.backchannel(lang, holds), None
+    if call.get("heldFragment") is not None:
+        current = calls.get_call(call["tenantId"], call["callId"]) or call
+        calls.set_status(current, current["status"], [current["status"]], heldFragment=None)
+    return None, (joined, count)
+
+
 def run_call_turn(call, text, at, asr_locale=None):
     """One caller utterance -> (reply, provider actions). `asr_locale`: the
-    recognizer's locale (the Connect line), stored on the caller's turn."""
+    recognizer's locale (the Connect line), stored on the caller's turn. An
+    utterance that ends unfinished ("för, ehm") gets only a backchannel and
+    is joined with the next one (_held)."""
     lang = call.get("language") or "sv"
+    if call.get("status") in ("answered", "disclosed", "talking"):
+        backchannel, kept = _held(call, text, at)
+        if backchannel:
+            return backchannel, []
+        text, held = kept
+        call = calls.get_call(call["tenantId"], call["callId"]) or call
+    else:
+        held = 0
     if call.get("locationPending"):
         options = [{**(tenant.get_location(call["tenantId"], x) or {}), "locationId": x}
                    for x in call.get("candidateLocations") or []]
@@ -523,7 +558,7 @@ def run_call_turn(call, text, at, asr_locale=None):
     result, updated, state, actions = session.call_turn(
         call, text, model=client("model"), invoke=invoker(), voice=client("voice"), tenant_row=tenant_row,
         location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)),
-        send_sms=sms_sender(), asr_locale=asr_locale)
+        send_sms=sms_sender(), asr_locale=asr_locale, held=held)
     if result.error:
         session.metric("ProviderErrors", 1)
     if (state.get("transfer") or {}).get("answered"):

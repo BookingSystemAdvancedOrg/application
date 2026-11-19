@@ -39,6 +39,10 @@ class TurnResult:
     language: str | None = None        # the model's `[<code>]` tag of the reply (any known language)
     rounds: int = 0
     cut: bool = False                  # the deadline came first: the caller heard the still-checking sentence
+    model_ms: int = 0                  # time spent waiting for the model (all rounds)
+    tool_ms: int = 0                   # time spent in tools (all rounds)
+    cache_read: int = 0                # prompt tokens read from Bedrock's prompt cache (all rounds)
+    cache_write: int = 0               # prompt tokens written to it
 
 
 def calendar(today: date, last: date) -> str:
@@ -63,23 +67,38 @@ def _self_name(agent_name):
 
 
 def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, last_day=None, disclose_now=False,
-                  phone_known=True, unsupported=None, resume=False) -> str:
-    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT);
-    `resume`: the previous turn was cut by the deadline (copy.RESUME)."""
+                  phone_known=True, unsupported=None, resume=False, switched=False, asked=None,
+                  locked=False) -> str:
+    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT).
+
+    The static part (the same in every turn of a call in one language) comes
+    first; the notes for this turn only follow under copy.TURN_SECTION, so
+    the static part is read from Bedrock's prompt cache: `disclose_now`,
+    `unsupported`, `resume` (the previous turn was cut by the deadline,
+    copy.RESUME), `switched` (the caller just switched to `lang`: read back
+    again, copy.SWITCH_NOTE), `asked` (Booqy asked whether to continue in
+    that language, copy.ASKED_NOTE) and `locked` (no more switches)."""
     name = language.name(lang) if lang in language.NAMES else "Swedish"
     last_day = last_day or today + timedelta(days=21)
     register = copy.REGISTER.get(tone or "formal", copy.REGISTER["formal"]).format(language_name=name)
-    return copy.SYSTEM_PROMPT.format(
+    prompt = copy.SYSTEM_PROMPT.format(
         agent=_self_name(agent_name),
         restaurant=" ".join(str(restaurant or "restaurangen").split()),
-        language_name=name, register=register,
-        disclose_now=copy.DISCLOSE_NOW.format(language_name=name) if disclose_now else "",
-        low_asr=copy.LOW_ASR.format(language_name=name) if lang in language.LOW_ASR else "",
-        unsupported=copy.UNSUPPORTED.format(unsupported=unsupported, unsupported_name=language.name(unsupported))
-        if unsupported else "",
+        language_name=name, register=register, openers=copy.OPENERS.get(lang) or copy.OPENERS_OTHER,
         phone_known=copy.PHONE_KNOWN if phone_known else copy.PHONE_HIDDEN,
         horizon_last=f"{last_day.isoformat()} ({_WEEKDAYS[last_day.weekday()]})",
-        calendar=calendar(today, last_day)) + (copy.RESUME if resume else "")
+        calendar=calendar(today, last_day))
+    notes = "".join((
+        copy.LOW_ASR.format(language_name=name) if lang in language.LOW_ASR else "",
+        copy.DISCLOSE_NOW.format(language_name=name) if disclose_now else "",
+        copy.SWITCH_NOTE.format(language_name=name) if switched else "",
+        copy.ASKED_NOTE.format(language_name=name, asked=asked, asked_name=language.name(asked))
+        if asked and asked != lang else "",
+        copy.LOCKED_NOTE.format(language_name=name) if locked else "",
+        copy.UNSUPPORTED.format(unsupported=unsupported, unsupported_name=language.name(unsupported))
+        if unsupported else "",
+        copy.RESUME if resume else ""))
+    return prompt + copy.TURN_SECTION + notes.strip() if notes else prompt
 
 
 def _ok(result) -> bool:
@@ -90,11 +109,11 @@ def error_sentence(lang):
     return copy.text(copy.ERROR, lang or "sv")
 
 
-def still_checking(lang, spoken=()):
-    """The sentence of a turn cut by the deadline: the fixed one in `lang`,
-    else the model's own announcement from this turn in that language ("one
-    moment, I am checking"), else English."""
-    fixed = copy.pick(copy.STILL_CHECKING, lang or "sv")
+def still_checking(lang, spoken=(), n=0):
+    """The sentence of a turn cut by the deadline: a fixed one in `lang`
+    (varied by `n`, the caller turn), else the model's own announcement from
+    this turn in that language ("one moment, I am checking"), else English."""
+    fixed = copy.still_checking_line(lang or "sv", n)
     if fixed:
         return fixed
     own = [text for tagged, text, _ in spoken if tagged in (None, lang)]
@@ -221,16 +240,23 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     def failed(rounds):
         text = error_sentence(lang)
         messages.append({"role": "assistant", "content": text})
-        return TurnResult(text, calls, ms(), error=True, rounds=rounds)
+        return done(TurnResult(text, calls, ms(), error=True, rounds=rounds))
 
     def cut(rounds):
-        text = still_checking(lang, spoken)
+        text = still_checking(lang, spoken, max(0, int(getattr(executor, "turn", None) or 1) - 1))
         messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
         if hasattr(executor, "not_heard"):
             executor.not_heard()
         said_in = lang if copy.pick(copy.STILL_CHECKING, lang) or text != copy.text(copy.STILL_CHECKING, lang) \
             else None
-        return TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in)
+        return done(TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in))
+
+    timing = {"model": 0.0, "tool": 0.0, "read": 0, "write": 0}
+
+    def done(result):
+        result.model_ms, result.tool_ms = int(timing["model"] * 1000), int(timing["tool"] * 1000)
+        result.cache_read, result.cache_write = timing["read"], timing["write"]
+        return result
 
     rounds, spoken, code = 0, [], None
     for round_ in range(MAX_ROUNDS + 1):
@@ -241,14 +267,21 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         if round_ and left < MIN_ROUND_S:
             return cut(rounds)
         rounds = round_ + 1
+        asked = time.monotonic()
         try:
             turn = _converse(model, system, messages, left)
         except _Late:
+            timing["model"] += time.monotonic() - asked
             return cut(rounds)
         except agent_model.AgentModelError as exc:
+            timing["model"] += time.monotonic() - asked
             if exc.code == "timeout":
                 return cut(rounds)
             return failed(rounds)
+        timing["model"] += time.monotonic() - asked
+        usage = getattr(turn, "usage", None) or {}
+        timing["read"] += int(usage.get("cacheReadInputTokens") or 0)
+        timing["write"] += int(usage.get("cacheWriteInputTokens") or 0)
         content = ([{"type": "text", "text": turn.text}] if turn.text else []) + [
             {"type": "tool_use", "id": u.id, "name": u.name, "input": dict(u.input)} for u in turn.tool_uses]
         messages.append({"role": "assistant", "content": content or [{"type": "text", "text": "..."}]})
@@ -264,8 +297,9 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         if not turn.tool_uses:
             if not spoken:
                 return failed(rounds)          # never silence: the error sentence offers a callback
-            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
+            return done(TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds))
         results, late = [], False
+        tools_started = time.monotonic()
         for use in turn.tool_uses:
             left = deadline - time.monotonic()
             if late or left <= 0:
@@ -279,12 +313,13 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             results.append({"type": "tool_result", "tool_use_id": use.id,
                             "content": json.dumps(read_as(result), ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
+        timing["tool"] += time.monotonic() - tools_started
         if late:
             return cut(rounds)
         if spoken and all(u.name == "end_call" for u in turn.tool_uses):
             # The goodbye was said with end_call: no further round (it only repeats the goodbye).
             messages.append({"role": "assistant", "content": [{"type": "text", "text": "..."}]})
-            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
+            return done(TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds))
     return failed(rounds)
 
 

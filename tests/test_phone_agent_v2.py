@@ -50,16 +50,21 @@ def test_one_word_never_switches_even_when_the_model_tags_it(text):
 
 def test_switch_needs_a_second_sign():
     allowed = language.V4_LANGUAGES
-    # three words in the new language
-    assert language.decide("sv", None, "so", "waan ka xumahay saaxiib", allowed=allowed) == ("so", None)
-    # the hint agrees
-    assert language.decide("sv", "ru", "ru", "Здравствуйте", allowed=allowed) == ("ru", None)
+    # three words and the tag alone: not sure yet, Booqy asks
+    d = language.decision("sv", None, "so", "waan ka xumahay saaxiib", allowed=allowed)
+    assert tuple(d) == ("sv", None) and d.ask == "so" and d.reason == "uncertain"
+    # ... the same tag in the next turn switches
+    assert language.decide("sv", None, "so", "waan ka xumahay saaxiib", allowed=allowed, previous_tag="so") == \
+        ("so", None)
+    # the hint agrees, three words or more
+    assert language.decide("sv", "ru", "ru", "Здравствуйте, я хотел бы столик", allowed=allowed) == ("ru", None)
+    # one word never switches, even with the hint or the same tag twice
+    assert language.decide("sv", "ru", "ru", "Здравствуйте", allowed=allowed) == ("sv", None)
+    assert language.decide("sv", None, "de", "Danke", allowed=allowed, previous_tag="de") == ("sv", None)
     # the caller asked for a language, in Swedish
     assert language.decide("sv", "sv", "en", "Kan vi prata engelska?", allowed=allowed) == ("en", None)
     # Swedish words (the hint says so): a wrong tag never flips the call
     assert language.decide("sv", "sv", "en", "Jag vill boka ett bord", allowed=allowed) == ("sv", None)
-    # the second turn tagged the same language switches
-    assert language.decide("sv", None, "de", "Danke", allowed=allowed, previous_tag="de") == ("de", None)
 
 
 def test_a_language_the_voice_cannot_speak_is_reported_not_switched():
@@ -89,7 +94,7 @@ def test_fixed_sentences_are_polite_and_have_no_dashes():
                 assert not DASHES.search(text), name
                 assert "!" not in text and "toppen" not in text.lower(), name
     assert copy.pick(copy.ERROR, "sw") is None and copy.text(copy.ERROR, "sw") == copy.ERROR["en"]
-    assert copy.unsupported_language().count("arabiska") == 1
+    assert "Swedish" in copy.unsupported_language() and "arabiska" not in copy.UNSUPPORTED_LANGUAGE["sv"]
 
 
 def test_prompt_is_english_names_the_language_and_lists_every_bookable_day():
@@ -277,7 +282,7 @@ def test_info_and_menu_are_structured_english(env):
                                                             "kind": "closed", "note": "Julafton"}
     assert info["lastBookableDate"] == "2026-11-23" and info["largestPartyByPhone"] == 8
     menu = ex.run("get_menu", {"query": "lasagne"})
-    assert menu == {"dishes": [{"name": "Vegetarisk lasagne", "price": 189, "currency": "SEK"}]}
+    assert menu == {"dishes": [{"name": "Vegetarisk lasagne", "price": 189, "currency": "SEK"}], "sourceLanguage": "sv"}
 
 
 def test_callback_topics_are_tagged(env):
@@ -444,9 +449,10 @@ def test_somali_on_a_voice_that_cannot_speak_it_gets_the_fixed_sentences_then_a_
     live.model.responses = [Turn(text="[so] Haa, immisa qof?"), Turn(text="[so] Waan ka xumahay.")]
     phone = Phone(live)
     first = phone.say("Waxaan rabaa miis berri fadlan")
-    assert first == copy.unsupported_language() and phone.row()["language"] == "sv"
+    assert first == copy.unsupported_language("so") and phone.row()["language"] == "sv"
+    assert first.startswith(copy.UNSUPPORTED_LANGUAGE["so"])          # in Somali first, never silent Swedish
     second = phone.say("Ma garanayo, waxaan rabaa Soomaali")
-    assert second == copy.unsupported_language(callback=True)
+    assert second == copy.unsupported_language("so", callback=True)
     _, body = call(live, "GET", L + "/callbacks")
     assert body["callbacks"][0]["topic"] == "language:so"
     messages = agent.loads(phone.row()["agentMessages"])
@@ -456,15 +462,21 @@ def test_somali_on_a_voice_that_cannot_speak_it_gets_the_fixed_sentences_then_a_
 def test_a_language_without_a_fixed_sentence_is_disclosed_by_the_model(live, monkeypatch):
     monkeypatch.setenv("PHONE_AGENT_TTS_MODEL", "eleven_v4_turbo")
     seen = []
-    replies = iter([Turn(text="[sw] Habari, mimi ni msaidizi wa kidijitali wa mgahawa. Watu wangapi?"), Turn(text="[sw] Sawa.")])
+    replies = iter([Turn(text="[sw] Habari. Watu wangapi?"),
+                    Turn(text="[sw] Habari, mimi ni msaidizi wa kidijitali wa mgahawa. Watu wangapi?"),
+                    Turn(text="[sw] Sawa.")])
     live.model.converse = lambda system, messages, tools, *, max_tokens: (seen.append(system), next(replies))[1]
     phone = Phone(live)
-    phone.say("Habari, nataka kuhifadhi meza kesho jioni tafadhali")
+    # the hint does not know Swahili and the tag alone is not sure: Booqy asks first
+    assert phone.say("Habari, nataka kuhifadhi meza kesho jioni tafadhali") == \
+        "Shall we continue in Swahili? Ska vi fortsätta på svenska?"
+    assert phone.row()["language"] == "sv"
+    phone.say("Ndiyo, Kiswahili tafadhali, meza kesho jioni")
     assert phone.row()["language"] == "sw"
     assert phone.row()["disclosure"]["modelSaid"] == ["sw"] and phone.row()["disclosure"]["languages"] == ["sv", "sw"]
-    assert "first say in one short sentence" not in seen[0]                   # the hint did not know Swahili: next turn
+    assert "first say in one short sentence" not in seen[1]                   # the hint did not know Swahili: next turn
     phone.say("Watu wanne")
-    assert "first say in one short sentence, in Swahili" in seen[1]
+    assert "first say in one short sentence, in Swahili" in seen[2]
 
 
 def test_okay_and_a_name_keep_a_swedish_call_swedish(live):

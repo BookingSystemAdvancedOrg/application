@@ -11965,6 +11965,14 @@ components:
           type: string
           minLength: 1
           maxLength: 40
+        course:
+          type: string
+          nullable: true
+          enum: [starters, mains, desserts, drinks, other, null]
+          description: |
+            Course for table orders (Bordsbeställning). Only a course the
+            owner chose is stored and returned; the four default categories
+            are their own course when this is absent. null clears it.
 
     MenuCategoryList:
       type: object

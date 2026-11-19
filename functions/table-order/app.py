@@ -172,8 +172,10 @@ def _warning_texts(result_warnings, stations):
         station = names.get(warning.get("stationId")) or {}
         name = station.get("stationName") or "Stationen"
         if code == "station_no_printer":
-            text = (f"{name} har ingen skrivare, bongen skrevs ut i köket." if station.get("fallback")
-                    else f"{name} har ingen skrivare. Bongen syns på köksskärmen.")
+            text = warning.get("text") if isinstance(warning.get("text"), str) and warning["text"].strip() else (
+                f"{name} har ingen skrivare, bongen skrevs ut i köket." if station.get("fallback")
+                else f"{name} har ingen skrivare. Bongen syns på köksskärmen. "
+                     "Koppla en skrivare i Inställningar > Skrivare.")
         else:
             code = "dispatch_failed"
             text = "Bongen kunde inte skickas. Tryck Skicka igen."
@@ -251,11 +253,13 @@ def _list(event, location_id, ctx):
             return http.respond(200, {"unchanged": True, "version": version})
     now = t.now_utc()
     today = t.local_date(ctx.location, now)
-    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    first = (date.fromisoformat(today) - timedelta(days=t.CLOSED_LOOKBACK_DAYS)).isoformat()
     locks = t.open_locks(location_id, now)
     open_tabs = sorted(t.load_by_locks(location_id, locks), key=lambda x: (x.get("openedAt") or "", x["tabId"]))
+    open_ids = {x["tabId"] for x in open_tabs}
+    locks = {table_id: lock for table_id, lock in locks.items() if lock.get("tabId") in open_ids}
     since_close = t.iso(now - timedelta(hours=t.CLOSED_TODAY_HOURS))
-    closed = [x for x in t.tabs_between(location_id, yesterday, today)
+    closed = [x for x in t.tabs_between(location_id, first, today)
               if x.get("status") == t.CLOSED and (x.get("closedAt") or "") >= since_close]
     closed.sort(key=lambda x: x.get("closedAt") or "", reverse=True)
     tables = t.read_tables(location_id)
@@ -275,7 +279,7 @@ def _closed(event, location_id, ctx):
         raise t.invalid("unsupported query parameters")
     now = t.now_utc()
     day = t.valid_date(params["date"]) if params.get("date") else t.local_date(ctx.location, now)
-    before = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+    before = (date.fromisoformat(day) - timedelta(days=t.CLOSED_LOOKBACK_DAYS)).isoformat()
     tabs = [x for x in t.tabs_between(location_id, before, day) if x.get("status") == t.CLOSED
             and x.get("closedAt") and t.local_date(ctx.location, t.parse_iso(x["closedAt"])) == day]
     tabs.sort(key=lambda x: x["closedAt"], reverse=True)
@@ -386,6 +390,10 @@ def _open_conflict(location_id, table, now):
     try:
         other = t.load(location_id, lock["tabId"])
     except t.TabError:
+        other = None
+    if other is None or other.get("status") != t.OPEN:
+        # A lock whose tab is gone (expired) or closed holds nobody's table.
+        t.release_orphan_lock(location_id, lock)
         return None
     return t.TabError("table_has_open_order",
                       message=f"{t.table_title(table['label'])} har redan en öppen beställning.",
@@ -424,7 +432,7 @@ def _open(event, location_id, ctx):
     data = http.body(event, allowed={"requestId", "tableId", "covers", "guestName", "reservationId", "note", "items"})
     request_id = _request_id(data)
     now = t.now_utc()
-    existing = t.get_request(location_id, request_id)
+    existing = _known_request(location_id, request_id, "open")
     if existing:
         return _replay(ctx, location_id, existing, now)
     table_id = t.table_id_value(data.get("tableId"))
@@ -450,16 +458,22 @@ def _open(event, location_id, ctx):
            t.pointer_put_op(location_id, tab),
            t.tab_put_op(location_id, tab),
            t.state_op(location_id)]
-    try:
-        t.transact(ops)
-    except t.TransactionFailed:
-        existing = t.get_request(location_id, request_id)
-        if existing:
-            return _replay(ctx, location_id, existing, now)
-        conflict = _open_conflict(location_id, table, now)
-        if conflict:
-            raise conflict from None
-        raise
+    for attempt in range(3):
+        try:
+            t.transact(ops)
+            break
+        except t.TransactionFailed as exc:
+            existing = t.get_request(location_id, request_id)
+            if existing:
+                return _replay(ctx, location_id, existing, now)
+            conflict = _open_conflict(location_id, table, now)
+            if conflict:
+                raise conflict from None
+            # Another write in this location was in flight (DynamoDB
+            # TransactionConflict) or an orphan lock was just cleared: try again.
+            if attempt == 2:
+                raise
+            logger.info(json.dumps({"tableOrder": "open_retry", "reasons": exc.reasons}))
     logger.info(json.dumps({"tableOrder": "open", "tabId": tab["tabId"], "items": len(priced), "round": number}))
     warnings = []
     if number is not None:
@@ -532,15 +546,25 @@ def _finish(ctx, location_id, outcome, now, *, send_result=True):
     return _send_result(location_id, tab, number, warnings)
 
 
-def _start(event, location_id, ctx, allowed):
+def _known_request(location_id, request_id, action, tab_id=None):
+    """The REQ row of an earlier try of this same request, or None. A
+    requestId that was used for another action or tab is refused: replaying
+    it would answer with the wrong tab (a client bug, never a retry)."""
+    existing = t.get_request(location_id, request_id)
+    if existing and (existing.get("action") != action or (tab_id is not None and existing.get("tabId") != tab_id)):
+        raise t.invalid("requestId was already used for another change")
+    return existing
+
+
+def _start(event, location_id, ctx, allowed, tab_id, action):
     data = http.body(event, allowed=allowed | {"requestId"})
     request_id = _request_id(data)
     now = t.now_utc()
-    return data, request_id, now, t.get_request(location_id, request_id)
+    return data, request_id, now, _known_request(location_id, request_id, action, tab_id)
 
 
 def _add(event, location_id, ctx, tab_id):
-    data, request_id, now, existing = _start(event, location_id, ctx, {"items"})
+    data, request_id, now, existing = _start(event, location_id, ctx, {"items"}, tab_id, "add")
     if existing:
         return _replay(ctx, location_id, existing, now)
     wanted = t.parse_new_items(data.get("items"))
@@ -558,7 +582,7 @@ def _add(event, location_id, ctx, tab_id):
 
 
 def _send(event, location_id, ctx, tab_id):
-    data, request_id, now, existing = _start(event, location_id, ctx, {"courses", "itemIds"})
+    data, request_id, now, existing = _start(event, location_id, ctx, {"courses", "itemIds"}, tab_id, "fire")
     if existing:
         return _replay(ctx, location_id, existing, now)
     courses = t.parse_courses(data.get("courses"))
@@ -576,7 +600,8 @@ def _send(event, location_id, ctx, tab_id):
 
 def _patch(event, location_id, ctx, tab_id):
     data, request_id, now, existing = _start(event, location_id, ctx,
-                                             {"expectedVersion", "covers", "guestName", "note", "items"})
+                                             {"expectedVersion", "covers", "guestName", "note", "items"},
+                                             tab_id, "edit")
     if existing:
         return _replay(ctx, location_id, existing, now, send_result=False)
     expected = _expected(data)
@@ -607,7 +632,8 @@ def _patch(event, location_id, ctx, tab_id):
 
 def _void(event, location_id, ctx, tab_id):
     data, request_id, now, existing = _start(event, location_id, ctx,
-                                             {"expectedVersion", "items", "reason", "note"})
+                                             {"expectedVersion", "items", "reason", "note"},
+                                             tab_id, "void")
     if existing:
         return _replay(ctx, location_id, existing, now)
     expected = _expected(data)
@@ -621,7 +647,8 @@ def _void(event, location_id, ctx, tab_id):
 
 
 def _move(event, location_id, ctx, tab_id):
-    data, request_id, now, existing = _start(event, location_id, ctx, {"expectedVersion", "tableId"})
+    data, request_id, now, existing = _start(event, location_id, ctx, {"expectedVersion", "tableId"}, tab_id,
+                                             "move")
     if existing:
         return _replay(ctx, location_id, existing, now)
     expected = _expected(data)
@@ -649,7 +676,8 @@ def _move(event, location_id, ctx, tab_id):
 
 
 def _close(event, location_id, ctx, tab_id):
-    data, request_id, now, existing = _start(event, location_id, ctx, {"expectedVersion", "dropHeld"})
+    data, request_id, now, existing = _start(event, location_id, ctx, {"expectedVersion", "dropHeld"}, tab_id,
+                                             "close")
     if existing:
         return _replay(ctx, location_id, existing, now, send_result=False)
     expected = _expected(data)
@@ -671,7 +699,7 @@ def _close(event, location_id, ctx, tab_id):
 
 
 def _reopen(event, location_id, ctx, tab_id):
-    data, request_id, now, existing = _start(event, location_id, ctx, set())
+    data, request_id, now, existing = _start(event, location_id, ctx, set(), tab_id, "reopen")
     if existing:
         return _replay(ctx, location_id, existing, now, send_result=False)
     actor = _actor(ctx)

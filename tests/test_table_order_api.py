@@ -483,3 +483,105 @@ def test_the_ordering_feature_is_required(env):
     shared_tenant.reset_caches()
     status, body = call(env, "GET")
     assert status == 403
+
+
+# --- review: hardening ----------------------------------------------------------------------
+
+def test_a_request_id_is_bound_to_its_tab_and_action(env):
+    status, a = open_tab(env, table="t1", items=[])
+    status, b = open_tab(env, table="t2", items=[])
+    request = rid()
+    add = {"requestId": request, "items": [{"menuItemId": "cola", "quantity": 1}]}
+    assert call(env, "POST", f"{a['tab']['tabId']}/items", add)[0] == 200
+    # the same requestId on the other table's tab must not answer with table 1's tab
+    status, body = call(env, "POST", f"{b['tab']['tabId']}/items", add)
+    assert status == 400 and body["error"] == "invalid_request"
+    # nor as another action on the same tab
+    status, body = call(env, "POST", f"{a['tab']['tabId']}/send", {"requestId": request})
+    assert status == 400
+    status, body = call(env, "POST", body={"requestId": request, "tableId": "t3", "items": []})
+    assert status == 400
+    assert call(env, "GET", b["tab"]["tabId"])[1]["tab"]["items"] == []
+
+
+def test_every_change_to_a_closed_tab_is_refused(env):
+    status, body = open_tab(env, items=[{"menuItemId": "cola", "quantity": 1},
+                                        {"menuItemId": "cod", "quantity": 1, "hold": True}])
+    tab = body["tab"]
+    held = next(i for i in tab["items"] if i["state"] == "held")
+    sent = next(i for i in tab["items"] if i["state"] == "sent")
+    status, body = call(env, "POST", f"{tab['tabId']}/close",
+                        {"requestId": rid(), "expectedVersion": tab["version"], "dropHeld": True})
+    closed = body["tab"]
+    v = closed["version"]
+    assert next(i for i in closed["items"] if i["itemId"] == held["itemId"])["voidReason"] == "closed"
+    for path, payload in (
+            ("items", {"items": [{"menuItemId": "cola", "quantity": 1}]}),
+            ("send", {}),
+            ("void", {"expectedVersion": v, "items": [{"itemId": sent["itemId"], "quantity": 1}], "reason": "wrong"}),
+            ("move", {"expectedVersion": v, "tableId": "t2"}),
+            ("close", {"expectedVersion": v})):
+        status, body = call(env, "POST", f"{tab['tabId']}/{path}", {"requestId": rid(), **payload})
+        assert status == 409 and body["error"] in ("tab_closed",), (path, body)
+    status, body = call(env, "PATCH", tab["tabId"], {"requestId": rid(), "expectedVersion": v, "covers": 3})
+    assert status == 409 and body["error"] == "tab_closed"
+    assert call(env, "GET", tab["tabId"])[1]["tab"]["version"] == v
+
+
+def test_a_lock_left_by_an_expired_tab_does_not_block_the_table(env):
+    status, body = open_tab(env, items=[])
+    tab_id = body["tab"]["tabId"]
+    # the tab row expired (TTL) but its lock row is still there
+    env.res.Table(TABLE).delete_item(Key=t.tab_key(LOC_A, TODAY, tab_id))
+    status, body = open_tab(env, items=[])
+    assert status == 201 and body["tab"]["tabId"] != tab_id
+    status, listing = call(env, "GET")
+    assert next(x for x in listing["tables"] if x["tableId"] == "t1")["tabId"] == body["tab"]["tabId"]
+
+
+def test_open_retries_a_transaction_conflict(env, monkeypatch):
+    real = t.transact
+    calls = []
+
+    def flaky(ops):
+        calls.append(1)
+        if len(calls) == 1:
+            raise t.TransactionFailed(["None", "TransactionConflict", "None", "None", "None"])
+        return real(ops)
+    monkeypatch.setattr(t, "transact", flaky)
+    status, body = open_tab(env, items=[{"menuItemId": "cola", "quantity": 1}])
+    assert status == 201 and len(calls) == 2 and len(env.fake.calls) == 1
+
+
+def test_a_tab_open_past_midnight_is_listed_when_it_closes(env):
+    status, body = open_tab(env, items=[{"menuItemId": "cola", "quantity": 1}])
+    tab = body["tab"]
+    env.clock["now"] = NOW + timedelta(days=1, hours=8)  # next day, 01:00 the day after
+    status, body = call(env, "POST", f"{tab['tabId']}/close", {"requestId": rid(), "expectedVersion": tab["version"]})
+    assert status == 200
+    status, listing = call(env, "GET")
+    assert [x["tabId"] for x in listing["closedToday"]] == [tab["tabId"]]
+    day = t.local_date(None, env.clock["now"])
+    status, closed = call(env, "GET", "closed", query={"date": day})
+    assert [x["tabId"] for x in closed["tabs"]] == [tab["tabId"]]
+
+
+def test_the_ticket_module_text_says_who_acts(env, monkeypatch):
+    def no_printer(*args):
+        return {"stations": [{"stationId": "bar", "stationName": "Dryck", "printers": 0, "fallback": False}],
+                "warnings": [{"code": "station_no_printer", "stationId": "bar",
+                              "text": "Dryck har ingen skrivare. Koppla en skrivare i Inställningar > Skrivare."}]}
+    monkeypatch.setattr(env.fake, "dispatch_round", no_printer, raising=False)
+    status, body = open_tab(env, items=[{"menuItemId": "ipa", "quantity": 1}])
+    assert body["warnings"] == [{"code": "station_no_printer", "stationId": "bar",
+                                 "text": "Dryck har ingen skrivare. Koppla en skrivare i Inställningar > Skrivare."}]
+
+
+def test_a_tab_of_another_location_of_the_same_tenant_is_not_found(env):
+    status, body = open_tab(env, items=[{"menuItemId": "cola", "quantity": 1}])
+    tab = body["tab"]
+    status, body = call(env, "GET", tab["tabId"], location=LOC_A2)
+    assert status == 404
+    status, body = call(env, "POST", f"{tab['tabId']}/close",
+                        {"requestId": rid(), "expectedVersion": tab["version"]}, location=LOC_A2)
+    assert status == 404

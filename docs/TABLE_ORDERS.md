@@ -89,7 +89,9 @@ a request: they come back as `warnings` (`station_no_printer`,
   same transaction as the tab. A repeated request returns the tab with
   `replayed: true` and dispatches the round again only when it was not
   dispatched (tickets are put once), so a double tap or a network retry
-  never makes a second round or ticket.
+  never makes a second round or ticket. A `requestId` belongs to one action
+  on one tab: reused for another action or tab it answers `400
+  invalid_request` instead of replaying the wrong tab.
 - Add and fire are commutative: read, apply and write conditional on
   `version`, retried up to three times. Close, move, void and PATCH take the
   version the screen showed and answer `409 changed_retry` with the fresh
@@ -97,6 +99,15 @@ a request: they come back as `warnings` (`station_no_printer`,
 - `OPEN#<tableId>` is the per-table lock, written in the same transaction as
   the open, move, close and reopen. A second waiter opening the same table
   gets `409 table_has_open_order` with the open tab and adds to it instead.
+  A lock whose tab expired or is closed is removed (conditional on the row
+  as read), so it never blocks the table. A DynamoDB `TransactionConflict`
+  on open is retried up to three times.
+- Closed lists (`closedToday`, `/closed`) read tabs opened up to two days
+  before, so a tab that stayed open past midnight is still listed.
+- Ticket states (Skickad, Klar) live in the print table and do not move
+  `STATE.version`: a screen that polls with `?version=N` must also load the
+  full list now and then (about every 15 seconds while a tab has tickets
+  that are not ready), or it never sees "Klar".
 - Tickets are made after the write. If that fails the round stays "not
   dispatched"; "Skicka igen" or a replay of the request sends it.
 

@@ -75,6 +75,9 @@ OPEN_TTL_HOURS = 48
 REQUEST_TTL_HOURS = 24
 CLOSED_TODAY_HOURS = 12
 CLOSED_TODAY_MAX = 30
+# Closed lists read tabs opened up to this many days before (an open tab
+# lives 48 hours past its last write, so it can close a day or two later).
+CLOSED_LOOKBACK_DAYS = 2
 
 # Guest matching (TableState.guest)
 ARRIVE_EARLY_MINUTES = 30
@@ -863,6 +866,23 @@ def lock_put_op(location_id, tab, now, *, own=False):
         return put_op(item, "attribute_not_exists(PK) OR tabId = :tab OR #ttl < :now", {"#ttl": "ttl"},
                       {":tab": tab["tabId"], ":now": epoch(now)})
     return put_op(item, "attribute_not_exists(PK) OR #ttl < :now", {"#ttl": "ttl"}, {":now": epoch(now)})
+
+
+def release_orphan_lock(location_id, lock):
+    """Deletes the OPEN#<table> row ``lock`` (as read) when it is unchanged:
+    its tab expired or is closed, so it holds nobody's table. False when the
+    row changed meanwhile (a reopen wrote it again)."""
+    try:
+        dynamo.table(table_name()).delete_item(Key={"PK": lock["PK"], "SK": lock["SK"]},
+                                               ConditionExpression="tabId = :tab AND #ttl = :ttl",
+                                               ExpressionAttributeNames={"#ttl": "ttl"},
+                                               ExpressionAttributeValues={":tab": lock["tabId"],
+                                                                          ":ttl": lock.get("ttl") or 0})
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
 
 
 def lock_delete_op(location_id, table_id, tab_id):

@@ -43,7 +43,7 @@ class VadConfig:
 
 @dataclass(frozen=True)
 class SttConfig:
-    region: str = "eu-north-1"          # Transcribe streaming (endpoint resolves there; verify sv-SE streaming)
+    region: str = "eu-central-1"        # Transcribe streaming is NOT served in eu-north-1 (401 NotAuthorized, checked 2026-11-20); Frankfurt streams sv-SE and en
     sample_rate: int = 16000
     partial_stability: Literal["low", "medium", "high"] = "high"
     vocabulary_name: str | None = None  # per tenant later (restaurant and street names)

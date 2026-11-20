@@ -831,7 +831,8 @@ class Executor:
         language (spoken.py; retest 2 on dev 2026-11-20: "fredag den sjunde
         november" was read back for the 27th): `spoken` is the slot as it is
         read back, `spokenDay` the day, `spokenTimes` each time it offers with
-        its part of the day. A language without a spoken form keeps readAs."""
+        its part of the day, `offerSpoken` the times to offer as one phrase
+        (spoken.offer). A language without a spoken form keeps readAs."""
         lang = self.language
         if lang not in say_.LANGS:
             return result
@@ -843,6 +844,11 @@ class Executor:
         offered += [n.get("time") for n in result.get("nearby") or [] if isinstance(n, dict) and n.get("time")]
         if offered:
             result["spokenTimes"] = say_.times(offered, lang)
+        # The offer list as one phrase, each run of times with its own part of the day (retest 3 on dev
+        # 2026-11-20: "halv fem eller halv sex på kvällen" made 16:30 evening).
+        shown = [t for t in (result.get("suggest") or (result.get("times") or [])[:3]) if isinstance(t, str)]
+        if shown:
+            result["offerSpoken"] = say_.offer(shown, lang)
         return result
 
     # -- what the caller said ---------------------------------------------------------
@@ -1174,6 +1180,25 @@ class Executor:
         elif verdict is False:
             self.state.pop("readBack", None)
 
+    def guest_names(self, reply=None):
+        """The names the caller gave in this call (agent.without_name_thanks):
+        the one they said for themselves ("jag heter Anna"), the one a reply
+        read the hold back under ("under namnet Anna") and the one a booking or
+        callback was made under. Kept in the state for later turns."""
+        known = list(self.state.get("guestNames") or [])
+        found = readback.names(self.caller_text, caller=True) + readback.names(reply)
+        for name in found:
+            name = " ".join(str(name).split())[:80]
+            if name and name not in known:
+                known.append(name)
+        if known:
+            self.state["guestNames"] = known[-5:]
+        return known
+
+    def _remember_name(self, name):
+        if name and name not in (self.state.get("guestNames") or []):
+            self.state["guestNames"] = (list(self.state.get("guestNames") or []) + [name])[-5:]
+
     def _replaced(self, hold_id):
         live_id, _ = self._live()
         return {"ok": False, "code": "holdReplaced", "hold": self._summary(hold_id),
@@ -1270,6 +1295,7 @@ class Executor:
         name = " ".join(str(args.get("name") or "").split())[:80]
         if not name:
             return {"ok": False, **_say("nameInvalid")}
+        self._remember_name(name)
         try:
             phone = self._booking_phone(args.get("phone"))
         except pa.PhoneAgentError:
@@ -1569,6 +1595,7 @@ class Executor:
                 if not self.caller_known:
                     return {"ok": False, **_say("phoneInvalid")}
         topic = self._topic(args.get("topic"))
+        self._remember_name(" ".join(str(args.get("name") or "").split())[:80])
         if self.dry_run or not self.callbacks:
             callback_id = "sim-callback"
         else:

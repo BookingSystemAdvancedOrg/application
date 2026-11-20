@@ -430,3 +430,33 @@ def mentions_terms(text, fees=True):
     """The reply said the guarantee's fee rule (`fees`), else that a card is needed."""
     low = str(text or "").lower()
     return any(p.search(low) for p in (_FEES if fees else _CARDS))
+
+
+# The name a read-back says the booking is under ("under namnet Anna Svensson", "in the name of Eve",
+# "auf den Namen Eve Weber", "på navnet Ola"): up to four capitalised words.
+_NAME_UNDER = re.compile(
+    r"(?<!\w)(?i:(?:under|i|på|in|unter|auf)\s+(?:the\s+|dem\s+|den\s+)?(?:namnet|navnet|name|namen)"
+    r"(?:\s+of)?)\s+(?P<name>[A-ZÅÄÖÆØÜ][\w'-]*(?:\s+[A-ZÅÄÖÆØÜ][\w'-]*){0,3})")
+# The caller naming themselves ("jag heter Anna", "my name is Eve Smith", "ich heiße Eve"): the first word,
+# and a second when it is capitalised (speech recognition may write the first in lower case).
+_NAME_SELF = re.compile(
+    r"(?<!\w)(?i:jag\s+heter|mitt\s+namn\s+är|namnet\s+är|jeg\s+heter|jeg\s+hedder|navnet\s+er|"
+    r"ich\s+hei(?:ße|sse)|mein\s+name\s+ist|my\s+name\s+is|the\s+name\s+is)\s+"
+    r"(?P<first>[^\W\d_][\w'-]*)(?:\s+(?P<last>[A-ZÅÄÖÆØÜ][\w'-]*))?")
+_NOT_NAMES = {"en", "ett", "ein", "eine", "a", "an", "the", "jag", "ich", "jeg", "i", "inte", "nicht", "ikke",
+              "not", "bra", "fint", "okej", "ok", "okay", "rätt", "fel", "så", "för", "till", "det", "den"}
+
+
+def names(text, *, caller=False):
+    """The names a reply reads back the booking under, or (caller=True) the
+    name the caller gave for themselves, in order, without repeats."""
+    found = []
+    if caller:
+        for m in _NAME_SELF.finditer(str(text or "")):
+            if m.group("first").lower() in _NOT_NAMES:
+                continue
+            found.append(" ".join(x for x in (m.group("first"), m.group("last")) if x))
+    else:
+        for m in _NAME_UNDER.finditer(str(text or "")):
+            found.append(m.group("name"))
+    return list(dict.fromkeys(found))

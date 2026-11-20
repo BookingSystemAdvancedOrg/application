@@ -297,6 +297,8 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         text = _said(spoken, code)
         if _holding(executor) and not any(c["name"] == "request_callback" for c in calls):
             text = without_call_promise(text)     # the confirmation is the text message, never a call
+        names = executor.guest_names(text) if hasattr(executor, "guest_names") else ()
+        text = without_name_thanks(text, names)    # never "Tack, Anna": the name is data only
         _heard(executor, text, code or lang)
         return done(TurnResult(text, calls, ms(), language=code, rounds=rounds))
 
@@ -417,6 +419,48 @@ def without_welcome(text, lang=None):
     stays); empty when the reply was nothing but a welcome."""
     parts = re.split(r"(?<=[.?!])\s+", str(text or "").strip())
     return " ".join(p for p in parts if not (_WELCOME.match(p) and not _carries_booking(p, lang))).strip()
+
+
+# Thanks or an acknowledgement before the caller's name at the start of a sentence (retest 3 on dev
+# 2026-11-20: "Tack, Anna", "Thank you, Eve" despite the prompt rule).
+_THANKS = (r"(?:tack(?:\s+så\s+mycket)?|tusen\s+tack|takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|tak(?:\s+skal\s+du\s+have)?|"
+           r"mange\s+tak|danke(?:\s+schön|\s+sehr)?|vielen\s+dank|thank\s+you(?:\s+very\s+much)?|thanks|"
+           r"perfekt|perfect|toppen|utmärkt|great|wunderbar|super|bra|fint|okej|okay|ok|gut|godt|flott)")
+
+
+def _name_words(names):
+    """Each stored name and each of its words (the first name alone is the usual vocative)."""
+    out = set()
+    for name in names or ():
+        name = " ".join(str(name or "").split())
+        if len(name) < 2:
+            continue
+        out.add(name)
+        out.update(w for w in name.split() if len(w) >= 2)
+    return sorted(out, key=len, reverse=True)
+
+
+def without_name_thanks(text, names):
+    """The reply without the caller's name after a sentence-leading thanks:
+    "Tack, Anna. Då har jag ..." -> "Tack. Då har jag ...", "Tack så mycket,
+    Anna, bokningen är klar." -> "Tack så mycket, bokningen är klar." Only a
+    name the caller gave (`names`); the name elsewhere ("under namnet Anna")
+    is data and stays."""
+    words = _name_words(names)
+    if not words:
+        return str(text or "")
+    vocative = re.compile(rf"^(?P<ack>(?i:{_THANKS}))\s*,\s*(?i:{'|'.join(map(re.escape, words))})"
+                          rf"(?P<end>\s*[.!?]|\s*,\s*|\s*$)")
+    parts = re.split(r"(?<=[.?!])\s+", str(text or "").strip())
+    out = []
+    for p in parts:
+        m = vocative.match(p)
+        if m:
+            end = m.group("end").strip()
+            rest = p[m.end():]
+            p = f"{m.group('ack')}, {rest}" if end == "," and rest else m.group("ack") + (end if end in ".!?" else ".")
+        out.append(p)
+    return " ".join(out).strip()
 
 
 def _carries_booking(sentence, lang):

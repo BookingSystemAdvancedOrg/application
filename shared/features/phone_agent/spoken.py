@@ -20,6 +20,7 @@ readAs is translated by the model)."""
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from . import readback
@@ -110,7 +111,11 @@ def clock(time, lang):
     hour, minute = (int(x) for x in str(time).split(":"))
     if hour == 12 and minute == 0:
         return _NOON[lang]
-    at = _AT[lang]
+    return f"{_AT[lang]} {_face(hour, minute, lang)} {period(time, lang)}"
+
+
+def _face(hour, minute, lang):
+    """The clock face without "klockan" and the part of the day: "halv sex", "half past five"."""
     half, past, to = _QUARTERS[lang]
     this, nxt = _hour(hour, lang), _hour(hour + 1, lang)
     if lang == "de" and nxt == "ein":
@@ -129,7 +134,7 @@ def clock(time, lang):
         said = f"{number(minute, 'en')} minutes past {this}"
     else:
         said = f"{hour:02d}.{minute:02d}"
-    return f"{at} {said} {period(time, lang)}"
+    return said
 
 
 def day(iso, lang):
@@ -179,3 +184,36 @@ def times(values, lang):
     if lang not in LANGS:
         return None
     return {t: clock(t, lang) for t in dict.fromkeys(values) if isinstance(t, str) and len(t) == 5}
+
+
+_OR = {"sv": "eller", "no": "eller", "da": "eller", "de": "oder", "en": "or"}
+
+
+def _either(words, lang):
+    """"A eller B", "A, B eller C"."""
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} {_OR[lang]} {words[-1]}"
+
+
+def offer(values, lang):
+    """The offered times as one phrase, in clock order, each run of times in
+    the same part of the day said with that part once (retest 3 on dev
+    2026-11-20: "halv fem eller halv sex på kvällen" made 16:30 evening):
+    ["16:30", "17:00", "17:30"] -> "halv fem eller fem på eftermiddagen,
+    eller halv sex på kvällen". 12:00 is its own run ("tolv mitt på
+    dagen"). None in a language without a spoken form or without times."""
+    if lang not in LANGS:
+        return None
+    found = sorted({(int(t[:2]), int(t[3:])) for t in values or ()
+                    if isinstance(t, str) and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)})
+    if not found:
+        return None
+    runs = []                                   # [(part or "noon", [faces])]
+    for hour, minute in found:
+        key = "noon" if (hour, minute) == (12, 0) else part(hour * 60 + minute)
+        if runs and runs[-1][0] == key != "noon":
+            runs[-1][1].append(_face(hour, minute, lang))
+        else:
+            runs.append((key, [_face(hour, minute, lang)]))
+    said = [_NOON[lang].split(" ", 1)[1] if key == "noon" else f"{_either(faces, lang)} {_PARTS[lang][key]}"
+            for key, faces in runs]
+    return said[0] if len(said) == 1 else f"{', '.join(said[:-1])}, {_OR[lang]} {said[-1]}"

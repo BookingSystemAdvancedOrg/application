@@ -414,6 +414,50 @@ def test_the_first_utterance_waits_longer_for_the_identify_final_and_never_ends_
     assert r.ends()[0].text.endswith("klockan sju.")
 
 
+def test_the_first_utterance_waits_for_a_late_identify_final_instead_of_ending_on_a_lagging_partial():
+    """Live voice-E, lang-D, lang-K (booqy-dev 2026-11-20): the identify stream's final came 1.8 s after the end of speech
+    and its partials ran behind the audio; at the old 900 ms cap the turn ended on "jag vill boka ett bord"."""
+    r = Rig()
+    r.td.partial_ends = False
+    r.speak(0, 4000)
+    r.partial(3900, "jag vill boka ett bord")
+    r.pause(4000)
+    r.run_to(4000 + BASE + 1400)
+    assert r.ends() == []                                     # the old cap (900 ms) has passed
+    r.final(4000 + BASE + 1450, "Jag vill boka ett bord för åtta personer på lördag klockan sju.", end=4000)
+    assert r.ends()[0].text.endswith("klockan sju.")
+
+
+def test_without_any_final_the_first_utterance_ends_at_the_cap_on_its_latest_partial():
+    r = Rig()
+    r.td.partial_ends = False
+    r.speak(0, 4000)
+    r.partial(3900, "jag vill boka ett bord för åtta personer")
+    r.pause(4000)
+    r.run_to(4000 + BASE + 1500 + 40)
+    assert r.ends()[0].text == "jag vill boka ett bord för åtta personer"
+
+
+def test_a_hesitation_burst_stays_held_when_a_lagging_first_utterance_partial_arrives_in_the_pause():
+    """Live voice-A: "boka bord för" then "ehm"; the identify stream's first partial "jag skulle vilja bok" came inside
+    the pause, looked like a complete clause and dropped the wait from 2200 to 1600 ms."""
+    r = Rig()
+    r.td.partial_ends = False
+    r.speak(0, 1500)
+    r.partial(1000, "jag skulle")                             # the stream is behind the caller from the start
+    r.pause(1500, 1500)
+    r.resume(1900, 400)                                       # "ehm", no word
+    r.pause(2300, 1900)
+    r.run_to(2500)
+    assert r.holds()[-1].threshold_ms == 2200
+    r.partial(2600, "jag skulle vilja bok")                   # the stream is behind: looks like a finished clause
+    r.run_to(2700)
+    assert r.holds()[-1].threshold_ms == 2200
+    r.partial(2800, "jag skulle vilja boka bord")
+    r.run_to(3600)
+    assert r.ends() == []
+
+
 def test_a_hesitation_pause_keeps_its_long_wait_when_a_late_final_stretches_the_last_word():
     """Live voice-A: "för" then "ehm" (no word): the final of "för" came inside the pause with its end time over the
     "ehm"; the wait must stay the longest, not fall back to the dangling 1400 ms."""

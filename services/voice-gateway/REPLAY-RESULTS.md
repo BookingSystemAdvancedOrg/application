@@ -1,6 +1,73 @@
 # Live replay results (dev)
 
-## Latency pass (2026-11-20, later the same day)
+## Against the real dev restaurant (2026-11-20, `VG_WORLD=dev`)
+
+First run with the real dev "Restaurant 1" (real tables and tool Lambdas, +46100000001, caller +46700000000), real
+Transcribe, Polly and Bedrock `eu.anthropic.claude-haiku-5-5`, silero VAD; lang-C with `VG_STT=fake` (Persian has no
+voice). SMS notices and events recorded, never sent. The scripted callers of lang-A, B, D, E, I, J, K and voice-E now say
+the final yes after the name, so a booking is really written and checked (`booked`, `booked_only_after_yes`); lang-A
+asks for "klockan fem" (dev had no table for three at 18:00). Five full passes ran (17 scenarios each, 52 to 54 answered
+turns); between them the gateway got the two fixes below. Everything the runs wrote in dev was deleted right after each
+scenario (`tests/vg_harness/devclean.py`); the table is the last pass (r6).
+
+**End of speech to first audio p50 2042 ms, p95 6948 ms (target p50 1500). First real answer audio (without the opener)
+p50 4267 ms, p95 8169 ms. Turn detection p50 733 ms** (later turns 601 ms, first utterances 1904 ms). 33 openers, 6
+backchannels, 0 overlapping the caller, barge-in stops within the 300 ms limit in every run (line quiet 0 to 2 ms after
+the barge-in). The five passes: first audio p50 1544, 1518, 1912, 1651, 2042 ms, reply p50 3494, 3330, 3094, 3722, 4267
+ms: this is slower than the faked-restaurant run below (1231 ms) and does not meet the target today. Two causes seen
+in the logs: the real tool Lambdas (get_availability 0.15 to 1.6 s, create and hold calls) sit inside every reply, and
+Transcribe's identify-language stream was slow on the first utterance (partials 1.5 to 2.5 s behind the audio, the final
+1.8 s after the end of speech), so first utterances now wait for it (below). A Bedrock round stayed at 1.3 to 1.8 s to its first token.
+
+4 of 17 scenarios pass every check, 10 pass every behaviour check (latency is the only failure in the others). No
+reservation was ever written without a read-back and a clear yes (`booked_only_after_yes` never failed, 0 of 5 passes);
+bookings written and checked: lang-B (John Smith, two, 20:00), lang-D (Ahmed, two, 20:00), lang-K (Jan Kowalski, two,
+14:00: Transcribe heard "godzina 20" as 14:00, the read-back said 14:00 and the caller's yes was clear), in earlier
+passes also lang-I (Hans Mueller, 20:00) and voice-E (Karl Andersson, eight, 17:00, fee sentence said first).
+
+| Scenario | Behaviour checks | End of speech to first audio per turn (ms) | Notes |
+|---|---|---|---|
+| voice-A hesitation | FAIL party_size | 2143 | "för, ehm... fyra" held; the call ends after the agent asks "i dag eller nästa fredag?" (today is a Friday), so no hold with a party size is ever made |
+| voice-B backchannel | pass (1 backchannel, 0 overlaps) | 1981 | |
+| voice-C correction | pass | 2463, 693, 626 | |
+| voice-D interruption | FAIL readback after barge-in | 1635, 4212, 1043 | Transcribe wrote "för fyra" as "för 12" / "24:00", dev had no table; barge-in stop fine, no hold to read back |
+| voice-E fee rule | FAIL booked, fee_rule | 2430, 669, 697, 688, 3041 | not reached this pass (booked eight at 17:00 with the fee sentence in the pass before) |
+| voice-F unavailable | pass | 2042, 682 | |
+| lang-A Swedish | FAIL booked | 2259, 2932, 673, 730 | no table that fit at the asked time, the scripted caller does not adapt |
+| lang-B English | pass, booked | 5110, 934, 868, 926 | first turn: the identify wait and the tool calls |
+| lang-C Persian (fake STT) | pass apart from latency | 7564, 4318 | |
+| lang-D Arabic | pass, booked | 2370, 732, 1026, 754 | |
+| lang-E English to Swedish | pass apart from latency | 2579, 5774 | two switches |
+| lang-F uncertain | pass apart from latency | 4301, 3010 | |
+| lang-G context across a switch | pass apart from latency | 1803, 2321, 3837, 862, 935 | |
+| lang-H interruption | FAIL readback after barge-in | 6537, 1243, 1029 | no free table at the asked time, so no read-back to repeat; stop in time |
+| lang-I German | FAIL booked | 3836, 786, 2062, 2016 | not reached this pass (booked in the pass before) |
+| lang-J Turkish | FAIL booked, final_language en | 2688, 6089, 4824, 16638 | Turkish not found this pass (found in the one before); the last turn took 16.6 s |
+| lang-K Polish | pass, booked | 7742, 697, 3433, 728 | |
+
+Other sessions book in the same dev restaurant while a replay runs, so a slot that was free in one pass can be taken in
+the next; the booking checks are the least repeatable.
+
+Fixes in the gateway (services/voice-gateway only):
+
+1. First utterance (`listen/turn.py`): the wait for the identify stream's final is 1500 ms (was 900). Live that final came
+   1.8 s after the end of speech and its partials lagged, so the turn ended on "jag vill boka ett bord" and "klockan sju"
+   / "الساعة الثامنة" / "dwóch osób" were lost (voice-E, lang-D, lang-K, lang-B in the first pass; in lang-K the garbled
+   partial even set the language to Turkish). A final that arrives earlier still ends the turn at once. Cost: first
+   utterances take about 1.9 s to the turn end instead of 1.5 s; the later turns are untouched.
+2. Hesitation on the first utterance: a lagging partial ("jag skulle vilja bok") inside the pause after "för, ehm" used
+   to look like a finished clause and cut the held wait from 2200 to 1600 ms; the burst now stays a hesitation until a
+   word follows (voice-A ended 60 ms before "fyra" in two passes).
+3. Tests: the two cases (`test_vg_listen_turn.py`), the final yes in the scenarios and their caller audio fixtures
+   (Polly), `tests/vg_harness/devclean.py` and the README paragraph for `VG_WORLD=dev`. Gateway suite 645 passed, 4
+   skipped; fake replay 17 of 17.
+
+Still open: the 1.5 s first-utterance turn detection and the reply time (tool Lambdas plus a Bedrock round) keep the
+first-audio p50 above 1500 ms against the real restaurant; language-switch turns (no opener before the disclosure);
+Transcribe sv-SE writes "fyra"/"sju" as numbers wrongly now and then; the scripted callers do not react to what dev
+offers (lang-A, voice-E, lang-I, lang-J, voice-D, lang-H depend on free tables).
+
+## Latency pass, faked restaurant (2026-11-20, later the same day)
 
 Same setup as below, but the restaurant faked (moto tables and tool Lambdas: no dev data written, nothing to clean
 up); real Transcribe, Polly and Bedrock `eu.anthropic.claude-haiku-5-5` on booqy-dev, silero VAD. Every scenario ran

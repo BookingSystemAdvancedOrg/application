@@ -106,7 +106,8 @@ VOICE = (
         Step(SV, (Piece("Hej, jag vill boka ett bord för åtta personer på lördag klockan sju."),)),
         Step(SV, (Piece("Nej tack, det går bra."),)),
         Step(SV, (Piece("Ja, det stämmer."),)),
-        Step(SV, (Piece("Karl Andersson.", gloss="Jag heter Karl Andersson."),))),
+        Step(SV, (Piece("Karl Andersson.", gloss="Jag heter Karl Andersson."),)),
+        Step(SV, (Piece("Ja, det stämmer."),))),
         Expect(fee_rule=True, booked=True, booked_only_after_yes=True),
         tenant={"guaranteeFromPartySize": 7}),
     Scenario("voice-F", "Unavailable time", (
@@ -118,14 +119,16 @@ VOICE = (
 
 LANGUAGE = (
     Scenario("lang-A", "Swedish booking", (
-        Step(SV, (Piece("Hej, jag vill boka ett bord för tre i morgon klockan sex."),)),
+        Step(SV, (Piece("Hej, jag vill boka ett bord för tre i morgon klockan fem."),)),
         Step(SV, (Piece("Ja, tack."),)),
-        Step(SV, (Piece("Lena Berg.", gloss="Jag heter Lena Berg."),))),
+        Step(SV, (Piece("Lena Berg.", gloss="Jag heter Lena Berg."),)),
+        Step(SV, (Piece("Ja, det stämmer."),))),
         Expect(final_language=SV, switches=0, booked=True)),
     Scenario("lang-B", "English after the Swedish greeting", (
         Step(EN, (Piece("Hi, I would like to book a table for two tomorrow at eight, please."),)),
         Step(EN, (Piece("Yes, that is right."),)),
-        Step(EN, (Piece("John Smith.", gloss="My name is John Smith."),))),
+        Step(EN, (Piece("John Smith.", gloss="My name is John Smith."),)),
+        Step(EN, (Piece("Yes, that is right.", gloss="Yes."),))),
         Expect(final_language=EN, switches=1, booked=True)),
     Scenario("lang-C", "Persian booking (no AWS voice: unsupported + callback)", (
         Step("fa", (Piece("سلام، می‌خواهم برای فردا ساعت هشت یک میز برای چهار نفر رزرو کنم.",
@@ -136,7 +139,8 @@ LANGUAGE = (
         Step("ar", (Piece("مرحبا، أريد حجز طاولة لشخصين غداً الساعة الثامنة مساءً.",
                           gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
         Step("ar", (Piece("نعم، هذا صحيح.", gloss="Yes, that is right."),)),
-        Step("ar", (Piece("أحمد.", gloss="My name is Ahmed."),))),
+        Step("ar", (Piece("أحمد.", gloss="My name is Ahmed."),)),
+        Step("ar", (Piece("نعم، صحيح.", gloss="Yes, that is right."),))),
         Expect(final_language="ar", switches=1, booked=True)),
     Scenario("lang-E", "Mid-call switch English to Swedish", (
         Step(EN, (Piece("Hello, do you have a table for four on Friday evening?"),)),
@@ -165,19 +169,22 @@ EXTRA = (
         Step("de", (Piece("Guten Abend, ich möchte einen Tisch für zwei Personen morgen um acht Uhr reservieren.",
                           gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
         Step("de", (Piece("Ja, das stimmt.", gloss="Yes, that is right."),)),
-        Step("de", (Piece("Hans Müller.", gloss="My name is Hans Mueller."),))),
+        Step("de", (Piece("Hans Müller.", gloss="My name is Hans Mueller."),)),
+        Step("de", (Piece("Ja, richtig.", gloss="Yes, that is right."),))),
         Expect(final_language="de", switches=1, booked=True)),
     Scenario("lang-J", "Turkish booking", (
         Step("tr", (Piece("Merhaba, yarın akşam saat sekizde iki kişilik bir masa ayırtmak istiyorum.",
                           gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
         Step("tr", (Piece("Evet, doğru.", gloss="Yes, that is right."),)),
-        Step("tr", (Piece("Ayşe Yılmaz.", gloss="My name is Ayse Yilmaz."),))),
+        Step("tr", (Piece("Ayşe Yılmaz.", gloss="My name is Ayse Yilmaz."),)),
+        Step("tr", (Piece("Evet, doğru.", gloss="Yes, that is right."),))),
         Expect(final_language="tr", switches=1, booked=True)),
     Scenario("lang-K", "Polish booking", (
         Step("pl", (Piece("Dzień dobry, chciałbym zarezerwować stolik dla dwóch osób jutro na godzinę dwudziestą.",
                           gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
         Step("pl", (Piece("Tak, zgadza się.", gloss="Yes, that is right."),)),
-        Step("pl", (Piece("Jan Kowalski.", gloss="My name is Jan Kowalski."),))),
+        Step("pl", (Piece("Jan Kowalski.", gloss="My name is Jan Kowalski."),)),
+        Step("pl", (Piece("Tak, dokładnie.", gloss="Yes, that is right."),))),
         Expect(final_language="pl", switches=1, booked=True)),
 )
 

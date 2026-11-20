@@ -116,7 +116,7 @@ def test_a_wait_that_times_out_does_not_abort_the_caller():
         finally:
             driver.cancel()
 
-    assert len(asyncio.run(main())) == 3
+    assert len(asyncio.run(main())) == 4
 
 
 # --- what the fake recogniser is told --------------------------------------------------------------------------------

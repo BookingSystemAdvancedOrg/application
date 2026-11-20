@@ -58,7 +58,12 @@ final 550 ms after the last word), so a change to the turn's shape shows in fake
 numbers: the scripted callers are not reactive, so some booking checks fail under it as they did before.
 
 Live mode uses the AWS profile `booqy-dev` (`VG_AWS_PROFILE` to change it); tables and tool Lambdas stay
-faked, so it writes no dev data. The silero model: point `VG_SILERO_MODEL` at a `silero_vad.onnx` (the
+faked, so it writes no dev data. With `VG_WORLD=dev` the restaurant is the real dev "Restaurant 1" instead (real
+tables and tool Lambdas through `tests/vg_harness/devworld.py`; SMS notices and events recorded, never sent): bookings
+are really written, so the answers depend on the dev availability (other sessions book there too). Take
+`python -m vg_harness.devclean snapshot before.json` (from `tests/`) first and `... clean before.json` after each
+scenario: it deletes the replay's calls, reservations, slot rows and callbacks and lowers the USAGE row, and leaves
+rows other sessions wrote. The silero model: point `VG_SILERO_MODEL` at a `silero_vad.onnx` (the
 container has it at `/opt/models/silero_vad.onnx`); without it the energy VAD is used and logged as
 `vad_fallback`.
 

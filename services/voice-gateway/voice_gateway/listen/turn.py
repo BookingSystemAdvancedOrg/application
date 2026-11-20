@@ -127,7 +127,9 @@ _TOKEN = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
 TIME_MARKERS = frozenset("klockan kl halv kvart at um om à alle saat godzina godzinę".split())
 _SENTENCE_END = re.compile(r"[.?!]\s*$")
 _HESITATION = re.compile(r"^(?:e+h*m*|ä+h*m*|ö+h*m*|u+[hm]+|h+m+|m{2,}|er+m*|a+h+m+)$")
-IDENTIFY_FINAL_WAIT_MS = 900   # the most a turn waits for the identify stream's final (first utterance)
+IDENTIFY_FINAL_WAIT_MS = 1500  # the most a turn waits for the identify stream's final (first utterance)
+# Live 2026-11-20: that final came 1.8 s after the end of speech (550 + 1250), its partials 1.5 to 2.5 s behind the audio. At 900 ms the
+# turn ended on "jag vill boka ett bord" / "för 8 personer på lördag" and the rest of the sentence ("klockan sju") was lost.
 EMPTY_GRACE_MS = 1500        # speech heard but no words yet: Transcribe may lag, wait this long before dropping
 # A hesitation sound Transcribe leaves out. Live on booqy-dev (2026-11-20) "boka bord för, ehm... fyra" came back as
 # "boka bord för." with nothing for the "ehm": the turn ended 1.4 s after it, inside the caller's pause. A voiced
@@ -270,7 +272,10 @@ class TurnDetector:
         if self._sticky_burst or self._wordless_burst():
             # Sticky for the pause: live voice-A the final of "för" arrived inside the pause with its end time
             # stretched over the "ehm", the burst no longer looked wordless and the wait fell back to 1400 ms.
-            longest = kind in ("dangling", "filler") or (self._sticky_burst and self._after_dangling(text))
+            # On the first utterance the identify stream's partials lag ("boka bord för" arrives as "jag skulle vilja bok"
+            # inside the pause, live voice-A 2026-11-20): the tail of the text says nothing yet, the burst stays a hesitation.
+            lagging = self._sticky_burst and not self.partial_ends
+            longest = kind in ("dangling", "filler") or (self._sticky_burst and (self._after_dangling(text) or lagging))
             self._sticky_burst = self._state == "paused" and longest      # only "för ... ehm" stays held
             return (cfg.max_silence_ms if longest else min(cfg.filler_silence_ms, cfg.max_silence_ms)), "filler"
         if kind == "short_answer":

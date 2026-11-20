@@ -88,6 +88,7 @@ EXPECTED_OPERATIONS = {
     "/tenant/billing": frozenset({"get"}),
     "/tenant/billing/card-session": frozenset({"post"}),
     "/site-config": frozenset({"get"}),
+    "/translate": frozenset({"post"}),
     "/locations/{locationId}/reservations": frozenset({"get", "post"}),
     "/locations/{locationId}/reservations/manual": frozenset({"post"}),
     "/locations/{locationId}/reservations/{reservationId}": frozenset(
@@ -210,6 +211,7 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/menu", "get"),
         ("/locations/{locationId}/layout/active", "get"),
         ("/site-config", "get"),
+        ("/translate", "post"),
         ("/locations/{locationId}/reservations", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
         ("/k/{code}", "get"),

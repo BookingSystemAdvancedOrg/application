@@ -1126,6 +1126,11 @@ Plan feature `marketing`. One table (`MARKETING_TABLE_NAME`), layout in `shared/
 **Trigger:** EventBridge Scheduler (`dlq_replay_interval_minutes`), input `{"queue": "all", "max": 50}`
 **Purpose:** Drains the dead-letter queues (lifecycle, notification and print stream pointers, scheduled invocations) by redelivering each message to the owning Lambda's live alias; deletes it only on success. After 3 failed replays it emails the alerts topic once and parks the message; expired stream pointers are reconciled (catering-lifecycle) or escalated. Scheduled targets must be on the `REPLAYABLE_FUNCTION_ARNS` allow-list.
 
+### 30c. `site-translate`
+**Trigger:** API GW `POST /translate`, Auth NONE; sites call it as `/api/translate` on their own domain (CloudFront and the sites' WAF add `x-booqy-viewer-host`, `x-booqy-viewer-ip`, `x-booqy-waf`)
+**Purpose:** The site languages (English, Spanish, Arabic, Persian; Swedish is the default and the source). Body `{lang, texts (1..100, each up to 3000 characters, 20000 in all), keep (0..200 names), slug (outside prod only)}` -> `{lang, texts, partial}`. The site is the viewer host, resolved like `tenant-site-config` (unknown, pending or inactive: 403 `unknown_site`); prod needs the WAF header (403 `bot_check_failed`). Names in `keep`, prices, times, numbers, phone numbers, e-mail addresses and URLs are wrapped in `translate="no"` (`shared/site_translate.py`) and must come back unchanged, else the Swedish text is used. Cache: in-memory LRU, then the `site-translations` table (`PK = T#<lang>#<sha256 of the protected text>`, `text`, `ttl` 180 days, no source text). Misses go to Amazon Translate within the character budgets in the request-guard table (`request_guard.consume`): per IP per hour, per restaurant and for the platform per 30 days; over a budget, a Translate error or a failed token check: the Swedish source and `partial: true`, never 5xx. 120 requests per IP per 5 minutes (429 `rate_limited`). Metrics `Booqy/SiteTranslate` (EMF): `Requests`, `CacheHits`, `Misses`, `TranslatedChars`, `BudgetLimited`, `TokenCheckFailed`, `TranslateErrors`. Logs carry tenantId, lang and counts only.
+**Env:** `ENVIRONMENT`, `TRANSLATION_TABLE_NAME`, `TENANT_TABLE_NAME`, `REQUEST_GUARD_TABLE_NAME`, `SITE_WAF_SECRET`, `CLOUDFRONT_EDGE_SECRET`, `TRANSLATE_IP_REQUESTS_PER_5MIN` (120), `TRANSLATE_IP_CHARS_PER_HOUR` (30000), `TRANSLATE_TENANT_CHARS_PER_30D` (500000), `TRANSLATE_GLOBAL_CHARS_PER_30D` (5000000)
+
 ---
 
 ### 31. `finance-rollup`
@@ -1217,6 +1222,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 30 | `tenant-purge` | EventBridge Scheduler (nightly / hourly in dev) | - |
 | 30a | `dlq-replay` | EventBridge Scheduler (`dlq_replay_interval_minutes`) | - |
 | 30b | `site-repo` | Direct invoke (onboarding, offboarding, platform-tenants) | n/a |
+| 30c | `site-translate` | API GW `POST /translate` (sites: `/api/translate`) | NONE (site host, WAF in prod) |
 | 31 | `finance-rollup` | EventBridge Scheduler (nightly), Booqy Console Rebuild (`{from, to}`) | - |
 | 32 | `insights-rollup` | EventBridge Scheduler (nightly), by hand (`{from, to}`) | - |
 | 33 | `insights` | API GW `GET /insights` | JWT (owner, staff without amounts) |

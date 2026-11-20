@@ -57,7 +57,12 @@ FORMALITY = {"es": "INFORMAL"}
 # v3: Translate gets the Booqy custom terminology (bord = restaurant table,
 # platser = seats, ...), so the v2 entries (tables as spreadsheets, seats as
 # web sites) are not served again.
-VERSION = "v3"
+# v4: in Arabic and Persian the restaurant words are put into the source as
+# protected target words (apply_terms), because Translate's custom terminology
+# is only a hint and was ignored there ("Bordet är reserverat" came back as
+# "the table" in the spreadsheet sense, sentence-initial or not), and "pers"
+# is a known term.
+VERSION = "v4"
 RTL = ("ar", "fa")
 
 MAX_TEXTS = 100
@@ -255,6 +260,61 @@ def load_glossary(path=GLOSSARY_FILE):
 
 
 GLOSSARY = load_glossary()
+
+
+def load_terms(path=GLOSSARY_FILE):
+    """{lang: [(swedish term, target word)]} for ar and fa, longest Swedish
+    term first, from the "terms" rows of the glossary file (a copy of
+    infrastructure site-translate/terminology.csv)."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    columns = data["columns"]
+    out = {}
+    for lang in RTL:
+        i = columns.index(lang)
+        pairs = [(_norm(row[0]), row[i]) for row in data.get("terms", []) if row[i]]
+        out[lang] = sorted(pairs, key=lambda p: (-len(p[0]), p[0]))
+    return out
+
+
+TERMS = load_terms()
+_TERM_RE = {lang: re.compile(r"(?<!\w)(?:" + "|".join(re.escape(sv) for sv, _ in pairs) + r")(?!\w)",
+                             re.IGNORECASE)
+            for lang, pairs in TERMS.items() if pairs}
+_TERM_TARGET = {lang: {sv.lower(): target for sv, target in pairs} for lang, pairs in TERMS.items()}
+
+
+def apply_terms(marked, lang):
+    """The marked text with every restaurant word (bord, bordet, Borden,
+    platser, pers, ...) outside the protected parts replaced by its Arabic or
+    Persian word inside <span translate="no">, which Amazon Translate keeps
+    as written. Matching is case-insensitive, so a capitalised first word of a
+    sentence is covered too. Other languages: unchanged (the terminology
+    works there). Undo with unwrap_terms."""
+    pattern = _TERM_RE.get(lang)
+    if pattern is None:
+        return marked
+    targets = _TERM_TARGET[lang]
+
+    def swap(segment):
+        return pattern.sub(lambda m: _OPEN + html.escape(targets[_norm(m.group(0)).lower()], quote=False) + _CLOSE,
+                           segment)
+
+    out, pos = [], 0
+    for m in _SPAN.finditer(marked):
+        out.append(swap(marked[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(swap(marked[pos:]))
+    return "".join(out)
+
+
+def unwrap_terms(translated, lang):
+    """The translation with the term spans apply_terms added unwrapped, so
+    only the spans of the real protected parts are left for restore()."""
+    if not isinstance(translated, str) or lang not in _TERM_TARGET:
+        return translated
+    words = {html.escape(t, quote=False) for t in _TERM_TARGET[lang].values()}
+    return _SPAN.sub(lambda m: m.group(1) if m.group(1) in words else m.group(0), translated)
 
 
 def template(marked):
@@ -469,7 +529,7 @@ def cache_put(entries, now):
 def translate_one(marked, lang, deadline=None):
     """The raw translation of one marked text, or None (logged by code).
     ``deadline`` (time.monotonic()): no attempt starts after it."""
-    kwargs = {"Text": marked, "SourceLanguageCode": SOURCE, "TargetLanguageCode": lang}
+    kwargs = {"Text": apply_terms(marked, lang), "SourceLanguageCode": SOURCE, "TargetLanguageCode": lang}
     name = terminology()[0]
     if name:
         # Restaurant words in whole sentences (bord, platser, sällskap, ...):
@@ -482,7 +542,7 @@ def translate_one(marked, lang, deadline=None):
             logger.warning(json.dumps({"translate": "failed", "code": "deadline"}))
             return None
         try:
-            return _translate_client().translate_text(**kwargs)["TranslatedText"]
+            return unwrap_terms(_translate_client().translate_text(**kwargs)["TranslatedText"], lang)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             if code not in RETRYABLE or attempt == ATTEMPTS - 1:

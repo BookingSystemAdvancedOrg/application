@@ -111,13 +111,13 @@ def test_spanish_is_informal_and_the_others_have_no_formality(app):
 
 
 def test_second_request_is_served_from_the_cache(app):
-    call(app, {"lang": "en", "texts": ["Boka bord"]})
+    call(app, {"lang": "en", "texts": ["Hälsa på kocken"]})
     app["m"]._sites.clear()
     st._lru.items.clear()  # a cold container: only DynamoDB has it
-    status, body, _ = call(app, {"lang": "fa", "texts": ["Boka bord"]})
-    assert body["texts"] == ["FA(Boka bord)"]
-    status, body, _ = call(app, {"lang": "en", "texts": ["Boka bord", "Boka bord"]})
-    assert body["texts"] == ["EN(Boka bord)"] * 2
+    status, body, _ = call(app, {"lang": "fa", "texts": ["Hälsa på kocken"]})
+    assert body["texts"] == ["FA(Hälsa på kocken)"]
+    status, body, _ = call(app, {"lang": "en", "texts": ["Hälsa på kocken", "Hälsa på kocken"]})
+    assert body["texts"] == ["EN(Hälsa på kocken)"] * 2
     assert len(app["fake"].calls) == 2  # en once, fa once
 
 

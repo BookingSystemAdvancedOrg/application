@@ -154,3 +154,30 @@ def test_isolates_only_in_rtl_and_only_around_latin_or_digits():
     assert out == "اتصل " + FSI + "08-123 45 67" + PDI + " قبل " + FSI + "18:00" + PDI
     assert st.restore(marked, tokens, "en") == "Ring 08-123 45 67 före 18:00"
     assert st.restore(marked, tokens) == "Ring 08-123 45 67 före 18:00"
+
+
+# --- table aria-labels and "pers" (retest findings 1 and 2) ---------------------------------
+
+@pytest.mark.parametrize("lang,expected", [
+    ("en", "Table 4, 6 seats, available"),
+    ("es", "Mesa 4, 6 plazas, libre"),
+    ("ar", "الطاولة ⁨4⁩، ⁨6⁩ مقاعد، متاحة"),
+    ("fa", "میز ⁨4⁩، ⁨6⁩ صندلی، آزاد"),
+])
+def test_table_aria_label_available(lang, expected):
+    assert gloss(lang, "Bord 4, 6 platser, ledigt") == expected
+
+
+@pytest.mark.parametrize("status", ["ledigt", "valt", "upptaget", "går inte att välja",
+                                    "går inte att välja: bokat", "går inte att välja: spärrat"])
+def test_table_aria_label_every_status_in_every_language(status):
+    for lang in LANGS:
+        out = gloss(lang, f"Bord 12, 2 platser, {status}")
+        assert out and "12" in out and "2" in out and "Bord" not in out, (lang, status)
+
+
+@pytest.mark.parametrize("lang,word", [("en", "people"), ("es", "personas"), ("ar", "أشخاص"), ("fa", "نفر")])
+def test_pers_abbreviation(lang, word):
+    assert word in gloss(lang, "3 pers")
+    assert word in gloss(lang, "3-6 pers")
+    assert gloss(lang, "pers") == word

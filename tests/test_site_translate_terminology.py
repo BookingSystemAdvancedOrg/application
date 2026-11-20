@@ -122,8 +122,8 @@ def test_translate_one_passes_terminology_names(monkeypatch):
     fake = TermTranslate()
     monkeypatch.setitem(st._clients, "translate", fake)
     monkeypatch.setenv("SITE_TRANSLATE_TERMINOLOGY", "site-translate-terms")
-    st.translate_one("Boka bord", "ar")
-    assert fake.calls[-1] == {"Text": "Boka bord", "SourceLanguageCode": "sv", "TargetLanguageCode": "ar",
+    st.translate_one("Boka bord", "en")
+    assert fake.calls[-1] == {"Text": "Boka bord", "SourceLanguageCode": "sv", "TargetLanguageCode": "en",
                               "TerminologyNames": ["site-translate-terms"]}
 
 
@@ -136,7 +136,7 @@ def test_without_a_terminology_configured_none_is_sent(monkeypatch):
 
 
 def test_cache_key_is_v3_and_changes_with_the_terminology(monkeypatch):
-    assert st.VERSION == "v3"
+    assert st.VERSION == "v4"
     monkeypatch.setenv("SITE_TRANSLATE_TERMINOLOGY", TERMINOLOGY)
     monkeypatch.setenv("SITE_TRANSLATE_TERMINOLOGY_HASH", "one")
     first = st.cache_key("en", "Boka bord")

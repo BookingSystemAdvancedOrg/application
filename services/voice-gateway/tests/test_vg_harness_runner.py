@@ -182,3 +182,53 @@ def test_missing_components_is_a_list_of_dotted_names():
 def test_run_rejects_an_unknown_mode():
     with pytest.raises(ValueError):
         asyncio.run(runner.run(sc.get("voice-A"), "turbo"))
+
+
+def test_driver_works_against_the_real_local_adapter_with_a_stand_in_gateway():
+    """drive_caller on the real LocalAdapter (clean 16 kHz line, FakeClock): a stand-in gateway answers the call, plays a
+    greeting and a short reply after the first caller words, and counts the caller frames until the caller hangs up."""
+    from voice_gateway.audio.local import LocalAdapter
+
+    scenario = sc.get("voice-F")
+
+    async def main():
+        clock = FakeClock()
+        adapter = LocalAdapter(clock, paced=True)
+        driver = asyncio.create_task(clock.drive())
+        got = {"frames": 0, "loud": 0}
+
+        async def gateway():
+            from voice_gateway.audio.frames import Frame
+            await adapter.accept()
+
+            async def pump():                                    # the listener: consume the caller from the first frame
+                async for frame in adapter.caller_frames():
+                    got["frames"] += 1
+                    got["loud"] += 1 if any(frame.pcm) else 0
+
+            pumping = asyncio.create_task(pump())
+            for i in range(50):                                  # a one second greeting
+                await adapter.play(Frame(b"\x10\x10" * 320, i * 20))
+                await clock.sleep_ms(20)
+            await pumping
+
+        task = asyncio.create_task(gateway())
+        await asyncio.sleep(0)
+        audio = audio_for(scenario, ms_per_piece=400)
+        for step in audio:
+            for piece in step:
+                object.__setattr__(piece, "pcm", b"\x00\x10" * 6400)        # 400 ms of audible samples
+        segments = []
+        try:
+            await asyncio.wait_for(runner.drive_caller(scenario, adapter, clock, audio, reply_timeout_ms=1500,
+                                                       end_quiet_ms=200, segments=segments), 30)
+            await asyncio.wait_for(task, 10)
+        finally:
+            driver.cancel()
+        return segments, got, adapter
+
+    segments, got, adapter = asyncio.run(main())
+    assert [s.label for s in segments] == ["voice-F/s0p0", "voice-F/s1p0"]
+    assert segments[1].start_ms > segments[0].end_ms and all(s.end_ms - s.start_ms >= 380 for s in segments)
+    assert got["frames"] > 50 and got["loud"] >= 36                    # two 400 ms pieces reached the gateway as audio
+    assert adapter.closed

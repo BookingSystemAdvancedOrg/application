@@ -348,7 +348,7 @@ def without_names(text, names=()):
     """The utterance without the call's proper names (for the hint)."""
     out = str(text or "")
     for name in sorted((str(n) for n in names or () if n), key=len, reverse=True):
-        out = re.sub(re.escape(name), " ", out, flags=re.I)
+        out = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", out, flags=re.I)   # whole words only
     return out
 
 

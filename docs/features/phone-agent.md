@@ -65,7 +65,9 @@ location and forwards the restaurant's number.
   language ("för", "och", "till", "klockan", "for", "and", "für") gets only a short backchannel ("Mm?",
   "Ja?", per language, varied) and is kept on the call row (`heldFragment`); the next utterance is joined
   to it before the agent runs. At most 2 in a row, a fragment older than 30 s is dropped, verb particles
-  ("lägga till", "boka om") and questions ("who am I speaking with") are finished. A held turn writes
+  ("lägga till", "boka om") and questions ("who am I speaking with") are finished. Swedish and English
+  list only conjunctions, articles and the clearest open words, because both end ordinary sentences on a
+  preposition ("det var det jag tänkte på", "what I'm looking for"). A held turn writes
   nothing else (the read-back guard counts agent turns). Metric `HesitationHold`.
 - **Natural phrasing.** The prompt offers short acknowledgements per language (`copy.OPENERS`, "Okej",
   "Precis", "Sure"), at most every second reply and never the same twice in a row, and host-like

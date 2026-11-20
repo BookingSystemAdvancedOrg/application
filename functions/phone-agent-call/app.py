@@ -614,8 +614,8 @@ def _lex_answer(event, text, *, close=False, attributes=None, nxt=None, speak=Tr
     return {"sessionState": state, "messages": messages}
 
 
-# Polly on the Connect test line: a little slower than its default, which sounded hurried.
-LEX_SPEECH_RATE = "92%"
+# Polly on the Connect test line at its own pace (voice ASSESSMENT stage 1: 92% sounded slow and even; A/B test it).
+LEX_SPEECH_RATE = "100%"
 
 
 def _ssml(text):

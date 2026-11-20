@@ -20,7 +20,7 @@ from test_phone_agent_languages import flow, lex
 from test_phone_agent_live import TOMORROW
 from test_phone_agent_support import env  # noqa: F401 (fixture)
 
-DASHES = re.compile("[–—]|&[nm]dash;")
+DASHES = re.compile("[\u2013\u2014]|&[nm]dash;")
 
 
 def record(e, replies):
@@ -80,6 +80,11 @@ def test_an_unfinished_utterance_is_held(text, langs):
     ("Dört kişi için", ("tr",)),              # Turkish postpositions end a phrase
     ("Ich rufe morgen an", ("de",)),           # German separable verbs
     ("Har ni öppet?", ("sv",)),
+    ("Det var det jag tänkte på", ("sv",)),    # Swedish strands prepositions in finished sentences
+    ("Det är bokningen jag ringde om", ("sv",)),
+    ("Och vem pratar jag med", ("sv",)),
+    ("Yes, that's exactly what I'm looking for", ("en",)),
+    ("Yes, I'd like to", ("en",)),
     ("", ("sv",)),
 ])
 def test_a_finished_utterance_is_not_held(text, langs):
@@ -124,8 +129,8 @@ def test_the_connect_line_answers_a_hesitation_with_a_backchannel(live):
     out, attrs = lex(live, "contact-h1", "Hej")
     out, attrs = lex(live, "contact-h1", "Jag skulle vilja boka bord för, öhm", attrs)
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
-    assert out["messages"][0]["content"] in ('<speak><prosody rate="92%">Mm?</prosody></speak>',
-                                             '<speak><prosody rate="92%">Ja?</prosody></speak>')
+    assert out["messages"][0]["content"] in ('<speak><prosody rate="100%">Mm?</prosody></speak>',
+                                             '<speak><prosody rate="100%">Ja?</prosody></speak>')
 
 
 # --- the switch rules ----------------------------------------------------------------------------------
@@ -488,3 +493,8 @@ def test_owner_wording_is_unchanged():
         for text in texts:
             if isinstance(text, str):
                 assert "AI-assistent" not in text, name
+
+
+def test_a_proper_name_is_removed_as_whole_words_only():
+    assert language.without_names("Har ni barnstol på Bar Nord?", ["Bar", "Bar Nord"]).split() == \
+        ["Har", "ni", "barnstol", "på", "?"]

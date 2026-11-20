@@ -146,7 +146,7 @@ def test_booqy_is_read_as_bookie_by_polly_and_written_out_for_plain_text_voices(
 
 def test_the_lex_reply_carries_the_alias_inside_the_ssml(live):
     ssml = live.live._ssml("Jag är Booqy-assistenten & hjälper dig.")
-    assert ssml == ('<speak><prosody rate="92%">Jag är <sub alias="Bookie">Booqy</sub>-assistenten &amp; hjälper '
+    assert ssml == ('<speak><prosody rate="100%">Jag är <sub alias="Bookie">Booqy</sub>-assistenten &amp; hjälper '
                     'dig.</prosody></speak>')
 
 
@@ -168,7 +168,7 @@ def test_the_connect_line_greeting_comes_from_the_restaurants_data(live):
     location = shared_tenant.get_location(TENANT_A, LOC_A)
     out = live.live.handler({"connectGreeting": {"dialedNumber": NUMBER}})
     assert out["ok"] == "true" and set(out) == {"ok", "greeting"} and all(isinstance(v, str) for v in out.values())
-    assert out["greeting"].startswith(f'<speak><prosody rate="92%">Hej och välkommen till {location["name"]}. '
+    assert out["greeting"].startswith(f'<speak><prosody rate="100%">Hej och välkommen till {location["name"]}. '
                                       "Du pratar med vår digitala assistent.")
     assert live.live.handler({"connectGreeting": {"dialedNumber": "+46100000999"}}) == {"ok": "false"}
     assert live.live.handler({"connectGreeting": {}}) == {"ok": "false"}

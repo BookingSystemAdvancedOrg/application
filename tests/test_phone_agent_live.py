@@ -515,12 +515,12 @@ def test_connect_lex_unknown_number_or_refused_call_is_closed(live):
     out, _ = lex(live, "contact-4", "Hej")
     assert out["sessionState"]["dialogAction"]["type"] == "Close"
     assert out["messages"][0]["contentType"] == "SSML"
-    assert out["messages"][0]["content"].startswith('<speak><prosody rate="92%">Tyvärr kan vi inte')
+    assert out["messages"][0]["content"].startswith('<speak><prosody rate="100%">Tyvärr kan vi inte')
 
 
 def test_connect_lex_reply_is_calm_escaped_ssml(live):
     message = live.live._lex_answer({}, 'Pasta & vin <i dag> "special"')["messages"][0]
-    assert message == {"contentType": "SSML", "content": '<speak><prosody rate="92%">Pasta &amp; vin &lt;i dag&gt; '
+    assert message == {"contentType": "SSML", "content": '<speak><prosody rate="100%">Pasta &amp; vin &lt;i dag&gt; '
                                                          '&quot;special&quot;</prosody></speak>'}
     assert live.live._lex_answer({}, "")["messages"][0]["content"] == \
-        '<speak><prosody rate="92%">...</prosody></speak>'
+        '<speak><prosody rate="100%">...</prosody></speak>'

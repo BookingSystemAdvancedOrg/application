@@ -27,12 +27,15 @@ FILLERS = frozenset((
     "yyy yyyy ııı ıı şey yani ano eto etto ettoo eto ehto эм э ээ эээ нуу مم اممم امم ام اه آه یعنی ممم "
     "えーと えっと えー あの あのー 음 어 그 저 उम्म अं").split())
 
-# Words that cannot end a finished utterance, per language (lowercase). Separable verb particles that
+# Words that cannot end a finished utterance, per language (lowercase). Swedish and English strand
+# prepositions in ordinary finished sentences ("det var det jag tänkte på", "that's what I'm looking for"),
+# so only conjunctions, articles and the clearest open words are listed for them; a false hold costs the
+# caller a "Mm?" and a repeat. Separable verb particles that
 # often end a sentence (German an/mit/zu/auf, Dutch op/aan/mee, Danish på/i/om) are left out on purpose;
 # Turkish is left out (its postpositions end complete phrases: "dört kişi için").
 DANGLING = {
-    "sv": "och eller men för till på med om att i av åt från kl klockan vid som utan mot efter innan",
-    "en": "and or but for to at with of the a an on in from about because than into onto",
+    "sv": "och eller men för till att kl klockan som",
+    "en": "and or but for of the a an because than",
     "de": "und oder aber für um am im vom beim den dem einen eine einem weil dass gegen ohne nach",
     "fr": "et ou mais pour à avec de du des le la les un une dans sur parce chez vers",
     "es": "y o pero para a con de del el la los las un una en por porque hacia",
@@ -66,7 +69,8 @@ PARTICLE_VERBS = {
     "sv": frozenset("lägga lägg la lade ta tar tog ha boka bokar ringa ringer ring komma kommer kom följa följer "
                     "följ hänga stänga håller hålla sätta sätter ändra gå går höra hör titta tittar tänka tänker "
                     "räkna räknar vänta väntar".split()),
-    "en": frozenset("hold holding carry go come log put call check sign turn look pick find hang get".split()),
+    "en": frozenset("hold holding carry go come log put call check sign turn look pick find hang get looking "
+                    "asking asked waiting paying paid hoping".split()),
 }
 
 # A question that starts with a question word may end on a preposition ("who am I speaking with").

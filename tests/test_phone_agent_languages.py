@@ -96,7 +96,7 @@ def test_switch_closes_without_a_message_and_hands_the_reply_to_the_flow(live):
     assert attrs["next"] == "switch" and attrs["lang"] == "de"
     assert (attrs["connectLanguage"], attrs["voice"], attrs["engine"]) == ("de-DE", "Vicki", "Neural")
     assert attrs["callerNumber"] == CALLER and attrs["dialedNumber"] == NUMBER
-    assert attrs["say"] == ('<speak><prosody rate="92%">Ich bin der digitale Assistent des Restaurants. '
+    assert attrs["say"] == ('<speak><prosody rate="100%">Ich bin der digitale Assistent des Restaurants. '
                             'Gerne. Für wie viele Personen?</prosody></speak>')
     row, turns = turns_of(live, attrs)
     assert row["language"] == "de" and row["languageSwitches"] == 1 and row["status"] == "talking"
@@ -110,7 +110,7 @@ def test_switch_closes_without_a_message_and_hands_the_reply_to_the_flow(live):
              "sessionState": {"intent": {"name": "Samtal", "state": "InProgress"}, "sessionAttributes": attrs}}
     out = live.live.handler({"lexV2": event})
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
-    assert out["messages"][0]["content"] == '<speak><prosody rate="92%">Wunderbar.</prosody></speak>'
+    assert out["messages"][0]["content"] == '<speak><prosody rate="100%">Wunderbar.</prosody></speak>'
     assert "next" not in out["sessionState"]["sessionAttributes"]
     assert turns_of(live, attrs)[1][-2]["asrLocale"] == "de_DE"
 
@@ -183,7 +183,7 @@ def test_a_garbled_first_sentence_is_asked_about_once_in_swedish_and_english(liv
 
     out, attrs = garbled("vala mak tobi sena ruki", attrs)
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
-    assert out["messages"][0]["content"] == f'<speak><prosody rate="92%">{copy.ask_language()}</prosody></speak>'
+    assert out["messages"][0]["content"] == f'<speak><prosody rate="100%">{copy.ask_language()}</prosody></speak>'
     row, turns = turns_of(live, attrs)
     assert row["languageAsked"] and turns[-1]["text"] == copy.ask_language()
     out, attrs = garbled("vala mak tobi sena ruki", attrs)       # asked once: the agent answers now

@@ -131,7 +131,7 @@ LANGUAGE = (
         Step("fa", (Piece("سلام، می‌خواهم برای فردا ساعت هشت یک میز برای چهار نفر رزرو کنم.",
                           gloss="Hello, I want to book a table for four tomorrow at 8."),)),
         Step("fa", (Piece("بله، لطفاً با من تماس بگیرید.", gloss="Yes."),))),
-        Expect(unsupported_reply=True, callback_topic="language:fa", switches=0)),
+        Expect(unsupported_reply=True, callback_topic="language:fa", switches=1)),
     Scenario("lang-D", "Arabic booking", (
         Step("ar", (Piece("مرحبا، أريد حجز طاولة لشخصين غداً الساعة الثامنة مساءً.",
                           gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),

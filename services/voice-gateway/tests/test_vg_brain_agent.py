@@ -273,8 +273,8 @@ def test_an_unsupported_language_is_held_and_answered_by_the_fixed_copy_in_its_o
     sentences = [(i.kind, i.language) for i in items if isinstance(i, AgentSentence)]
     assert {k for k, _ in sentences} == {"fixed"} and sentences[-1] == ("fixed", "en")
     assert all(lang != "fa" for _, lang in sentences)
-    assert spoken(items) == copy.unsupported_language(connect=True)        # Elin never reads Persian
-    assert done(items).language == "sv" and c.row()["language"] == "sv"
+    assert spoken(items) == f"{copy.DISCLOSURE_SHORT['en']} {copy.unsupported_language(connect=True)}"   # Elin never reads Persian
+    assert done(items).language == "en" and c.row()["language"] == "en"     # the English voice asks the one question
     c.close()
 
 

@@ -154,7 +154,7 @@ def not_heard_state(state: dict) -> dict:
     write needs a new read-back and a later clear yes. `resume` is popped
     again: a barge-in is not a deadline cut."""
     had_resume = "resume" in state
-    Executor.not_heard(SimpleNamespace(state=state, turn=state.get("turn")))
+    Executor.not_heard(SimpleNamespace(state=state, turn=state.get("turn"), _live=lambda: (None, None)))
     if not had_resume:
         state.pop("resume", None)
     return state

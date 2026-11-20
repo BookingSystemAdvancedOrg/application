@@ -381,3 +381,117 @@ def test_after_the_still_checking_sentence_the_next_turn_reads_back_and_books(en
     _next(ex)
     assert agent.run_turn(model, messages, "Ja", ex, system="s").reply == "Klart."
     assert _booked(env) == ["19:00"]
+
+
+# --- Adversarial review: the read-back is the whole booking ----------------------------------------
+
+def _create_after(ex, said, lang="sv", hold=("18:30", 4)):
+    ex.run("hold_table", {"date": TOMORROW, "time": hold[0], "partySize": hold[1]})
+    ex.heard(said, lang)
+    _next(ex)
+    return ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})
+
+
+@pytest.mark.parametrize("lang, said", [
+    ("sv", "Ett bord för fem på tisdag klockan halv sju. Stämmer det?"),                 # party
+    ("sv", "Fem personer på tisdag klockan halv sju. Stämmer det?"),
+    ("sv", "Fyra personer på tisdag den tionde november klockan halv sju. Stämmer det?"),  # a week later
+    ("sv", "Fyra personer i dag klockan halv sju. Stämmer det?"),                        # today, not tomorrow
+    ("sv", "Fyra personer den tredje december klockan halv sju. Stämmer det?"),          # another month
+    ("en", "A table for five on Tuesday at half past six. Is that correct?"),
+    ("en", "Four people on Tuesday the tenth of November at half past six. Is that correct?"),
+    ("de", "Ein Tisch für vier am Dienstag, den zehnten November, um halb sieben. Stimmt das?"),
+    ("zh", "五位，明天晚上六点半。对吗？"),     # five
+    ("fr", "Mardi à 19h30 pour quatre personnes. C'est bien ça ?"),                    # digits: 19:30
+    ("ko", "화요일 7시 반, 네 명. 맞습니까?"),                # 7:30
+])
+def test_a_read_back_of_another_party_day_or_time_never_books_the_hold(env, lang, said):
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env, language_=lang)
+    assert _create_after(ex, said, lang)["code"] == "readBackMismatch"
+    assert _booked(env) == []
+
+
+@pytest.mark.parametrize("lang, said", [
+    ("sv", "Ett bord för fyra i morgon, tisdag den tredje november, klockan halv sju. Stämmer det?"),
+    ("en", "May I confirm: a table for four tomorrow, Tuesday the third of November, at half past six?"),
+    ("de", "Ein Tisch für vier Personen morgen, am Dienstag, um halb sieben. Stimmt das?"),
+    ("zh", "11月3日星期二晚上六点半，四位。对吗？"),
+    ("fr", "Mardi à 18h30 pour quatre personnes. C'est bien ça ?"),
+])
+def test_the_same_party_day_and_time_in_full_still_books(env, lang, said):
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env, language_=lang)
+    assert _create_after(ex, said, lang)["booked"] is True
+    assert _booked(env) == ["18:30"]
+
+
+def test_a_failed_hold_for_another_time_voids_the_earlier_read_back(env):
+    """Read back 18:30; the caller asks for 20:00, which is taken, and the reply names no time; a yes
+    then must not book 18:30 (the caller had moved on from it)."""
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env)
+    ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})
+    ex.heard("Fyra personer på tisdag klockan halv sju. Stämmer det?", "sv")
+    _next(ex)
+    assert "holdId" not in ex.run("hold_table", {"date": TOMORROW, "time": "20:00", "partySize": 4})
+    ex.heard("Den tiden är tyvärr upptagen. Vill du ha en annan?", "sv")
+    _next(ex)
+    assert ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})["code"] == \
+        "readBackMismatch"
+    assert _booked(env) == []
+
+
+def test_holding_another_time_then_the_first_again_needs_a_new_read_back(env):
+    env.availability.set(TOMORROW, ["18:30", "19:00"])
+    ex = _ex(env)
+    ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})
+    ex.heard("Fyra personer på tisdag klockan halv sju. Stämmer det?", "sv")
+    _next(ex)
+    ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})
+    ex.heard("Vilket namn ska bokningen stå på?", "sv")             # no time named
+    _next(ex)
+    assert ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})["holdId"] == "p1"
+    assert ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})["code"] == \
+        "readBackMismatch"
+    assert _booked(env) == []
+
+
+def test_the_same_hold_checked_again_keeps_its_read_back(env):
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env)
+    ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})
+    ex.heard("Fyra personer på tisdag klockan halv sju. Stämmer det?", "sv")
+    _next(ex)
+    assert ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})["holdId"] == "p1"
+    assert ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})["booked"] is True
+
+
+def test_a_cut_turn_whose_own_sentence_names_another_time_voids_the_read_back(env):
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env)
+    ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})
+    ex.heard("Fyra personer på tisdag klockan halv sju. Stämmer det?", "sv")
+    _next(ex)
+    ex.not_heard("Klockan sju finns också, ett ögonblick.", "sv")
+    _next(ex)
+    assert ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})["code"] == \
+        "readBackMismatch"
+
+
+def test_a_cut_turn_with_a_plain_still_checking_sentence_keeps_the_read_back(env):
+    env.availability.set(TOMORROW, ["18:30"])
+    ex = _ex(env)
+    ex.run("hold_table", {"date": TOMORROW, "time": "18:30", "partySize": 4})
+    ex.heard("Fyra personer på tisdag klockan halv sju. Stämmer det?", "sv")
+    _next(ex)
+    ex.not_heard("Ett ögonblick, jag kollar fortfarande.", "sv")
+    _next(ex)
+    assert ex.run("create_reservation", {"holdId": "p1", "name": "Anna", "confirmed": True})["booked"] is True
+
+
+def test_the_fee_rule_needs_a_fee_word_not_a_word_that_contains_one():
+    assert not readback.mentions_terms("Would you like coffee or feedback?")
+    assert readback.mentions_terms("A fee applies if you cancel later than twenty-four hours before.")
+    assert readback.mentions_terms("取消费用")                     # Chinese: inside the word
+    assert readback.mentions_terms("Restaurangen tar ut en avgift om ni inte kommer.")

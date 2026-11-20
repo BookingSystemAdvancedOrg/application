@@ -377,11 +377,17 @@ class Executor:
         self.state.update(twin.state)
         self._cache.update(twin._cache)
 
-    def not_heard(self):
+    def not_heard(self, reply=None, lang=None):
         """The reply of this utterance was cut by the deadline (the caller
         heard only that the agent is still checking): what it looked up
         counts as looked up in the next utterance, so a write still needs a
-        read-back the caller hears first, and the next turn resumes."""
+        read-back the caller hears first, and the next turn resumes. When the
+        sentence said (`reply`, the model's own announcement) names another
+        day, time or party than the live hold, its earlier read-back is void."""
+        _, live = self._live()
+        if reply and live and readback.covers(reply, live["date"], live["time"], lang or self.language,
+                                              party=live.get("partySize"), today=self.today) is False:
+            self.state.pop("readBack", None)
         self.state["resume"] = True
         self.state["heard"] = self.turn       # nothing of this utterance was read back
         if self.turn is None:
@@ -686,6 +692,16 @@ class Executor:
         return answer
 
     def hold_table(self, args):
+        """A new hold, a failed one or another time offered: the read-back of
+        the earlier live hold no longer counts (the caller asked for something
+        else since). The same hold checked again keeps it."""
+        before = (self.state.get("readBack") or {}).get("holdId")
+        result = self._hold_table(args)
+        if before is not None and result.get("holdId") != before:
+            self.state.pop("readBack", None)
+        return result
+
+    def _hold_table(self, args):
         day, time, party = self._day(args["date"]), self._time(args["time"]), self._party(args["partySize"])
         problem = self._date_problem(day) or self._party_problem(party)
         if problem:
@@ -795,7 +811,8 @@ class Executor:
         due = proposal.get("guaranteeDue")
         if due and not proposal.get("guaranteeSaid") and readback.mentions_terms(reply, fees=due == "fee"):
             proposal["guaranteeSaid"] = turn
-        verdict = readback.covers(reply, proposal["date"], proposal["time"], lang or self.language)
+        verdict = readback.covers(reply, proposal["date"], proposal["time"], lang or self.language,
+                                  party=proposal.get("partySize"), today=self.today)
         if verdict is True:
             self.state["readBack"] = {"holdId": hold_id, "turn": turn}
         elif verdict is False:

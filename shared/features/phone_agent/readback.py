@@ -3,9 +3,11 @@
 
 The server compares the reply the caller heard with the one hold that can
 be booked (tools.Executor.heard): every clock time and weekday the reply
-names, in canonical form, must be the hold's. `covers()` answers True (the
-reply names the hold's time and nothing that contradicts it), False (it
-names another time or weekday) or None (it names no time).
+names, in canonical form, must be the hold's, and so must every day of
+the month, month, "today" or "tomorrow" and number of guests it names.
+`covers()` answers True (the reply names the hold's time and nothing that
+contradicts it), False (it names another time, day or party) or None (it
+names no time).
 
 Times are read from digits in any script and from words in the languages
 below. Half hours count toward the next hour in Swedish, Norwegian, Danish,
@@ -20,7 +22,7 @@ A clock time without the part of the day matches both halves of the day
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 PARSED = ("sv", "en", "no", "da", "de", "nl", "zh", "yue")
 
@@ -84,6 +86,9 @@ _DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹０１２３４
 _DIGIT_CLOCK = re.compile(r"(?<![\d:.])([01]?\d|2[0-3])\s?[:.]\s?([0-5]\d)(?![\d:])")
 _DIGIT_MARKED = re.compile(r"(?<!\w)(?:klockan|klokka|klokken|kl\.?|um|om|at|à|alle|a las)\s+([01]?\d|2[0-3])"
                            r"(?![\d:.]\d)(?!\s*(?:personer|people|guests|pers|gäster|personen|timmar|hours))", re.I)
+# "18h30" (French, Portuguese and others), "6시 30분" / "6시 반" (Korean).
+_DIGIT_H = re.compile(r"(?<![\d:.])([01]?\d|2[0-3])\s?h\s?([0-5]\d)(?!\d)", re.I)
+_KO_CLOCK = re.compile(r"(?<!\d)([01]?\d|2[0-3])\s*시(?:\s*(반|([0-5]?\d)\s*분))?")
 _DIGIT_SUFFIX = re.compile(r"(?<![\d:.])([01]?\d|2[0-3])\s*(am|pm|uhr|uur|h)\b", re.I)
 
 
@@ -167,6 +172,10 @@ def clock_times(text, lang=None):
             add(m.span(), (hour, minute))
     for m in _DIGIT_CLOCK.finditer(low):
         add(m.span(), (int(m.group(1)), int(m.group(2))))
+    for m in _DIGIT_H.finditer(low):
+        add(m.span(), (int(m.group(1)), int(m.group(2))))
+    for m in _KO_CLOCK.finditer(low):
+        add(m.span(), (int(m.group(1)), 30 if m.group(2) == "반" else int(m.group(3) or 0)))
     langs = [x for x in (lang, "en") if x in _PATTERNS]
     for code in dict.fromkeys(langs):
         for pattern, read in _PATTERNS[code]:
@@ -201,21 +210,169 @@ def same_clock(said, hold_time):
     return said[1] == minute and said[0] % 12 == hour % 12
 
 
-def covers(text, day, time, lang=None):
-    """True: the reply names the hold's time and no other time or weekday;
-    False: it names another time or another weekday; None: it names no time.
-    In a language whose words are not read here (PARSED), a reply that
-    contradicts nothing and asks a question counts as the read-back."""
+def covers(text, day, time, lang=None, *, party=None, today=None):
+    """True: the reply names the hold's time and no other time, weekday,
+    date or party size; False: it names another time, weekday, day of the
+    month, month, day relative to `today` ("i morgon") or number of guests;
+    None: it names no time. In a language whose words are not read here
+    (PARSED), a reply that contradicts nothing and asks a question counts as
+    the read-back."""
     times = clock_times(text, lang)
     days = weekdays(text, lang)
-    weekday = date.fromisoformat(str(day)[:10]).weekday()
-    if any(not same_clock(t, time) for t in times) or (days and weekday not in days):
+    when = date.fromisoformat(str(day)[:10])
+    if any(not same_clock(t, time) for t in times) or (days and when.weekday() not in days):
+        return False
+    if any(d != when for d in dates(text, lang, when, today)):
+        return False
+    if party is not None and any(n != int(party) for n in party_sizes(text, lang)):
         return False
     if times:
         return True
     if lang not in PARSED and re.search(r"[?？؟]", str(text or "")):
         return True
     return None
+
+
+# --- days of the month, months, days relative to today, party sizes --------------------------------
+
+_MONTHS = {
+    "sv": "januari februari mars april maj juni juli augusti september oktober november december",
+    "no": "januar februar mars april mai juni juli august september oktober november desember",
+    "da": "januar februar marts april maj juni juli august september oktober november december",
+    "de": "januar februar märz april mai juni juli august september oktober november dezember",
+    "nl": "januari februari maart april mei juni juli augustus september oktober november december",
+    "en": "january february march april may june july august september october november december",
+}
+MONTHS = {lang: words.split() for lang, words in _MONTHS.items()}
+_ORDINALS = {
+    "sv": "första andra tredje fjärde femte sjätte sjunde åttonde nionde tionde elfte tolfte trettonde fjortonde "
+          "femtonde sextonde sjuttonde artonde nittonde tjugonde tjugoförsta tjugoandra tjugotredje tjugofjärde "
+          "tjugofemte tjugosjätte tjugosjunde tjugoåttonde tjugonionde trettionde trettioförsta",
+    "no": "første andre tredje fjerde femte sjette sjuende åttende niende tiende ellevte tolvte trettende "
+          "fjortende femtende sekstende syttende attende nittende tjuende tjueførste tjueandre tjuetredje "
+          "tjuefjerde tjuefemte tjuesjette tjuesjuende tjueåttende tjueniende trettiende trettiførste",
+    "da": "første anden tredje fjerde femte sjette syvende ottende niende tiende ellevte tolvte trettende "
+          "fjortende femtende sekstende syttende attende nittende tyvende enogtyvende toogtyvende treogtyvende "
+          "fireogtyvende femogtyvende seksogtyvende syvogtyvende otteogtyvende niogtyvende tredivte enogtredivte",
+    "de": "erste zweite dritte vierte fünfte sechste siebte achte neunte zehnte elfte zwölfte dreizehnte "
+          "vierzehnte fünfzehnte sechzehnte siebzehnte achtzehnte neunzehnte zwanzigste einundzwanzigste "
+          "zweiundzwanzigste dreiundzwanzigste vierundzwanzigste fünfundzwanzigste sechsundzwanzigste "
+          "siebenundzwanzigste achtundzwanzigste neunundzwanzigste dreißigste einunddreißigste",
+    "nl": "eerste tweede derde vierde vijfde zesde zevende achtste negende tiende elfde twaalfde dertiende "
+          "veertiende vijftiende zestiende zeventiende achttiende negentiende twintigste eenentwintigste "
+          "tweeëntwintigste drieëntwintigste vierentwintigste vijfentwintigste zesentwintigste "
+          "zevenentwintigste achtentwintigste negenentwintigste dertigste eenendertigste",
+    "en": "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth "
+          "fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth twenty-first "
+          "twenty-second twenty-third twenty-fourth twenty-fifth twenty-sixth twenty-seventh twenty-eighth "
+          "twenty-ninth thirtieth thirty-first",
+}
+ORDINALS = {lang: {w: i + 1 for i, w in enumerate(words.split())} for lang, words in _ORDINALS.items()}
+ORDINALS["no"]["syvende"] = 7
+ORDINALS["no"]["tjuesyvende"] = 27
+for _w, _n in list(ORDINALS["en"].items()):
+    if "-" in _w:
+        ORDINALS["en"][_w.replace("-", " ")] = _n
+for _w, _n in list(ORDINALS["de"].items()):      # "am siebten", "der siebte", "siebter"
+    for _end in ("n", "r", "s", "m"):
+        ORDINALS["de"][_w + _end] = _n
+# Days relative to today (offset), longest forms first when read.
+_RELATIVE = {
+    "sv": {"i dag": 0, "idag": 0, "i kväll": 0, "ikväll": 0, "i morgon": 1, "imorgon": 1, "i övermorgon": 2,
+           "övermorgon": 2},
+    "no": {"i dag": 0, "i kveld": 0, "i morgen": 1, "i overmorgen": 2, "overmorgen": 2},
+    "da": {"i dag": 0, "i aften": 0, "i morgen": 1, "i overmorgen": 2, "overmorgen": 2},
+    "de": {"heute": 0, "morgen": 1, "übermorgen": 2},
+    "nl": {"vandaag": 0, "vanavond": 0, "morgen": 1, "overmorgen": 2},
+    "en": {"today": 0, "tonight": 0, "tomorrow": 1, "day after tomorrow": 2},
+    "zh": {"今天": 0, "今晚": 0, "明天": 1, "后天": 2, "後天": 2, "今日": 0, "聽日": 1, "听日": 1},
+}
+_NOT_ALONE = ("may", "march")       # English words that are a month only beside a day
+_CJK_DATE = re.compile(rf"(?:({_HAN_NUMBER})\s*月\s*)?({_HAN_NUMBER})\s*[日号號](?![本])")
+_PERSONS = {
+    "sv": ("personer", "person", "pers", "gäster", "gäst"), "no": ("personer", "person", "gjester", "gjest"),
+    "da": ("personer", "person", "gæster", "gæst"), "de": ("personen", "person", "gäste", "gast"),
+    "nl": ("personen", "persoon", "gasten", "gast", "mensen"),
+    "en": ("people", "persons", "person", "guests", "guest"),
+}
+_TABLE_FOR = {"sv": r"bord\s+för", "no": r"bord\s+(?:for|til)", "da": r"bord\s+(?:til|for)",
+              "de": r"tisch\s+für", "nl": r"tafel\s+voor", "en": r"table\s+for"}
+_CJK_PARTY = re.compile(rf"({_HAN_NUMBER})\s*(?:位|个人|個人|人|名)")
+
+
+def _month_day(text, lang):
+    """(month or None, day of month) pairs the text names in `lang` and English."""
+    low = " ".join(str(text or "").translate(_DIGITS).lower().replace(",", " ").split())
+    out = []
+    for code in dict.fromkeys(x for x in (lang, "en") if x in MONTHS):
+        months = _alternation(MONTHS[code])
+        ords = _alternation(ORDINALS[code])
+        day = rf"(?P<d>{ords}|[0-3]?\d)(?::?[ae]|st|nd|rd|th|\.)?"
+        for m in re.finditer(rf"(?<!\w){day}\s+(?:of\s+)?(?P<m>{months})(?!\w)", low):
+            out.append((MONTHS[code].index(m.group("m")) + 1, _day(m.group("d"), code)))
+        for m in re.finditer(rf"(?<!\w)(?P<m>{months})\s+(?:the\s+)?{day}(?!\w)", low):
+            out.append((MONTHS[code].index(m.group("m")) + 1, _day(m.group("d"), code)))
+        for m in re.finditer(rf"(?<!\w)(?P<m>{months})(?!\w)", low):
+            if m.group("m") not in _NOT_ALONE:      # "May I have your name?"
+                out.append((MONTHS[code].index(m.group("m")) + 1, None))
+    for m in _CJK_DATE.finditer(low):
+        out.append((_han(m.group(1)) if m.group(1) else None, _han(m.group(2))))
+    return out
+
+
+def _day(word, code):
+    return int(word) if word.isdigit() else ORDINALS[code][word]
+
+
+def dates(text, lang=None, near=None, today=None):
+    """The dates the text names that can be told apart: a day of the month
+    with or without the month (the year and month of `near`, the hold's
+    date, when left out), a month alone (any day of it is the hold's when
+    it is the hold's month) and "today", "tomorrow" (with `today`)."""
+    out = []
+    near = near or today
+    for month, day in _month_day(text, lang) if near else ():
+        try:
+            if day is None:
+                if month != near.month:
+                    out.append(date(near.year, month, 1))
+            else:
+                out.append(date(near.year, month or near.month, day))
+        except ValueError:
+            out.append(date.min)
+    if today is not None:
+        low = " " + " ".join(str(text or "").lower().split()) + " "
+        for code in dict.fromkeys(x for x in (lang, "en", "zh") if x in _RELATIVE):
+            words = _RELATIVE[code]
+            hits, spare = [], low
+            for word in sorted(words, key=len, reverse=True):
+                unspaced = not re.search(r"[a-zåäöæøüß]", word)
+                pattern = re.escape(word) if unspaced else rf"(?<![\w']){re.escape(word)}(?!\w)"
+                if code in ("de", "nl") and word == "morgen":
+                    pattern = r"(?<![\w'])(?<!am )(?<!den )(?<!'s )morgen(?!\w)"
+                if re.search(pattern, spare):
+                    hits.append(words[word])
+                    spare = re.sub(pattern, " ", spare)
+            out.extend(today + timedelta(days=n) for n in hits)
+    return out
+
+
+def party_sizes(text, lang=None):
+    """The numbers of guests the text names ("fyra personer", "table for four", "四位")."""
+    low = " ".join(str(text or "").translate(_DIGITS).lower().split())
+    out = []
+    for code in dict.fromkeys(x for x in (lang, "en") if x in _PERSONS):
+        nums = NUMBERS[code]
+        num = rf"(?P<n>{_alternation(nums)}|\d{{1,3}})"
+        for m in re.finditer(rf"(?<!\w){num}\s+(?:{_alternation(_PERSONS[code])})(?!\w)", low):
+            out.append(_hour(m.group("n"), nums))
+        for m in re.finditer(rf"(?<!\w){_TABLE_FOR[code]}\s+{num}(?!\w)", low):
+            out.append(_hour(m.group("n"), nums))
+    for m in _CJK_PARTY.finditer(low):
+        n = _han(m.group(1))
+        if n:
+            out.append(n)
+    return out
 
 
 # A fee in the caller's language (the card guarantee's rule): any of these words.
@@ -233,7 +390,22 @@ CARD_WORDS = ("kort", "card", "karte", "carte", "tarjeta", "carta", "kaart", "ko
               "jamstv", "担保", "擔保")
 
 
+def _term(word):
+    """A word in a spaced Latin, Greek or Cyrillic script starts a word ("fee", never "coffee");
+    Chinese, Japanese, Korean, Thai and Arabic-script words are found anywhere. A word of three
+    letters is whole, or plural ("fees", never "feedback")."""
+    if len(word) <= 3 and word.isascii():
+        return re.compile(rf"(?<![^\W\d_]){re.escape(word)}(?:s|es)?(?![^\W\d_])")
+    if re.match(r"[a-zà-öø-ÿāăąćčďęěğıłńňőřśşšťůűźżžα-ωа-яёіїє]", word):
+        return re.compile(rf"(?<![^\W\d_]){re.escape(word)}")
+    return re.compile(re.escape(word))
+
+
+_FEES = [_term(w) for w in FEE_WORDS]
+_CARDS = [_term(w) for w in FEE_WORDS + CARD_WORDS]
+
+
 def mentions_terms(text, fees=True):
     """The reply said the guarantee's fee rule (`fees`), else that a card is needed."""
     low = str(text or "").lower()
-    return any(w in low for w in (FEE_WORDS if fees else FEE_WORDS + CARD_WORDS))
+    return any(p.search(low) for p in (_FEES if fees else _CARDS))

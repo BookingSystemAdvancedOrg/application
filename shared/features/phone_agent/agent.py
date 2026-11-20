@@ -288,7 +288,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         text = still_checking(lang, spoken, max(0, int(getattr(executor, "turn", None) or 1) - 1))
         messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
         if hasattr(executor, "not_heard"):
-            executor.not_heard()
+            executor.not_heard(text, lang)
         said_in = lang if copy.pick(copy.STILL_CHECKING, lang) or text != copy.text(copy.STILL_CHECKING, lang) \
             else None
         return done(TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in))

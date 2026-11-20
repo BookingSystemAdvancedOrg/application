@@ -1,0 +1,80 @@
+# Copy to application/.github/workflows/voice-gateway-image.yml
+# Builds the voice gateway image (linux/arm64) and pushes it to the dev ECR repository in eu-north-1,
+# which the existing CI role dev-back-end-deploy-role may already push to. Dev only.
+name: Voice gateway image (dev)
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "services/voice-gateway/**"
+      - "shared/**"
+      - "functions/phone-agent-call/**"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: voice-gateway-image-dev
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load shared config
+        run: |
+          grep -v '^#' .github/config/project.env \
+            | grep -v '^[[:space:]]*$' \
+            | sed -e $'s/\r$//' -e 's/="\(.*\)"$/=\1/' \
+            >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.OIDC_ROLE_ARN_DEV }}
+          aws-region: eu-north-1
+          role-session-name: gha-voice-gateway-${{ github.run_id }}
+
+      - name: Log in to ECR
+        run: |
+          aws ecr get-login-password --region eu-north-1 \
+            | docker login --username AWS --password-stdin "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.eu-north-1.amazonaws.com"
+
+      - name: Skip when the repository does not exist (A2A test off)
+        id: repo
+        run: |
+          if aws ecr describe-repositories --region eu-north-1 --repository-names dev-voice-gateway-a2a >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::dev-voice-gateway-a2a does not exist (a2a_dev_test_enabled is false); nothing pushed."
+          fi
+
+      - name: Build and push
+        if: steps.repo.outputs.exists == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/voice-gateway/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.eu-north-1.amazonaws.com/dev-voice-gateway-a2a:latest
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.eu-north-1.amazonaws.com/dev-voice-gateway-a2a:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

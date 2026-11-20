@@ -107,3 +107,64 @@ def refund(counted):
                                          "code": exc.response.get("Error", {}).get("Code")}))
         except BotoCoreError:
             logger.error(json.dumps({"guard": "refund_failed"}))
+
+
+def _budget_key(kind, value, window, now):
+    seconds = int(now.timestamp())
+    bucket = seconds // window
+    return _key(kind, value, window, bucket), (bucket + 1) * window
+
+
+def consume(kind, value, amount, max_amount, window, now):
+    """Takes ``amount`` from a budget of ``max_amount`` per fixed window of
+    ``window`` seconds (e.g. characters sent to a paid service). True when
+    it fit and was counted, False when the budget can't cover it (nothing
+    is counted then). Fail open like ``check``: True when the table is
+    unset or unavailable."""
+    name = os.environ.get("REQUEST_GUARD_TABLE_NAME")
+    if not name or amount <= 0:
+        return True
+    if amount > max_amount:
+        return False
+    key, window_end = _budget_key(kind, value, window, now)
+    try:
+        table(name).update_item(
+            Key={"PK": key},
+            UpdateExpression="ADD used :n SET #ttl = if_not_exists(#ttl, :ttl)",
+            ConditionExpression="attribute_not_exists(used) OR used <= :room",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":n": amount, ":room": max_amount - amount,
+                                       ":ttl": window_end + 3600},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.warning(json.dumps({"budget": "exhausted", "kind": kind}))
+            return False
+        logger.error(json.dumps({"guard": "unavailable", "kind": kind,
+                                 "code": exc.response.get("Error", {}).get("Code")}))
+    except BotoCoreError:
+        logger.error(json.dumps({"guard": "unavailable", "kind": kind}))
+    return True
+
+
+def give_back(kind, value, amount, window, now):
+    """Returns ``amount`` that ``consume`` took in the same window (best
+    effort; never below zero)."""
+    name = os.environ.get("REQUEST_GUARD_TABLE_NAME")
+    if not name or amount <= 0:
+        return
+    key, _ = _budget_key(kind, value, window, now)
+    try:
+        table(name).update_item(
+            Key={"PK": key},
+            UpdateExpression="ADD used :minus",
+            ConditionExpression="used >= :n",
+            ExpressionAttributeValues={":minus": -amount, ":n": amount},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.error(json.dumps({"guard": "refund_failed",
+                                     "code": exc.response.get("Error", {}).get("Code")}))
+    except BotoCoreError:
+        logger.error(json.dumps({"guard": "refund_failed"}))

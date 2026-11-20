@@ -306,7 +306,8 @@ def test_real_agent_model_calls_converse_stream_on_the_configured_model(monkeypa
     model = RealAgentModel(client=bedrock, model_id="eu.anthropic.claude-haiku")
     turn = model.converse("system", [{"role": "user", "content": "Hej"}], TOOLS, max_tokens=400)
     assert turn.text == "Hej!"
-    assert bedrock.args["modelId"] == "eu.anthropic.claude-haiku" and bedrock.args["system"] == [{"text": "system"}]
+    assert bedrock.args["modelId"] == "eu.anthropic.claude-haiku" and bedrock.args["system"] == [
+        {"text": "system"}, {"cachePoint": {"type": "default"}}]     # the static prompt is cached
     # thinking at effort low (Haiku 5.5 thinks by default): reasoning gets its own room on top of the reply
     assert bedrock.args["inferenceConfig"]["maxTokens"] == 1900 and "toolConfig" in bedrock.args
     assert bedrock.args["additionalModelRequestFields"] == {"output_config": {"effort": "low"}}

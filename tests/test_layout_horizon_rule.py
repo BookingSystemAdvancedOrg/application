@@ -75,8 +75,9 @@ def test_prod_effective_from_inside_horizon_is_too_early(app_and_table, monkeypa
 def test_dev_effective_date_today_means_earliest(app_and_table, monkeypatch):
     app, snapshot_table = app_and_table
     response = _replace(app, snapshot_table, monkeypatch, {"effectiveDate": "2026-09-07"}, "dev")
-    # published long ago in dev: eligible already, so it switches now
-    assert response["statusCode"] == 200
+    # published long ago, still never immediate: dev follows the prod rule
+    assert response["statusCode"] == 202
+    assert response_body(response)["cutoverAt"] == EARLIEST_PROD
 
 
 def test_effective_date_and_from_together_is_400(app_and_table, monkeypatch):

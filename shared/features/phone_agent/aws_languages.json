@@ -1,5 +1,5 @@
 {
-  "_comment": "Languages of the Amazon Connect + Lex V2 phone line (our code -> Lex locale, Connect language code, Polly voice, engine). Two identical copies: application/shared/features/phone_agent/aws_languages.json (canonical, read by language.AWS_LANGUAGES) and infrastructure/phone-test-line/languages.json (read by Terraform for the Lex locales and the flow). Change both together.",
+  "_comment": "Languages of the Amazon Connect + Lex V2 phone line (our code -> Lex locale, Connect language code, Polly voice, engine). One locale per language. assistedNlu \"Primary\" is required by Lex for the locales it marks with an asterisk (tr_TR, da_DK, cs_CZ, ru_RU, is_IS, ro_RO, cy_GB): without it the locale build fails with 'assistedNluMode must be set to Primary'. Every voice exists in Polly eu-central-1 (checked 2026-11-20). Two identical copies: application/shared/features/phone_agent/aws_languages.json (canonical, read by language.AWS_LANGUAGES) and infrastructure/phone-test-line/languages.json (read by Terraform for the Lex locales and the flow). Change both together.",
   "languages": {
     "sv": {
       "lexLocale": "sv_SE",
@@ -17,7 +17,8 @@
       "lexLocale": "da_DK",
       "connectLanguage": "da-DK",
       "voice": "Sofie",
-      "engine": "neural"
+      "engine": "neural",
+      "assistedNlu": "Primary"
     },
     "fi": {
       "lexLocale": "fi_FI",
@@ -77,13 +78,15 @@
       "lexLocale": "tr_TR",
       "connectLanguage": "tr-TR",
       "voice": "Burcu",
-      "engine": "neural"
+      "engine": "neural",
+      "assistedNlu": "Primary"
     },
     "cs": {
       "lexLocale": "cs_CZ",
       "connectLanguage": "cs-CZ",
       "voice": "Jitka",
-      "engine": "neural"
+      "engine": "neural",
+      "assistedNlu": "Primary"
     },
     "ca": {
       "lexLocale": "ca_ES",
@@ -113,13 +116,47 @@
       "lexLocale": "ru_RU",
       "connectLanguage": "ru-RU",
       "voice": "Tatyana",
-      "engine": "standard"
+      "engine": "standard",
+      "assistedNlu": "Primary"
     },
     "is": {
       "lexLocale": "is_IS",
       "connectLanguage": "is-IS",
       "voice": "Dora",
-      "engine": "standard"
+      "engine": "standard",
+      "assistedNlu": "Primary"
+    },
+    "no": {
+      "lexLocale": "no_NO",
+      "connectLanguage": "no-NO",
+      "voice": "Ida",
+      "engine": "neural"
+    },
+    "zh": {
+      "lexLocale": "zh_CN",
+      "connectLanguage": "zh-CN",
+      "voice": "Zhiyu",
+      "engine": "neural"
+    },
+    "yue": {
+      "lexLocale": "zh_HK",
+      "connectLanguage": "zh-HK",
+      "voice": "Hiujin",
+      "engine": "neural"
+    },
+    "ro": {
+      "lexLocale": "ro_RO",
+      "connectLanguage": "ro-RO",
+      "voice": "Carmen",
+      "engine": "standard",
+      "assistedNlu": "Primary"
+    },
+    "cy": {
+      "lexLocale": "cy_GB",
+      "connectLanguage": "cy-GB",
+      "voice": "Gwyneth",
+      "engine": "standard",
+      "assistedNlu": "Primary"
     }
   }
 }

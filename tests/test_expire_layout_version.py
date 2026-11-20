@@ -799,26 +799,50 @@ def test_archived_snapshot_makes_cutover_state_inconsistent(
         assert stored == original
 
 
+# shared.availability.layout_cutover_floor: publication + 21 days - 1 hour,
+# the same in every environment; a snapshot published before 2026-11-23 keeps
+# the legacy five-minute floor (switches booked under dev's old rule).
+RULE_CREATED_AT = "2026-11-23T00:00:00Z"
+RULE_FLOOR = "2026-12-13T23:00:00Z"  # RULE_CREATED_AT + 21 days - 1 hour
+
+
+def put_cutover_at(snapshot_table, app, monkeypatch, created_at, cutover_at):
+    outgoing = outgoing_snapshot(effectiveTo=cutover_at, expiresAt=cutover_at)
+    target = target_snapshot(createdAt=created_at, effectiveFrom=cutover_at)
+    state = pending_state(app, cutover_at=cutover_at)
+    for item in (outgoing, target, state):
+        snapshot_table.put_item(Item=item)
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime.fromisoformat(cutover_at.replace("Z", "+00:00")),
+    )
+    return outgoing, target, state
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
 @pytest.mark.parametrize(
-    ("environment", "created_at"),
+    ("created_at", "cutover_at"),
     [
-        ("dev", "2026-10-05T14:32:00Z"),
-        ("prod", "2026-09-14T14:37:00Z"),  # cutover - 21 days
+        # legacy: published before 2026-11-23, cutover - 5 minutes
+        ("2026-10-05T14:32:00Z", CUTOVER_AT),
+        # the rule: exactly at the floor
+        (RULE_CREATED_AT, RULE_FLOOR),
     ],
+    ids=["legacy-five-minutes", "rule-floor"],
 )
 def test_replacement_cutover_at_exact_eligibility_is_allowed(
     app_and_table,
     monkeypatch,
     environment,
     created_at,
+    cutover_at,
 ):
     app, snapshot_table = app_and_table
     monkeypatch.setattr(app, "ENVIRONMENT", environment)
-    outgoing = outgoing_snapshot()
-    target = target_snapshot(createdAt=created_at)
-    state = pending_state(app)
-    for item in (outgoing, target, state):
-        snapshot_table.put_item(Item=item)
+    _, _, state = put_cutover_at(
+        snapshot_table, app, monkeypatch, created_at, cutover_at
+    )
 
     assert app.handler(event_for_state(state), None) is None
 
@@ -856,11 +880,23 @@ def test_whole_minute_cutover_may_ceil_exact_eligibility(
     assert stored_state["currentVersion"] == Decimal("2")
 
 
+@pytest.mark.parametrize("environment", ["dev", "prod"])
 @pytest.mark.parametrize(
-    ("environment", "created_at"),
+    ("created_at", "cutover_at"),
     [
-        ("dev", "2026-10-05T14:32:00.000001Z"),
-        ("prod", "2026-09-14T14:37:00.000001Z"),
+        # legacy: published before 2026-11-23, just under 5 minutes
+        ("2026-10-05T14:32:00.000001Z", CUTOVER_AT),
+        # the rule: just under 21 days - 1 hour
+        ("2026-11-23T00:00:00.000001Z", RULE_FLOOR),
+        (RULE_CREATED_AT, "2026-12-13T22:59:00Z"),
+        # published at the shim's end: no longer legacy, 5 minutes is early
+        ("2026-11-23T00:00:00Z", "2026-11-23T00:05:00Z"),
+    ],
+    ids=[
+        "legacy-five-minutes",
+        "rule-floor-microsecond",
+        "rule-floor-minute",
+        "rule-not-legacy",
     ],
 )
 def test_cutover_before_exact_replacement_eligibility_fails_closed(
@@ -868,15 +904,14 @@ def test_cutover_before_exact_replacement_eligibility_fails_closed(
     monkeypatch,
     environment,
     created_at,
+    cutover_at,
 ):
     app, snapshot_table = app_and_table
     monkeypatch.setattr(app, "ENVIRONMENT", environment)
-    outgoing = outgoing_snapshot()
-    target = target_snapshot(createdAt=created_at)
-    state = pending_state(app)
-    originals = [copy.deepcopy(item) for item in (outgoing, target, state)]
-    for item in (outgoing, target, state):
-        snapshot_table.put_item(Item=item)
+    items = put_cutover_at(
+        snapshot_table, app, monkeypatch, created_at, cutover_at
+    )
+    originals = [copy.deepcopy(item) for item in items]
     transaction_client = Mock(
         side_effect=AssertionError("must not write DynamoDB")
     )
@@ -886,7 +921,7 @@ def test_cutover_before_exact_replacement_eligibility_fails_closed(
         app._CutoverConflict,
         match="replacement activation delay",
     ):
-        app.handler(event_for_state(state), None)
+        app.handler(event_for_state(items[2]), None)
 
     transaction_client.assert_not_called()
     for original in originals:

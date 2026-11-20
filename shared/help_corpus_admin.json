@@ -6,6 +6,8 @@
   "/statistik",
   "/bokningar",
   "/bestallningar",
+  "/bestallningar/bord/ny",
+  "/bestallningar/bord/:tabId/lagg-till",
   "/meny",
   "/cateringkalkyl",
   "/catering",
@@ -1109,6 +1111,275 @@
      "id": "bestallningar-open",
      "label": "Öppna Beställningar",
      "to": "/bestallningar"
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-ny",
+   "route": "/bestallningar/bord/ny",
+   "title": "Ta en bordsbeställning",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "bordsbeställning",
+    "ny bordsbeställning",
+    "ta beställning",
+    "beställning vid bordet",
+    "servitör",
+    "servera",
+    "ipad",
+    "surfplatta",
+    "välj bord",
+    "bongar till köket",
+    "kökslapp"
+   ],
+   "answer": "När gästerna har bestämt sig tar du beställningen i Booqy: välj bordet, tryck på rätterna i menyn och tryck Skicka. Maten går till köket och drycken till baren. Gästen betalar sedan i er egen kassa, inte i Booqy.",
+   "steps": [
+    "Öppna Beställningar och tryck Ny bordsbeställning.",
+    "Välj bordet på kartan eller i listan (eller skriv numret).",
+    "Tryck på rätterna gästerna vill ha. Ett tryck till lägger till en till.",
+    "Tryck Skicka. Köket och baren får var sin bong."
+   ],
+   "actions": [
+    {
+     "id": "bord-ny-open",
+     "label": "Ny bordsbeställning",
+     "to": "/bestallningar/bord/ny"
+    }
+   ],
+   "suggestion": "Hur tar jag en beställning vid bordet?",
+   "kind": "guide"
+  },
+  {
+   "id": "bord-lagg-till",
+   "route": "/bestallningar/bord/:tabId/lagg-till",
+   "title": "Lägga till på ett bord som redan beställt",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "lägg till",
+    "beställa mer",
+    "en till",
+    "påfyllning",
+    "mer dryck",
+    "lägg till på bord",
+    "öppen beställning"
+   ],
+   "answer": "Vill bordet ha mer lägger du till på samma beställning. Det nya går som en ny runda till köket och baren.",
+   "steps": [
+    "Öppna Beställningar och fliken Bord.",
+    "Tryck Lägg till på bordets kort.",
+    "Tryck på rätterna och tryck Skicka."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-bord",
+     "label": "Öppna Bord",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "bord"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-skicka-senare",
+   "route": "/bestallningar",
+   "title": "Skicka varmrätten senare",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "skicka varmrätt",
+    "vänta med varmrätten",
+    "vänta",
+    "håll",
+    "efterrätt senare",
+    "skicka efterrätt",
+    "skicka förrätt",
+    "kursvis",
+    "rätter i tur och ordning",
+    "pacing"
+   ],
+   "answer": "Varmrätter och efterrätter kan vänta tills gästerna är klara med förrätten. De står kvar som Väntar och går till köket först när du trycker Skicka varmrätt.",
+   "steps": [
+    "När du tar beställningen: välj Vänta vid Varmrätt.",
+    "Köksbongen visar vad som väntar.",
+    "När förrätten är klar lyser Skicka varmrätt på bordets kort under Beställningar, Bord. Tryck på den."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-bord",
+     "label": "Öppna Bord",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "bord"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-makulera",
+   "route": "/bestallningar",
+   "title": "Makulera en rätt på ett bord",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "makulera",
+    "ta bort rätt",
+    "fel rätt",
+    "ångra rätt",
+    "gästen ändrade sig",
+    "fel registrerad",
+    "stryka"
+   ],
+   "answer": "En rätt som redan har skickats men inte ska lagas makulerar du. Köket får en bong med MAKULERAD och summan att slå in blir lägre.",
+   "steps": [
+    "Öppna Beställningar och fliken Bord.",
+    "Tryck på bordets kort och sedan Makulera.",
+    "Välj rätten och hur många, välj varför och tryck Makulera."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-bord",
+     "label": "Öppna Bord",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "bord"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-flytta",
+   "route": "/bestallningar",
+   "title": "Flytta gästerna till ett annat bord",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "flytta bord",
+    "byta bord",
+    "flytta gäster",
+    "annat bord",
+    "flytta beställning"
+   ],
+   "answer": "Byter gästerna bord flyttar du beställningen. Köket och baren får det nya bordet på sina bongar.",
+   "steps": [
+    "Öppna Beställningar och fliken Bord.",
+    "Tryck på bordets kort och sedan Flytta.",
+    "Välj ett ledigt bord och tryck Flytta till bord."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-bord",
+     "label": "Öppna Bord",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "bord"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-stang",
+   "route": "/bestallningar",
+   "title": "Stänga bordet när gästen betalt i kassan",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "stäng bord",
+    "stänga bordet",
+    "betald i kassan",
+    "gästen har betalat",
+    "notan",
+    "betala",
+    "kassan",
+    "att slå in",
+    "avsluta bord"
+   ],
+   "answer": "Booqy tar inte betalt för bordsbeställningar. Gästen betalar i er egen kassa. Under Att slå in står det du ska slå in där. När gästen har betalat stänger du bordet i Booqy.",
+   "steps": [
+    "Öppna Beställningar och fliken Bord.",
+    "Tryck Stäng på bordets kort.",
+    "Slå in raderna under Att slå in i er kassa.",
+    "Tryck Betald i kassan, stäng. Ångra går i 15 minuter."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-bord",
+     "label": "Öppna Bord",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "bord"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-bar-utan-skrivare",
+   "route": "/bestallningar",
+   "title": "Baren har ingen skrivare",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "bar utan skrivare",
+    "barskrivare",
+    "dryck skrivare",
+    "bongen i köket",
+    "bar",
+    "barskärm",
+    "dryckesbong"
+   ],
+   "answer": "Har baren ingen egen skrivare skrivs barens bong ut i köket med BAR i stor stil. Baren kan också ha en egen skärm: Köksskärm med stationen Dryck.",
+   "steps": [
+    "Öppna Beställningar och fliken Köksskärm.",
+    "Välj stationen Dryck.",
+    "Spara sidan som bokmärke på barens surfplatta."
+   ],
+   "actions": [
+    {
+     "id": "bestallningar-kok-bar",
+     "label": "Öppna barens skärm",
+     "to": "/bestallningar",
+     "query": {
+      "vy": "kok",
+      "station": "bar"
+     }
+    }
+   ],
+   "kind": "guide"
+  },
+  {
+   "id": "bord-ratt-per-kategori",
+   "route": "/meny",
+   "title": "Välja förrätt, varmrätt eller efterrätt per kategori",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "rätt per kategori",
+    "kategori varmrätt",
+    "kurs",
+    "förrätt varmrätt efterrätt",
+    "pizza varmrätt",
+    "egen kategori",
+    "rätt"
+   ],
+   "answer": "Varje menykategori har en rätt: Förrätt, Varmrätt, Efterrätt, Dryck eller Övrigt. Den styr ordningen på köksbongen och vad som kan vänta när personalen tar en bordsbeställning.",
+   "steps": [
+    "Öppna Meny och tryck Kategorier.",
+    "Välj Rätt för kategorin, till exempel Varmrätt för Pizzor.",
+    "Tryck Spara kategorier."
+   ],
+   "actions": [
+    {
+     "id": "meny-open-kategorier",
+     "label": "Öppna Meny",
+     "to": "/meny"
     }
    ],
    "kind": "guide"
@@ -2663,6 +2934,9 @@
      "hash": "utseende"
     }
    ],
+   "highlight": [
+    "help:utseende:volym"
+   ],
    "kind": "guide"
   },
   {
@@ -3844,6 +4118,132 @@
    "text": "",
    "highlight": [
     "text:Visa"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-BestallningarPage:ny-bordsbestallning:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Ny bordsbeställning",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Ny bordsbeställning"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-CloseTabDialog:avbryt:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Avbryt",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Avbryt"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-CloseTabDialog:att-sla-in:heading",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Att slå in",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Att slå in"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-TabDetail:lagg-till:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Lägg till",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Lägg till"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-TabDetail:makulera:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Makulera",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Makulera"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-TabDetail:flytta:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Flytta",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Flytta"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-TabDetail:stang:button",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Stäng",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Stäng"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-TabDetail:bongar:heading",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Bongar",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Bongar"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
+  },
+  {
+   "id": "features-bestallningar-tables-board-VoidDialog:notering:field",
+   "kind": "element",
+   "route": "/bestallningar",
+   "title": "Notering",
+   "where": "Beställningar",
+   "text": "",
+   "highlight": [
+    "text:Notering"
    ],
    "audience": "all",
    "feature": "ordering",
@@ -6474,9 +6874,22 @@
    "route": "/meny",
    "title": "Kategorier",
    "where": "Meny",
-   "text": "Skickas till: vilken skrivare hela kategorins bongar hamnar på. Ett tryck sparar direkt. En rätt kan välja egen.",
+   "text": "Skickas till: vilken skrivare hela kategorins bongar hamnar på. Ett tryck sparar direkt. En rätt kan välja egen. Bordsbeställningar följer samma val. Rätt: om kategorin är förrätt, varmrätt, efterrätt eller dryck när personalen tar beställningen vid bordet.",
    "highlight": [
     "text:Kategorier"
+   ],
+   "audience": "all",
+   "area": "meny"
+  },
+  {
+   "id": "features-meny-CategoriesModal:ratt:field",
+   "kind": "element",
+   "route": "/meny",
+   "title": "Rätt",
+   "where": "Meny",
+   "text": "",
+   "highlight": [
+    "text:Rätt"
    ],
    "audience": "all",
    "area": "meny"
@@ -6788,20 +7201,6 @@
    "text": "Skriv som om du ringde. Assistenten kollar riktiga lediga tider men bokar ingenting här.",
    "highlight": [
     "text:Prova att skriva"
-   ],
-   "audience": "all",
-   "feature": "phoneAgent",
-   "area": "telefon"
-  },
-  {
-   "id": "features-phone-agent-CallDetail:utskrift:heading",
-   "kind": "element",
-   "route": "/telefon",
-   "title": "Utskrift",
-   "where": "Telefon",
-   "text": "",
-   "highlight": [
-    "text:Utskrift"
    ],
    "audience": "all",
    "feature": "phoneAgent",

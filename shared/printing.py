@@ -22,6 +22,9 @@ Print table (PRINT_TABLE_NAME), one partition per location:
     PK LOCATION#<l>  SK JOB#<src>#rp-<station>-<device>-<ms>  "Skriv ut igen"
     PK LOCATION#<l>  SK JOB#<src>#mk-<device>  "MAKULERAD" slip on a printer that
                                                may have printed the order
+    A staff table order's round uses src = <tabId>r<round> (shared/tab_tickets.py):
+    its TICKET and st-/al- JOB rows carry no orderId; a station without
+    printers may print on Kök's (fallback).
 
 Station tickets are made for every paid order (the kitchen display shows
 them); their printers print them when auto print is on. Jobs with a
@@ -574,16 +577,33 @@ def order_header(order):
             "readyEstimate": order.get("readyEstimate")}
 
 
-def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False, sims=None):
+def ticket_printers(ticket, config, *, fallback=False):
+    """(printer ids, fell back) for a ticket: its station's printers; with
+    `fallback`, a station with none prints on the Kök station's printers
+    (the ticket keeps its own station name, so the paper says which)."""
+    station = next((s for s in config["stations"] if s["stationId"] == ticket["stationId"]), None)
+    own = list((station or {}).get("printerIds") or [])
+    if own or not fallback:
+        return own, False
+    kitchen = next((s for s in config["stations"] if s["stationId"] == routing.FOOD), None)
+    printers = list((kitchen or {}).get("printerIds") or [])
+    return printers, bool(printers)
+
+
+def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False, sims=None, fallback=None):
     """The ticket on each printer of its station, plus the allergy ticket
     when it has an allergy and the location wants one. Idempotent (a
-    reprint is a new job per press). Returns the jobs created."""
+    reprint is a new job per press). With `fallback` a station without
+    printers prints on Kök's (ticket_printers); unset, a staff table
+    order's ticket falls back (so "Skriv ut igen" on the kitchen display
+    does too) and an online order's does not. Returns the jobs created."""
     sims = sim_ids(location_id) if sims is None else sims
-    station = next((s for s in config["stations"] if s["stationId"] == ticket["stationId"]), None)
+    if fallback is None:
+        fallback = ticket.get("kind") in routing.TAB_KINDS
     source, sid = ticket["sourceId"], ticket["stationId"]
     suffix = f"-{_ms(now)}" if copy else ""
     jobs = []
-    for device_id in (station or {}).get("printerIds") or []:
+    for device_id in ticket_printers(ticket, config, fallback=fallback)[0]:
         kinds = [("rp" if copy else "st", STATION)]
         if ticket.get("allergy") and config.get("allergyTicket"):
             kinds.append(("ra" if copy else "al", ALLERGY))
@@ -595,20 +615,29 @@ def ticket_jobs(tenant_id, location_id, ticket, config, now, *, copy=False, sims
     return jobs
 
 
-def dispatch(tenant_id, location_id, source_id, header, lines, notes, now, *, auto_print=None):
+def dispatch(tenant_id, location_id, source_id, header, lines, notes, now, *, auto_print=None, fallback=None):
     """Station tickets for an order, then their print jobs
     (when auto print is on, or always with auto_print=True). A retry makes
-    nothing twice. Returns (tickets, jobs)."""
+    nothing twice. `fallback`: a station without printers prints on Kök's
+    (staff table orders). Returns (tickets, jobs)."""
     settings = get_settings(location_id)
     config = routing.get_config(location_id, settings["printerId"])
     tickets = routing.tickets(source_id, header, lines, notes, config, now)
+    jobs = dispatch_tickets(tenant_id, location_id, tickets, config, settings, now, auto_print=auto_print,
+                            fallback=fallback)
+    return tickets, jobs
+
+
+def dispatch_tickets(tenant_id, location_id, tickets, config, settings, now, *, auto_print=None, fallback=None):
+    """Stores tickets that are already built (put once) and makes their
+    print jobs when printing is on. Returns the jobs created."""
     routing.store(tenant_id, location_id, tickets)
     jobs = []
     if auto_print if auto_print is not None else settings["autoPrint"]:
         sims = sim_ids(location_id)
         for ticket in tickets:
-            jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, sims=sims)
-    return tickets, jobs
+            jobs += ticket_jobs(tenant_id, location_id, ticket, config, now, sims=sims, fallback=fallback)
+    return jobs
 
 
 def on_order_paid(order, now):
@@ -823,6 +852,9 @@ def _stale(job, settings, device_ids, now):
     if (job.get("deviceId") or settings.get("printerId")) not in device_ids:
         return True
     if job.get("status") == FAILED:
+        if not job.get("orderId"):
+            # A staff table order's ticket has no order to look at: it leaves by age.
+            return age > FAILED_SECONDS
         return age > FAILED_SECONDS or not _order_open(job["locationId"], job.get("orderId"))
     return False
 

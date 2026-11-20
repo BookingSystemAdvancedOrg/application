@@ -80,7 +80,7 @@ def ended(e):
 
 def assert_disclosure_first(phone):
     first = phone.turns()[0]
-    assert first["role"] == "agent" and ("AI-assistent" in first["text"])
+    assert first["role"] == "agent" and ("digitala assistent" in first["text"])
     assert phone.row()["disclosure"]["text"] == first["text"]
 
 
@@ -356,10 +356,10 @@ def test_disclosure_repeated_when_interrupted_and_in_a_new_language(live):
     row = phone.row()
     assert row["disclosure"]["repeats"] == 1 and row["disclosure"]["languages"] == ["sv", "en"]
     said = [c[2] for c in live.voice.calls if c[0] == "say"]
-    assert said[1] == "Jag är restaurangens AI-assistent."
-    assert said[2] == "I am the restaurant's AI assistant." and len(said) == 3
+    assert said[1] == "Jag är restaurangens digitala assistent."
+    assert said[2] == "I am the restaurant's digital assistant." and len(said) == 3
     texts = [t["text"] for t in phone.turns()]
-    assert "AI-assistent" in texts[0] and texts[1:] == said[1:]
+    assert "digitala assistent" in texts[0] and texts[1:] == said[1:]
 
 
 def test_disclosure_evidence_is_the_providers_first_final_agent_transcript(live):
@@ -386,7 +386,7 @@ def test_disclosure_evidence_keeps_a_diverging_provider_text(live):
     row = phone.row()
     assert row["status"] == "disclosed" and row["disclosure"]["playedAt"]
     assert row["disclosure"]["spoken"] == "Hej, du pratar med Sara." and row["disclosure"]["verbatim"] is False
-    assert "AI-assistent" in row["disclosure"]["text"]                              # what Booqy sent is kept
+    assert "digitala assistent" in row["disclosure"]["text"]                              # what Booqy sent is kept
     assert calls_normalized("Hej, du pratar med Sara!") == calls_normalized("  hej  du PRATAR med sara ")
 
 

@@ -53,7 +53,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import booking_rules, dynamo, tenant
 from shared import reservations as r
-from shared.availability import SLOT_STEP_MINUTES, _live_occupancies
+from shared.availability import (
+    SLOT_STEP_MINUTES,
+    _live_occupancies,
+    layout_cutover_floor,
+)
 from shared.auth import (
     Unauthorized,
     get_claims,
@@ -125,10 +129,7 @@ _PENDING_STATE_FIELDS = frozenset(
     }
 )
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
-_REPLACEMENT_DELAYS = {
-    "dev": timedelta(minutes=5),
-    "prod": timedelta(days=28),
-}
+_ENVIRONMENTS = frozenset({"dev", "prod"})
 _MANUAL_SOURCE = "manual_block"
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
@@ -596,7 +597,7 @@ def _validate_activation_state(state, location_id):
     }
     if not required_pending_fields.issubset(state):
         raise _BlockConflict("layout activation state is inconsistent")
-    if ENVIRONMENT not in _REPLACEMENT_DELAYS:
+    if ENVIRONMENT not in _ENVIRONMENTS:
         raise _BlockServiceFailure
 
     try:
@@ -880,9 +881,7 @@ def _validate_pending_snapshot(snapshot, location_id, state):
         pending["version"],
     )
     try:
-        eligible_at = details["createdAt"] + _REPLACEMENT_DELAYS[ENVIRONMENT]
-    except KeyError:
-        raise _BlockServiceFailure from None
+        eligible_at = layout_cutover_floor(details["createdAt"])
     except OverflowError:
         raise _BlockConflict(
             "published layout record is inconsistent"

@@ -8,6 +8,8 @@ TRIGGER:
         (CONTRACTS.md lists L13/L14 as API Gateway routes; feature-routes.tf sends a feature's
         routes to its API Lambda only, so until that hotspot allows a second integration the
         providers call these paths on this function's URL; reported in STATUS.md.)
+    Direct invoke {"connectGreeting": {"dialedNumber"}} from the same relay (the Connect flow's
+                                                     first prompt): {"ok", "greeting" (SSML)}
     Direct invoke {"lexV2": <Lex V2 code hook event>} from the relay Lambda next to
                                                      the Amazon Connect test line (Frankfurt): one caller
                                                      utterance -> the Lex response with the reply
@@ -42,6 +44,7 @@ import time
 import json
 import logging
 import os
+import re
 from datetime import timedelta
 from xml.sax.saxutils import escape
 
@@ -51,7 +54,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import agent_model, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
-from shared.features.phone_agent import calls, copy, language, session
+from shared.features.phone_agent import agent, calls, copy, hesitation, language, session
 from shared.features.phone_agent import locations as locations_mod
 from shared.features.phone_agent.tools import lambda_invoker
 
@@ -170,6 +173,41 @@ def _candidates(tenant_row, config, row, at):
     return found, reason or "entitlement"
 
 
+def _greeting_for(tenant_row, config, candidates, lang="sv"):
+    """(greeting, restaurant): the first sentence of a call that is answered,
+    with the guest-facing name from the restaurant's own data
+    (locations.public_name); on a shared number it asks which location."""
+    recording = bool((config.get("recording") or {}).get("enabled"))
+    if len(candidates) == 1:
+        location, loc = candidates[0]
+        restaurant = locations_mod.public_name(tenant_row, location)
+        extra = loc.get("greetingExtraSv")
+    else:
+        restaurant = locations_mod.public_name(tenant_row)
+        extra = copy.which_location(lang, [locations_mod.label(x) for x, _ in candidates])
+    return copy.greeting(lang, config.get("agentName"), restaurant, extra, recording=recording), restaurant
+
+
+def connect_greeting(params, at=None):
+    """The Connect test line's first prompt (the flow's InvokeLambdaFunction
+    through the relay, before the Lex bot starts): the same greeting the
+    call row will store as the disclosure at the first utterance, as SSML
+    for Polly. {"ok": "false"} (the flow then plays its fixed greeting
+    without a name) when the number is unknown or the call would be
+    refused. A flat string map: what Connect accepts from a Lambda."""
+    at = at or pa.now()
+    row = number_row(str((params or {}).get("dialedNumber") or ""))
+    if not row:
+        return {"ok": "false"}
+    tenant_row = tenant.get_tenant(row["tenantId"], fresh=True) or {}
+    config = pa.get_config(row["tenantId"])
+    candidates, _ = _candidates(tenant_row, config, row, at)
+    if not candidates:
+        return {"ok": "false"}
+    greeting, _ = _greeting_for(tenant_row, config, candidates)
+    return {"ok": "true", "greeting": _ssml(greeting)}
+
+
 def start_call(*, call_ref, caller, to, at):
     """A new call on a Booqy number: the row, then the guards; refused calls
     hear the refusal sentence and end (0 minutes, counted in the list). On a
@@ -197,19 +235,12 @@ def start_call(*, call_ref, caller, to, at):
                 logger.warning(json.dumps({"voice": "refuse_failed", "code": exc.code}))
         return calls.process(calls.end(call, at, "refused"), at=at)
     lang = "sv"
-    recording = bool((config.get("recording") or {}).get("enabled"))
+    greeting, restaurant = _greeting_for(tenant_row, config, candidates, lang)
     if len(candidates) == 1:
-        location, loc = candidates[0]
-        restaurant = location.get("name") or ""
-        greeting = copy.greeting(lang, config.get("agentName"), restaurant, loc.get("greetingExtraSv"),
-                                 recording=recording)
+        location, _ = candidates[0]
         if location["locationId"] != call["locationId"]:
             call = calls.set_status(call, "ringing", ["ringing"], locationId=location["locationId"]) or call
     else:
-        restaurant = tenant_row.get("name") or ""
-        names = [locations_mod.label(x) for x, _ in candidates]
-        greeting = copy.greeting(lang, config.get("agentName"), restaurant, copy.which_location(lang, names),
-                                 recording=recording)
         call = calls.set_status(call, "ringing", ["ringing"], locationPending=True,
                                 candidateLocations=[x["locationId"] for x, _ in candidates]) or call
     call, _ = calls.answer(call, greeting=greeting, lang=lang, at=at, restaurant=restaurant)
@@ -293,8 +324,8 @@ def telephony_webhook(event):
 def _first_message(call):
     """What the caller hears first: the greeting with the disclosure, or the refusal."""
     if call.get("outcome") == "refused":
-        return copy.REFUSED["sv"]
-    return (call.get("disclosure") or {}).get("text") or ""
+        return copy.spoken_plain(copy.REFUSED["sv"])
+    return copy.spoken_plain((call.get("disclosure") or {}).get("text") or "")
 
 
 def voice_webhook(event):
@@ -399,7 +430,8 @@ def _sse(text, status=200, tool_calls=()):
             "created": int(time.time()), "model": "booqy-phone-agent"}
     chunks = []
     if text or not tool_calls:
-        chunks.append({**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": text},
+        chunks.append({**base, "choices": [{"index": 0, "delta": {"role": "assistant",
+                                                                   "content": copy.spoken_plain(text)},
                                             "finish_reason": None if tool_calls else "stop"}]})
     for i, use in enumerate(tool_calls):
         chunks.append({**base, "choices": [{"index": 0, "delta": {"tool_calls": [{
@@ -472,10 +504,45 @@ def _turn_key(call, messages, text):
     return digest.hexdigest()[:32]
 
 
+def _held(call, text, at):
+    """The hesitation guard (shared/features/phone_agent/hesitation.py), no
+    model call: (backchannel, None) when the utterance ends unfinished (the
+    fragment is kept on the call row, `heldFragment`), else (None, the text
+    to answer: a kept fragment joined with this utterance, and how many
+    fragments were joined)."""
+    lang = call.get("language") or "sv"
+    kept = call.get("heldFragment") if isinstance(call.get("heldFragment"), dict) else None
+    if kept and (at - (pa.parse_iso(kept.get("at")) or at)).total_seconds() > hesitation.MAX_AGE_S:
+        kept = None
+    joined = hesitation.joined((kept or {}).get("text"), text)
+    count = int((kept or {}).get("count") or 0)
+    langs = (lang, language.hint(text))
+    if count < hesitation.MAX_HOLDS and hesitation.unfinished(joined, langs):
+        holds = int(call.get("heldTotal") or 0)
+        calls.set_status(call, call["status"], [call["status"]], heldTotal=holds + 1,
+                         heldFragment={"text": joined[-500:], "at": pa.iso(at), "count": count + 1})
+        session.metric("HesitationHold", 1)
+        return hesitation.backchannel(lang, holds), None
+    if call.get("heldFragment") is not None:
+        current = calls.get_call(call["tenantId"], call["callId"]) or call
+        calls.set_status(current, current["status"], [current["status"]], heldFragment=None)
+    return None, (joined, count)
+
+
 def run_call_turn(call, text, at, asr_locale=None):
     """One caller utterance -> (reply, provider actions). `asr_locale`: the
-    recognizer's locale (the Connect line), stored on the caller's turn."""
+    recognizer's locale (the Connect line), stored on the caller's turn. An
+    utterance that ends unfinished ("för, ehm") gets only a backchannel and
+    is joined with the next one (_held)."""
     lang = call.get("language") or "sv"
+    if call.get("status") in ("answered", "disclosed", "talking"):
+        backchannel, kept = _held(call, text, at)
+        if backchannel:
+            return backchannel, []
+        text, held = kept
+        call = calls.get_call(call["tenantId"], call["callId"]) or call
+    else:
+        held = 0
     if call.get("locationPending"):
         options = [{**(tenant.get_location(call["tenantId"], x) or {}), "locationId": x}
                    for x in call.get("candidateLocations") or []]
@@ -492,7 +559,7 @@ def run_call_turn(call, text, at, asr_locale=None):
     result, updated, state, actions = session.call_turn(
         call, text, model=client("model"), invoke=invoker(), voice=client("voice"), tenant_row=tenant_row,
         location=location, loc=loc, config=config, at=at, add_callback=add_callback_for(updated_or(call)),
-        send_sms=sms_sender(), asr_locale=asr_locale)
+        send_sms=sms_sender(), asr_locale=asr_locale, held=held)
     if result.error:
         session.metric("ProviderErrors", 1)
     if (state.get("transfer") or {}).get("answered"):
@@ -548,13 +615,14 @@ def _lex_answer(event, text, *, close=False, attributes=None, nxt=None, speak=Tr
     return {"sessionState": state, "messages": messages}
 
 
-# Polly on the Connect test line: a little slower than its default, which sounded hurried.
-LEX_SPEECH_RATE = "92%"
+# Polly on the Connect test line at its own pace (voice ASSESSMENT stage 1: 92% sounded slow and even; A/B test it).
+LEX_SPEECH_RATE = "100%"
 
 
 def _ssml(text):
-    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE."""
-    said = escape(str(text), {'"': "&quot;", "'": "&apos;"})
+    """The reply as SSML for Polly: the text XML-escaped, spoken at LEX_SPEECH_RATE,
+    Booqy said "Bookie" (copy.ssml_names)."""
+    said = copy.ssml_names(escape(str(text), {'"': "&quot;", "'": "&apos;"}))
     return f'<speak><prosody rate="{LEX_SPEECH_RATE}">{said}</prosody></speak>'
 
 
@@ -620,6 +688,48 @@ def _sync_locale(call, locale):
     return call
 
 
+# A first utterance that is only a hello ("Hej", "Hallå", "Hello"): the greeting is the whole answer.
+_HELLO = re.compile(r"^(?:(?:hej|hejsan|hallå|hallå där|goddag|god dag|god morgon|god kväll|tjena|tja|hello|hi|hey|"
+                    r"good (?:morning|afternoon|evening))[\s,.!?]*)+$", re.I)
+
+
+def _only_hello(text):
+    return bool(_HELLO.match(" ".join(str(text or "").split())))
+
+
+def _greeting_played(event, attrs):
+    """The caller heard Booqy's greeting before this utterance. The flow can
+    say so in the session attribute `greeted` ("true" or "false"); without
+    it, a spoken turn came through the Connect flow, which always plays a
+    greeting before it starts the bot (Booqy's from connect_greeting, else
+    its fixed one), while a typed turn (Lex recognize-text) has no flow and
+    heard nothing."""
+    flag = str(attrs.get("greeted") or "").strip().lower()
+    if flag in ("true", "1", "yes"):
+        return True
+    if flag in ("false", "0", "no"):
+        return False
+    return str(event.get("inputMode") or "").lower() in ("speech", "dtmf")
+
+
+def _opening(greeting):
+    """The greeting without its closing question ("Vad kan jag hjälpa dig
+    med?"), said before the answer to a first utterance that asked something."""
+    parts = re.split(r"(?<=[.?!])\s+", str(greeting).strip())
+    if len(parts) > 1 and parts[-1].endswith("?"):
+        parts = parts[:-1]
+    return " ".join(parts)
+
+
+def _greeted(call, text, greeting, at, locale):
+    """The caller's hello and the greeting as its answer, in the transcript and the model's history."""
+    calls.append_turn(call, "caller", text, at, asr_locale=locale)
+    history = agent.loads(call.get("agentMessages")) + [{"role": "user", "content": text},
+                                                        {"role": "assistant", "content": greeting}]
+    calls.set_status(call, "talking", ["answered", "disclosed", "talking"], agentMessages=agent.dumps(history))
+    return greeting
+
+
 def lex_turn(event):
     """One caller utterance from the Lex V2 bot on the Connect test number.
 
@@ -647,12 +757,14 @@ def lex_turn(event):
     at = pa.now()
     call_ref = LEX_CALL_PREFIX + session_id
     call = None
+    fresh = False
     if attrs.get("tenantId") and attrs.get("callId"):
         call = calls.get_call(attrs["tenantId"], attrs["callId"])
     if call is None:
         call = start_call(call_ref=call_ref, caller=attrs.get("callerNumber"), to=attrs.get("dialedNumber"), at=at)
         if call is None:
             return _lex_answer(event, copy.REFUSED["sv"], close=True, nxt="end")
+        fresh = True
         if call.get("status") == "answered":
             calls.disclosed(call, at, spoken=(call.get("disclosure") or {}).get("text"))
             call = calls.get_call(call["tenantId"], call["callId"]) or call
@@ -666,7 +778,14 @@ def lex_turn(event):
         return _lex_answer(event, copy.text(copy.STILL_THERE, lang), attributes={**ids, "lang": lang})
     if _garbled(call, event, text):
         return _lex_answer(event, _ask_language(call, text, at, locale), attributes={**ids, "lang": lang})
+    greeting = (call.get("disclosure") or {}).get("text") if fresh and not _greeting_played(event, attrs) else None
+    if greeting and _only_hello(text):
+        # No flow played the greeting (Lex recognize-text): the caller's "Hej" is answered with the
+        # owner's greeting itself, word for word, never another greeting by the model.
+        return _lex_answer(event, _greeted(call, text, greeting, at, locale), attributes={**ids, "lang": lang})
     reply, actions = run_call_turn(call, text, at, asr_locale=locale)
+    if fresh and reply:
+        reply = agent.without_welcome(reply, lang) or copy.text(copy.DEFAULT_EXTRA, lang)   # never a second welcome
     names = {a["name"] for a in actions}
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     done = "end_call" in names or current.get("status") in ("ended", "processed")
@@ -676,6 +795,8 @@ def lex_turn(event):
     now_lang = current.get("language") or lang
     ids["lang"] = now_lang
     switched = now_lang != lang and now_lang in language.AWS_LANGUAGES
+    if greeting and reply and not switched:
+        reply = f"{_opening(greeting)} {reply}"   # no greeting was played: the owner's greeting comes first
     if switched:
         # also when the turn ended the call: the goodbye is in the new language, so the new voice says it
         session.metric("LanguageSwitches", 1)
@@ -694,6 +815,12 @@ ROUTES = {
 
 
 def handler(event, context=None):
+    if isinstance(event, dict) and isinstance(event.get("connectGreeting"), dict):   # the flow's first prompt
+        try:
+            return connect_greeting(event["connectGreeting"])
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(json.dumps({"route": "connect-greeting", "aws": type(exc).__name__}))
+            return {"ok": "false"}
     if isinstance(event, dict) and isinstance(event.get("lexV2"), dict):  # the relay in Connect's region
         try:
             return lex_turn(event["lexV2"])

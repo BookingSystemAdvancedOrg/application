@@ -9,8 +9,8 @@ PURPOSE:
     At or after the stored cutover time, atomically retires the outgoing
     layout snapshot, activates the pending target, advances activation state,
     and removes its pending fields. Before writing, it revalidates that the
-    target's publication time satisfies the five-minute dev or booking-horizon (21-day) prod
-    replacement delay. It also recovers a due ``scheduling`` intent left after
+    target's publication time satisfies the floor of the booking-horizon rule
+    (shared/availability.layout_cutover_floor, the same in every environment). It also recovers a due ``scheduling`` intent left after
     Scheduler creation but before lifecycle staging, but only within 10
     minutes of its cutover (later it is abandoned: a no-op). Missing state and stale
     or completed schedule tokens are idempotent no-ops; matching early,
@@ -37,7 +37,7 @@ from decimal import Decimal
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared.availability import BOOKING_HORIZON_DAYS
+from shared.availability import layout_cutover_floor
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
 
@@ -67,12 +67,9 @@ _MAX_VERSION_DIGITS = 38
 _MAX_DYNAMODB_INTEGER = int("9" * _MAX_VERSION_DIGITS)
 _VERSION_SK_PATTERN = re.compile(r"LAYOUT#v([1-9][0-9]{0,37})\Z")
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
-_REPLACEMENT_ACTIVATION_DELAYS = {
-    "dev": timedelta(minutes=5),
-    # A floor: activate schedules prod cutovers at local midnight after the
-    # booking horizon from the day it is booked, so always later than this.
-    "prod": timedelta(days=BOOKING_HORIZON_DAYS),
-}
+# activate-layout-version schedules a replacement at local midnight after the
+# booking horizon from the day it is booked; this worker checks the floor.
+_ENVIRONMENTS = frozenset({"dev", "prod"})
 _EVENT_FIELDS = frozenset(
     {
         "PK",
@@ -572,17 +569,15 @@ def _validate_pending_lifecycle(outgoing, target, state_details, details):
 
 
 def _validate_replacement_eligibility(target, state_details):
-    try:
-        activation_delay = _REPLACEMENT_ACTIVATION_DELAYS[ENVIRONMENT]
-    except KeyError as exc:
-        raise _CutoverConflict("environment is invalid") from exc
+    if ENVIRONMENT not in _ENVIRONMENTS:
+        raise _CutoverConflict("environment is invalid")
 
     try:
         created_at = _parse_utc_timestamp(
             target.get("createdAt"),
             "createdAt",
         )
-        eligible_at = created_at + activation_delay
+        eligible_at = layout_cutover_floor(created_at)
     except (OverflowError, ValueError) as exc:
         raise _CutoverConflict(
             "published layout record is inconsistent"

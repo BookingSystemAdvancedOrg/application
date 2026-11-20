@@ -1,0 +1,17 @@
+# BuildKit reads this file for `docker build -f services/voice-gateway/Dockerfile .` (context: the application root).
+# The image copies only shared/, functions/phone-agent-call/app.py and the gateway package; keep the rest out of
+# the context so builds stay fast and nothing local leaks in.
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.pytest_cache
+**/.env
+**/.env.*
+services/voice-gateway/tests
+docs
+contracts
+scripts
+tests

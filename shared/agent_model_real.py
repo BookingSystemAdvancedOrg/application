@@ -7,6 +7,18 @@ the one Bedrock action the role has).
 
 Messages and tools are the port's (shared/agent_model.py); they are mapped
 to Bedrock's content blocks here.
+
+Prompt caching (Bedrock explicit prompt caching, Converse `cachePoint`;
+checked 2026-11-20 in the Bedrock user guide: Claude Haiku 5.5 supports it in
+`tools`, `system` and `messages`, at least 512 tokens before a checkpoint, at
+most 4 checkpoints, 5 minute TTL by default; a checkpoint below the minimum
+is accepted and simply not cached). Three checkpoints: after the tool specs
+(the same for every call), after the static system prompt (the part before
+CACHE_SPLIT; the per-turn notes follow it) and after the last message (the
+conversation so far, which the next round of the same turn re-sends).
+PHONE_AGENT_PROMPT_CACHE=off sends none; a ValidationException on a request
+with checkpoints is retried at once without them and caching stays off in
+that container (the safe fallback for a model that refuses them).
 """
 
 from __future__ import annotations
@@ -22,7 +34,63 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from dataclasses import dataclass, field
+
 from shared.agent_model import AgentModel, AgentModelError, ToolUse, Turn
+
+CACHE_POINT = {"cachePoint": {"type": "default"}}
+# The heading the phone agent's per-turn notes start with (phone_agent copy.TURN_SECTION).
+CACHE_SPLIT = "\n\n# This turn\n"
+
+
+@dataclass(frozen=True)
+class UsageTurn(Turn):
+    """A Turn with Bedrock's token usage (inputTokens, outputTokens,
+    cacheReadInputTokens, cacheWriteInputTokens) when the stream reported it."""
+    usage: dict = field(default_factory=dict)
+
+
+def caching_enabled() -> bool:
+    return (os.environ.get("PHONE_AGENT_PROMPT_CACHE") or "on").lower() not in ("off", "0", "false", "no")
+
+
+def system_blocks(system, cache=True):
+    """The system prompt as Converse blocks: the static part, a cache
+    checkpoint, then the per-turn notes (CACHE_SPLIT and after)."""
+    text = str(system or "")
+    if not cache:
+        return [{"text": text}]
+    static, split, notes = text.partition(CACHE_SPLIT)
+    blocks = [{"text": static}, dict(CACHE_POINT)]
+    if split:
+        blocks.append({"text": (split + notes).strip()})
+    return blocks
+
+
+def with_cache_points(args):
+    """`args` for ConverseStream with checkpoints after the tools and after the last message."""
+    out = dict(args)
+    tools = (out.get("toolConfig") or {}).get("tools")
+    if tools:
+        out["toolConfig"] = {**out["toolConfig"], "tools": list(tools) + [dict(CACHE_POINT)]}
+    messages = [dict(m) for m in out.get("messages") or []]
+    if messages:
+        messages[-1]["content"] = list(messages[-1]["content"]) + [dict(CACHE_POINT)]
+        out["messages"] = messages
+    return out
+
+
+def without_cache_points(args):
+    out = dict(args)
+    out["system"] = [b for b in out.get("system") or [] if "cachePoint" not in b]
+    if len(out["system"]) > 1:
+        out["system"] = [{"text": "\n\n".join(b["text"] for b in out["system"])}]
+    if out.get("toolConfig"):
+        out["toolConfig"] = {**out["toolConfig"],
+                             "tools": [t for t in out["toolConfig"]["tools"] if "cachePoint" not in t]}
+    out["messages"] = [{**m, "content": [b for b in m["content"] if "cachePoint" not in b]}
+                       for m in out.get("messages") or []]
+    return out
 
 RETRYABLE = ("ThrottlingException", "ServiceUnavailableException", "ModelNotReadyException",
              "InternalServerException", "ModelTimeoutException")
@@ -78,7 +146,7 @@ def to_bedrock_tools(tools):
 def read_stream(stream, deadline=None):
     """Text, tool uses and the stop reason from a ConverseStream event stream
     (AgentModelError("timeout") once `deadline`, a time.monotonic(), passed)."""
-    text, tools, current, stop = [], [], None, "end_turn"
+    text, tools, current, stop, usage = [], [], None, "end_turn", {}
     for event in stream:
         if deadline is not None and time.monotonic() > deadline:
             close = getattr(stream, "close", None)
@@ -105,9 +173,11 @@ def read_stream(stream, deadline=None):
             current = None
         elif "messageStop" in event:
             stop = event["messageStop"].get("stopReason") or stop
+        elif "metadata" in event:
+            usage = dict((event["metadata"] or {}).get("usage") or {})
         elif any(k.endswith("Exception") for k in event):
             raise AgentModelError("unavailable", True)
-    return Turn(("".join(text).strip() or None), tuple(tools), stop)
+    return UsageTurn(("".join(text).strip() or None), tuple(tools), stop, usage)
 
 
 THINKING_HEADROOM = 1500
@@ -151,6 +221,7 @@ class RealAgentModel(AgentModel):
         self.model_id = model_id or os.environ.get("PHONE_AGENT_MODEL_ID") or ""
         self._client = client
         self._clients = {}
+        self.cache_refused = False       # the model refused cache checkpoints once: none are sent again
 
     @property
     def client(self):
@@ -172,7 +243,9 @@ class RealAgentModel(AgentModel):
     def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
         if not self.model_id:
             raise AgentModelError("not_configured")
-        args = {"modelId": self.model_id, "system": [{"text": system}], "messages": to_bedrock_messages(messages),
+        cache = caching_enabled() and not self.cache_refused
+        args = {"modelId": self.model_id, "system": system_blocks(system, cache),
+                "messages": to_bedrock_messages(messages),
                 "inferenceConfig": {"maxTokens": int(max_tokens)}}  # newer models refuse `temperature`
         extra, headroom = thinking_fields()
         if extra:
@@ -181,6 +254,8 @@ class RealAgentModel(AgentModel):
         tool_config = to_bedrock_tools(tools)
         if tool_config:
             args["toolConfig"] = tool_config
+        if cache:
+            args = with_cache_points(args)
         deadline = None if timeout_s is None else time.monotonic() + float(timeout_s)
         for attempt in range(2):
             left = None if deadline is None else deadline - time.monotonic()
@@ -203,6 +278,14 @@ class RealAgentModel(AgentModel):
             return read_stream(answer.get("stream") or [], deadline)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ValidationException" and not self.cache_refused and _has_cache_points(args):
+                self.cache_refused = True     # the safe fallback: the same request without checkpoints
+                left = None if deadline is None else deadline - time.monotonic()
+                return self._once(without_cache_points(args), left, deadline)
             raise AgentModelError("unavailable" if code in RETRYABLE else "rejected", code in RETRYABLE) from None
         except BotoCoreError:
             raise AgentModelError("unavailable", True) from None
+
+
+def _has_cache_points(args):
+    return "cachePoint" in json.dumps(args.get("system")) or "cachePoint" in json.dumps(args.get("toolConfig"))

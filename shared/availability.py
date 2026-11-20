@@ -75,10 +75,7 @@ _PENDING_STATE_FIELDS = frozenset(
     }
 )
 _ARCHIVE_FIELDS = frozenset({"archivedBy", "archivedAt"})
-_REPLACEMENT_DELAYS = {
-    "dev": timedelta(minutes=5),
-    "prod": timedelta(days=28),
-}
+_ENVIRONMENTS = frozenset({"dev", "prod"})
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "PK",
@@ -139,13 +136,26 @@ _MANUAL_ID_PATTERN = re.compile(
     r"MANUAL_BLOCK#[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
-# How far ahead a booking may start (online, by staff and by the phone agent).
-# One place: a per-location rule later changes only last_bookable_date().
+# The booking window and the floor-plan rule are one hard platform rule, the
+# same in every environment and for every restaurant (owner, 2026-11-20):
+# - a booking (online, by staff, by the phone agent) starts on a local date
+#   from today through today + BOOKING_HORIZON_DAYS, any time on that day;
+# - a replacement floor plan takes effect at the earliest at local midnight
+#   starting the day after that, counted from the day it is scheduled.
+# So no booking that exists when a switch is booked lands on a changed plan.
 BOOKING_HORIZON_DAYS = 21
-_BOOKING_HORIZON = timedelta(days=BOOKING_HORIZON_DAYS)
+# A floor on a stored pending cutover, from the target's publication time.
+# Local midnight 22 days after any moment of the publication day is more than
+# 21 days later, less at most one hour when summer time starts in between.
+LAYOUT_CHANGE_FLOOR = timedelta(days=BOOKING_HORIZON_DAYS) - timedelta(hours=1)
+# Switches published before the rule reached dev were booked with dev's old
+# five-minute delay; they keep that floor so none is stranded. Remove this
+# once no such switch can still be pending (after 2027-01-31).
+_LEGACY_RULE_BEFORE = datetime(2026, 11, 23, tzinfo=timezone.utc)
+_LEGACY_FLOOR = timedelta(minutes=5)
 
 
-def last_bookable_date(today, location=None):
+def last_bookable_date(today):
     """The last local date with bookable start times, seen from `today` (the
     location's local date)."""
     return today + timedelta(days=BOOKING_HORIZON_DAYS)
@@ -156,6 +166,23 @@ def earliest_layout_change_date(today):
     after the last bookable date, so no booking that can exist today lands on
     a layout that changed under it."""
     return last_bookable_date(today) + timedelta(days=1)
+
+
+def earliest_layout_cutover(now, zone):
+    """Local midnight (``zone``) starting earliest_layout_change_date of
+    ``now``'s local date, as UTC: the first moment a replacement scheduled
+    at ``now`` may take effect."""
+    day = earliest_layout_change_date(now.astimezone(zone).date())
+    return datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc)
+
+
+def layout_cutover_floor(published_at):
+    """The earliest cutover a stored pending switch of a snapshot published
+    at ``published_at`` (aware) may carry. Readers and the cutover worker
+    check it; activate-layout-version enforces the exact rule."""
+    if published_at < _LEGACY_RULE_BEFORE:
+        return published_at + _LEGACY_FLOOR
+    return published_at + LAYOUT_CHANGE_FLOOR
 
 
 # Start times sit on the clock's half hours (14:00, 14:30 - never 14:02),
@@ -425,15 +452,16 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None, 
         raise _AvailabilityServiceFailure
     now = now.astimezone(timezone.utc)
     earliest = (now + LEAD_TIME) if earliest is None else earliest.astimezone(timezone.utc)
-    latest_start = now + _BOOKING_HORIZON
     requested_date = date.fromisoformat(details["date"])
     local_today = now.astimezone(location["timezone"]).date()
     if requested_date < local_today:
         raise ValueError("date must not be in the past")
-    if requested_date > latest_start.astimezone(
-        location["timezone"]
-    ).date():
-        raise ValueError("date must not be more than 21 days ahead")
+    # Whole local days: the last bookable date is bookable all day, and a
+    # floor-plan switch never starts before the local midnight after it.
+    if requested_date > last_bookable_date(local_today):
+        raise ValueError(
+            f"date must not be more than {BOOKING_HORIZON_DAYS} days ahead"
+        )
 
     time_rules = location.get("bookingTimeRules")
     rules = {}
@@ -479,7 +507,7 @@ def _candidate_slots(details, location, now, *, earliest=None, keep_start=None, 
 
             if (
                 end_utc - start_utc == timedelta(minutes=duration)
-                and earliest <= start_utc <= latest_start
+                and earliest <= start_utc
             ):
                 slots.append(
                     {
@@ -602,7 +630,7 @@ def _validate_activation_state(state, location_id):
         raise _AvailabilityConflict(
             "layout activation state is inconsistent"
         )
-    if _environment() not in _REPLACEMENT_DELAYS:
+    if _environment() not in _ENVIRONMENTS:
         raise _AvailabilityServiceFailure
 
     try:
@@ -895,9 +923,7 @@ def _validate_pending_snapshot(snapshot, location_id, state):
         pending["version"],
     )
     try:
-        eligible_at = details["createdAt"] + _REPLACEMENT_DELAYS[_environment()]
-    except KeyError:
-        raise _AvailabilityServiceFailure from None
+        eligible_at = layout_cutover_floor(details["createdAt"])
     except OverflowError:
         raise _AvailabilityConflict(
             "published layout record is inconsistent"

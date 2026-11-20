@@ -2,8 +2,8 @@
 
 #19: a 'scheduling' intent whose cutover passed without a schedule can be
 cancelled, resumed (re-reserved at the earliest safe cutover) or moved.
-#25: the default prod cutover lands on a closed time (next local midnight),
-not on the publishing minute four weeks later.
+#25: the default cutover lands on a closed time (local midnight after the
+booking horizon), not on the publishing minute; the same in dev and prod.
 #26: activation is refused while bookings after the cutover sit on tables
 the new layout removes (only when RESERVATION_TABLE_NAME is set).
 """
@@ -16,6 +16,7 @@ import pytest
 
 from error_body import err  # noqa: F401
 from test_activate_layout_version import (  # noqa: F401
+    EARLIEST_CUTOVER,
     NOW,
     activation_state,
     app_and_table,
@@ -32,6 +33,8 @@ from test_activate_layout_version import (  # noqa: F401
 )
 
 OVERDUE_CUTOVER = "2026-09-07T10:00:00Z"  # NOW is 10:30Z
+# A booking after the earliest replacement cutover at NOW (2026-09-29 00:00).
+AFTER_CUTOVER = {"date": "2026-10-01", "ends_at": "2026-10-01T18:00:00Z"}
 RESERVATION_TABLE = "test-reservations"
 
 
@@ -106,15 +109,15 @@ def test_overdue_scheduling_intent_resumes_with_new_safe_cutover(
             "status": "pending",
             "version": 2,
             "currentVersion": 1,
-            "cutoverAt": "2026-09-07T10:31:00Z",
+            "cutoverAt": EARLIEST_CUTOVER,
         },
     )
     stored = snapshot_table.get_item(Key=state_key())["Item"]
     assert stored["pendingStatus"] == "scheduled"
-    assert stored["cutoverAt"] == "2026-09-07T10:31:00Z"
+    assert stored["cutoverAt"] == EARLIEST_CUTOVER
     assert scheduler.create_schedule.call_args.kwargs[
         "ScheduleExpression"
-    ] == "at(2026-09-07T10:31:00)"
+    ] == "at(2026-09-28T22:00:00)"
     # the never-created schedule of the old intent is cleaned up first
     scheduler.delete_schedule.assert_called_once()
 
@@ -128,14 +131,14 @@ def test_overdue_scheduling_intent_can_be_rescheduled(
     monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
     response = app.handler(
-        make_reschedule_event(effective_from="2026-09-08T22:00:00Z"),
+        make_reschedule_event(effective_from="2026-09-29T22:00:00Z"),
         None,
     )
 
     assert_response(response, 202)
     stored = snapshot_table.get_item(Key=state_key())["Item"]
     assert stored["pendingStatus"] == "scheduled"
-    assert stored["cutoverAt"] == "2026-09-08T22:00:00Z"
+    assert stored["cutoverAt"] == "2026-09-29T22:00:00Z"
 
 
 # --- #25 ---------------------------------------------------------------------
@@ -167,36 +170,48 @@ def test_default_prod_cutover_is_next_local_midnight(app_and_table, monkeypatch)
     )
 
 
-def test_default_prod_cutover_follows_location_timezone(app_and_table, monkeypatch):
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_default_cutover_follows_location_timezone(
+    app_and_table, monkeypatch, environment
+):
     app, _ = app_and_table
-    monkeypatch.setattr(app, "ENVIRONMENT", "prod")
-    target = snapshot_item(2, createdAt="2026-08-10T17:10:00Z")
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
 
-    london = app._replacement_transition(
-        {"mode": "default"}, target, NOW, location={"timezone": "Europe/London"}
+    london = app._replacement_transition({"mode": "default"}, snapshot_item(2), NOW, location={"timezone": "Europe/London"}
     )
-    unknown = app._replacement_transition(
-        {"mode": "default"}, target, NOW, location={"timezone": "Not/AZone"}
+    unknown = app._replacement_transition({"mode": "default"}, snapshot_item(2), NOW, location={"timezone": "Not/AZone"}
     )
 
     assert london == {"mode": "future", "effectiveFrom": "2026-09-28T23:00:00Z"}
     assert unknown == {"mode": "future", "effectiveFrom": "2026-09-28T22:00:00Z"}
 
 
-def test_next_local_midnight_keeps_exact_midnight(app_and_table):
+def test_default_cutover_counts_from_the_local_date_at_midnight(app_and_table):
     app, _ = app_and_table
-    zone = app._location_zone(None)
+    # 2026-09-08 00:00 CEST exactly: today is 2026-09-08, earliest 2026-09-30
     midnight = datetime(2026, 9, 7, 22, 0, tzinfo=timezone.utc)
-    assert app._next_local_midnight(midnight, zone) == midnight
+    # one microsecond earlier it is still 2026-09-07: earliest 2026-09-29
+    before = datetime(2026, 9, 7, 21, 59, 59, 999999, tzinfo=timezone.utc)
 
-
-def test_default_dev_cutover_keeps_whole_minute(app_and_table, monkeypatch):
-    app, _ = app_and_table
-    target = snapshot_item(2, createdAt="2026-09-07T10:26:01Z")
-    assert app._replacement_transition({"mode": "default"}, target, NOW) == {
+    assert app._replacement_transition({"mode": "default"}, snapshot_item(2), midnight) == {
         "mode": "future",
-        "effectiveFrom": "2026-09-07T10:32:00Z",
+        "effectiveFrom": "2026-09-29T22:00:00Z",
     }
+    assert app._replacement_transition({"mode": "default"}, snapshot_item(2), before) == {
+        "mode": "future",
+        "effectiveFrom": "2026-09-28T22:00:00Z",
+    }
+
+
+def test_default_dev_cutover_matches_prod(app_and_table):
+    app, _ = app_and_table
+    assert app.ENVIRONMENT == "dev"
+    assert app._replacement_transition({"mode": "default"}, snapshot_item(2), NOW) == {
+        "mode": "future",
+        "effectiveFrom": EARLIEST_CUTOVER,
+    }
+    with pytest.raises(app._TooEarly):
+        app._replacement_transition({"mode": "immediate"}, snapshot_item(2), NOW)
 
 
 # --- #26 ---------------------------------------------------------------------
@@ -257,7 +272,7 @@ def test_activation_refused_for_bookings_on_removed_tables(
 ):
     app, snapshot_table = app_and_table
     put_layouts(snapshot_table)
-    reservations.put_item(Item=booking("a" * 32))
+    reservations.put_item(Item=booking("a" * 32, **AFTER_CUTOVER))
     scheduler = successful_scheduler()
     monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
@@ -266,10 +281,11 @@ def test_activation_refused_for_bookings_on_removed_tables(
     assert response["statusCode"] == 409
     body = response_body(response)
     assert body["code"] == "bookings_on_removed_tables"
+    assert body["missingFrom"] == "new"
     assert body["reservations"] == [
         {
             "reservationId": "a" * 32,
-            "date": "2026-09-20",
+            "date": "2026-10-01",
             "startTime": "18:00",
             "tableIds": ["T7"],
         }
@@ -286,13 +302,13 @@ def test_activation_ignores_irrelevant_bookings(
     app, snapshot_table = app_and_table
     put_layouts(snapshot_table)
     for item in (
-        booking("b" * 32, status="cancelled_by_restaurant"),
-        booking("c" * 32, table_ids=("T1",)),
-        booking("d" * 32, status="held", holdOnly=True),
-        # ends before the cutover (now: the target is already eligible)
-        booking("e" * 32, date="2026-09-07", ends_at="2026-09-07T09:00:00Z"),
+        booking("b" * 32, status="cancelled_by_restaurant", **AFTER_CUTOVER),
+        booking("c" * 32, table_ids=("T1",), **AFTER_CUTOVER),
+        booking("d" * 32, status="held", holdOnly=True, **AFTER_CUTOVER),
+        # ends at the cutover (2026-09-29 00:00 CEST)
+        booking("e" * 32, date="2026-09-28", ends_at=EARLIEST_CUTOVER),
         # another location's booking on a T7 of its own
-        booking("f" * 32, location_id="second-location"),
+        booking("f" * 32, location_id="second-location", **AFTER_CUTOVER),
     ):
         reservations.put_item(Item=item)
     scheduler = successful_scheduler()
@@ -300,7 +316,8 @@ def test_activation_ignores_irrelevant_bookings(
 
     response = app.handler(make_event(version_id="2"), None)
 
-    assert_response(response, 200)
+    assert_response(response, 202)
+    assert response_body(response)["cutoverAt"] == EARLIEST_CUTOVER
 
 
 def test_activation_check_skipped_without_reservation_table_env(
@@ -314,21 +331,32 @@ def test_activation_check_skipped_without_reservation_table_env(
 
     response = app.handler(make_event(version_id="2"), None)
 
-    assert_response(response, 200)
+    assert_response(response, 202)
+    assert response_body(response)["cutoverAt"] == EARLIEST_CUTOVER
 
 
-def test_immediate_activation_also_checks_bookings(
+def test_explicit_cutover_also_checks_bookings(
     app_and_table, reservations, monkeypatch
 ):
     app, snapshot_table = app_and_table
     current, _ = put_layouts(snapshot_table)
-    reservations.put_item(Item=booking("a" * 32))
-    monkeypatch.setattr(
-        app, "_get_scheduler_client", lambda: successful_scheduler()
-    )
+    reservations.put_item(Item=booking("a" * 32, **AFTER_CUTOVER))
+    scheduler = successful_scheduler()
+    monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
+    # a replacement is never immediate: now is too early, whatever is booked
     response = app.handler(
         make_event(version_id="2", body='{"effectiveFrom": "2026-09-07T10:30:00Z"}'),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert response_body(response)["code"] == "too_early"
+    assert response_body(response)["earliestCutoverAt"] == EARLIEST_CUTOVER
+
+    # an explicit later cutover still has the booking after it
+    response = app.handler(
+        make_event(version_id="2", body='{"effectiveDate": "2026-09-30"}'),
         None,
     )
 
@@ -337,6 +365,8 @@ def test_immediate_activation_also_checks_bookings(
     assert snapshot_table.get_item(
         Key={"PK": current["PK"], "SK": current["SK"]}
     )["Item"]["isCurrent"] is True
+    assert "pendingVersion" not in snapshot_table.get_item(Key=state_key())["Item"]
+    scheduler.create_schedule.assert_not_called()
 
 
 # --- review follow-ups -------------------------------------------------------
@@ -395,6 +425,7 @@ def test_openapi_conflict_documents_bookings_on_removed_tables(response_name):
     body = {
         "error": "Det finns bokningar efter bytet.",
         "code": "bookings_on_removed_tables",
+        "missingFrom": "new",
         "reservations": [
             {
                 "reservationId": "a" * 32,

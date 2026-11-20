@@ -88,6 +88,7 @@ EXPECTED_OPERATIONS = {
     "/tenant/billing": frozenset({"get"}),
     "/tenant/billing/card-session": frozenset({"post"}),
     "/site-config": frozenset({"get"}),
+    "/translate": frozenset({"post"}),
     "/locations/{locationId}/reservations": frozenset({"get", "post"}),
     "/locations/{locationId}/reservations/manual": frozenset({"post"}),
     "/locations/{locationId}/reservations/{reservationId}": frozenset(
@@ -99,6 +100,7 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/reservations/{reservationId}/guest": frozenset(
         {"get"}
     ),
+    "/k/{code}": frozenset({"get"}),
     "/locations/{locationId}/reservations/{reservationId}/cancel": frozenset(
         {"post"}
     ),
@@ -118,6 +120,17 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/orders/{orderId}/status": frozenset({"put"}),
     "/locations/{locationId}/orders/{orderId}/refund": frozenset({"post"}),
     "/locations/{locationId}/orders/pause": frozenset({"put"}),
+    "/locations/{locationId}/table-orders": frozenset({"get", "post"}),
+    "/locations/{locationId}/table-orders/menu": frozenset({"get"}),
+    "/locations/{locationId}/table-orders/closed": frozenset({"get"}),
+    "/locations/{locationId}/table-orders/{tabId}": frozenset({"get", "patch"}),
+    "/locations/{locationId}/table-orders/{tabId}/items": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/send": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/void": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/move": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/close": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/reopen": frozenset({"post"}),
+    "/locations/{locationId}/table-orders/{tabId}/rounds/{round}/dispatch": frozenset({"post"}),
     "/locations/{locationId}/catering/menu": frozenset({"get"}),
     "/locations/{locationId}/catering/menu/dishes": frozenset({"get", "post"}),
     "/locations/{locationId}/catering/menu/dishes/{dishId}": frozenset({"put", "delete"}),
@@ -198,8 +211,10 @@ PUBLIC_OPERATIONS = frozenset(
         ("/locations/{locationId}/menu", "get"),
         ("/locations/{locationId}/layout/active", "get"),
         ("/site-config", "get"),
+        ("/translate", "post"),
         ("/locations/{locationId}/reservations", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/guest", "get"),
+        ("/k/{code}", "get"),
         ("/locations/{locationId}/reservations/{reservationId}/cancel", "post"),
         ("/locations/{locationId}/reservations/{reservationId}/confirm", "post"),
         ("/locations/{locationId}/holds", "post"),
@@ -275,6 +290,19 @@ STAFF_OPERATIONS = frozenset(
         ("/locations/{locationId}/orders/{orderId}", "get"),
         ("/locations/{locationId}/orders/{orderId}/status", "put"),
         ("/locations/{locationId}/orders/pause", "put"),
+        ("/locations/{locationId}/table-orders", "get"),
+        ("/locations/{locationId}/table-orders", "post"),
+        ("/locations/{locationId}/table-orders/menu", "get"),
+        ("/locations/{locationId}/table-orders/closed", "get"),
+        ("/locations/{locationId}/table-orders/{tabId}", "get"),
+        ("/locations/{locationId}/table-orders/{tabId}", "patch"),
+        ("/locations/{locationId}/table-orders/{tabId}/items", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/send", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/void", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/move", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/close", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/reopen", "post"),
+        ("/locations/{locationId}/table-orders/{tabId}/rounds/{round}/dispatch", "post"),
         ("/locations/{locationId}/print", "get"),
         ("/locations/{locationId}/print/status", "get"),
         ("/locations/{locationId}/print/devices", "post"),
@@ -677,15 +705,15 @@ def test_get_availability_contract_matches_handler(openapi_document):
     assert operation["x-required-groups"] == []
     assert "requestBody" not in operation
     description = " ".join(operation["description"].split())
-    assert "now < slotStartUtc <= now + 21 days" in description
-    assert "partial cutoff date" in description
+    assert "today through today + 21 days" in description
+    assert "every slot of the last date is returned" in description
     assert "slotEndUtc <= cutoverAt" in description
     assert "slotStartUtc >= cutoverAt" in description
     assert "straddles the cutover" in description
     assert "still being scheduled" in description
     assert "overdue" in description
     assert "return `409`" in description
-    assert "local date wholly beyond the 504-hour cutoff" in description
+    assert "local date after today + 21 days returns `400`" in description
     assert "date must not be more than 21 days ahead" in description
     assert "conditionally revalidated when booking" in description
     assert "Floor, floor-area, and cash-register elements" in description
@@ -1488,23 +1516,23 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert effective_from["format"] == "date-time"
     assert effective_from["minLength"] == 1
     assert effective_from["maxLength"] == 64
-    assert "dev delay" in activation_request["description"]
-    assert "prod booking" in activation_request["description"]
+    assert "never immediate" in activation_request["description"]
+    assert "today + booking horizon + 1 day" in activation_request["description"]
     effective_description = " ".join(
         effective_from["description"].split()
     )
-    assert "cannot bypass" in effective_description
+    assert "a replacement is `409` `too_early`" in effective_description
     assert "at or after replacement eligibility" in effective_description
 
     description = operation["description"]
     assert "zero-length body" in description
     assert "first activation is immediate" in description
-    assert "`createdAt` plus five minutes" in description
+    assert "never immediate, in any environment" in description
     assert "day after the guest booking horizon" in description
     assert "too_early" in description
-    assert "earliest safe whole UTC" in description
+    assert "The default timing schedules exactly that" in description
     assert "at or before" in description
-    assert "only once" in description
+    assert "always `409`" in description
     assert "must not precede the eligibility boundary" in description
     assert "whole-minute" in description
     assert "at least 60 seconds" in description
@@ -1777,6 +1805,10 @@ def test_pending_layout_activation_contract_matches_handler(
             "Det finns bokningar efter bytet på bord som inte finns i den "
             "nya planlösningen. Flytta bokningarna till andra bord (eller "
             "lägg tillbaka borden) och aktivera sedan igen."
+        ),
+        (
+            "Det finns bokningar på bord som bara finns i den nya "
+            "planlösningen. Flytta bokningarna till andra bord först."
         ),
     }
 

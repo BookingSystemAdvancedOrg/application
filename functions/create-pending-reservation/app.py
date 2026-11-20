@@ -106,6 +106,10 @@ PURPOSE:
     confirms it. Only for a tenant whose row has cardStepOnManagePage true
     (its live site runs site-kit 0.4.0 or later, which has the card step);
     without it, or without a site address or link key: the Stripe page.
+    Either page reaches the guest as a short plain link (SHORT_LINK_BASE,
+    shared/short_link.py: <base>/<10 random characters>, stored in the same
+    transaction, valid while the booking is held; GET /k/{code} in
+    get-reservation redirects to it): guaranteeLink.url is that short link.
 
     Multi-tenant: the location decides the tenant (public route) or the
     token does (staff route, staff limited to their own location). Tenants
@@ -119,6 +123,8 @@ ENV_VARS:
     RESERVATION_LINK_KEY_SECRET_ARN (manage link signing key)
     STRIPE_SECRET_ARN, STRIPE_API_VERSION (card guarantee)
     PHONE_CARD_PAGE (optional: "site" or "stripe", default "stripe"; a phone guest's card page)
+    SHORT_LINK_BASE (optional: e.g. https://restaurang.booqy.se/api/k; the SMS
+        link's short form, shared/short_link.py; unset: the long URL)
     BOT_CHECK_ENFORCED, SITE_WAF_SECRET (bot check, shared/bot_check.py)
     REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
 
@@ -132,7 +138,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import bot_check, request_guard, site, tenant
+from shared import bot_check, request_guard, short_link, site, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -322,6 +328,22 @@ def phone_card_page():
     return "site" if (os.environ.get("PHONE_CARD_PAGE") or "").strip().lower() == "site" else "stripe"
 
 
+def _short_link_base(ctx):
+    """Where the SMS card link points: <restaurant's own domain or slug
+    address>/api/k when its site is live (restaurant sites send /api/* to this
+    API), else SHORT_LINK_BASE (Booqy's admin host). None when short links
+    are off (SHORT_LINK_BASE unset)."""
+    default = short_link.base()
+    if not default:
+        return None
+    try:
+        host = site.canonical_host(ctx.tenant_id, ctx.tenant)
+    except (BotoCoreError, ClientError, KeyError):
+        host = None
+    own = f"https://{host}/api/k" if host else None
+    return own if own and short_link.PLAIN_URL.fullmatch(own) else default
+
+
 def _site_card_page(ctx, item):
     """The booking's manage link on the restaurant's site, or None (then the
     Stripe page) when the tenant's live site has no card step yet (tenant
@@ -377,7 +399,7 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
-    setup = checkout = None
+    setup = checkout = short_put = None
     if staff and link and guarantee.required(ctx.location, ctx.tenant, party_size):
         # A phone booking with the card guarantee: pending until the guest
         # adds the card on the Stripe page the SMS links to.
@@ -396,7 +418,7 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
             # the card form, exactly as after an online booking (SetupIntent).
             customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
             item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
-            url = page
+            url, done_url = page, page
         else:
             success_url, cancel_url = _return_urls(ctx, item)
             customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
@@ -404,6 +426,16 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
                                                             now=now)
             item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
             url = session["url"]
+            done_url = success_url if success_url != FALLBACK_RETURN_URL else None
+        # The SMS carries a short plain link (shared/short_link.py), never the
+        # long URL: phones cut a link at # or %, which broke the Stripe page.
+        link_base = _short_link_base(ctx)
+        if link_base:
+            code = short_link.new_code()
+            short_put = short_link.put_op(code, table=r.reservation_table(), target=url, item=item,
+                                          expires=expires, serialize=r.serialize, done_url=done_url,
+                                          keep_until=ends_at)
+            url = short_link.url(code, link_base)
         checkout = {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
                     "page": "site" if page else "stripe"}
     elif not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
@@ -444,6 +476,7 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
                      "ConditionExpression": "attribute_not_exists(PK)"}},
         ]
         + ([guarantee.marker_put(item)] if setup or checkout else [])
+        + ([short_put] if short_put else [])
     )
 
     if staff:

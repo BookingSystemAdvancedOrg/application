@@ -52,9 +52,10 @@ def test_aws_language_table_is_complete_and_known_to_the_model():
     # the exact list Terraform's byte-identical copy (infrastructure/phone-test-line/languages.json) has:
     # a locale here that the bot lacks fails every switch to it
     assert list(language.AWS_LANGUAGES) == ["sv", "en", "da", "fi", "de", "fr", "es", "it", "nl", "pl", "pt", "ar",
-                                            "tr", "cs", "ca", "ja", "ko", "hi", "ru", "is"]
+                                            "tr", "cs", "ca", "ja", "ko", "hi", "ru", "is", "no", "zh", "yue", "ro", "cy"]
     for code, spec in language.AWS_LANGUAGES.items():
-        assert set(spec) == {"lexLocale", "connectLanguage", "voice", "engine"}, code
+        assert set(spec) - {"assistedNlu"} == {"lexLocale", "connectLanguage", "voice", "engine"}, code
+        assert spec.get("assistedNlu", "Primary") == "Primary", code
         assert spec["engine"] in ("neural", "standard"), code
         assert code in language.NAMES, code
     assert language.AWS_LANGUAGES["sv"] == {"lexLocale": "sv_SE", "connectLanguage": "sv-SE", "voice": "Elin",
@@ -66,17 +67,22 @@ def test_connect_calls_get_the_aws_list_and_other_calls_the_elevenlabs_list():
     assert session.allowed_languages({}, {"callRef": "connect-abc"}) == language.AWS_CALL_LANGUAGES
     assert session.allowed_languages({}, {"callRef": "conv-1"}) == language.voice_languages()
     assert session.allowed_languages({}) == language.voice_languages()
-    assert "so" not in language.AWS_CALL_LANGUAGES and "no" not in language.AWS_CALL_LANGUAGES
+    assert "so" not in language.AWS_CALL_LANGUAGES and "no" in language.AWS_CALL_LANGUAGES
     assert "ca" in language.AWS_CALL_LANGUAGES
 
 
-def test_unsupported_language_says_english_after_swedish():
-    said = copy.unsupported_language()
-    sv, en = copy.UNSUPPORTED_LANGUAGE["sv"], copy.UNSUPPORTED_LANGUAGE["en"]
-    assert said.startswith(sv + " " + en)
-    assert copy.unsupported_language(connect=True) == f"{sv} {en}"          # Elin cannot read Arabic script
-    assert copy.unsupported_language(callback=True, connect=True) == \
-        f"{copy.UNSUPPORTED_CALLBACK['sv']} {copy.UNSUPPORTED_CALLBACK['en']}"
+def test_unsupported_language_is_said_in_the_callers_language_then_english():
+    en = copy.UNSUPPORTED_LANGUAGE["en"]
+    # one question at a time (live test 2026-11-20): English first, the callback only after a no
+    assert en.endswith("Shall we continue in English?") and "call you back" not in en and "Arabic" not in en
+    assert copy.unsupported_language() == en
+    # Bosnian on the Connect line: Elin can read the Latin script, so Bosnian first, then English
+    assert copy.unsupported_language("bs", connect=True) == f"{copy.UNSUPPORTED_LANGUAGE['bs']} {en}"
+    # Persian on the Connect line: Elin cannot read the Arabic script, English only (never silent Swedish)
+    assert copy.unsupported_language("fa", connect=True, current="sv") == en
+    assert copy.unsupported_language("fa") == f"{copy.UNSUPPORTED_LANGUAGE['fa']} {en}"   # a multilingual voice
+    assert copy.unsupported_language("bs", callback=True, connect=True) == \
+        f"{copy.UNSUPPORTED_CALLBACK['bs']} {copy.UNSUPPORTED_CALLBACK['en']}"
 
 
 # --- the Connect line: switching ------------------------------------------------------------------
@@ -91,7 +97,7 @@ def test_switch_closes_without_a_message_and_hands_the_reply_to_the_flow(live):
     assert attrs["next"] == "switch" and attrs["lang"] == "de"
     assert (attrs["connectLanguage"], attrs["voice"], attrs["engine"]) == ("de-DE", "Vicki", "Neural")
     assert attrs["callerNumber"] == CALLER and attrs["dialedNumber"] == NUMBER
-    assert attrs["say"] == ('<speak><prosody rate="92%">Ich bin der KI-Assistent des Restaurants. '
+    assert attrs["say"] == ('<speak><prosody rate="100%">Ich bin der digitale Assistent des Restaurants. '
                             'Gerne. Für wie viele Personen?</prosody></speak>')
     row, turns = turns_of(live, attrs)
     assert row["language"] == "de" and row["languageSwitches"] == 1 and row["status"] == "talking"
@@ -105,7 +111,7 @@ def test_switch_closes_without_a_message_and_hands_the_reply_to_the_flow(live):
              "sessionState": {"intent": {"name": "Samtal", "state": "InProgress"}, "sessionAttributes": attrs}}
     out = live.live.handler({"lexV2": event})
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
-    assert out["messages"][0]["content"] == '<speak><prosody rate="92%">Wunderbar.</prosody></speak>'
+    assert out["messages"][0]["content"] == '<speak><prosody rate="100%">Wunderbar.</prosody></speak>'
     assert "next" not in out["sessionState"]["sessionAttributes"]
     assert turns_of(live, attrs)[1][-2]["asrLocale"] == "de_DE"
 
@@ -125,14 +131,15 @@ def test_switching_back_to_swedish_uses_the_same_handshake(live):
 
 def test_a_connect_call_switches_at_most_three_times(live):
     out, attrs = lex(live, "contact-l3", "Hej")
-    for tagged, said in (("[en] Sure.", "Hi, I would like to book a table please"),
-                         ("[de] Gerne.", "Hallo, ich möchte bitte einen Tisch reservieren"),
+    # explicit requests (a switch right after a switch needs one)
+    for tagged, said in (("[en] Sure.", "Hi, can we speak English please, I would like a table"),
+                         ("[de] Gerne.", "Hallo, können wir bitte Deutsch sprechen"),
                          ("[en] Sure.", "Sorry, can we speak English, I want a table")):
         live.model.responses = [Turn(text=tagged)]
         out, attrs = lex(live, "contact-l3", said, flow(attrs))
         assert attrs["next"] == "switch"
     live.model.responses = [Turn(text="[de] Gerne.")]
-    out, attrs = lex(live, "contact-l3", "Hallo, ich möchte bitte einen Tisch reservieren", flow(attrs))
+    out, attrs = lex(live, "contact-l3", "Hallo, können wir bitte Deutsch sprechen", flow(attrs))
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"} and "next" not in attrs
     row, _ = turns_of(live, attrs)
     assert row["language"] == "en" and row["languageSwitches"] == 3
@@ -177,7 +184,7 @@ def test_a_garbled_first_sentence_is_asked_about_once_in_swedish_and_english(liv
 
     out, attrs = garbled("vala mak tobi sena ruki", attrs)
     assert out["sessionState"]["dialogAction"] == {"type": "ElicitIntent"}
-    assert out["messages"][0]["content"] == f'<speak><prosody rate="92%">{copy.ask_language()}</prosody></speak>'
+    assert out["messages"][0]["content"] == f'<speak><prosody rate="100%">{copy.ask_language()}</prosody></speak>'
     row, turns = turns_of(live, attrs)
     assert row["languageAsked"] and turns[-1]["text"] == copy.ask_language()
     out, attrs = garbled("vala mak tobi sena ruki", attrs)       # asked once: the agent answers now

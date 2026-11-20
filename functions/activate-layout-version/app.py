@@ -11,13 +11,15 @@ TRIGGERS:
 PURPOSE:
     Activates a published layout snapshot, reschedules an existing pending
     activation, or cancels it. The first layout activates immediately. A
-    replacement cannot activate until five minutes after it was published in
-    dev; in prod not before local midnight of the day after the booking
-    horizon (shared/availability.earliest_layout_change_date), so no booking
-    made before the switch lands on a changed layout. An optional
+    replacement never does: in every environment it takes effect at the
+    earliest at local midnight of the day after the booking horizon
+    (today + 22 days, shared/availability.earliest_layout_cutover), so no
+    booking made before the switch lands on a changed layout. An optional
     ``effectiveFrom`` selects a later whole-UTC-minute cutover, or
     ``effectiveDate`` (YYYY-MM-DD) local midnight of that date. Too early is
-    409 with code ``too_early`` and ``earliestCutoverAt``.
+    409 with code ``too_early`` and ``earliestCutoverAt``. Cancelling a
+    switch or moving it later is 409 ``bookings_on_removed_tables`` while
+    bookings made on the new layout sit on tables the current one lacks.
 
 ENV_VARS:
     ENVIRONMENT -- "dev" or "prod"
@@ -54,7 +56,7 @@ from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import console_invoke, tenant
-from shared.availability import BOOKING_HORIZON_DAYS, earliest_layout_change_date
+from shared.availability import earliest_layout_cutover, layout_cutover_floor
 from shared.auth import Unauthorized, get_claims, get_sub
 from shared.dynamo import client as dynamodb_client
 from shared.dynamo import table
@@ -94,18 +96,11 @@ _LIFECYCLE_FIELDS = frozenset(
 )
 _ACTIVATION_REQUEST_FIELDS = frozenset({"effectiveFrom", "effectiveDate"})
 _MINIMUM_SCHEDULE_LEAD = timedelta(minutes=1)
-# A default (no effectiveFrom) cutover in prod moves to the next local
-# midnight: a booking always ends on the date it starts (shared/availability
-# _DAY_END), so no slot spans it and none is dropped on the cutover day.
-# Short delays (dev) keep the whole-minute cutover so changes are testable.
-_CLOSED_CUTOVER_MIN_DELAY = timedelta(days=1)
+# A default (no effectiveFrom) cutover is a local midnight: a booking always
+# ends on the date it starts (shared/availability _DAY_END), so no slot spans
+# it and none is dropped on the cutover day.
 _DEFAULT_LOCATION_TIMEZONE = "Europe/Stockholm"
-_REPLACEMENT_DELAYS = {
-    "dev": timedelta(minutes=5),
-    # Prod: the booking horizon plus one day, counted from the local date of
-    # the request (see _replacement_eligibility), not from publication.
-    "prod": timedelta(days=BOOKING_HORIZON_DAYS + 1),
-}
+_ENVIRONMENTS = frozenset({"dev", "prod"})
 _SNAPSHOT_REQUIRED_FIELDS = frozenset(
     {
         "version",
@@ -152,11 +147,19 @@ class _ActivationRequestError(Exception):
 
 
 class _BookingsOnRemovedTables(Exception):
-    """Bookings after the cutover sit on tables the target layout drops."""
+    """Bookings sit on tables a layout lacks: the new one ("new", an
+    activation or an earlier switch) or the current one ("current", a
+    stopped switch or one moved later)."""
 
-    def __init__(self, reservations):
+    def __init__(self, reservations, missing_from="new"):
         super().__init__("bookings_on_removed_tables")
         self.reservations = reservations
+        self.missing_from = missing_from
+        self.message = (
+            _NEW_TABLES_MESSAGE
+            if missing_from == "current"
+            else _REMOVED_TABLES_MESSAGE
+        )
 
 
 class _TooEarly(Exception):
@@ -199,8 +202,9 @@ def _removed_tables_response(exc):
     return _activation_response(
         HTTPStatus.CONFLICT.value,
         {
-            "error": _REMOVED_TABLES_MESSAGE,
+            "error": exc.message,
             "code": "bookings_on_removed_tables",
+            "missingFrom": exc.missing_from,
             "reservations": exc.reservations,
         },
     )
@@ -926,34 +930,34 @@ def _bootstrap_state(location_id, target, caller_sub, now):
     return target["effectiveFrom"], normalized_target
 
 
-def _replacement_delay():
-    delay = _REPLACEMENT_DELAYS.get(ENVIRONMENT)
-    if delay is None:
+def _check_environment():
+    if ENVIRONMENT not in _ENVIRONMENTS:
         raise _ActivationServiceFailure
-    return delay
 
 
 def _replacement_eligibility(target, now, location=None):
-    delay = _replacement_delay()
-    if delay >= _CLOSED_CUTOVER_MIN_DELAY:
-        zone = _location_zone(location)
-        day = earliest_layout_change_date(now.astimezone(zone).date())
-        try:
-            return datetime(
-                day.year, day.month, day.day, tzinfo=zone
-            ).astimezone(timezone.utc)
-        except (OverflowError, ValueError):
-            raise _ActivationServiceFailure from None
-
+    """The earliest cutover of a replacement booked at ``now``: local midnight
+    of today + booking horizon + 1 day, the same in every environment. It is
+    never before the floor that availability, table blocks and the cutover
+    worker check (shared/availability.layout_cutover_floor of the target's
+    ``createdAt``); a target that cannot meet it is inconsistent."""
+    _check_environment()
+    try:
+        eligible_at = earliest_layout_cutover(now, _location_zone(location))
+    except (OverflowError, ValueError):
+        raise _ActivationServiceFailure from None
     try:
         created_at = datetime.fromisoformat(
             _utc_timestamp(target, "createdAt").replace("Z", "+00:00")
         ).astimezone(timezone.utc)
-        return created_at + delay
+        floor = layout_cutover_floor(created_at)
     except (OverflowError, TypeError, ValueError):
         raise _ActivationConflict(
             "published layout record is inconsistent"
         ) from None
+    if floor > eligible_at:
+        raise _ActivationConflict("published layout record is inconsistent")
+    return eligible_at
 
 
 def _ceil_to_whole_minute(value):
@@ -1548,191 +1552,6 @@ def _snapshot_condition_is_unchanged(actual, expected):
     ) and _archive_metadata(actual) == _archive_metadata(expected)
 
 
-def _reconcile_immediate_replacement(
-    location_id,
-    state_details,
-    expected_current,
-    expected_target,
-):
-    snapshot_table = table(PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME)
-    snapshots = _query_snapshots(snapshot_table, location_id)
-    by_version = {
-        _snapshot_version(snapshot, location_id): snapshot
-        for snapshot in snapshots
-    }
-    state = _read_state(snapshot_table, location_id)
-    actual_state_details = (
-        None if state is None else _validate_state(state, location_id)
-    )
-    current = [snapshot for snapshot in snapshots if snapshot["isCurrent"]]
-    if len(current) > 1:
-        raise _ActivationConflict
-
-    target_version = _snapshot_version(expected_target, location_id)
-    actual_target = by_version.get(target_version)
-    if (
-        actual_state_details is not None
-        and actual_state_details["currentVersion"] == target_version
-        and actual_state_details["pending"] is None
-        and len(current) == 1
-        and actual_target is not None
-        and _snapshot_version(current[0], location_id) == target_version
-        and _archive_metadata(actual_target) is None
-    ):
-        _validate_steady_current(actual_target)
-        return actual_target["effectiveFrom"]
-
-    state_is_unchanged = (
-        state is None
-        if state_details is None
-        else actual_state_details == state_details
-    )
-    expected_current_version = _snapshot_version(
-        expected_current,
-        location_id,
-    )
-    if (
-        state_is_unchanged
-        and _snapshot_condition_is_unchanged(
-            by_version.get(expected_current_version),
-            expected_current,
-        )
-        and _snapshot_condition_is_unchanged(
-            actual_target,
-            expected_target,
-        )
-    ):
-        return None
-    raise _ActivationConflict
-
-
-def _replace_current_immediately(
-    location_id,
-    state_details,
-    current,
-    target,
-    caller_sub,
-    now,
-):
-    timestamp = _isoformat(now.astimezone(timezone.utc))
-    target_version = _snapshot_version(target, location_id)
-    if state_details is None:
-        state_operation = _put_state_operation(
-            _state_item(
-                location_id,
-                target_version,
-                caller_sub,
-                timestamp,
-            )
-        )
-    else:
-        next_revision = state_details["revision"] + 1
-        names = {
-            "#recordType": "recordType",
-            "#currentVersion": "currentVersion",
-            "#revision": "revision",
-            "#pendingVersion": "pendingVersion",
-            "#pendingStatus": "pendingStatus",
-            "#activationToken": "activationToken",
-            "#cutoverAt": "cutoverAt",
-            "#scheduleName": "scheduleName",
-            "#scheduleArn": "scheduleArn",
-            "#targetPreviousLifecycle": (
-                _PENDING_TARGET_PREVIOUS_LIFECYCLE
-            ),
-            "#updatedBy": "updatedBy",
-            "#updatedAt": "updatedAt",
-        }
-        values = _typed_map(
-            {
-                ":recordType": _ACTIVATION_STATE_TYPE,
-                ":expectedCurrentVersion": state_details[
-                    "currentVersion"
-                ],
-                ":nextCurrentVersion": target_version,
-                ":expectedRevision": state_details["revision"],
-                ":nextRevision": next_revision,
-                ":callerSub": caller_sub,
-                ":timestamp": timestamp,
-            }
-        )
-        state_operation = {
-            "Update": {
-                "TableName": PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME,
-                "Key": _typed_map(_state_key(location_id)),
-                "UpdateExpression": (
-                    "SET #currentVersion = :nextCurrentVersion, "
-                    "#revision = :nextRevision, "
-                    "#updatedBy = :callerSub, "
-                    "#updatedAt = :timestamp "
-                    "REMOVE #targetPreviousLifecycle"
-                ),
-                "ConditionExpression": (
-                    "attribute_exists(PK) AND attribute_exists(SK) "
-                    "AND #recordType = :recordType "
-                    "AND #currentVersion = :expectedCurrentVersion "
-                    "AND #revision = :expectedRevision "
-                    "AND attribute_not_exists(#pendingVersion) "
-                    "AND attribute_not_exists(#pendingStatus) "
-                    "AND attribute_not_exists(#activationToken) "
-                    "AND attribute_not_exists(#cutoverAt) "
-                    "AND attribute_not_exists(#scheduleName) "
-                    "AND attribute_not_exists(#scheduleArn)"
-                ),
-                "ExpressionAttributeNames": names,
-                "ExpressionAttributeValues": values,
-            }
-        }
-    try:
-        dynamodb_client().transact_write_items(
-            TransactItems=[
-                state_operation,
-                _snapshot_lifecycle_update(
-                    current,
-                    is_current=False,
-                    effective_from=current["effectiveFrom"],
-                    effective_to=timestamp,
-                    expires_at=timestamp,
-                    caller_sub=caller_sub,
-                    timestamp=timestamp,
-                ),
-                _snapshot_lifecycle_update(
-                    target,
-                    is_current=True,
-                    effective_from=timestamp,
-                    effective_to=None,
-                    expires_at=None,
-                    caller_sub=caller_sub,
-                    timestamp=timestamp,
-                ),
-            ]
-        )
-    except (BotoCoreError, ClientError) as exc:
-        if isinstance(exc, ClientError) and (
-            exc.response.get("Error", {}).get("Code")
-            != "TransactionCanceledException"
-            or exc.response.get("CancellationReasons")
-        ):
-            raise
-        try:
-            committed_effective_from = _reconcile_immediate_replacement(
-                location_id,
-                state_details,
-                current,
-                target,
-            )
-        except _ActivationConflict:
-            raise _ActivationConflict(
-                "layout activation changed; retry request"
-            ) from None
-        except (BotoCoreError, ClientError, _ActivationServiceFailure):
-            raise exc
-        if committed_effective_from is None:
-            raise
-        return committed_effective_from
-    return timestamp
-
-
 def _finalize_pending_activation(
     location_id,
     state_details,
@@ -2052,22 +1871,12 @@ def _resume_pending_activation(
         # it again with the earliest safe cutover instead of leaving the
         # location stuck. A schedule it may have created is deleted by the
         # renewal, and the rotated token turns any survivor into a no-op.
-        # In prod the new cutover is the next local midnight, as for a new
-        # default activation, so no booking slot spans it.
-        try:
-            renewed = _ceil_to_whole_minute(
-                now.astimezone(timezone.utc) + _MINIMUM_SCHEDULE_LEAD
-            )
-        except OverflowError:
-            raise _ActivationServiceFailure from None
-        if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
-            # Bookings kept landing on the current layout meanwhile, so the
-            # renewed cutover keeps the booking-horizon rule too.
-            renewed = max(
-                _next_local_midnight(renewed, _location_zone(location)),
-                _replacement_eligibility(target, now, location),
-            )
-        renewed_cutover = _isoformat(renewed)
+        # Bookings kept landing on the current layout meanwhile, so the
+        # renewed cutover keeps the booking-horizon rule, as for a new
+        # default activation (a local midnight no booking slot spans).
+        renewed_cutover = _isoformat(
+            _replacement_eligibility(target, now, location)
+        )
         # Bookings made while the intent looked abandoned may sit on tables
         # the target drops: check them as for a new activation.
         _bookings_on_removed_tables(location_id, target, renewed_cutover)
@@ -2373,6 +2182,12 @@ def _cancel_pending_activation(location_id, caller_sub, now):
     ):
         raise _ActivationConflict(
             "layout activation cutover is overdue"
+        )
+    if cutover > now.astimezone(timezone.utc):
+        # Guests may have booked on the new layout since the switch was
+        # booked: stopping it must not leave them on tables that are gone.
+        _bookings_on_removed_tables(
+            location_id, current[0], cutover, missing_from="current"
         )
 
     timestamp = _isoformat(now.astimezone(timezone.utc))
@@ -2934,6 +2749,21 @@ def _reschedule_pending_activation(
     if not same_cutover:
         _replacement_transition(timing, target, now, location=location)
         _bookings_on_removed_tables(location_id, target, requested_cutover)
+        if (
+            previous_cutover > now.astimezone(timezone.utc)
+            and datetime.fromisoformat(
+                requested_cutover.replace("Z", "+00:00")
+            ) > previous_cutover
+        ):
+            # Moving it later: bookings made on the new layout between the
+            # two dates would land on the current one.
+            _bookings_on_removed_tables(
+                location_id,
+                current[0],
+                previous_cutover,
+                until=requested_cutover,
+                missing_from="current",
+            )
     # The same cutover again was checked when it was booked; in prod the
     # earliest date moves with today, so it is not checked a second time.
 
@@ -3001,20 +2831,6 @@ def _location_zone(location):
         return ZoneInfo(_DEFAULT_LOCATION_TIMEZONE)
 
 
-def _next_local_midnight(value, zone):
-    """The first local midnight at or after ``value`` (UTC result)."""
-    try:
-        local = value.astimezone(zone)
-        day = local.date()
-        midnight = datetime(day.year, day.month, day.day, tzinfo=zone)
-        if midnight < local:
-            day = day + timedelta(days=1)
-            midnight = datetime(day.year, day.month, day.day, tzinfo=zone)
-        return midnight.astimezone(timezone.utc)
-    except (OverflowError, ValueError):
-        raise _ActivationServiceFailure from None
-
-
 # Booking statuses that occupy a table (shared/reservations.HOLDS_TABLES
 # without 'held': a 15-minute form hold expires on its own).
 _BOOKING_STATUSES_ON_TABLES = frozenset({"pending", "reserved", "arrived"})
@@ -3023,6 +2839,12 @@ _REMOVED_TABLES_MESSAGE = (
     "Det finns bokningar efter bytet på bord som inte finns i den nya "
     "planlösningen. Flytta bokningarna till andra bord (eller lägg "
     "tillbaka borden) och aktivera sedan igen."
+)
+# Stopping a switch or moving it later: guests booked on the new layout since
+# the switch was booked would land on tables the current one lacks.
+_NEW_TABLES_MESSAGE = (
+    "Det finns bokningar på bord som bara finns i den nya planlösningen. "
+    "Flytta bokningarna till andra bord först."
 )
 
 
@@ -3037,16 +2859,24 @@ def _target_table_ids(target):
     }
 
 
-def _bookings_on_removed_tables(location_id, target, cutover):
-    """Bookings ending after ``cutover`` whose tables the target layout
-    lacks. Raises _BookingsOnRemovedTables. Skipped when the function has no
-    RESERVATION_TABLE_NAME (no read access to the Reservation table)."""
+def _bookings_on_removed_tables(
+    location_id, target, cutover, *, until=None, missing_from="new"
+):
+    """Bookings ending after ``cutover`` (and, with ``until``, starting
+    before it) whose tables the ``target`` layout lacks. Raises
+    _BookingsOnRemovedTables saying which layout ``target`` is. Skipped when
+    the function has no RESERVATION_TABLE_NAME (no read access to the
+    Reservation table)."""
     table_name = os.environ.get("RESERVATION_TABLE_NAME")
     if not table_name:
         return
     if isinstance(cutover, str):
         cutover = datetime.fromisoformat(cutover.replace("Z", "+00:00"))
     cutover = cutover.astimezone(timezone.utc)
+    if isinstance(until, str):
+        until = datetime.fromisoformat(until.replace("Z", "+00:00"))
+    if until is not None:
+        until = until.astimezone(timezone.utc)
     table_ids = _target_table_ids(target)
     # Reservation SKs carry the local date; start one day early so a
     # booking whose local date is before the UTC date is not missed.
@@ -3060,8 +2890,8 @@ def _bookings_on_removed_tables(location_id, target, cutover):
             )
         ),
         "ProjectionExpression": (
-            "reservationId, #date, startTime, endsAt, tableIds, "
-            "#status, holdOnly"
+            "reservationId, #date, startTime, bookedFor, endsAt, "
+            "tableIds, #status, holdOnly"
         ),
         "ExpressionAttributeNames": {"#date": "date", "#status": "status"},
         "ConsistentRead": True,
@@ -3085,6 +2915,15 @@ def _bookings_on_removed_tables(location_id, target, cutover):
                 ends = None
             if ends is not None and ends <= cutover:
                 continue
+            if until is not None:
+                try:
+                    starts = datetime.fromisoformat(
+                        item.get("bookedFor").replace("Z", "+00:00")
+                    ).astimezone(timezone.utc)
+                except (AttributeError, TypeError, ValueError):
+                    starts = None
+                if starts is not None and starts >= until:
+                    continue
             booked = item.get("tableIds") or []
             if not isinstance(booked, list):
                 booked = []
@@ -3111,35 +2950,25 @@ def _bookings_on_removed_tables(location_id, target, cutover):
         affected.sort(
             key=lambda b: (str(b["date"]), str(b["startTime"]))
         )
-        raise _BookingsOnRemovedTables(affected[:_MAX_REPORTED_BOOKINGS])
+        raise _BookingsOnRemovedTables(
+            affected[:_MAX_REPORTED_BOOKINGS], missing_from
+        )
 
 
 def _replacement_transition(timing, target, now, *, location=None):
+    """The cutover of a replacement. Never immediate: the earliest one is the
+    local midnight after the booking horizon, a whole minute far beyond the
+    scheduler lead; a past, present or earlier request is too early."""
     eligible_at = _replacement_eligibility(target, now, location)
-    now = now.astimezone(timezone.utc)
 
     if timing["mode"] == "default":
-        if now >= eligible_at:
-            return {"mode": "immediate"}
-        try:
-            earliest_safe_cutover = max(
-                eligible_at,
-                now + _MINIMUM_SCHEDULE_LEAD,
-            )
-        except OverflowError:
-            raise _ActivationServiceFailure from None
-        cutover = _ceil_to_whole_minute(earliest_safe_cutover)
-        if _replacement_delay() >= _CLOSED_CUTOVER_MIN_DELAY:
-            cutover = _next_local_midnight(cutover, _location_zone(location))
         return {
             "mode": "future",
-            "effectiveFrom": _isoformat(cutover),
+            "effectiveFrom": _isoformat(eligible_at),
         }
 
     if timing["mode"] == "immediate":
-        if now < eligible_at:
-            raise _TooEarly(_isoformat(eligible_at))
-        return {"mode": "immediate"}
+        raise _TooEarly(_isoformat(eligible_at))
 
     if timing["mode"] != "future":
         raise _ActivationServiceFailure
@@ -3217,22 +3046,8 @@ def _activate_version(
             timing, target, now, location=location
         )
         _bookings_on_removed_tables(
-            location_id,
-            target,
-            now
-            if transition["mode"] == "immediate"
-            else transition["effectiveFrom"],
+            location_id, target, transition["effectiveFrom"]
         )
-        if transition["mode"] == "immediate":
-            effective_from = _replace_current_immediately(
-                location_id,
-                state_details,
-                current[0],
-                target,
-                caller_sub,
-                now,
-            )
-            return _active_response(version, effective_from)
         return _start_pending_activation(
             location_id,
             state_details,
@@ -3262,22 +3077,8 @@ def _activate_version(
                 timing, target, now, location=location
             )
             _bookings_on_removed_tables(
-                location_id,
-                target,
-                now
-                if transition["mode"] == "immediate"
-                else transition["effectiveFrom"],
+                location_id, target, transition["effectiveFrom"]
             )
-        if transition is not None and transition["mode"] == "immediate":
-            effective_from = _replace_current_immediately(
-                location_id,
-                None,
-                current[0],
-                target,
-                caller_sub,
-                now,
-            )
-            return _active_response(version, effective_from)
 
         effective_from, normalized_current = _bootstrap_state(
             location_id,
@@ -3427,12 +3228,14 @@ def handler(event, context):
 
     if operation == "cancel":
         try:
-            _replacement_delay()
+            _check_environment()
             return _cancel_pending_activation(
                 location_id,
                 caller_sub,
                 _utc_now(),
             )
+        except _BookingsOnRemovedTables as exc:
+            return _removed_tables_response(exc)
         except _ActivationConflict as exc:
             return _activation_error(HTTPStatus.CONFLICT.value, str(exc))
         except (BotoCoreError, ClientError, _ActivationServiceFailure) as exc:
@@ -3451,7 +3254,7 @@ def handler(event, context):
         location = getattr(location_context, "location", None)
         try:
             timing = _reschedule_timing(event, now, _location_zone(location))
-            _replacement_delay()
+            _check_environment()
         except ValueError as exc:
             return _activation_error(
                 HTTPStatus.BAD_REQUEST.value,
@@ -3507,7 +3310,7 @@ def handler(event, context):
     location = getattr(location_context, "location", None)
     try:
         timing = _activation_timing(event, now, _location_zone(location))
-        _replacement_delay()
+        _check_environment()
     except ValueError as exc:
         return _activation_error(HTTPStatus.BAD_REQUEST.value, str(exc))
     except _ActivationServiceFailure:

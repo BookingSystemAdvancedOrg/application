@@ -50,7 +50,7 @@ NAMES = {   # every language the model may tag, for the prompt ("answer in <name
     # languages the model may recognise but no voice model speaks: the call does not switch
     "ti": "Tigrinya", "kmr": "Northern Kurdish (Kurmanji)", "om": "Oromo",
     # the Connect + Lex line only (AWS_LANGUAGES)
-    "ca": "Catalan",
+    "ca": "Catalan", "yue": "Cantonese", "cy": "Welsh",
 }
 # ElevenLabs eleven_flash_v2_5 / eleven_turbo_v2_5 (the default until the sandbox test).
 FLASH_LANGUAGES = ("sv", "en", "no", "da", "fi", "de", "fr", "es", "it", "pl", "ar", "pt", "nl", "tr", "ru",
@@ -68,15 +68,14 @@ CALL_LANGUAGES = VOICE_LANGUAGES   # kept for callers of the old name
 # Languages where speech recognition is weak (ElevenLabs' own ratings): the prompt
 # asks the model to repeat every detail and to have names spelled.
 LOW_ASR = ("so", "am", "ckb", "ps", "ti", "kmr", "om", "sw", "ur", "pa")
-_ALIASES = {"nb": "no", "nn": "no", "tl": "fil", "ku": "kmr", "iw": "he", "prs": "fa", "zh-cn": "zh",
+_ALIASES = {"nb": "no", "nn": "no", "tl": "fil", "ku": "kmr", "iw": "he", "prs": "fa", "zh-cn": "zh", "zh-hk": "yue",
             "pt-br": "pt", "sh": "sr"}
 _TAG = re.compile(r"^\s*\[([A-Za-z]{2,3})(?:[-_][A-Za-z]{2,4})?\]\s*")
 
 
 # The Amazon Connect + Lex V2 line: our code -> {lexLocale, connectLanguage, voice, engine}.
 # Verified 2026-11-18 against the Lex V2 locale list, Polly's voice list and the Connect Set voice
-# docs [VERIFY ON A REAL CALL: the pairing, design risk 1]. Norwegian, Chinese and Cantonese are
-# not on the line (the bot has no locale for them). The file must stay byte-identical to
+# docs [VERIFY ON A REAL CALL: the pairing, design risk 1]. The file must stay byte-identical to
 # infrastructure/phone-test-line/languages.json (tests pin the key set).
 AWS_LANGUAGES = json.loads((Path(__file__).with_name("aws_languages.json")).read_text("utf-8"))["languages"]
 AWS_CALL_LANGUAGES = tuple(AWS_LANGUAGES)
@@ -139,6 +138,11 @@ _WORDS = {
           "hadda dad galabta",
     "tr": "ve bir masa için yarın lütfen teşekkür istiyorum kişilik saat merhaba evet hayır akşam rezervasyon "
           "kişi ben",
+    # Bosnian, Croatian and Serbian (Latin script) as one group: "ja" and "da" are left out (Swedish yes).
+    "bs": "želim želio željela bih sto stol rezervisati rezervirati rezervaciju za sutra molim hvala dobar "
+          "dan večeras osobe osoba sati može li imate trebam",
+    "id": "saya mau ingin pesan meja untuk besok malam orang terima kasih tolong bisa apakah ada selamat "
+          "pagi siang reservasi",
 }
 WORDS = {lang: frozenset(words.split()) for lang, words in _WORDS.items()}
 # Letters that only some of the languages use: one point each for those languages.
@@ -167,22 +171,44 @@ _UKRAINIAN = re.compile(r"[іїєґ]")
 _ARABIC_SCRIPT = re.compile(r"[؀-ۿݐ-ݿ]")
 _SORANI = re.compile(r"[ڕڵێۆ]")
 _PERSIAN = re.compile(r"[پچژگ]")
-_ARABIC_ONLY = re.compile(r"[ةيى]")        # Arabic letters Persian writes differently
-_PERSIAN_YEH = re.compile(r"ی")
+_ARABIC_ONLY = re.compile(r"[ةيىأإ]")      # Arabic letters (and hamza seats) Persian writes differently
+_PERSIAN_YEH = re.compile(r"[یک]")
+_URDU = re.compile(r"[ٹڈڑںےھ]")            # letters Urdu has and Arabic and Persian do not
+# Common words that tell Persian from Arabic when the letters do not (both use the Arabic script).
+_FA_WORDS = frozenset("است هست می میخواهم میخوام برای فردا شب نفر میز رزرو ممنون لطفا لطفاً سلام بله نه "
+                      "دارید خواهش ساعت امشب".split())
+_AR_WORDS = frozenset("أريد اريد من فضلك شكرا شكراً طاولة حجز غدا غداً مساء أشخاص اشخاص هل نعم لا مرحبا "
+                      "الساعة الليلة لو سمحت".split())
 _TOKEN = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?")
 MIN_SCORE = 2
+# Cantonese written in Chinese characters (live test 2026-11-20: taken for Mandarin): words Mandarin
+# does not write. One of them is enough.
+_CANTONESE = re.compile(r"[係唔咗嘅啲冇佢嗰咁喺哋嚟嘢乜畀搵揾枱]")
+# Characters written only in Traditional (and their Simplified forms): Traditional only, no
+# Simplified, is Hong Kong usage, so Cantonese when the line speaks it.
+_TRADITIONAL = re.compile(r"[們個說這時來會點兩號訂張廳請謝問嗎對從還裡麼樣過約飯幾鐘間見話]")
+_SIMPLIFIED = re.compile(r"[们个说这时来会点两号订张厅请谢问吗对从还里么样过约饭几钟间见话]")
 
 
 def _script(low):
-    """A language read from the script alone, else None."""
+    """A language read from the script alone, else None. Chinese with a
+    Cantonese word is "yue"."""
     for pattern, lang in _SCRIPTS:
         if len(pattern.findall(low)) >= 3:
+            if lang == "zh" and _CANTONESE.search(low):
+                return "yue"
             return lang or ""
     if len(_CYRILLIC.findall(low)) >= 3:
         return "uk" if _UKRAINIAN.search(low) else "ru"
     if len(_ARABIC_SCRIPT.findall(low)) >= 3:
         if _SORANI.search(low):
             return "ckb"
+        if _URDU.search(low):
+            return "ur"
+        words = set(re.findall(r"[؀-ۿݐ-ݿ]+", low.replace("\u200c", "")))
+        fa, ar = len(words & _FA_WORDS), len(words & _AR_WORDS)
+        if fa != ar:
+            return "fa" if fa > ar else "ar"
         if _PERSIAN.search(low) or (_PERSIAN_YEH.search(low) and not _ARABIC_ONLY.search(low)):
             return "fa"
         return "ar"
@@ -200,6 +226,8 @@ def scores(text) -> dict:
     script = _script(low)
     if script:
         out[script] = MIN_SCORE + len(tokens)
+        if script == "zh" and _TRADITIONAL.search(low) and not _SIMPLIFIED.search(low):
+            out["yue"] = out["zh"] + 1        # Hong Kong writing: Cantonese where the line speaks it, else Mandarin
     elif script == "":                     # a script that names no single language: no word list counts
         out = {lang: 0 for lang in out}
     return out
@@ -251,43 +279,267 @@ def tagged(text):
 
 
 # --- the decision ------------------------------------------------------------------------------
+#
+# Switch rules (owner 2026-11-20, MULTILINGUAL.md stage 1). The call starts in Swedish. A switch needs:
+#   * an explicit request ("can we speak English", "auf Deutsch bitte") that the reply follows, or the
+#     caller's yes to Booqy's own "shall we continue in ...?" question; or
+#   * strong evidence: at least MIN_WORDS content words, the model's tag and the word hint agree; or
+#   * the same signal twice: the model tagged the same language in the previous turn too (MIN_WORDS words).
+# Never on fewer than MIN_WORDS content words (restaurant and location names do not count), never within
+# MIN_TURNS_AFTER_SWITCH caller turns after a switch, never more than MAX_SWITCHES times per call. When
+# the reply is in another language but no rule allows the switch, Booqy asks a short question in both
+# languages instead (`Decision.ask`). A language the line cannot speak is reported (`unsupported`), never
+# answered silently in Swedish.
 
-# A caller asking for a language ("can we speak English", "auf Deutsch bitte").
-_ASKED = re.compile(
-    r"\b(english|engelska|englanniksi|englisch|anglais|inglés|ingles|svenska|swedish|schwedisch|deutsch|german|"
-    r"tyska|french|français|franska|spanish|español|spanska|arabic|arabiska|العربية|عربي|somali|soomaali|"
-    r"somaliska|russian|ryska|русски|по-русски|turkish|türkçe|turkiska|polish|polski|polska|finnish|suomeksi|"
-    r"finska|persian|farsi|فارسی|persiska|kurdish|kurdiska|amharic|amhariska|tigrinya|tigrinja)\b", re.I)
+MIN_WORDS = 3
+MIN_TURNS_AFTER_SWITCH = 2
+MAX_SWITCHES = MAX_CONNECT_SWITCHES
+
+# A caller naming a language ("can we speak English", "auf Deutsch", "بالعربي"): word -> code.
+_REQUEST_WORDS = {
+    "sv": "svenska swedish schwedisch suédois suedois sueco svedese szwedzku szwedzki isveççe swedia švedski "
+          "svenskt سوئدی السويدية",
+    "en": "english engelska englisch anglais inglés ingles inglese angielsku angielski ingilizce inggris engleski "
+          "englanniksi انگلیسی الإنجليزية الانجليزية",
+    "de": "deutsch german tyska allemand alemán aleman tedesco niemiecku niemiecki almanca jerman njemački "
+          "nemački آلمانی الألمانية",
+    "fr": "french franska français francais französisch francés frances francese francusku francuski fransızca "
+          "prancis فرانسوی الفرنسية",
+    "es": "spanish spanska español espanol spanisch espagnol spagnolo hiszpańsku hiszpański ispanyolca spanyol "
+          "španjolski španski اسپانیایی الإسبانية",
+    "it": "italian italienska italiano italienisch italien italiano włosku włoski italyanca italia talijanski "
+          "italijanski ایتالیایی الإيطالية",
+    "pl": "polish polska polski polsku polnisch polonais polaco polacco lehçe polandia poljski لهستانی البولندية",
+    "tr": "turkish turkiska türkçe turkce türkisch turc turco turecku turecki turki turski ترکی التركية",
+    "ar": "arabic arabiska arabisch arabe árabe arabo arabsku arapça arab arapski عربي العربية بالعربي "
+          "بالعربية عربی",
+    "fa": "persian persiska farsi persisch persan persa persiano persku farsça persia perzijski فارسی بفارسی "
+          "الفارسية",
+    "bs": "bosnian bosniska bosnisch bosanski bosanskom bosnio boşnakça hrvatski hrvatskom srpski srpskom "
+          "croatian kroatiska serbian serbiska",
+    "id": "indonesian indonesiska indonesisch indonésien indonesio indonesiano indonezyjsku endonezce indonesia",
+    "da": "danish danska dänisch dansk",
+    "fi": "finnish finska finnisch suomeksi suomi",
+    "nl": "dutch nederländska holländska niederländisch nederlands",
+    "pt": "portuguese portugisiska portugiesisch português portugues",
+    "ru": "russian ryska russisch русски русском по-русски",
+    "so": "somali somaliska soomaali",
+    "ckb": "kurdish kurdiska sorani",
+    "am": "amharic amhariska",
+    "ti": "tigrinya tigrinja",
+    "zh": "chinese mandarin kinesiska mandarin chinesisch chinois chino cinese 中文 普通话 普通話 国语 國語 汉语 "
+          "漢語 华语 華語",
+    "yue": "cantonese kantonesiska kantonesisch cantonais cantonés 廣東話 广东话 粵語 粤语 廣州話 白話",
+    "ja": "japanese japanska japanisch japonais japonés 日本語",
+    "ko": "korean koreanska koreanisch coréen coreano 한국어 한국말",
+    "el": "greek grekiska griechisch grec griego ελληνικά",
+    "he": "hebrew hebreiska hebräisch hébreu hebreo עברית",
+    "hi": "hindi हिंदी हिन्दी",
+    "th": "thai thailändska ภาษาไทย",
+}
+_REQUEST = {}
+for _code, _words in _REQUEST_WORDS.items():
+    for _word in _words.split():
+        _REQUEST.setdefault(_word.casefold(), _code)
+_ASKED = re.compile(r"(?<![\w])(" + "|".join(sorted((re.escape(w) for w in _REQUEST), key=len, reverse=True))
+                    + r")(?![\w])", re.I)
+
+
+# Names in scripts without spaces ("我想说中文"): found inside the utterance, no word boundary.
+_UNSPACED_REQUEST = {w: code for w, code in _REQUEST.items() if re.search(r"[\u0e00-\u0e7f\u3040-\u30ff"
+                                                                         r"\u4e00-\u9fff]", w)}
+
+
+def requested_languages(text) -> set:
+    """Every language the caller named ("English", "på svenska", "فارسی", "我想说中文")."""
+    raw = str(text or "")
+    found = {_REQUEST[m.group(1).casefold()] for m in _ASKED.finditer(raw) if m.group(1).casefold() in _REQUEST}
+    return found | {code for w, code in _UNSPACED_REQUEST.items() if w in raw}
 
 
 def asked_for_language(text) -> bool:
-    return bool(_ASKED.search(str(text or "")))
+    return bool(requested_languages(text))
 
 
 def words(text) -> int:
     return len(_TOKEN.findall(str(text or "")))
 
 
-def decide(current, hint_code, tag_code, text, *, allowed, previous_tag=None):
-    """(language, unsupported) after one turn.
+# A script that names the language on its own is strong evidence even in few words (live test
+# 2026-11-20: Mandarin has no spaces, so "我想订一张桌子" was one word and never switched).
+SCRIPT_MIN_CHARS = 4          # Chinese, Japanese and Thai: characters, no spaces between words
+SCRIPT_MIN_WORDS = 2          # spaced scripts (Arabic, Cyrillic, Hangul, Greek, Hebrew, Devanagari): words ...
+SCRIPT_MIN_SPACED_CHARS = 8   # ... and letters, so one greeting ("Здравствуйте") never switches
+_UNSPACED = re.compile(r"[\u0e00-\u0e7f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_SPACED = re.compile(r"[\u0370-\u03ff\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\u0900-\u097f"
+                     r"\uac00-\ud7af]")
 
-    `language` is the call's language from now on; `unsupported` is a
-    language code the model recognised that the voice cannot speak (or the
-    owner did not allow), else None. A switch needs the model's tag to differ
-    from the current language and one more sign: the hint agrees, the caller
-    said three words or more, the caller asked for a language, or the
-    previous turn was tagged the same. A caller still speaking the current
-    language (the hint says so) never switches, whatever the tag."""
+
+def script_strong(text, names=()) -> bool:
+    """The utterance is clearly in a script that names its language
+    (Han, Kana, Thai: SCRIPT_MIN_CHARS characters; Arabic, Cyrillic, Hangul,
+    Greek, Hebrew, Devanagari: SCRIPT_MIN_WORDS words of SCRIPT_MIN_SPACED_CHARS
+    letters), whatever the word count."""
+    low = without_names(text, names).lower()
+    if not _script(low):
+        return False
+    if len(_UNSPACED.findall(low)) >= SCRIPT_MIN_CHARS:
+        return True
+    spaced = [t for t in _TOKEN.findall(low) if _SPACED.search(t)]
+    return len(spaced) >= SCRIPT_MIN_WORDS and sum(len(t) for t in spaced) >= SCRIPT_MIN_SPACED_CHARS
+
+
+def short(text, names=()) -> bool:
+    """Too little to switch on: fewer than MIN_WORDS content words and no strong script."""
+    return content_words(text, names) < MIN_WORDS and not script_strong(text, names)
+
+
+def content_words(text, names=()) -> int:
+    """Words of the utterance that are not a restaurant, location or other proper name of this call."""
+    skip = {t for name in names or () for t in _TOKEN.findall(str(name or "").casefold())}
+    return sum(1 for t in _TOKEN.findall(str(text or "").casefold()) if t not in skip)
+
+
+def without_names(text, names=()):
+    """The utterance without the call's proper names (for the hint)."""
+    out = str(text or "")
+    for name in sorted((str(n) for n in names or () if n), key=len, reverse=True):
+        out = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", out, flags=re.I)   # whole words only
+    return out
+
+
+class Decision:
+    """The call's language after one turn: `language` (the call's language from now on), `unsupported`
+    (a language the model recognised that the line cannot speak), `reason` for the log (same, capped,
+    explicit, asked, short, unsupported, dwell, strong, repeated, uncertain, hint) and `ask` (a language
+    the reply is in that the call did not switch to: Booqy asks whether to continue in it)."""
+
+    __slots__ = ("language", "unsupported", "reason", "ask")
+
+    def __init__(self, language, unsupported=None, reason="same", ask=None):
+        self.language, self.unsupported, self.reason, self.ask = language, unsupported, reason, ask
+
+    def __iter__(self):            # (language, unsupported), as decide() always answered
+        return iter((self.language, self.unsupported))
+
+    def __repr__(self):
+        return f"Decision({self.language!r}, {self.unsupported!r}, {self.reason!r}, ask={self.ask!r})"
+
+
+def _fit(hint_code, allowed):
+    """Cantonese where the line cannot speak it is answered in Mandarin (as before 2026-11-20)."""
+    if hint_code == "yue" and allowed is not None and "yue" not in allowed and "zh" in allowed:
+        return "zh"
+    return hint_code
+
+
+def _dwelling(turns_since_switch):
+    return turns_since_switch is not None and int(turns_since_switch) <= MIN_TURNS_AFTER_SWITCH
+
+
+def pre_switch(current, hint_code, text, *, allowed, names=(), turns_since_switch=None, switches=0,
+               max_switches=MAX_SWITCHES):
+    """The language the prompt asks for before the model runs: the hint's
+    language when it already is strong evidence (allowed, MIN_WORDS content
+    words, not right after a switch, switches left), else the call's."""
+    hint_code = _fit(hint_code, allowed)
+    if hint_code in (None, current) or hint_code not in allowed:
+        return current
+    if max_switches is not None and int(switches or 0) >= max_switches:
+        return current
+    explicit = hint_code in requested_languages(without_names(text, names))
+    if (short(text, names) and not explicit) or _dwelling(turns_since_switch):
+        return current
+    return hint_code
+
+
+def _unspeakable_hint(current, hint_code, tag_code, text, *, allowed, names=()):
+    """The fast hint is strong evidence (a script that names its language, or
+    MIN_WORDS content words) for a language the line cannot speak, while the
+    model answered in the call's language (or tagged nothing): the
+    unsupported-language path. A reply in another language the line speaks
+    is left to the rules below (the model reads the language better than the
+    word lists: Arabic is never taken for Persian)."""
+    if not hint_code or hint_code not in NAMES or allowed is None or hint_code in allowed:
+        return False
+    if tag_code and tag_code != current and tag_code in allowed:
+        return False
+    return not short(text, names)
+
+
+def decision(current, hint_code, tag_code, text, *, allowed, previous_tag=None, names=(), turns_since_switch=None,
+             switches=0, max_switches=None, asked_switch=None, prompt_lang=None) -> Decision:
+    """The switch rules above for one turn. `tag_code` is the model's `[xx]`
+    tag (None: the reply is in `prompt_lang`, the language the prompt asked
+    for); `asked_switch` the language Booqy asked about in the previous turn."""
+    hint_code = _fit(hint_code, allowed)
+    if tag_code == "zh" and hint_code == "yue":
+        tag_code = "yue"          # Cantonese words: the model's "Chinese" is Cantonese on this line
     if tag_code is None:
-        return (hint_code if hint_code in allowed else current), None
+        tag_code = prompt_lang if prompt_lang else (
+            pre_switch(current, hint_code, text, allowed=allowed, names=names, turns_since_switch=turns_since_switch,
+                       switches=switches, max_switches=max_switches))
+        if tag_code != current:
+            return Decision(tag_code, None, "hint")
+    if _unspeakable_hint(current, hint_code, tag_code, text, allowed=allowed, names=names):
+        # Retest 2026-11-20: a long Persian turn was tagged [sv] and answered in Swedish, 3 of 3 times.
+        return Decision(current, hint_code, "unsupported")
     if tag_code == current:
-        return current, None
-    asked = asked_for_language(text)
-    if hint_code == current and not asked:
-        return current, None
-    sure = hint_code == tag_code or words(text) >= 3 or asked or previous_tag == tag_code
-    if not sure:
-        return current, None
+        return Decision(current, None, "same")
+    if max_switches is not None and int(switches or 0) >= max_switches:
+        return Decision(current, None, "capped")
+    explicit = tag_code in requested_languages(without_names(text, names))
+    if explicit or (asked_switch and tag_code == asked_switch):
+        reason = "explicit" if explicit else "asked"
+        return Decision(current, tag_code, reason) if tag_code not in allowed else Decision(tag_code, None, reason)
+    if short(text, names):
+        return Decision(current, None, "short", ask=tag_code)
     if tag_code not in allowed:
-        return current, tag_code
-    return tag_code, None
+        return Decision(current, tag_code, "unsupported")
+    if _dwelling(turns_since_switch):
+        return Decision(current, None, "dwell", ask=tag_code)
+    if hint_code == tag_code:
+        return Decision(tag_code, None, "strong")
+    if previous_tag == tag_code and hint_code in (None, tag_code):
+        return Decision(tag_code, None, "repeated")
+    return Decision(current, None, "uncertain", ask=tag_code)
+
+
+def decide(current, hint_code, tag_code, text, *, allowed, previous_tag=None, **rules):
+    """(language, unsupported) after one turn (see `decision`)."""
+    return tuple(decision(current, hint_code, tag_code, text, allowed=allowed, previous_tag=previous_tag, **rules))
+
+
+# --- a short yes or no in any language (the unsupported-language questions) ------------------------
+
+_YES = frozenset((
+    "yes yeah yep yup sure ok okay please ja jo javisst gärna absolut jawohl oui si sí sì tak da evet haa ha "
+    "baleh bale bali areh ndiyo ano igen kyllä joo ναι да так бәлі ha'a iya ya oo "
+    "بله بلی آره باشه حتما چشم نعم ايوه أيوه اي اوه طيب ہاں جی هو بەڵێ ئا כן हाँ हां जी ใช่ ครับ ค่ะ").split())
+_NO = frozenset((
+    "no nope nah nej nä nein non nie ne hayır hayir maya la nahi ei όχι нет ні не tidak bukan nee "
+    "نه نخیر لا كلا نہیں نا نەخێر לא नहीं ไม่").split())
+_CJK_YES = ("是", "好", "对", "對", "係", "可以", "行", "はい", "ええ", "네", "예", "응")
+_CJK_NO = ("不", "唔要", "唔使", "唔係", "冇", "没有", "沒有", "いいえ", "아니")
+
+
+def yes_no(text):
+    """"yes", "no" or None for a short answer (at most three words) in any
+    language the word lists know; Chinese, Japanese and Korean by their
+    yes and no words."""
+    raw = " ".join(str(text or "").split()).strip(" .,!?؟。？！")
+    tokens = [t.strip(".,!?؟。？！،") for t in raw.lower().split()]
+    tokens = [t for t in tokens if t]
+    if not tokens or len(tokens) > 3:
+        return None
+    said = set(tokens)
+    if said & _NO:
+        return "no"
+    if said & _YES:
+        return "yes"
+    if len(raw) <= 6:
+        if any(raw.startswith(w) for w in _CJK_NO):
+            return "no"
+        if any(raw.startswith(w) for w in _CJK_YES):
+            return "yes"
+    return None

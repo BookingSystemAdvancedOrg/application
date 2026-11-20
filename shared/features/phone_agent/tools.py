@@ -25,6 +25,8 @@ from shared import agent_model, availability as shared_availability, booking_rul
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import copy
 from shared.features.phone_agent import offers as of
+from shared.features.phone_agent import readback
+from shared.features.phone_agent import spoken as say_
 
 _DATE = {"type": "string", "description": "YYYY-MM-DD, from the calendar in your instructions"}
 _TIME = {"type": "string", "description": "HH:MM, 24 hour clock, on the hour or half hour"}
@@ -37,15 +39,18 @@ TOOLS = [
      "description": "Free start times for a party on one day. `suggest` holds the (at most three) free times "
                     "nearest the wished time: offer those. A full day lists `nextDays` with free times. A result "
                     "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`. "
-                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the terms in "
-                    "`guaranteeTerms` before the read-back).",
+                    "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the fee rule "
+                    "in `guaranteeTerms` before the read-back, amounts only if the caller asks).",
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
-     "description": "Check that a table can be booked at a time; writes nothing. Returns `holdId`, or other times "
+     "description": "Check that a table can be booked at the one time the caller chose; writes nothing. Call it "
+                    "once per reply: a new hold replaces the previous one, and only the latest hold can be "
+                    "booked (to compare times use get_availability). Returns `holdId`, or other times "
                     "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
-                    "`guaranteeRequired` with a holdId: first say the terms in `guaranteeTerms` briefly, then the "
-                    "read-back also says the card link is texted.",
+                    "`guaranteeRequired` with a holdId: first say `guaranteeTerms.sentence` and ask "
+                    "`guaranteeTerms.question` (no amounts unless the caller asks), then the read-back also says "
+                    "the card link is texted.",
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": _DATE, "time": _TIME, "partySize": _PARTY,
          "tableIds": {"type": "array", "items": {"type": "string"},
@@ -80,8 +85,11 @@ TOOLS = [
      "input_schema": {"type": "object", "required": ["reservationId", "confirmed"], "properties": {
          "reservationId": {"type": "string"}, "reason": {"type": "string"}, "confirmed": _CONFIRMED}}},
     {"name": "get_menu", "description": "Dishes on today's menu matching a question, with prices. A dish that is "
-                                        "not listed is not available today.",
-     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                                        "not listed is not available today. The menu is stored in Swedish: say "
+                                        "dish names exactly as returned.",
+     "input_schema": {"type": "object", "properties": {"query": {
+         "type": "string", "description": "search words in Swedish (translate the caller's words, for example "
+                                          "chicken: kyckling, fish: fisk)"}}}},
     {"name": "transfer_to_staff", "description": "Transfer the caller to a person at the restaurant.",
      "input_schema": {"type": "object", "required": ["reason"], "properties": {"reason": {"type": "string"}}}},
     {"name": "request_callback",
@@ -119,23 +127,28 @@ SAY = {
                           copy.GUARANTEE_CALLBACK["en"] + "\" Do not read back or book. If yes, call "
                           "request_callback with topic guarantee."),
     # The card is added on a Stripe page the caller gets by text message (create_reservation sends it).
-    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds its real terms for this party. "
-                      "Offer the times as usual. Before the read-back, explain the terms briefly in one or two "
-                      "short sentences: say `guaranteeTerms.sentence` (in the caller's language, the amounts as "
-                      "in its readAs). In Swedish it starts \"För den bokningen behövs ett kort som garanti\". "
-                      "Only if the caller asks for more, explain further: the amounts per person, free "
+    "guaranteeLink": ("This party needs a card guarantee; `guaranteeTerms` holds this restaurant's real terms for "
+                      "this party. Offer the times as usual. Before the read-back, in a reply of its own, say "
+                      "`guaranteeTerms.sentence` in the caller's language: a card is needed, nothing is charged "
+                      "now, and when a fee is charged (only the fees and the cutoff it names), with no amount. In "
+                      "Swedish it starts \"För den bokningen behövs ett kort som garanti\". End that reply with "
+                      "`guaranteeTerms.question` (whether the caller wants more information). Only if the caller "
+                      "wants more information, say `guaranteeTerms.ifAsked.details` (the amounts as in its readAs) "
+                      "and answer further questions from `guaranteeTerms.ifAsked`: the amounts per person, free "
                       "cancellation until the cutoff through the link in the text message or by calling the "
                       "restaurant, the card is handled securely by Stripe, nothing is charged if they come. "
-                      "Never say an amount or a fee that is not in `guaranteeTerms`. Then the read-back: day, "
-                      "time, number of guests and name, that a text message with a link to add a card as a "
-                      "guarantee will be sent to the number the caller is calling from, and that the booking is "
-                      "confirmed once the card is added; in Swedish end it with \"Stämmer det?\". "
-                      "Never ask for card details."),
+                      "Otherwise never say an amount. Never say an amount, a fee or a cutoff that is not in "
+                      "`guaranteeTerms`. Then the read-back: day, time, number of guests and name, that a text "
+                      "message with a link to add a card as a guarantee will be sent to the number the caller is "
+                      "calling from, and that the booking is confirmed once the card is added; in Swedish end it "
+                      "with \"Stämmer det?\". The answer to the information question is never a yes to the "
+                      "read-back. Never ask for card details."),
     # The same without terms (the location's policy could not be read): no amounts at all.
     "guaranteeLinkNoTerms": ("This party needs a card guarantee. Offer the times as usual. Before the read-back say "
                              "that the booking needs a card as a guarantee and that nothing is charged now (in "
                              "Swedish: \"För den bokningen behövs ett kort som garanti, men inget dras nu.\"); "
-                             "never name an amount. In the read-back also say that a text message with a link to "
+                             "never name an amount, a fee or a cutoff: the restaurant's terms are in the text "
+                             "message. In the read-back also say that a text message with a link to "
                              "add a card as a guarantee will be sent to the number the caller is calling from, and "
                              "that the booking is confirmed once the card is added; in Swedish end it with "
                              "\"Stämmer det?\". Never ask for card details."),
@@ -154,8 +167,63 @@ SAY = {
                       "it, read back the change and after a clear yes call move_reservation with its "
                       "reservationId; for a second table that day, offer that the restaurant calls back."),
     "nameInvalid": "The name could not be used. Ask for the name again.",
+    # Live test 2026-11-20: several holds in one reply, the read-back of one, the booking of another.
+    "holdReplaced": ("Not booked: that hold was replaced by a later one. Only `live` can be booked. If the "
+                     "caller said yes to a read-back of `live` (its day, time and number of guests), call "
+                     "create_reservation with its holdId; otherwise read `live` back and wait for a clear yes."),
+    # Retest 2 on dev 2026-11-20: after this refusal the model said "halv sex ... Rättelse: det är fredag den
+    # tjugosjunde november, klockan fem": a wrong time first, then a correction aloud.
+    "readBackMismatch": ("Not booked: your last reply did not read back this hold's day and time (`hold`). "
+                         "Read it back now, once and plainly, in one sentence: exactly the words in `spoken` "
+                         "(the day, time and number of guests; in a language without `spoken`, the hold's "
+                         "readAs), then the name, and ask whether it is correct. Never say another day or time "
+                         "first and never use correction words (\"Rättelse\", \"jag menar\", \"nej förlåt\", "
+                         "\"correction\", \"I mean\"): the caller hears only this one statement. After a clear "
+                         "yes, call create_reservation again."),
+    "termsFirst": ("Not booked yet: the caller has not heard the card guarantee's terms. Say "
+                   "`guaranteeTerms.sentence` now and end with `guaranteeTerms.question` (no amounts unless "
+                   "asked). Then read back the booking, and after a clear yes call create_reservation again."),
     "phoneInvalid": "The phone number could not be used. Ask for it again, or book without a number.",
+    # Retest 2026-11-20: "fredag" said on a Friday was taken for next Friday, then the dates got mixed.
+    "whichDay": ("Nothing looked up yet: the caller said {weekday}, and today is {weekday}. Ask once, in the "
+                 "caller's language, whether they mean today or next {weekday} (in Swedish: \"I dag eller nästa "
+                 "{sv}?\"). Today is {today}, next {weekday} is {next}: use the date they choose."),
+    "whichDayAgain": ("Nothing looked up yet: the caller's answer did not say which {weekday}, today ({today}) "
+                      "or next {weekday} ({next}). Ask again in other words than before, naming both days, in "
+                      "the caller's language; say `question` when the result has it. Use the date they choose."),
+    "weekdayMismatch": ("Nothing looked up: the caller said {weekday}, which is {date}, not {asked}. Use {date} "
+                        "(see relative) and never another date for that {weekday}."),
 }
+_SAY_HALF = ("Not held: the caller said a half hour that is {said} (in Swedish, Norwegian, Danish, German and "
+             "Dutch \"halv sju\" is half past six, 18:30), not {asked}. Hold {said} if it is free; if it is not, "
+             "say so and offer the free times. Never say the corrected time aloud as a correction.")
+_NEGATION = re.compile(r"(?<!\w)(nej|inte|ej|nicht|nein|kein|keine|niet|nee|ikke|not|no)(?!\w)")
+_NEXT_WORDS = re.compile(r"(?<!\w)(nästa|nästkommande|neste|næste|nächsten|nächste|volgende|next)(?!\w)")
+_TODAY_WORDS = re.compile(r"(?<!\w)(i dag|idag|i kväll|ikväll|i kveld|i aften|heute|vandaag|vanavond|today|tonight)"
+                          r"(?!\w)")
+_WEEK_WORDS = re.compile(r"(?<!\w)(vecka|veckan|veckor|week|weeks|woche|wochen|uke|uka|uker|uge|ugen|uger)(?!\w)")
+_DAY_OF_MONTH = re.compile(r"(?<!\w)(den|the|am|le|el|il)\s+\d{1,2}(?![\d:.]\d)")
+# "andra" is also "other", "second" also a unit: no date by themselves.
+_AMBIGUOUS_ORDINALS = frozenset(("andra", "second", "andre", "anden"))
+_NO_WORDS = frozenset("nej nä nää nope no nein nei nee".split())
+_FILLER = frozenset("tack det du men och eh ehm öh hm thanks thank you".split())
+_YES_WORDS = frozenset("ja jo japp javisst absolut gärna okej ok okay yes yeah yep sure please bitte".split())
+_CONFIRM_WORDS = _YES_WORDS | frozenset(
+    "tack boka bokar det den in bra perfekt kör stämmer precis gör så thanks thank you book it that great "
+    "perfect fine right correct danke gerne buchen sie es gut genau".split())
+
+
+def _yes_no(text):
+    """"yes", "no", "unclear" (mm, both) for a short bare yes or no, else None."""
+    tokens = re.findall(r"[^\W\d_]+", str(text or "").lower())
+    if not 0 < len(tokens) <= 5 or not set(tokens) <= (_YES_WORDS | _NO_WORDS | _FILLER | {"mm", "mhm", "jaha"}):
+        return None
+    yes, no = bool(set(tokens) & _YES_WORDS), bool(set(tokens) & _NO_WORDS)
+    if yes != no:
+        return "yes" if yes else "no"
+    return "unclear" if set(tokens) & {"mm", "mhm", "jaha"} or (yes and no) else None
+
+
 # Beside a time lookup once the caller's own booking was found: a move is not a new booking.
 MOVE_NEXT = ("If the caller wants to move the booking found by find_reservations: ask for no name and do not "
              "hold. When they pick a time, read back the old and the new day and time, ask whether to move it, "
@@ -280,13 +348,27 @@ class Executor:
         self.send_sms = send_sms
         self.today = today or date.today()
         self.now_time = now_time      # "HH:MM" local: today's started times are never offered (staff view)
-        self.last_day = shared_availability.last_bookable_date(self.today, location)
+        self.last_day = shared_availability.last_bookable_date(self.today)
         self.language = language or "sv"
         # The caller utterance this runs in (session.call_turn / sim_turn count them). A write needs the
         # thing it writes to have been looked up in an EARLIER utterance: the caller cannot have said yes
         # to a read-back of something first looked up in this one. None (a direct call in tests): no check.
         self.turn = state.get("turn")
+        # The caller's utterance of this turn (agent.run_turn sets it): the server checks what the model
+        # holds and looks up against what the caller said ("halv sju", "fredag").
+        self._caller_text = None
         self._cache = {}
+
+    @property
+    def caller_text(self):
+        return self._caller_text
+
+    @caller_text.setter
+    def caller_text(self, text):
+        """Set once per utterance: what it says about today's weekday is noted (_hear_day)."""
+        self._caller_text = text
+        if text:
+            self._hear_day(text)
 
     # -- plumbing ---------------------------------------------------------------------
 
@@ -355,12 +437,19 @@ class Executor:
         self.state.update(twin.state)
         self._cache.update(twin._cache)
 
-    def not_heard(self):
+    def not_heard(self, reply=None, lang=None):
         """The reply of this utterance was cut by the deadline (the caller
         heard only that the agent is still checking): what it looked up
         counts as looked up in the next utterance, so a write still needs a
-        read-back the caller hears first, and the next turn resumes."""
+        read-back the caller hears first, and the next turn resumes. When the
+        sentence said (`reply`, the model's own announcement) names another
+        day, time or party than the live hold, its earlier read-back is void."""
+        _, live = self._live()
+        if reply and live and readback.covers(reply, live["date"], live["time"], lang or self.language,
+                                              party=live.get("partySize"), today=self.today) is False:
+            self.state.pop("readBack", None)
         self.state["resume"] = True
+        self.state["heard"] = self.turn       # nothing of this utterance was read back
         if self.turn is None:
             return
         now, later = int(self.turn), int(self.turn) + 1
@@ -467,35 +556,45 @@ class Executor:
 
     def _guarantee_terms(self, party):
         """The card guarantee's terms for this party, computed as the booking
-        will snapshot them (shared/guarantee.snapshot): totals and per-person
-        amounts in kronor, the free-cancellation cutoff, nothing charged now,
-        each with its spoken English form (readAs) and the short sentence in
-        the caller's language (Swedish or English; others translate the
-        English one). A fee that is 0 is left out; None without a policy."""
+        will snapshot them (shared/guarantee.snapshot). By default the model
+        says `sentence` (a card is needed, nothing is charged now, and when a
+        fee is charged: only the fees this restaurant charges, its own
+        cutoff, no amount) and asks `question`; `ifAsked` holds the totals
+        and per-person amounts in kronor with their spoken English form
+        (readAs) and `details`, the amounts sentence, said only when the
+        caller wants more information. Sentences in the caller's language
+        (Swedish or English; others translate the English one). A fee that
+        is 0 is left out, a late fee without a cutoff too; None without a
+        policy."""
         if not guarantee.policy_of(self.location):
             return None
         snap = guarantee.snapshot(self.location, party)
         no_show, late = int(snap["noShowFee"]) // 100, int(snap["lateCancelFee"]) // 100
         hours = int(snap["cancelCutoffHours"])
-        terms = {"chargedNow": 0, "currency": "SEK"}
+        late_said = bool(late and hours)     # no cutoff: cancelling is never late, the fee is not said
+        fees = [x for x, on in (("noShow", no_show), ("lateCancel", late_said)) if on]
+        terms = {"chargedNow": 0, "fees": fees}
+        if late_said:
+            terms.update({"cancelCutoffHours": hours, "readAs": {"cancelCutoffHours": hours_words(hours)}})
+        details = {"currency": "SEK"}
         said = {"chargedNow": kronor_words(0)}
         if no_show:
-            terms.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
+            details.update({"noShowFee": no_show, "noShowFeePerPerson": int(snap["noShowFeePerPerson"])})
             said.update({"noShowFee": kronor_words(no_show),
                          "noShowFeePerPerson": kronor_words(snap["noShowFeePerPerson"]) + " per person"})
-        if late and hours:     # no cutoff: cancelling is never late, the fee is not said
-            terms.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"]),
-                          "cancelCutoffHours": hours})
+        if late_said:
+            details.update({"lateCancelFee": late, "lateCancelFeePerPerson": int(snap["lateCancelFeePerPerson"])})
             said.update({"lateCancelFee": kronor_words(late),
-                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person",
-                         "cancelCutoffHours": hours_words(hours)})
+                         "lateCancelFeePerPerson": kronor_words(snap["lateCancelFeePerPerson"]) + " per person"})
         lang = "sv" if self.language == "sv" else "en"
-        late_said = bool(late and hours)
-        terms["sentence"] = copy.guarantee_terms(
+        words = copy.guarantee_terms(
             lang, no_show=kronor_words(no_show, lang) if no_show else None,
             late=kronor_words(late, lang) if late_said else None,
             hours=hours_words(hours, lang) if late_said else None)
-        terms["readAs"] = said
+        terms["sentence"] = words["sentence"]
+        if words["question"]:
+            terms["question"] = words["question"]
+            terms["ifAsked"] = {**details, "details": words["details"], "readAs": said}
         return terms
 
     # -- reads ------------------------------------------------------------------------
@@ -595,6 +694,7 @@ class Executor:
         if loc.get("bookingDurationHours") is not None:
             out["bookingLengthMinutes"] = int(float(loc["bookingDurationHours"]) * 60)
         out["lastBookableDate"] = self.last_day.isoformat()
+        out["sourceLanguage"] = "sv"      # names as stored; descriptions translated by the model
         return out
 
     def _next_days(self, day, party, time):
@@ -626,6 +726,9 @@ class Executor:
     def get_availability(self, args):
         day, party = self._day(args["date"]), self._party(args["partySize"])
         time = self._time(args["time"]) if args.get("time") else None
+        problem = self._weekday_problem(day)
+        if problem:
+            return {"times": [], **problem}
         problem = self._date_problem(day) or self._party_problem(party)
         if problem:
             return {"date": day, "weekday": _weekday(day), "times": [], **problem}
@@ -641,9 +744,11 @@ class Executor:
             answer["suggest"] = agent_model.nearest_times(time, answer["times"], ())
         answer["before"], answer["after"] = answer["before"][:3], answer["after"][:3]
         answer["times"] = of.spread(answer["times"], time, MAX_TIMES)
-        answer.update({"date": day, "weekday": _weekday(day), "partySize": party, **self._guarantee_note(party)})
+        answer.update({"date": day, "weekday": _weekday(day), "relative": self._relative(day), "partySize": party,
+                       **self._guarantee_note(party)})
         if self.state.get("found"):
             answer["next"] = MOVE_NEXT
+        self._spoken(answer, day, party, time)
         if not answer["times"] and not answer.get("nearby"):
             answer["dayFull"] = True
             answer["nextDays"] = self._next_days(day, party, time)
@@ -652,7 +757,20 @@ class Executor:
         return answer
 
     def hold_table(self, args):
+        """A new hold, a failed one or another time offered: the read-back of
+        the earlier live hold no longer counts (the caller asked for something
+        else since). The same hold checked again keeps it."""
+        before = (self.state.get("readBack") or {}).get("holdId")
+        result = self._hold_table(args)
+        if before is not None and result.get("holdId") != before:
+            self.state.pop("readBack", None)
+        return result
+
+    def _hold_table(self, args):
         day, time, party = self._day(args["date"]), self._time(args["time"]), self._party(args["partySize"])
+        problem = self._weekday_problem(day) or self._half_hour_problem(time)
+        if problem:
+            return {"held": False, "time": time, **problem}
         problem = self._date_problem(day) or self._party_problem(party)
         if problem:
             return {"held": False, "date": day, "time": time, **problem}
@@ -667,30 +785,444 @@ class Executor:
             if result.get("bookable") and sorted(result["tableIds"]) == sorted(wanted):
                 match = {"tableIds": wanted, "kind": None}
             if not match:
-                return {**self._counter(result, time), "reason": "time_taken"}
+                return self._spoken({**self._counter(result, time), "reason": "time_taken"}, day, party)
             table_ids, kind = match["tableIds"], match.get("kind")
         elif result.get("bookable"):
             table_ids = result["tableIds"]
         else:
-            return self._counter(result, time)
+            return self._spoken(self._counter(result, time), day, party)
         # The same table again (the model re-checks before booking): the read-back of the first check holds.
-        same = next((k for k, p in self.state["proposals"].items() if not p.get("reservationId")
+        # A replaced hold checked again is live again under its own id (its read-back still counts only
+        # if no later reply contradicted it: heard).
+        same = next((k for k, p in reversed(list(self.state["proposals"].items())) if not p.get("reservationId")
                      and (p["date"], p["time"], int(p["partySize"]), sorted(p["tableIds"])) ==
                      (day, time, party, sorted(table_ids))), None)
         hold_id = same or f"p{len(self.state['proposals']) + 1}"
+        if same:
+            self.state["proposals"][same].pop("released", None)
+            # Last in the order: _live() answers the latest hold.
+            self.state["proposals"][same] = self.state["proposals"].pop(same)
         if same and self.state["proposals"][same].get("turn") is None:
             self.state["proposals"][same]["turn"] = self.turn
         if not same:
             self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party,
                                                 "tableIds": table_ids, "nearby": bool(kind), "turn": self.turn}
+        replaced = self._release_others(hold_id)
         note = self._guarantee_note(party)
-        if note:     # the caller is told the card terms with this hold's read-back
-            self.state["proposals"][hold_id]["guaranteeNoted"] = True
-        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party,
-                **note}
+        if note:     # the caller must hear the card terms before this hold's read-back (heard)
+            proposal = self.state["proposals"][hold_id]
+            proposal["guaranteeDue"] = "fee" if (note.get("guaranteeTerms") or {}).get("fees") else "card"
+            proposal["guaranteeNoted"] = True      # an executor that is never told what was said (tests)
+        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "relative": self._relative(day),
+                "time": time, "partySize": party, **note}
+        self._spoken(held, day, party, time)
+        if replaced:
+            held["replaced"] = replaced
+            held["note"] = ("This hold replaced " + ", ".join(replaced) + ": only " + hold_id + " can be booked. "
+                            "Hold only the one time the caller chose.")
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
         return held
+
+    # -- how the slot is said ------------------------------------------------------------
+
+    def _spoken(self, result, day, party, time=None):
+        """The result with the server's own words for its slot in the call's
+        language (spoken.py; retest 2 on dev 2026-11-20: "fredag den sjunde
+        november" was read back for the 27th): `spoken` is the slot as it is
+        read back, `spokenDay` the day, `spokenTimes` each time it offers with
+        its part of the day, `offerSpoken` the times to offer as one phrase
+        (spoken.offer). A language without a spoken form keeps readAs."""
+        lang = self.language
+        if lang not in say_.LANGS:
+            return result
+        result["spokenDay"] = say_.day(day, lang)
+        if time:
+            result["spoken"] = say_.slot(day, time, party, lang)
+        offered = [t for key in ("times", "suggest", "before", "after") for t in result.get(key) or []
+                   if isinstance(t, str)]
+        offered += [n.get("time") for n in result.get("nearby") or [] if isinstance(n, dict) and n.get("time")]
+        if offered:
+            result["spokenTimes"] = say_.times(offered, lang)
+        # The offer list as one phrase, each run of times with its own part of the day (retest 3 on dev
+        # 2026-11-20: "halv fem eller halv sex på kvällen" made 16:30 evening).
+        shown = [t for t in (result.get("suggest") or (result.get("times") or [])[:3]) if isinstance(t, str)]
+        if shown:
+            result["offerSpoken"] = say_.offer(shown, lang)
+        return result
+
+    # -- what the caller said ---------------------------------------------------------
+
+    def _half_hour_problem(self, time):
+        """Retest 2026-11-20: "Halv sju går bra" after offers without 18:30 was
+        held as 19:30. When the caller's utterance names a half hour ("halv
+        sju", "halb acht", "half zeven", "half past six", in English also "half
+        seven"), the hold must be that half hour on the clock face; a "no" or
+        "not" in the utterance leaves it to the model (the caller corrected
+        themselves)."""
+        said = readback.half_hours(self.caller_text, self.language)
+        if not said or _NEGATION.search(str(self.caller_text or "").lower()):
+            return None
+        hour, minute = (int(x) for x in time.split(":"))
+        if minute == 30 and hour % 12 in said:
+            return None
+        if any(readback.same_clock(t, time) for t in readback.clock_times(self.caller_text, self.language)):
+            return None         # another time the caller named too ("halv sju eller klockan sju")
+        base = said[0]
+        right = f"{(base + 12 if hour >= 12 else base) % 24:02d}:30"
+        return {"code": "halfHour", "time": right, "asked": time,
+                "say": _SAY_HALF.format(said=right, asked=time)}
+
+    def _weekday_named(self, text=None):
+        """The one weekday (0 Monday) the caller's utterance names, else None
+        (none, several, or a date of the month that says which day)."""
+        text = self.caller_text if text is None else text
+        if not text:
+            return None
+        days = readback.weekdays(text, self.language)
+        if len(days) != 1 or readback._month_day(text, self.language) or _DAY_OF_MONTH.search(text.lower()):
+            return None
+        tokens = set(re.findall(r"[^\W\d_]+", text.lower()))
+        if any(tokens & set(readback.ORDINALS.get(code) or ()) for code in (self.language, "en")):
+            return None         # "fredag den trettonde": the caller said which Friday
+        return next(iter(days))
+
+    def _service_over(self):
+        """Today's opening hours have ended (the last closing time has passed)."""
+        if not self.now_time:
+            return False
+        hours = (self.location or {}).get("businessHours") or (self.location or {}).get("openingHours")
+        if not isinstance(hours, dict):
+            return False
+        key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[self.today.weekday()]
+        spans = next((v for k, v in hours.items() if _DAY_KEYS.get(str(k).lower()) == _DAY_KEYS[key]), None)
+        closes = [str(i.get("closesAt")) for i in spans or [] if isinstance(i, dict) and i.get("closesAt")
+                  and i.get("opensAt") and not (str(i["closesAt"]) < str(i["opensAt"]) or i["closesAt"] == "00:00")]
+        if not closes or len(closes) != len(spans or []):
+            return False        # open past midnight or unknown: not over
+        return self.now_time >= max(closes)
+
+    def _weekday_problem(self, day):
+        """The caller named a weekday ("fredag"): the date must be that weekday,
+        resolved here from the restaurant's local date, never by the model.
+        Another day than today's weekday: its next date (or the one after with
+        "nästa"). Today's weekday: today with "i dag", next week with "nästa"
+        or once today's last closing time has passed; otherwise the question
+        "i dag eller nästa fredag?" stays open (_hear_day) and every lookup
+        and hold is refused with whichDay, whatever date the model passes, in
+        this utterance and the later ones, until the caller's words decide
+        (retest 2 on dev 2026-11-20: next Friday was picked silently)."""
+        when = date.fromisoformat(day)
+        question = self._day_question()
+        if question and self._service_over():
+            self.state.pop("dayQuestion", None)     # service ended meanwhile: the weekday is next week's
+            question = None
+        if question:
+            return self._which_day(question)
+        chosen = self._day_chosen()
+        if chosen and when.weekday() == chosen["weekday"] and day != chosen["date"]:
+            return self._mismatch(chosen["weekday"], date.fromisoformat(chosen["date"]), day)
+        wanted = self._weekday_named()
+        if wanted is None or when.weekday() != wanted:
+            return None     # another weekday than the one named: the caller asked for something else
+        text = " " + " ".join(str(self.caller_text).lower().split()) + " "
+        if _WEEK_WORDS.search(text):
+            return None         # "fredag om en vecka", "next week": the caller said which week
+        nxt = bool(_NEXT_WORDS.search(text))
+        ahead = (wanted - self.today.weekday()) % 7
+        if ahead == 0:
+            today, week = self.today, self.today + timedelta(days=7)
+            if nxt:
+                allowed = [week]
+            elif _TODAY_WORDS.search(text):
+                allowed = [today]
+            elif self._service_over():
+                allowed = [week]
+            elif self._day_chosen():
+                return None      # the caller's choice was checked above
+            else:                # never let a bare "fredag" through: ask
+                self.state["dayQuestion"] = {"weekday": wanted, "today": today.isoformat(), "opened": self.turn,
+                                             "asked": None, "form": "choice", "variant": "first", "asks": 0}
+                return self._which_day(self.state["dayQuestion"])
+        else:
+            first = self.today + timedelta(days=ahead)
+            allowed = [first, first + timedelta(days=7)] if nxt else [first]
+        if when in allowed:
+            return None
+        return self._mismatch(wanted, allowed[0], day)
+
+    def _mismatch(self, weekday, right, asked):
+        return {"code": "weekdayMismatch", "date": right.isoformat(), "weekday": _WEEKDAYS[weekday],
+                "relative": self._relative(right.isoformat()), "asked": asked,
+                "say": SAY["weekdayMismatch"].format(weekday=_WEEKDAYS[weekday], date=right.isoformat(),
+                                                     asked=asked)}
+
+    # -- "fredag" said on a Friday: the open question ----------------------------------
+
+    def _day_question(self):
+        """The open "i dag eller nästa fredag?" question of today, else None."""
+        question = self.state.get("dayQuestion")
+        if question and question.get("today") == self.today.isoformat():
+            return question
+        self.state.pop("dayQuestion", None)
+        return None
+
+    def _day_chosen(self):
+        """{"weekday", "date"}: which of today's weekday the caller chose today, else None."""
+        chosen = self.state.get("dayChosen")
+        if chosen and chosen.get("today") == self.today.isoformat():
+            return chosen
+        self.state.pop("dayChosen", None)
+        return None
+
+    def _choose(self, weekday, next_week):
+        when = self.today + timedelta(days=7 if next_week else 0)
+        self.state["dayChosen"] = {"weekday": weekday, "today": self.today.isoformat(), "date": when.isoformat()}
+        self.state.pop("dayQuestion", None)
+
+    def _names_date(self, text):
+        """The utterance names a day another way: a day of the month or "i morgon"."""
+        low = str(text).lower()
+        if readback._month_day(text, self.language) or _DAY_OF_MONTH.search(low):
+            return True
+        tokens = set(re.findall(r"[^\W\d_]+", low)) - _AMBIGUOUS_ORDINALS
+        if any(tokens & set(readback.ORDINALS.get(code) or ()) for code in (self.language, "en")):
+            return True
+        return any(d != self.today for d in readback.dates(text, self.language, today=self.today))
+
+    def _hear_day(self, text):
+        """What the caller's utterance says about today's weekday: it opens the
+        question ("fredag" on a Friday during service), answers it ("i dag",
+        "nästa", a date, another weekday) or leaves it open (a bare yes or no
+        to "i dag eller nästa fredag?" is no answer: the next sentence asks
+        differently, never the same one twice in a row)."""
+        low = " " + " ".join(str(text).lower().split()) + " "
+        turn = self.turn
+        weekday = self.today.weekday()
+        names = readback.weekdays(text, self.language)
+        nxt = bool(_NEXT_WORDS.search(low))
+        today_ = bool(_TODAY_WORDS.search(low))
+        # "om två veckor", "nästa vecka": the caller said which week ("nästa vecka" is next week).
+        weeks = bool(_WEEK_WORDS.search(low)) and not nxt
+        question = self._day_question()
+        if question and names - {question["weekday"]}:
+            self.state.pop("dayQuestion", None)     # another weekday: a new request
+            return
+        if question and (turn is None or question.get("opened") is None or int(question["opened"]) < int(turn)):
+            if question.get("heard") == turn and turn is not None:
+                return          # this utterance was read already
+            question["heard"] = turn
+            if weeks:
+                self.state.pop("dayQuestion", None)
+            elif nxt != today_:
+                self._choose(question["weekday"], nxt)
+            elif self._names_date(text):
+                self.state.pop("dayQuestion", None)
+            elif question.get("asked") is not None:
+                answer = _yes_no(text)
+                if answer and question.get("form") == "today" and answer in ("yes", "no"):
+                    self._choose(question["weekday"], answer == "no")
+                elif answer:
+                    self._reask(question, turn)
+            return
+        chosen = self._day_chosen()
+        if chosen and not question:
+            if names - {chosen["weekday"]} or weeks or (self._names_date(text) and not names):
+                self.state.pop("dayChosen", None)
+            elif nxt != today_:
+                self._choose(chosen["weekday"], nxt)
+            return
+        if question or weeks or self._weekday_named(text) != weekday:
+            return
+        if nxt != today_:
+            self._choose(weekday, nxt)
+        elif not self._service_over():
+            self.state["dayQuestion"] = {"weekday": weekday, "today": self.today.isoformat(), "opened": turn,
+                                         "asked": None, "form": "choice", "variant": "first", "asks": 0}
+
+    @staticmethod
+    def _reask(question, turn):
+        """The next question after an unclear answer: both days with their
+        dates, then "Gäller det i dag?" (a yes or no decides it), then both
+        days again; never the same sentence twice in a row."""
+        question["unclear"] = turn
+        question["asks"] = int(question.get("asks") or 0) + 1
+        if question.get("form") == "today" or question["asks"] == 1:
+            question.update({"form": "choice", "variant": "again"})
+        else:
+            question.update({"form": "today", "variant": "today"})
+
+    def _day_words(self, question, lang):
+        """The question to say now, in `lang` (sv, en), else None."""
+        weekday = question["weekday"]
+        today, week = self.today.isoformat(), (self.today + timedelta(days=7)).isoformat()
+        name = readback.WEEKDAYS["sv"][weekday] if lang == "sv" else _WEEKDAYS[weekday]
+        variant = question.get("variant") or "first"
+        table = {"first": copy.WHICH_DAY, "again": copy.WHICH_DAY_AGAIN, "today": copy.WHICH_DAY_TODAY}[variant]
+        sentence = copy.pick(table, lang)
+        if sentence is None or lang not in say_.LANGS:
+            return None
+        return sentence.format(weekday=name, today=say_.date_only(today, lang), next=say_.date_only(week, lang),
+                               day=say_.day(today, lang))
+
+    def _which_day(self, question):
+        """The refusal while the question is open (the model asks, Booqy's words when they exist)."""
+        if question.get("asked") is None:
+            question["asked"] = self.turn
+        weekday = question["weekday"]
+        name = _WEEKDAYS[weekday]
+        today, week = self.today.isoformat(), (self.today + timedelta(days=7)).isoformat()
+        variant = question.get("variant") or "first"
+        out = {"code": "whichDay", "today": today, "next": week, "weekday": name, "times": []}
+        words = self._day_words(question, self.language)
+        if self.language in say_.LANGS:
+            out.update({"spokenToday": say_.day(today, self.language), "spokenNext": say_.day(week, self.language)})
+        if variant == "first":
+            out["say"] = SAY["whichDay"].format(weekday=name, sv=readback.WEEKDAYS["sv"][weekday], today=today,
+                                                next=week)
+        else:
+            out["say"] = SAY["whichDayAgain"].format(weekday=name, today=today, next=week)
+        if words:
+            out["question"] = words
+        return out
+
+    def day_reask(self, text, lang=None):
+        """Booqy's own next question when the caller answered "i dag eller nästa
+        fredag?" with a bare yes or no in this utterance (no model round, so
+        never the same sentence again), else None."""
+        question = self._day_question()
+        if not question or self.turn is None or question.get("unclear") != self.turn:
+            return None
+        if self._live()[0] is not None:
+            return None
+        return self._day_words(question, lang or self.language)
+
+    def _relative(self, day):
+        """The day relative to the restaurant's local today ("today", "tomorrow", "in 4 days")."""
+        n = (date.fromisoformat(day) - self.today).days
+        return "today" if n == 0 else "tomorrow" if n == 1 else f"in {n} days" if n > 1 else f"{-n} days ago"
+
+    def repeated_yes(self, text):
+        """A plain yes ("ja tack boka det") in the utterance right after this
+        call's booking was made, with no live hold: nothing to book again."""
+        booked = self.state.get("bookedTurn")
+        if booked is None or self.turn is None or int(booked) != int(self.turn) - 1:
+            return False        # only the utterance right after the booking (a later yes may be to a move)
+        if self.state.get("guaranteePending") or self._live()[0] is not None:
+            return False
+        tokens = re.findall(r"[^\W\d_]+", str(text or "").lower())
+        return 0 < len(tokens) <= 6 and set(tokens) <= _CONFIRM_WORDS and bool(set(tokens) & _YES_WORDS)
+
+    def _live(self):
+        """(holdId, proposal) of the one hold that can be booked, else (None, None)."""
+        live = [(k, p) for k, p in self.state["proposals"].items()
+                if not p.get("released") and not p.get("reservationId")]
+        return live[-1] if live else (None, None)
+
+    def _release_others(self, hold_id):
+        """At most one live hold per call: every other unbooked hold is
+        released (nothing was written for it, so nothing is freed)."""
+        out = []
+        for k, p in self.state["proposals"].items():
+            if k != hold_id and not p.get("reservationId") and not p.get("released"):
+                p["released"] = True
+                out.append(k)
+        return out
+
+    def _summary(self, hold_id):
+        p = self.state["proposals"].get(hold_id) or {}
+        return {"holdId": hold_id, "date": p.get("date"), "weekday": _weekday(p.get("date") or ""),
+                "time": p.get("time"), "partySize": p.get("partySize")}
+
+    @property
+    def tracked(self) -> bool:
+        """The executor is told what the caller heard (heard / not_heard): the
+        read-back and the card terms are checked against the spoken replies.
+        Every call and simulator turn is (agent.run_turn, session)."""
+        return "heard" in self.state
+
+    def heard(self, reply, lang=None, *, error=False):
+        """The reply the caller heard at the end of this utterance (after any
+        replacement by session). The one live hold counts as read back in
+        this utterance only when the reply names its time and no other time
+        or weekday (readback.covers); the card terms count as said only when
+        the reply carries the fee rule. Called again in the same utterance
+        (the reply was replaced), it first undoes its earlier verdict."""
+        turn = self.turn
+        before = self.state.get("heardBefore") or {}
+        if self.state.get("heard") == turn and turn is not None:
+            if before.get("readBack") is None:
+                self.state.pop("readBack", None)
+            else:
+                self.state["readBack"] = before["readBack"]
+            for p in self.state["proposals"].values():
+                if p.get("guaranteeSaid") == turn:
+                    p.pop("guaranteeSaid", None)
+        self.state["heard"] = turn
+        self.state["heardBefore"] = {"readBack": self.state.get("readBack")}
+        question = self._day_question()
+        if (question and question.get("asked") is None and "?" in str(reply or "")
+                and question["weekday"] in readback.weekdays(reply, lang or self.language)):
+            question["asked"] = turn     # the model asked "i dag eller nästa fredag?" without a lookup
+        hold_id, proposal = self._live()
+        if error:
+            self.state.pop("readBack", None)
+            return
+        if not proposal:
+            return
+        due = proposal.get("guaranteeDue")
+        if due and not proposal.get("guaranteeSaid") and readback.mentions_terms(reply, fees=due == "fee"):
+            proposal["guaranteeSaid"] = turn
+        verdict = readback.covers(reply, proposal["date"], proposal["time"], lang or self.language,
+                                  party=proposal.get("partySize"), today=self.today)
+        if verdict is True:
+            self.state["readBack"] = {"holdId": hold_id, "turn": turn}
+        elif verdict is False:
+            self.state.pop("readBack", None)
+
+    def guest_names(self, reply=None):
+        """The names the caller gave in this call (agent.without_name_thanks):
+        the one they said for themselves ("jag heter Anna"), the one a reply
+        read the hold back under ("under namnet Anna") and the one a booking or
+        callback was made under. Kept in the state for later turns."""
+        known = list(self.state.get("guestNames") or [])
+        found = readback.names(self.caller_text, caller=True) + readback.names(reply)
+        for name in found:
+            name = " ".join(str(name).split())[:80]
+            if name and name not in known:
+                known.append(name)
+        if known:
+            self.state["guestNames"] = known[-5:]
+        return known
+
+    def _remember_name(self, name):
+        if name and name not in (self.state.get("guestNames") or []):
+            self.state["guestNames"] = (list(self.state.get("guestNames") or []) + [name])[-5:]
+
+    def _replaced(self, hold_id):
+        live_id, _ = self._live()
+        return {"ok": False, "code": "holdReplaced", "hold": self._summary(hold_id),
+                **({"live": self._summary(live_id)} if live_id else {}), "say": SAY["holdReplaced"]}
+
+    def _read_back_problem(self, hold_id, proposal):
+        """Why the caller's yes is not a yes to this hold (tracked executors)."""
+        if not self.tracked or self.turn is None:
+            return None
+        rb = self.state.get("readBack") or {}
+        turn = int(self.turn)
+        fresh = rb.get("holdId") == hold_id and rb.get("turn") is not None and int(rb["turn"]) < turn and (
+            proposal.get("turn") is None or int(rb["turn"]) >= int(proposal["turn"]))
+        said = proposal.get("guaranteeSaid")
+        if fresh and said is not None and int(rb["turn"]) < int(said):
+            fresh = False        # the read-back came before the terms: read back again after them
+        if not fresh:
+            refused = {"ok": False, "code": "readBackMismatch", "hold": self._summary(hold_id),
+                       "say": SAY["readBackMismatch"]}
+            if self.language in say_.LANGS:
+                refused["spoken"] = say_.slot(proposal["date"], proposal["time"], proposal.get("partySize"),
+                                              self.language)
+            return refused
+        return None
 
     def _counter(self, result, time):
         if result.get("nearby"):
@@ -715,7 +1247,8 @@ class Executor:
         return pa.normalize_e164(str(spoken))
 
     def create_reservation(self, args):
-        proposal = self.state["proposals"].get(str(args["holdId"]))
+        hold_id = str(args["holdId"])
+        proposal = self.state["proposals"].get(hold_id)
         if not proposal:
             return {"ok": False, "code": "unknown_hold"}
         if proposal.get("reservationId"):  # a retry of the same booking
@@ -729,15 +1262,27 @@ class Executor:
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
         party = int(proposal["partySize"])
-        if not proposal.get("guaranteeNoted") and self._guarantee_mode(party) == "link":
+        if proposal.get("released"):      # at most one live hold: the caller's yes is never to this one
+            return self._replaced(hold_id)
+        link = self._guarantee_mode(party) == "link"
+        noted = proposal.get("guaranteeSaid") is not None if self.tracked else proposal.get("guaranteeNoted")
+        if link and not noted and self.tracked and proposal.get("guaranteeDue"):
+            # Live test 2026-11-20: the terms were written before hold_table and never spoken.
+            note = self._guarantee_note(party, new_booking=True)
+            return {"ok": False, "code": "termsFirst", "holdId": hold_id, **note, "say": SAY["termsFirst"]}
+        if link and not noted:
             # Held while the caller's bookings were found (no card terms then): the terms and the
             # card link are said in a new read-back before the pending booking is made.
-            proposal.update({"guaranteeNoted": True, "turn": self.turn})
             note = self._guarantee_note(party, new_booking=True)
-            return {"ok": False, "code": "readBackFirst", "holdId": str(args["holdId"]), **note,
+            proposal.update({"guaranteeNoted": True, "turn": self.turn,
+                             "guaranteeDue": "fee" if (note.get("guaranteeTerms") or {}).get("fees") else "card"})
+            return {"ok": False, "code": "readBackFirst", "holdId": hold_id, **note,
                     "say": "Not booked yet. " + note["say"] + " After a clear yes, call create_reservation again."}
         if not self._heard_before(proposal.get("turn")):
             return {"ok": False, **_say("readBackFirst")}
+        problem = self._read_back_problem(hold_id, proposal)
+        if problem:
+            return problem
         booked = next((p for p in self.state["proposals"].values()
                        if p.get("reservationId") and p["date"] == proposal["date"]), None)
         if booked:   # a second booking the same day in one call: a correction, not a new table
@@ -750,6 +1295,7 @@ class Executor:
         name = " ".join(str(args.get("name") or "").split())[:80]
         if not name:
             return {"ok": False, **_say("nameInvalid")}
+        self._remember_name(name)
         try:
             phone = self._booking_phone(args.get("phone"))
         except pa.PhoneAgentError:
@@ -793,7 +1339,7 @@ class Executor:
         proposal["reservationId"] = reservation_id
         # The caller's own booking: it may be moved or cancelled in this call (also with a hidden number).
         self._remember_found([{"reservationId": reservation_id, "partySize": int(proposal["partySize"])}])
-        self.state.update({"outcome": "booked", "reservationId": reservation_id,
+        self.state.update({"outcome": "booked", "reservationId": reservation_id, "bookedTurn": self.turn,
                            "accepted": self._accepted(proposal)})
         return {"reservationId": reservation_id, "booked": True, "date": proposal["date"],
                 "weekday": _weekday(proposal["date"]), "time": proposal["time"], "partySize": proposal["partySize"],
@@ -809,7 +1355,8 @@ class Executor:
 
     def _held_for_card(self, proposal, reservation_id, answer):
         """The booking is pending until the card is added: text the caller
-        the Stripe link (their own caller ID only) and tell the model the
+        the card link (guaranteeLink.url, a short plain link; their own caller
+        ID only) and tell the model the
         fixed sentence. `answer` None: the simulator (nothing sent)."""
         if answer is not None:
             link = answer["guaranteeLink"]
@@ -1009,12 +1556,12 @@ class Executor:
             return {"ok": False, "code": "menu_unavailable"}
         query = str(args.get("query") or "").lower()
         items = body.get("items") or body.get("menu") or []
-        words = [w for w in query.split() if len(w) > 3]
+        words = menu_words(query)
         hits = [i for i in items if any(w[:5] in json.dumps(i, ensure_ascii=False).lower() for w in words)] or items
         dishes = [{"name": i.get("name"), "price": i.get("price"), "currency": "SEK"}
                   for i in hits[:5] if i.get("name")]
         self.state.setdefault("outcome", "info")
-        return {"dishes": dishes}
+        return {"dishes": dishes, "sourceLanguage": "sv"}
 
     def transfer_to_staff(self, args):
         to = self.loc.get("transferTo")
@@ -1048,6 +1595,7 @@ class Executor:
                 if not self.caller_known:
                     return {"ok": False, **_say("phoneInvalid")}
         topic = self._topic(args.get("topic"))
+        self._remember_name(" ".join(str(args.get("name") or "").split())[:80])
         if self.dry_run or not self.callbacks:
             callback_id = "sim-callback"
         else:
@@ -1098,6 +1646,50 @@ _EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "e
 _SV_ONES = ("noll", "ett", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio", "tio", "elva", "tolv",
             "tretton", "fjorton", "femton", "sexton", "sjutton", "arton", "nitton")
 _SV_TENS = ("", "", "tjugo", "trettio", "fyrtio", "femtio", "sextio", "sjuttio", "åttio", "nittio")
+
+
+# Common food words in the line's languages -> the Swedish stem the menu uses, so a dish asked for in
+# another language still matches when the model passes the caller's own word (the tool asks for
+# Swedish; this is the cheap fallback, no translation call). Matching is on the first five letters.
+MENU_WORDS = {
+    "kyckl": "chicken poulet pollo hähnchen huhn kurczak tavuk ayam piletina pile دجاج مرغ".split(),
+    "fisk": "fish poisson pescado pesce fisch ryba balık ikan riba سمك ماهی".split(),
+    "lax": "salmon saumon salmón salmone lachs łosoś somon salmon losos سلمون".split(),
+    "räk": "shrimp shrimps prawn prawns crevette crevettes gamba gambas gamberi garnelen krewetki karides udang "
+           "škampi روبيان میگو".split(),
+    "nöt": "beef boeuf bœuf ternera carne manzo rind rindfleisch wołowina dana sapi govedina لحم گوشت".split(),
+    "fläsk": "pork porc cerdo maiale schwein schweinefleisch wieprzowina babi svinjetina".split(),
+    "lamm": "lamb agneau cordero agnello lammfleisch jagnięcina kuzu domba janjetina خروف بره".split(),
+    "veget": "vegetarian végétarien vegetariano vegetarisch wegetariańskie wegetariański vejetaryen "
+             "vegetarijansko نباتي گیاهی".split(),
+    "vegan": "vegan végane vegano wegańskie vegansko".split(),
+    "salla": "salad salade ensalada insalata salat sałatka salata سلطة سالاد".split(),
+    "soppa": "soup soupe sopa zuppa suppe zupa çorba sup supa حساء شوربة سوپ".split(),
+    "potat": "potato potatoes pomme patata patate kartoffel ziemniaki patates kentang krompir بطاطس سیب".split(),
+    "ris": "rice riz arroz riso reis ryż pirinç nasi riža أرز برنج".split(),
+    "ost": "cheese fromage queso formaggio käse ser peynir keju sir جبن پنیر".split(),
+    "bröd": "bread pain pan pane brot chleb ekmek roti kruh خبز نان".split(),
+    "glass": "ice cream glace helado gelato eis lody dondurma es sladoled بستنی".split(),
+    "dess": "dessert desserts postre dolce nachtisch deser tatlı pencuci desert حلوى دسر".split(),
+    "glute": "gluten glutenfree glutenfrei bezglutenowe glutensiz".split(),
+    "lakto": "lactose lactosa lattosio laktose laktoza laktoz".split(),
+    "barn": "kids children child enfant enfants niños bambini kinder dzieci çocuk anak djeca".split(),
+    "svamp": "mushroom mushrooms champignon champignons setas funghi pilze grzyby mantar jamur gljive قارچ".split(),
+}
+_MENU_STEMS = {word: stem for stem, words in MENU_WORDS.items() for word in words}
+
+
+def menu_words(query):
+    """The search words of a menu question (more than three letters), each
+    caller word with the Swedish stem of a known food word added."""
+    out = []
+    for word in str(query or "").lower().split():
+        word = word.strip(".,?!:;\"'")
+        if word in _MENU_STEMS:
+            out.append(_MENU_STEMS[word])
+        if len(word) > 3:
+            out.append(word)
+    return list(dict.fromkeys(out))
 
 
 def number_words(n, lang="en"):
@@ -1170,8 +1762,7 @@ def clock_words(value):
     if not m:
         return None
     hour, minute = int(m.group(1)), int(m.group(2))
-    part = ("at night" if hour < 5 else "in the morning" if hour < 12 else "in the afternoon" if hour < 17
-            else "in the evening")
+    part = say_.period(value, "en")       # one rule for the part of the day (spoken.part): 17:00 afternoon
     if hour == 12 and minute == 0:
         return "twelve noon"
     if hour == 0 and minute == 0:

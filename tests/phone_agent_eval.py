@@ -167,7 +167,8 @@ def run(e, scenario, key, spec, *, mode, monkeypatch, phone_cls, verbose=False):
         failures += [("latency", f"turn{i}:{ms}ms") for i, ms in enumerate(latencies)
                      if ms > agent.TURN_BUDGET_S * 1000]
         failures += [("latency", f"cut@turn{i}") for i, r in enumerate(replies)
-                     if any(s in r for s in copy.STILL_CHECKING.values())]
+                     if any(s in r for s in list(copy.STILL_CHECKING.values()) +
+                            [x for more in copy.STILL_CHECKING_MORE.values() for x in more])]
     graders = ("safety", "outcome", "language") + (("style", "register", "latency") if mode == "live" else ())
     return {"scenario": scenario["id"], "call": key, "mode": mode, "turns": len(replies),
             "passed": {g: not any(f[0] == g for f in failures) for g in graders},
@@ -260,7 +261,7 @@ def _language(scenario, phone, replies, langs, expected):
     if final != "en" and any(copy.ERROR["en"] in r or copy.MAX_LENGTH["en"] in r or
                               copy.STILL_CHECKING["en"] in r for r in replies):
         out.append(("language", "english_fixed_sentence"))
-    if expect.get("unsupported") and not any(copy.UNSUPPORTED_LANGUAGE["sv"] in r for r in replies):
+    if expect.get("unsupported") and not any(copy.UNSUPPORTED_LANGUAGE["en"] in r for r in replies):
         out.append(("language", "no_unsupported_sentence"))
     return out
 

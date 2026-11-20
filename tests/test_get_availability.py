@@ -1,7 +1,7 @@
 from error_body import err
 import importlib.util
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
@@ -1317,7 +1317,7 @@ def test_today_includes_only_slots_strictly_after_now(
     assert [slot["startTime"] for slot in captured["slots"]] == half_hours("14:30", "20:00")
 
 
-def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
+def test_horizon_day_is_bookable_all_day(
     app_and_tables,
     monkeypatch,
 ):
@@ -1330,8 +1330,10 @@ def test_horizon_day_includes_exact_boundary_and_filters_later_slots(
         None,
     )
 
+    # today (2026-09-08, now 14:00 local) + 21: whole local days, so every
+    # slot of the last bookable date, also those after the current clock time
     assert response["statusCode"] == 200
-    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("10:00", "14:00")
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours("10:00", "20:00")
 
 
 def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
@@ -1367,9 +1369,22 @@ def test_date_wholly_beyond_horizon_is_rejected_before_layout_read(
     snapshot.get_item.assert_not_called()
 
 
-def test_horizon_uses_location_date_but_exact_utc_elapsed_time(
+@pytest.mark.parametrize(
+    ("now", "last_bookable"),
+    [
+        # 2026-10-10 00:30 CEST, still 2026-10-09 in UTC: the local date
+        # decides (now + 21 days would end on 2026-10-30 23:30 CET)
+        (datetime(2026, 10, 9, 22, 30, tzinfo=timezone.utc), "2026-10-31"),
+        # 2026-10-09 23:30 CEST
+        (datetime(2026, 10, 9, 21, 30, tzinfo=timezone.utc), "2026-10-30"),
+    ],
+    ids=["after-local-midnight", "before-local-midnight"],
+)
+def test_horizon_uses_location_date_near_midnight(
     app_and_tables,
     monkeypatch,
+    now,
+    last_bookable,
 ):
     app, tables = app_and_tables
     put_stage_two_records(
@@ -1379,23 +1394,30 @@ def test_horizon_uses_location_date_but_exact_utc_elapsed_time(
             hours=business_hours("00:00", "18:00"),
         ),
     )
-    monkeypatch.setattr(
-        app,
-        "_utc_now",
-        lambda: datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
-    )
+    monkeypatch.setattr(app, "_utc_now", lambda: now)
     captured = successful_occupancy_boundary(app, monkeypatch)
 
     response = app.handler(
-        make_event(query={"date": "2026-10-25"}),
+        make_event(query={"date": last_bookable}),
         None,
     )
 
+    # whole days: every slot of the last bookable date (last start 16:00)
     assert response["statusCode"] == 200
-    assert captured["slots"][-1]["startTime"] == "13:00"
-    assert "14:00" not in {
-        slot["startTime"] for slot in captured["slots"]
-    }
+    assert [slot["startTime"] for slot in captured["slots"]] == half_hours(
+        "00:00", "16:00"
+    )
+
+    day_after = (
+        date.fromisoformat(last_bookable) + timedelta(days=1)
+    ).isoformat()
+    response = app.handler(make_event(query={"date": day_after}), None)
+
+    assert_response(
+        response,
+        400,
+        err("date must not be more than 21 days ahead"),
+    )
 
 
 def test_fractional_hour_duration_uses_exact_minute_grid(

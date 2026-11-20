@@ -141,10 +141,12 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 **Lifecycle fields:**
 
 - The first activation is immediate when the request omits `effectiveFrom` or supplies an instant at or before server now: the selected snapshot gets `isCurrent=true`, `effectiveFrom=server now`, `effectiveTo=null`, and `expiresAt=null`. A future first activation is not represented by this model and is rejected.
-- A replacement is eligible at the target snapshot's `createdAt` plus five
-  minutes in `dev` or 28 days in `prod`. Without `effectiveFrom`, an eligible
-  target replaces immediately; otherwise `cutoverAt` is the whole-minute
-  ceiling of `max(eligibleAt, server now + 60 seconds)`.
+- A replacement is never immediate. In every environment it is eligible at
+  local midnight (location `timezone`) of today + 22 days, the day after the
+  21-day booking window, counted from the day of the request. Without
+  `effectiveFrom`, `cutoverAt` is exactly that midnight. Readers and the
+  cutover worker check a floor of the target's `createdAt` plus 21 days minus
+  one hour (`shared/availability.layout_cutover_floor`).
 - An explicit future `effectiveFrom` supplies the exact cutoff after
   normalization from its timezone-aware ISO 8601 offset to UTC. A new future
   transition must use a whole minute, be at least 60 seconds ahead, and be no
@@ -185,12 +187,10 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
   active; calling `activate-layout-version` for that current version
   bootstraps the state machine before those readers can use it.
 
-Pending-management currently has no Reservation or Slot Occupancy access. If
-a pending layout has already been advertised inside the 21-day booking
-horizon, cancelling or moving it can invalidate stored layout-version/table
-assumptions for affected bookings. A reservation-impact rule must therefore be
-defined before production enables late changes; this model does not silently
-migrate those records.
+Pending-management reads the Reservation table: cancelling a pending layout,
+or moving it later, is refused (`409` `bookings_on_removed_tables`) while
+bookings made on it sit on tables the current layout lacks. This model does
+not silently migrate those records.
 
 **Archive fields:** `archivedBy` and `archivedAt` are optional as a pair: both are absent on an ordinary snapshot, and both must be present and valid on an archived snapshot. A partial or malformed pair is inconsistent data. Archiving is a soft-delete operation and never removes the DynamoDB row or compiled content. It sets `archivedBy` to the owner's/super-user's Cognito subject and `archivedAt` to the archive time, and sets `updatedBy`/`updatedAt` to the same values. The snapshot's version remains allocated permanently, preserving reservation references and historical continuity; publishing therefore cannot reuse an archived version number.
 
@@ -496,3 +496,53 @@ One record per failed charge, keyed by phone number so you can look up "does thi
 **Phone number normalization matters here** - `PK` is keyed on a *normalized* phone number, so `create-pending-reservation`'s delinquency check and whatever writes this table on charge failure (`no-show-check` / `stripe-webhook`) both need to normalize the same way (e.g. E.164) before building the key, or lookups will silently miss real matches.
 
 `reason` values (`no_show`\|`late_cancellation`) map onto the Reservation `status` values that create a delinquency record: `no_show_charge_failed` → `reason="no_show"`; `cancelled_charge_failed` → `reason="late_cancellation"`.
+
+---
+
+## Table Orders
+
+Staff table orders ("Bordsbeställning", docs/TABLE_ORDERS.md): one open tab per table, items by course, rounds of kitchen and bar tickets. Its own table (`TABLE_ORDER_TABLE_NAME`) with no stream and no index, so accounting, Statistik, finance-rollup, guest CRM, marketing, notification and data-retention never see it. Read and written only by `table-order` (`shared/table_orders.py`). Amounts are öre and only a reference for the restaurant's own till: no payment is taken or recorded.
+
+All rows of a location share `PK` = `LOCATION#<locationId>`.
+
+| `SK` | Row |
+|---|---|
+| `TAB#<openedDate>#<tabId>` | The tab (`openedDate` = location-local YYYY-MM-DD at open) |
+| `TID#<tabId>` | Pointer `{date, ttl}`, so a tab loads by id |
+| `OPEN#<tableId>` | Lock `{tabId, date, ttl}` while the table has an open tab |
+| `REQ#<requestId>` | Idempotency `{tabId, round?, action, at, ttl}` |
+| `STATE` | `{version}`, ADD 1 on every write (cheap poll) |
+
+Tab row:
+
+| Attribute | Type |
+|---|---|
+| `tabId`, `tenantId`, `locationId` | String (`tabId` 32 lowercase hex) |
+| `status` | String (`open`\|`closed`) |
+| `tableId`, `tableLabel`, `floorName` | String (layout element id; label and floor snapshotted at open and move) |
+| `openedDate` | String (YYYY-MM-DD) |
+| `covers` | Number (1-50, optional) |
+| `reservationId`, `guestName` | String (optional; the booking's guest snapshotted at open, or typed for walk-ins) |
+| `note` | String (optional, max 200) |
+| `items` | List of Map: `itemId` (12 hex), `menuItemId`, `name`, `unitPrice` (öre, options included), `quantity`, `options` [{group, choice}], `note?`, `allergy`, `alcohol`, `course` (`drinks`\|`starters`\|`mains`\|`desserts`\|`other`), `category?`, `categoryName?`, `station?`, `components?`, `stationId`, `stationName`, `state` (`held`\|`sent`\|`void`), `round?`, `addedAt`, `addedBy`, `addedByName`, `voidedAt?`, `voidedBy?`, `voidedByName?`, `voidReason?` (`wrong`\|`guest_changed`\|`other`\|`before_send`\|`closed`), `voidRound?`, `splitFrom?`; max 150 |
+| `rounds` | List of Map: `round`, `kind` (`order`\|`fire`\|`void`\|`move`), `at`, `by`, `byName`, `sourceId` (`<tabId>r<round>`), `courses`, `itemIds`, `dispatched`, `stations` [{stationId, stationName, printers, fallback}], `reason?`, `note?`, `fromTable?`, `toTable?`, `fromLabel?`, `toLabel?`; max 60 |
+| `nextRound` | Number |
+| `referenceTotal` | Number (öre, non-void items) |
+| `openedAt`, `openedBy`, `openedByName` | String |
+| `closedAt`, `closedBy`, `closedByName`, `closeReason` | String (`closeReason` = `paid_elsewhere`) |
+| `version` | Number (optimistic lock, +1 per write) |
+| `updatedAt` | String (ISO8601) |
+| `history` | List of Map `{action, at, by, byName, ...}`, last 100 |
+| `ttl` | Number (Unix epoch) |
+
+### Retention
+
+| Row | Kept |
+|---|---|
+| Closed tab (guest name) | 14 days after close (`ttl`) |
+| Open tab, `OPEN#` lock | 48 hours after its last write |
+| `REQ#` | 24 hours |
+| `TID#` | A day longer than its tab |
+| `STATE` | Stays (a counter, no personal data) |
+
+tenant-purge does not delete these rows: TTL clears a closed restaurant's tabs within 14 days (accepted trade-off). data-retention does not read this table.

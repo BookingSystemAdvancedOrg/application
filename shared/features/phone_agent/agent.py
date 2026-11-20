@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from shared import agent_model
-from shared.features.phone_agent import copy, language
+from shared.features.phone_agent import copy, language, readback
 from shared.features.phone_agent.tools import TOOLS, read_as
 
 MAX_ROUNDS = 4          # model passes per caller utterance (tool calls in between)
@@ -27,6 +27,9 @@ KEEP_TOOL_ROUNDS = 2    # tool results older than this many rounds are shortened
 MAX_HISTORY_BYTES = 120_000
 WRITES = ("create_reservation", "move_reservation", "cancel_reservation", "request_callback", "transfer_to_staff",
           "send_guarantee_link")
+# Reads that change no booking state beyond what running them again in order repeats: when a round asks
+# for several, their Lambda calls run in parallel first (the answers are cached), then they run in order.
+PARALLEL_READS = ("get_restaurant_info", "get_availability", "get_menu")
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
@@ -39,6 +42,10 @@ class TurnResult:
     language: str | None = None        # the model's `[<code>]` tag of the reply (any known language)
     rounds: int = 0
     cut: bool = False                  # the deadline came first: the caller heard the still-checking sentence
+    model_ms: int = 0                  # time spent waiting for the model (all rounds)
+    tool_ms: int = 0                   # time spent in tools (all rounds)
+    cache_read: int = 0                # prompt tokens read from Bedrock's prompt cache (all rounds)
+    cache_write: int = 0               # prompt tokens written to it
 
 
 def calendar(today: date, last: date) -> str:
@@ -53,24 +60,48 @@ def calendar(today: date, last: date) -> str:
     return "\n".join(lines)
 
 
+def _self_name(agent_name):
+    """How the model names itself: the restaurant's own agent name, else
+    Booqy-assistenten (translated in other languages)."""
+    name = copy.agent_name(agent_name)
+    if name == copy.DEFAULT_AGENT_NAME:
+        return f"{name} (in other languages: the Booqy assistant, translated)"
+    return name
+
+
 def system_prompt(lang, agent_name, restaurant, today: date, tone="formal", *, last_day=None, disclose_now=False,
-                  phone_known=True, unsupported=None, resume=False) -> str:
-    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT);
-    `resume`: the previous turn was cut by the deadline (copy.RESUME)."""
+                  phone_known=True, unsupported=None, resume=False, switched=False, asked=None,
+                  locked=False) -> str:
+    """The instruction prompt for one turn in `lang` (copy.SYSTEM_PROMPT).
+
+    The static part (the same in every turn of a call in one language) comes
+    first; the notes for this turn only follow under copy.TURN_SECTION, so
+    the static part is read from Bedrock's prompt cache: `disclose_now`,
+    `unsupported`, `resume` (the previous turn was cut by the deadline,
+    copy.RESUME), `switched` (the caller just switched to `lang`: read back
+    again, copy.SWITCH_NOTE), `asked` (Booqy asked whether to continue in
+    that language, copy.ASKED_NOTE) and `locked` (no more switches)."""
     name = language.name(lang) if lang in language.NAMES else "Swedish"
     last_day = last_day or today + timedelta(days=21)
     register = copy.REGISTER.get(tone or "formal", copy.REGISTER["formal"]).format(language_name=name)
-    return copy.SYSTEM_PROMPT.format(
-        agent=" ".join(str(agent_name or copy.DEFAULT_AGENT_NAME).split()),
+    prompt = copy.SYSTEM_PROMPT.format(
+        agent=_self_name(agent_name),
         restaurant=" ".join(str(restaurant or "restaurangen").split()),
-        language_name=name, register=register,
-        disclose_now=copy.DISCLOSE_NOW.format(language_name=name) if disclose_now else "",
-        low_asr=copy.LOW_ASR.format(language_name=name) if lang in language.LOW_ASR else "",
-        unsupported=copy.UNSUPPORTED.format(unsupported=unsupported, unsupported_name=language.name(unsupported))
-        if unsupported else "",
+        language_name=name, register=register, openers=copy.OPENERS.get(lang) or copy.OPENERS_OTHER,
         phone_known=copy.PHONE_KNOWN if phone_known else copy.PHONE_HIDDEN,
         horizon_last=f"{last_day.isoformat()} ({_WEEKDAYS[last_day.weekday()]})",
-        calendar=calendar(today, last_day)) + (copy.RESUME if resume else "")
+        calendar=calendar(today, last_day))
+    notes = "".join((
+        copy.LOW_ASR.format(language_name=name) if lang in language.LOW_ASR else "",
+        copy.DISCLOSE_NOW.format(language_name=name) if disclose_now else "",
+        copy.SWITCH_NOTE.format(language_name=name) if switched else "",
+        copy.ASKED_NOTE.format(language_name=name, asked=asked, asked_name=language.name(asked))
+        if asked and asked != lang else "",
+        copy.LOCKED_NOTE.format(language_name=name) if locked else "",
+        copy.UNSUPPORTED.format(unsupported=unsupported, unsupported_name=language.name(unsupported))
+        if unsupported else "",
+        copy.RESUME if resume else ""))
+    return prompt + copy.TURN_SECTION + notes.strip() if notes else prompt
 
 
 def _ok(result) -> bool:
@@ -81,11 +112,11 @@ def error_sentence(lang):
     return copy.text(copy.ERROR, lang or "sv")
 
 
-def still_checking(lang, spoken=()):
-    """The sentence of a turn cut by the deadline: the fixed one in `lang`,
-    else the model's own announcement from this turn in that language ("one
-    moment, I am checking"), else English."""
-    fixed = copy.pick(copy.STILL_CHECKING, lang or "sv")
+def still_checking(lang, spoken=(), n=0):
+    """The sentence of a turn cut by the deadline: a fixed one in `lang`
+    (varied by `n`, the caller turn), else the model's own announcement from
+    this turn in that language ("one moment, I am checking"), else English."""
+    fixed = copy.still_checking_line(lang or "sv", n)
     if fixed:
         return fixed
     own = [text for tagged, text, _ in spoken if tagged in (None, lang)]
@@ -124,6 +155,36 @@ def _converse(model, system, messages, seconds):
     return _within(lambda: model.converse(system, snapshot, TOOLS, max_tokens=MAX_TOKENS, **extra), seconds)
 
 
+def _prefetch(executor, uses, seconds):
+    """Several reads in one round (two days, the menu and the hours): their
+    Lambda calls run at the same time on forks, whose GET answers warm the
+    executor's cache, so the reads in order (which change the call's state)
+    take one round trip instead of several (live test 2026-11-20: p95 6.8 s
+    for tool turns). Anything late is simply run again in order."""
+    reads = [u for u in uses if u.name in PARALLEL_READS]
+    if len(reads) < 2 or not hasattr(executor, "fork") or seconds <= 0:
+        return
+    twins = [executor.fork() for _ in reads]
+    pool = ThreadPoolExecutor(len(reads))
+    futures = [pool.submit(twin.run, use.name, use.input) for twin, use in zip(twins, reads)]
+    pool.shutdown(wait=False)
+    deadline = time.monotonic() + seconds
+    for twin, future in zip(twins, futures):
+        try:
+            future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001 - a late or failed prefetch is run again in order
+            continue
+        if hasattr(executor, "_cache"):
+            executor._cache.update(twin._cache)
+
+
+def _heard(executor, text, lang, *, error=False):
+    """Tells the executor what the caller heard at the end of the turn (the
+    read-back and the card terms are checked against it: tools.Executor.heard)."""
+    if hasattr(executor, "heard"):
+        executor.heard(text, lang, error=error)
+
+
 def _tool(executor, use, seconds):
     """A write always runs to its end on the call's state (never left
     half-known: no double booking); a read runs on a fork that is joined
@@ -142,7 +203,7 @@ _LATE = {"ok": False, "code": "timeout", "say": "This did not finish in time. Ru
 
 
 _KEEP_KEYS = ("ok", "code", "holdId", "reservationId", "date", "weekday", "time", "partySize", "reservations",
-              "guaranteeRequired", "pending")
+              "guaranteeRequired", "guaranteeTerms", "pending")   # the terms: amounts are said only when asked
 SHORT_RESULT = 400       # bytes: an older tool result above this is shortened
 
 
@@ -198,13 +259,30 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     Text the model writes before a lookup or a write ("one moment, I am
     checking") is left out when a later round answers: the caller hears the
     whole reply only once the turn ends, so it would only repeat. The
-    goodbye written with end_call is kept; `keep_preamble` keeps it all
-    (the model was asked to say the AI sentence itself in this reply)."""
+    goodbye written with end_call is kept, and so is text that carries the
+    card guarantee's fee rule (live test 2026-11-20: dropped, never said);
+    `keep_preamble` keeps it all (the model was asked to say the disclosure
+    sentence itself in this reply). The reply the caller hears is passed to
+    `executor.heard` (the read-back and the terms are checked against it)."""
     started = time.monotonic()
     deadline = started + budget_s
     compact(messages)
     messages.append({"role": "user", "content": caller_text})
     calls = []
+    if hasattr(executor, "caller_text"):
+        executor.caller_text = caller_text      # the server checks holds against what the caller said
+    already = copy.pick(copy.ALREADY_BOOKED, lang)
+    if already and not keep_preamble and hasattr(executor, "repeated_yes") and executor.repeated_yes(caller_text):
+        # A yes after the booking was made: no model round, nothing booked again (retest 2026-11-20).
+        messages.append({"role": "assistant", "content": already})
+        _heard(executor, already, lang)
+        return TurnResult(already, [], int((time.monotonic() - started) * 1000), language=lang)
+    reask = executor.day_reask(caller_text, lang) if not keep_preamble and hasattr(executor, "day_reask") else None
+    if reask:
+        # A bare yes or no to "i dag eller nästa fredag?": Booqy asks in other words, without a model round.
+        messages.append({"role": "assistant", "content": reask})
+        _heard(executor, reask, lang)
+        return TurnResult(reask, [], int((time.monotonic() - started) * 1000), language=lang)
 
     def ms():
         return int((time.monotonic() - started) * 1000)
@@ -212,16 +290,33 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     def failed(rounds):
         text = error_sentence(lang)
         messages.append({"role": "assistant", "content": text})
-        return TurnResult(text, calls, ms(), error=True, rounds=rounds)
+        _heard(executor, text, lang, error=True)
+        return done(TurnResult(text, calls, ms(), error=True, rounds=rounds))
+
+    def answered(rounds):
+        text = _said(spoken, code)
+        if _holding(executor) and not any(c["name"] == "request_callback" for c in calls):
+            text = without_call_promise(text)     # the confirmation is the text message, never a call
+        names = executor.guest_names(text) if hasattr(executor, "guest_names") else ()
+        text = without_name_thanks(text, names)    # never "Tack, Anna": the name is data only
+        _heard(executor, text, code or lang)
+        return done(TurnResult(text, calls, ms(), language=code, rounds=rounds))
 
     def cut(rounds):
-        text = still_checking(lang, spoken)
+        text = still_checking(lang, spoken, max(0, int(getattr(executor, "turn", None) or 1) - 1))
         messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
         if hasattr(executor, "not_heard"):
-            executor.not_heard()
+            executor.not_heard(text, lang)
         said_in = lang if copy.pick(copy.STILL_CHECKING, lang) or text != copy.text(copy.STILL_CHECKING, lang) \
             else None
-        return TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in)
+        return done(TurnResult(text, calls, ms(), rounds=rounds, cut=True, language=said_in))
+
+    timing = {"model": 0.0, "tool": 0.0, "read": 0, "write": 0}
+
+    def done(result):
+        result.model_ms, result.tool_ms = int(timing["model"] * 1000), int(timing["tool"] * 1000)
+        result.cache_read, result.cache_write = timing["read"], timing["write"]
+        return result
 
     rounds, spoken, code = 0, [], None
     for round_ in range(MAX_ROUNDS + 1):
@@ -232,14 +327,21 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         if round_ and left < MIN_ROUND_S:
             return cut(rounds)
         rounds = round_ + 1
+        asked = time.monotonic()
         try:
             turn = _converse(model, system, messages, left)
         except _Late:
+            timing["model"] += time.monotonic() - asked
             return cut(rounds)
         except agent_model.AgentModelError as exc:
+            timing["model"] += time.monotonic() - asked
             if exc.code == "timeout":
                 return cut(rounds)
             return failed(rounds)
+        timing["model"] += time.monotonic() - asked
+        usage = getattr(turn, "usage", None) or {}
+        timing["read"] += int(usage.get("cacheReadInputTokens") or 0)
+        timing["write"] += int(usage.get("cacheWriteInputTokens") or 0)
         content = ([{"type": "text", "text": turn.text}] if turn.text else []) + [
             {"type": "tool_use", "id": u.id, "name": u.name, "input": dict(u.input)} for u in turn.tool_uses]
         messages.append({"role": "assistant", "content": content or [{"type": "text", "text": "..."}]})
@@ -250,13 +352,17 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             text = _whole_sentences(text) if turn.stop_reason == "max_tokens" else (text or "").strip()
             text = spoken_text(text, tagged or lang)
             preamble = bool(turn.tool_uses) and not all(u.name == "end_call" for u in turn.tool_uses)
+            if preamble and readback.mentions_terms(text):
+                preamble = False     # the card guarantee's fee rule written before a tool: the caller must hear it
             if text and text not in [t for _, t, _ in spoken]:
                 spoken.append((tagged, text, preamble and not keep_preamble))
         if not turn.tool_uses:
             if not spoken:
                 return failed(rounds)          # never silence: the error sentence offers a callback
-            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
+            return answered(rounds)
         results, late = [], False
+        tools_started = time.monotonic()
+        _prefetch(executor, turn.tool_uses, deadline - time.monotonic())
         for use in turn.tool_uses:
             left = deadline - time.monotonic()
             if late or left <= 0:
@@ -270,16 +376,99 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             results.append({"type": "tool_result", "tool_use_id": use.id,
                             "content": json.dumps(read_as(result), ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
+        timing["tool"] += time.monotonic() - tools_started
         if late:
             return cut(rounds)
         if spoken and all(u.name == "end_call" for u in turn.tool_uses):
             # The goodbye was said with end_call: no further round (it only repeats the goodbye).
             messages.append({"role": "assistant", "content": [{"type": "text", "text": "..."}]})
-            return TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds)
+            return answered(rounds)
     return failed(rounds)
 
 
 _SENTENCE_END = ".?!。？！؟።"
+
+
+def _holding(executor):
+    live = getattr(executor, "_live", None)
+    return bool(live and live()[0] is not None)
+
+
+# "We will call you on the number you are calling from" (retest 2026-11-20, German read-back): a call
+# verb and a number word in one sentence. The confirmation is the SMS link.
+_CALL_YOU = re.compile(r"\b(ring(er|a|e)?\s+(dig|er|deg|jer)|rufen\s+sie|call\s+you|bellen\s+(u|je)|"
+                       r"vous\s+(rappel|appel)|le\s+llamar)", re.I)
+_NUMBER_WORD = re.compile(r"\b(numret|nummer|nummeret|nummeren|number|numéro|numero|número)\b", re.I)
+
+
+def without_call_promise(text):
+    """The reply without a sentence promising to call the caller at a number."""
+    parts = re.split(r"(?<=[.?!])\s+", str(text or ""))
+    kept = [p for p in parts if not (_CALL_YOU.search(p) and _NUMBER_WORD.search(p))]
+    return " ".join(kept).strip() if kept else str(text or "")
+
+
+# A welcome after the greeting was already said (retest 2 on dev 2026-11-20: the first reply greeted again
+# with another greeting): "Hej och välkommen till ...", "Välkommen!", "Hello and welcome to ...".
+_WELCOME = re.compile(r"^\s*(?:(?:hej|hejsan|hallå|hello|hi)\b[\s,]*(?:och|and)?\s*)?(?:varmt\s+)?"
+                      r"(?:välkommen|välkomna|welcome)\b", re.I)
+
+
+def without_welcome(text, lang=None):
+    """The reply without a sentence that welcomes the caller (a plain "Hej"
+    stays); empty when the reply was nothing but a welcome."""
+    parts = re.split(r"(?<=[.?!])\s+", str(text or "").strip())
+    return " ".join(p for p in parts if not (_WELCOME.match(p) and not _carries_booking(p, lang))).strip()
+
+
+# Thanks or an acknowledgement before the caller's name at the start of a sentence (retest 3 on dev
+# 2026-11-20: "Tack, Anna", "Thank you, Eve" despite the prompt rule).
+_THANKS = (r"(?:tack(?:\s+så\s+mycket)?|tusen\s+tack|takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|tak(?:\s+skal\s+du\s+have)?|"
+           r"mange\s+tak|danke(?:\s+schön|\s+sehr)?|vielen\s+dank|thank\s+you(?:\s+very\s+much)?|thanks|"
+           r"perfekt|perfect|toppen|utmärkt|great|wunderbar|super|bra|fint|okej|okay|ok|gut|godt|flott)")
+
+
+def _name_words(names):
+    """Each stored name and each of its words (the first name alone is the usual vocative)."""
+    out = set()
+    for name in names or ():
+        name = " ".join(str(name or "").split())
+        if len(name) < 2:
+            continue
+        out.add(name)
+        out.update(w for w in name.split() if len(w) >= 2)
+    return sorted(out, key=len, reverse=True)
+
+
+def without_name_thanks(text, names):
+    """The reply without the caller's name after a sentence-leading thanks:
+    "Tack, Anna. Då har jag ..." -> "Tack. Då har jag ...", "Tack så mycket,
+    Anna, bokningen är klar." -> "Tack så mycket, bokningen är klar." Only a
+    name the caller gave (`names`); the name elsewhere ("under namnet Anna")
+    is data and stays."""
+    words = _name_words(names)
+    if not words:
+        return str(text or "")
+    vocative = re.compile(rf"^(?P<ack>(?i:{_THANKS}))\s*,\s*(?i:{'|'.join(map(re.escape, words))})"
+                          rf"(?P<end>\s*[.!?]|\s*,\s*|\s*$)")
+    parts = re.split(r"(?<=[.?!])\s+", str(text or "").strip())
+    out = []
+    for p in parts:
+        m = vocative.match(p)
+        if m:
+            end = m.group("end").strip()
+            rest = p[m.end():]
+            p = f"{m.group('ack')}, {rest}" if end == "," and rest else m.group("ack") + (end if end in ".!?" else ".")
+        out.append(p)
+    return " ".join(out).strip()
+
+
+def _carries_booking(sentence, lang):
+    """A sentence that names a time, day, date or party, or the card terms: never dropped, since
+    executor.heard already counted it as said (a read-back must be what the caller heard)."""
+    return bool(readback.clock_times(sentence, lang) or readback.weekdays(sentence, lang)
+                or readback._month_day(sentence, lang) or readback.party_sizes(sentence, lang)
+                or readback.mentions_terms(sentence, fees=False))
 
 
 def _said(spoken, code):
@@ -300,6 +489,38 @@ _META = re.compile(r"^\s*(let me (correct|fix|rephrase|try)|correction\b|note\s*
 # The same inside a sentence ("... Corrected: Haa, ..."): only what follows is meant.
 _META_INLINE = re.compile(r"\b(corrected|correction|let me (correct|rephrase)( that)?)\s*:\s*", re.I)
 _DASHES = re.compile(r"\s*[\u2013\u2014]\s*")
+# Thinking aloud (retest 2026-11-20): "Halv åtta... nej, klockan sju", "tre personer till? Nej, två": the
+# sentence up to the trailing dots or the question and its "no" is dropped; only the final answer is said.
+_SELF_CORRECTION = re.compile(r"[^.?!…]*(?:\.\.\.|…|\?)\s*(?:nej|nei|nein|nee|no|nope)\s*[,.]\s*", re.I)
+
+
+# A correction said aloud (retest 2 on dev 2026-11-20: "halv sex ... Rättelse: det är fredag den
+# tjugosjunde november, klockan fem"): a marker at the start of a sentence or clause, with something said
+# before it and a restatement after it. Only the restatement is said. "Nej, förlåt, vi har fullt" at the
+# start of a reply corrects nothing and stays.
+_CORRECTION = re.compile(
+    r"(?:^|(?<=[.?!…,;:]))\s*(?:rättelse|korrigering|korrektur|correction|nej,?\s+förlåt|förlåt,?\s+jag\s+menar|"
+    r"jag\s+menar|ich\s+meine|jeg\s+mener|sorry,?\s+i\s+mean|i\s+mean)\s*[:,.]\s*", re.I)
+
+
+def _restated(text):
+    """The text after the last correction marker that has words before and after it."""
+    for m in reversed(list(_CORRECTION.finditer(text))):
+        before, after = text[:m.start()], text[m.end():]
+        if re.search(r"\w", before) and re.search(r"\w", after):
+            return after[:1].upper() + after[1:]
+    return text
+
+
+def _final_answer(text):
+    """The text without a spoken self-correction; what follows it starts a sentence."""
+    m = _SELF_CORRECTION.search(text)
+    while m:
+        lead = re.match(r"\s*", m.group(0)).group(0)
+        rest = text[m.end():]
+        text = text[:m.start()] + lead + rest[:1].upper() + rest[1:]
+        m = _SELF_CORRECTION.search(text)
+    return text
 
 
 def spoken_text(text, code=None):
@@ -321,6 +542,8 @@ def spoken_text(text, code=None):
         if inline and text[inline[-1].end():].strip():
             text = text[inline[-1].end():]
     text = _INNER_TAG.sub(lambda m: "" if language.normalise(m.group(1)) in language.NAMES else m.group(0), text)
+    text = _final_answer(text)
+    text = _restated(text)
     text = _DASHES.sub(", ", text)
     text = re.sub(r"[*#`]+", "", text)
     text = re.sub(r"[!¡]+", lambda m: "" if m.group(0) == "¡" else ".", text)   # calm, never exclaimed

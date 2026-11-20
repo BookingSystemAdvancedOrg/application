@@ -73,6 +73,9 @@ def app(monkeypatch):
         monkeypatch.setitem(st._clients, "translate", fake)
         monkeypatch.setattr(st, "_lru", st._Lru(100))
         monkeypatch.setattr(st, "BACKOFF_S", 0)
+        # The Translate path is tested with an empty glossary; the reviewed
+        # glossary has its own tests (test_site_translate_glossary.py).
+        monkeypatch.setattr(st, "GLOSSARY", {})
         yield {"m": module, "fake": fake, "cache": ddb.Table(CACHE_TABLE), "guard": ddb.Table(GUARD_TABLE)}
         shared_dynamo._resource = None
         shared_dynamo._client = None
@@ -278,3 +281,77 @@ def test_request_guard_consume_counts_and_refuses_over_the_budget(app):
 def test_request_guard_consume_fails_open(monkeypatch):
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
     assert request_guard.consume("k", "v", 99, 1, 60, datetime.now(timezone.utc)) is True
+
+
+# --- live test findings: glossary, the restaurant's own names, the IP budget ----------------
+
+def _name_tenant(app, name, legal=None):
+    item = {":n": name}
+    expr = "SET #n = :n"
+    if legal:
+        expr += ", legalName = :l"
+        item[":l"] = legal
+    boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"}, UpdateExpression=expr,
+        ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues=item)
+    shared_tenant.reset_caches()
+
+
+def test_glossary_texts_skip_translate_cache_and_budgets(app, monkeypatch):
+    monkeypatch.setattr(st, "GLOSSARY", st.load_glossary())
+    status, body, _ = call(app, {"lang": "es", "texts": ["Bekräfta bord", " Klart ", "Bord 2 hålls åt dig i 14:59",
+                                                         "Välkommen till oss"]})
+    assert status == 200 and body["partial"] is False
+    assert body["texts"][:3] == ["Confirmar mesa", " Listo ", "Te guardamos la mesa 2 durante 14:59"]
+    assert [c["Text"] for c in app["fake"].calls] == ["Välkommen till oss"]
+    used = {row["PK"].split("#")[0]: int(row["used"]) for row in app["guard"].scan()["Items"] if "used" in row}
+    assert used == {"tr-ip-chars": 18, "tr-tenant-chars": 18, "tr-global-chars": 18}
+    assert len(app["cache"].scan()["Items"]) == 1
+
+
+def test_glossary_wins_over_an_old_cached_translation(app, monkeypatch):
+    call(app, {"lang": "en", "texts": ["Bekräfta bord"]})  # cached as Amazon's answer
+    monkeypatch.setattr(st, "GLOSSARY", st.load_glossary())
+    assert call(app, {"lang": "en", "texts": ["Bekräfta bord"]})[1]["texts"] == ["Confirm your table"]
+
+
+def test_the_restaurants_own_names_are_protected_without_a_keep_list(app):
+    _name_tenant(app, "ANAR Restaurang & Bar", legal="Anar Linköping AB")
+    app["m"]._sites.clear()
+    status, body, _ = call(app, {"lang": "ar", "texts": [
+        "Catering från ANAR Restaurang & Bar i Linköping.", "Säljs av Anar Linköping AB", "ANAR RESTAURANG & BAR"]})
+    sent = [c["Text"] for c in app["fake"].calls]
+    assert '<span translate="no">ANAR Restaurang &amp; Bar</span>' in sent[0]
+    assert '<span translate="no">Anar Linköping AB</span>' in sent[1]
+    # a text that is only the name (here in capitals) is never sent
+    assert body["texts"][2] == "ANAR RESTAURANG & BAR" and len(sent) == 2
+    # the name comes back isolated inside the right-to-left sentence
+    assert "⁨ANAR Restaurang & Bar⁩" in body["texts"][0]
+
+
+def test_dish_names_from_the_keep_list_are_protected_in_catering_labels(app, monkeypatch):
+    monkeypatch.setattr(st, "GLOSSARY", st.load_glossary())
+    keep = ["Dagens fisk", "Burrata", "Grillad lax"]
+    status, body, _ = call(app, {"lang": "ar", "keep": keep,
+                                 "texts": ["Dagens fisk", "Portioner Burrata", "Grillad lax med dillstuvad potatis."]})
+    assert body["texts"][0] == "Dagens fisk"
+    assert body["texts"][1] == "عدد حصص ⁨Burrata⁩"
+    assert [c["Text"] for c in app["fake"].calls] == [
+        '<span translate="no">Grillad lax</span> med dillstuvad potatis.']
+    assert body["texts"][2] == "AR(⁨Grillad lax⁩ med dillstuvad potatis.)"
+
+
+def test_default_ip_budget_is_200000_characters_per_hour(app, monkeypatch):
+    monkeypatch.delenv("SITE_TRANSLATE_IP_CHARS_PER_HOUR", raising=False)
+    budgets = {kind: limit for kind, _, limit, _ in app["m"]._budgets(TENANT_A, IP)}
+    assert budgets["tr-ip-chars"] == 200000
+
+
+def test_cache_hits_do_not_count_on_the_ip_budget(app, monkeypatch):
+    monkeypatch.setenv("SITE_TRANSLATE_IP_CHARS_PER_HOUR", "12")
+    assert call(app, {"lang": "en", "texts": ["Boka bordet"]})[1]["partial"] is False
+    for _ in range(3):
+        assert call(app, {"lang": "en", "texts": ["Boka bordet"]})[1]["partial"] is False
+    # a new text over what is left: stays Swedish and says so
+    body = call(app, {"lang": "en", "texts": ["Boka bordet", "Ny text"]})[1]
+    assert body == {"lang": "en", "texts": ["EN(Boka bordet)", "Ny text"], "partial": True}

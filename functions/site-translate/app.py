@@ -19,8 +19,12 @@ PURPOSE:
     host may name the restaurant with `slug`. Unknown: 403 unknown_site. In
     prod every call must have come through the WAF (403 bot_check_failed).
 
-    Each text is protected (names in `keep`, prices, times, numbers, phone
-    numbers, e-mail addresses, URLs wrapped in translate="no"), looked up in
+    Each text is protected (names in `keep` plus the restaurant's own name
+    and legal name from its tenant row, prices, times, numbers, phone
+    numbers, e-mail addresses, URLs wrapped in translate="no"). A text the
+    reviewed glossary (shared/site_translate_glossary.json: the kit's UI
+    labels and recurring terms) covers is answered from it, free and
+    uncounted. Everything else is looked up in
     the cache (in-memory LRU, then DynamoDB, keyed by a hash of the
     protected text), and only the misses go to Amazon Translate, within the
     character budgets (per IP per hour, per restaurant and for the whole
@@ -35,7 +39,7 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TRANSLATION_TABLE_NAME, TENANT_TABLE_NAME,
     REQUEST_GUARD_TABLE_NAME, SITE_WAF_SECRET, CLOUDFRONT_EDGE_SECRET,
-    SITE_TRANSLATE_IP_REQUESTS_PER_5MIN (120), SITE_TRANSLATE_IP_CHARS_PER_HOUR (30000),
+    SITE_TRANSLATE_IP_REQUESTS_PER_5MIN (120), SITE_TRANSLATE_IP_CHARS_PER_HOUR (200000),
     SITE_TRANSLATE_TENANT_CHARS_PER_30D (500000), SITE_TRANSLATE_GLOBAL_CHARS_PER_30D
     (5000000)
 """
@@ -122,9 +126,23 @@ def site_of(event, slug):
     return tenant_id
 
 
+def site_terms(tenant_id):
+    """The restaurant's own names, protected in every text whatever the
+    site sends: name and legal name from the tenant row (also in capitals,
+    as headings often write it)."""
+    row = tenant.get_tenant(tenant_id) or {}
+    terms = set()
+    for field in ("name", "legalName"):
+        value = row.get(field)
+        if isinstance(value, str) and 0 < len(value.strip()) <= st.MAX_KEEP_CHARS:
+            terms.add(value.strip())
+            terms.add(value.strip().upper())
+    return terms
+
+
 def _budgets(tenant_id, ip):
     return [
-        ("tr-ip-chars", ip or "", _limit("SITE_TRANSLATE_IP_CHARS_PER_HOUR", 30000), 3600),
+        ("tr-ip-chars", ip or "", _limit("SITE_TRANSLATE_IP_CHARS_PER_HOUR", 200000), 3600),
         ("tr-tenant-chars", tenant_id, _limit("SITE_TRANSLATE_TENANT_CHARS_PER_30D", 500000), WINDOW_30D),
         ("tr-global-chars", "all", _limit("SITE_TRANSLATE_GLOBAL_CHARS_PER_30D", 5000000), WINDOW_30D),
     ]
@@ -155,12 +173,22 @@ def translate(tenant_id, ip, lang, texts, keep, now):
     """(translated texts, partial, counts)."""
     epoch = int(now.timestamp())
     jobs = []  # per text: (lead, core, trail, marked, tokens, key or None)
+    glossary_hits = 0
     for text in texts:
         core = text.strip()
         lead = text[:len(text) - len(text.lstrip())]
         trail = text[len(text.rstrip()):]
         marked, tokens = st.protect(core, keep)
-        key = st.cache_key(lang, marked) if st.needs_translation(marked) else None
+        key = None
+        if st.needs_translation(marked):
+            reviewed = st.glossary(lang, core, marked, tokens)
+            if reviewed is not None:
+                # Answered by the reviewed glossary: no cache, no Translate,
+                # no budget.
+                core = reviewed
+                glossary_hits += 1
+            else:
+                key = st.cache_key(lang, marked)
         jobs.append((lead, core, trail, marked, tokens, key))
 
     keys = list(dict.fromkeys(j[5] for j in jobs if j[5]))
@@ -170,7 +198,8 @@ def translate(tenant_id, ip, lang, texts, keep, now):
         if key and key not in found and key not in misses:
             misses[key] = (marked, tokens)
 
-    counts = {"Requests": 1, "CacheHits": len(keys) - len(misses), "Misses": len(misses),
+    counts = {"Requests": 1, "GlossaryHits": glossary_hits, "CacheHits": len(keys) - len(misses),
+              "Misses": len(misses),
               "TranslatedChars": 0, "BudgetLimited": 0, "TokenCheckFailed": 0, "TranslateErrors": 0}
     if misses:
         chars = sum(len(m) for m, _ in misses.values())
@@ -184,7 +213,7 @@ def translate(tenant_id, ip, lang, texts, keep, now):
                     counts["TranslateErrors"] += 1
                     failed_chars += len(marked)
                     continue
-                plain = st.restore(out, tokens)
+                plain = st.restore(out, tokens, lang)
                 if plain is None:
                     counts["TokenCheckFailed"] += 1
                     continue
@@ -237,10 +266,16 @@ def handler(event, context=None):
     except request_guard.Limited as exc:
         return http.respond(429, {"error": "rate_limited"}, {"Retry-After": str(exc.retry_after)})
 
+    try:
+        own = site_terms(tenant_id)
+    except (BotoCoreError, ClientError):
+        own = set()
+    if own:
+        keep = sorted(set(keep) | own, key=lambda t: (-len(t), t))
     translated, partial, counts = translate(tenant_id, ip, lang, texts, keep, now)
     st.metrics(counts)
     logger.info(json.dumps({"tenantId": tenant_id, "lang": lang, "items": len(texts),
-                            "hits": counts["CacheHits"], "misses": counts["Misses"],
+                            "glossary": counts["GlossaryHits"], "hits": counts["CacheHits"], "misses": counts["Misses"],
                             "chars": counts["TranslatedChars"], "budgetLimited": counts["BudgetLimited"],
                             "tokenCheckFailed": counts["TokenCheckFailed"],
                             "errors": counts["TranslateErrors"]}))

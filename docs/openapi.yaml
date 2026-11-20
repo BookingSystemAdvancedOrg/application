@@ -4467,8 +4467,11 @@ paths:
         rejected; outside prod a direct call (localhost, `*.cloudfront.net`)
         may name the restaurant with `slug`.
 
-        Names in `keep`, prices, times, numbers, phone numbers, e-mail
-        addresses and URLs are never translated. Every result is cached
+        Names in `keep`, the restaurant's own name and legal name, prices,
+        times, numbers, phone numbers, e-mail addresses and URLs are never
+        translated (in Arabic and Persian they come back inside Unicode
+        isolates, U+2068/U+2069). Texts the reviewed glossary of site-kit
+        UI strings covers are answered from it. Every other result is cached
         (keyed by a hash of the protected text), so a string is translated
         once across all sites. A string that could not be translated (a
         Translate error, a character budget used up, a protected part that

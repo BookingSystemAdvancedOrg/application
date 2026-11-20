@@ -14,6 +14,10 @@ Pure parts (unit tested without AWS):
     cache_key()  -- sha256 of the protected text, language and formality
     restore()    -- checks that every protected token came back unchanged,
                     strips the markup; None when the check fails
+    glossary()   -- the reviewed translation of a kit UI string or recurring
+                    term (site_translate_glossary.json), used instead of
+                    Amazon Translate: short labels have no context there
+                    ("Bekräfta bord" came back as a spreadsheet table)
 
 Privacy: nothing here logs a text, a keep term or an IP address, and the
 cache stores only the hash of the source and the translation.
@@ -25,6 +29,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 import threading
 import time
 from collections import Counter, OrderedDict
@@ -43,7 +48,10 @@ TARGETS = ("en", "es", "ar", "fa")
 # Spanish in the informal register to match the Swedish "du" voice. Amazon
 # Translate supports formality only for some targets; of ours only es.
 FORMALITY = {"es": "INFORMAL"}
-VERSION = "v1"
+# v2: names and numbers in Arabic and Persian come back inside Unicode
+# isolates (see restore), so the v1 entries are not reused.
+VERSION = "v2"
+RTL = ("ar", "fa")
 
 MAX_TEXTS = 100
 MAX_TEXT_CHARS = 3000
@@ -169,9 +177,12 @@ def cache_key(lang, marked):
 _DASHES = re.compile(r"\s*[" + chr(0x2013) + chr(0x2014) + r"]\s*")
 
 
-def restore(translated, tokens):
+def restore(translated, tokens, lang=None):
     """The plain translation, or None when a protected part did not come
-    back exactly (missing, changed, duplicated) or stray markup is left."""
+    back exactly (missing, changed, duplicated) or stray markup is left.
+    In Arabic and Persian each protected part with a Latin letter or a digit
+    is wrapped in Unicode isolates, so a name, price or phone number keeps
+    its own order inside the right-to-left sentence."""
     if not isinstance(translated, str):
         return None
     if Counter(_SPAN.findall(translated)) != Counter(tokens):
@@ -179,12 +190,23 @@ def restore(translated, tokens):
     parts, pos = [], 0
     for m in _SPAN.finditer(translated):
         parts.append(_free_text(translated[pos:m.start()]))
-        parts.append(m.group(1))
+        parts.append(_isolate(m.group(1), lang))
         pos = m.end()
     parts.append(_free_text(translated[pos:]))
     if any(part is None for part in parts):
         return None
     return html.unescape("".join(parts)).strip()
+
+
+_FSI, _PDI = "\u2068", "\u2069"
+_LTR = re.compile(r"[A-Za-z0-9\u00c0-\u024f]")
+
+
+def _isolate(token, lang):
+    """A protected part as it goes back into the sentence (still escaped)."""
+    if lang in RTL and _LTR.search(token):
+        return _FSI + token + _PDI
+    return token
 
 
 def _free_text(segment):
@@ -193,6 +215,78 @@ def _free_text(segment):
     if re.search(r"</?span\b|translate\s*=", segment, re.IGNORECASE):
         return None
     return _DASHES.sub(lambda m: ", " if m.group(0) != m.group(0).strip() else "-", segment)
+
+
+# --- glossary --------------------------------------------------------------------------------
+
+GLOSSARY_FILE = Path(__file__).with_name("site_translate_glossary.json")
+_PLACEHOLDER = re.compile(r"\{(\d+)\}")
+_SPACES = re.compile(r"\s+")
+
+
+def _norm(text):
+    return _SPACES.sub(" ", text).strip()
+
+
+def load_glossary(path=GLOSSARY_FILE):
+    """{swedish: {lang: text}} from the reviewed glossary file."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    columns = data["columns"]
+    return {_norm(row[0]): dict(zip(columns[1:], row[1:])) for row in data["entries"]}
+
+
+GLOSSARY = load_glossary()
+
+
+def template(marked):
+    """The protected text with each protected part as {0}, {1}, ... (in
+    order), unescaped: the glossary key for texts with numbers or names.
+    None when the free text has a brace of its own."""
+    parts, pos, n = [], 0, 0
+    for m in _SPAN.finditer(marked):
+        free = html.unescape(marked[pos:m.start()])
+        if "{" in free or "}" in free:
+            return None
+        parts.append(free)
+        parts.append("{%d}" % n)
+        n += 1
+        pos = m.end()
+    free = html.unescape(marked[pos:])
+    if "{" in free or "}" in free:
+        return None
+    parts.append(free)
+    return _norm("".join(parts))
+
+
+def _fill(text, tokens, lang):
+    return _PLACEHOLDER.sub(lambda m: html.unescape(_isolate(tokens[int(m.group(1))], lang)), text)
+
+
+def glossary(lang, core, marked, tokens, entries=None):
+    """The reviewed translation of the whole text, or None. Tried in order:
+    the text exactly, the text with its protected parts as placeholders,
+    then both without a trailing colon (the colon is put back)."""
+    entries = GLOSSARY if entries is None else entries
+    keys = [(_norm(core), None), (template(marked), tokens)]
+    for key, toks in list(keys):
+        if key and key.endswith(":") and len(key) > 1:
+            keys.append((key[:-1].rstrip(), toks))
+    for i, (key, toks) in enumerate(keys):
+        entry = entries.get(key) if key else None
+        if not entry or not entry.get(lang):
+            continue
+        text = entry[lang]
+        if toks is None:
+            if _PLACEHOLDER.search(text):
+                continue
+        else:
+            used = sorted(int(x) for x in _PLACEHOLDER.findall(text))
+            if used != list(range(len(toks))):
+                continue
+            text = _fill(text, toks, lang)
+        colon = i >= 2
+        return text + ":" if colon else text
+    return None
 
 
 # --- cache -----------------------------------------------------------------------------------

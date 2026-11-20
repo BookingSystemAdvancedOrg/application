@@ -328,3 +328,22 @@ def test_a_hung_send_counts_as_a_dead_stream_and_the_frame_loop_goes_on(monkeypa
     run(body)
     assert hung_calls == [0]                             # the dead stream is not fed again
     assert received[2][:3] == [0, 20, 40] and 280 in received[2]   # replayed, then live audio
+
+
+def test_a_switch_whose_stream_will_not_open_keeps_the_healthy_stream():
+    class Picky(FakeSttFactory):
+        async def open(self, mode, *, stream_id, audio_origin_ms):
+            if mode.language == "cy":
+                raise ValueError("unsupported language code")
+            return await super().open(mode, stream_id=stream_id, audio_origin_ms=audio_origin_ms)
+
+    async def body(clock):
+        r = Rig(clock, [], [], factory=Picky([], labeller=_labelled([])))
+        await r.t.open("sv")
+        await r.feed(tone(200, 200), 0)
+        live = r.t._live
+        sid = await r.t.reopen("cy", replay_from_ms=0)
+        await r.feed(tone(200, 100), 200)                # still fed, no SttUnavailable
+        return r, live, sid
+    r, live, sid = run(body)
+    assert r.t._live is live and sid == 1 and r.t.language == "sv" and r.t._unavailable is None

@@ -43,6 +43,9 @@ TRANSCRIBE = {
     "it": "it-IT", "nl": "nl-NL", "pl": "pl-PL", "pt": "pt-PT", "ar": "ar-SA", "tr": "tr-TR", "cs": "cs-CZ",
     "ca": "ca-ES", "ja": "ja-JP", "ko": "ko-KR", "hi": "hi-IN", "ru": "ru-RU", "is": "is-IS", "no": "no-NO",
     "fa": "fa-IR", "id": "id-ID", "bs": "bs-BA", "so": "so-SO", "uk": "uk-UA",
+    # stage 1 voices (2026-11-20); not opened live yet (the dev SSO session had expired): a stream that will not
+    # open keeps the call on the current stream (Transcriber.reopen), it never ends the call
+    "zh": "zh-CN", "yue": "zh-HK", "ro": "ro-RO", "cy": "cy-WL",
 }
 TRANSCRIBE_TO_CODE = {v: k for k, v in TRANSCRIBE.items()} | {"ar-AE": "ar", "en-US": "en", "en-AU": "en",
                                                               "es-US": "es", "fr-CA": "fr", "pt-BR": "pt",

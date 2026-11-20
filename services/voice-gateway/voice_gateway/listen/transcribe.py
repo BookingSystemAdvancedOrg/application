@@ -631,7 +631,15 @@ class Transcriber:
         replay_from_ms (paced at replay_speed) then live audio, drops the old
         stream's later results. Returns the new stream id."""
         mode = SttMode(language=language, vocabulary_name=self.cfg.vocabulary_name)
-        return await self._reopen_with(mode, replay_from_ms)
+        try:
+            return await self._reopen_with(mode, replay_from_ms)
+        except SttUnavailable:
+            if self._live is None or self._live is self._broken:
+                raise
+            # the new language's stream cannot be opened (a code Transcribe streaming refuses, a throttle): the
+            # caller is still heard by the healthy stream, the call goes on instead of ending
+            log.event("stt_switch_failed", level="warning", language=language)
+            return self._live_id
 
     async def _reopen_with(self, mode: SttMode, replay_from_ms: int, replay: bool = True) -> int:
         old = self._live

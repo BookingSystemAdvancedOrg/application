@@ -51,7 +51,7 @@ session.call_turn is the truth. Its sentences that were not streamed yet
 (the disclosure sentence prepended on a language switch, the error or
 still-checking sentence, the unsupported sentences, a held reply) are
 emitted in order, as kind "fixed" when they are Booqy copy (spoken in the
-copy's own language: the unsupported sentences are Swedish then English)
+copy's own language: each unsupported sentence in the voice of the language it is written in)
 or "assistant" otherwise; streamed sentences that the final reply leaves
 out (a preamble before a lookup) were already heard, which is fine: the
 history keeps the model's full text.

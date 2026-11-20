@@ -262,7 +262,7 @@ def test_end_call_never_announces_a_tool(live):
     c.close()
 
 
-def test_an_unsupported_language_is_held_and_answered_in_swedish_then_english(live):
+def test_an_unsupported_language_is_held_and_answered_by_the_fixed_copy_in_its_own_voices(live):
     rounds = ([text("[fa] سلام، بله، برای چند نفر میز می‌خواهید؟"), stop("end_turn")],)
 
     def factory(sink):
@@ -271,7 +271,8 @@ def test_an_unsupported_language_is_held_and_answered_in_swedish_then_english(li
     c = Call(live, model_factory=factory)
     items = c.say("سلام، من یک میز برای چهار نفر فردا می‌خواهم")
     sentences = [(i.kind, i.language) for i in items if isinstance(i, AgentSentence)]
-    assert sentences == [("fixed", "sv"), ("fixed", "sv"), ("fixed", "en"), ("fixed", "en")]
+    assert {k for k, _ in sentences} == {"fixed"} and sentences[-1] == ("fixed", "en")
+    assert all(lang != "fa" for _, lang in sentences)
     assert spoken(items) == copy.unsupported_language(connect=True)        # Elin never reads Persian
     assert done(items).language == "sv" and c.row()["language"] == "sv"
     c.close()

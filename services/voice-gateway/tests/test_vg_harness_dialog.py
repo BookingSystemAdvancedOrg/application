@@ -7,6 +7,7 @@ import contextlib
 import io
 
 import pytest
+from shared.features.phone_agent import copy
 
 pytest.importorskip("moto")
 
@@ -89,7 +90,7 @@ def test_english_caller_gets_the_short_disclosure_and_books(runs):
 
 def test_persian_is_unsupported_then_a_callback_with_the_language_topic(runs):
     out = runs("lang-C")
-    assert "kan inte tala ditt språk" in out.turns[0].reply and [c["topic"] for c in out.callbacks] == ["language:fa"]
+    assert copy.UNSUPPORTED_LANGUAGE["en"] in out.turns[0].reply and [c["topic"] for c in out.callbacks] == ["language:fa"]
     assert any(a["name"] == "end_call" for a in out.turns[1].actions) and not made(out)
 
 

@@ -248,8 +248,8 @@ def test_reconcile_adds_only_what_was_not_streamed_in_its_own_language():
                                                                      "What time would you like?")]
     unsupported = copy.unsupported_language(connect=True)
     out = reconcile(unsupported, [], turn=2, language="sv", at_ms=0)
-    assert [(x.kind, x.language) for x in out] == [("fixed", "sv"), ("fixed", "sv"), ("fixed", "en"),
-                                                   ("fixed", "en")]                 # Elin, then the English voice
+    assert [x.text for x in out] == split_sentences(unsupported) and {x.kind for x in out} == {"fixed"}
+    assert [x.language for x in out] == [fixed_language(x.text, "sv") for x in out] and out[-1].language == "en"
     out = reconcile(copy.ERROR["de"], [], turn=3, language="de", at_ms=0)
     assert {(x.kind, x.language) for x in out} == {("fixed", "de")}
 

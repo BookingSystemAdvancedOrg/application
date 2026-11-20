@@ -337,3 +337,16 @@ def test_a_held_reply_is_left_to_the_reconciliation():
 
     history, emitted = bridge_run(fn)
     assert emitted == [] and not [e for e in history if isinstance(e, AgentSentence)]
+
+
+def test_reconcile_speaks_only_the_rest_when_the_first_clause_was_streamed():
+    """Live 2026-11-20: the clause was streamed, the done claim after the comma waited, the whole sentence came again."""
+    streamed = [AgentSentence(0, 1, 0, "Under the name John Smith.", "en"),
+                AgentSentence(0, 1, 1, "A text message with a link will be sent to that number,", "en")]
+    final = ("Under the name John Smith. A text message with a link will be sent to that number, and the booking is "
+             "confirmed once the card is added. Is that correct?")
+    assert [x.text for x in reconcile(final, streamed, turn=1, language="en", at_ms=0)] == [
+        "and the booking is confirmed once the card is added.", "Is that correct?"]
+    # a short opening clause that happens to match is not a streamed clause
+    assert [x.text for x in reconcile("Ja, det går bra.", [AgentSentence(0, 1, 0, "Ja, tack.", "sv")], turn=1,
+                                      language="sv", at_ms=0)] == ["Ja, det går bra."]

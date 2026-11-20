@@ -288,3 +288,35 @@ def test_new_speech_after_an_ended_turn_ignores_its_late_finals():
     r.pause(2800)
     r.run_to(4000)
     assert [e.text for e in r.ends()] == ["Bord för alla.", "Och en barnstol."]
+
+
+# --- a hesitation sound Transcribe leaves out (live 2026-11-20) --------------------------------
+
+def test_wordless_burst_after_dangling_word_holds_across_the_pause():
+    """"boka bord för" (400 ms) "ehm" (1500 ms): Transcribe reports only "boka bord för." ending before the "ehm"."""
+    r = Rig()
+    r.speak(0, 1700)
+    r.partial(900, "jag skulle vilja boka")
+    r.pause(1700, 1700)
+    r.resume(2160, 400)                          # the "ehm" began at 2100
+    r.pause(2560, 2160)                          # and ended at 2560
+    r.final(3100, "Jag skulle vilja boka bord för.", end=1700)
+    r.run_to(2560 + 1500 + 100)                  # the caller is still silent 1.5 s after the "ehm"
+    assert r.ends() == []
+    assert any(h.reason == "filler" for h in r.holds())
+    r.run_to(2560 + TurnConfig().max_silence_ms + 600)
+    assert len(r.ends()) == 1
+
+
+def test_burst_with_words_is_not_a_hesitation():
+    r = Rig()
+    r.speak(0, 1200)
+    r.final(1500, "Jag vill boka ett bord", end=1200)
+    r.pause(1200, 1200)
+    r.resume(1460, 200)
+    r.partial(1700, "Jag vill boka ett bord i morgon")   # new words inside the burst
+    r.pause(1900, 1700)
+    r.final(2300, "i morgon.", end=1900)
+    r.run_to(1900 + TurnConfig().base_silence_ms + 400)
+    assert len(r.ends()) == 1
+    assert not any(h.reason == "filler" for h in r.holds())

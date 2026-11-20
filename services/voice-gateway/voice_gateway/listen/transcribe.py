@@ -169,6 +169,9 @@ def _convert(result, stream_id: int, mode: SttMode, origin_ms: int) -> SttPartia
     lang = _our_code(getattr(result, "language_code", None), fallback) or fallback
     start = origin_ms + int(float(result.start_time or 0) * 1000)
     end = origin_ms + int(float(result.end_time or 0) * 1000)
+    word_ends = [float(i.end_time) for i in alt.items or []
+                 if getattr(i, "item_type", None) == "pronunciation" and getattr(i, "end_time", None) is not None]
+    last_word = origin_ms + round(max(word_ends) * 1000) if word_ends else None
     if result.is_partial:
         stable: list[str] = []
         for item in alt.items or []:
@@ -176,7 +179,7 @@ def _convert(result, stream_id: int, mode: SttMode, origin_ms: int) -> SttPartia
                 break
             piece = item.content or ""
             stable.append(piece if _WORD_END.match(piece) and stable else (" " if stable else "") + piece)
-        return SttPartial(end, str(result.result_id), text, "".join(stable).strip(), lang, stream_id)
+        return SttPartial(end, str(result.result_id), text, "".join(stable).strip(), lang, stream_id, last_word)
     confs = [float(i.confidence) for i in alt.items or [] if i.item_type == "pronunciation" and i.confidence is not None]
     scores: dict[str, float] = {}
     for code, score in getattr(result, "language_identification", ()) or ():
@@ -185,7 +188,7 @@ def _convert(result, stream_id: int, mode: SttMode, origin_ms: int) -> SttPartia
             scores[ours] = max(scores.get(ours, 0.0), score)
     ordered = tuple(sorted(scores.items(), key=lambda kv: -kv[1]))
     return SttFinal(end, str(result.result_id), text, lang, stream_id, start, end,
-                    sum(confs) / len(confs) if confs else None, ordered)
+                    sum(confs) / len(confs) if confs else None, ordered, last_word)
 
 
 class TranscribeStream:
@@ -295,6 +298,8 @@ class _PooledClient:
 class TranscribeFactory:
     """Opens streams, one client per active stream (see the module docstring).
     `client_factory` (tests) replaces the amazon-transcribe client."""
+
+    answers_in_real_time = True     # replayed audio is heard no faster than it was spoken (see pipeline)
 
     def __init__(self, cfg: SttConfig, client_factory: Callable[[], object] | None = None) -> None:
         self.cfg = cfg

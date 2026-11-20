@@ -279,6 +279,23 @@ def fixed_language(sentence: str, prefer: str | None = None) -> str | None:
     return next((x for x in ("sv", "en") if x in langs), langs[0])
 
 
+_CLAUSE_CUT = re.compile(r"[,;:](?=\s)")
+MIN_STREAMED_CLAUSE_WORDS = 3
+
+
+def _unsaid_rest(sentence: str, said: str) -> str:
+    """`sentence` minus a leading clause already streamed. Live on booqy-dev (2026-11-20) the clause "A text message
+    ... will be sent to that number," was streamed, the rest (", and the booking is confirmed ...") waited as a done
+    claim, and the reply's whole sentence was then spoken again: the caller heard the clause twice. Only a clause
+    cut (comma, semicolon, colon) of at least three words counts, so a short common opening is never dropped."""
+    padded = f" {said} "
+    for cut in reversed([m.end() for m in _CLAUSE_CUT.finditer(sentence)]):
+        head = _norm(sentence[:cut])
+        if len(head.split()) >= MIN_STREAMED_CLAUSE_WORDS and f" {head} " in padded:
+            return sentence[cut:].strip()
+    return sentence
+
+
 def reconcile(final_reply: str, streamed: list[AgentSentence], *, turn: int, language: str, at_ms: int,
               start_index: int = 0) -> list[AgentSentence]:
     """The sentences of the authoritative reply not streamed yet, in order.
@@ -292,7 +309,11 @@ def reconcile(final_reply: str, streamed: list[AgentSentence], *, turn: int, lan
         key = _norm(sentence)
         if not key or f" {key} " in f" {said} ":
             continue
+        rest = _unsaid_rest(sentence, said)
         said += " " + key
+        if not rest:
+            continue
+        sentence = rest
         lang = fixed_language(sentence, language)
         out.append(AgentSentence(at_ms, turn, index, sentence, lang or language, "fixed" if lang else "assistant"))
         index += 1

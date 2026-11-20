@@ -25,6 +25,7 @@ from voice_gateway.backchannel.controller import BackchannelController
 from voice_gateway.clock import Clock
 from voice_gateway.config import GatewayConfig
 from voice_gateway.events import (AgentTurnDone, AssistantContext, BackchannelRequest, EventBus, LanguageDecided,
+                                  LanguageEvidence,
                                   PlaybackFinished, PlaybackFlushed, PlaybackStarted, SttPartial, StateChanged,
                                   ToolFinished, ToolStarted, TurnEnd, TurnHold, VadPause, VadResume, VadStart)
 from voice_gateway.speak.fillers import FillerPolicy
@@ -47,6 +48,11 @@ class Speaker:
                                                   available=clips.has_backchannel, duration=self._clip_ms)
         self.fillers = FillerPolicy(cfg.speak)
         self._requests: list[BackchannelRequest] = []
+        # The caller's words point to another language than the call's (text hint before the TurnEnd): no filler
+        # this turn. Live 2026-11-20 an English caller after the Swedish greeting heard a Swedish "one moment"
+        # before the reply switched to English; silence is better than a filler in the wrong language.
+        self._other_hint = False
+        self._no_filler = False
         bus.listen(self._on_event)
 
     def _clip_ms(self, language: str, token: str) -> int | None:
@@ -62,8 +68,11 @@ class Speaker:
             self.fillers.on_tool_finished(ev.at_ms)
         elif isinstance(ev, AgentTurnDone):
             self.fillers.turn_done()
+        elif isinstance(ev, LanguageEvidence) and ev.source == "hint":
+            self._other_hint = bool(ev.code) and ev.code.split("-")[0] != self.language.split("-")[0]
         elif isinstance(ev, TurnEnd):
             self.fillers.new_turn()
+            self._no_filler, self._other_hint = self._other_hint and ev.language == self.language, False
         elif isinstance(ev, PlaybackStarted) and ev.kind in ("assistant", "fixed"):
             self.fillers.on_assistant_audio(ev.at_ms)
 
@@ -88,7 +97,7 @@ class Speaker:
                 self.bus.publish(req)
             else:
                 self.backchannels.note_dropped(req)
-        index = self.fillers.due(now, self.language, assistant_busy=self.mixer.busy)
+        index = None if self._no_filler else self.fillers.due(now, self.language, assistant_busy=self.mixer.busy)
         if index is not None and not self.mixer.request_filler(self.language, index):
             self.fillers.refused(self.language)
 

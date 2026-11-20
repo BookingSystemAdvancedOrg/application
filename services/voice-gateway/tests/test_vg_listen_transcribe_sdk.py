@@ -41,12 +41,14 @@ def test_partial_and_final_results_become_our_events():
     (p,) = [tr._convert(r, 7, SttMode(language="sv"), 1000) for r in ev.transcript.results]
     assert isinstance(p, SttPartial) and (p.text, p.stable_text, p.language, p.stream_id) == ("Jag vill boka", "Jag vill", "sv", 7)
     assert p.at_ms == 2400 and p.segment_id == "r1"
+    assert p.last_word_ms == 1900                     # the words end at 0.9 s, the result covers audio to 1.4 s
     ev = _event([{"ResultId": "r1", "StartTime": 0.5, "EndTime": 1.8, "IsPartial": False,
                   "Alternatives": [{"Transcript": "Jag vill boka bord.", "Items": _items(["Jag", "vill", "boka", "bord", "."],
                                                                                       conf=0.8)}]}])
     (f,) = [tr._convert(r, 7, SttMode(language="sv"), 1000) for r in ev.transcript.results]
     assert isinstance(f, SttFinal) and f.text == "Jag vill boka bord." and f.start_ms == 1500 and f.end_ms == 2800
     assert f.confidence == pytest.approx(0.8) and f.language_scores == ()
+    assert f.last_word_ms == 2200
 
 
 def test_identify_language_scores_survive_the_sdk_parser():

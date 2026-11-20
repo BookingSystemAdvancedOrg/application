@@ -41,7 +41,7 @@ from voice_gateway.config import GatewayConfig
 from voice_gateway.events import (AssistantContext, BargeIn, EventBus, LanguageAction, SttFinal, SttPartial, TurnEnd,
                                   TurnHold, VadStart)
 from voice_gateway.listen.barge_in import BargeInDetector, is_backchannel
-from voice_gateway.listen.language_id import LanguageTracker, UtteranceInfo, candidates_for
+from voice_gateway.listen.language_id import LanguageTracker, UtteranceInfo, candidates_for, explicit_targets
 from voice_gateway.listen.transcribe import SttFactory, SttUnavailable, Transcriber
 from voice_gateway.listen.turn import TurnDetector
 from voice_gateway.listen.vad import VadModel, VadSegmenter, make_vad
@@ -49,6 +49,11 @@ from voice_gateway.listen.vad import VadModel, VadSegmenter, make_vad
 from typing import Protocol
 
 NEW_STREAM_WAIT_MS = 2500        # how long a TurnEnd waits for the re-transcription after a switch
+# Transcribe accepts replayed audio faster than real time but answers in real time (measured live 2026-11-20: a
+# 5.0 s utterance fed at 3x or 6x gave its identify-language final 5.1 to 5.6 s after the feed began, plus 0.8 s to
+# open the stream). A probe over a longer utterance cannot finish inside its 2.5 s budget and only delays the reply:
+# it runs for short utterances only.
+PROBE_MAX_UTTERANCE_MS = 1000
 
 
 class PlaybackView(Protocol):
@@ -200,6 +205,10 @@ class Listener:
             self._publish_barge(BargeIn(end.at_ms, end.speech_start_ms, "words"))
         utt = UtteranceInfo(end.at_ms, end.text, speech_ms, asr_lang, end.confidence, tuple(lid), self._first)
         cands = None if self.transcriber.identifying else self.tracker.wants_probe(utt)
+        if cands and getattr(self.transcriber.factory, "answers_in_real_time", False) \
+                and end.eos_ms - end.speech_start_ms > PROBE_MAX_UTTERANCE_MS:
+            log.event("probe_skipped", reason="too_long", speech_ms=end.eos_ms - end.speech_start_ms)
+            cands = None
         probe_text: tuple[str, str] | None = None
         if cands:
             ev = await self.transcriber.probe(cands, replay_from_ms=end.speech_start_ms)
@@ -207,6 +216,10 @@ class Listener:
                 self.bus.publish(ev)
                 utt = dataclasses.replace(utt, lid_scores=self.transcriber.last_probe_scores)
                 probe_text = self.transcriber.last_probe_text
+                if probe_text and explicit_targets(probe_text[1]) and not explicit_targets(utt.text):
+                    # the live stream heard the request in the wrong language ("vi kan ta det på svenska" on
+                    # en-GB came back as nonsense, live 2026-11-20): the probe's words carry the request (rule 1)
+                    utt = dataclasses.replace(utt, text=probe_text[1])
         for evidence in self.tracker.evidence(utt):
             self.bus.publish(evidence)
         decision = self.tracker.observe(utt)

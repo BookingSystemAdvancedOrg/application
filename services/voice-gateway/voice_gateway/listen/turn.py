@@ -115,6 +115,12 @@ TAILS: dict[str, dict[str, frozenset[str]]] = {
 _TOKEN = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
 _HESITATION = re.compile(r"^(?:e+h*m*|ä+h*m*|ö+h*m*|u+[hm]+|h+m+|m{2,}|er+m*|a+h+m+)$")
 EMPTY_GRACE_MS = 1500        # speech heard but no words yet: Transcribe may lag, wait this long before dropping
+# A hesitation sound Transcribe leaves out. Live on booqy-dev (2026-11-20) "boka bord för, ehm... fyra" came back as
+# "boka bord för." with nothing for the "ehm": the turn ended 1.4 s after it, inside the caller's pause. A voiced
+# burst after a pause that brings no word (every word the recogniser reported ends before the burst began) and is
+# short is a hesitation: it gets the filler wait, after a dangling word the longest wait.
+WORDLESS_BURST_MAX_MS = 900  # longer voiced stretches without words are Transcribe lag, not an "ehm"
+WORDLESS_SLACK_MS = 60       # word end times and VAD onsets disagree by a frame or two (at least)
 
 
 def _tokens(text: str) -> list[str]:
@@ -172,12 +178,14 @@ class TurnDetector:
         self._speech_ms = 0
         self._last_hold: tuple[str, int] | None = None
         self._ignore_before = -1
+        self._burst: tuple[int, int] | None = None   # (start, end) of the last voiced stretch after a pause
 
     def _clear_text(self) -> None:
         self._finals: list[str] = []
         self._confs: list[float] = []
         self._partial = ""
         self._covered = False
+        self._last_word_ms = -1                 # audio time the last reported word ends
 
     def set_context(self, ctx: AssistantContext) -> None:
         self.ctx = ctx
@@ -202,6 +210,9 @@ class TurnDetector:
         cfg, asked = self.cfg, self._asked()
         kind = classify_tail(self._text(), self.language, asked)
         thr, reason = cfg.base_silence_ms, None
+        if self._wordless_burst():
+            longest = kind in ("dangling", "filler")
+            return (cfg.max_silence_ms if longest else min(cfg.filler_silence_ms, cfg.max_silence_ms)), "filler"
         if kind == "short_answer":
             thr = cfg.short_answer_silence_ms
         elif kind == "filler":
@@ -213,6 +224,16 @@ class TurnDetector:
         if asked == "open" and thr < cfg.open_question_silence_ms:
             thr, reason = cfg.open_question_silence_ms, "open_question"
         return min(thr, cfg.max_silence_ms), (reason if thr > cfg.base_silence_ms else None)
+
+    def _wordless_burst(self) -> bool:
+        """The caller's last voiced stretch (after a pause, short) brought no word: a hesitation sound."""
+        if self._state != "paused" or self._burst is None or not self._text():
+            return False
+        start, end = self._burst
+        # Transcribe stretches a word's end time towards the next sound (live: "för" ran into the "ehm"), so
+        # the burst counts as wordless while the words end before its middle.
+        return end - start <= WORDLESS_BURST_MAX_MS and self._last_word_ms < start + max(WORDLESS_SLACK_MS,
+                                                                                        (end - start) // 2)
 
     def threshold_ms(self) -> int:
         """The silence threshold that applies right now."""
@@ -236,6 +257,7 @@ class TurnDetector:
             return []
         if isinstance(ev, VadResume):
             if self._state == "paused":
+                self._burst = (self._pause_start + ev.pause_ms, ev.at_ms)    # end set at the next pause
                 self._state, self._pause_start, self._last_hold = "speaking", None, None
             elif self._state in ("idle", "ended"):
                 self._begin(ev.at_ms, ev.at_ms)
@@ -243,6 +265,8 @@ class TurnDetector:
         if isinstance(ev, VadPause) and self._state == "speaking":
             self._state, self._pause_start = "paused", ev.silence_start_ms
             self._eos, self._speech_ms = ev.silence_start_ms, ev.speech_ms
+            if self._burst is not None:
+                self._burst = (self._burst[0], ev.silence_start_ms)
             if ev.speech_ms < self.cfg.min_speech_ms and not self._text():
                 self._state = "idle"                    # a click or a breath, not a turn
                 return []
@@ -254,12 +278,13 @@ class TurnDetector:
             self._ignore_before = self._eos + 50       # late finals of the turn that just ended
         self._clear_text()
         self._state, self._speech_start, self._eos = "speaking", speech_start, now
-        self._pause_start, self._last_hold, self._speech_ms = None, None, 0
+        self._pause_start, self._last_hold, self._speech_ms, self._burst = None, None, 0, None
 
     def on_partial(self, ev: SttPartial) -> list[TurnHold | TurnEnd]:
         if self._state in ("idle", "ended"):
             return []
         self._partial, self._covered = ev.text.strip(), False
+        self._last_word_ms = max(self._last_word_ms, ev.at_ms if ev.last_word_ms is None else ev.last_word_ms)
         return list(self._hold(ev.at_ms)) if self._state == "paused" else []
 
     def on_final(self, ev: SttFinal) -> list[TurnHold | TurnEnd]:
@@ -269,6 +294,7 @@ class TurnDetector:
             self._finals.append(ev.text.strip())
         if ev.confidence is not None:
             self._confs.append(ev.confidence)
+        self._last_word_ms = max(self._last_word_ms, ev.end_ms if ev.last_word_ms is None else ev.last_word_ms)
         self._partial, self._covered = "", True
         if self._state != "paused":
             return []

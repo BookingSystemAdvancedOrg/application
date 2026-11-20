@@ -450,3 +450,29 @@ def test_barge_in_storm_never_overlaps_or_leaks_items():
     assert sorted(started) == sorted(finished) and len(started) == len(set(started))
     assert_no_overlap(history)
     assert not mixer.busy and mixer.overlaps == 0
+
+
+def test_speaker_plays_no_filler_when_the_caller_spoke_another_language():
+    """Live 2026-11-20: an English caller after the Swedish greeting heard a Swedish filler first."""
+    from voice_gateway.events import LanguageEvidence, TurnEnd
+
+    async def body(clock, tts):
+        bus = EventBus()
+        bus.history = []
+        clips = await warm_clips(tts)
+        sp = Speaker(CFG, Line(clock), tts, clips, bus, clock, rng_seed=1)
+        task = asyncio.create_task(sp.run())
+        await clock.sleep_ms(100)
+        bus.publish(LanguageEvidence(clock.now_ms(), "hint", "en"))
+        bus.publish(TurnEnd(clock.now_ms(), "Hi, a table for two please", "sv", 0, 0, "silence"))
+        bus.publish(ToolStarted(clock.now_ms(), 1, "get_availability"))
+        await clock.sleep_ms(2500)
+        bus.publish(LanguageEvidence(clock.now_ms(), "hint", "sv"))
+        bus.publish(TurnEnd(clock.now_ms(), "Ett bord för två", "sv", 0, 0, "silence"))
+        bus.publish(ToolStarted(clock.now_ms(), 2, "get_availability"))
+        await clock.sleep_ms(2500)
+        task.cancel()
+        return bus.history
+
+    fillers = [e for e in run(body) if isinstance(e, PlaybackStarted) and e.kind == "filler"]
+    assert len(fillers) == 1 and fillers[0].language == "sv" and fillers[0].at_ms > 2600

@@ -65,6 +65,7 @@ class SttPartial:
     stable_text: str
     language: str           # our code (sv, en, ...), the stream's language
     stream_id: int          # which Transcribe stream produced it (a reopen makes a new one)
+    last_word_ms: int | None = None     # audio time (call clock) the last word ends; at_ms is the result's end
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class SttFinal:
     end_ms: int
     confidence: float | None = None             # mean word confidence, None if absent
     language_scores: tuple[tuple[str, float], ...] = ()   # identify-language streams only, our codes
+    last_word_ms: int | None = None     # audio time the last word ends (end_ms also covers trailing audio)
 
 
 @dataclass(frozen=True, slots=True)

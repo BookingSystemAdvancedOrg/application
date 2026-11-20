@@ -199,6 +199,29 @@ def test_a_low_confidence_second_utterance_gets_a_lid_probe_and_switches():
     assert r.listener.transcriber.last_probe_text[0] == "en"
 
 
+def test_no_probe_over_a_long_utterance_when_the_recogniser_answers_in_real_time():
+    """Live Transcribe hears replayed audio no faster than real time: a 3.5 s probe cannot finish in 2.5 s."""
+    async def body(clock):
+        script = [ScriptedUtterance("s", "hej jag vill boka bord", "sv", (("sv", 0.97),)),
+                  ScriptedUtterance("e", "actually could we do tomorrow evening for six people please", "en",
+                                    (("en", 0.93), ("sv", 0.03)))]
+        r = Rig(clock, script)
+        r.stt.answers_in_real_time = True
+        await r.start()
+        taker = await r.take_turns()
+        await r.adapter.caller.silence_ms(400)
+        await r.adapter.caller.say(speech(2000), label="s")
+        await r.adapter.caller.silence_ms(2500)
+        await r.adapter.caller.say(speech(3500, 180), label="e")
+        await r.adapter.caller.silence_ms(4000)
+        await r.stop()
+        taker.cancel()
+        return r
+    r = run(body)
+    assert len(r.events(TurnEnd)) == 2
+    assert [m for m in r.stt.opened if m.identify and m is not r.stt.opened[0]] == []
+
+
 def test_explicit_language_request_switches_without_a_probe():
     async def body(clock):
         script = [ScriptedUtterance("s", "hej jag vill boka bord", "sv", (("sv", 0.97),)),

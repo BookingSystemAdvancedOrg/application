@@ -457,6 +457,10 @@ class CallOrchestrator:
             turn.done = item
             if turn.dropped:
                 return await self._settle_dropped(turn)
+            # The brain switched language: the caller is heard in it from now, not only after the reply played
+            # (live 2026-11-20 a German "Ja, das stimmt" said over a 28 s German reply was transcribed on the
+            # Swedish stream as "Ja, det stä..."). Speaker and listener follow at once; _on_drained finds it done.
+            await self._after_language(item)
             if not turn.items and self._prefix:
                 text, lang = self._prefix
                 self._prefix_text = text

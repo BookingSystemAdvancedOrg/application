@@ -260,6 +260,20 @@ def test_probe_current_language_leads_the_candidates_and_explicit_named_requests
     assert tracker().wants_probe(utt("kan vi prata engelska")) is None
 
 
+def test_probe_away_from_the_start_language_on_a_middling_confidence():
+    """Live 2026-11-20: Swedish on the en-GB stream came back as English nonsense at confidence 0.66."""
+    away = tracker(current="en")
+    assert away.wants_probe(utt("float the canto de kuwska clock passer bro", asr="en", conf=0.66)) is not None
+    assert away.wants_probe(utt("yes that is right", asr="en", conf=0.95)) is None
+    assert tracker().wants_probe(utt("jag vill boka ett bord i morgon klockan sju", conf=0.66)) is None   # home: 0.4
+
+
+def test_unsupported_by_the_hint_when_the_lid_top_is_a_weak_guess():
+    t = tracker()
+    d = t.observe(utt(FA_TEXT, lid=[("sv", 0.40), ("ar", 0.30)]))
+    assert d.action == A.UNSUPPORTED and d.candidate == "fa"
+
+
 def test_probe_can_be_switched_off():
     t = LanguageTracker(LanguageConfig(probe_on_hint=False), spoken=languages.SPOKEN)
     assert t.wants_probe(utt(EN_TEXT)) is None

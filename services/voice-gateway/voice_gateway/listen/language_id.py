@@ -91,6 +91,9 @@ _NO = frozenset("nej nä no nope non nein nie hayır hayir لا".split())
 _TOKEN = re.compile(r"[^\W_]+")
 
 
+AWAY_PROBE_CONFIDENCE = 0.7
+
+
 def explicit_targets(text: str) -> list[str]:
     """Language codes the caller asks for ("can we speak English"), in the
     order they occur. Empty when none is named."""
@@ -278,7 +281,11 @@ class LanguageTracker:
         long_enough = utt.speech_ms >= cfg.min_speech_ms and words >= cfg.min_content_words
         if top and top not in spoken and p >= cfg.strong_p and long_enough and hint in (None, top):
             return self._result(at, LanguageAction.UNSUPPORTED, top, "lid")
-        if hint and hint not in spoken and words >= cfg.min_content_words and (top is None or top == hint):
+        # A weak LID top (the language is not among the stream's candidates, so Transcribe guesses one of them)
+        # does not veto the text hint: live 2026-11-20 Persian on a +46 line scored sv 0.40 while the script
+        # said fa, and the booking ran on text nobody could read.
+        if hint and hint not in spoken and words >= cfg.min_content_words \
+                and (top is None or top == hint or p < cfg.uncertain_low):
             return self._result(at, LanguageAction.UNSUPPORTED, hint, "hint")
 
         # rule 2: strong switch, rule 4 (short evidence alone never switches)
@@ -328,7 +335,13 @@ class LanguageTracker:
         if utt.lid_scores:
             return None
         cfg = self.cfg
-        probe = utt.asr_confidence is not None and utt.asr_confidence < cfg.low_asr_confidence
+        # Away from the start language the caller may go back to it, and the fixed stream then writes words of the
+        # wrong language with a middling confidence (live 2026-11-20: Swedish on en-GB came back as English
+        # nonsense at 0.66, real English at 1.00, real Swedish over the line at 0.75 or more): probe below
+        # AWAY_PROBE_CONFIDENCE there. In the start language the low ASR confidence alone decides.
+        bar = cfg.low_asr_confidence if self.current == cfg.start_language else \
+            max(cfg.low_asr_confidence, AWAY_PROBE_CONFIDENCE)
+        probe = utt.asr_confidence is not None and utt.asr_confidence < bar
         if cfg.probe_on_hint and not explicit_targets(utt.text):
             hint = self._hint(utt)
             if hint and hint != self.current:

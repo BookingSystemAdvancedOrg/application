@@ -6,6 +6,7 @@ target layout drops.
 
 from error_body import err  # noqa: F401
 from test_activate_layout_version import (  # noqa: F401
+    EARLIEST_CUTOVER,
     activation_state,
     app_and_table,
     make_event,
@@ -16,6 +17,7 @@ from test_activate_layout_version import (  # noqa: F401
     successful_scheduler,
 )
 from test_audit_layout_activation import (  # noqa: F401
+    AFTER_CUTOVER,
     OVERDUE_CUTOVER,
     booking,
     reservations,
@@ -43,7 +45,7 @@ def test_overdue_scheduling_renewal_refused_for_bookings_on_removed_tables(
 ):
     app, snapshot_table = app_and_table
     state = put_overdue_scheduling_dropping_t7(app, snapshot_table)
-    reservations.put_item(Item=booking("a" * 32))
+    reservations.put_item(Item=booking("a" * 32, **AFTER_CUTOVER))
     scheduler = successful_scheduler()
     monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
@@ -52,6 +54,7 @@ def test_overdue_scheduling_renewal_refused_for_bookings_on_removed_tables(
     assert response["statusCode"] == 409
     body = response_body(response)
     assert body["code"] == "bookings_on_removed_tables"
+    assert body["missingFrom"] == "new"
     assert body["reservations"][0]["tableIds"] == ["T7"]
     # nothing renewed: state untouched, no schedule created
     assert snapshot_table.get_item(Key=state_key())["Item"] == state
@@ -63,11 +66,13 @@ def test_overdue_scheduling_renewal_ignores_bookings_on_kept_tables(
 ):
     app, snapshot_table = app_and_table
     put_overdue_scheduling_dropping_t7(app, snapshot_table)
-    reservations.put_item(Item=booking("c" * 32, table_ids=("T1",)))
+    reservations.put_item(
+        Item=booking("c" * 32, table_ids=("T1",), **AFTER_CUTOVER)
+    )
     scheduler = successful_scheduler()
     monkeypatch.setattr(app, "_get_scheduler_client", lambda: scheduler)
 
     response = app.handler(make_event(version_id="2"), None)
 
     assert response["statusCode"] == 202
-    assert response_body(response)["cutoverAt"] == "2026-09-07T10:31:00Z"
+    assert response_body(response)["cutoverAt"] == EARLIEST_CUTOVER

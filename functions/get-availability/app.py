@@ -13,7 +13,8 @@ PURPOSE:
     layout version effective at that instant, including across a scheduled
     current-to-pending layout cutover. The implementation cross-references
     business hours, published layouts, and both reservation and manual Slot
-    Occupancy holds. Slot starts are limited to the next 21 days. This route
+    Occupancy holds. Slot starts are limited to local dates from today through today + 21
+    (whole days). This route
     intentionally has no JWT check because customers do not have Cognito
     accounts.
 

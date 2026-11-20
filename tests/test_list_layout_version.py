@@ -3151,10 +3151,11 @@ def test_public_active_before_the_dpa_only_own_staff_see_the_plan(
 
 @pytest.mark.parametrize(
     ("environment", "expected"),
-    [("dev", "2026-09-08"), ("prod", "2026-09-30")],
+    [("dev", "2026-09-30"), ("prod", "2026-09-30")],
 )
 def test_list_reports_earliest_change_date(app_and_table, monkeypatch, environment, expected):
-    """Prod: today (2026-09-08) + 21 bookable days + 1 = 2026-09-30."""
+    """Every environment: today (2026-09-08) + 21 bookable days + 1 =
+    2026-09-30 (dev = prod)."""
     app = app_and_table[0]
     monkeypatch.setattr(app, "ENVIRONMENT", environment)
     monkeypatch.setattr(app, "_utc_now", lambda: NOW)

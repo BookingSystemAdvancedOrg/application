@@ -1118,10 +1118,9 @@ paths:
         A new restaurant that has not accepted the DPA answers 404 here,
         except to its own staff (a tenant-pool access token of the same
         tenant in Authorization).
-        Slot starts are bounded by exact elapsed UTC time:
-        `now < slotStartUtc <= now + 21 days`. The local calendar date that
-        contains the upper boundary remains valid, but any later slots on that
-        partial cutoff date are filtered out. Reservation and manual holds are
+        Bookable dates run from the location's local today through today + 21
+        days, whole days (every slot of the last date is returned); today's
+        slots start at least 30 minutes from now. Reservation and manual holds are
         both excluded by interval overlap, so older-duration holds remain safe.
 
         Every returned slot identifies its `layoutVersion` and contains tables
@@ -1162,9 +1161,8 @@ paths:
         Special days (`specialDays` on the location) apply to both views: a
         closed day has no slots, special hours replace the weekday's opening
         hours. `day` describes the date's special day when it has one. Daylight-saving-unsafe intervals are
-        omitted. A local date wholly beyond the 504-hour cutoff returns `400`
-        with `date must not be more than 21 days ahead`; the cutoff date itself
-        remains partially queryable as described above. A closed day, missing
+        omitted. A local date after today + 21 days returns `400`
+        with `date must not be more than 21 days ahead`. A closed day, missing
         active layout, layout without tables, or fully occupied day returns an
         empty `slots` array. Availability is advisory; its layout version,
         table, and occupancy must be conditionally revalidated when booking.
@@ -2455,23 +2453,18 @@ paths:
         every floor and linked element in that version. The request body is
         optional. Omitting it, sending a zero-length body, or sending `{}` uses
         the default timing. A first activation is immediate. A replacement is
-        not eligible until the target snapshot's `createdAt` plus five minutes
-        in `dev`. In `prod` it is not eligible before local midnight (location
-        timezone) of the day after the guest booking horizon, counted from
-        today's local date (21 bookable days, so today + 22 days), so no
-        booking that exists when the switch is booked lands on a changed
-        layout; a prod replacement is therefore never immediate. If already
-        eligible (dev), the replacement is immediate; otherwise it is
-        scheduled for the earliest safe whole UTC minute at or after both
-        eligibility and the 60-second scheduler lead (prod: that midnight).
-        A cutover before eligibility returns `409` with code `too_early` and
-        `earliestCutoverAt`.
+        never immediate, in any environment: it is not eligible before local
+        midnight (location timezone) of the
+        day after the guest booking horizon, counted from today's local date
+        (21 bookable days, so today + 22 days), so no booking that exists when the switch is booked
+        lands on a changed layout. The default timing schedules exactly that
+        midnight. A cutover before eligibility returns `409` with code
+        `too_early` and `earliestCutoverAt`.
 
         Set `effectiveFrom` to a timezone-aware ISO 8601 timestamp to control
         the transition. A timestamp at or before the server's captured request
-        time requests immediate replacement, which succeeds only once the
-        target is eligible; the response reports the server time actually
-        used. A future timestamp schedules the exact instant after
+        time requests immediate replacement, which is always `409`
+        `too_early`. A future timestamp schedules the exact instant after
         normalization to UTC and must not precede the eligibility boundary.
         Future values must use whole-minute precision and be at least 60 seconds
         after the captured request time. A future activation requires an
@@ -2638,8 +2631,8 @@ paths:
         Moves the cutoff of the location's existing pending activation without
         changing its target version. The required `effectiveFrom` value is
         normalized to UTC and must be a future whole UTC minute, at least 60
-        seconds after the captured server time, and at or after the target's
-        environment-specific replacement eligibility boundary. A request for
+        seconds after the captured server time, and at or after the
+        replacement eligibility boundary (local midnight of today + 22 days). A request for
         the same normalized instant is idempotent and may resume an incomplete
         scheduling attempt without reapplying the current lead-time check.
 
@@ -2656,7 +2649,9 @@ paths:
         `scheduled` cutoff at or before server time returns `409` rather than
         being moved; an overdue `scheduling` intent (never staged) can still
         be moved. A moved cutoff is refused with `409`
-        `bookings_on_removed_tables` like a new activation.
+        `bookings_on_removed_tables` like a new activation, and a cutoff moved
+        later also while bookings made on the new layout between the two
+        cutoffs sit on tables the current layout lacks.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -2774,7 +2769,10 @@ paths:
         The operation is idempotent: a location with no activation state or no
         pending transition also returns `204`. An at-or-past-due `scheduled`
         transition, corrupt or changing state, or a legacy scheduled transition without
-        the saved original lifecycle returns `409` and is not cancelled.
+        the saved original lifecycle returns `409` and is not cancelled. So
+        does a future transition while bookings made on the new layout (ending
+        after its cutoff) sit on tables the current layout lacks: `409`
+        `bookings_on_removed_tables` with those bookings.
       security:
         - bearerAuth: []
       x-required-groups:
@@ -10875,11 +10873,15 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        Bookings ending after the cutoff hold tables the target layout lacks.
-        `error` is Swedish copy for the owner; clients map `code`.
+        Bookings hold tables a layout lacks: the new one (an activation or a
+        switch moved earlier: bookings after the cutoff) or the current one (a
+        stopped switch or one moved later: bookings made on the new layout).
+        `error` is Swedish copy for the owner; clients map `code` and
+        `missingFrom`.
       required:
         - error
         - code
+        - missingFrom
         - reservations
       properties:
         error:
@@ -10888,6 +10890,12 @@ components:
           type: string
           enum:
             - bookings_on_removed_tables
+        missingFrom:
+          type: string
+          enum:
+            - new
+            - current
+          description: Which layout lacks the listed tables.
         reservations:
           type: array
           maxItems: 50
@@ -13792,7 +13800,7 @@ components:
           format: date
           description: >-
             First local date a replacement may take effect if scheduled now:
-            today in dev, today + booking horizon + 1 day in prod.
+            today + booking horizon + 1 day, in every environment.
         bookingHorizonDays:
           type: integer
           minimum: 1
@@ -13804,18 +13812,18 @@ components:
       description: |
         Optional activation timing. With neither `effectiveFrom` nor
         `effectiveDate`, the handler immediately performs a first activation.
-        A replacement is immediate when eligible, or scheduled for the
-        earliest safe whole minute after the dev delay or the prod booking
-        horizon rule. Send at most one of the two fields.
+        A replacement is never immediate: it is scheduled for local midnight
+        of today + booking horizon + 1 day, or a later requested cutover.
+        Send at most one of the two fields.
       properties:
         effectiveDate:
           type: string
           format: date
           description: |
             Local date (location timezone) the replacement takes effect, at
-            local midnight. A date whose midnight has passed (today, only
-            useful in dev) means the earliest allowed cutover; an older date
-            is `400`. A date before eligibility is `409` `too_early`.
+            local midnight. A date whose midnight has passed (today) means the
+            earliest allowed cutover; an older date is `400`. A date before
+            eligibility is `409` `too_early`.
         effectiveFrom:
           type: string
           format: date-time
@@ -13823,8 +13831,8 @@ components:
           maxLength: 64
           description: |
             Timezone-aware ISO 8601 timestamp. A value at or before the
-            captured server time requests immediate activation and cannot
-            bypass the replacement eligibility boundary. A future value must
+            captured server time requests immediate activation (a first
+            activation only; a replacement is `409` `too_early`). A future value must
             be on a whole minute, at least 60 seconds ahead, and at or after
             replacement eligibility; it is normalized to UTC before being
             persisted and returned.
@@ -14758,6 +14766,7 @@ components:
                   nya planlösningen. Flytta bokningarna till andra bord (eller
                   lägg tillbaka borden) och aktivera sedan igen.
                 code: bookings_on_removed_tables
+                missingFrom: new
                 reservations:
                   - reservationId: 0f8fad5bd9cb469fa16570867728950e
                     date: '2026-09-20'
@@ -14770,7 +14779,9 @@ components:
         The pending `scheduled` transition is overdue, cannot be safely
         restored or moved, violates replacement eligibility, would strand
         bookings on removed tables, or changed concurrently. The eligibility
-        and bookings examples apply only to PUT.
+        example applies only to PUT; the bookings example to PUT and DELETE
+        (for DELETE and a later PUT the message says the tables exist only in
+        the new layout).
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -14812,12 +14823,29 @@ components:
                   nya planlösningen. Flytta bokningarna till andra bord (eller
                   lägg tillbaka borden) och aktivera sedan igen.
                 code: bookings_on_removed_tables
+                missingFrom: new
                 reservations:
                   - reservationId: 0f8fad5bd9cb469fa16570867728950e
                     date: '2026-09-20'
                     startTime: '18:00'
                     tableIds:
                       - T7
+            bookingsOnNewTables:
+              summary: >-
+                DELETE, or PUT to a later cutoff: bookings made on the new
+                layout sit on tables the current layout lacks.
+              value:
+                error: >-
+                  Det finns bokningar på bord som bara finns i den nya
+                  planlösningen. Flytta bokningarna till andra bord först.
+                code: bookings_on_removed_tables
+                missingFrom: current
+                reservations:
+                  - reservationId: 0f8fad5bd9cb469fa16570867728950e
+                    date: '2026-10-02'
+                    startTime: '18:00'
+                    tableIds:
+                      - T9
 
     LayoutActivationServiceUnavailable:
       description: >-

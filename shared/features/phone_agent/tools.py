@@ -348,7 +348,7 @@ class Executor:
         self.send_sms = send_sms
         self.today = today or date.today()
         self.now_time = now_time      # "HH:MM" local: today's started times are never offered (staff view)
-        self.last_day = shared_availability.last_bookable_date(self.today, location)
+        self.last_day = shared_availability.last_bookable_date(self.today)
         self.language = language or "sv"
         # The caller utterance this runs in (session.call_turn / sim_turn count them). A write needs the
         # thing it writes to have been looked up in an EARLIER utterance: the caller cannot have said yes

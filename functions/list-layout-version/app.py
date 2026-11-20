@@ -16,7 +16,7 @@ PURPOSE:
     deliberately performs no JWT validation. A location without an active
     layout gets an empty plan (200, no floors, no elements). The version list
     also carries ``earliestChangeDate`` (the first local date a replacement
-    may take effect: today in dev, the day after the booking horizon in prod)
+    may take effect: the day after the booking horizon, in every environment)
     and ``bookingHorizonDays``.
 
 ENV_VARS:
@@ -527,10 +527,7 @@ def _earliest_change_date(location, now):
         zone = ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError):
         zone = ZoneInfo("Europe/Stockholm")
-    today = now.astimezone(zone).date()
-    if ENVIRONMENT == "dev":
-        return today.isoformat()
-    return earliest_layout_change_date(today).isoformat()
+    return earliest_layout_change_date(now.astimezone(zone).date()).isoformat()
 
 
 def _list_versions(location_id, location=None):

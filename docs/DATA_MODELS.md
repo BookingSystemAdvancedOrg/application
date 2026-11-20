@@ -141,10 +141,12 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
 **Lifecycle fields:**
 
 - The first activation is immediate when the request omits `effectiveFrom` or supplies an instant at or before server now: the selected snapshot gets `isCurrent=true`, `effectiveFrom=server now`, `effectiveTo=null`, and `expiresAt=null`. A future first activation is not represented by this model and is rejected.
-- A replacement is eligible at the target snapshot's `createdAt` plus five
-  minutes in `dev` or 28 days in `prod`. Without `effectiveFrom`, an eligible
-  target replaces immediately; otherwise `cutoverAt` is the whole-minute
-  ceiling of `max(eligibleAt, server now + 60 seconds)`.
+- A replacement is never immediate. In every environment it is eligible at
+  local midnight (location `timezone`) of today + 22 days, the day after the
+  21-day booking window, counted from the day of the request. Without
+  `effectiveFrom`, `cutoverAt` is exactly that midnight. Readers and the
+  cutover worker check a floor of the target's `createdAt` plus 21 days minus
+  one hour (`shared/availability.layout_cutover_floor`).
 - An explicit future `effectiveFrom` supplies the exact cutoff after
   normalization from its timezone-aware ISO 8601 offset to UTC. A new future
   transition must use a whole minute, be at least 60 seconds ahead, and be no
@@ -185,12 +187,10 @@ On initial publication, `publish-layout` assigns the numeric maximum existing ve
   active; calling `activate-layout-version` for that current version
   bootstraps the state machine before those readers can use it.
 
-Pending-management currently has no Reservation or Slot Occupancy access. If
-a pending layout has already been advertised inside the 21-day booking
-horizon, cancelling or moving it can invalidate stored layout-version/table
-assumptions for affected bookings. A reservation-impact rule must therefore be
-defined before production enables late changes; this model does not silently
-migrate those records.
+Pending-management reads the Reservation table: cancelling a pending layout,
+or moving it later, is refused (`409` `bookings_on_removed_tables`) while
+bookings made on it sit on tables the current layout lacks. This model does
+not silently migrate those records.
 
 **Archive fields:** `archivedBy` and `archivedAt` are optional as a pair: both are absent on an ordinary snapshot, and both must be present and valid on an archived snapshot. A partial or malformed pair is inconsistent data. Archiving is a soft-delete operation and never removes the DynamoDB row or compiled content. It sets `archivedBy` to the owner's/super-user's Cognito subject and `archivedAt` to the archive time, and sets `updatedBy`/`updatedAt` to the same values. The snapshot's version remains allocated permanently, preserving reservation references and historical continuity; publishing therefore cannot reuse an archived version number.
 

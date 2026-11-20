@@ -1295,12 +1295,85 @@ def test_invalid_environment_with_pending_state_returns_503(
     )
 
 
-def test_prod_pending_target_must_observe_28_day_delay(
+def _put_rule_floor_transition(app, tables, monkeypatch, cutover_at):
+    # Published under the rule (on or after 2026-11-23): the floor is
+    # createdAt + 21 days - 1 hour = 2026-12-13T23:00:00Z.
+    monkeypatch.setattr(
+        app,
+        "_utc_now",
+        lambda: datetime(2026, 12, 10, 12, 0, tzinfo=timezone.utc),
+    )
+    put_scheduled_layout_transition(
+        app,
+        tables,
+        cutover_at=cutover_at,
+        pending_elements=[table_element()],
+    )
+    tables["snapshot"].put_item(
+        Item=snapshot_item(
+            "2",
+            elements=[table_element()],
+            isCurrent=False,
+            effectiveFrom=cutover_at,
+            createdAt="2026-11-23T00:00:00Z",
+        )
+    )
+    return make_event(valid_body(date="2026-12-20"))
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_pending_target_must_observe_layout_cutover_floor(
     app_and_tables,
     monkeypatch,
+    environment,
 ):
     app, tables = app_and_tables
-    monkeypatch.setattr(app, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    event = _put_rule_floor_transition(
+        app, tables, monkeypatch, "2026-12-13T22:59:00Z"
+    )
+
+    response = app.handler(event, None)
+
+    assert_response(
+        response,
+        409,
+        err("published layout record is inconsistent"),
+    )
+    assert tables["occupancy"].scan(ConsistentRead=True)["Items"] == []
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_pending_target_at_exact_layout_cutover_floor_is_used(
+    app_and_tables,
+    monkeypatch,
+    environment,
+):
+    app, tables = app_and_tables
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
+    event = _put_rule_floor_transition(
+        app, tables, monkeypatch, "2026-12-13T23:00:00Z"
+    )
+
+    response = app.handler(event, None)
+
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(date_value="2026-12-20"),
+        ConsistentRead=True,
+    )["Item"]["layoutVersion"] == Decimal("2")
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_legacy_pending_target_keeps_five_minute_floor(
+    app_and_tables,
+    monkeypatch,
+    environment,
+):
+    # Published before 2026-11-23 (2026-09-01): the old 28-day prod floor is
+    # gone, the legacy five-minute floor applies in both environments.
+    app, tables = app_and_tables
+    monkeypatch.setattr(app, "ENVIRONMENT", environment)
     put_scheduled_layout_transition(
         app,
         tables,
@@ -1309,11 +1382,11 @@ def test_prod_pending_target_must_observe_28_day_delay(
 
     response = app.handler(make_event(), None)
 
-    assert_response(
-        response,
-        409,
-        err("published layout record is inconsistent"),
-    )
+    assert response["statusCode"] == 201
+    assert tables["occupancy"].get_item(
+        Key=slot_key(),
+        ConsistentRead=True,
+    )["Item"] == manual_item(layoutVersion=Decimal("2"))
 
 
 def test_missing_pending_snapshot_for_future_slot_returns_409(

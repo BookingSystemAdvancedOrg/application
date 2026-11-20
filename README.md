@@ -208,14 +208,15 @@ a bookable table.
 Publishing and activation are location-wide: one version contains every floor
 and all of their elements, and the whole version is activated together.
 Publishing alone leaves the snapshot inactive. The first activation is
-immediate. A replacement cannot take effect before the target snapshot's
-`createdAt` plus five minutes in `dev` or 28 days in `prod`; a default request
-activates immediately when eligible, otherwise at the earliest safe whole UTC
-minute. Owners and super-users can move the same pending target with
+immediate. A replacement never is: in every environment it takes effect at the
+earliest at local midnight of today + 22 days (the day after the 21-day booking
+window, `shared/availability.earliest_layout_cutover`), and a default request
+schedules exactly that midnight. Owners and super-users can move the same pending target with
 `PUT /locations/{locationId}/layout/pending-activation` and the required body
-`{"effectiveFrom":"<future whole-minute ISO 8601 timestamp>"}`. Normal success
-is `202`. `DELETE` on the same route cancels a still-future transition and is
-idempotent with an empty `204`; due/overdue or unsafe state returns `409`. To
+`{"effectiveFrom":"<future whole-minute ISO 8601 timestamp>"}` (or
+`{"effectiveDate":"YYYY-MM-DD"}`). Normal success is `202`. `DELETE` on the same
+route cancels a still-future transition and is idempotent with an empty `204`;
+due/overdue or unsafe state returns `409`. To
 choose another version, cancel first and then call the existing version
 activation POST. Legacy flat drafts with no floor elements and no `floorId`
 values remain valid. Draft editing is intentionally non-cascading, so deleting
@@ -224,8 +225,10 @@ publishing again. A draft `floorArea` may omit `floorId` while it is being
 edited, but once a draft contains floor storeys, publication requires it (and
 every other non-floor element) to reference a valid floor in that same draft.
 
-Availability returns only slot starts satisfying
-`now < slotStartUtc <= now + 21 days`. Every slot includes the published
+Availability returns slot starts on local dates from today through today + 21
+days (whole days in the location's time zone; today's start at least 30
+minutes from now), the same window for guests, staff and the phone agent.
+Every slot includes the published
 `layoutVersion` effective for its whole interval, while each available table
 still contains only `tableId` and `seats`; adding a display label does not
 change the table object. At a scheduled cutover, slots ending at or before it
@@ -239,12 +242,12 @@ ignores them and the table-block endpoint cannot target their IDs. An optional
 cash-register label does not change that rule. The block route continues to
 receive the table's `elementId` as `tableId`, never its label.
 
-Pending-layout management does not currently inspect reservations or slot
-occupancy. Once the pending layout is visible inside the 21-day booking
-horizon, moving or cancelling it can invalidate a booking's stored layout
-version/table assumptions. Do not expose late changes in production until the
-team chooses a policy such as forbidding them inside the horizon or migrating
-affected reservations explicitly.
+From the day after a switch is booked, guests can book on the pending layout
+(its cutover is inside the booking window). Cancelling the switch, or moving it
+later, is therefore refused with `409` `bookings_on_removed_tables` while such
+bookings sit on tables the current layout lacks, as an activation is refused
+while bookings after the cutover sit on tables the new layout removes. Staff
+move those bookings first; nothing is migrated silently.
 
 The public active-layout read separates published floor records into `floors`
 and returns floor areas, walls, doors, windows, tables, and cash registers in

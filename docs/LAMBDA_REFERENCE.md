@@ -209,12 +209,10 @@ the gate is lifted so the restaurant's own staff can book in admin
 **Request:** `GET /locations/{locationId}/availability?date=YYYY-MM-DD`.
 `locationId` must be nonblank, at most 128 characters, and may not contain
 `#`. `date` is the only accepted query parameter and must be a real calendar
-date in canonical form. Past dates return `400`. Returned slot starts satisfy
-the exact elapsed-time bound `now < slotStartUtc <= now + 21 days`. For the
-location's current local date, only slots whose start instant is strictly in
-the future are returned. The local date containing the upper UTC boundary is
-valid, but later slots on that partial cutoff date are filtered out. A local
-date wholly beyond that 504-hour cutoff returns `400` with
+date in canonical form. Past dates return `400`. Bookable dates run from the
+location's local today through today + 21 days (whole days: every slot of the
+last date is returned). For today, only slots starting at least 30 minutes
+from now are returned. A later date returns `400` with
 `date must not be more than 21 days ahead`.
 
 The handler strongly consistently reads the Location record and derives a
@@ -302,7 +300,7 @@ requested table; clients must handle a booking-time conflict.
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` waits out the booking horizon (switch at local midnight, today + 22 days) |
+| `ENVIRONMENT` | `dev` or `prod`; the replacement rule is the same in both (switch at local midnight, today + 22 days) |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Reservation and manual holds to exclude |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | Activation state and current/pending published tables and seat counts |
@@ -468,7 +466,7 @@ return `405` with `Allow: POST`.
 
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` uses a five-minute replacement delay; `prod` waits out the booking horizon (switch at local midnight, today + 22 days) |
+| `ENVIRONMENT` | `dev` or `prod`; the replacement rule is the same in both (switch at local midnight, today + 22 days) |
 | `LOCATION_TABLE_NAME` | Location timezone, business hours, and booking duration |
 | `USER_TABLE_NAME` | Caller role, status, and assigned location |
 | `SLOT_OCCUPANCY_TABLE_NAME` | Where the manual block is written/deleted |
@@ -649,19 +647,16 @@ Malformed paths return `400`. A recognized request with the wrong method returns
 - API Gateway - `PUT /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
 - API Gateway - `DELETE /locations/{locationId}/layout/pending-activation` - Auth: `JWT`
 
-**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement becomes eligible from the target snapshot's immutable `createdAt` plus five minutes in `dev`; in `prod` from local midnight of the day after the guest booking horizon, counted from today (today + 22 days, `shared/availability.earliest_layout_change_date`), so no existing booking lands on a changed layout. The caller may also send `effectiveDate` (YYYY-MM-DD, local midnight); too early is `409` `too_early` with `earliestCutoverAt`. The caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
+**Purpose:** Activates one complete published snapshot and manages its pending transition while preserving exactly one current version. For a multi-floor layout, activation applies to all floors and their elements together; there is no per-floor activation state. The first layout activates immediately. A replacement never does: in every environment it becomes eligible at local midnight of the day after the guest booking horizon, counted from today (today + 22 days, `shared/availability.earliest_layout_cutover`), so no existing booking lands on a changed layout. The caller may also send `effectiveDate` (YYYY-MM-DD, local midnight); too early is `409` `too_early` with `earliestCutoverAt`. The caller may use the eligibility-aware default, request a later exact future cutover, reschedule an existing future cutover, or cancel it. The old version remains current until `expire-layout-version` performs any scheduled cutover.
 
 **Authorization and request:** The caller must have a valid Cognito subject and belong to `owner_user` or `super_user`, checked before path or body validation and before AWS access. Dispatch uses the exact API Gateway route and method: `POST` activates a selected version, `PUT` reschedules the singleton pending activation, and `DELETE` cancels it. `locationId` must be non-empty and at most 128 characters. On `POST`, `versionId` is read only from the path and must be a canonical positive integer of at most 38 digits (`1`, not `01`). The stored snapshot's `version` must agree with `SK="LAYOUT#v<N>"`.
 
 The `POST` body is optional. An omitted body, an API Gateway `null` body, an empty
 string, or `{}` selects the default timing. For a replacement, define
-`eligibleAt` as the target snapshot's `createdAt` plus five minutes in `dev`, or
-local midnight of today + booking horizon + 1 day in `prod`. The default activates immediately when server now is at or
-after `eligibleAt`; otherwise it schedules the earliest whole UTC minute at or
-after both `eligibleAt` and `now + 60 seconds`; in `prod` that minute then
-moves to the next local midnight (location `timezone`, default
-Europe/Stockholm), since a booking always ends on the date it starts and no
-slot spans midnight. Otherwise the body must be a
+`eligibleAt` as local midnight (location `timezone`, default Europe/Stockholm)
+of today + booking horizon + 1 day, in every environment. The default schedules
+exactly `eligibleAt`; a booking always ends on the date it starts, so no slot
+spans that midnight. Otherwise the body must be a
 JSON object containing only `effectiveFrom`:
 
 ```json
@@ -716,21 +711,20 @@ Malformed paths, malformed/unsupported `POST` or `PUT` bodies, invalid timestamp
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` enforces five minutes from publication; `prod` enforces local midnight after the booking horizon (today + 22 days) |
+| `ENVIRONMENT` | `dev` or `prod`; both enforce local midnight after the booking horizon (today + 22 days) |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to read/update |
 | `SCHEDULER_INVOKE_ROLE_ARN` | IAM role ARN to pass to `scheduler.create_schedule()` as `RoleArn` - the role EventBridge Scheduler assumes to invoke `expire-layout-version` on your behalf |
 | `EXPIRE_LAYOUT_VERSION_FUNCTION_ARN` | Target Lambda ARN to pass as the schedule's `Target.Arn` |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. Scheduler `CreateSchedule`, `GetSchedule`, and `DeleteSchedule`, scoped to names matching `expire-layout-version-*` in the `default` group, plus `iam:PassRole` on the scheduler invoke role. It accesses no other table or AWS service.
 
-The pending-management routes do not inspect Reservation or Slot Occupancy.
-Once availability begins advertising the pending layout inside the 21-day
-booking horizon, cancelling, retiming, or replacing it can make an existing
-booking's stored layout-version/table assumptions stale. Production must
-define a separate reservation-impact policy before exposing late changes;
-possible policies include forbidding changes inside the booking horizon or
-adding reservation-aware migration. This Lambda's current resource contract
-does not authorize the latter.
+From the day after a switch is booked, availability offers the pending layout
+for dates after the cutover. `DELETE` (cancel) and a `PUT` that moves the
+cutover later are therefore refused with `409` `bookings_on_removed_tables`
+while bookings made on the pending layout (ending after the old cutover and,
+for a move, starting before the new one) sit on tables the current layout
+lacks. This uses the same Reservation `Query` as activation; nothing is
+migrated.
 
 **Infrastructure and rollout:** API Gateway must add the exact JWT-protected
 `PUT` and `DELETE /locations/{locationId}/layout/pending-activation` routes,
@@ -808,8 +802,11 @@ routes reject it because they cannot safely reconstruct the inactive target's
 earlier lifecycle.
 
 Before writing, the worker independently revalidates that `cutoverAt` is not
-earlier than the target snapshot's `createdAt` plus five minutes in `dev` or
-21 days (the booking horizon, a floor under activate's rule) in `prod`. The transaction also binds each snapshot's immutable
+earlier than the target snapshot's `createdAt` plus 21 days minus one hour
+(`shared/availability.layout_cutover_floor`, a floor under activate's rule that
+allows for a summer-time change), in every environment; snapshots published
+before 2026-11-23 keep the old five-minute floor so dev switches booked under
+the old rule still complete. The transaction also binds each snapshot's immutable
 `createdAt` to the value that was read, so a concurrent or corrupt timestamp
 cannot bypass the policy. An invalid environment or a transition violating
 that delay raises for retry and does not activate the target.
@@ -821,7 +818,7 @@ A missing state item, a state item with no pending transition, or a different au
 **Environment variables:**
 | Name | Meaning |
 |---|---|
-| `ENVIRONMENT` | `dev` revalidates five minutes from publication; `prod` revalidates 21 days (the booking horizon) as a floor |
+| `ENVIRONMENT` | `dev` or `prod`; both revalidate the same floor (21 days minus one hour from publication) |
 | `PUBLISHED_LAYOUT_SNAPSHOT_TABLE_NAME` | DynamoDB table to update |
 
 **AWS resource access:** Full `dynamodb:*` on Published Layout Snapshot. No Scheduler permissions of its own - this function is the schedule's *target*, not the one creating/deleting schedules.

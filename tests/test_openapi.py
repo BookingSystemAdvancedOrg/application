@@ -705,15 +705,15 @@ def test_get_availability_contract_matches_handler(openapi_document):
     assert operation["x-required-groups"] == []
     assert "requestBody" not in operation
     description = " ".join(operation["description"].split())
-    assert "now < slotStartUtc <= now + 21 days" in description
-    assert "partial cutoff date" in description
+    assert "today through today + 21 days" in description
+    assert "every slot of the last date is returned" in description
     assert "slotEndUtc <= cutoverAt" in description
     assert "slotStartUtc >= cutoverAt" in description
     assert "straddles the cutover" in description
     assert "still being scheduled" in description
     assert "overdue" in description
     assert "return `409`" in description
-    assert "local date wholly beyond the 504-hour cutoff" in description
+    assert "local date after today + 21 days returns `400`" in description
     assert "date must not be more than 21 days ahead" in description
     assert "conditionally revalidated when booking" in description
     assert "Floor, floor-area, and cash-register elements" in description
@@ -1516,23 +1516,23 @@ def test_activate_layout_version_contract_matches_handler(openapi_document):
     assert effective_from["format"] == "date-time"
     assert effective_from["minLength"] == 1
     assert effective_from["maxLength"] == 64
-    assert "dev delay" in activation_request["description"]
-    assert "prod booking" in activation_request["description"]
+    assert "never immediate" in activation_request["description"]
+    assert "today + booking horizon + 1 day" in activation_request["description"]
     effective_description = " ".join(
         effective_from["description"].split()
     )
-    assert "cannot bypass" in effective_description
+    assert "a replacement is `409` `too_early`" in effective_description
     assert "at or after replacement eligibility" in effective_description
 
     description = operation["description"]
     assert "zero-length body" in description
     assert "first activation is immediate" in description
-    assert "`createdAt` plus five minutes" in description
+    assert "never immediate, in any environment" in description
     assert "day after the guest booking horizon" in description
     assert "too_early" in description
-    assert "earliest safe whole UTC" in description
+    assert "The default timing schedules exactly that" in description
     assert "at or before" in description
-    assert "only once" in description
+    assert "always `409`" in description
     assert "must not precede the eligibility boundary" in description
     assert "whole-minute" in description
     assert "at least 60 seconds" in description
@@ -1805,6 +1805,10 @@ def test_pending_layout_activation_contract_matches_handler(
             "Det finns bokningar efter bytet på bord som inte finns i den "
             "nya planlösningen. Flytta bokningarna till andra bord (eller "
             "lägg tillbaka borden) och aktivera sedan igen."
+        ),
+        (
+            "Det finns bokningar på bord som bara finns i den nya "
+            "planlösningen. Flytta bokningarna till andra bord först."
         ),
     }
 

@@ -13,6 +13,12 @@
       spoken language. It answers no calls yet: the AWS phone adapter is
       the missing piece, so /health says "phoneAdapter": "missing" (still
       200: the process is healthy, there is just no line to take calls).
+  python -m voice_gateway.server connect [--port 8443] [--fake]
+      the Amazon Connect A2A audio endpoint (audio/connect_a2a.py,
+      CONNECT-A2A.md): Connect's WebSocket on --port (TLS ends at the ALB),
+      GET /health on the same port and on --health-port (the Docker
+      HEALTHCHECK's 8080), one call per Connect contact. Needs
+      VG_A2A_API_KEY or VG_A2A_API_KEY_SECRET_ARN; SIGTERM drains.
 Process start: GatewayConfig, ClipCache.warm for every languages.SPOKEN
 code with a token or filler (never blocks accepting calls).
 
@@ -51,6 +57,12 @@ def parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="the container process: /health, warm clips (no phone adapter yet)")
     serve.add_argument("--port", type=int, default=8080)
     serve.add_argument("--host", default="0.0.0.0")   # noqa: S104  (inside the container, behind the task's security group)
+    connect = sub.add_parser("connect", help="the Amazon Connect A2A audio endpoint (CONNECT-A2A.md)")
+    connect.add_argument("--port", type=int, default=8443)
+    connect.add_argument("--host", default="0.0.0.0")   # noqa: S104  (behind the ALB, task security group)
+    connect.add_argument("--fake", action="store_true", help="FakeStt, FakeTts and a scripted brain: no AWS")
+    connect.add_argument("--drain-s", type=int, default=110, help="SIGTERM: let running calls end this long")
+    connect.add_argument("--health-port", type=int, default=8080, help="the container HEALTHCHECK's /health")
     return p
 
 
@@ -124,13 +136,14 @@ async def run_ws(args, cfg: GatewayConfig) -> int:
 class Health:
     """What GET /health reports: the process state, never call content."""
 
-    def __init__(self) -> None:
+    def __init__(self, phone_adapter: str = "missing") -> None:
+        self.phone_adapter = phone_adapter
         self.clips = 0
         self.warm = "pending"
         self.calls = 0
 
     def body(self) -> dict:
-        return {"status": "ok", "phoneAdapter": "missing", "clipsWarm": self.warm, "clips": self.clips,
+        return {"status": "ok", "phoneAdapter": self.phone_adapter, "clipsWarm": self.warm, "clips": self.clips,
                 "activeCalls": self.calls}
 
 
@@ -177,11 +190,68 @@ async def run_serve(args, cfg: GatewayConfig, *, stop: asyncio.Event | None = No
     return 0
 
 
+async def run_connect(args, cfg: GatewayConfig, *, stop: asyncio.Event | None = None,
+                      ready: asyncio.Event | None = None, endpoint=None) -> int:
+    """The Connect A2A endpoint: one CallOrchestrator per new contact (a
+    reconnect re-attaches inside the adapter, no new call)."""
+    import os
+    import signal
+    from voice_gateway.audio import connect_a2a
+    from voice_gateway.orchestrator import CallOrchestrator
+    health = Health("connect-a2a")
+    comps = components(cfg, RealClock(), fake=args.fake)
+    if endpoint is None:
+        endpoint = connect_a2a.A2AEndpoint(RealClock, connect_a2a.api_key_from_env(),
+                                           model=os.environ.get(cfg.brain.model_id_env))
+    health.body = lambda: Health.body(health) | {"activeCalls": endpoint.active}   # both /health answers
+    stop = stop or asyncio.Event()
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGTERM, stop.set)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    async def warm_clips() -> None:
+        await warm(comps)
+        health.clips, health.warm = len(comps.clips), "done"
+
+    running: set[asyncio.Task] = set()
+
+    async def accept_calls() -> None:
+        async for adapter in endpoint.calls():
+            call = CallOrchestrator(cfg, adapter, connect_a2a.components_for_call(comps, adapter, adapter.clock))
+            task = asyncio.create_task(call.run())
+            running.add(task)
+            task.add_done_callback(running.discard)
+
+    listening, closing = asyncio.Event(), asyncio.Event()
+    health_http = await health_server(health, args.host, args.health_port)
+    warming = asyncio.create_task(warm_clips())
+    accepting = asyncio.create_task(accept_calls())
+    serving = asyncio.create_task(connect_a2a.serve(endpoint, args.host, args.port,
+                                                    health_body=health.body,
+                                                    ready=listening, stop=closing))
+    await listening.wait()
+    if ready is not None:
+        ready.set()
+    await stop.wait()
+    await endpoint.shutdown(args.drain_s * 1000)          # calls end or get 1012 before the socket server stops
+    closing.set()
+    for task in (warming, accepting):
+        task.cancel()
+    await asyncio.gather(serving, return_exceptions=True)
+    health_http.close()
+    await health_http.wait_closed()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     cfg = GatewayConfig.from_env()
     if args.mode == "serve":
         return asyncio.run(run_serve(args, cfg))
+    if args.mode == "connect":
+        return asyncio.run(run_connect(args, cfg))
     runner = run_local if args.mode == "local" else run_ws
     return asyncio.run(runner(args, cfg))
 

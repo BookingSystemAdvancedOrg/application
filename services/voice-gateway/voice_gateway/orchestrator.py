@@ -79,6 +79,9 @@ TICK_MS = 100
 DRAIN_TIMEOUT_MS = 30000
 FIXED_INDEX = 900                  # item index of the gateway's own sentences (the brain's count from 0)
 TURN_SAVE_WAIT_MS = 12000          # a running turn may finish its writes before the call ends (agent budget 8 s)
+FINISH_WAIT_MS = 30000             # brain.finish (call row, metering) after the line is down
+TURN_MAX_MS = 25000                # a turn still running this long after the caller's turn end is stuck: error, end
+CALL_MAX_MS = (900 + 60) * 1000    # hard cap above the largest maxCallSeconds (900): no line, stream or task outlives it
 
 
 @dataclass
@@ -119,6 +122,8 @@ class _Turn:
     interrupted: bool = False                        # barge-in: the rest is never said
     suppressed: bool = False                         # the caller kept talking before any audio
     heard: list | None = None                        # what was heard when interrupted
+    played_until: int | None = None                  # when the reply's last played item ended on the line
+    started_ms: int = 0                              # when the brain turn started (the watchdog's zero)
 
     @property
     def dropped(self) -> bool:
@@ -223,6 +228,7 @@ class CallOrchestrator:
 
     async def _call(self, info: CallInfo) -> str:
         self._language = self.start.language
+        self._call_started_ms = self.clock.now_ms()
         self.speaker = self._make_speaker()
         self.listener = self._make_listener(info)
         self._tasks = [asyncio.create_task(self.speaker.run(), name="speaker"),
@@ -350,6 +356,7 @@ class CallOrchestrator:
         turn = self._turn
         if turn is not None and e.item_id in turn.items and not e.interrupted:
             turn.played.add(e.item_id)
+            turn.played_until = max(turn.played_until or 0, e.at_ms)
         if not self.speaker_busy():
             self._quiet_since = max(self._quiet_since, e.at_ms)
 
@@ -409,6 +416,7 @@ class CallOrchestrator:
 
     async def _start_turn(self, e: TurnEnd) -> None:
         self.listener.turn_taken()
+        await self._overlap_guard(e)
         decision = e.language_decision
         if decision is not None and decision.action == LanguageAction.SWITCH and decision.candidate:
             said = await self.brain.set_language(decision.candidate, e.at_ms, decision.reason)
@@ -417,7 +425,7 @@ class CallOrchestrator:
             if said:
                 self._say(said, decision.candidate, kind="fixed")
         self._gen += 1
-        turn = _Turn(self._gen, e)
+        turn = _Turn(self._gen, e, started_ms=self.clock.now_ms())
         self._turn = turn
         self._set(CallState.THINKING, "turn_end")
         turn.task = asyncio.create_task(self._consume(turn, e.text, e.language or self._language,
@@ -484,6 +492,7 @@ class CallOrchestrator:
             if reason:
                 return reason
         self._turn = None
+        self._last_reply = turn
         ctx = AssistantContext(self.clock.now_ms(), done.asked_question, done.awaiting_confirmation, self._language)
         self.bus.publish(ctx)
         self.listener.set_context(ctx)
@@ -493,6 +502,21 @@ class CallOrchestrator:
             return None
         self._listen("reply_done")
         return None
+
+    async def _overlap_guard(self, e: TurnEnd) -> None:
+        """A caller turn that began while the previous reply (a read-back
+        waiting for the yes) was still playing is not an answer to it: a
+        "ja" said over the date or the time must not book. That reply's
+        read-backs count as not heard (brain.mark_not_heard), so the model
+        reads back again and needs a later clear yes. The caller may answer
+        over the last overlap_tolerance_ms of the question."""
+        last, self._last_reply = self._last_reply, None
+        if last is None or last.dropped or last.done is None or not last.done.awaiting_confirmation:
+            return
+        if last.played_until is None or e.speech_start_ms >= last.played_until - self.cfg.call.overlap_tolerance_ms:
+            return
+        log.event("answer_overlapped", call=self.tag, gen=last.gen)
+        await self.brain.mark_not_heard([text for item, text in last.items.items() if item in last.played])
 
     async def _after_language(self, done: AgentTurnDone | None) -> None:
         if done is None or not done.language or done.language == self._language:
@@ -532,6 +556,19 @@ class CallOrchestrator:
         if self.adapter.closed:
             return await self._hung_up()
         now = self.clock.now_ms()
+        if self._ending:
+            return None
+        if now - self._call_started_ms > CALL_MAX_MS:             # noise that never ends a turn cannot keep it open
+            log.event("call_cap", call=self.tag)
+            if self._turn is not None:
+                self._turn.interrupted = True
+            text, lang = self._fixed("max_length")
+            self._say(text, lang, kind="fixed")
+            return await self._end("max_length", drain=True)
+        turn = self._turn
+        if turn is not None and turn.done is None and now - turn.started_ms > TURN_MAX_MS:
+            log.event("turn_stuck", level="error", call=self.tag, gen=turn.gen)
+            return await self._fail()
         if self._caller_active and now - self._last_vad > self.cfg.turn.max_utterance_ms + self.cfg.turn.max_silence_ms:
             self._caller_active = False               # a VadStart that never became a turn (noise)
         if self.state != CallState.LISTENING or self._caller_active or self._turn is not None:
@@ -592,7 +629,8 @@ class CallOrchestrator:
         if hangup and not self.adapter.closed:
             await self._safe(self.adapter.hangup(reason))
         finish = "error" if reason == "error" else reason
-        await self._safe(self.brain.finish(finish))
+        # bounded: a worker thread that never returns holds the brain's lock, and the call must still end
+        await self._safe(asyncio.wait_for(self.brain.finish(finish), FINISH_WAIT_MS / 1000))
         return reason
 
     # -- helpers -------------------------------------------------------------------------------
@@ -644,3 +682,5 @@ class CallOrchestrator:
             log.event("cleanup_failed", level="warning", error=type(exc).__name__)
 
     _prefix_text: str | None = None
+    _last_reply: _Turn | None = None
+    _call_started_ms: int = 0

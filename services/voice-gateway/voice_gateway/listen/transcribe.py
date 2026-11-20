@@ -73,6 +73,7 @@ from voice_gateway.config import SttConfig
 from voice_gateway.events import EventBus, LanguageEvidence, SttFinal, SttPartial
 
 OPEN_TIMEOUT_S = 6                  # a stream that cannot be opened in this time counts as a failed open
+FEED_TIMEOUT_S = 2.0                # a send that hangs this long counts as a dead stream (reopen with replay)
 CHUNK_MS = 60                       # audio sent per event (Transcribe advises 50 to 200 ms)
 
 
@@ -274,15 +275,16 @@ class TranscribeStream:
         if self._reader is None:
             self._done()
             return
+        reader = self._reader
+        if reader is not None:                 # first, so a hung end_stream cannot keep the stream open
+            asyncio.get_running_loop().call_later(4.0, reader.cancel)
         try:
             if self._pending:
-                await self._stream.input_stream.send_audio_event(audio_chunk=bytes(self._pending))
-            await self._stream.input_stream.end_stream()
+                await asyncio.wait_for(self._stream.input_stream.send_audio_event(audio_chunk=bytes(self._pending)),
+                                       FEED_TIMEOUT_S)
+            await asyncio.wait_for(self._stream.input_stream.end_stream(), FEED_TIMEOUT_S)
         except Exception:
             pass
-        reader = self._reader
-        if reader is not None:
-            asyncio.get_running_loop().call_later(4.0, reader.cancel)
 
 
 class _PooledClient:
@@ -530,6 +532,7 @@ class Transcriber:
         self._last_sent = 0
         self._last_final_end: int | None = None
         self._errors = 0
+        self._broken: SttStream | None = None        # the live stream failed: not fed until the reopen replaces it
         self._unavailable: SttUnavailable | None = None
         self._identifying = False
         self._background: set[asyncio.Task] = set()
@@ -593,6 +596,7 @@ class Transcriber:
             self._unavailable = SttUnavailable("Transcribe failed twice")
             return
         self._errors += 1
+        self._broken = stream
         self._spawn(self._recover())
 
     async def _recover(self) -> None:
@@ -634,6 +638,8 @@ class Transcriber:
         frames = self._replay_frames(replay_from_ms) if replay and old is not None else []
         origin = frames[0].ts_ms if frames else (self._fed_end or self.clock.now_ms())
         stream, sid = await self._open_stream(mode, origin)
+        if frames:                     # the audio that arrived while the stream opened is replayed too, not lost
+            frames = [f for f in self.ring.since(origin) if f.end_ms <= self._fed_end] or frames
         if self._replay_task is not None:
             self._replay_task.cancel()
         self._backlog, self._replaying = [], bool(frames)
@@ -657,11 +663,11 @@ class Transcriber:
             for f in frames:
                 if stream is not self._live:
                     return
-                await stream.feed(f)
+                await asyncio.wait_for(stream.feed(f), FEED_TIMEOUT_S)
                 await self.clock.sleep_ms(step)
             while self._backlog:
                 f = self._backlog.pop(0)
-                await stream.feed(f)
+                await asyncio.wait_for(stream.feed(f), FEED_TIMEOUT_S)
                 await self.clock.sleep_ms(step)
             self._replaying = False
         except asyncio.CancelledError:
@@ -675,16 +681,16 @@ class Transcriber:
         self._fed_end = max(self._fed_end, frame.end_ms)
         self._latest = max(self._latest, frame.end_ms)
         stream = self._live
-        if stream is None:
-            return
+        if stream is None or stream is self._broken:
+            return                                   # the ring keeps the audio: the reopen replays it
         if self._replaying:
             self._backlog.append(frame)
             return
         try:
             gap = self._now() - self._last_sent
             if gap >= self.cfg.idle_keepalive_ms:                    # a stall: keep the stream alive first
-                await stream.feed(silence(frame.ts_ms))
-            await stream.feed(frame)
+                await asyncio.wait_for(stream.feed(silence(frame.ts_ms)), FEED_TIMEOUT_S)
+            await asyncio.wait_for(stream.feed(frame), FEED_TIMEOUT_S)
             self._last_sent = self._now()
         except Exception as exc:
             self._on_error(stream, exc)

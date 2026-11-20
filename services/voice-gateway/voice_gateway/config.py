@@ -152,6 +152,7 @@ class CallConfig:
     hangup_after_still_there: int = 2   # then the goodbye and hang up
     continuation_grace_ms: int = 900    # caller resumes this soon after TurnEnd, before first audio: merge
     transfer_timeout_s: int = 25
+    overlap_tolerance_ms: int = 500     # a yes over the last this-many ms of a read-back still counts
 
 
 @dataclass(frozen=True)

@@ -214,6 +214,29 @@ def test_text_before_a_lookup_is_a_preamble():
     assert [(x.text, x.preamble) for x in out] == [("Ett ögonblick, jag kollar", True)]
 
 
+def test_a_done_claim_before_the_write_tool_is_never_streamed():
+    """"Jag har bokat" streamed before create_reservation, which the guard may refuse, would tell the caller about a
+    booking that does not exist: the claim and the rest of its round wait for the final reply."""
+    s = TextStreamer(SpeakConfig(), "sv", ALLOWED, 1, ("sv",))
+    s.start_block(0)
+    out = s.feed("[sv] Toppen, tack för det. Jag har bokat ett bord för fyra. Välkommen ", 1)
+    out += s.tool_started(2)
+    assert [x.text for x in out] == ["Toppen, tack för det."]
+    s.start_block(3)
+    out = s.feed("[sv] Jag behöver läsa upp bokningen först. Stämmer det?", 4) + s.end_round("end_turn", 5)
+    assert [x.text for x in out] == ["Jag behöver läsa upp bokningen först.", "Stämmer det?"]
+
+
+def test_a_done_claim_in_the_last_round_is_said_by_the_reconciliation():
+    s, out = stream(["[sv] Jag har bokat ett bord för fyra i morgon. Välkommen."])
+    assert out == []
+    final = "Jag har bokat ett bord för fyra i morgon. Välkommen."
+    assert [x.text for x in reconcile(final, out, turn=1, language="sv", at_ms=0)] == [
+        "Jag har bokat ett bord för fyra i morgon.", "Välkommen."]
+    _, question = stream(["[sv] Ska jag boka ett bord för fyra i morgon? "])
+    assert [x.text for x in question] == ["Ska jag boka ett bord för fyra i morgon?"]
+
+
 # --- reconciliation ---------------------------------------------------------------------------------
 
 def test_reconcile_adds_only_what_was_not_streamed_in_its_own_language():

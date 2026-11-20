@@ -93,6 +93,24 @@ def is_self_note(text: str) -> bool:
     return bool(_SELF_NOTE.search(text or ""))
 
 
+# A sentence that says a write is done ("Jag har bokat ett bord", "Your table is booked"). Streamed before the
+# round ends, it could be followed by the create_reservation call itself, which the guard may still refuse (no
+# fresh read-back, no clear yes, no availability): the caller would hear a booking that does not exist. Such a
+# sentence, and the rest of its round, is never streamed; the reconciliation says it from the final reply (the
+# truth) once the turn is done. A question is not a claim. A false match only costs latency.
+_CLAIM = re.compile(
+    r"\b(bokat|bokad|bokade|avbokat|avbokad|ombokat|ombokad|flyttat|flyttad|bekräftat|bekräftad|registrerat|"
+    r"registrerad|booked|cancell?ed|confirmed|rescheduled|reserved|all set|gebucht|storniert|bestätigt|"
+    r"verschoben|reserviert|réservé|réservée|confirmé|confirmée|annulé|annulée|reservado|reservada|confirmado|"
+    r"confirmada|cancelado|cancelada|zarezerwowa\w*|potwierdzon\w*|anulowan\w*|rezervasyon\w* (yapıldı|"
+    r"oluşturuldu|onaylandı)|iptal edildi)\b", re.I)
+
+
+def is_settled_claim(text: str) -> bool:
+    text = (text or "").strip()
+    return bool(text) and not text.endswith(("?", "\uff1f", "\u061f")) and bool(_CLAIM.search(text))
+
+
 NO_FILLER_TOOLS = frozenset({"end_call"})   # not a lookup: never a "one moment" before the goodbye
 
 
@@ -299,6 +317,7 @@ class TextStreamer:
     _held_text: str = ""
     _seen: set = field(default_factory=set)
     _preamble: bool = False
+    _claim_hold: bool = False             # a done claim was seen in this round: the rest waits for the reply
 
     def __post_init__(self) -> None:
         self._lang = self.call_language
@@ -316,6 +335,7 @@ class TextStreamer:
     def restart_round(self) -> None:
         """A failed attempt is retried: its unspoken tail is dropped."""
         self._buf, self._head, self._tag_pending = "", "", True
+        self._claim_hold = False
 
     def tool_started(self, at_ms: int) -> list[AgentSentence]:
         """Text before a lookup is a preamble ("one moment, I am checking")."""
@@ -323,6 +343,7 @@ class TextStreamer:
         out = self._flush(at_ms)
         self._preamble = False
         self._tag_pending, self._head = True, ""
+        self._claim_hold = False            # a claim before a tool call is dropped: the final reply says what is true
         return out
 
     def end_round(self, stop_reason: str, at_ms: int) -> list[AgentSentence]:
@@ -332,6 +353,7 @@ class TextStreamer:
         else:
             out = self._flush(at_ms)
         self._tag_pending, self._head = True, ""
+        self._claim_hold = False
         return out
 
     # -- text --------------------------------------------------------------------------------
@@ -422,6 +444,9 @@ class TextStreamer:
         text = pa_agent.spoken_text(raw, self._lang)
         key = _norm(text)
         if not key or key in self._seen or is_self_note(text):
+            return []
+        if self._claim_hold or is_settled_claim(text):
+            self._claim_hold = True             # said by the reconciliation if the final reply keeps it
             return []
         out = []
         if self._lang not in self.disclosed:

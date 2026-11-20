@@ -353,6 +353,46 @@ def test_the_caller_who_keeps_talking_before_any_audio_is_not_answered_twice():
     assert [c[2] for c in brain.calls if c[0] == "turn"] == ["Jag vill boka för", "fyra personer i morgon"]
 
 
+def test_a_yes_said_over_the_read_back_does_not_count_as_the_answer():
+    """The caller starts "ja" while the read-back still plays, no barge-in (a backchannel word), and the turn ends
+    after the reply drained: the read-back counts as not heard, so the guard needs a new read-back and yes."""
+    reply = Reply("Ett bord för fyra i morgon klockan sju. Stämmer det?", awaiting_confirmation=True,
+                  asked_question="yes_no", gap_ms=0)
+
+    async def script(c):
+        await c.wait_state(S.LISTENING)
+        await c.utter("Bord för fyra i morgon klockan sju")
+        await c.wait_state(S.SPEAKING)
+        start = c.clock.now_ms()                         # the read-back's first sentence is playing
+        c.bus.publish(VadStart(start + 100, start, 0.9, during_playback=True))
+        await c.wait_state(S.LISTENING, 2)               # the reply drained before the caller's turn ended
+        await c.clock.sleep_ms(300)
+        c.bus.publish(TurnEnd(c.clock.now_ms(), "ja", "sv", start, c.clock.now_ms() - 200, "silence"))
+        await c.wait_state(S.LISTENING, 3)
+        await c.hang_up()
+
+    summary, brain, *_ = run_call(script, replies=[reply, Reply("Då läser jag upp det igen.")])
+    marks = [c for c in brain.calls if c[0] == "mark_not_heard"]
+    assert marks and marks[0][1] == ["Ett bord för fyra i morgon klockan sju.", "Stämmer det?"]
+    assert brain.calls.index(marks[0]) < max(i for i, c in enumerate(brain.calls) if c[0] == "turn")
+
+
+def test_a_yes_after_the_read_back_ended_is_the_answer():
+    reply = Reply("Ett bord för fyra i morgon klockan sju. Stämmer det?", awaiting_confirmation=True,
+                  asked_question="yes_no", gap_ms=0)
+
+    async def script(c):
+        await c.wait_state(S.LISTENING)
+        await c.utter("Bord för fyra i morgon klockan sju")
+        await c.wait_state(S.LISTENING, 2)
+        await c.utter("ja", speech_ms=300)
+        await c.wait_state(S.LISTENING, 3)
+        await c.hang_up()
+
+    summary, brain, *_ = run_call(script, replies=[reply, Reply("Klart.")])
+    assert not [c for c in brain.calls if c[0] == "mark_not_heard"]
+
+
 def test_after_the_grace_window_the_reply_plays():
     cfg = GatewayConfig.from_json('{"call": {"continuation_grace_ms": 100}}')
 
@@ -476,6 +516,41 @@ def test_speech_resets_the_still_there_timer():
 
     summary, brain, speaker, *_ = run_call(script)
     assert not [t for t in speaker.texts() if t.startswith("Är du kvar")]
+
+
+def test_a_stuck_brain_turn_says_the_error_sentence_and_ends(monkeypatch):
+    """A turn whose worker never returns (a hung DynamoDB or Lambda call) must not leave the caller in silence
+    with the line and the Transcribe stream open."""
+    from voice_gateway import orchestrator
+    monkeypatch.setattr(orchestrator, "TURN_MAX_MS", 3000)
+    monkeypatch.setattr(orchestrator, "TURN_SAVE_WAIT_MS", 100)
+
+    async def script(c):
+        await c.wait_state(S.LISTENING)
+        await c.utter("Boka åt mig")
+        await c.wait_state(S.ENDED, timeout_ms=30000)
+
+    summary, brain, speaker, _, adapter, _ = run_call(script, replies=[Reply("Visst.", first_ms=600000)])
+    assert summary.end_reason == "error" and adapter.hangups == ["error"]
+    assert speaker.texts("fixed")[-1] == "Ursäkta, något gick fel hos oss. Vill du att restaurangen ringer upp dig?"
+    assert not speaker.texts("assistant")                # the stuck reply is never said
+    assert ("finish", "error") in brain.calls
+
+
+def test_noise_that_never_ends_a_turn_cannot_keep_the_call_open(monkeypatch):
+    from voice_gateway import orchestrator
+    monkeypatch.setattr(orchestrator, "CALL_MAX_MS", 20000)
+
+    async def script(c):
+        await c.wait_state(S.LISTENING)
+        while True:                                      # VAD keeps firing, no TurnEnd ever comes
+            now = c.clock.now_ms()
+            c.bus.publish(VadStart(now, now, 0.9))
+            await c.clock.sleep_ms(1000)
+
+    summary, brain, speaker, _, adapter, _ = run_call(script)
+    assert summary.end_reason == "max_length" and adapter.hangups == ["max_length"]
+    assert ("finish", "max_length") in brain.calls
 
 
 def test_a_caller_hangup_mid_turn_lets_the_turn_save_before_finish():

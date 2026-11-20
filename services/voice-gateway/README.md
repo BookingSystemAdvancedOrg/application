@@ -123,6 +123,22 @@ Logs are JSON events (`state`, `brain_turn`, `barge_in`, `still_there`, `call_en
 hashed call tag only. `python -m voice_gateway.server local` writes the same per-turn numbers to
 `<out>.metrics.json`; the replay harness recomputes them from the raw events and checks them.
 
+## Guards on top of the agent's
+
+The agent's read-back and clear-yes guard decides every write; streaming adds a few ways to hear things out of
+order, so the gateway closes them:
+
+* a sentence that says a write is done ("Jag har bokat ...") is never streamed before its round ends: it could
+  come right before the create_reservation call the guard refuses; the final reply says it when it is true;
+* a caller turn that began while a read-back was still playing (more than `call.overlap_tolerance_ms` before
+  its end) is not the answer to it: the read-back counts as not heard, so the agent reads back again;
+* a barge-in, a reply dropped because the caller kept talking, and a language switch all mark the read-back
+  as not heard (the agent's own not-heard rule);
+* a Transcribe send that hangs (2 s) or fails reopens the stream once with replay of the buffered audio; a
+  second failure ends the call with the error sentence (never silence);
+* a brain turn still running 25 s after it started ends the call with the error sentence; no call outlives
+  960 s (the largest `maxCallSeconds` plus a minute), so a line with endless noise cannot keep Transcribe open.
+
 ## Add a language
 
 1. Hearing: add the Transcribe streaming code to `TRANSCRIBE` in `voice_gateway/languages.py` and open one

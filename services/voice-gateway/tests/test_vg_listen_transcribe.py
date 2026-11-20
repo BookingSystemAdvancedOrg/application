@@ -292,3 +292,39 @@ def test_a_stalled_stream_gets_a_silence_frame_before_the_next_audio():
         return sent
     sent = run(body)
     assert len(sent) == 3 and sent[1].pcm == bytes(640) and sent[1].ts_ms == 1500
+
+
+def test_a_hung_send_counts_as_a_dead_stream_and_the_frame_loop_goes_on(monkeypatch):
+    """A send that never returns (a stalled HTTP/2 connection) must not freeze VAD and barge-in: it times out, the
+    stream is reopened with replay and the dead one is not fed again."""
+    from voice_gateway.listen import transcribe as tr
+    monkeypatch.setattr(tr, "FEED_TIMEOUT_S", 0.05)
+    received: dict[int, list[int]] = {}
+    hung_calls = []
+
+    class Hung(FakeSttFactory):
+        async def open(self, mode, *, stream_id, audio_origin_ms):
+            s = await super().open(mode, stream_id=stream_id, audio_origin_ms=audio_origin_ms)
+            real = s.feed
+
+            async def feed(frame):
+                if stream_id == 1:
+                    hung_calls.append(frame.ts_ms)
+                    await asyncio.Event().wait()
+                received.setdefault(stream_id, []).append(frame.ts_ms)
+                await real(frame)
+            s.feed = feed
+            return s
+
+    async def body(clock):
+        f = Hung([], labeller=_labelled([]))
+        r = Rig(clock, [], [], factory=f)
+        await r.t.open("sv")
+        await r.feed(tone(200, 200), 0)
+        await clock.sleep_ms(400)
+        assert len(f.opened) == 2 and r.t._unavailable is None
+        await r.feed(tone(200, 100), 200)
+        await clock.sleep_ms(400)
+    run(body)
+    assert hung_calls == [0]                             # the dead stream is not fed again
+    assert received[2][:3] == [0, 20, 40] and 280 in received[2]   # replayed, then live audio

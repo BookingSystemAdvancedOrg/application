@@ -22,7 +22,8 @@ def _run(key, cfg=None):
 
 def test_openers_come_at_the_turn_end_and_check_only_before_a_real_lookup():
     from vg_harness import analysis as an
-    r = _run("lang-A")
+    from voice_gateway.config import GatewayConfig, SpeakConfig
+    r = _run("lang-A", GatewayConfig(speak=SpeakConfig(opener=True)))
     ends = [e for e in r.events if isinstance(e, TurnEnd)]
     openers = [e for e in r.events if isinstance(e, PlaybackStarted) and e.kind == "opener"]
     assert openers
@@ -45,3 +46,11 @@ def test_the_lookup_first_saves_a_bedrock_round_on_the_booking_turn():
     before, after = _run("lang-A", fake_config(off)), _run("lang-A")
     first = lambda r: an.eos_to_reply_audio(r.events)[0]
     assert first(before) - first(after) >= 1400            # one model round (1500 ms) less to the reply
+
+
+def test_no_fixed_lines_by_default():
+    """Owner 2026-11-20: only real answers. No opener ("Jag kollar.", "Då ska vi se."), no filler,
+    no backchannel, in a call with a lookup and a yes to a read-back."""
+    r = _run("lang-A")
+    fixed = [e for e in r.events if isinstance(e, PlaybackStarted) and e.kind in ("opener", "filler", "backchannel")]
+    assert fixed == []

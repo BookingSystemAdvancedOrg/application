@@ -263,6 +263,10 @@ the turn across the 1.5 s pause; at most one "mm" (backchannel inside the pause 
 
 ### 6.5 Backchannels
 
+Off by default since 2026-11-20 (owner: only real answers): `BackchannelConfig.enabled`, `SpeakConfig.opener`
+and `SpeakConfig.filler` are False, and the greeting is not interruptible (`BargeInConfig.during_greeting`).
+The rules below apply when they are switched on for a test.
+
 Rules in `backchannel/controller.py` (all thresholds in BackchannelConfig): caller has held the turn
 >= 2.5 s, pause between 250 and 600 ms, a clause of >= 4 new words, not a number tail, cooldown 4 s, at
 most 2 per turn, never in the first second, never over caller speech, never over or right after

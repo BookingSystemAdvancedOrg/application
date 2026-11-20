@@ -14,7 +14,7 @@ from voice_gateway.audio.adapter import CallInfo, TransferOutcome
 from voice_gateway.audio.frames import PCM16_16K
 from voice_gateway.brain.scripted import Reply, ScriptedBrain
 from voice_gateway.clock import FakeClock
-from voice_gateway.config import GatewayConfig
+from voice_gateway.config import BargeInConfig, GatewayConfig
 from voice_gateway.events import (AgentSentence, AssistantContext, BargeIn, CallState, LanguageAction,
                                   LanguageDecided, PlaybackFinished, PlaybackFlushed, PlaybackStarted, ProviderAction,
                                   StateChanged, ToolStarted, TurnEnd, VadStart)
@@ -186,6 +186,10 @@ class Caller:
         self.adapter.close()
 
 
+# Barge-in during the greeting is off by default (owner 2026-11-20); these tests cover it switched on.
+_GREETING_BARGE_IN = GatewayConfig(barge_in=BargeInConfig(during_greeting=True))
+
+
 def run_call(script, *, replies=None, cfg=None, transfer_answers=True, **brain_kwargs):
     """Runs one call; returns (summary, brain, speaker, listener, adapter, caller)."""
     cfg = cfg or GatewayConfig()
@@ -285,7 +289,7 @@ def test_barge_in_before_the_disclosure_repeats_the_short_disclosure_before_the_
         await c.wait_state(S.LISTENING, 2)
         await c.hang_up()
 
-    summary, brain, speaker, *_ = run_call(script)
+    summary, brain, speaker, *_ = run_call(script, cfg=_GREETING_BARGE_IN)
     assert ("greeting_interrupted",) in brain.calls
     assert summary.end_reason == "hangup"
     after = speaker.said[3:]                             # the greeting was cut in its first sentence
@@ -302,8 +306,29 @@ def test_barge_in_after_the_disclosure_counts_the_greeting_as_heard():
         await c.barge_in()
         await c.hang_up()
 
-    summary, brain, speaker, *_ = run_call(script)
+    summary, brain, speaker, *_ = run_call(script, cfg=_GREETING_BARGE_IN)
     assert ("greeting_played", None) in brain.calls and ("greeting_interrupted",) not in brain.calls
+
+
+def test_greeting_plays_to_its_end_when_the_caller_talks_over_it():
+    """Default (owner 2026-11-20): a "hallå?" in the first sentence never cuts the greeting; what the
+    caller said is still heard and answered after it."""
+    async def script(c):
+        await c.wait_playing("fixed")
+        await c.clock.sleep_ms(300)                      # inside "Hej och välkommen till Testkrogen."
+        await c.barge_in()
+        await c.utter("Hej, jag vill boka")
+        await c.wait_state(S.LISTENING, 2)
+        await c.hang_up()
+
+    summary, brain, speaker, *_ = run_call(script)
+    assert ("greeting_interrupted",) not in brain.calls
+    assert summary.end_reason == "hangup"
+    fixed = [text for kind, _, text in speaker.said if kind == "fixed"]
+    assert fixed[:3] == ["Hej och välkommen till Testkrogen.", "Du pratar med vår digitala assistent.",
+                         "Vad kan jag hjälpa dig med?"]                 # the whole greeting, nothing cut
+    assert "Jag är restaurangens digitala assistent." not in fixed    # so no short disclosure is needed
+    assert any(kind == "assistant" for kind, *_ in speaker.said)     # and the caller's words were answered
 
 
 # --- barge-in, the caller who keeps talking -------------------------------------------------------

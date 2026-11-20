@@ -107,19 +107,26 @@ class TurnConfig:
 @dataclass(frozen=True)
 class BargeInConfig:
     enabled: bool = True
+    # The greeting (recording notice, disclosure, the owner's text) plays to its end: a "hallå?", a
+    # cough or the line's echo never cuts it (owner 2026-11-20). What the caller said meanwhile is
+    # still heard and becomes the first turn.
+    during_greeting: bool = False
     min_speech_ms: int = 350            # sustained caller speech over playback (shorter: backchannel or cough)
     word_min_speech_ms: int = 150       # a partial with a non-backchannel word may barge in this early
     stop_words: dict = field(default_factory=lambda: {
         "sv": ("nej", "vänta", "stopp", "förlåt", "ursäkta"), "en": ("no", "wait", "stop", "sorry", "hold on"),
     })
-    echo_delay_max_ms: int = 300        # look this far back in the playback energy for echo
+    # Look this far back in the playback energy for echo: on a phone line the echo returns after the
+    # playout lead plus the network round trip (often 400 to 900 ms), not within 300 ms.
+    echo_delay_max_ms: int = 900
     echo_return_loss_db: float = 10.0   # caller energy this far under playback energy = echo
     ignore_first_playback_ms: int = 150  # line settling at the start of each item
 
 
 @dataclass(frozen=True)
 class BackchannelConfig:
-    enabled: bool = True
+    # Off (owner 2026-11-20): the assistant says only real answers, no "mm" in the caller's pauses.
+    enabled: bool = False
     min_call_ms: int = 1000             # never in the first second of the call
     min_turn_speech_ms: int = 2500      # caller held the turn at least this long (ASSESSMENT)
     pause_min_ms: int = 160             # fire window inside a caller pause (a 220 ms "mm" fits a 450 ms pause)
@@ -143,11 +150,14 @@ class SpeakConfig:
     synth_ahead: int = 2                # sentences synthesised ahead of playback
     tts_timeout_ms: int = 2500
     tts_retry: int = 1
+    # Fixed lines are off (owner 2026-11-20: only real answers, never "Ett ögonblick, jag kollar" or
+    # "Då ska vi se" after a plain yes). Both stay switchable for A/B tests.
+    filler: bool = False                # a fixed filler while a slow tool runs
     filler_delay_ms: int = 700          # tool started and no assistant audio this long: play a filler
     filler_cooldown_ms: int = 5000
     backchannel_max_wait_ms: int = 150  # assistant audio waits at most this for a playing backchannel to end
     first_clause: bool = True           # the first chunk of a turn may end at a comma (Polly starts on a clause)
-    opener: bool = True                 # a short pre-rendered opener ("Mm.", "Okej.") right at the turn end
+    opener: bool = False                # a short pre-rendered opener ("Mm.", "Okej.") right at the turn end
     opener_chance: float = 0.65         # chance of an opener on a turn without a certain lookup (varied, not always)
 
 

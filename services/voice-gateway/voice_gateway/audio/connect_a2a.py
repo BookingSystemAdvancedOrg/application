@@ -1130,9 +1130,12 @@ async def serve(endpoint: A2AEndpoint, host: str, port: int, health_body: Callab
             body = json.dumps((health_body() if health_body else {}) | {"status": "ok" if ok else "draining"}).encode()
             return Response(200 if ok else 503, "OK" if ok else "Service Unavailable",
                             Headers([("Content-Type", "application/json"), ("Content-Length", str(len(body)))]), body)
-        status = endpoint.upgrade_status(path, lower(request))
+        headers = lower(request)
+        status = endpoint.upgrade_status(path, headers)
         if status is not None:
-            log.event("a2a_upgrade_refused", status=status)
+            # Names only, never values: tells Connect (A2A-Extensions, traceparent) from internet scanners.
+            log.event("a2a_upgrade_refused", status=status, path=path[:64],
+                      headers=sorted(h[:40] for h in headers)[:24], connect="a2a-extensions" in headers)
             return connection.respond(status, "")
         return None
 

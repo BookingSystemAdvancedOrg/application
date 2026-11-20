@@ -72,7 +72,9 @@ location and forwards the restaurant's number.
 - **Natural phrasing.** The prompt offers short acknowledgements per language (`copy.OPENERS`, "Okej",
   "Precis", "Sure"), at most every second reply and never the same twice in a row, and host-like
   questions ("Sure, how many people will be joining you?"). The model never announces a lookup itself
-  (the reply is spoken only when the turn ends; the line's own wait lines cover the lookup). The
+  (the reply is spoken only when the turn ends). The line plays no wait lines either (owner 2026-11-20:
+  the caller hears only real answers; the Lex line's start and update messages and the gateway's openers,
+  fillers and backchannels are off). The greeting is never cut: barge-in is off until it has played. The
   still-checking sentence of a cut turn varies per turn (`copy.STILL_CHECKING_MORE`) and is only said
   while a lookup or the model is still working.
 - **Guards at call start**, in order: entitlement and location enabled (`entitlement`), tenant pause

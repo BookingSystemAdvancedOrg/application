@@ -15,7 +15,8 @@ from voice_gateway.speak.queue import SpeechItem, SpeechQueue
 from voice_gateway.speak.speaker import Speaker
 from voice_gateway.speak.tts import FakeTts
 
-CFG = GatewayConfig()
+# Backchannels and fillers are off by default (owner 2026-11-20); these tests cover them switched on.
+CFG = GatewayConfig(backchannel=BackchannelConfig(enabled=True), speak=SpeakConfig(filler=True))
 
 
 class Line:

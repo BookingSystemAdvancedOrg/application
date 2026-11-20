@@ -86,12 +86,12 @@ VOICE = (
         Step(SV, (Piece("Jag skulle vilja boka bord för", 400), Piece("ehm", 1500),
                   Piece("fyra personer på fredag klockan sju."),)),),
         Expect(no_cutoff_before_ms=2500, max_hesitation_acks=1, party_size=4)),
-    Scenario("voice-B", "Backchannel during a monologue", (
+    Scenario("voice-B", "No backchannel during a monologue (owner 2026-11-20)", (
         Step(SV, (Piece("Hej, jag vill boka ett bord på lördag för sex personer.", 450),
                   Piece("Vi firar min mammas sjuttioårsdag, så det vore fint med ett lugnt bord.", 450),
                   Piece("En av gästerna är allergisk mot nötter och en är vegetarian.", 450),
                   Piece("Helst runt halv sju om det går."),)),),
-        Expect(backchannels_between=(1, 2), backchannel_overlaps=0)),
+        Expect(backchannels_between=(0, 0), backchannel_overlaps=0)),
     Scenario("voice-C", "Correction", (
         Step(SV, (Piece("Jag vill boka ett bord i morgon klockan sju för fyra, nej förlåt, fem personer."),)),
         Step(SV, (Piece("Ja, det stämmer."),)),

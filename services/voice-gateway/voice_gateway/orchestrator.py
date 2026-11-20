@@ -400,6 +400,8 @@ class CallOrchestrator:
         if not self.cfg.barge_in.enabled:
             return None
         if self.state == CallState.GREETING:
+            if not self.cfg.barge_in.during_greeting:
+                return None                            # the greeting plays to its end; the caller's words wait
             await self._greeting_barge_in(e)
             return None
         turn = self._turn

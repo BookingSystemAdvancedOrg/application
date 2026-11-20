@@ -14,7 +14,7 @@ from voice_gateway.events import (AssistantContext, CallState, LanguageAction, L
                                   PlaybackStarted, SttPartial, StateChanged, TurnEnd, TurnHold, VadPause, VadResume,
                                   VadStart)
 
-CFG = BackchannelConfig()
+CFG = BackchannelConfig(enabled=True)
 
 
 # --- tokens ----------------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def test_short_turn_few_words_and_the_first_second_get_nothing():
     call.pause(700)
     assert call.fired == []
 
-    call = Call(cfg=BackchannelConfig(min_turn_speech_ms=0), start_ms=0)
+    call = Call(cfg=BackchannelConfig(enabled=True, min_turn_speech_ms=0), start_ms=0)
     call.speak(200, "vi är fyra personer", first=True)              # call younger than min_call_ms
     call.ev(VadPause(call.now + 80, call.now, 200))
     call.tick_to(min(call.now + 500, CFG.min_call_ms - 20))
@@ -188,7 +188,7 @@ def test_needs_listening_state():
 
 
 def test_cooldown_and_max_per_turn():
-    cfg = BackchannelConfig(cooldown_ms=0)
+    cfg = BackchannelConfig(enabled=True, cooldown_ms=0)
     for seed in range(20):
         call = Call(cfg=cfg, seed=seed)
         call.speak(3000, "vi är fyra personer som vill boka", first=True)
@@ -207,7 +207,7 @@ def test_cooldown_and_max_per_turn():
 
 
 def test_counters_reset_on_turn_end():
-    call = Call(cfg=BackchannelConfig(cooldown_ms=0, max_per_turn=1))
+    call = Call(cfg=BackchannelConfig(enabled=True, cooldown_ms=0, max_per_turn=1))
     call.speak(3000, "vi är fyra personer som vill boka", first=True)
     call.pause(500)
     call.end_turn()
@@ -317,7 +317,7 @@ def test_only_tokens_with_a_clip():
 
 
 def test_note_dropped_undoes_the_count():
-    call = Call(cfg=BackchannelConfig(max_per_turn=1))
+    call = Call(cfg=BackchannelConfig(enabled=True, max_per_turn=1))
     call.speak(3000, "vi är fyra personer som vill boka", first=True)
     call.pause(500)
     assert len(call.fired) == 1 and call.c.sent == 1
@@ -412,3 +412,8 @@ def test_no_backchannel_at_a_comma_or_right_after_a_number():
     call.speak(3000, "jag vill boka ett bord i morgon för fyra, ehm", first=True)
     call.pause(700, hold="filler")
     assert call.fired == []                              # a number still counts behind a filler
+
+
+def test_off_by_default():
+    """Owner 2026-11-20: no "mm" in the caller's pauses unless switched on."""
+    assert BackchannelConfig().enabled is False

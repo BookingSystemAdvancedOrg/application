@@ -97,7 +97,8 @@ class Speaker:
                 self.bus.publish(req)
             else:
                 self.backchannels.note_dropped(req)
-        index = None if self._no_filler else self.fillers.due(now, self.language, assistant_busy=self.mixer.busy)
+        index = None if self._no_filler or not self.cfg.speak.filler \
+            else self.fillers.due(now, self.language, assistant_busy=self.mixer.busy)
         if index is not None and not self.mixer.request_filler(self.language, index):
             self.fillers.refused(self.language)
 

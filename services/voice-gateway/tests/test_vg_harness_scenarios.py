@@ -14,7 +14,7 @@ DASH = re.compile("[" + chr(0x2013) + chr(0x2014) + "]|&[nm]dash;")
 
 def test_every_voice_and_language_scenario_is_there():
     keys = [s.key for s in sc.ALL]
-    assert keys == [f"voice-{c}" for c in "ABCDEF"] + [f"lang-{c}" for c in "ABCDEFGH"]
+    assert keys == [f"voice-{c}" for c in "ABCDEF"] + [f"lang-{c}" for c in "ABCDEFGHIJK"]
     assert len(set(keys)) == len(keys)
 
 

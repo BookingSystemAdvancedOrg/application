@@ -87,7 +87,7 @@ def test_an_error_is_the_first_thing_a_reader_sees():
 def test_list_prints_every_scenario(capsys):
     assert cli.main(["list"]) == 0
     out = capsys.readouterr().out
-    assert out.count("\n") == 14 and "voice-A" in out and "lang-H" in out and "during_reply" in out
+    assert out.count("\n") == 17 and "voice-A" in out and "lang-H" in out and "during_reply" in out
 
 
 def test_unknown_scenario_exits_2(capsys):

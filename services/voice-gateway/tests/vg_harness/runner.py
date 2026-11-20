@@ -376,11 +376,17 @@ async def run_live(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"
     from vg_harness.textrun import glosses_of
     from vg_harness.world import fake_world
 
+    dev_world_on = os.environ.get("VG_WORLD") == "dev"
+    if dev_world_on:
+        from vg_harness.devworld import dev_world as fake_world     # noqa: F811  the real dev restaurant
     started = time.monotonic()
     result = Result(scenario.key, mode="live")
-    audio = prepare_audio(scenario, allow_network=os.environ.get("VG_CALLER_NETWORK") == "1")
+    fake_stt = os.environ.get("VG_STT") == "fake"     # a language no AWS voice speaks has no caller audio: the
+    #                                                   recogniser is scripted, Polly, Bedrock and the tools stay real
+    audio = (prepare_audio(scenario, synth_fallback=True) if fake_stt
+             else prepare_audio(scenario, allow_network=os.environ.get("VG_CALLER_NETWORK") == "1"))
     result.audio_sources = {p.label: p.source for step in audio for p in step}
-    cfg = cfg or GatewayConfig()
+    cfg = fake_config(cfg) if fake_stt else (cfg or GatewayConfig())
     polly, bedrock, creds = _live_clients()
     model_id = os.environ.get("PHONE_AGENT_MODEL_ID") or DEFAULT_LIVE_MODEL
     glosses, languages = glosses_of(scenario)
@@ -390,13 +396,20 @@ async def run_live(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"
         tts = RecordingTts(PollyTts(cfg.speak, client=polly))
         clips = ClipCache(PollyTts(cfg.speak, client=polly), cfg.speak, cfg.backchannel, cache_dir=(out_dir or OUT_DIR) / "clips")
         await clips.warm(_spoken_languages(scenario))
-        adapter = LocalAdapter(clock, call_ref=f"harness-{scenario.key}", dialed=world.number, caller=scenario.caller,
+        adapter = LocalAdapter(clock, call_ref=f"harness-{scenario.key}" + (f"-{int(time.time())}" if dev_world_on else ""),
+                               dialed=world.number, caller=getattr(world, "caller", None) if os.environ.get("VG_WORLD") == "dev" else scenario.caller,
                                wire_format=TELEPHONY_MULAW_8K if wire == "mulaw" else PCM16_16K, paced=True,
                                echo_db=echo_db, noise_dbfs=noise_dbfs)
         if on_adapter:
             on_adapter(adapter)
+        if fake_stt:
+            from voice_gateway.listen.transcribe import FakeSttFactory
+            stt = FakeSttFactory(script=stt_script(scenario, audio))
+            stt.labeller = adapter.label_at
+        else:
+            stt = TranscribeFactory(cfg.stt)
         comps = Components(
-            stt=TranscribeFactory(cfg.stt), tts=tts, clips=clips, clock=clock, rng_seed=7, record_events=True,
+            stt=stt, tts=tts, clips=clips, clock=clock, rng_seed=7, record_events=True,
             brain_factory=lambda c, bus, clk: AgentBrain(
                 c, bus, clk, app=world.live,
                 model_factory=lambda sink: StreamingAgentModel(sink, c.brain, client=bedrock, model_id=model_id)))

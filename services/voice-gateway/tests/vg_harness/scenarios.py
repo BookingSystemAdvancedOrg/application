@@ -160,7 +160,28 @@ LANGUAGE = (
         Expect(final_language=EN, barge_in_stop_max_ms=300, readback_repeated_after_barge_in=True)),
 )
 
-ALL = VOICE + LANGUAGE
+EXTRA = (
+    Scenario("lang-I", "German booking", (
+        Step("de", (Piece("Guten Abend, ich möchte einen Tisch für zwei Personen morgen um acht Uhr reservieren.",
+                          gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
+        Step("de", (Piece("Ja, das stimmt.", gloss="Yes, that is right."),)),
+        Step("de", (Piece("Hans Müller.", gloss="My name is Hans Mueller."),))),
+        Expect(final_language="de", switches=1, booked=True)),
+    Scenario("lang-J", "Turkish booking", (
+        Step("tr", (Piece("Merhaba, yarın akşam saat sekizde iki kişilik bir masa ayırtmak istiyorum.",
+                          gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
+        Step("tr", (Piece("Evet, doğru.", gloss="Yes, that is right."),)),
+        Step("tr", (Piece("Ayşe Yılmaz.", gloss="My name is Ayse Yilmaz."),))),
+        Expect(final_language="tr", switches=1, booked=True)),
+    Scenario("lang-K", "Polish booking", (
+        Step("pl", (Piece("Dzień dobry, chciałbym zarezerwować stolik dla dwóch osób jutro na godzinę dwudziestą.",
+                          gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
+        Step("pl", (Piece("Tak, zgadza się.", gloss="Yes, that is right."),)),
+        Step("pl", (Piece("Jan Kowalski.", gloss="My name is Jan Kowalski."),))),
+        Expect(final_language="pl", switches=1, booked=True)),
+)
+
+ALL = VOICE + LANGUAGE + EXTRA
 BY_KEY = {s.key: s for s in ALL}
 
 

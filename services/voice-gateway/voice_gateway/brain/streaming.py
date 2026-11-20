@@ -83,6 +83,16 @@ from voice_gateway.clock import Clock
 from voice_gateway.config import BrainConfig, SpeakConfig
 from voice_gateway.events import AgentSentence, EventBus, ToolFinished, ToolStarted
 
+# A note the model wrote to itself beside a lookup ("Friday is 2026-11-27.", 'Time 17:00 is "klockan fem".'): an ISO
+# date, a clock time in digits or a quoted phrase is never something a person says. Dropped from the live stream; the
+# reconciliation still says it if the final reply (the truth) holds the sentence.
+_SELF_NOTE = re.compile(r'\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}\b|["\u201c\u201d]')
+
+
+def is_self_note(text: str) -> bool:
+    return bool(_SELF_NOTE.search(text or ""))
+
+
 NO_FILLER_TOOLS = frozenset({"end_call"})   # not a lookup: never a "one moment" before the goodbye
 
 
@@ -411,7 +421,7 @@ class TextStreamer:
     def _sentence(self, raw: str, at_ms: int) -> list[AgentSentence]:
         text = pa_agent.spoken_text(raw, self._lang)
         key = _norm(text)
-        if not key or key in self._seen:
+        if not key or key in self._seen or is_self_note(text):
             return []
         out = []
         if self._lang not in self.disclosed:

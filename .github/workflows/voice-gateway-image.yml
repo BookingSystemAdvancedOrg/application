@@ -11,6 +11,7 @@ on:
       - "services/voice-gateway/**"
       - "shared/**"
       - "functions/phone-agent-call/**"
+      - ".github/workflows/voice-gateway-image.yml"
   workflow_dispatch:
 
 permissions:
@@ -49,6 +50,9 @@ jobs:
           aws-region: eu-north-1
           role-session-name: gha-voice-gateway-${{ github.run_id }}
 
+      - name: Look up the account
+        run: echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+
       - name: Log in to ECR
         run: |
           aws ecr get-login-password --region eu-north-1 \
@@ -57,7 +61,9 @@ jobs:
       - name: Skip when the repository does not exist (A2A test off)
         id: repo
         run: |
-          if aws ecr describe-repositories --region eu-north-1 --repository-names dev-voice-gateway-a2a >/dev/null 2>&1; then
+          # The CI role may not DescribeRepositories; BatchCheckLayerAvailability (allowed) fails only when the repository is missing.
+          if aws ecr batch-check-layer-availability --region eu-north-1 --repository-name dev-voice-gateway-a2a \
+              --layer-digests sha256:0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"

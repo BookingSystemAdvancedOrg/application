@@ -392,32 +392,42 @@ GUARANTEE_LINK_SENT = {
 }
 # A language the line cannot speak (owner 2026-11-20: never silently Swedish): said in the caller's own
 # language when the voice can read it, then in English, offering English or Swedish or a callback.
+# Live test 2026-11-20: one question at a time (a yes to a three-way offer was taken as the callback). First
+# whether to continue in English; a no asks whether the restaurant may call back (UNSUPPORTED_ASK_CALLBACK).
+# [NEEDS YOUR OK: native review of the reworded sentences]
 UNSUPPORTED_LANGUAGE = {
-    SV: ("Jag beklagar, jag kan inte tala ditt språk på den här linjen ännu. Vi kan fortsätta på svenska eller "
-         "engelska, eller så ringer restaurangen upp dig."),
-    EN: ("I am sorry, I cannot speak your language on this line yet. We can continue in English or Swedish, or "
-         "the restaurant can call you back."),
-    "ar": ("عذراً، لا أستطيع التحدث بلغتكم على هذا الخط بعد. يمكننا المتابعة بالإنجليزية أو السويدية، أو يمكن "
-           "للمطعم معاودة الاتصال بكم."),
-    "fa": ("متأسفم، هنوز نمی‌توانم در این خط به زبان شما صحبت کنم. می‌توانیم به انگلیسی یا سوئدی ادامه دهیم، "
-           "یا رستوران با شما تماس بگیرد."),
-    "bs": ("Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo nastaviti na engleskom ili "
-           "švedskom, ili vas restoran može nazvati."),
-    "hr": ("Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo nastaviti na engleskom ili "
-           "švedskom, ili vas restoran može nazvati."),
-    "sr": ("Žao mi je, na ovoj liniji još ne mogu da govorim vaš jezik. Možemo da nastavimo na engleskom ili "
-           "švedskom, ili vas restoran može pozvati."),
-    "id": ("Mohon maaf, saya belum bisa berbicara dalam bahasa Anda di saluran ini. Kita bisa melanjutkan dalam "
-           "bahasa Inggris atau Swedia, atau restoran dapat menelepon Anda kembali."),
-    "no": ("Beklager, jeg kan ikke snakke språket ditt på denne linjen ennå. Vi kan fortsette på engelsk eller "
-           "svensk, eller restauranten kan ringe deg tilbake."),
-    "uk": ("Перепрошую, на цій лінії я поки не можу говорити вашою мовою. Ми можемо продовжити англійською або "
-           "шведською, або ресторан вам передзвонить."),
-    "so": ("Waan ka xumahay, weli kuma hadli karo luqaddaada khadkan. Waxaan ku sii wadi karnaa Ingiriis ama "
-           "Iswiidhish, ama makhaayaddu way kuu soo wici kartaa."),
-    "ur": ("معذرت، میں ابھی اس لائن پر آپ کی زبان نہیں بول سکتا۔ ہم انگریزی یا سویڈش میں بات جاری رکھ سکتے "
-           "ہیں، یا ریسٹورنٹ آپ کو واپس کال کر سکتا ہے۔"),
+    SV: "Jag beklagar, jag kan inte tala ditt språk på den här linjen ännu. Kan vi fortsätta på engelska?",
+    EN: "I am sorry, I cannot speak your language on this line yet. Shall we continue in English?",
+    "ar": "عذراً، لا أستطيع التحدث بلغتكم على هذا الخط بعد. هل نتابع بالإنجليزية؟",
+    "fa": "متأسفم، هنوز نمی‌توانم در این خط به زبان شما صحبت کنم. به انگلیسی ادامه بدهیم؟",
+    "bs": "Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo li nastaviti na engleskom?",
+    "hr": "Žao mi je, na ovoj liniji još ne mogu govoriti vaš jezik. Možemo li nastaviti na engleskom?",
+    "sr": "Žao mi je, na ovoj liniji još ne mogu da govorim vaš jezik. Možemo li da nastavimo na engleskom?",
+    "id": ("Mohon maaf, saya belum bisa berbicara dalam bahasa Anda di saluran ini. Bisakah kita lanjutkan dalam "
+           "bahasa Inggris?"),
+    "no": "Beklager, jeg kan ikke snakke språket ditt på denne linjen ennå. Kan vi fortsette på engelsk?",
+    "uk": "Перепрошую, на цій лінії я поки не можу говорити вашою мовою. Продовжимо англійською?",
+    "so": "Waan ka xumahay, weli kuma hadli karo luqaddaada khadkan. Ma ku sii wadnaa Ingiriis?",
+    "ur": "معذرت، میں ابھی اس لائن پر آپ کی زبان نہیں بول سکتا۔ کیا ہم انگریزی میں بات جاری رکھیں؟",
 }
+# The caller said no to English: the second question, alone.
+UNSUPPORTED_ASK_CALLBACK = {
+    SV: "Vill du att restaurangen ringer upp dig?",
+    EN: "Would you like the restaurant to call you back?",
+    "ar": "هل تريدون أن يعاود المطعم الاتصال بكم؟",
+    "fa": "می‌خواهید رستوران با شما تماس بگیرد؟",
+    "bs": "Želite li da vas restoran nazove?",
+    "hr": "Želite li da vas restoran nazove?",
+    "sr": "Da li želite da vas restoran pozove?",
+    "id": "Apakah Anda ingin restoran menelepon Anda kembali?",
+    "no": "Vil du at restauranten ringer deg tilbake?",
+    "uk": "Бажаєте, щоб ресторан вам передзвонив?",
+    "so": "Ma rabtaa in makhaayaddu kuu soo wacdo?",
+    "ur": "کیا آپ چاہتے ہیں کہ ریسٹورنٹ آپ کو واپس کال کرے؟",
+}
+# A yes to English, or a no to the callback: the call goes on in English.
+UNSUPPORTED_CONTINUE = {EN: "Good, we continue in English. How may I help you?"}
+UNSUPPORTED_NO_CALLBACK = {EN: "Of course. How may I help you?"}
 # Said when the caller still cannot continue: Booqy has asked the restaurant to call back.
 UNSUPPORTED_CALLBACK = {
     SV: "Restaurangen ringer upp dig så snart som möjligt. Tack för samtalet.",
@@ -479,11 +489,14 @@ def _readable(text, voice_lang):
     return script(text) == script(sample)
 
 
-def unsupported_language(code=None, callback=False, *, connect=False, current=SV):
+def unsupported_language(code=None, callback=False, *, connect=False, current=SV, ask_callback=False):
     """The fixed "I cannot speak your language yet" sentences: in the
     caller's language `code` when there is one and the call's voice can read
-    it (on the Connect line the voice of `current`), then in English."""
-    sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_LANGUAGE
+    it (on the Connect line the voice of `current`), then in English.
+    `ask_callback`: the second question (whether the restaurant may call
+    back); `callback`: the confirmation that it will."""
+    sentences = UNSUPPORTED_CALLBACK if callback else UNSUPPORTED_ASK_CALLBACK if ask_callback else \
+        UNSUPPORTED_LANGUAGE
     own = sentences.get(code) if code not in (None, EN) else None
     if own and connect and not _readable(own, current):
         own = None
@@ -674,6 +687,9 @@ Never say a year unless the caller does. Never use lists, symbols, dashes or mar
 When the caller names a time without the part of the day ("seven", "half past seven"), it means the \
 offered time with that hour on the clock face: half past seven is 19:30, never 17:30. If two offered times \
 fit, ask which one.
+A half hour counts toward the next hour in Swedish, Norwegian, Danish, German and Dutch: "halv sju" \
+(Swedish), "halv syv" (Norwegian, Danish), "halb sieben" (German) and "half zeven" (Dutch) all mean 18:30, \
+half past six, never 19:30. In English "half past six" is 18:30 and "half seven" is 19:30.
 Say a price in words with the currency, for example "hundrafemtio kronor".
 
 # Goal: booking a table
@@ -681,7 +697,9 @@ Say a price in words with the currency, for example "hundrafemtio kronor".
 2. Call get_availability (any day from today until the last bookable day). Offer only times the tool returned: at most three, nearest the wished time first. If requestedTimeFree is true, the wished time is free: say so and offer it; never call it taken. If it is false, say it is taken and offer the nearest.
    If the day is full or closed, say so and offer the days in nextDays, once.
    If the result has "say", follow it.
-3. When the caller picks a time, call hold_table. If it returns other times, offer those instead. \
+3. When the caller picks a time, call hold_table once, for that one time only: never hold several times to \
+compare them (get_availability lists the free times), and each new hold replaces the previous one. Read back \
+only the time of your latest hold. If it returns other times, offer those instead. \
 Never mention the hold: when it succeeds, simply ask for the name.
 4. Ask for the name the booking should be under. If the name is unusual or unclear, ask the caller to spell it.
 5. Read back everything in one sentence: the day, the time, the number of guests and the name, \

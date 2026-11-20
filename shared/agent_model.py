@@ -163,6 +163,9 @@ CONFIRMATIONS = {   # tool -> (sv, en) said after its tool_result
               "Something went wrong, sorry. Would you like someone to call you back?"),
 }
 _ACTION = {"cancel": ("avboka", "cancel"), "move": ("flytta", "move")}
+# A card guarantee without readable terms (phone agent tools: guaranteeLinkNoTerms), said before the read-back.
+CARD_NEEDED = ("För den bokningen behövs ett kort som garanti, men inget dras nu.",
+               "That booking needs a card as a guarantee, but nothing is charged now.")
 # Tool results that carry a `code` and a `say` hint (phone agent tools): what the simulator says.
 CODE_SENTENCES = {
     "pastDate": ("Den dagen har tyvärr redan varit. Vilken dag menar du?",
@@ -571,9 +574,12 @@ class SimulatedAgentModel(external_client.Simulated, AgentModel):
             return self._say("find_reservations", lang, date=found[0].get("date", ""),
                              time=found[0].get("time", ""), action=action)
         if name == "hold_table":
-            return self._say("hold_table", lang, date=result.get("date", slots.get("date", "")),
+            said = self._say("hold_table", lang, date=result.get("date", slots.get("date", "")),
                              time=result.get("time", slots.get("time", "")),
                              partySize=result.get("partySize", slots.get("partySize", "")))
+            terms = (result.get("guaranteeTerms") or {}).get("sentence") or (
+                CARD_NEEDED[0 if lang == _SV else 1] if result.get("guaranteeRequired") else None)
+            return Turn(text=f"{terms} {said.text}") if terms else said     # the card terms before the read-back
         if name == "get_menu" and "dishes" in result:
             summary = ", ".join(f"{d.get('name')} {d.get('price', '')} kr".strip() for d in result["dishes"])
             return self._say(name, lang, summary=summary)

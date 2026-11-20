@@ -73,7 +73,8 @@ def test_connect_calls_get_the_aws_list_and_other_calls_the_elevenlabs_list():
 
 def test_unsupported_language_is_said_in_the_callers_language_then_english():
     en = copy.UNSUPPORTED_LANGUAGE["en"]
-    assert "English or Swedish" in en and "call you back" in en and "Arabic" not in en
+    # one question at a time (live test 2026-11-20): English first, the callback only after a no
+    assert en.endswith("Shall we continue in English?") and "call you back" not in en and "Arabic" not in en
     assert copy.unsupported_language() == en
     # Bosnian on the Connect line: Elin can read the Latin script, so Bosnian first, then English
     assert copy.unsupported_language("bs", connect=True) == f"{copy.UNSUPPORTED_LANGUAGE['bs']} {en}"

@@ -142,19 +142,54 @@ def _after_cut(result, state, disclose_now):
 
 def _unsupported_reply(executor, state, code, messages, connect=False, current="sv"):
     """A language the line cannot speak: the fixed sentences in the caller's
-    language (when the call's voice can read it) and in English, offering
-    English, Swedish or a callback; never a silent Swedish answer. The second
-    time the caller still cannot continue, Booqy asks the restaurant to call
-    back (topic language:<code>) and ends."""
+    language (when the call's voice can read it) and in English, asking one
+    question: whether to continue in English (state unsupportedStep); never a
+    silent Swedish answer. `current` is the language of the voice that speaks
+    it (on the Connect line the call switches to English first, so the
+    English voice says the English sentence). When the caller again speaks
+    the language (not a yes or a no), Booqy asks the restaurant to call back
+    (topic language:<code>), says so and ends."""
     again = state.get("unsupported") == code
     state["unsupported"] = code
     if again and not state.get("callbackId"):
         executor.request_callback({"topic": f"language:{code}"})
     reply = copy.unsupported_language(code, callback=again, connect=connect, current=current)
     if again:
+        state.pop("unsupportedStep", None)
         state.setdefault("providerActions", []).append({"name": "end_call", "arguments": {"reason": "callback"}})
+    else:
+        state["unsupportedStep"] = "english"
     agent.replace_last_reply(messages, reply)
     return reply
+
+
+def _unsupported_answer(executor, state, answer, messages, connect=False, current="sv"):
+    """The caller's yes or no (language.yes_no, any language) to the one
+    question Booqy asked after a language the line cannot speak, answered
+    without the model (live test 2026-11-20: "بله" to a three-way offer was
+    taken as the callback). Continue in English? yes: English; no: may the
+    restaurant call back? yes: the callback, confirmed (in English, and in
+    the caller's language when the voice reads it), and the end; no:
+    English. Returns (reply, the language to continue in or None)."""
+    code = state.get("unsupported")
+    step = state.pop("unsupportedStep", None)
+    target = None
+    if step == "english" and answer == "yes":
+        state.pop("unsupported", None)
+        reply, target = copy.UNSUPPORTED_CONTINUE["en"], "en"
+    elif step == "english":
+        state["unsupportedStep"] = "callback"
+        reply = copy.unsupported_language(code, connect=connect, current=current, ask_callback=True)
+    elif answer == "yes":
+        if not state.get("callbackId"):
+            executor.request_callback({"topic": f"language:{code}"})
+        reply = copy.unsupported_language(code, callback=True, connect=connect, current=current)
+        state.setdefault("providerActions", []).append({"name": "end_call", "arguments": {"reason": "callback"}})
+    else:
+        state.pop("unsupported", None)
+        reply, target = copy.UNSUPPORTED_NO_CALLBACK["en"], "en"
+    messages.append({"role": "assistant", "content": reply})
+    return reply, target
 
 
 def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, loc, config, at, add_callback,
@@ -210,11 +245,19 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
                                  phone_known=executor.caller_known, unsupported=state.get("unsupported"),
                                  resume=bool(state.pop("resume", None)), switched=switch_note,
                                  asked=state.get("askedSwitch"), locked=locked)
-    result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang,
-                            keep_preamble=disclose_now)
-    _after_cut(result, state, disclose_now)
-    decided = _after_turn(lang, hint, result, caller_text, state, allowed, locked, names=names,
-                          prompt_lang=prompt_lang, switches=switches)
+    answer = language.yes_no(caller_text) if state.get("unsupportedStep") else None
+    if answer:      # the yes or no to Booqy's own unsupported-language question: no model turn
+        messages.append({"role": "user", "content": caller_text})
+        reply, target = _unsupported_answer(executor, state, answer, messages, connect=connect, current=lang)
+        result = agent.TurnResult(reply, language=lang)
+        decided = language.Decision(target, None, "asked") if target and target != lang and target in allowed \
+            else language.Decision(lang, None, "unsupportedAnswer")
+    else:
+        result = agent.run_turn(model, messages, caller_text, executor, system=system, lang=prompt_lang,
+                                keep_preamble=disclose_now)
+        _after_cut(result, state, disclose_now)
+        decided = _after_turn(lang, hint, result, caller_text, state, allowed, locked, names=names,
+                              prompt_lang=prompt_lang, switches=switches)
     new_lang, unsupported = decided
     wrote = any(c["ok"] and c["name"] in agent.WRITES for c in result.tool_calls)
     asking = None
@@ -231,13 +274,21 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     else:
         state.pop("askedSwitch", None)
     if unsupported:
-        result.reply = _unsupported_reply(executor, state, unsupported, messages, connect=connect, current=lang)
-    elif new_lang != lang:
+        # On the Connect line each language has its own voice: the call switches to English first, so the
+        # English sentence is said by the English voice (live test 2026-11-20: Elin read it).
+        english = (state.get("unsupported") != unsupported and connect and lang != "en" and "en" in allowed
+                   and not locked)
+        result.reply = _unsupported_reply(executor, state, unsupported, messages, connect=connect,
+                                          current="en" if english else lang)
+        new_lang = "en" if english else lang
+    if (answer or unsupported or asking) and not result.cut:
+        executor.heard(result.reply, new_lang)       # the caller heard Booqy's sentence, not the model's reply
+    if new_lang != lang:
         state["langSince"] = state["turn"]
         if not pre_switched or prompt_lang != new_lang:
             _read_back_again(state, state["turn"] + 1)     # this reply may not have read it back in new_lang
             state["switchNote"] = True
-        if caller_seq:
+        if caller_seq and not (answer or unsupported):
             calls.set_turn_language(current, caller_seq, new_lang)   # the caller spoke the new language
         current, said = calls.repeat_disclosure(current, new_lang, at, new_language=True)
         if said is None and not (disclose_now and prompt_lang == new_lang):
@@ -252,7 +303,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     actions.extend(state.pop("providerActions", None) or [])
     for tool in result.tool_calls:
         calls.append_turn(call, "tool", tool["name"], at, tool_name=tool["name"], tool_ok=tool["ok"])
-    calls.append_turn(call, "agent", result.reply, at, lang=lang if unsupported else new_lang)
+    calls.append_turn(call, "agent", result.reply, at, lang=new_lang)
     result.reply = " ".join(spoken + [result.reply]).strip()
     current = calls.get_call(call["tenantId"], call["callId"])
     fields = {"agentMessages": agent.dumps(messages), "toolState": json.dumps(state, default=str),
@@ -261,7 +312,7 @@ def call_turn(call, caller_text, *, model, invoke, voice, tenant_row, location, 
     if transfer:
         fields["transfer"] = {**transfer, "at": pa.iso(at)}
     updated = calls.set_status(current, "talking", ["answered", "disclosed", "talking", "transferring"], **fields)
-    turn_log(result, total_ms=(time.monotonic() - started) * 1000, lang=lang if unsupported else new_lang,
+    turn_log(result, total_ms=(time.monotonic() - started) * 1000, lang=new_lang,
              previous=lang, decision=decided, held=held)
     return result, updated or current, state, actions
 
@@ -336,6 +387,7 @@ def sim_turn(*, tenant_id, tenant_row, location, loc, config, session_id, text, 
             state["langSince"] = state["turn"]
         if unsupported:
             result.reply = _unsupported_reply(executor, state, unsupported, messages)
+            executor.heard(result.reply, lang)
             state.pop("providerActions", None)
         elif lang not in disclosed:
             disclosed.append(lang)

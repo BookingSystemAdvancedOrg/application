@@ -25,6 +25,7 @@ from shared import agent_model, availability as shared_availability, booking_rul
 from shared.features import phone_agent as pa
 from shared.features.phone_agent import copy
 from shared.features.phone_agent import offers as of
+from shared.features.phone_agent import readback
 
 _DATE = {"type": "string", "description": "YYYY-MM-DD, from the calendar in your instructions"}
 _TIME = {"type": "string", "description": "HH:MM, 24 hour clock, on the hour or half hour"}
@@ -42,7 +43,9 @@ TOOLS = [
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
-     "description": "Check that a table can be booked at a time; writes nothing. Returns `holdId`, or other times "
+     "description": "Check that a table can be booked at the one time the caller chose; writes nothing. Call it "
+                    "once per reply: a new hold replaces the previous one, and only the latest hold can be "
+                    "booked (to compare times use get_availability). Returns `holdId`, or other times "
                     "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
                     "`guaranteeRequired` with a holdId: first say `guaranteeTerms.sentence` and ask "
                     "`guaranteeTerms.question` (no amounts unless the caller asks), then the read-back also says "
@@ -163,6 +166,16 @@ SAY = {
                       "it, read back the change and after a clear yes call move_reservation with its "
                       "reservationId; for a second table that day, offer that the restaurant calls back."),
     "nameInvalid": "The name could not be used. Ask for the name again.",
+    # Live test 2026-11-20: several holds in one reply, the read-back of one, the booking of another.
+    "holdReplaced": ("Not booked: that hold was replaced by a later one. Only `live` can be booked. If the "
+                     "caller said yes to a read-back of `live` (its day, time and number of guests), call "
+                     "create_reservation with its holdId; otherwise read `live` back and wait for a clear yes."),
+    "readBackMismatch": ("Not booked: your last reply did not read back this hold's day and time (`hold`). "
+                         "Read back exactly that day, time, number of guests and name in one sentence and "
+                         "ask whether it is correct; after a clear yes, call create_reservation again."),
+    "termsFirst": ("Not booked yet: the caller has not heard the card guarantee's terms. Say "
+                   "`guaranteeTerms.sentence` now and end with `guaranteeTerms.question` (no amounts unless "
+                   "asked). Then read back the booking, and after a clear yes call create_reservation again."),
     "phoneInvalid": "The phone number could not be used. Ask for it again, or book without a number.",
 }
 # Beside a time lookup once the caller's own booking was found: a move is not a new booking.
@@ -370,6 +383,7 @@ class Executor:
         counts as looked up in the next utterance, so a write still needs a
         read-back the caller hears first, and the next turn resumes."""
         self.state["resume"] = True
+        self.state["heard"] = self.turn       # nothing of this utterance was read back
         if self.turn is None:
             return
         now, later = int(self.turn), int(self.turn) + 1
@@ -694,23 +708,119 @@ class Executor:
         else:
             return self._counter(result, time)
         # The same table again (the model re-checks before booking): the read-back of the first check holds.
-        same = next((k for k, p in self.state["proposals"].items() if not p.get("reservationId")
+        # A replaced hold checked again is live again under its own id (its read-back still counts only
+        # if no later reply contradicted it: heard).
+        same = next((k for k, p in reversed(list(self.state["proposals"].items())) if not p.get("reservationId")
                      and (p["date"], p["time"], int(p["partySize"]), sorted(p["tableIds"])) ==
                      (day, time, party, sorted(table_ids))), None)
         hold_id = same or f"p{len(self.state['proposals']) + 1}"
+        if same:
+            self.state["proposals"][same].pop("released", None)
+            # Last in the order: _live() answers the latest hold.
+            self.state["proposals"][same] = self.state["proposals"].pop(same)
         if same and self.state["proposals"][same].get("turn") is None:
             self.state["proposals"][same]["turn"] = self.turn
         if not same:
             self.state["proposals"][hold_id] = {"date": day, "time": time, "partySize": party,
                                                 "tableIds": table_ids, "nearby": bool(kind), "turn": self.turn}
+        replaced = self._release_others(hold_id)
         note = self._guarantee_note(party)
-        if note:     # the caller is told the card terms with this hold's read-back
-            self.state["proposals"][hold_id]["guaranteeNoted"] = True
+        if note:     # the caller must hear the card terms before this hold's read-back (heard)
+            proposal = self.state["proposals"][hold_id]
+            proposal["guaranteeDue"] = "fee" if (note.get("guaranteeTerms") or {}).get("fees") else "card"
+            proposal["guaranteeNoted"] = True      # an executor that is never told what was said (tests)
         held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party,
                 **note}
+        if replaced:
+            held["replaced"] = replaced
+            held["note"] = ("This hold replaced " + ", ".join(replaced) + ": only " + hold_id + " can be booked. "
+                            "Hold only the one time the caller chose.")
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
         return held
+
+    def _live(self):
+        """(holdId, proposal) of the one hold that can be booked, else (None, None)."""
+        live = [(k, p) for k, p in self.state["proposals"].items()
+                if not p.get("released") and not p.get("reservationId")]
+        return live[-1] if live else (None, None)
+
+    def _release_others(self, hold_id):
+        """At most one live hold per call: every other unbooked hold is
+        released (nothing was written for it, so nothing is freed)."""
+        out = []
+        for k, p in self.state["proposals"].items():
+            if k != hold_id and not p.get("reservationId") and not p.get("released"):
+                p["released"] = True
+                out.append(k)
+        return out
+
+    def _summary(self, hold_id):
+        p = self.state["proposals"].get(hold_id) or {}
+        return {"holdId": hold_id, "date": p.get("date"), "weekday": _weekday(p.get("date") or ""),
+                "time": p.get("time"), "partySize": p.get("partySize")}
+
+    @property
+    def tracked(self) -> bool:
+        """The executor is told what the caller heard (heard / not_heard): the
+        read-back and the card terms are checked against the spoken replies.
+        Every call and simulator turn is (agent.run_turn, session)."""
+        return "heard" in self.state
+
+    def heard(self, reply, lang=None, *, error=False):
+        """The reply the caller heard at the end of this utterance (after any
+        replacement by session). The one live hold counts as read back in
+        this utterance only when the reply names its time and no other time
+        or weekday (readback.covers); the card terms count as said only when
+        the reply carries the fee rule. Called again in the same utterance
+        (the reply was replaced), it first undoes its earlier verdict."""
+        turn = self.turn
+        before = self.state.get("heardBefore") or {}
+        if self.state.get("heard") == turn and turn is not None:
+            if before.get("readBack") is None:
+                self.state.pop("readBack", None)
+            else:
+                self.state["readBack"] = before["readBack"]
+            for p in self.state["proposals"].values():
+                if p.get("guaranteeSaid") == turn:
+                    p.pop("guaranteeSaid", None)
+        self.state["heard"] = turn
+        self.state["heardBefore"] = {"readBack": self.state.get("readBack")}
+        hold_id, proposal = self._live()
+        if error:
+            self.state.pop("readBack", None)
+            return
+        if not proposal:
+            return
+        due = proposal.get("guaranteeDue")
+        if due and not proposal.get("guaranteeSaid") and readback.mentions_terms(reply, fees=due == "fee"):
+            proposal["guaranteeSaid"] = turn
+        verdict = readback.covers(reply, proposal["date"], proposal["time"], lang or self.language)
+        if verdict is True:
+            self.state["readBack"] = {"holdId": hold_id, "turn": turn}
+        elif verdict is False:
+            self.state.pop("readBack", None)
+
+    def _replaced(self, hold_id):
+        live_id, _ = self._live()
+        return {"ok": False, "code": "holdReplaced", "hold": self._summary(hold_id),
+                **({"live": self._summary(live_id)} if live_id else {}), "say": SAY["holdReplaced"]}
+
+    def _read_back_problem(self, hold_id, proposal):
+        """Why the caller's yes is not a yes to this hold (tracked executors)."""
+        if not self.tracked or self.turn is None:
+            return None
+        rb = self.state.get("readBack") or {}
+        turn = int(self.turn)
+        fresh = rb.get("holdId") == hold_id and rb.get("turn") is not None and int(rb["turn"]) < turn and (
+            proposal.get("turn") is None or int(rb["turn"]) >= int(proposal["turn"]))
+        said = proposal.get("guaranteeSaid")
+        if fresh and said is not None and int(rb["turn"]) < int(said):
+            fresh = False        # the read-back came before the terms: read back again after them
+        if not fresh:
+            return {"ok": False, "code": "readBackMismatch", "hold": self._summary(hold_id),
+                    "say": SAY["readBackMismatch"]}
+        return None
 
     def _counter(self, result, time):
         if result.get("nearby"):
@@ -735,7 +845,8 @@ class Executor:
         return pa.normalize_e164(str(spoken))
 
     def create_reservation(self, args):
-        proposal = self.state["proposals"].get(str(args["holdId"]))
+        hold_id = str(args["holdId"])
+        proposal = self.state["proposals"].get(hold_id)
         if not proposal:
             return {"ok": False, "code": "unknown_hold"}
         if proposal.get("reservationId"):  # a retry of the same booking
@@ -749,15 +860,27 @@ class Executor:
         if args.get("confirmed") is not True:
             return {"ok": False, **_say("notConfirmed")}
         party = int(proposal["partySize"])
-        if not proposal.get("guaranteeNoted") and self._guarantee_mode(party) == "link":
+        if proposal.get("released"):      # at most one live hold: the caller's yes is never to this one
+            return self._replaced(hold_id)
+        link = self._guarantee_mode(party) == "link"
+        noted = proposal.get("guaranteeSaid") is not None if self.tracked else proposal.get("guaranteeNoted")
+        if link and not noted and self.tracked and proposal.get("guaranteeDue"):
+            # Live test 2026-11-20: the terms were written before hold_table and never spoken.
+            note = self._guarantee_note(party, new_booking=True)
+            return {"ok": False, "code": "termsFirst", "holdId": hold_id, **note, "say": SAY["termsFirst"]}
+        if link and not noted:
             # Held while the caller's bookings were found (no card terms then): the terms and the
             # card link are said in a new read-back before the pending booking is made.
-            proposal.update({"guaranteeNoted": True, "turn": self.turn})
             note = self._guarantee_note(party, new_booking=True)
-            return {"ok": False, "code": "readBackFirst", "holdId": str(args["holdId"]), **note,
+            proposal.update({"guaranteeNoted": True, "turn": self.turn,
+                             "guaranteeDue": "fee" if (note.get("guaranteeTerms") or {}).get("fees") else "card"})
+            return {"ok": False, "code": "readBackFirst", "holdId": hold_id, **note,
                     "say": "Not booked yet. " + note["say"] + " After a clear yes, call create_reservation again."}
         if not self._heard_before(proposal.get("turn")):
             return {"ok": False, **_say("readBackFirst")}
+        problem = self._read_back_problem(hold_id, proposal)
+        if problem:
+            return problem
         booked = next((p for p in self.state["proposals"].values()
                        if p.get("reservationId") and p["date"] == proposal["date"]), None)
         if booked:   # a second booking the same day in one call: a correction, not a new table

@@ -164,9 +164,11 @@ def test_a_persian_caller_on_the_connect_line_hears_that_the_line_cannot_speak_p
     out, attrs = lex(live, "contact-fa", "Hej")
     live.model.responses = [Turn(text="[fa] سلام، برای چند نفر؟")]
     out, attrs = lex(live, "contact-fa", "سلام، می‌خواهم برای فردا یک میز رزرو کنم", attrs)
-    said = out["messages"][0]["content"]
-    assert copy.UNSUPPORTED_LANGUAGE["en"] in said                             # Elin cannot read Persian script
-    assert "سلام" not in said and attrs["lang"] == "sv" and "next" not in attrs
+    # live test 2026-11-20: the call switches to English first, so the English voice (not Elin) says it
+    assert out["messages"] == [] and attrs["next"] == "switch" and attrs["lang"] == "en" and attrs["voice"] == "Amy"
+    said = attrs["say"]
+    assert copy.UNSUPPORTED_LANGUAGE["en"] in said                             # Amy cannot read Persian script
+    assert "سلام" not in said
     row = live.live.calls.get_call(attrs["tenantId"], attrs["callId"])
     assert json.loads(row["toolState"])["unsupported"] == "fa"
 
@@ -175,7 +177,9 @@ def test_a_bosnian_caller_hears_bosnian_first_then_english_then_a_callback(live)
     out, attrs = lex(live, "contact-bs", "Hej")
     live.model.responses = [Turn(text="[bs] Dobar dan, za koliko osoba?"), Turn(text="[bs] Razumijem.")]
     out, attrs = lex(live, "contact-bs", "Dobar dan, želim rezervisati sto za sutra", attrs)
-    said = out["messages"][0]["content"]
+    assert attrs["next"] == "switch" and attrs["lang"] == "en"           # the English voice reads both
+    said = attrs["say"]
+    attrs = {k: v for k, v in attrs.items() if k not in ("next", "say")}
     assert copy.UNSUPPORTED_LANGUAGE["bs"] in said and copy.UNSUPPORTED_LANGUAGE["en"] in said
     assert said.index(copy.UNSUPPORTED_LANGUAGE["bs"]) < said.index(copy.UNSUPPORTED_LANGUAGE["en"])
     out, attrs = lex(live, "contact-bs", "Ne znam švedski, molim vas na bosanskom", attrs)

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from shared import agent_model
-from shared.features.phone_agent import copy, language
+from shared.features.phone_agent import copy, language, readback
 from shared.features.phone_agent.tools import TOOLS, read_as
 
 MAX_ROUNDS = 4          # model passes per caller utterance (tool calls in between)
@@ -27,6 +27,9 @@ KEEP_TOOL_ROUNDS = 2    # tool results older than this many rounds are shortened
 MAX_HISTORY_BYTES = 120_000
 WRITES = ("create_reservation", "move_reservation", "cancel_reservation", "request_callback", "transfer_to_staff",
           "send_guarantee_link")
+# Reads that change no booking state beyond what running them again in order repeats: when a round asks
+# for several, their Lambda calls run in parallel first (the answers are cached), then they run in order.
+PARALLEL_READS = ("get_restaurant_info", "get_availability", "get_menu")
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
@@ -152,6 +155,36 @@ def _converse(model, system, messages, seconds):
     return _within(lambda: model.converse(system, snapshot, TOOLS, max_tokens=MAX_TOKENS, **extra), seconds)
 
 
+def _prefetch(executor, uses, seconds):
+    """Several reads in one round (two days, the menu and the hours): their
+    Lambda calls run at the same time on forks, whose GET answers warm the
+    executor's cache, so the reads in order (which change the call's state)
+    take one round trip instead of several (live test 2026-11-20: p95 6.8 s
+    for tool turns). Anything late is simply run again in order."""
+    reads = [u for u in uses if u.name in PARALLEL_READS]
+    if len(reads) < 2 or not hasattr(executor, "fork") or seconds <= 0:
+        return
+    twins = [executor.fork() for _ in reads]
+    pool = ThreadPoolExecutor(len(reads))
+    futures = [pool.submit(twin.run, use.name, use.input) for twin, use in zip(twins, reads)]
+    pool.shutdown(wait=False)
+    deadline = time.monotonic() + seconds
+    for twin, future in zip(twins, futures):
+        try:
+            future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001 - a late or failed prefetch is run again in order
+            continue
+        if hasattr(executor, "_cache"):
+            executor._cache.update(twin._cache)
+
+
+def _heard(executor, text, lang, *, error=False):
+    """Tells the executor what the caller heard at the end of the turn (the
+    read-back and the card terms are checked against it: tools.Executor.heard)."""
+    if hasattr(executor, "heard"):
+        executor.heard(text, lang, error=error)
+
+
 def _tool(executor, use, seconds):
     """A write always runs to its end on the call's state (never left
     half-known: no double booking); a read runs on a fork that is joined
@@ -226,8 +259,11 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     Text the model writes before a lookup or a write ("one moment, I am
     checking") is left out when a later round answers: the caller hears the
     whole reply only once the turn ends, so it would only repeat. The
-    goodbye written with end_call is kept; `keep_preamble` keeps it all
-    (the model was asked to say the disclosure sentence itself in this reply)."""
+    goodbye written with end_call is kept, and so is text that carries the
+    card guarantee's fee rule (live test 2026-11-20: dropped, never said);
+    `keep_preamble` keeps it all (the model was asked to say the disclosure
+    sentence itself in this reply). The reply the caller hears is passed to
+    `executor.heard` (the read-back and the terms are checked against it)."""
     started = time.monotonic()
     deadline = started + budget_s
     compact(messages)
@@ -240,7 +276,13 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     def failed(rounds):
         text = error_sentence(lang)
         messages.append({"role": "assistant", "content": text})
+        _heard(executor, text, lang, error=True)
         return done(TurnResult(text, calls, ms(), error=True, rounds=rounds))
+
+    def answered(rounds):
+        text = _said(spoken, code)
+        _heard(executor, text, code or lang)
+        return done(TurnResult(text, calls, ms(), language=code, rounds=rounds))
 
     def cut(rounds):
         text = still_checking(lang, spoken, max(0, int(getattr(executor, "turn", None) or 1) - 1))
@@ -292,14 +334,17 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
             text = _whole_sentences(text) if turn.stop_reason == "max_tokens" else (text or "").strip()
             text = spoken_text(text, tagged or lang)
             preamble = bool(turn.tool_uses) and not all(u.name == "end_call" for u in turn.tool_uses)
+            if preamble and readback.mentions_terms(text):
+                preamble = False     # the card guarantee's fee rule written before a tool: the caller must hear it
             if text and text not in [t for _, t, _ in spoken]:
                 spoken.append((tagged, text, preamble and not keep_preamble))
         if not turn.tool_uses:
             if not spoken:
                 return failed(rounds)          # never silence: the error sentence offers a callback
-            return done(TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds))
+            return answered(rounds)
         results, late = [], False
         tools_started = time.monotonic()
+        _prefetch(executor, turn.tool_uses, deadline - time.monotonic())
         for use in turn.tool_uses:
             left = deadline - time.monotonic()
             if late or left <= 0:
@@ -319,7 +364,7 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         if spoken and all(u.name == "end_call" for u in turn.tool_uses):
             # The goodbye was said with end_call: no further round (it only repeats the goodbye).
             messages.append({"role": "assistant", "content": [{"type": "text", "text": "..."}]})
-            return done(TurnResult(_said(spoken, code), calls, ms(), language=code, rounds=rounds))
+            return answered(rounds)
     return failed(rounds)
 
 

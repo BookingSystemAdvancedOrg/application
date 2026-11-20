@@ -94,7 +94,7 @@ def test_fixed_sentences_are_polite_and_have_no_dashes():
                 assert not DASHES.search(text), name
                 assert "!" not in text and "toppen" not in text.lower(), name
     assert copy.pick(copy.ERROR, "sw") is None and copy.text(copy.ERROR, "sw") == copy.ERROR["en"]
-    assert "Swedish" in copy.unsupported_language() and "arabiska" not in copy.UNSUPPORTED_LANGUAGE["sv"]
+    assert "English?" in copy.unsupported_language() and "arabiska" not in copy.UNSUPPORTED_LANGUAGE["sv"]
 
 
 def test_prompt_is_english_names_the_language_and_lists_every_bookable_day():

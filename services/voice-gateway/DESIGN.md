@@ -1,6 +1,7 @@
 # Voice gateway: design (Stage 2, streaming)
 
-Status: skeleton committed on branch `voice-gateway`, builders work in parallel from here.
+Status: integrated on branch `voice-gateway` (2026-11-20): every part built, the 14 replay scenarios pass in
+fake mode, live runs on booqy-dev work end to end. Missing: the AWS phone adapter and deployment (section 10).
 Sources: `ASSESSMENT.md` (Stage 2, option c) and `MULTILINGUAL.md` (rules 1 to 10, scenarios A to H),
 the phone agent on origin/dev (2026-11-20).
 
@@ -303,7 +304,7 @@ call tag; never text, never numbers (log.py masks and drops).
   task, about 20 to 40 concurrent calls per task (verify with the harness), ECR, CloudWatch logs 30 days,
   config JSON in SSM.
 - IAM call-out (new task role, no OIDC or deploy-role change in this step): transcribe:StartStreamTranscription
-  (eu-north-1), polly:SynthesizeSpeech (eu-central-1), bedrock:InvokeModelWithResponseStream (same model
+  (eu-central-1: streaming is not served in eu-north-1), polly:SynthesizeSpeech (eu-central-1), bedrock:InvokeModelWithResponseStream (same model
   ARNs as phone-agent-call), lambda:InvokeFunction (same tool functions), DynamoDB on the PhoneAgent and
   tenant tables (same as phone-agent-call), ssm:GetParameter on its path. The CI deploy role would need
   ECS/ECR permissions: that is a deploy-role change and the owner's decision.
@@ -314,9 +315,14 @@ call tag; never text, never numbers (log.py masks and drops).
 
 ## 11. Risks and open points
 
-- VERIFY with a short live stream (builder 'listen'): sv-SE in Transcribe streaming in eu-north-1,
-  identify-language with sv-SE among the options, replay faster than real time, fa-IR and id-ID and
-  bs-BA in streaming.
+- Verified with live streams on booqy-dev (builder 'listen', 2026-11-20): Transcribe streaming answers
+  401 in eu-north-1, so the gateway streams to eu-central-1 (about 25 ms away, like Polly). sv-SE and en-GB
+  stream with partial stabilization (partials about 100 ms behind the audio, every 480 ms; the final
+  about 0.55 s after the last word), identify-language scores Swedish and English correctly, replay at 3x
+  is accepted, and a stream opens for every code in languages.TRANSCRIBE (fa-IR, id-ID, bs-BA and so-SO
+  included). Open: recognition and identification quality for Arabic and Persian on real callers.
+- Transcribe bills every streamed second, silence included (the stream carries the whole call: gating by
+  VAD would break its timeline). About the price of the call length, not of the speech.
 - webrtcvad has no arm64 Python 3.13 wheel (checked): silero via onnxruntime is the default VAD, energy
   VAD the fallback; the silero model file is pinned by sha256 in the Dockerfile.
 - Elin neural lives only in eu-central-1 (checked): every Polly call crosses to Frankfurt (about 25 ms).

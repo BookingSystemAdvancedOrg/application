@@ -240,6 +240,16 @@ def test_reconcile_knows_a_short_sentence_streamed_together_with_the_next():
                                       language="sv", at_ms=0)] == ["Nej."]          # whole words only
 
 
+def test_reconcile_knows_a_long_sentence_streamed_in_two_clauses():
+    final = ("Restaurangen tar ut en avgift om bokningen avbokas senare än tjugofyra timmar innan, "
+             "eller om ni inte kommer. Vill du ha mer information om det?")
+    streamed = [AgentSentence(0, 1, 0, "Restaurangen tar ut en avgift om bokningen avbokas senare än tjugofyra "
+                                       "timmar innan,", "sv"),
+                AgentSentence(0, 1, 1, "eller om ni inte kommer.", "sv"),
+                AgentSentence(0, 1, 2, "Vill du ha mer information om det?", "sv")]
+    assert reconcile(final, streamed, turn=1, language="sv", at_ms=0, start_index=3) == []
+
+
 def test_fixed_language_prefers_the_call_language_for_shared_sentences():
     assert fixed_language(copy.DISCLOSURE_SHORT["no"], "da") == "da"
     assert fixed_language(copy.DISCLOSURE_SHORT["no"], "no") == "no"

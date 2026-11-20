@@ -97,15 +97,17 @@ def lid_scores(language: str, text: str) -> tuple[tuple[str, float], ...]:
     return ((language, 0.55), (others[0], 0.35), (others[-1] if len(others) > 1 else "de", 0.10))
 
 
-def stt_script(scenario: Scenario):
-    """One ScriptedUtterance per piece, keyed by the label the caller audio is sent with."""
+def stt_script(scenario: Scenario, audio=None):
+    """One ScriptedUtterance per piece, keyed by the label the caller audio is sent with. With the rendered `audio`
+    (prepare_audio), each line knows its audio's length, so the fake recogniser's partials follow the speech."""
     from vg_harness.caller_audio import piece_label
     from voice_gateway.listen.transcribe import ScriptedUtterance
     script = []
     for i, step in enumerate(scenario.steps):
         for j, piece in enumerate(step.pieces):
+            duration = len(audio[i][j].pcm) // 32 if audio else None          # canonical PCM16 16 kHz
             script.append(ScriptedUtterance(piece_label(scenario.key, i, j), piece.text, step.language,
-                                            lid_scores(step.language, piece.text), 0.9))
+                                            lid_scores(step.language, piece.text), 0.9, duration))
     return script
 
 
@@ -118,6 +120,11 @@ def prepare_audio(scenario: Scenario, *, allow_network: bool = False, synth_fall
 
 
 # --- the caller ------------------------------------------------------------------------------------------------------
+
+# A caller answers a reply, not an "mm": assistant audio counts as the reply once one utterance has played this long
+# (longer than any backchannel clip, about 200 to 520 ms).
+REPLY_MIN_MS = 700
+
 
 async def _wait(coro) -> bool:
     """Runs a CallerSide wait; a timeout or a call that ended meanwhile is not an error here (the assertions say
@@ -142,7 +149,7 @@ async def drive_caller(scenario: Scenario, adapter, clock, audio, *, reply_timeo
             await _wait(caller.wait_assistant_audio(min_ms=max(1, step.after_ms), timeout_ms=reply_timeout_ms))
         elif step.trigger == "after_quiet":
             # the reply (or the greeting) first, then its end: a quiet gap before the reply even starts must not count
-            await _wait(caller.wait_assistant_audio(min_ms=1, timeout_ms=reply_timeout_ms))
+            await _wait(caller.wait_assistant_audio(min_ms=REPLY_MIN_MS, timeout_ms=reply_timeout_ms))
             await _wait(caller.wait_assistant_quiet(quiet_ms=quiet_ms if quiet_ms is not None else 700))
         for j, piece in enumerate(audio[i]):
             start = clock.now_ms()
@@ -150,7 +157,7 @@ async def drive_caller(scenario: Scenario, adapter, clock, audio, *, reply_timeo
             segments.append(Segment(i, j, piece.label, piece.text, piece.language, start, clock.now_ms(), piece.source))
             if piece.pause_after_ms and j < len(audio[i]) - 1:
                 await caller.silence_ms(piece.pause_after_ms)
-    await _wait(caller.wait_assistant_audio(min_ms=1, timeout_ms=reply_timeout_ms))
+    await _wait(caller.wait_assistant_audio(min_ms=REPLY_MIN_MS, timeout_ms=reply_timeout_ms))
     await _wait(caller.wait_assistant_quiet(quiet_ms=end_quiet_ms))
     await caller.hang_up()
     return segments
@@ -302,13 +309,14 @@ async def run_fake(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"
     log = io.StringIO()
     with fake_world(scenario.tenant, now_ms=clock.now_ms, glosses=glosses, languages=languages) as world, \
             inline_threads(), contextlib.redirect_stdout(log):
-        stt = FakeSttFactory(script=stt_script(scenario))
+        stt = FakeSttFactory(script=stt_script(scenario, audio))
         tts = RecordingTts(FakeTts())
         clips = ClipCache(FakeTts(), cfg.speak, cfg.backchannel, cache_dir=None)
         await clips.warm(_spoken_languages(scenario))
         adapter = LocalAdapter(clock, call_ref=f"harness-{scenario.key}", dialed=world.number, caller=scenario.caller,
                                wire_format=TELEPHONY_MULAW_8K if wire == "mulaw" else PCM16_16K, paced=True,
                                echo_db=echo_db, noise_dbfs=noise_dbfs)
+        stt.labeller = adapter.label_at      # the script follows the caller audio's labels, not the energy segments
         if on_adapter:
             on_adapter(adapter)
         comps = Components(

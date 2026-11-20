@@ -92,8 +92,9 @@ def readback_repeated_after_barge_in(sc: Scenario, r: Result) -> str | None:
     if not pairs:
         return "readback_repeated_after_barge_in: no BargeIn recorded"
     at = pairs[0][0].at_ms
+    hold_marks = {id(e) for e in an.holds(r.events)}
     again = [e for e in r.events if e.at_ms > at and (
-        (isinstance(e, an.AgentTurnDone) and e.awaiting_confirmation) or (isinstance(e, an.ToolFinished) and e.name == "hold_table"))]
+        (isinstance(e, an.AgentTurnDone) and e.awaiting_confirmation) or id(e) in hold_marks)]
     if not again:
         return "readback_repeated_after_barge_in: no new read-back (hold or awaiting confirmation) after the barge-in"
     spoken = [p for p in an.playbacks(r.events) if p.kind in an.ASSISTANT_KINDS and p.at_ms > again[0].at_ms - 1]
@@ -146,10 +147,11 @@ def booked_only_after_yes(sc: Scenario, r: Result) -> str | None:
     writes = _reservations(r)
     for w in writes:
         confirmed, held, heard = False, False, True
+        hold_marks = {id(e) for e in an.holds(r.events)}
         for e in r.events:
             if e.at_ms > w["at_ms"]:
                 break
-            if isinstance(e, an.ToolFinished) and e.name == "hold_table":
+            if id(e) in hold_marks:
                 held, heard, confirmed = True, True, False
             elif isinstance(e, an.BargeIn) and held and not confirmed:
                 heard = False

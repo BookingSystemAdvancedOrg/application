@@ -7,9 +7,12 @@
       FakeTts and a scripted brain (no AWS).
   python -m voice_gateway.server ws [--port 8765]
       WebSocketAdapter on 127.0.0.1 for manual tests.
-  python -m voice_gateway.server serve
-      Fargate (later, DESIGN.md 10): config from SSM, /health on :8080,
-      the AWS phone adapter. Not built in this step: exits with 2.
+  python -m voice_gateway.server serve [--port 8080]
+      the container's process (Fargate later, DESIGN.md 10): GET /health
+      on :8080 (the Docker HEALTHCHECK) and the clip cache warmed for every
+      spoken language. It answers no calls yet: the AWS phone adapter is
+      the missing piece, so /health says "phoneAdapter": "missing" (still
+      200: the process is healthy, there is just no line to take calls).
 Process start: GatewayConfig, ClipCache.warm for every languages.SPOKEN
 code with a token or filler (never blocks accepting calls).
 
@@ -45,7 +48,9 @@ def parser() -> argparse.ArgumentParser:
     ws = sub.add_parser("ws", help="WebSocketAdapter on 127.0.0.1 for manual tests")
     ws.add_argument("--port", type=int, default=8765)
     ws.add_argument("--fake", action="store_true")
-    sub.add_parser("serve", help="Fargate service (later)")
+    serve = sub.add_parser("serve", help="the container process: /health, warm clips (no phone adapter yet)")
+    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--host", default="0.0.0.0")   # noqa: S104  (inside the container, behind the task's security group)
     return p
 
 
@@ -97,6 +102,7 @@ async def run_local(args, cfg: GatewayConfig) -> int:
     summary = await asyncio.wait_for(CallOrchestrator(cfg, adapter, comps).run(), CALL_LIMIT_S + 30)
     acting.cancel()
     out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     adapter.save(str(out))
     out.with_suffix(".metrics.json").write_text(json.dumps(summary.metrics_summary, indent=2), "utf-8")
     log.event("local_call_done", reason=summary.end_reason)
@@ -115,12 +121,67 @@ async def run_ws(args, cfg: GatewayConfig) -> int:
     return 0
 
 
+class Health:
+    """What GET /health reports: the process state, never call content."""
+
+    def __init__(self) -> None:
+        self.clips = 0
+        self.warm = "pending"
+        self.calls = 0
+
+    def body(self) -> dict:
+        return {"status": "ok", "phoneAdapter": "missing", "clipsWarm": self.warm, "clips": self.clips,
+                "activeCalls": self.calls}
+
+
+async def health_server(health: Health, host: str, port: int) -> asyncio.AbstractServer:
+    """A minimal HTTP/1.1 responder: GET /health -> 200 JSON, anything else 404. No framework needed."""
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request = await asyncio.wait_for(reader.readline(), 5)
+            while (await asyncio.wait_for(reader.readline(), 5)) not in (b"\r\n", b"\n", b""):
+                pass                                            # headers are not needed
+            parts = request.decode("latin-1").split()
+            ok = len(parts) >= 2 and parts[0] in ("GET", "HEAD") and parts[1].split("?")[0] == "/health"
+            body = json.dumps(health.body() if ok else {"status": "not_found"}).encode()
+            head = (f"HTTP/1.1 {'200 OK' if ok else '404 Not Found'}\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
+            writer.write(head + (body if parts and parts[0] != "HEAD" else b""))
+            await writer.drain()
+        except Exception:   # noqa: BLE001  (a bad probe never takes the process down)
+            pass
+        finally:
+            writer.close()
+
+    return await asyncio.start_server(handle, host, port)
+
+
+async def run_serve(args, cfg: GatewayConfig, *, stop: asyncio.Event | None = None) -> int:
+    health = Health()
+    server = await health_server(health, args.host, args.port)
+    log.event("serve_started", port=server.sockets[0].getsockname()[1], phone_adapter="missing")
+    comps = components(cfg, RealClock(), fake=False)
+
+    async def warm_clips() -> None:
+        await warm(comps)
+        health.clips, health.warm = len(comps.clips), "done"
+
+    warming = asyncio.create_task(warm_clips())
+    try:
+        await (stop.wait() if stop is not None else asyncio.Future())
+    finally:
+        warming.cancel()
+        server.close()
+        await server.wait_closed()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     cfg = GatewayConfig.from_env()
     if args.mode == "serve":
-        log.event("serve_not_built", level="warning")
-        return 2
+        return asyncio.run(run_serve(args, cfg))
     runner = run_local if args.mode == "local" else run_ws
     return asyncio.run(runner(args, cfg))
 

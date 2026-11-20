@@ -2,7 +2,7 @@
 # The shared/ code it imports needs boto3 (same pin as the application root).
 boto3==1.43.66
 amazon-transcribe==0.6.4
-awscrt==0.38.2
+awscrt==0.26.1  # amazon-transcribe 0.6.4 requires awscrt~=0.26.1
 numpy==2.5.5
 onnxruntime==1.32.0
 websockets==17.4

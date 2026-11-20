@@ -44,10 +44,14 @@ class Speaker:
         self.queue = SpeechQueue(tts, cfg.speak, clock)
         self.mixer: OutputMixer = OutputMixer(cfg, adapter, self.queue, clips, bus, clock)
         self.backchannels = BackchannelController(cfg.backchannel, rng=random.Random(rng_seed), language=language,
-                                                  available=clips.has_backchannel)
+                                                  available=clips.has_backchannel, duration=self._clip_ms)
         self.fillers = FillerPolicy(cfg.speak)
         self._requests: list[BackchannelRequest] = []
         bus.listen(self._on_event)
+
+    def _clip_ms(self, language: str, token: str) -> int | None:
+        clip = self.clips.backchannel(language, token)
+        return clip.duration_ms if clip is not None else None
 
     def _on_event(self, ev) -> None:
         if isinstance(ev, _CONTROLLER_EVENTS):

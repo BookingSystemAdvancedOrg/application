@@ -77,6 +77,7 @@ from voice_gateway.speak.tts import Tts
 
 TICK_MS = 100
 DRAIN_TIMEOUT_MS = 30000
+FIXED_INDEX = 900                  # item index of the gateway's own sentences (the brain's count from 0)
 TURN_SAVE_WAIT_MS = 12000          # a running turn may finish its writes before the call ends (agent budget 8 s)
 
 
@@ -162,6 +163,7 @@ class CallOrchestrator:
         self._ending: str | None = None
         self._tasks: list[asyncio.Task] = []
         self._helpers: set[asyncio.Task] = set()
+        self._fixed_seq = 0
 
     # -- public ------------------------------------------------------------------------------
 
@@ -600,7 +602,10 @@ class CallOrchestrator:
         return text, fixed_language(text, self._language) or self._language
 
     def _say(self, text: str, language: str, *, kind: str = "fixed") -> str:
-        return self.speaker.say(text, language, kind=kind, turn=self._gen, index=0)
+        """A sentence of the gateway's own (disclosure, still there, transfer, error). Its item id never collides
+        with the brain's sentences of the same turn ("t<gen>-s<index>"): these count from FIXED_INDEX."""
+        self._fixed_seq += 1
+        return self.speaker.say(text, language, kind=kind, turn=self._gen, index=FIXED_INDEX + self._fixed_seq)
 
     def _listen(self, reason: str) -> None:
         self._quiet_since = self.clock.now_ms()

@@ -1,37 +1,158 @@
 # voice-gateway
 
-Stage 2 of the Booqy phone agent: a streaming voice front (VAD, Amazon Transcribe streaming, turn and
-barge-in detection, rule based backchannels, Amazon Polly) around the unchanged phone agent in
-`shared/features/phone_agent`. Design, ownership and interfaces: [DESIGN.md](DESIGN.md).
+Stage 2 of the Booqy phone agent: a streaming voice front around the unchanged phone agent. The caller is
+heard by a local VAD and Amazon Transcribe streaming, turns end on meaning and silence (not on a fixed
+timeout), short acknowledgements ("mm") fall in the caller's pauses, replies are spoken sentence by sentence
+by Amazon Polly while the agent is still thinking, and the agent stops within 300 ms when the caller talks
+over it. The booking itself is the existing agent in `shared/features/phone_agent` (same tools, read-back and
+clear-yes guard, real availability, owner wording, language rules): the gateway imports it and edits nothing.
 
-Status: skeleton. Interfaces are fixed; implementations are being built in parallel.
+AWS-billed services only (Transcribe, Polly, Bedrock, Fargate later); the VAD (silero) runs on the CPU in the
+container. Design, ownership and interfaces: [DESIGN.md](DESIGN.md). Languages: MULTILINGUAL.md.
 
-## Run the tests
+## Layout
 
-From the application root:
+| Folder | What |
+|---|---|
+| `voice_gateway/audio/` | frames, resampler, ring, jitter and playout buffers, WAV, LocalAdapter (simulated phone line), WebSocket adapter |
+| `voice_gateway/listen/` | VAD (silero, energy fallback), Transcribe streaming client, turn detector, barge-in, language tracker, Listener |
+| `voice_gateway/speak/` | Polly TTS, sentence chunker, speech queue, fillers, output mixer, Speaker |
+| `voice_gateway/backchannel/` | when an "mm" fits (controller), the tokens per language, the pre-rendered clip cache |
+| `voice_gateway/brain/` | AgentBrain (the phone agent's turn, streamed), StreamingAgentModel (Bedrock ConverseStream tee) |
+| `voice_gateway/orchestrator.py` | the call state machine (greeting, listening, thinking, speaking, transfer, ending) |
+| `voice_gateway/server.py` | entry points: `local`, `ws`, `serve` |
+| `tests/` | unit tests per part, the replay harness (`tests/vg_harness/`) and its 14 scenarios |
+
+## Run it locally
+
+From the application root, with Python 3.13 or later:
 
 ```
-python -m pytest services/voice-gateway -q            # contracts and pure logic (no extra deps)
-pip install -r services/voice-gateway/requirements-dev.txt
-python -m pytest services/voice-gateway -q            # everything with the runtime libraries
-VG_HARNESS=fake python -m pytest services/voice-gateway/tests/test_vg_scenarios.py -q
-AWS_PROFILE=booqy-dev VG_HARNESS=live python -m pytest services/voice-gateway/tests/test_vg_scenarios.py -q
+python -m venv .venv-vg && . .venv-vg/bin/activate
+pip install -r services/voice-gateway/requirements-dev.txt     # the gateway's runtime plus the application's dev deps
+cd services/voice-gateway
 ```
 
-The live harness calls Transcribe, Polly and Bedrock in the dev account (cents per run); tables and tool
-Lambdas stay faked, so it writes no dev data.
-
-## Run one local call
+One whole call, no AWS (fake recogniser, tone voice, scripted agent), recorded as a stereo WAV (left the
+caller, right the assistant) with a metrics JSON next to it:
 
 ```
-python -m voice_gateway.server local --caller caller.wav --out call.wav --fake
+python -m voice_gateway.server local --fake --caller tests/fixtures/listen/sv_booking.wav \
+    --transcript "Hej, jag vill boka ett bord för fyra i morgon klockan sju." --out /tmp/vg/call.wav
 ```
+
+Replay one scenario through the whole gateway and print its timeline (lanes, events, numbers, checks):
+
+```
+python -m voice_gateway.replay list
+python -m voice_gateway.replay voice-B                  # fake mode: virtual clock, free, deterministic
+python -m voice_gateway.replay all --summary            # every scenario, one line each
+python -m voice_gateway.replay lang-B --mode live       # real Transcribe, Polly, Bedrock on booqy-dev (cents)
+```
+
+Live mode uses the AWS profile `booqy-dev` (`VG_AWS_PROFILE` to change it); tables and tool Lambdas stay
+faked, so it writes no dev data. The silero model: point `VG_SILERO_MODEL` at a `silero_vad.onnx` (the
+container has it at `/opt/models/silero_vad.onnx`); without it the energy VAD is used and logged as
+`vad_fallback`.
+
+A WebSocket line for manual tests (127.0.0.1 only): `python -m voice_gateway.server ws --fake`.
+
+## Tests
+
+```
+python -m pytest services/voice-gateway -q -n auto                    # from the application root
+VG_SILERO_MODEL=/path/silero_vad.onnx python -m pytest services/voice-gateway -q -n auto
+VG_AWS=1 AWS_PROFILE=booqy-dev python -m pytest services/voice-gateway -q -m aws   # live Transcribe tests
+VG_HARNESS=off python -m pytest services/voice-gateway -q             # skip the scenarios
+```
+
+Root CI runs `python -m pytest -q -n auto` with only the application's `requirements-dev.txt` (no numpy,
+onnxruntime or amazon-transcribe). The gateway tests are written for that: pure logic and the 14 scenarios
+run there (the line is plain PCM without numpy), a test that needs a runtime library skips itself
+(`pytest.importorskip`), and the live tests are opt-in (`VG_AWS=1`, marker `aws`). Nothing here needs a
+change to `.github/`.
 
 ## Container
 
 ```
-docker build -f services/voice-gateway/Dockerfile -t voice-gateway:dev .
+docker build -f services/voice-gateway/Dockerfile -t voice-gateway:dev .      # from the application root
+docker run --rm -p 8080:8080 voice-gateway:dev
+curl -s localhost:8080/health
 ```
 
-Built from the application root (it copies `shared/` and `functions/phone-agent-call/app.py`).
-Deployment (Fargate, IAM, the AWS phone adapter) is a later step: DESIGN.md section 10.
+Python 3.13 slim, two stages: the silero model is taken from the pinned `silero-vad` wheel (no torch) and
+checked by sha256, the build fails on a mismatch. Runs as uid 10001, no secrets in the image (AWS access
+from the task role), `HEALTHCHECK` on `GET /health`. `serve` answers no calls yet (see What is missing):
+`/health` returns 200 with `"phoneAdapter": "missing"`.
+
+## Configuration
+
+Every tunable is a field of `voice_gateway/config.py` (`GatewayConfig`, sections `audio`, `vad`, `stt`,
+`language`, `turn`, `barge_in`, `backchannel`, `speak`, `brain`, `call`; all durations in ms). Override with
+one JSON document; unknown keys fail loudly:
+
+```
+VG_CONFIG_JSON='{"turn": {"filler_silence_ms": 1800}, "backchannel": {"enabled": false}}' python -m voice_gateway.server ...
+```
+
+In Fargate the same JSON comes from SSM (`/booqy/<env>/voice-gateway/config`). Environment knobs:
+`VG_CONFIG_JSON`, `VG_SILERO_MODEL`, `VG_APP_ROOT` (where `functions/phone-agent-call/app.py` lives),
+`PHONE_AGENT_MODEL_ID` (the Bedrock model, as the phone-agent-call Lambda), `VG_HARNESS` (`fake`, `live`,
+`off`), `VG_AWS=1` (live tests), `VG_AWS_PROFILE`.
+
+Regions: Transcribe streaming `eu-central-1` (it answers 401 in eu-north-1, checked live), Polly
+`eu-central-1` (Elin neural is only there), Bedrock as the phone agent.
+
+## Metrics and logs
+
+One CloudWatch Embedded Metric Format line per value, namespace `Booqy/VoiceGateway`, dimensions of low
+cardinality only (language, outcome, reason; never a call id, a phone number or any transcript text).
+
+| Metric | Per | Meaning |
+|---|---|---|
+| `EosToFirstAudio` | turn | end of the caller's speech to the first reply audio (the number that matters) |
+| `TurnDetectMs` | turn | end of speech to the turn decision |
+| `FirstSentenceMs` | turn | turn decision to the agent's first sentence |
+| `TtsFirstAudioMs` | turn | sentence to its first Polly audio |
+| `FirstBackchannelMs`, `BackchannelOverlaps` | turn | when the first "mm" came, and how many met the caller's voice (target 0) |
+| `BargeInDetectMs`, `BargeInStopMs` | turn | caller onset to detection, detection to silence on the line (target under 300) |
+| `Rounds`, `FillerPlayed` | turn | agent rounds (tools), whether a filler covered a tool call |
+| `CallMs`, `BargeIns`, `Outcome`, `FirstLanguage`, `LanguageDetected`, `LanguageSwitch` | call | the call's shape |
+
+Logs are JSON events (`state`, `brain_turn`, `barge_in`, `still_there`, `call_ended`, ...) tagged with a
+hashed call tag only. `python -m voice_gateway.server local` writes the same per-turn numbers to
+`<out>.metrics.json`; the replay harness recomputes them from the raw events and checks them.
+
+## Add a language
+
+1. Hearing: add the Transcribe streaming code to `TRANSCRIBE` in `voice_gateway/languages.py` and open one
+   live stream in that code (`VG_AWS=1` test in `tests/test_vg_listen_transcribe_sdk.py`).
+2. Speaking: the voice comes from the phone agent's own table (`pa_language.AWS_LANGUAGES` in
+   `shared/features/phone_agent/language.py`, owned by the phone agent, not by the gateway). A code with a
+   Transcribe code but no voice is heard only: it gets the fixed unsupported sentences and a callback.
+3. Conversation feel (optional, each falls back to silence or the generic rule when missing):
+   backchannel tokens in `backchannel/tokens.py` (`TOKENS`, at least one continuer), fillers in
+   `speak/fillers.py` (`FILLERS`), turn-end word lists in `listen/turn.py` (`TAILS`: filler, dangling,
+   number, short answer), backchannel words for barge-in in `listen/barge_in.py`, explicit language requests
+   in `listen/language_id.py`.
+4. A replay scenario in `tests/vg_harness/scenarios.py` (render its caller audio once with
+   `python -m voice_gateway.replay --warm`) and run it fake and live.
+
+## What is missing
+
+- **The AWS phone adapter.** Calls reach the gateway only through LocalAdapter and the WebSocket test line.
+  The real line needs an AWS-only telephony path that streams audio both ways (Amazon Connect cannot);
+  the candidate is the Amazon Chime SDK Voice Connector with origination to the gateway's SIP/RTP endpoint
+  (G.711 mu-law 8 kHz, which `TELEPHONY_MULAW_8K` already handles) behind an NLB, plus Swedish number
+  availability. It implements `audio/adapter.py: TelephonyAdapter` (accept, caller_frames, play, clear,
+  hangup, transfer). Owner decision when Stage 2 goes ahead.
+- **Deployment.** ECS Fargate ARM64, ECR, the SSM config, CloudWatch, and a new task role (Transcribe,
+  Polly, Bedrock, the tool Lambdas, the PhoneAgent and tenant tables). That is an IAM change, and pushing
+  images from CI touches the deploy role: both are the owner's call (DESIGN.md 10).
+- **Live latency.** End of speech to first audio is about 2.3 to 4.7 s on booqy-dev today, against a 1.5 s
+  target. The gateway's own part is small (turn detection 0.6 to 1.6 s by design, Polly first audio about
+  70 ms); most of it is the agent's Bedrock rounds (1.4 to 3.1 s per turn). Levers: prompt caching
+  (`BrainConfig.prompt_cache`, model support to verify), a faster model, a filler for long tool-free turns.
+- **Tuning on real calls.** VAD, turn and backchannel thresholds are tuned on Polly voices over a
+  simulated line; Arabic and Persian recognition are unverified on real callers; nobody has listened to
+  the backchannel clips yet (owner decision 7: recorded human clips).

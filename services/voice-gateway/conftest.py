@@ -15,3 +15,7 @@ ROOT = HERE.parents[1]
 for path in (HERE, ROOT, ROOT / "tests", HERE / "tests"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "aws: live tests against booqy-dev, opt-in with VG_AWS=1")

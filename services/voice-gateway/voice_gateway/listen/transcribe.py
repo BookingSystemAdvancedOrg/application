@@ -351,6 +351,7 @@ class ScriptedUtterance:
     language: str
     scores: tuple[tuple[str, float], ...] = ()
     confidence: float = 0.9
+    duration_ms: int | None = None          # the labelled audio's length: words follow the audio (see _FakeStream)
 
 
 @dataclass
@@ -361,6 +362,8 @@ class FakeSttFactory:
     opened: list[SttMode] = field(default_factory=list)
     labeller: Callable[[int], str | None] | None = None
     silence_gap_ms: int = 400               # label-less audio: this much silence ends a segment
+    partial_lag_ms: int = 100               # a word shows this long after its audio (measured live: about 100 ms)
+    partial_interval_ms: int = 480          # partials come in updates this far apart (measured live: 480 ms)
     voiced_dbfs: float = -45.0
 
     def __post_init__(self) -> None:
@@ -438,7 +441,7 @@ class _FakeStream:
                 continue
             n = len(seg.words)
             while seg.emitted < n:
-                due = seg.start + int((seg.emitted + 1) * 1000 / self.f.words_per_s)
+                due = self._due(seg, seg.emitted)
                 if seg.ended or flush:                        # the audio is over: the rest comes at once
                     seg.emitted = n
                     self._partial(seg, t)
@@ -452,6 +455,18 @@ class _FakeStream:
                 if flush or t >= final_at:
                     seg.done = True
                     self._final(seg, final_at)
+
+    def _due(self, seg: _Seg, index: int) -> int:
+        """When word `index` shows in a partial. A line with duration_ms spreads its words over the audio by length
+        (letters are a fair stand-in for syllables) and shows each one partial_lag_ms after its audio, on the next
+        partial update, as Transcribe does: a partial never runs ahead of the speech. Without it, words_per_s."""
+        if not seg.line.duration_ms:
+            return seg.start + int((index + 1) * 1000 / self.f.words_per_s)
+        total = sum(len(w) + 1 for w in seg.words)
+        upto = sum(len(w) + 1 for w in seg.words[:index + 1])
+        heard = int(seg.line.duration_ms * upto / max(1, total)) + self.f.partial_lag_ms
+        step = max(1, self.f.partial_interval_ms)
+        return seg.start + -(-heard // step) * step
 
     def _language(self, seg: _Seg) -> tuple[str, tuple[tuple[str, float], ...], float]:
         line, mode = seg.line, self.mode
@@ -501,6 +516,7 @@ class Transcriber:
         self.factory, self.ring, self.cfg, self.bus, self.clock = factory, ring, cfg, bus, clock
         self.language: str | None = None
         self.last_probe_scores: tuple[tuple[str, float], ...] = ()
+        self.last_probe_text: tuple[str, str] | None = None     # (language, text) the probe heard, see probe()
         self._live: SttStream | None = None
         self._live_id = 0
         self._mode: SttMode | None = None
@@ -688,8 +704,12 @@ class Transcriber:
                     ) -> LanguageEvidence | None:
         """A short identify-language stream over the buffered utterance only.
         Returns the evidence (source "transcribe_lid") or None; the live
-        stream is never touched. `last_probe_scores` keeps every score."""
+        stream is never touched. `last_probe_scores` keeps every score;
+        `last_probe_text` is (language, text) when every final of the probe
+        was recognised in the winning language (the utterance's text in it,
+        so a switch to that language needs no re-transcription)."""
         self.last_probe_scores = ()
+        self.last_probe_text = None
         frames = self._replay_frames(max(replay_from_ms, self._fed_end - 8000))
         if not frames or len(candidates) < 2:
             return None
@@ -735,6 +755,10 @@ class Transcriber:
                 agg[code] = agg.get(code, 0.0) + score * weight
         ordered = tuple(sorted(agg.items(), key=lambda kv: -kv[1]))
         self.last_probe_scores = ordered
+        top = ordered[0][0]
+        if all(f.language.split("-")[0] == top.split("-")[0] for f in finals):
+            text = " ".join(f.text.strip() for f in finals).strip()
+            self.last_probe_text = (top, text) if text else None
         words = sum(len(f.text.split()) for f in finals)
         return LanguageEvidence(self._now(), "transcribe_lid", ordered[0][0], ordered[0][1],
                                 total, words)

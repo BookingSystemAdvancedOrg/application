@@ -132,7 +132,7 @@ def test_short_answer_after_a_yes_no_question_is_fast():
     assert end.text == "ja" and end.at_ms - end.eos_ms <= 450
 
 
-def test_english_first_utterance_switches_and_re_transcribes_the_replayed_audio():
+def test_english_first_utterance_switches_without_waiting_for_a_re_transcription():
     async def body(clock):
         line = ScriptedUtterance("e", "hello I would like to book a table for four", "en", (("en", 0.96), ("sv", 0.02)))
         r = Rig(clock, [line])
@@ -147,9 +147,10 @@ def test_english_first_utterance_switches_and_re_transcribes_the_replayed_audio(
     d = end.language_decision
     assert (d.action, d.current, d.reason, d.switches) == (LanguageAction.SWITCH, "en", "first_utterance", 1)
     assert end.language == "en" and end.text == "hello I would like to book a table for four"
-    assert [m.language for m in r.stt.opened] == [None, "en"]             # identify, then English with replay
-    finals = r.events(SttFinal)
-    assert {f.stream_id for f in finals} >= {2}
+    assert [m.language for m in r.stt.opened] == [None, "en"]             # identify, then English from here on
+    # the identify stream already heard it in English: the TurnEnd is not held back for a replay
+    assert end.at_ms - end.eos_ms <= 1000
+    assert all(f.stream_id == 1 for f in r.events(SttFinal))
     assert any(e.source == "transcribe_lid" and e.code == "en" for e in r.events(LanguageEvidence))
     assert r.listener.tracker.current == "en" and r.listener.turn.language == "en"
 
@@ -193,6 +194,9 @@ def test_a_low_confidence_second_utterance_gets_a_lid_probe_and_switches():
     assert ends[1].language_decision.reason == "strong" and ends[1].text.startswith("actually could we")
     probes = [m for m in r.stt.opened if m.identify and m is not r.stt.opened[0]]
     assert len(probes) == 1                                                # one probe stream, nothing more
+    # the probe heard the utterance in English: its text is used, no replayed re-transcription is waited for
+    assert ends[1].at_ms - ends[1].eos_ms < 2000
+    assert r.listener.transcriber.last_probe_text[0] == "en"
 
 
 def test_explicit_language_request_switches_without_a_probe():

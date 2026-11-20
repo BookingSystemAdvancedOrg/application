@@ -97,9 +97,12 @@ class Call:
         self.tick_to(self.now + ms)
         self.speech_ms += ms
 
-    def pause(self, ms, hold=None):
+    def pause(self, ms, hold=None, *, caught_up=True):
+        """A pause; `caught_up`: the recogniser's partial for the last words arrives 100 ms in (as live)."""
         start = self.now
         self.ev(VadPause(start + 80, start, self.speech_ms))
+        if caught_up and self.c.tail_text:
+            self.ev(SttPartial(start + 100, f"s{self.seg}", self.c.tail_text, self.c.tail_text, "sv", 1))
         if hold:
             self.ev(TurnHold(start + 200, hold, 1500))
         self.tick_to(start + ms)
@@ -346,3 +349,66 @@ def test_tail_kind(text, kind):
         assert got == kind
     else:
         assert got in {kind, "complete", "short_answer"}       # listen's classifier may be finer
+
+
+# --- controller: the clip must end before the caller resumes (integration) -----------------
+
+def _with_clip_ms(ms):
+    def make(seed=0):
+        call = Call(seed=seed)
+        call.c.duration = lambda language, token: ms
+        return call
+    return make
+
+
+def test_a_clip_too_long_for_the_expected_pause_is_never_started():
+    for seed in range(20):
+        call = _with_clip_ms(300)(seed)                  # 250 ms in + 300 ms clip + margin > the 500 ms prior
+        call.speak(3000, "vi är fyra personer som vill boka bord.", first=True)
+        call.pause(700)
+        assert call.fired == [], seed
+        call = _with_clip_ms(200)(seed)
+        call.speak(3000, "vi är fyra personer som vill boka bord.", first=True)
+        start = call.now
+        call.pause(700)
+        assert len(call.fired) == 1, seed
+        assert call.fired[0].at_ms - start + 200 <= 500 - 30
+
+
+def test_a_caller_with_long_pauses_gets_room_for_longer_clips_and_short_pauses_teach_nothing():
+    call = _with_clip_ms(300)()
+    call.speak(3000, "vi är fyra personer", first=True)
+    for pause in (900, 950):                             # this caller pauses long between clauses
+        call.ev(VadPause(call.now + 80, call.now, 3000))
+        call.now += pause
+        call.ev(VadResume(call.now, pause))
+        call.speak(1000, "som vill boka ett bord")
+    assert call.c.expected_pause_ms() == 900
+    call.pause(1200)
+    assert len(call.fired) == 1
+    call = Call()
+    for pause in (120, 220, 280):                        # inside words and at commas: not learned
+        call.ev(VadResume(call.now, pause))
+    assert call.c.expected_pause_ms() == 500
+
+
+def test_nothing_before_the_recogniser_caught_up_with_the_pause():
+    call = Call()
+    call.speak(3000, "vi är fyra personer som vill boka bord.", first=True)
+    call.pause(700, caught_up=False)
+    assert call.fired == []
+
+
+def test_no_backchannel_at_a_comma_or_right_after_a_number():
+    call = Call()
+    call.speak(3000, "jag vill boka ett bord i morgon klockan sju,", first=True)
+    call.pause(700)
+    assert call.fired == []
+    call = Call()
+    call.speak(3000, "jag vill boka ett bord i morgon för fyra, nej", first=True)
+    call.pause(700)
+    assert call.fired == []
+    call = Call()
+    call.speak(3000, "jag vill boka ett bord i morgon för fyra, ehm", first=True)
+    call.pause(700, hold="filler")
+    assert call.fired == []                              # a number still counts behind a filler

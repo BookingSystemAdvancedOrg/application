@@ -38,7 +38,8 @@ def _quote(text: str, show_text: bool, limit: int = 78) -> str:
 
 def lanes(result, scenario: Scenario | None = None) -> list[str]:
     """The two-lane strip as text lines (a ruler, caller, assistant per row of LANE_WIDTH bins)."""
-    end = max([e.at_ms for e in result.events] + [s.end_ms for s in result.caller_segments] + [BIN_MS])
+    end = max([e.at_ms for e in result.events] + [s.end_ms for s in result.caller_segments] + [BIN_MS]
+              + [p.at_ms + p.duration_ms for p in an.playbacks(result.events)])   # a reply cut by the hang-up
     bins = end // BIN_MS + 2
     caller = [" "] * bins
     assistant = [" "] * bins
@@ -150,7 +151,7 @@ def numbers(result) -> list[str]:
         lines.append(f"  barge-in at {_fmt_t(b.at_ms).strip()}: detected {b.at_ms - b.speech_start_ms} ms after speech began, "
                      f"line quiet after {'?' if f is None else f'{f.stop_ms} ms'}")
     lines.append(f"  language path: {' -> '.join(an.language_path(ev))} ({an.switches(ev)} switches)")
-    names = [t.name for t in an.tools(ev)]
+    names = an.tool_names(ev)
     lines.append(f"  tools: {', '.join(names) if names else 'none'}")
     made = [c for c in result.tool_calls if c["fn"] == "create-pending-reservation" and c.get("status") == 201]
     lines.append(f"  reservations made: {len(made)}"

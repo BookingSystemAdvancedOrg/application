@@ -75,6 +75,11 @@ class Rig:
     ("det blir 18", "sv", None, "number"),
     ("klockan", "sv", None, "dangling"),
     ("jag vill ha ett", "sv", None, "dangling"),
+    ("jag skulle vilja boka bord för en.", "sv", None, "filler"),     # live: Transcribe wrote "ehm" as "en"
+    ("jag skulle vilja boka bord för. N.", "sv", None, "filler"),       # live: "ehm" as a final of its own
+    ("vi bor i", "sv", None, "dangling"),
+    ("klockan ett", "sv", None, "dangling"),                          # a time, never the filler wait
+    ("vi kommer klockan ett", "sv", None, "dangling"),
     ("it is for", "en", None, "dangling"),
     ("it is for um", "en", None, "filler"),
     ("yes", "en", "yes_no", "short_answer"),

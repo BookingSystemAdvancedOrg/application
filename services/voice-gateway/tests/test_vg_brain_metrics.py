@@ -91,4 +91,29 @@ def test_server_command_line():
     args = p.parse_args(["local", "--caller", "c.wav", "--out", "o.wav", "--fake"])
     assert args.mode == "local" and args.fake and args.dialed.startswith("+46")
     assert p.parse_args(["ws", "--port", "9000"]).port == 9000
-    assert server.main(["serve"]) == 2
+    assert p.parse_args(["serve"]).port == 8080
+
+
+def test_health_endpoint_answers_without_call_content():
+    import asyncio
+    import json as _json
+
+    async def body():
+        health = server.Health()
+        srv = await server.health_server(health, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        out = []
+        for path in ("/health", "/nope"):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            await writer.drain()
+            out.append(await reader.read())
+            writer.close()
+        srv.close()
+        await srv.wait_closed()
+        return out
+
+    ok, missing = asyncio.run(body())
+    assert ok.startswith(b"HTTP/1.1 200") and missing.startswith(b"HTTP/1.1 404")
+    data = _json.loads(ok.split(b"\r\n\r\n", 1)[1])
+    assert data == {"status": "ok", "phoneAdapter": "missing", "clipsWarm": "pending", "clips": 0, "activeCalls": 0}

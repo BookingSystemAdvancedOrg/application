@@ -256,13 +256,15 @@ def reconcile(final_reply: str, streamed: list[AgentSentence], *, turn: int, lan
     """The sentences of the authoritative reply not streamed yet, in order.
     Booqy copy is kind "fixed" in the copy's own language; the rest is
     "assistant" in `language` (the reply's language)."""
-    said = " | ".join(_norm(s.text) for s in streamed)   # a streamed chunk may hold two short sentences
+    # One running text, not one entry per chunk: a streamed chunk may hold two short sentences, and a long
+    # sentence may have been streamed as two chunks split at a comma (both are the same words in the final).
+    said = " ".join(_norm(s.text) for s in streamed)
     out, index = [], start_index
     for sentence in split_sentences(final_reply):
         key = _norm(sentence)
         if not key or f" {key} " in f" {said} ":
             continue
-        said += " | " + key
+        said += " " + key
         lang = fixed_language(sentence, language)
         out.append(AgentSentence(at_ms, turn, index, sentence, lang or language, "fixed" if lang else "assistant"))
         index += 1

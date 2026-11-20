@@ -10,9 +10,13 @@ sentences and a callback (owner 2026-11-20: no ElevenLabs, AWS voices only).
 
 Facts checked 2026-11-20 with booqy-dev: Polly neural voices in
 eu-central-1 include every voice below (Elin only there, not eu-north-1);
-the Transcribe streaming endpoint resolves in eu-north-1. VERIFY (listen
-builder, one short live stream each): sv-SE streaming, identify-language
-with sv-SE among the options, and every code marked verify below.
+the Transcribe streaming endpoint resolves in eu-north-1 but answers 401
+NotAuthorized there, so the gateway streams to eu-central-1 (SttConfig.region).
+Verified there with live streams (builder 'listen'): sv-SE and en-GB with
+partial stabilization, identify-language with sv-SE among the options, and
+a stream opens for every code in TRANSCRIBE (opening proves the code is
+accepted, not the recognition quality: Arabic and Persian are unverified on
+real callers).
 """
 
 from __future__ import annotations

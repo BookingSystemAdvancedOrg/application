@@ -11,7 +11,10 @@
         stream in the new language with replay from the utterance start,
         and the TurnEnd carries the re-transcribed text of the new stream
         (waits at most 2.5 s for it, else the original text) plus the
-        decision. Every event goes on the bus; the orchestrator consumes
+        decision. When the text was already recognised in the new language
+        (the identify-language stream of the first utterance, or the LID
+        probe), nothing is replayed or waited for: the live stream just
+        follows. Every event goes on the bus; the orchestrator consumes
         TurnEnd and BargeIn.
 
 Turn ends are enriched in a task (probe, language decision, reopen) while
@@ -56,6 +59,11 @@ class PlaybackView(Protocol):
     def assistant_item_started_ms(self) -> int | None: ...
 
     def playback_dbfs_at(self, at_ms: int) -> float: ...
+
+
+def same_language(a: str | None, b: str | None) -> bool:
+    """sv and sv-SE are the same language here (base codes compared)."""
+    return bool(a and b) and a.split("-")[0].lower() == b.split("-")[0].lower()
 
 
 class Listener:
@@ -192,20 +200,30 @@ class Listener:
             self._publish_barge(BargeIn(end.at_ms, end.speech_start_ms, "words"))
         utt = UtteranceInfo(end.at_ms, end.text, speech_ms, asr_lang, end.confidence, tuple(lid), self._first)
         cands = None if self.transcriber.identifying else self.tracker.wants_probe(utt)
+        probe_text: tuple[str, str] | None = None
         if cands:
             ev = await self.transcriber.probe(cands, replay_from_ms=end.speech_start_ms)
             if ev is not None:
                 self.bus.publish(ev)
                 utt = dataclasses.replace(utt, lid_scores=self.transcriber.last_probe_scores)
+                probe_text = self.transcriber.last_probe_text
         for evidence in self.tracker.evidence(utt):
             self.bus.publish(evidence)
         decision = self.tracker.observe(utt)
         self.bus.publish(decision)
         self._first = False
         text = end.text
-        if decision.action == LanguageAction.SWITCH:
+        if decision.action == LanguageAction.SWITCH and probe_text and same_language(probe_text[0], decision.current):
+            asr_lang, text = decision.current, probe_text[1]      # the probe already heard it in the new language
+        if decision.action == LanguageAction.SWITCH and not same_language(asr_lang, decision.current):
             self.turn.set_language(decision.current)
             text = await self._retranscribe(decision.current, end) or text
+        elif decision.action == LanguageAction.SWITCH:
+            # the text was already recognised in the new language (the identify-language stream of the first
+            # utterance, or the probe): no replay to wait for, the live stream follows from here
+            self.turn.set_language(decision.current)
+            if self.transcriber.language != decision.current or self.transcriber.identifying:
+                await self.transcriber.reopen(decision.current, self.transcriber.fed_end_ms)
         elif self.transcriber.identifying:
             await self.transcriber.reopen(self.tracker.current, self.transcriber.fed_end_ms)
         self.bus.publish(dataclasses.replace(end, text=text, language=decision.current, language_decision=decision))

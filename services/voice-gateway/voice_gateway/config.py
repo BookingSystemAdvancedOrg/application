@@ -49,7 +49,7 @@ class SttConfig:
     vocabulary_name: str | None = None  # per tenant later (restaurant and street names)
     final_wait_ms: int = 350            # after the silence threshold, wait this long for the final result
     max_reopen_replay_ms: int = 10000   # replay at most this much buffered audio into a new stream
-    replay_speed: float = 2.0           # replay pacing relative to real time (verify the limit Transcribe accepts)
+    replay_speed: float = 3.0           # replay pacing relative to real time (3x verified on booqy-dev 2026-11-20)
     idle_keepalive_ms: int = 10000      # send silence when nothing was sent for this long (stream times out at 15 s)
 
 

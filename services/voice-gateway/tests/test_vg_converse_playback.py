@@ -360,6 +360,7 @@ def test_speaker_backchannels_a_monologue_and_fills_a_slow_tool():
         bus.publish(SttPartial(t0 + 1500, "a", words, words, "sv", 1))
         await clock.sleep_ms(3000)
         bus.publish(VadPause(clock.now_ms() + 80, clock.now_ms(), 3000))
+        bus.publish(SttPartial(clock.now_ms() + 100, "a", words, words, "sv", 1))   # the recogniser caught up
         await clock.sleep_ms(500)
         bus.publish(VadResume(clock.now_ms(), 500))
         await clock.sleep_ms(1000)

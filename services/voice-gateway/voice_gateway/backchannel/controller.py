@@ -11,6 +11,10 @@ Fires only when ALL hold (BackchannelConfig):
     not yet pause_max_ms (on_tick decides inside the window; a VadResume
     cancels), and the TurnDetector has not ended the turn; a TurnHold in
     this pause makes it a better moment (hesitation), not a requirement;
+  * the recogniser has caught up: a partial arrived after the pause
+    began, so the tail below is the caller's real last words (partials
+    trail the audio by 100 ms and come every 480 ms; at a short comma pause
+    the tail is still a word or two behind, and that pause gets nothing);
   * a meaningful clause since the last backchannel: at least
     min_words_since_last new words in the partials, and the tail is not a
     number (turn.classify_tail != "number") when no_number_tail;
@@ -22,6 +26,17 @@ Fires only when ALL hold (BackchannelConfig):
   * a token exists for the caller's language (tokens.TOKENS).
 At most one request per pause. Each request is counted for metrics
 (time to first backchannel from VadStart).
+
+It must end before the caller speaks again (an "mm" over the caller is
+the one thing that sounds worse than none). The controller learns this
+caller's pauses: every pause the caller resumed from (at least
+PAUSE_SAMPLE_MIN_MS; shorter gaps, inside words or at a comma, could
+host no clip anyway) is kept, and the
+expected pause is the median of the last ones plus a prior
+(PAUSE_PRIOR_MS). A token is only chosen when its clip (duration from
+`duration(language, token)`) ends FIT_MARGIN_MS before that expected
+pause is over, so a caller with short pauses gets none, and a shorter
+token wins when time is tight.
 
 What makes it sound like a person and not a metronome:
   * the moment inside the pause is drawn per pause (pause_min_ms plus up
@@ -35,8 +50,9 @@ What makes it sound like a person and not a metronome:
     "mm"; never the same token twice in a row, recent tokens weigh less;
   * never after a question from the caller (they wait for an answer, an
     "mm" there sounds like not listening), never after a number (it could
-    be heard as confirming it), never while the caller confirms a
-    read-back.
+    be heard as confirming it), never at a comma ("fyra, nej förlåt,":
+    the caller is mid-clause and resumes within a few hundred ms), never
+    while the caller confirms a read-back.
 The assistant's own queue is the shell's business: Speaker calls on_tick
 only while the mixer is idle, and the mixer re-checks at play time;
 note_dropped() undoes the bookkeeping when the mixer refused.
@@ -45,6 +61,7 @@ note_dropped() undoes the bookkeeping when the mixer refused.
 from __future__ import annotations
 
 import random
+import statistics
 from collections import deque
 from dataclasses import dataclass
 
@@ -56,8 +73,14 @@ from voice_gateway.events import (AssistantContext, BackchannelRequest, CallStat
 
 SECOND_CHANCE = 0.6         # probability that a second backchannel in one turn is used at all
 JITTER_MS = 150             # extra wait drawn per pause on top of pause_min_ms
+PAUSE_PRIOR_MS = 500        # expected caller pause before this caller showed any (a sentence boundary)
+PAUSE_SAMPLE_MIN_MS = 300   # shorter resumed pauses (inside words, at commas) can host no clip: not learned
+PAUSE_SAMPLES = 6           # the last this many resumed pauses count
+FIT_MARGIN_MS = 30          # the clip ends at least this long before the expected resume
+TICK_MS = 20                # the shell ticks every frame: the moment can land this much after fire_after_ms
 HESITATION = frozenset({"filler", "dangling"})
 _QUESTION_END = ("?", "？", "؟")
+_COMMA_END = (",", "،", ";")   # the recogniser heard a clause go on: a comma pause is too short for a clip
 _NUMBER_WORDS = frozenset(
     "noll ett en två tre fyra fem sex sju åtta nio tio elva tolv tretton fjorton femton sexton sjutton arton "
     "nitton tjugo trettio fyrtio femtio halv kvart zero oh one two three four five six seven eight nine ten "
@@ -109,11 +132,15 @@ class _Snapshot:
 
 class BackchannelController:
     def __init__(self, cfg: BackchannelConfig, *, rng: random.Random | None = None, language: str = "sv",
-                 available=None) -> None:
+                 available=None, duration=None) -> None:
         """`available(language, token) -> bool` (optional): only tokens with a
-        ready clip are chosen (ClipCache.backchannel is not None)."""
+        ready clip are chosen (ClipCache.backchannel is not None).
+        `duration(language, token) -> int | None` (optional): the clip's
+        length in ms; without it a token is assumed to fit."""
         self.cfg, self.rng, self.language = cfg, rng or random.Random(), language
         self.available = available
+        self.duration = duration
+        self.pauses: deque[int] = deque(maxlen=PAUSE_SAMPLES)   # this caller's resumed pauses (ms)
         self.state: CallState | None = None
         self.awaiting_confirmation = False
         self.asked_question = None
@@ -124,6 +151,7 @@ class BackchannelController:
         self._segments: dict[str, int] = {}
         self._words_at_last = 0
         self.tail_text = ""
+        self.last_partial_ms: int | None = None
         self.last_ms: int | None = None
         self.last_token: str | None = None
         self.recent: deque[str] = deque(maxlen=3)
@@ -146,16 +174,21 @@ class BackchannelController:
             if self.turn_start_ms is None:
                 self.turn_start_ms = event.speech_start_ms
         elif isinstance(event, VadResume):
+            if event.pause_ms >= PAUSE_SAMPLE_MIN_MS:
+                self.pauses.append(event.pause_ms)
             self.caller_speaking, self.pause, self.hold = True, None, None
         elif isinstance(event, VadPause):
             self.caller_speaking = False
             if self.turn_start_ms is None:
                 self.turn_start_ms = event.silence_start_ms - event.speech_ms
             allowed = self.count_this_turn == 0 or self.rng.random() < SECOND_CHANCE
-            jitter = max(0, min(JITTER_MS, self.cfg.pause_max_ms - self.cfg.pause_min_ms - 100))
+            room = (self.expected_pause_ms() - FIT_MARGIN_MS - TICK_MS - self._shortest_ms()
+                    - self.cfg.pause_min_ms)
+            jitter = max(0, min(JITTER_MS, self.cfg.pause_max_ms - self.cfg.pause_min_ms - 100, room))
             self.pause = _Pause(event.silence_start_ms, event.speech_ms,
                                 self.cfg.pause_min_ms + self.rng.randint(0, jitter), allowed)
         elif isinstance(event, SttPartial):
+            self.last_partial_ms = event.at_ms
             words = len(event.text.split())
             self._segments[event.segment_id] = max(words, self._segments.get(event.segment_id, 0))
             self.tail_text = event.text
@@ -208,6 +241,34 @@ class BackchannelController:
         self.dropped += 1
 
     # -- the decision -------------------------------------------------------------------------
+    def expected_pause_ms(self) -> int:
+        """How long this caller's pause is expected to last (see the module doc)."""
+        return int(statistics.median([PAUSE_PRIOR_MS, *self.pauses]))
+
+    def _clip_ms(self, token: str) -> int:
+        if self.duration is None:
+            return 0
+        try:
+            return int(self.duration(tk.base_language(self.language), token) or 0)
+        except Exception:   # noqa: BLE001  (a missing clip is the availability check's business)
+            return 0
+
+    def _shortest_ms(self) -> int:
+        lang = tk.base_language(self.language)
+        rows = [t for t, _, _ in tk.TOKENS.get(lang, ())
+                if self.available is None or self.available(lang, t)]
+        return min((self._clip_ms(t) for t in rows), default=0)
+
+    def _fits(self, elapsed_ms: int):
+        """available() limited to tokens whose clip ends before the expected resume."""
+        budget = self.expected_pause_ms() - FIT_MARGIN_MS - elapsed_ms
+
+        def ok(language: str, token: str) -> bool:
+            if self.available is not None and not self.available(language, token):
+                return False
+            return self._clip_ms(token) <= budget
+        return ok
+
     @property
     def words(self) -> int:
         return sum(self._segments.values())
@@ -244,12 +305,24 @@ class BackchannelController:
             return "audio"
         if self.assistant_end_ms is not None and now_ms - self.assistant_end_ms < cfg.after_assistant_ms:
             return "after_assistant"
+        if self.last_partial_ms is None or self.last_partial_ms < p.silence_start_ms:
+            return "stale_text"     # the recogniser has not caught up with the pause: the tail is not known yet
         text = self.tail_text.rstrip()
         if text.endswith(_QUESTION_END):
             return "question"
-        if cfg.no_number_tail and (self.hold == "number" or self._tail() == "number"):
+        if text.endswith(_COMMA_END) and self.hold not in HESITATION:
+            return "mid_clause"
+        if cfg.no_number_tail and (self.hold == "number" or self._tail() == "number" or self._number_before_tail()):
             return "number"
         return None
+
+    def _number_before_tail(self) -> bool:
+        """The word before the last is a number ("för fyra, nej"): the newest
+        partial word is the least stable one, and the caller may be correcting
+        the number, so an "mm" could still be heard as confirming it."""
+        words = self.tail_text.split()
+        return len(words) > 1 and tail_kind(" ".join(words[:-1]), tk.base_language(self.language),
+                                            self.asked_question) == "number"
 
     def _tail(self) -> str:
         return tail_kind(self.tail_text, tk.base_language(self.language), self.asked_question)
@@ -259,13 +332,13 @@ class BackchannelController:
         why = self.blocked(now_ms)
         if why is not None:
             if p is not None and why in ("pause_over", "sparse", "short_turn", "max_per_turn", "few_words",
-                                         "confirmation", "question", "number"):
+                                         "confirmation", "question", "number", "mid_clause"):
                 p.done = True       # nothing in this pause can change that
             return []
         hesitation = self.hold in HESITATION or self._tail() in HESITATION
         token = tk.pick_token(self.language, self.rng, self.last_token,
-                              style="continuer" if hesitation else None, available=self.available,
-                              recent=tuple(self.recent))
+                              style="continuer" if hesitation else None,
+                              available=self._fits(now_ms - p.silence_start_ms), recent=tuple(self.recent))
         p.done = True               # at most one per pause, fired or not
         if token is None:
             return []

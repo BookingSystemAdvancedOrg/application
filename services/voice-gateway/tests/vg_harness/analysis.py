@@ -130,8 +130,26 @@ def tools(events) -> list[ToolStarted]:
     return of(events, ToolStarted)
 
 
-def holds(events) -> list[ToolFinished]:
-    return [e for e in of(events, ToolFinished) if e.name == "hold_table"]
+def tool_names(events) -> list[str]:
+    """Every tool the agent ran: the streamed ToolStarted events, and for a turn that streamed none (the
+    non-streaming brain, such as the scripted model of fake mode) the names its AgentTurnDone lists."""
+    streamed = {e.turn for e in of(events, ToolStarted)}
+    names = []
+    for e in of(events, ToolStarted, AgentTurnDone):
+        if isinstance(e, ToolStarted):
+            names.append(e.name)
+        elif e.turn not in streamed:
+            names.extend(e.tools)
+    return names
+
+
+def holds(events) -> list[ToolFinished | AgentTurnDone]:
+    """Where a hold (a new read-back) happened: ToolFinished("hold_table"), or the AgentTurnDone of a turn that held a
+    table without streaming its tool events."""
+    streamed = {e.turn for e in of(events, ToolFinished) if e.name == "hold_table"}
+    return [e for e in of(events, ToolFinished, AgentTurnDone)
+            if (isinstance(e, ToolFinished) and e.name == "hold_table")
+            or (isinstance(e, AgentTurnDone) and e.turn not in streamed and "hold_table" in e.tools)]
 
 
 def turn_holds(events) -> list[TurnHold]:

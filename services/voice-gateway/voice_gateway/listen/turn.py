@@ -38,6 +38,17 @@ from voice_gateway.events import AssistantContext, SttFinal, SttPartial, TurnEnd
 
 TailKind = Literal["empty", "complete", "short_answer", "filler", "dangling", "number"]
 
+# Words the recogniser writes for a hesitation sound when it follows a dangling word. Live on booqy-dev
+# (2026-11-20) Transcribe sv-SE heard "boka bord för, ehm..." as "boka bord för en.": an "en" right after a
+# preposition gets the filler wait (a real "för en", a party of one, waits only that half second longer).
+# A lone letter is a hesitation fragment too (live: "ehm" came back as a final of its own, "N."), unless the
+# language has it as a word.
+ONE_LETTER_WORDS = frozenset("i å ö a o y e u".split())
+# Only after a preposition: "klockan ett" stays a time (number).
+HESITATION_LOOKALIKES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "sv": (frozenset({"en", "ett", "e"}), frozenset("för till på i med om från vid åt".split())),
+}
+
 TAILS: dict[str, dict[str, frozenset[str]]] = {
     "sv": {
         "filler": frozenset("eh ehm öh öhm äh ähm hm hmm mm alltså typ liksom asså".split()),
@@ -121,6 +132,12 @@ def classify_tail(text: str, language: str,
     number, short = sets.get("number", frozenset()), sets.get("short_answer", frozenset())
     last = toks[-1]
     if last in filler or _HESITATION.match(last):
+        return "filler"
+    if len(last) == 1 and last.isalpha() and last not in ONE_LETTER_WORDS \
+            and not any(last in words for words in sets.values()):
+        return "filler"
+    sounds, after = HESITATION_LOOKALIKES.get(language, (frozenset(), frozenset()))
+    if len(toks) > 1 and last in sounds and toks[-2] in after:
         return "filler"
     has_digit = lambda t: any(c.isdigit() for c in t)
     if asked == "yes_no" and len(toks) <= 4 and all(t in short for t in toks):

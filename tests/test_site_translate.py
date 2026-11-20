@@ -160,9 +160,29 @@ def test_a_translate_failure_stays_swedish_and_gives_the_characters_back(app):
     assert used == {"tr-ip-chars": 3, "tr-tenant-chars": 3, "tr-global-chars": 3}
 
 
+def test_no_translate_call_starts_after_the_deadline(app, monkeypatch):
+    # A slow Translate must not run the Lambda (28 s) into a timeout: past
+    # the deadline the remaining strings stay Swedish and are given back.
+    monkeypatch.setattr(st, "DEADLINE_S", -1)
+    status, body, _ = call(app, {"lang": "en", "texts": ["Sent", "Senare"]})
+    assert status == 200 and body["texts"] == ["Sent", "Senare"] and body["partial"] is True
+    assert app["fake"].calls == []
+    used = {row["PK"].split("#")[0]: int(row["used"]) for row in app["guard"].scan()["Items"] if "used" in row}
+    assert set(used.values()) <= {0}
+
+
+def test_limit_env_names_match_terraform():
+    # infrastructure site-translate/main.tf sets these names; a mismatch
+    # silently falls back to the prod defaults in dev.
+    source = APP.read_text()
+    for name in ("SITE_TRANSLATE_IP_REQUESTS_PER_5MIN", "SITE_TRANSLATE_IP_CHARS_PER_HOUR",
+                 "SITE_TRANSLATE_TENANT_CHARS_PER_30D", "SITE_TRANSLATE_GLOBAL_CHARS_PER_30D"):
+        assert f'_limit("{name}"' in source
+
+
 def test_over_a_budget_the_misses_stay_swedish_but_hits_are_served(app, monkeypatch):
     call(app, {"lang": "en", "texts": ["Boka bord"]})
-    monkeypatch.setenv("TRANSLATE_TENANT_CHARS_PER_30D", "20")
+    monkeypatch.setenv("SITE_TRANSLATE_TENANT_CHARS_PER_30D", "20")
     status, body, _ = call(app, {"lang": "en", "texts": ["Boka bord", "En mycket lång text här"]})
     assert status == 200
     assert body == {"lang": "en", "texts": ["EN(Boka bord)", "En mycket lång text här"], "partial": True}
@@ -173,14 +193,14 @@ def test_over_a_budget_the_misses_stay_swedish_but_hits_are_served(app, monkeypa
 
 
 def test_the_ip_character_budget_is_per_ip(app, monkeypatch):
-    monkeypatch.setenv("TRANSLATE_IP_CHARS_PER_HOUR", "10")
+    monkeypatch.setenv("SITE_TRANSLATE_IP_CHARS_PER_HOUR", "10")
     assert call(app, {"lang": "en", "texts": ["Boka bord"]})[1]["partial"] is False
     assert call(app, {"lang": "en", "texts": ["Avboka"]})[1]["partial"] is True
     assert call(app, {"lang": "en", "texts": ["Avboka"]}, ip="198.51.100.8")[1]["partial"] is False
 
 
 def test_requests_per_ip_are_limited(app, monkeypatch):
-    monkeypatch.setenv("TRANSLATE_IP_REQUESTS_PER_5MIN", "2")
+    monkeypatch.setenv("SITE_TRANSLATE_IP_REQUESTS_PER_5MIN", "2")
     assert call(app, {"lang": "en", "texts": ["A b"]})[0] == 200
     assert call(app, {"lang": "en", "texts": ["A b"]})[0] == 200
     status, body, headers = call(app, {"lang": "en", "texts": ["A b"]})

@@ -58,6 +58,10 @@ LRU_SIZE = 5000
 THREADS = 8
 ATTEMPTS = 3
 BACKOFF_S = 0.3
+# No new Translate call starts later than this after the request began, so a
+# slow or throttled Translate can't run the Lambda (28 s) or API Gateway
+# (29 s) into a timeout: the late strings stay Swedish (partial) instead.
+DEADLINE_S = 15
 # Errors a retry can fix (throttling, a service hiccup).
 RETRYABLE = ("ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException",
              "InternalServerException", "LimitExceededException")
@@ -301,12 +305,16 @@ def cache_put(entries, now):
 
 # --- Amazon Translate ------------------------------------------------------------------------
 
-def translate_one(marked, lang):
-    """The raw translation of one marked text, or None (logged by code)."""
+def translate_one(marked, lang, deadline=None):
+    """The raw translation of one marked text, or None (logged by code).
+    ``deadline`` (time.monotonic()): no attempt starts after it."""
     kwargs = {"Text": marked, "SourceLanguageCode": SOURCE, "TargetLanguageCode": lang}
     if lang in FORMALITY:
         kwargs["Settings"] = {"Formality": FORMALITY[lang]}
     for attempt in range(ATTEMPTS):
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(json.dumps({"translate": "failed", "code": "deadline"}))
+            return None
         try:
             return _translate_client().translate_text(**kwargs)["TranslatedText"]
         except ClientError as exc:
@@ -322,15 +330,18 @@ def translate_one(marked, lang):
     return None
 
 
-def translate_many(items, lang):
-    """{key: raw translation or None} for [(key, marked)], 8 at a time."""
+def translate_many(items, lang, deadline=None):
+    """{key: raw translation or None} for [(key, marked)], 8 at a time.
+    ``deadline`` defaults to DEADLINE_S from now."""
     if not items:
         return {}
+    if deadline is None:
+        deadline = time.monotonic() + DEADLINE_S
     if len(items) == 1:
         key, marked = items[0]
-        return {key: translate_one(marked, lang)}
+        return {key: translate_one(marked, lang, deadline)}
     with ThreadPoolExecutor(max_workers=min(THREADS, len(items))) as pool:
-        results = pool.map(lambda item: translate_one(item[1], lang), items)
+        results = pool.map(lambda item: translate_one(item[1], lang, deadline), items)
         return {key: out for (key, _), out in zip(items, results)}
 
 

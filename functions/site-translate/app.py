@@ -35,8 +35,8 @@ PURPOSE:
 ENV_VARS:
     ENVIRONMENT, TRANSLATION_TABLE_NAME, TENANT_TABLE_NAME,
     REQUEST_GUARD_TABLE_NAME, SITE_WAF_SECRET, CLOUDFRONT_EDGE_SECRET,
-    TRANSLATE_IP_REQUESTS_PER_5MIN (120), TRANSLATE_IP_CHARS_PER_HOUR (30000),
-    TRANSLATE_TENANT_CHARS_PER_30D (500000), TRANSLATE_GLOBAL_CHARS_PER_30D
+    SITE_TRANSLATE_IP_REQUESTS_PER_5MIN (120), SITE_TRANSLATE_IP_CHARS_PER_HOUR (30000),
+    SITE_TRANSLATE_TENANT_CHARS_PER_30D (500000), SITE_TRANSLATE_GLOBAL_CHARS_PER_30D
     (5000000)
 """
 
@@ -124,9 +124,9 @@ def site_of(event, slug):
 
 def _budgets(tenant_id, ip):
     return [
-        ("tr-ip-chars", ip or "", _limit("TRANSLATE_IP_CHARS_PER_HOUR", 30000), 3600),
-        ("tr-tenant-chars", tenant_id, _limit("TRANSLATE_TENANT_CHARS_PER_30D", 500000), WINDOW_30D),
-        ("tr-global-chars", "all", _limit("TRANSLATE_GLOBAL_CHARS_PER_30D", 5000000), WINDOW_30D),
+        ("tr-ip-chars", ip or "", _limit("SITE_TRANSLATE_IP_CHARS_PER_HOUR", 30000), 3600),
+        ("tr-tenant-chars", tenant_id, _limit("SITE_TRANSLATE_TENANT_CHARS_PER_30D", 500000), WINDOW_30D),
+        ("tr-global-chars", "all", _limit("SITE_TRANSLATE_GLOBAL_CHARS_PER_30D", 5000000), WINDOW_30D),
     ]
 
 
@@ -233,7 +233,7 @@ def handler(event, context=None):
     now = datetime.now(timezone.utc)
     ip = http.source_ip(event)
     try:
-        request_guard.check([("tr-ip", ip, _limit("TRANSLATE_IP_REQUESTS_PER_5MIN", 120), 300)], now)
+        request_guard.check([("tr-ip", ip, _limit("SITE_TRANSLATE_IP_REQUESTS_PER_5MIN", 120), 300)], now)
     except request_guard.Limited as exc:
         return http.respond(429, {"error": "rate_limited"}, {"Retry-After": str(exc.retry_after)})
 

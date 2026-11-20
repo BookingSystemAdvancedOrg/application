@@ -27,8 +27,13 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class Piece:
+    """One stretch of caller speech. `gloss`: what the fake agent model (the
+    application's scripted simulator, which only knows Swedish and English)
+    reads for this text in fake mode; the fake Transcribe still hears `text`.
+    Live mode ignores it."""
     text: str
     pause_after_ms: int = 0
+    gloss: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class Expect:
     callback_topic: str | None = None
     no_invented_times: bool = False
     fee_rule: bool = False                          # fee sentence, "Vill du ha mer information om det?", no amount
+    readback_in_new_language_first: bool = False    # a switch before the yes: read-back repeated in the new language
     voice_of_each_sentence_matches_language: bool = True
     eos_to_first_audio_p50_max_ms: int | None = 1500
 
@@ -89,7 +95,7 @@ VOICE = (
     Scenario("voice-C", "Correction", (
         Step(SV, (Piece("Jag vill boka ett bord i morgon klockan sju för fyra, nej förlåt, fem personer."),)),
         Step(SV, (Piece("Ja, det stämmer."),)),
-        Step(SV, (Piece("Anna Svensson."),))),
+        Step(SV, (Piece("Anna Svensson.", gloss="Jag heter Anna Svensson."),))),
         Expect(party_size=5, booked_only_after_yes=True)),
     Scenario("voice-D", "Interruption of the read-back", (
         Step(SV, (Piece("Jag vill boka bord för två i morgon klockan åtta."),)),
@@ -100,7 +106,7 @@ VOICE = (
         Step(SV, (Piece("Hej, jag vill boka ett bord för åtta personer på lördag klockan sju."),)),
         Step(SV, (Piece("Nej tack, det går bra."),)),
         Step(SV, (Piece("Ja, det stämmer."),)),
-        Step(SV, (Piece("Karl Andersson."),))),
+        Step(SV, (Piece("Karl Andersson.", gloss="Jag heter Karl Andersson."),))),
         Expect(fee_rule=True, booked=True, booked_only_after_yes=True),
         tenant={"guaranteeFromPartySize": 7}),
     Scenario("voice-F", "Unavailable time", (
@@ -114,21 +120,23 @@ LANGUAGE = (
     Scenario("lang-A", "Swedish booking", (
         Step(SV, (Piece("Hej, jag vill boka ett bord för tre i morgon klockan sex."),)),
         Step(SV, (Piece("Ja, tack."),)),
-        Step(SV, (Piece("Lena Berg."),))),
+        Step(SV, (Piece("Lena Berg.", gloss="Jag heter Lena Berg."),))),
         Expect(final_language=SV, switches=0, booked=True)),
     Scenario("lang-B", "English after the Swedish greeting", (
         Step(EN, (Piece("Hi, I would like to book a table for two tomorrow at eight, please."),)),
         Step(EN, (Piece("Yes, that is right."),)),
-        Step(EN, (Piece("John Smith."),))),
+        Step(EN, (Piece("John Smith.", gloss="My name is John Smith."),))),
         Expect(final_language=EN, switches=1, booked=True)),
     Scenario("lang-C", "Persian booking (no AWS voice: unsupported + callback)", (
-        Step("fa", (Piece("سلام، می‌خواهم برای فردا ساعت هشت یک میز برای چهار نفر رزرو کنم."),)),
-        Step("fa", (Piece("بله، لطفاً با من تماس بگیرید."),))),
+        Step("fa", (Piece("سلام، می‌خواهم برای فردا ساعت هشت یک میز برای چهار نفر رزرو کنم.",
+                          gloss="Hello, I want to book a table for four tomorrow at 8."),)),
+        Step("fa", (Piece("بله، لطفاً با من تماس بگیرید.", gloss="Yes."),))),
         Expect(unsupported_reply=True, callback_topic="language:fa", switches=0)),
     Scenario("lang-D", "Arabic booking", (
-        Step("ar", (Piece("مرحبا، أريد حجز طاولة لشخصين غداً الساعة الثامنة مساءً."),)),
-        Step("ar", (Piece("نعم، هذا صحيح."),)),
-        Step("ar", (Piece("أحمد."),))),
+        Step("ar", (Piece("مرحبا، أريد حجز طاولة لشخصين غداً الساعة الثامنة مساءً.",
+                          gloss="Hello, I want to book a table for two people tomorrow at 8 pm."),)),
+        Step("ar", (Piece("نعم، هذا صحيح.", gloss="Yes, that is right."),)),
+        Step("ar", (Piece("أحمد.", gloss="My name is Ahmed."),))),
         Expect(final_language="ar", switches=1, booked=True)),
     Scenario("lang-E", "Mid-call switch English to Swedish", (
         Step(EN, (Piece("Hello, do you have a table for four on Friday evening?"),)),
@@ -140,10 +148,11 @@ LANGUAGE = (
         Expect(final_language=SV, switches=0)),
     Scenario("lang-G", "Context kept across a switch before confirming", (
         Step(SV, (Piece("Jag vill boka bord för fyra på lördag klockan sju."),)),
-        Step(EN, (Piece("Sorry, can we continue in English? Is that the table for four on Saturday?"),)),
-        Step(EN, (Piece("Yes, please book it."),)),
-        Step(EN, (Piece("Maria Lopez."),))),
-        Expect(final_language=EN, party_size=4, booked_only_after_yes=True, readback_repeated_after_barge_in=False)),
+        Step(EN, (Piece("Sorry, can we continue in English? Is that the table for four on Saturday?",
+                        gloss="Saturday at 7 pm for four people."),)),
+        Step(EN, (Piece("Yes, please book it.", gloss="Yes."),)),
+        Step(EN, (Piece("Maria Lopez.", gloss="My name is Maria Lopez."),))),
+        Expect(final_language=EN, party_size=4, booked_only_after_yes=True, readback_in_new_language_first=True)),
     Scenario("lang-H", "Interruption keeps the language", (
         Step(EN, (Piece("Hi, a table for two tomorrow at seven, please."),)),
         Step(EN, (Piece("Wait, sorry, make that half past seven."),), trigger="during_reply", after_ms=1200),
@@ -152,3 +161,44 @@ LANGUAGE = (
 )
 
 ALL = VOICE + LANGUAGE
+BY_KEY = {s.key: s for s in ALL}
+
+
+def get(key: str) -> Scenario:
+    """A scenario by key; a unique prefix or the short form ("A", "voice-a", "langC") also works."""
+    if key in BY_KEY:
+        return BY_KEY[key]
+    norm = key.lower().replace("_", "-").replace(" ", "")
+    for k, sc in BY_KEY.items():
+        if k.lower() == norm or k.lower().replace("-", "") == norm.replace("-", ""):
+            return sc
+    hits = [sc for k, sc in BY_KEY.items() if k.lower().startswith(norm)]
+    if len(hits) == 1:
+        return hits[0]
+    raise KeyError(f"unknown scenario {key!r}; known: {', '.join(BY_KEY)}")
+
+
+def step_text(step: Step) -> str:
+    return " ".join(p.text for p in step.pieces)
+
+
+def validate(scenario: Scenario) -> list[str]:
+    """Structural problems of one scenario (empty: fine). Used by the tests and the CLI."""
+    problems = []
+    if not scenario.steps:
+        problems.append("no steps")
+    for i, step in enumerate(scenario.steps):
+        if not step.pieces:
+            problems.append(f"step {i}: no pieces")
+        if step.trigger == "during_reply" and step.after_ms <= 0:
+            problems.append(f"step {i}: during_reply needs after_ms")
+        if step.trigger == "during_reply" and i == 0:
+            problems.append(f"step {i}: nothing to talk over yet")
+        for j, piece in enumerate(step.pieces):
+            if not piece.text.strip():
+                problems.append(f"step {i} piece {j}: empty text")
+            if "\u2013" in piece.text or "\u2014" in piece.text:
+                problems.append(f"step {i} piece {j}: dash")
+            if step.language not in ("sv", "en") and not piece.gloss:
+                problems.append(f"step {i} piece {j}: a {step.language} piece needs a gloss for fake mode")
+    return problems

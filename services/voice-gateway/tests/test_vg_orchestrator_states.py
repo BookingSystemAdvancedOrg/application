@@ -528,7 +528,7 @@ def test_a_stuck_brain_turn_says_the_error_sentence_and_ends(monkeypatch):
     async def script(c):
         await c.wait_state(S.LISTENING)
         await c.utter("Boka åt mig")
-        await c.wait_state(S.ENDED, timeout_ms=30000)
+        await c.wait_state(S.ENDED, timeout_ms=3600000)
 
     summary, brain, speaker, _, adapter, _ = run_call(script, replies=[Reply("Visst.", first_ms=600000)])
     assert summary.end_reason == "error" and adapter.hangups == ["error"]

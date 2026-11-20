@@ -453,6 +453,20 @@ def pre_switch(current, hint_code, text, *, allowed, names=(), turns_since_switc
     return hint_code
 
 
+def _unspeakable_hint(current, hint_code, tag_code, text, *, allowed, names=()):
+    """The fast hint is strong evidence (a script that names its language, or
+    MIN_WORDS content words) for a language the line cannot speak, while the
+    model answered in the call's language (or tagged nothing): the
+    unsupported-language path. A reply in another language the line speaks
+    is left to the rules below (the model reads the language better than the
+    word lists: Arabic is never taken for Persian)."""
+    if not hint_code or hint_code not in NAMES or allowed is None or hint_code in allowed:
+        return False
+    if tag_code and tag_code != current and tag_code in allowed:
+        return False
+    return not short(text, names)
+
+
 def decision(current, hint_code, tag_code, text, *, allowed, previous_tag=None, names=(), turns_since_switch=None,
              switches=0, max_switches=None, asked_switch=None, prompt_lang=None) -> Decision:
     """The switch rules above for one turn. `tag_code` is the model's `[xx]`
@@ -467,6 +481,9 @@ def decision(current, hint_code, tag_code, text, *, allowed, previous_tag=None, 
                        switches=switches, max_switches=max_switches))
         if tag_code != current:
             return Decision(tag_code, None, "hint")
+    if _unspeakable_hint(current, hint_code, tag_code, text, allowed=allowed, names=names):
+        # Retest 2026-11-20: a long Persian turn was tagged [sv] and answered in Swedish, 3 of 3 times.
+        return Decision(current, hint_code, "unsupported")
     if tag_code == current:
         return Decision(current, None, "same")
     if max_switches is not None and int(switches or 0) >= max_switches:

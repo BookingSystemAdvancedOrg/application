@@ -128,6 +128,11 @@ def _after_turn(lang, hint, result, caller_text, state, allowed, locked=False, *
         return language.Decision(lang, None, "error")
     if locked:
         return language.Decision(lang, None, "capped")
+    if decided.unsupported and decided.unsupported != result.language and any(
+            c["ok"] and c["name"] in agent.WRITES for c in result.tool_calls):
+        # The hint alone (the model answered in the call's language) never hides a booking, move or
+        # cancellation the model just made behind the "I cannot speak your language" sentences.
+        return language.Decision(lang, None, "same")
     return decided
 
 

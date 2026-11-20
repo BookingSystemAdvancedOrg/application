@@ -73,7 +73,9 @@ def test_scenario_a_three_holds_read_back_halv_sju_and_yes_books_1830_never_1930
     messages = []
     agent.run_turn(model, messages, "Hej, ett bord för fyra i morgon vid sju, jag heter Anna", ex, system="s")
     _next(ex)
-    agent.run_turn(model, messages, "Halv sju går bra", ex, system="s")
+    # "Halv sju går bra" itself is refused at hold_table now (test_phone_agent_retest2): a caller utterance
+    # without the half hour keeps this test on the one-live-hold guard.
+    agent.run_turn(model, messages, "Den tiden går bra", ex, system="s")
     assert [k for k, p in ex.state["proposals"].items() if not p.get("released")] == ["p3"]   # one live hold
     assert ex.state["readBack"] == {"holdId": "p3", "turn": 2}
     _next(ex)
@@ -96,7 +98,7 @@ def test_scenario_a_reordered_the_live_hold_is_not_what_was_read_back_so_nothing
         Turn(text="[sv] Förlåt, jag läser upp det igen."),
     ])
     messages = []
-    agent.run_turn(model, messages, "Halv sju går bra, Anna", ex, system="s")
+    agent.run_turn(model, messages, "Det går bra, Anna", ex, system="s")      # no half hour: see above
     assert "readBack" not in ex.state          # "halv sju" (18:30) is not the live hold (19:30)
     _next(ex)
     agent.run_turn(model, messages, "Ja", ex, system="s")

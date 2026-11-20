@@ -269,6 +269,14 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
     compact(messages)
     messages.append({"role": "user", "content": caller_text})
     calls = []
+    if hasattr(executor, "caller_text"):
+        executor.caller_text = caller_text      # the server checks holds against what the caller said
+    already = copy.pick(copy.ALREADY_BOOKED, lang)
+    if already and not keep_preamble and hasattr(executor, "repeated_yes") and executor.repeated_yes(caller_text):
+        # A yes after the booking was made: no model round, nothing booked again (retest 2026-11-20).
+        messages.append({"role": "assistant", "content": already})
+        _heard(executor, already, lang)
+        return TurnResult(already, [], int((time.monotonic() - started) * 1000), language=lang)
 
     def ms():
         return int((time.monotonic() - started) * 1000)
@@ -281,6 +289,8 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
 
     def answered(rounds):
         text = _said(spoken, code)
+        if _holding(executor) and not any(c["name"] == "request_callback" for c in calls):
+            text = without_call_promise(text)     # the confirmation is the text message, never a call
         _heard(executor, text, code or lang)
         return done(TurnResult(text, calls, ms(), language=code, rounds=rounds))
 
@@ -371,6 +381,25 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
 _SENTENCE_END = ".?!。？！؟።"
 
 
+def _holding(executor):
+    live = getattr(executor, "_live", None)
+    return bool(live and live()[0] is not None)
+
+
+# "We will call you on the number you are calling from" (retest 2026-11-20, German read-back): a call
+# verb and a number word in one sentence. The confirmation is the SMS link.
+_CALL_YOU = re.compile(r"\b(ring(er|a|e)?\s+(dig|er|deg|jer)|rufen\s+sie|call\s+you|bellen\s+(u|je)|"
+                       r"vous\s+(rappel|appel)|le\s+llamar)", re.I)
+_NUMBER_WORD = re.compile(r"\b(numret|nummer|nummeret|nummeren|number|numéro|numero|número)\b", re.I)
+
+
+def without_call_promise(text):
+    """The reply without a sentence promising to call the caller at a number."""
+    parts = re.split(r"(?<=[.?!])\s+", str(text or ""))
+    kept = [p for p in parts if not (_CALL_YOU.search(p) and _NUMBER_WORD.search(p))]
+    return " ".join(kept).strip() if kept else str(text or "")
+
+
 def _said(spoken, code):
     """The spoken reply: every piece in the reply's language (a piece the
     model tagged with another language before a tool call is left out, so
@@ -389,6 +418,20 @@ _META = re.compile(r"^\s*(let me (correct|fix|rephrase|try)|correction\b|note\s*
 # The same inside a sentence ("... Corrected: Haa, ..."): only what follows is meant.
 _META_INLINE = re.compile(r"\b(corrected|correction|let me (correct|rephrase)( that)?)\s*:\s*", re.I)
 _DASHES = re.compile(r"\s*[\u2013\u2014]\s*")
+# Thinking aloud (retest 2026-11-20): "Halv åtta... nej, klockan sju", "tre personer till? Nej, två": the
+# sentence up to the trailing dots or the question and its "no" is dropped; only the final answer is said.
+_SELF_CORRECTION = re.compile(r"[^.?!…]*(?:\.\.\.|…|\?)\s*(?:nej|nei|nein|nee|no|nope)\s*[,.]\s*", re.I)
+
+
+def _final_answer(text):
+    """The text without a spoken self-correction; what follows it starts a sentence."""
+    m = _SELF_CORRECTION.search(text)
+    while m:
+        lead = re.match(r"\s*", m.group(0)).group(0)
+        rest = text[m.end():]
+        text = text[:m.start()] + lead + rest[:1].upper() + rest[1:]
+        m = _SELF_CORRECTION.search(text)
+    return text
 
 
 def spoken_text(text, code=None):
@@ -410,6 +453,7 @@ def spoken_text(text, code=None):
         if inline and text[inline[-1].end():].strip():
             text = text[inline[-1].end():]
     text = _INNER_TAG.sub(lambda m: "" if language.normalise(m.group(1)) in language.NAMES else m.group(0), text)
+    text = _final_answer(text)
     text = _DASHES.sub(", ", text)
     text = re.sub(r"[*#`]+", "", text)
     text = re.sub(r"[!¡]+", lambda m: "" if m.group(0) == "¡" else ".", text)   # calm, never exclaimed

@@ -519,6 +519,13 @@ def ask_switch(current, candidate, *, connect=False, candidate_name=None):
 
 
 ASK_CONTINUE_BY_NAME = "Shall we continue in {name}?"
+# A plain yes after the call's booking was made (retest 2026-11-20: "ja tack boka det" took 13.6 s): said
+# without the model, nothing is booked again.
+ALREADY_BOOKED = {
+    SV: "Bokningen är redan klar. Kan jag hjälpa dig med något mer?",
+    EN: "Your booking is already done. Can I help you with anything else?",
+    "de": "Ihre Buchung ist bereits erledigt. Kann ich Ihnen sonst noch helfen?",
+}
 WHICH_LANGUAGE = {SV: "Vilket språk vill du prata?", EN: "Which language would you like to speak?"}
 
 
@@ -656,7 +663,9 @@ Do not switch because of a single word, a name, a place or "okay".
 Begin every reply with the language code of your answer in square brackets, for example [sv], [de], [so]. \
 The code is removed before speaking.
 Every sentence you write is spoken: write no notes, reasoning, corrections or explanations about tools \
-or rules, only words for the caller, in {language_name}. Never write English unless the caller speaks English.
+or rules, only words for the caller, in {language_name}. Never say a correction or your deliberation \
+("halv åtta, nej, klockan sju", "tre personer? Nej, två"): decide first, then say only the final answer. \
+Never write English unless the caller speaks English.
 The caller hears your reply only when you have finished, so write nothing before calling a tool, and never \
 announce that you are checking, holding or trying something: while a lookup runs the line itself asks the \
 caller to wait. The only exception is the goodbye you write together with end_call.
@@ -808,7 +817,10 @@ OPENERS = {
     "is": '"Já", "Gott", "Auðvitað"',
 }
 OPENERS_OTHER = "the short natural acknowledgements a polite host uses in that language"
-PHONE_KNOWN = "The booking uses the number the caller is calling from; mention that in the read-back."
+# Retest 2026-11-20: the German read-back said "Wir rufen Sie unter der Nummer an, von der Sie anrufen".
+PHONE_KNOWN = ("The confirmation is a text message with a link, sent to the number the caller is calling from; "
+               "the read-back may say that a confirmation comes by text message. Never say that anyone will call "
+               "the caller.")
 PHONE_HIDDEN = ("The caller's number is hidden. Ask for a phone number for the confirmation, read it back in "
                 "groups of two or three digits in words and get a yes, then pass it as phone. If the caller "
                 "declines, book without a number.")

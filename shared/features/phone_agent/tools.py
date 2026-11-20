@@ -177,7 +177,26 @@ SAY = {
                    "`guaranteeTerms.sentence` now and end with `guaranteeTerms.question` (no amounts unless "
                    "asked). Then read back the booking, and after a clear yes call create_reservation again."),
     "phoneInvalid": "The phone number could not be used. Ask for it again, or book without a number.",
+    # Retest 2026-11-20: "fredag" said on a Friday was taken for next Friday, then the dates got mixed.
+    "whichDay": ("Nothing looked up yet: the caller said {weekday}, and today is {weekday}. Ask once, in the "
+                 "caller's language, whether they mean today or next {weekday} (in Swedish: \"I dag eller nästa "
+                 "{sv}?\"). Today is {today}, next {weekday} is {next}: use the date they choose."),
+    "weekdayMismatch": ("Nothing looked up: the caller said {weekday}, which is {date}, not {asked}. Use {date} "
+                        "(see relative) and never another date for that {weekday}."),
 }
+_SAY_HALF = ("Not held: the caller said a half hour that is {said} (in Swedish, Norwegian, Danish, German and "
+             "Dutch \"halv sju\" is half past six, 18:30), not {asked}. Hold {said} if it is free; if it is not, "
+             "say so and offer the free times. Never say the corrected time aloud as a correction.")
+_NEGATION = re.compile(r"(?<!\w)(nej|inte|ej|nicht|nein|kein|keine|niet|nee|ikke|not|no)(?!\w)")
+_NEXT_WORDS = re.compile(r"(?<!\w)(nästa|nästkommande|neste|næste|nächsten|nächste|volgende|next)(?!\w)")
+_TODAY_WORDS = re.compile(r"(?<!\w)(i dag|idag|i kväll|ikväll|i kveld|i aften|heute|vandaag|vanavond|today|tonight)"
+                          r"(?!\w)")
+_WEEK_WORDS = re.compile(r"(?<!\w)(vecka|veckan|veckor|week|weeks|woche|wochen|uke|uka|uker|uge|ugen|uger)(?!\w)")
+_DAY_OF_MONTH = re.compile(r"(?<!\w)(den|the|am|le|el|il)\s+\d{1,2}(?![\d:.]\d)")
+_YES_WORDS = frozenset("ja jo japp javisst absolut gärna okej ok okay yes yeah yep sure please bitte".split())
+_CONFIRM_WORDS = _YES_WORDS | frozenset(
+    "tack boka bokar det den in bra perfekt kör stämmer precis gör så thanks thank you book it that great "
+    "perfect fine right correct danke gerne buchen sie es gut genau".split())
 # Beside a time lookup once the caller's own booking was found: a move is not a new booking.
 MOVE_NEXT = ("If the caller wants to move the booking found by find_reservations: ask for no name and do not "
              "hold. When they pick a time, read back the old and the new day and time, ask whether to move it, "
@@ -308,6 +327,9 @@ class Executor:
         # thing it writes to have been looked up in an EARLIER utterance: the caller cannot have said yes
         # to a read-back of something first looked up in this one. None (a direct call in tests): no check.
         self.turn = state.get("turn")
+        # The caller's utterance of this turn (agent.run_turn sets it): the server checks what the model
+        # holds and looks up against what the caller said ("halv sju", "fredag").
+        self.caller_text = None
         self._cache = {}
 
     # -- plumbing ---------------------------------------------------------------------
@@ -666,6 +688,9 @@ class Executor:
     def get_availability(self, args):
         day, party = self._day(args["date"]), self._party(args["partySize"])
         time = self._time(args["time"]) if args.get("time") else None
+        problem = self._weekday_problem(day)
+        if problem:
+            return {"times": [], **problem}
         problem = self._date_problem(day) or self._party_problem(party)
         if problem:
             return {"date": day, "weekday": _weekday(day), "times": [], **problem}
@@ -681,7 +706,8 @@ class Executor:
             answer["suggest"] = agent_model.nearest_times(time, answer["times"], ())
         answer["before"], answer["after"] = answer["before"][:3], answer["after"][:3]
         answer["times"] = of.spread(answer["times"], time, MAX_TIMES)
-        answer.update({"date": day, "weekday": _weekday(day), "partySize": party, **self._guarantee_note(party)})
+        answer.update({"date": day, "weekday": _weekday(day), "relative": self._relative(day), "partySize": party,
+                       **self._guarantee_note(party)})
         if self.state.get("found"):
             answer["next"] = MOVE_NEXT
         if not answer["times"] and not answer.get("nearby"):
@@ -703,6 +729,9 @@ class Executor:
 
     def _hold_table(self, args):
         day, time, party = self._day(args["date"]), self._time(args["time"]), self._party(args["partySize"])
+        problem = self._weekday_problem(day) or self._half_hour_problem(time)
+        if problem:
+            return {"held": False, "time": time, **problem}
         problem = self._date_problem(day) or self._party_problem(party)
         if problem:
             return {"held": False, "date": day, "time": time, **problem}
@@ -745,8 +774,8 @@ class Executor:
             proposal = self.state["proposals"][hold_id]
             proposal["guaranteeDue"] = "fee" if (note.get("guaranteeTerms") or {}).get("fees") else "card"
             proposal["guaranteeNoted"] = True      # an executor that is never told what was said (tests)
-        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "time": time, "partySize": party,
-                **note}
+        held = {"holdId": hold_id, "date": day, "weekday": _weekday(day), "relative": self._relative(day),
+                "time": time, "partySize": party, **note}
         if replaced:
             held["replaced"] = replaced
             held["note"] = ("This hold replaced " + ", ".join(replaced) + ": only " + hold_id + " can be booked. "
@@ -754,6 +783,116 @@ class Executor:
         if self.state.get("found"):
             held["next"] = MOVE_NEXT
         return held
+
+    # -- what the caller said ---------------------------------------------------------
+
+    def _half_hour_problem(self, time):
+        """Retest 2026-11-20: "Halv sju går bra" after offers without 18:30 was
+        held as 19:30. When the caller's utterance names a half hour ("halv
+        sju", "halb acht", "half zeven", "half past six", in English also "half
+        seven"), the hold must be that half hour on the clock face; a "no" or
+        "not" in the utterance leaves it to the model (the caller corrected
+        themselves)."""
+        said = readback.half_hours(self.caller_text, self.language)
+        if not said or _NEGATION.search(str(self.caller_text or "").lower()):
+            return None
+        hour, minute = (int(x) for x in time.split(":"))
+        if minute == 30 and hour % 12 in said:
+            return None
+        if any(readback.same_clock(t, time) for t in readback.clock_times(self.caller_text, self.language)):
+            return None         # another time the caller named too ("halv sju eller klockan sju")
+        base = said[0]
+        right = f"{(base + 12 if hour >= 12 else base) % 24:02d}:30"
+        return {"code": "halfHour", "time": right, "asked": time,
+                "say": _SAY_HALF.format(said=right, asked=time)}
+
+    def _weekday_named(self):
+        """The one weekday (0 Monday) the caller's utterance names, else None
+        (none, several, or a date of the month that says which day)."""
+        text = self.caller_text
+        if not text:
+            return None
+        days = readback.weekdays(text, self.language)
+        if len(days) != 1 or readback._month_day(text, self.language) or _DAY_OF_MONTH.search(text.lower()):
+            return None
+        tokens = set(re.findall(r"[^\W\d_]+", text.lower()))
+        if any(tokens & set(readback.ORDINALS.get(code) or ()) for code in (self.language, "en")):
+            return None         # "fredag den trettonde": the caller said which Friday
+        return next(iter(days))
+
+    def _service_over(self):
+        """Today's opening hours have ended (the last closing time has passed)."""
+        if not self.now_time:
+            return False
+        hours = (self.location or {}).get("businessHours") or (self.location or {}).get("openingHours")
+        if not isinstance(hours, dict):
+            return False
+        key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[self.today.weekday()]
+        spans = next((v for k, v in hours.items() if _DAY_KEYS.get(str(k).lower()) == _DAY_KEYS[key]), None)
+        closes = [str(i.get("closesAt")) for i in spans or [] if isinstance(i, dict) and i.get("closesAt")
+                  and i.get("opensAt") and not (str(i["closesAt"]) < str(i["opensAt"]) or i["closesAt"] == "00:00")]
+        if not closes or len(closes) != len(spans or []):
+            return False        # open past midnight or unknown: not over
+        return self.now_time >= max(closes)
+
+    def _weekday_problem(self, day):
+        """The caller named a weekday ("fredag"): the date must be that weekday,
+        resolved here from the restaurant's local date, never by the model.
+        Only a date on that weekday is checked (which week). Another day: its
+        next date (or the one after with "nästa"). Today's
+        weekday: today with "i dag", next week with "nästa" or once today's
+        service has ended; otherwise Booqy asks once "i dag eller nästa
+        fredag?"."""
+        wanted = self._weekday_named()
+        if wanted is None or date.fromisoformat(day).weekday() != wanted:
+            return None     # another weekday than the one named: the caller asked for something else
+        text = " " + " ".join(str(self.caller_text).lower().split()) + " "
+        if _WEEK_WORDS.search(text):
+            return None         # "fredag om en vecka", "next week": the caller said which week
+        nxt = bool(_NEXT_WORDS.search(text))
+        ahead = (wanted - self.today.weekday()) % 7
+        if ahead == 0:
+            today, week = self.today, self.today + timedelta(days=7)
+            if nxt:
+                allowed = [week]
+            elif _TODAY_WORDS.search(text):
+                allowed = [today]
+            elif self._service_over():
+                allowed = [week]
+            elif self.state.get("weekdayAsked") == today.isoformat():
+                return None      # asked once: the caller's answer decides
+            else:
+                self.state["weekdayAsked"] = today.isoformat()
+                name = _WEEKDAYS[wanted]
+                return {"code": "whichDay", "date": day, "today": today.isoformat(), "next": week.isoformat(),
+                        "weekday": name, "say": SAY["whichDay"].format(
+                            weekday=name, sv=readback.WEEKDAYS["sv"][wanted], today=today.isoformat(),
+                            next=week.isoformat())}
+        else:
+            first = self.today + timedelta(days=ahead)
+            allowed = [first, first + timedelta(days=7)] if nxt else [first]
+        if date.fromisoformat(day) in allowed:
+            return None
+        right = allowed[0]
+        return {"code": "weekdayMismatch", "date": right.isoformat(), "weekday": _WEEKDAYS[wanted],
+                "relative": self._relative(right.isoformat()), "asked": day,
+                "say": SAY["weekdayMismatch"].format(weekday=_WEEKDAYS[wanted], date=right.isoformat(), asked=day)}
+
+    def _relative(self, day):
+        """The day relative to the restaurant's local today ("today", "tomorrow", "in 4 days")."""
+        n = (date.fromisoformat(day) - self.today).days
+        return "today" if n == 0 else "tomorrow" if n == 1 else f"in {n} days" if n > 1 else f"{-n} days ago"
+
+    def repeated_yes(self, text):
+        """A plain yes ("ja tack boka det") in the utterance right after this
+        call's booking was made, with no live hold: nothing to book again."""
+        booked = self.state.get("bookedTurn")
+        if booked is None or self.turn is None or int(booked) != int(self.turn) - 1:
+            return False        # only the utterance right after the booking (a later yes may be to a move)
+        if self.state.get("guaranteePending") or self._live()[0] is not None:
+            return False
+        tokens = re.findall(r"[^\W\d_]+", str(text or "").lower())
+        return 0 < len(tokens) <= 6 and set(tokens) <= _CONFIRM_WORDS and bool(set(tokens) & _YES_WORDS)
 
     def _live(self):
         """(holdId, proposal) of the one hold that can be booked, else (None, None)."""
@@ -953,7 +1092,7 @@ class Executor:
         proposal["reservationId"] = reservation_id
         # The caller's own booking: it may be moved or cancelled in this call (also with a hidden number).
         self._remember_found([{"reservationId": reservation_id, "partySize": int(proposal["partySize"])}])
-        self.state.update({"outcome": "booked", "reservationId": reservation_id,
+        self.state.update({"outcome": "booked", "reservationId": reservation_id, "bookedTurn": self.turn,
                            "accepted": self._accepted(proposal)})
         return {"reservationId": reservation_id, "booked": True, "date": proposal["date"],
                 "weekday": _weekday(proposal["date"]), "time": proposal["time"], "partySize": proposal["partySize"],

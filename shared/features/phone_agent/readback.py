@@ -192,6 +192,27 @@ def clock_times(text, lang=None):
     return found
 
 
+_HALF_PAST_EN = re.compile(rf"(?<!\w)half\s+past\s+(?P<h>{_alternation(NUMBERS['en'])}|[01]?\d|2[0-3])(?!\w)")
+
+
+def half_hours(text, lang=None):
+    """The half hours the caller said, as hours on the clock face (0 to 11):
+    "halv sju" (sv, no, da), "halb sieben" (de), "half zeven" (nl) are 6;
+    "half past six" is 6 in any language, the British "half seven" 7 in
+    English only. Words in `lang`, digits too ("halv 7")."""
+    low = " ".join(str(text or "").translate(_DIGITS).lower().split())
+    out = []
+    before = {w: v for w, v in (_BEFORE.get(lang) or {}).items() if v[0] == 30}
+    if before:
+        nums = NUMBERS[lang]
+        num = rf"(?P<h>{_alternation(nums)}|[01]?\d|2[0-3])"
+        for m in re.finditer(rf"(?<!\w)(?P<w>{_alternation(before)})\s+{num}(?!\w)", low):
+            out.append(_shift(m.group("h"), *before[m.group("w")], nums)[0] % 12)
+    if lang != "en":
+        out.extend(_hour(m.group("h"), NUMBERS["en"]) % 12 for m in _HALF_PAST_EN.finditer(low))
+    return out
+
+
 def weekdays(text, lang=None):
     """The weekdays (0 Monday) the text names, in `lang` and English."""
     low = str(text or "").lower()

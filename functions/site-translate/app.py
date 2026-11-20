@@ -41,7 +41,9 @@ ENV_VARS:
     REQUEST_GUARD_TABLE_NAME, SITE_WAF_SECRET, CLOUDFRONT_EDGE_SECRET,
     SITE_TRANSLATE_IP_REQUESTS_PER_5MIN (120), SITE_TRANSLATE_IP_CHARS_PER_HOUR (200000),
     SITE_TRANSLATE_TENANT_CHARS_PER_30D (500000), SITE_TRANSLATE_GLOBAL_CHARS_PER_30D
-    (5000000)
+    (5000000), SITE_TRANSLATE_TERMINOLOGY (the Booqy custom terminology passed
+    as TerminologyNames: bord = restaurant table, platser = seats, ...; none
+    when unset), SITE_TRANSLATE_TERMINOLOGY_HASH (part of the cache key)
 """
 
 import json

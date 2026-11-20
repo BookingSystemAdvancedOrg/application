@@ -18,6 +18,10 @@ Pure parts (unit tested without AWS):
                     term (site_translate_glossary.json), used instead of
                     Amazon Translate: short labels have no context there
                     ("Bekräfta bord" came back as a spreadsheet table)
+    terminology()  -- the Booqy custom terminology for whole sentences
+                    (bord, platser, sällskap, ...), passed to Translate as
+                    TerminologyNames; the CSV lives in infrastructure
+                    site-translate/terminology.csv
 
 Privacy: nothing here logs a text, a keep term or an IP address, and the
 cache stores only the hash of the source and the translation.
@@ -50,7 +54,10 @@ TARGETS = ("en", "es", "ar", "fa")
 FORMALITY = {"es": "INFORMAL"}
 # v2: names and numbers in Arabic and Persian come back inside Unicode
 # isolates (see restore), so the v1 entries are not reused.
-VERSION = "v2"
+# v3: Translate gets the Booqy custom terminology (bord = restaurant table,
+# platser = seats, ...), so the v2 entries (tables as spreadsheets, seats as
+# web sites) are not served again.
+VERSION = "v3"
 RTL = ("ar", "fa")
 
 MAX_TEXTS = 100
@@ -168,9 +175,21 @@ def needs_translation(marked):
     return bool(_LETTER.search(html.unescape(_SPAN.sub("", marked))))
 
 
+def terminology():
+    """(name, version) of the Booqy custom terminology Terraform imported
+    (infrastructure site-translate/terminology.csv), or (None, "") when the
+    function runs without one. The version is a hash of the CSV, so an edited
+    terminology gets new cache entries."""
+    name = (os.environ.get("SITE_TRANSLATE_TERMINOLOGY") or "").strip()
+    if not name:
+        return None, ""
+    return name, (os.environ.get("SITE_TRANSLATE_TERMINOLOGY_HASH") or "").strip()
+
+
 def cache_key(lang, marked):
     formality = FORMALITY.get(lang, "")
-    digest = hashlib.sha256(f"{VERSION}|{lang}|{formality}|{marked}".encode("utf-8")).hexdigest()
+    terms = terminology()[1]
+    digest = hashlib.sha256(f"{VERSION}|{lang}|{formality}|{terms}|{marked}".encode("utf-8")).hexdigest()
     return f"T#{lang}#{digest}"
 
 
@@ -265,8 +284,56 @@ def _fill(text, tokens, lang):
 def glossary(lang, core, marked, tokens, entries=None):
     """The reviewed translation of the whole text, or None. Tried in order:
     the text exactly, the text with its protected parts as placeholders,
-    then both without a trailing colon (the colon is put back)."""
+    then both without a trailing colon (the colon is put back), then without
+    a trailing full stop (put back), then "Label: rest" with both halves in
+    the glossary ("Bokningstid: 2 tim, kan inte förlängas.")."""
     entries = GLOSSARY if entries is None else entries
+    found = _whole(lang, core, marked, tokens, entries)
+    if found is not None:
+        return found
+    keys = [(_norm(core), None), (template(marked), tokens)]
+    for key, toks in keys:
+        if not key:
+            continue
+        stop = key.endswith(".") and not key.endswith("..")
+        body = key[:-1].rstrip() if stop else key
+        found = _keyed(lang, body, toks, entries) if stop else None
+        if found is None:
+            found = _labelled(lang, body, toks, entries)
+        if found is not None:
+            return found + "." if stop else found
+    return None
+
+
+def _keyed(lang, key, toks, entries):
+    """One glossary key (exact, or as a template with toks), or None."""
+    entry = entries.get(key)
+    if not entry or not entry.get(lang):
+        return None
+    text = entry[lang]
+    if toks is None:
+        return None if _PLACEHOLDER.search(text) else text
+    used = sorted(int(x) for x in _PLACEHOLDER.findall(text))
+    if used != list(range(len(toks))):
+        return None
+    return _fill(text, toks, lang)
+
+
+def _labelled(lang, key, toks, entries):
+    """ "Label: rest" where the label (no placeholders) and the rest are both
+    glossary entries."""
+    head, sep, tail = key.partition(": ")
+    if not sep or not tail or "{" in head:
+        return None
+    label = _keyed(lang, head + ":", None, entries)
+    if label is None:
+        return None
+    rest = _keyed(lang, tail, toks, entries)
+    return None if rest is None else label + " " + rest
+
+
+def _whole(lang, core, marked, tokens, entries):
+    """The text exactly or as a template, with or without a trailing colon."""
     keys = [(_norm(core), None), (template(marked), tokens)]
     for key, toks in list(keys):
         if key and key.endswith(":") and len(key) > 1:
@@ -403,6 +470,11 @@ def translate_one(marked, lang, deadline=None):
     """The raw translation of one marked text, or None (logged by code).
     ``deadline`` (time.monotonic()): no attempt starts after it."""
     kwargs = {"Text": marked, "SourceLanguageCode": SOURCE, "TargetLanguageCode": lang}
+    name = terminology()[0]
+    if name:
+        # Restaurant words in whole sentences (bord, platser, sällskap, ...):
+        # without it "bord" came back as a spreadsheet table, "platser" as web sites.
+        kwargs["TerminologyNames"] = [name]
     if lang in FORMALITY:
         kwargs["Settings"] = {"Formality": FORMALITY[lang]}
     for attempt in range(ATTEMPTS):

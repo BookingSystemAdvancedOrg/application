@@ -577,6 +577,23 @@
     ["Restaurangen kunde inte hittas.", "The restaurant could not be found.", "No se ha encontrado el restaurante.", "تعذر العثور على المطعم.", "رستوران پیدا نشد."],
     ["Planritningen kunde inte hämtas just nu.", "The floor plan could not be loaded right now.", "No se pudo cargar el plano ahora mismo.", "تعذر تحميل مخطط المكان حاليًا.", "در حال حاضر نقشه سالن بارگذاری نشد."],
     ["Ingen publicerad planritning hittades.", "No published floor plan was found.", "No se encontró ningún plano publicado.", "لم يتم العثور على مخطط منشور.", "نقشه سالن منتشرشده‌ای پیدا نشد."],
-    ["Skriver ut betalningen", "Printing the payment", "Imprimiendo el pago", "جارٍ طباعة الدفع", "در حال چاپ پرداخت"]
+    ["Skriver ut betalningen", "Printing the payment", "Imprimiendo el pago", "جارٍ طباعة الدفع", "در حال چاپ پرداخت"],
+
+    ["{0} platser", "{0} seats", "{0} plazas", "{0} مقاعد", "{0} صندلی"],
+    ["{0} pl", "{0} seats", "{0} plazas", "{0} مقاعد", "{0} صندلی"],
+    ["Bord {0} · {1} platser", "Table {0} · {1} seats", "Mesa {0} · {1} plazas", "الطاولة {0} · {1} مقاعد", "میز {0} · {1} صندلی"],
+    ["Bord {0}, {1} platser", "Table {0}, {1} seats", "Mesa {0}, {1} plazas", "الطاولة {0}، {1} مقاعد", "میز {0}، {1} صندلی"],
+    ["{0} platser kvar", "{0} seats left", "Quedan {0} plazas", "{0} مقاعد متبقية", "{0} صندلی باقی مانده"],
+    ["Fler än {0} personer?", "More than {0} people?", "¿Más de {0} personas?", "أكثر من {0} أشخاص؟", "بیش از {0} نفر؟"],
+    ["Mer än {0} personer?", "More than {0} people?", "¿Más de {0} personas?", "أكثر من {0} أشخاص؟", "بیش از {0} نفر؟"],
+    ["Fler än {0} personer? Ring", "More than {0} people? Call", "¿Más de {0} personas? Llama al", "أكثر من {0} أشخاص؟ اتصل على", "بیش از {0} نفر؟ تماس:"],
+    ["Fler än {0} personer? Ring restaurangen.", "More than {0} people? Call the restaurant.", "¿Más de {0} personas? Llama al restaurante.", "أكثر من {0} أشخاص؟ اتصل بالمطعم.", "بیش از {0} نفر؟ با رستوران تماس بگیرید."],
+    ["Fler än", "More than", "Más de", "أكثر من", "بیش از"],
+    ["personer? Ring", "people? Call", "personas? Llama al", "أشخاص؟ اتصل على", "نفر؟ تماس:"],
+    ["personer? Ring restaurangen.", "people? Call the restaurant.", "personas? Llama al restaurante.", "أشخاص؟ اتصل بالمطعم.", "نفر؟ با رستوران تماس بگیرید."],
+    ["· org.nr", "· Reg. no.", "· N.º de registro", "· رقم التسجيل", "· شماره ثبت"],
+    ["org.nr", "Reg. no.", "N.º de registro", "رقم التسجيل", "شماره ثبت"],
+    ["org.nr {0}", "reg. no. {0}", "n.º de registro {0}", "رقم التسجيل {0}", "شماره ثبت {0}"],
+    ["(org.nr {0})", "(reg. no. {0})", "(n.º de registro {0})", "(رقم التسجيل {0})", "(شماره ثبت {0})"]
   ]
 }

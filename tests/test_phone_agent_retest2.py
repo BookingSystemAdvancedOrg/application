@@ -138,7 +138,11 @@ def test_fredag_said_on_a_friday_during_service_is_asked_once(env):
     asked = ex.run("get_availability", {"date": "2026-11-13", "partySize": 2})
     assert asked["code"] == "whichDay" and "nästa fredag" in asked["say"] and "I dag" in asked["say"]
     assert asked["today"] == "2026-11-06" and asked["next"] == "2026-11-13" and not asked.get("times")
-    again = ex.run("get_availability", {"date": "2026-11-13", "partySize": 2})       # asked once only
+    again = ex.run("get_availability", {"date": "2026-11-13", "partySize": 2})       # retried at once: no answer
+    assert again["code"] == "whichDay" and not again.get("times")                    # (retest 3: was let through)
+    ex.state["turn"] = ex.turn = 2
+    ex.caller_text = "Nästa fredag"                                                  # the caller's answer decides
+    again = ex.run("get_availability", {"date": "2026-11-13", "partySize": 2})
     assert again["times"] == ["19:00"] and again["date"] == "2026-11-13" and again["relative"] == "in 7 days"
 
 

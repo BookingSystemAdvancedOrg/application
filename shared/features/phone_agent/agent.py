@@ -277,6 +277,12 @@ def run_turn(model, messages: list, caller_text: str, executor, *, system: str, 
         messages.append({"role": "assistant", "content": already})
         _heard(executor, already, lang)
         return TurnResult(already, [], int((time.monotonic() - started) * 1000), language=lang)
+    reask = executor.day_reask(caller_text, lang) if not keep_preamble and hasattr(executor, "day_reask") else None
+    if reask:
+        # A bare yes or no to "i dag eller nästa fredag?": Booqy asks in other words, without a model round.
+        messages.append({"role": "assistant", "content": reask})
+        _heard(executor, reask, lang)
+        return TurnResult(reask, [], int((time.monotonic() - started) * 1000), language=lang)
 
     def ms():
         return int((time.monotonic() - started) * 1000)
@@ -400,6 +406,27 @@ def without_call_promise(text):
     return " ".join(kept).strip() if kept else str(text or "")
 
 
+# A welcome after the greeting was already said (retest 2 on dev 2026-11-20: the first reply greeted again
+# with another greeting): "Hej och välkommen till ...", "Välkommen!", "Hello and welcome to ...".
+_WELCOME = re.compile(r"^\s*(?:(?:hej|hejsan|hallå|hello|hi)\b[\s,]*(?:och|and)?\s*)?(?:varmt\s+)?"
+                      r"(?:välkommen|välkomna|welcome)\b", re.I)
+
+
+def without_welcome(text, lang=None):
+    """The reply without a sentence that welcomes the caller (a plain "Hej"
+    stays); empty when the reply was nothing but a welcome."""
+    parts = re.split(r"(?<=[.?!])\s+", str(text or "").strip())
+    return " ".join(p for p in parts if not (_WELCOME.match(p) and not _carries_booking(p, lang))).strip()
+
+
+def _carries_booking(sentence, lang):
+    """A sentence that names a time, day, date or party, or the card terms: never dropped, since
+    executor.heard already counted it as said (a read-back must be what the caller heard)."""
+    return bool(readback.clock_times(sentence, lang) or readback.weekdays(sentence, lang)
+                or readback._month_day(sentence, lang) or readback.party_sizes(sentence, lang)
+                or readback.mentions_terms(sentence, fees=False))
+
+
 def _said(spoken, code):
     """The spoken reply: every piece in the reply's language (a piece the
     model tagged with another language before a tool call is left out, so
@@ -421,6 +448,24 @@ _DASHES = re.compile(r"\s*[\u2013\u2014]\s*")
 # Thinking aloud (retest 2026-11-20): "Halv åtta... nej, klockan sju", "tre personer till? Nej, två": the
 # sentence up to the trailing dots or the question and its "no" is dropped; only the final answer is said.
 _SELF_CORRECTION = re.compile(r"[^.?!…]*(?:\.\.\.|…|\?)\s*(?:nej|nei|nein|nee|no|nope)\s*[,.]\s*", re.I)
+
+
+# A correction said aloud (retest 2 on dev 2026-11-20: "halv sex ... Rättelse: det är fredag den
+# tjugosjunde november, klockan fem"): a marker at the start of a sentence or clause, with something said
+# before it and a restatement after it. Only the restatement is said. "Nej, förlåt, vi har fullt" at the
+# start of a reply corrects nothing and stays.
+_CORRECTION = re.compile(
+    r"(?:^|(?<=[.?!…,;:]))\s*(?:rättelse|korrigering|korrektur|correction|nej,?\s+förlåt|förlåt,?\s+jag\s+menar|"
+    r"jag\s+menar|ich\s+meine|jeg\s+mener|sorry,?\s+i\s+mean|i\s+mean)\s*[:,.]\s*", re.I)
+
+
+def _restated(text):
+    """The text after the last correction marker that has words before and after it."""
+    for m in reversed(list(_CORRECTION.finditer(text))):
+        before, after = text[:m.start()], text[m.end():]
+        if re.search(r"\w", before) and re.search(r"\w", after):
+            return after[:1].upper() + after[1:]
+    return text
 
 
 def _final_answer(text):
@@ -454,6 +499,7 @@ def spoken_text(text, code=None):
             text = text[inline[-1].end():]
     text = _INNER_TAG.sub(lambda m: "" if language.normalise(m.group(1)) in language.NAMES else m.group(0), text)
     text = _final_answer(text)
+    text = _restated(text)
     text = _DASHES.sub(", ", text)
     text = re.sub(r"[*#`]+", "", text)
     text = re.sub(r"[!¡]+", lambda m: "" if m.group(0) == "¡" else ".", text)   # calm, never exclaimed

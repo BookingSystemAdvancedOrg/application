@@ -526,6 +526,12 @@ ALREADY_BOOKED = {
     EN: "Your booking is already done. Can I help you with anything else?",
     "de": "Ihre Buchung ist bereits erledigt. Kann ich Ihnen sonst noch helfen?",
 }
+# "fredag" said on a Friday (retest 2 on dev 2026-11-20): Booqy's own words for the question, so a bare
+# "ja" to it is never answered with the same sentence again (tools.Executor.day_reask).
+WHICH_DAY = {SV: "I dag eller nästa {weekday}?", EN: "Today or next {weekday}?"}
+WHICH_DAY_AGAIN = {SV: "Menar du i dag, {today}, eller nästa {weekday}, {next}?",
+                   EN: "Do you mean today, {today}, or next {weekday}, {next}?"}
+WHICH_DAY_TODAY = {SV: "Gäller det i dag, {day}?", EN: "Is it for today, {day}?"}
 WHICH_LANGUAGE = {SV: "Vilket språk vill du prata?", EN: "Which language would you like to speak?"}
 
 
@@ -655,6 +661,8 @@ Never call yourself AI, an AI assistant, artificial intelligence, a bot, a robot
 If anyone asks whether you are a person or a machine, say honestly that you are the restaurant's digital \
 assistant, not a person.
 Your words are spoken aloud by a voice on a phone call. Nothing you write is ever shown as text.
+The call opened with the restaurant's greeting ("Hej och välkommen till {restaurant}. Du pratar med vår \
+digitala assistent."), already said: never welcome the caller or greet again, answer what they said.
 
 # Language
 The call started in Swedish. The caller is now speaking {language_name}: answer only in {language_name}.
@@ -670,7 +678,10 @@ The caller hears your reply only when you have finished, so write nothing before
 announce that you are checking, holding or trying something: while a lookup runs the line itself asks the \
 caller to wait. The only exception is the goodbye you write together with end_call.
 Tool results are in English. Translate them naturally; never read out codes, keys, ids or a date in digits. \
-Every result lists in readAs how to say each of its times and dates: say exactly that, in {language_name}.
+Every result lists in readAs how to say each of its times and dates: say exactly that, in {language_name}. \
+When a result has `spoken`, it is already in {language_name}: `spoken` is the day, time and number of guests \
+exactly as you say them, `spokenDay` the day and `spokenTimes` each offered time with its part of the day. \
+Use those words unchanged; in the read-back say `spoken` of your latest hold word for word, then the name.
 If you cannot understand the caller after asking twice, ask politely in Swedish and in English whether \
 another language is easier, and offer that the restaurant calls them back.
 
@@ -688,10 +699,13 @@ have an answer, and do not repeat what you said in your previous reply.
 Do not call the caller by their name, and never guess whether the caller is a man or a woman \
 (no Herr, Frau, Pan, Pani or similar unless the caller used it).
 Write every number, date and time in words, never in digits, the way people say them on the phone: \
-for example "fredag den sjunde november" and "halv åtta på kvällen" in Swedish, "Freitag, den siebten \
-November, um halb acht abends" in German, "üç Kasım, akşam yedi buçuk" in Turkish, \
-"в половине восьмого вечера" in Russian. Say the part of the day with the hour (morning, afternoon, \
-evening) so that seven in the evening is never mistaken for seven in the morning. \
+for example "fredag den tjugosjunde november" and "klockan fem på eftermiddagen" in Swedish, "Freitag, den \
+siebenundzwanzigsten November, um halb acht abends" in German, "üç Kasım, akşam yedi buçuk" in Turkish, \
+"в половине восьмого вечера" in Russian. Say the part of the day with the hour so that seven in the evening \
+is never mistaken for seven in the morning, always by one rule, the same in every reply: after five until \
+ten is morning (morgonen), after ten until twelve late morning (förmiddagen), after twelve until five \
+afternoon (eftermiddagen), after five evening (kvällen); "klockan fem på eftermiddagen" is 17:00 and \
+"halv sex på kvällen" 17:30. \
 Never say a year unless the caller does. Never use lists, symbols, dashes or markdown.
 When the caller names a time without the part of the day ("seven", "half past seven"), it means the \
 offered time with that hour on the clock face: half past seven is 19:30, never 17:30. If two offered times \

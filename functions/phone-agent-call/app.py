@@ -44,6 +44,7 @@ import time
 import json
 import logging
 import os
+import re
 from datetime import timedelta
 from xml.sax.saxutils import escape
 
@@ -53,7 +54,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import agent_model, http, telephony, tenant, voice_provider
 from shared.features import phone_agent as pa
-from shared.features.phone_agent import calls, copy, hesitation, language, session
+from shared.features.phone_agent import agent, calls, copy, hesitation, language, session
 from shared.features.phone_agent import locations as locations_mod
 from shared.features.phone_agent.tools import lambda_invoker
 
@@ -687,6 +688,48 @@ def _sync_locale(call, locale):
     return call
 
 
+# A first utterance that is only a hello ("Hej", "Hallå", "Hello"): the greeting is the whole answer.
+_HELLO = re.compile(r"^(?:(?:hej|hejsan|hallå|hallå där|goddag|god dag|god morgon|god kväll|tjena|tja|hello|hi|hey|"
+                    r"good (?:morning|afternoon|evening))[\s,.!?]*)+$", re.I)
+
+
+def _only_hello(text):
+    return bool(_HELLO.match(" ".join(str(text or "").split())))
+
+
+def _greeting_played(event, attrs):
+    """The caller heard Booqy's greeting before this utterance. The flow can
+    say so in the session attribute `greeted` ("true" or "false"); without
+    it, a spoken turn came through the Connect flow, which always plays a
+    greeting before it starts the bot (Booqy's from connect_greeting, else
+    its fixed one), while a typed turn (Lex recognize-text) has no flow and
+    heard nothing."""
+    flag = str(attrs.get("greeted") or "").strip().lower()
+    if flag in ("true", "1", "yes"):
+        return True
+    if flag in ("false", "0", "no"):
+        return False
+    return str(event.get("inputMode") or "").lower() in ("speech", "dtmf")
+
+
+def _opening(greeting):
+    """The greeting without its closing question ("Vad kan jag hjälpa dig
+    med?"), said before the answer to a first utterance that asked something."""
+    parts = re.split(r"(?<=[.?!])\s+", str(greeting).strip())
+    if len(parts) > 1 and parts[-1].endswith("?"):
+        parts = parts[:-1]
+    return " ".join(parts)
+
+
+def _greeted(call, text, greeting, at, locale):
+    """The caller's hello and the greeting as its answer, in the transcript and the model's history."""
+    calls.append_turn(call, "caller", text, at, asr_locale=locale)
+    history = agent.loads(call.get("agentMessages")) + [{"role": "user", "content": text},
+                                                        {"role": "assistant", "content": greeting}]
+    calls.set_status(call, "talking", ["answered", "disclosed", "talking"], agentMessages=agent.dumps(history))
+    return greeting
+
+
 def lex_turn(event):
     """One caller utterance from the Lex V2 bot on the Connect test number.
 
@@ -714,12 +757,14 @@ def lex_turn(event):
     at = pa.now()
     call_ref = LEX_CALL_PREFIX + session_id
     call = None
+    fresh = False
     if attrs.get("tenantId") and attrs.get("callId"):
         call = calls.get_call(attrs["tenantId"], attrs["callId"])
     if call is None:
         call = start_call(call_ref=call_ref, caller=attrs.get("callerNumber"), to=attrs.get("dialedNumber"), at=at)
         if call is None:
             return _lex_answer(event, copy.REFUSED["sv"], close=True, nxt="end")
+        fresh = True
         if call.get("status") == "answered":
             calls.disclosed(call, at, spoken=(call.get("disclosure") or {}).get("text"))
             call = calls.get_call(call["tenantId"], call["callId"]) or call
@@ -733,7 +778,14 @@ def lex_turn(event):
         return _lex_answer(event, copy.text(copy.STILL_THERE, lang), attributes={**ids, "lang": lang})
     if _garbled(call, event, text):
         return _lex_answer(event, _ask_language(call, text, at, locale), attributes={**ids, "lang": lang})
+    greeting = (call.get("disclosure") or {}).get("text") if fresh and not _greeting_played(event, attrs) else None
+    if greeting and _only_hello(text):
+        # No flow played the greeting (Lex recognize-text): the caller's "Hej" is answered with the
+        # owner's greeting itself, word for word, never another greeting by the model.
+        return _lex_answer(event, _greeted(call, text, greeting, at, locale), attributes={**ids, "lang": lang})
     reply, actions = run_call_turn(call, text, at, asr_locale=locale)
+    if fresh and reply:
+        reply = agent.without_welcome(reply, lang) or copy.text(copy.DEFAULT_EXTRA, lang)   # never a second welcome
     names = {a["name"] for a in actions}
     current = calls.get_call(call["tenantId"], call["callId"]) or call
     done = "end_call" in names or current.get("status") in ("ended", "processed")
@@ -743,6 +795,8 @@ def lex_turn(event):
     now_lang = current.get("language") or lang
     ids["lang"] = now_lang
     switched = now_lang != lang and now_lang in language.AWS_LANGUAGES
+    if greeting and reply and not switched:
+        reply = f"{_opening(greeting)} {reply}"   # no greeting was played: the owner's greeting comes first
     if switched:
         # also when the turn ended the call: the goodbye is in the new language, so the new voice says it
         session.metric("LanguageSwitches", 1)

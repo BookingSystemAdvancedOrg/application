@@ -146,6 +146,14 @@ class PollyTts:
             req["LanguageCode"] = row.polly_language
         return req
 
+    async def warm(self, language: str) -> None:
+        """Opens the Polly connection at call start (one short request in the call's voice), so the first
+        sentence does not pay for the TLS handshake. Never fails the call."""
+        try:
+            await self.synthesize("Mm.", language)
+        except Exception:   # noqa: BLE001  (only a warm-up)
+            pass
+
     async def synthesize(self, text: str, language: str, *, ssml_body: bool = False) -> TtsAudio:
         req = self._request(text, language, ssml_body)
         started = time.monotonic()

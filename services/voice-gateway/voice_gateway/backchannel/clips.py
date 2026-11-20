@@ -28,11 +28,15 @@ from pathlib import Path
 
 from voice_gateway import log
 from voice_gateway.audio.frames import gain
-from voice_gateway.backchannel.tokens import TOKENS, base_language
+from voice_gateway.backchannel.tokens import SHORT_TOKENS, TOKENS, base_language
 from voice_gateway.config import BackchannelConfig, SpeakConfig
+from voice_gateway.speak.openers import MAX_OPENER_MS
 from voice_gateway.speak.tts import NoVoice, Tts, synthesize_with_retry, voice_for, whole_frames
 
 MAX_BACKCHANNEL_MS = 700
+BACKCHANNEL_TARGET_MS = 220    # one-syllable tokens ("mm", "ja") are cut to this with a fade (live clips 240 to 260 ms)
+BACKCHANNEL_TRIM_DB = 20.0      # a backchannel keeps only its loud part: 150 to 250 ms for "mm" and "ja" (live voice-B:
+#                                 450 ms caller pauses had no room for the 320 ms clips the 28 dB trim left)
 _RATE = 16000
 _WINDOW = 160                   # 10 ms
 _LEAD_PAD_MS, _TAIL_PAD_MS, _FADE_MS = 10, 30, 5
@@ -62,7 +66,7 @@ def _pcm(a: array) -> bytes:
     return a.tobytes()
 
 
-def trim(pcm: bytes, *, rel_db: float = 28.0, floor_dbfs: float = -55.0) -> bytes:
+def trim(pcm: bytes, *, rel_db: float = 28.0, floor_dbfs: float = -55.0, tail_pad_ms: int = _TAIL_PAD_MS) -> bytes:
     """Cuts leading and trailing silence (10 ms windows quieter than the
     loudest window minus `rel_db`, and never louder than `floor_dbfs`
     counts as speech), keeps a short pad, fades 5 ms in and out (no click)
@@ -82,13 +86,26 @@ def trim(pcm: bytes, *, rel_db: float = 28.0, floor_dbfs: float = -55.0) -> byte
     if not voiced:
         return b""
     start = max(0, voiced[0] * _WINDOW - _LEAD_PAD_MS * _RATE // 1000)
-    end = min(len(a), (voiced[-1] + 1) * _WINDOW + _TAIL_PAD_MS * _RATE // 1000)
+    end = min(len(a), (voiced[-1] + 1) * _WINDOW + tail_pad_ms * _RATE // 1000)
     out = array("h", a[start:end])
     fade = min(len(out) // 2, _FADE_MS * _RATE // 1000)
     for i in range(fade):
         f = i / fade
         out[i] = int(out[i] * f)
         out[-1 - i] = int(out[-1 - i] * f)
+    return whole_frames(_pcm(out))
+
+
+def shorten(pcm: bytes, max_ms: int, fade_ms: int = 40) -> bytes:
+    """The first `max_ms` of a clip with a fade out (a held "mmm" ends sooner; whole 20 ms frames)."""
+    n = max_ms * _RATE // 1000
+    a = _samples(pcm)
+    if len(a) <= n:
+        return pcm
+    out = array("h", a[:n])
+    fade = min(len(out), fade_ms * _RATE // 1000)
+    for i in range(fade):
+        out[-1 - i] = int(out[-1 - i] * (i / fade))
     return whole_frames(_pcm(out))
 
 
@@ -108,6 +125,12 @@ class ClipCache:
     def filler(self, language: str, index: int) -> Clip | None:
         return self._clips.get(f"filler:{base_language(language)}:{index}")
 
+    def opener(self, language: str, key: str) -> Clip | None:
+        return self._clips.get(f"opener:{base_language(language)}:{key}")
+
+    def has_opener(self, language: str, key: str) -> bool:
+        return self.opener(language, key) is not None
+
     def has_backchannel(self, language: str, token: str) -> bool:
         return self.backchannel(language, token) is not None
 
@@ -118,6 +141,7 @@ class ClipCache:
     async def warm(self, languages: tuple[str, ...]) -> int:
         """Renders what is missing; returns the number of clips ready."""
         from voice_gateway.speak.fillers import FILLERS
+        from voice_gateway.speak.openers import OPENERS
 
         jobs = []
         for lang in dict.fromkeys(base_language(x) for x in languages):
@@ -125,6 +149,8 @@ class ClipCache:
                 jobs.append((f"bc:{lang}:{token}", lang, text, True))
             for index, text in enumerate(FILLERS.get(lang, ())):
                 jobs.append((f"filler:{lang}:{index}", lang, text, False))
+            for key, _, text in OPENERS.get(lang, ()):
+                jobs.append((f"opener:{lang}:{key}", lang, text, True))
         jobs = [j for j in jobs if j[0] not in self._clips]
         gate = asyncio.Semaphore(_PARALLEL)
 
@@ -137,11 +163,15 @@ class ClipCache:
                 except Exception as exc:
                     log.event("clip_failed", level="warning", key=key, error=type(exc).__name__)
                     return
-            pcm = trim(raw)
+            opener = key.startswith("opener:")
+            is_bc = is_bc and not opener
+            pcm = trim(raw, rel_db=BACKCHANNEL_TRIM_DB, tail_pad_ms=10) if is_bc else trim(raw)
+            if is_bc and key.rsplit(":", 1)[-1] in SHORT_TOKENS and len(pcm) // 32 > BACKCHANNEL_TARGET_MS:
+                pcm = shorten(pcm, BACKCHANNEL_TARGET_MS)
             if is_bc:
                 pcm = gain(pcm, self.backchannel_cfg.clip_volume_db) if pcm else pcm
             ms = len(pcm) // 32
-            if not pcm or (is_bc and ms > MAX_BACKCHANNEL_MS):
+            if not pcm or (is_bc and ms > MAX_BACKCHANNEL_MS) or (opener and ms > MAX_OPENER_MS):
                 self.rejected.append(key)
                 log.event("clip_rejected", level="warning", key=key, ms=ms)
                 return
@@ -158,6 +188,7 @@ class ClipCache:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     async def _raw(self, lang: str, text: str, is_bc: bool) -> bytes:
+        """`is_bc`: `text` is an SSML body (backchannel tokens and openers)."""
         key = self._key(lang, text, is_bc)          # NoVoice for a language without a voice
         path = self.cache_dir / f"{key}.pcm" if self.cache_dir else None
         if path is not None and path.is_file():

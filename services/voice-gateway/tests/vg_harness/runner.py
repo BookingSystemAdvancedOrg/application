@@ -286,8 +286,40 @@ def missing_components() -> list[str]:
 
 # --- fake mode -----------------------------------------------------------------------------------------------------
 
+# Simulated latency for fake mode (`--sim-latency`): what the live run measured (REPLAY-RESULTS.md), on the virtual
+# clock. Fake mode's brain answers in no time; with this the reply waits as a live one would: every Bedrock round the
+# turn sent (the gateway's own lookup round is not one) costs model_ms to its first token, every tool Lambda call
+# that went out cold tool_ms, a prefetched answer only what was left of its tool_ms; Polly's first audio tts_ms;
+# Transcribe's final final_ms after the last word.
+SIM_LATENCY = {"model_ms": 1500, "tool_ms": 120, "tts_ms": 100, "final_ms": 550}
+
+
+class SimLatencyBrain:
+    """AgentBrain with the live costs on the virtual clock (fake mode only, see SIM_LATENCY)."""
+
+    def __init__(self, inner, clock, invoke_log, costs: dict) -> None:
+        self.inner, self.clock, self.invoke_log, self.costs = inner, clock, invoke_log, costs
+        self.turn_costs: list[int] = []
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def turn(self, text, **kw):
+        calls0, hits0 = len(self.invoke_log), len(self.inner.invoker().hits)
+        items = [item async for item in self.inner.turn(text, **kw)]
+        tool_ms = self.costs["tool_ms"]
+        cost = (self.inner.last_turn.get("bedrock_rounds", 0) * self.costs["model_ms"]
+                + (len(self.invoke_log) - calls0) * tool_ms
+                + sum(max(0, tool_ms - age) for age in self.inner.invoker().hits[hits0:]))
+        self.turn_costs.append(cost)
+        if cost:
+            await self.clock.sleep_ms(cost)
+        for item in items:
+            yield item
+
 async def run_fake(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"] = "mulaw", out_dir: Path | None = None,
-                   echo_db: float | None = None, noise_dbfs: float | None = None, on_adapter=None) -> Result:
+                   echo_db: float | None = None, noise_dbfs: float | None = None, on_adapter=None,
+                   sim_latency: dict | None = None) -> Result:
     from voice_gateway.audio.frames import PCM16_16K, TELEPHONY_MULAW_8K
     from voice_gateway.audio.local import LocalAdapter
     from voice_gateway.backchannel.clips import ClipCache
@@ -310,7 +342,9 @@ async def run_fake(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"
     with fake_world(scenario.tenant, now_ms=clock.now_ms, glosses=glosses, languages=languages) as world, \
             inline_threads(), contextlib.redirect_stdout(log):
         stt = FakeSttFactory(script=stt_script(scenario, audio))
-        tts = RecordingTts(FakeTts())
+        if sim_latency:
+            stt.final_delay_ms = sim_latency["final_ms"]
+        tts = RecordingTts(FakeTts(clock=clock, latency_ms=sim_latency["tts_ms"]) if sim_latency else FakeTts())
         clips = ClipCache(FakeTts(), cfg.speak, cfg.backchannel, cache_dir=None)
         await clips.warm(_spoken_languages(scenario))
         adapter = LocalAdapter(clock, call_ref=f"harness-{scenario.key}", dialed=world.number, caller=scenario.caller,
@@ -319,9 +353,12 @@ async def run_fake(scenario: Scenario, *, cfg=None, wire: Literal["mulaw", "pcm"
         stt.labeller = adapter.label_at      # the script follows the caller audio's labels, not the energy segments
         if on_adapter:
             on_adapter(adapter)
-        comps = Components(
-            stt=stt, tts=tts, clips=clips, clock=clock, rng_seed=7, record_events=True,
-            brain_factory=lambda c, bus, clk: AgentBrain(c, bus, clk, app=world.live, model_factory=lambda sink: world.model))
+        def brain_factory(c, bus, clk):
+            brain = AgentBrain(c, bus, clk, app=world.live, model_factory=lambda sink: world.model)
+            return SimLatencyBrain(brain, clk, world.invoke.log, sim_latency) if sim_latency else brain
+
+        comps = Components(stt=stt, tts=tts, clips=clips, clock=clock, rng_seed=7, record_events=True,
+                           brain_factory=brain_factory)
         orchestrator = CallOrchestrator(cfg, adapter, comps)
         driver = asyncio.create_task(clock.drive())
         segments: list[Segment] = []

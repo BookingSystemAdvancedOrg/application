@@ -15,10 +15,10 @@ container. Design, ownership and interfaces: [DESIGN.md](DESIGN.md). Languages: 
 | Folder | What |
 |---|---|
 | `voice_gateway/audio/` | frames, resampler, ring, jitter and playout buffers, WAV, LocalAdapter (simulated phone line), WebSocket adapter |
-| `voice_gateway/listen/` | VAD (silero, energy fallback), Transcribe streaming client, turn detector, barge-in, language tracker, Listener |
-| `voice_gateway/speak/` | Polly TTS, sentence chunker, speech queue, fillers, output mixer, Speaker |
+| `voice_gateway/listen/` | VAD (silero, energy fallback), Transcribe streaming client (live, probe and shadow streams), turn detector, barge-in, language tracker, Swedish number read-back (`numbers.py`), Listener |
+| `voice_gateway/speak/` | Polly TTS, sentence chunker, speech queue, fillers, openers (`openers.py`), output mixer, Speaker |
 | `voice_gateway/backchannel/` | when an "mm" fits (controller), the tokens per language, the pre-rendered clip cache |
-| `voice_gateway/brain/` | AgentBrain (the phone agent's turn, streamed), StreamingAgentModel (Bedrock ConverseStream tee) |
+| `voice_gateway/brain/` | AgentBrain (the phone agent's turn, streamed), StreamingAgentModel (Bedrock ConverseStream tee), speculative availability and the one-round booking turn (`prefetch.py`) |
 | `voice_gateway/orchestrator.py` | the call state machine (greeting, listening, thinking, speaking, transfer, ending) |
 | `voice_gateway/server.py` | entry points: `local`, `ws`, `serve` |
 | `tests/` | unit tests per part, the replay harness (`tests/vg_harness/`) and its 14 scenarios |
@@ -48,7 +48,14 @@ python -m voice_gateway.replay list
 python -m voice_gateway.replay voice-B                  # fake mode: virtual clock, free, deterministic
 python -m voice_gateway.replay all --summary            # every scenario, one line each
 python -m voice_gateway.replay lang-B --mode live       # real Transcribe, Polly, Bedrock on booqy-dev (cents)
+python -m voice_gateway.replay all --summary --sim-latency   # fake mode with the live costs on the virtual clock
+python -m voice_gateway.replay all --summary --sim-latency --config-json '{"speak": {"opener": false}}'
 ```
+
+`--sim-latency` puts what the live run measured on the virtual clock (`vg_harness.runner.SIM_LATENCY`: 1500 ms
+per Bedrock round the turn sent, 120 ms per tool Lambda call that went out cold, Polly 100 ms, the Transcribe
+final 550 ms after the last word), so a change to the turn's shape shows in fake mode. It is for the latency
+numbers: the scripted callers are not reactive, so some booking checks fail under it as they did before.
 
 Live mode uses the AWS profile `booqy-dev` (`VG_AWS_PROFILE` to change it); tables and tool Lambdas stay
 faked, so it writes no dev data. The silero model: point `VG_SILERO_MODEL` at a `silero_vad.onnx` (the
@@ -95,6 +102,19 @@ one JSON document; unknown keys fail loudly:
 VG_CONFIG_JSON='{"turn": {"filler_silence_ms": 1800}, "backchannel": {"enabled": false}}' python -m voice_gateway.server ...
 ```
 
+The latency levers can each be switched off there: `speak.opener` (the opener at the turn end),
+`speak.first_clause` (Polly starts on the first clause), `brain.prefetch` (availability looked up from the
+partial transcript), `brain.one_round` (the lookup before the first model round), `brain.warm_connections`
+(one Bedrock client per call, Bedrock and Polly connections opened while the greeting plays),
+`language.second_identify_candidates` (empty: no second identify stream) and
+`language.shadow_start_language` (no Swedish stream beside the live one away from Swedish).
+
+Transcribe cost of the language streams: the second identify stream runs from call start to the first turn
+end (about 10 s, sv, en, tr, fi, es: Turkish, Finnish and Spanish callers on +46 numbers are found, the first
+stream keeps sv, en, ar, de, pl); the Swedish stream beside the live one runs only while the call is in
+another language, so such a call bills its Transcribe seconds twice for that stretch. Both are billed like the
+main stream (Transcribe streaming, per second, eu-central-1); a Swedish call pays only the 10 s.
+
 In Fargate the same JSON comes from SSM (`/booqy/<env>/voice-gateway/config`). Environment knobs:
 `VG_CONFIG_JSON`, `VG_SILERO_MODEL`, `VG_APP_ROOT` (where `functions/phone-agent-call/app.py` lives),
 `PHONE_AGENT_MODEL_ID` (the Bedrock model, as the phone-agent-call Lambda), `VG_HARNESS` (`fake`, `live`,
@@ -110,7 +130,8 @@ cardinality only (language, outcome, reason; never a call id, a phone number or 
 
 | Metric | Per | Meaning |
 |---|---|---|
-| `EosToFirstAudio` | turn | end of the caller's speech to the first reply audio (the number that matters) |
+| `EosToFirstAudio` | turn | end of the caller's speech to the first audio the caller hears, the opener included (the number that matters) |
+| `EosToReplyAudio`, `OpenerPlayed` | turn | end of speech to the reply itself; whether an opener played |
 | `TurnDetectMs` | turn | end of speech to the turn decision |
 | `FirstSentenceMs` | turn | turn decision to the agent's first sentence |
 | `TtsFirstAudioMs` | turn | sentence to its first Polly audio |
@@ -165,10 +186,9 @@ order, so the gateway closes them:
 - **Deployment.** ECS Fargate ARM64, ECR, the SSM config, CloudWatch, and a new task role (Transcribe,
   Polly, Bedrock, the tool Lambdas, the PhoneAgent and tenant tables). That is an IAM change, and pushing
   images from CI touches the deploy role: both are the owner's call (DESIGN.md 10).
-- **Live latency.** End of speech to first audio is about 2.3 to 4.7 s on booqy-dev today, against a 1.5 s
-  target. The gateway's own part is small (turn detection 0.6 to 1.6 s by design, Polly first audio about
-  70 ms); most of it is the agent's Bedrock rounds (1.4 to 3.1 s per turn). Levers: prompt caching
-  (`BrainConfig.prompt_cache`, model support to verify), a faster model, a filler for long tool-free turns.
+- **Live latency.** End of speech to first audio p50 1231 ms on booqy-dev (target 1500; REPLAY-RESULTS.md), the
+  first sound being the opener; the reply itself p50 2.6 s, one Bedrock round (1.3 to 1.8 s to the first token)
+  plus detection. Language-switch turns get no opener (the short disclosure must come first) and stay 1.4 to 4.7 s.
 - **Tuning on real calls.** VAD, turn and backchannel thresholds are tuned on Polly voices over a
   simulated line; Arabic and Persian recognition are unverified on real callers; nobody has listened to
   the backchannel clips yet (owner decision 7: recorded human clips).

@@ -139,12 +139,15 @@ def numbers(result) -> list[str]:
     replies = an.replies(ev)
     lines = []
     for i, r in enumerate(replies, 1):
-        eos = r.eos_to_first_audio
+        eos, reply = r.eos_to_first_audio, r.eos_to_reply_audio
+        opener = "" if reply is None or reply == eos else f" (opener; the reply {reply} ms)"
         lines.append(f"  turn {i}: end of speech to first audio "
-                     f"{'none (no reply played)' if eos is None else f'{eos} ms'}, turn detection {r.turn_detect} ms")
+                     f"{'none (no reply played)' if eos is None else f'{eos} ms'}{opener}, turn detection {r.turn_detect} ms")
     p50 = an.percentile(an.eos_to_first_audio(ev), 0.5)
     if p50 is not None:
-        lines.append(f"  p50 end of speech to first audio: {p50:.0f} ms")
+        reply50 = an.percentile(an.eos_to_reply_audio(ev), 0.5)
+        lines.append(f"  p50 end of speech to first audio: {p50:.0f} ms"
+                     + (f" (to the reply: {reply50:.0f} ms)" if reply50 is not None else ""))
     spans = an.backchannel_spans(ev)
     lines.append(f"  backchannels: {len(spans)}, overlapping the caller: {an.backchannel_overlaps(ev)}")
     for b, f in an.barge_ins(ev):

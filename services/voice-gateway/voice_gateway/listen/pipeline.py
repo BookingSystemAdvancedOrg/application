@@ -41,12 +41,16 @@ from voice_gateway.config import GatewayConfig
 from voice_gateway.events import (AssistantContext, BargeIn, EventBus, LanguageAction, SttFinal, SttPartial, TurnEnd,
                                   TurnHold, VadStart)
 from voice_gateway.listen.barge_in import BargeInDetector, is_backchannel
-from voice_gateway.listen.language_id import LanguageTracker, UtteranceInfo, candidates_for, explicit_targets
-from voice_gateway.listen.transcribe import SttFactory, SttUnavailable, Transcriber
+from voice_gateway.listen.language_id import (AWAY_PROBE_CONFIDENCE, LanguageTracker, UtteranceInfo, candidates_for,
+                                              explicit_targets, second_candidates)
+from voice_gateway.listen.numbers import normalise as normalise_numbers
+from voice_gateway.listen.transcribe import SttFactory, SttMode, SttUnavailable, Transcriber
 from voice_gateway.listen.turn import TurnDetector
 from voice_gateway.listen.vad import VadModel, VadSegmenter, make_vad
 
 from typing import Protocol
+
+from shared.features.phone_agent import language as pa_language
 
 NEW_STREAM_WAIT_MS = 2500        # how long a TurnEnd waits for the re-transcription after a switch
 # Transcribe accepts replayed audio faster than real time but answers in real time (measured live 2026-11-20: a
@@ -54,6 +58,9 @@ NEW_STREAM_WAIT_MS = 2500        # how long a TurnEnd waits for the re-transcrip
 # open the stream). A probe over a longer utterance cannot finish inside its 2.5 s budget and only delays the reply:
 # it runs for short utterances only.
 PROBE_MAX_UTTERANCE_MS = 1000
+SHADOW_WAIT_MS = 400             # how long a TurnEnd waits for the shadow stream's final of the same utterance
+SHADOW_SCORE = 0.9               # a start-language shadow that heard the caller clearly counts as a strong result
+SHADOW_MARGIN = 0.1              # its confidence must beat the live stream's by this much
 
 
 class PlaybackView(Protocol):
@@ -96,6 +103,8 @@ class Listener:
         self._tasks: set[asyncio.Task] = set()
         self._collect: dict | None = None
         self._failure: Exception | None = None      # SttUnavailable from a background task: run() raises it
+        self._topic: str | None = None              # what the assistant's last question asked for (numbers.py)
+        self._first_candidates: tuple[str, ...] = ()
         bus.listen(self._on_stt, SttPartial, SttFinal)
 
     # --- run -------------------------------------------------------------------------------------
@@ -110,8 +119,13 @@ class Listener:
             self._tasks.add(warm_task)
             warm_task.add_done_callback(self._tasks.discard)
         cands = candidates_for(self.caller_e164, self.cfg.language, current=lang)
+        self._first_candidates = cands
         if self.cfg.language.identify_first_utterance and len(cands) >= 2:
             await self.transcriber.open_identify(cands, preferred=lang)
+            second = second_candidates(cands, self.cfg.language)
+            if second:          # Turkish, Finnish, Spanish: a +46 caller's languages beyond the first stream's five
+                await self.transcriber.open_shadow(SttMode(identify=second, preferred=lang,
+                                                           vocabulary_name=self.cfg.stt.vocabulary_name))
         else:
             await self.transcriber.open(lang)
         try:
@@ -143,6 +157,7 @@ class Listener:
                                     speaking=self.vad.speaking, assistant_playing=playing, item_started_ms=started)
         if barge:
             self._publish_barge(barge)
+        self.turn.partial_ends = not self.transcriber.identifying
         self._emit(self.turn.on_tick(now))
 
     def _publish_barge(self, barge: BargeIn) -> None:
@@ -204,12 +219,19 @@ class Listener:
                 return
             self._publish_barge(BargeIn(end.at_ms, end.speech_start_ms, "words"))
         utt = UtteranceInfo(end.at_ms, end.text, speech_ms, asr_lang, end.confidence, tuple(lid), self._first)
-        cands = None if self.transcriber.identifying else self.tracker.wants_probe(utt)
+        shadow = await self._shadow_evidence(end, utt)
+        if self._first and self.transcriber.shadow_mode is not None and self.transcriber.shadow_mode.identify:
+            await self.transcriber.close_shadow()          # the second identify stream is for the first utterance only
+        if shadow is not None:
+            scores, shadow_lang, shadow_text = shadow
+            utt = dataclasses.replace(utt, text=shadow_text, asr_language=shadow_lang, lid_scores=scores)
+            log.event("shadow_evidence", language=shadow_lang, score=scores[0][1])
+        cands = None if self.transcriber.identifying or shadow is not None else self.tracker.wants_probe(utt)
         if cands and getattr(self.transcriber.factory, "answers_in_real_time", False) \
                 and end.eos_ms - end.speech_start_ms > PROBE_MAX_UTTERANCE_MS:
             log.event("probe_skipped", reason="too_long", speech_ms=end.eos_ms - end.speech_start_ms)
             cands = None
-        probe_text: tuple[str, str] | None = None
+        probe_text: tuple[str, str] | None = (shadow[1], shadow[2]) if shadow is not None else None
         if cands:
             ev = await self.transcriber.probe(cands, replay_from_ms=end.speech_start_ms)
             if ev is not None:
@@ -226,6 +248,8 @@ class Listener:
         self.bus.publish(decision)
         self._first = False
         text = end.text
+        reopen_to: str | None = None        # after the TurnEnd is out: the caller is answered first (live: the
+        #                                     identify-to-fixed reopen held the first TurnEnd back up to 0.6 s)
         if decision.action == LanguageAction.SWITCH and probe_text and same_language(probe_text[0], decision.current):
             asr_lang, text = decision.current, probe_text[1]      # the probe already heard it in the new language
         if decision.action == LanguageAction.SWITCH and not same_language(asr_lang, decision.current):
@@ -236,10 +260,88 @@ class Listener:
             # utterance, or the probe): no replay to wait for, the live stream follows from here
             self.turn.set_language(decision.current)
             if self.transcriber.language != decision.current or self.transcriber.identifying:
-                await self.transcriber.reopen(decision.current, self.transcriber.fed_end_ms)
+                reopen_to = decision.current
         elif self.transcriber.identifying:
-            await self.transcriber.reopen(self.tracker.current, self.transcriber.fed_end_ms)
+            reopen_to = self.tracker.current
+        elif shadow is not None and same_language(shadow[1], self.cfg.language.start_language) \
+                and not same_language(decision.current, shadow[1]):
+            text = shadow[2]        # kept in the away language, but its words are the start language's: the agent
+            #                         reads them (and may answer in it) instead of the away stream's nonsense
+        text = normalise_numbers(text, decision.current, topic=self._topic)
         self.bus.publish(dataclasses.replace(end, text=text, language=decision.current, language_decision=decision))
+        if reopen_to is not None:
+            await self.transcriber.reopen(reopen_to, self.transcriber.fed_end_ms)
+        await self._follow_shadow()
+
+    async def _shadow_evidence(self, end: TurnEnd, utt: UtteranceInfo
+                               ) -> tuple[tuple[tuple[str, float], ...], str, str] | None:
+        """(scores, language, text) from the shadow stream when it heard this utterance better than the live one:
+        the first utterance's second identify stream found a language the first stream could not offer (strong,
+        and stronger than the first stream's top), or the start-language stream heard words the away stream
+        did not (its confidence over shadow_min_confidence, the live one's under AWAY_PROBE_CONFIDENCE)."""
+        tr, cfg = self.transcriber, self.cfg.language
+        mode = tr.shadow_mode
+        if mode is None:
+            return None
+        # Waited for only when the live stream's own evidence is weak: a clear first utterance (sv 0.95) or a clear
+        # one in the away language never waits for the shadow.
+        first_p = max((s for _, s in utt.lid_scores), default=0.0)
+        unsure = utt.asr_confidence is not None and utt.asr_confidence < AWAY_PROBE_CONFIDENCE
+        # live lang-J: Turkish on the first stream scored en 0.95 with words at 0.43 confidence (nonsense)
+        weak = (first_p < cfg.strong_p or unsure) if mode.identify else unsure
+        if not weak:
+            return None
+        await tr.wait_shadow(end.eos_ms, SHADOW_WAIT_MS)
+        finals = tr.shadow_finals(end.speech_start_ms, end.eos_ms)
+        text = " ".join(f.text.strip() for f in finals).strip()
+        partial = tr.shadow_partial
+        if mode.identify and not finals and partial is not None and partial.at_ms >= end.speech_start_ms:
+            # no final yet (live it came 0.5 to 1 s after the turn end), but an identify stream's partials name
+            # the language they are written in: one the first stream could not offer, with words, counts
+            code = partial.language
+            if code not in self._first_candidates and pa_language.words(partial.text) >= cfg.min_content_words \
+                    and (unsure or first_p < cfg.strong_p):
+                return ((code, SHADOW_SCORE),), code, partial.text
+            return None
+        if not finals or not text:
+            return None
+        if mode.identify:
+            total = sum(max(1, f.end_ms - f.start_ms) for f in finals)
+            agg: dict[str, float] = {}
+            for f in finals:
+                for code, score in f.language_scores:
+                    agg[code] = agg.get(code, 0.0) + score * max(1, f.end_ms - f.start_ms) / total
+            if not agg:
+                return None
+            ordered = tuple(sorted(agg.items(), key=lambda kv: -kv[1]))
+            top, p = ordered[0]
+            if top in self._first_candidates or p < cfg.strong_p or (p <= first_p and not unsure) \
+                    or not all(same_language(f.language, top) for f in finals):
+                return None
+            return ordered, top, text
+        start = mode.language
+        confs = [f.confidence for f in finals if f.confidence is not None]
+        conf = sum(confs) / len(confs) if confs else 0.0
+        live = utt.asr_confidence
+        if same_language(self.tracker.current, start) or live is None or live >= AWAY_PROBE_CONFIDENCE \
+                or conf < cfg.shadow_min_confidence or conf - live < SHADOW_MARGIN:
+            return None
+        if pa_language.words(text) < cfg.min_content_words or pa_language.detect(text) not in (None, start):
+            return None
+        return ((start, SHADOW_SCORE), (self.tracker.current, round(live, 2))), start, text
+
+    async def _follow_shadow(self) -> None:
+        """Away from the start language a start-language stream runs beside the live one; back in it, none."""
+        cfg, tr = self.cfg.language, self.transcriber
+        start = cfg.start_language
+        away = not same_language(self.tracker.current, start)
+        mode = tr.shadow_mode
+        if not cfg.shadow_start_language or tr.identifying:
+            return
+        if away and (mode is None or mode.identify or not same_language(mode.language, start)):
+            await tr.open_shadow(SttMode(language=start, vocabulary_name=self.cfg.stt.vocabulary_name))
+        elif not away and mode is not None and not mode.identify:
+            await tr.close_shadow()
 
     async def _retranscribe(self, language: str, end: TurnEnd) -> str | None:
         """Reopens the live stream in `language` with replay and waits (a bounded
@@ -261,7 +363,16 @@ class Listener:
 
     # --- the orchestrator's calls ----------------------------------------------------------------
 
+    def caller_voiced(self) -> bool:
+        """The caller's voice is on the line right now (also before VadStart confirms it)."""
+        return self.vad.voiced
+
+    def heard_so_far(self) -> str:
+        """The caller's words of the turn in progress (numbers read as numbers.py does), for the prefetch."""
+        return normalise_numbers(self.turn.text(), self.turn.language, topic=self._topic)
+
     def set_context(self, ctx: AssistantContext) -> None:
+        self._topic = getattr(ctx, "topic", None)
         self.turn.set_context(ctx)
         self.turn.set_language(ctx.language)
 
@@ -273,6 +384,7 @@ class Listener:
         self.turn.set_language(code)
         if self.transcriber.language != code or self.transcriber.identifying:
             await self.transcriber.reopen(code, self.transcriber.fed_end_ms)
+        await self._follow_shadow()
 
     def turn_taken(self) -> None:
         """The orchestrator acted on a TurnEnd or a BargeIn: reset VAD turn

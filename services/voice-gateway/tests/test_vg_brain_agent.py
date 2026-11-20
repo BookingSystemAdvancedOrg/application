@@ -27,6 +27,7 @@ from voice_gateway.config import BrainConfig, GatewayConfig
 from voice_gateway.events import AgentSentence, AgentTurnDone, EventBus, ToolFinished, ToolStarted
 
 assert live and env
+SCRIPTED_CFG = GatewayConfig(brain=BrainConfig(one_round=False))
 TOMORROW = "2026-11-03"
 HOLD = {"date": TOMORROW, "time": "19:00", "partySize": 4}
 READ_BACK = "[sv] Ett bord för fyra i morgon klockan sju i namnet Anna, stämmer det?"
@@ -72,14 +73,16 @@ def stop(reason):
 class Call:
     """One gateway call through AgentBrain, driven synchronously."""
 
-    def __init__(self, e, model=None, *, model_factory=None, ref="gw-1"):
+    def __init__(self, e, model=None, *, model_factory=None, ref="gw-1", cfg=None):
         e.live._clients["voice"] = GatewayVoice()
         self.e = e
         self.bus = EventBus()
         self.bus.history = []
         self.loop = asyncio.new_event_loop()
         factory = model_factory or (lambda sink: model)
-        self.brain = AgentBrain(GatewayConfig(), self.bus, FakeClock(), app=e.live, model_factory=factory)
+        # The scripted models below answer round by round as the model would without the gateway's lookup first
+        # (brain/prefetch.py); test_vg_brain_prefetch.py covers the one-round turn.
+        self.brain = AgentBrain(cfg or SCRIPTED_CFG, self.bus, FakeClock(), app=e.live, model_factory=factory)
         self.start = self.run(self.brain.start(CallInfo(ref, NUMBER, CALLER, PCM16_16K)))
 
     def run(self, coro):

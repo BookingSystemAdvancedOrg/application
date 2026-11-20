@@ -71,7 +71,9 @@ def test_a_party_below_the_guarantee_threshold_hears_no_fee_rule(runs):
 
 def test_a_full_time_offers_only_times_the_tools_returned(runs):
     out = runs("voice-F")
-    assert "19:00 är tyvärr fullt" in out.turns[0].reply and not made(out)
+    # the lookup comes first (brain/prefetch.py, the prompt's step 2): the nearest free times around the asked one
+    assert ("19:00 är tyvärr fullt" in out.turns[0].reply or "Närmast klockan 19:00" in out.turns[0].reply) \
+        and not made(out)
     offered = {t for c in out.tool_calls for t in ([c["time"]] if c["time"] else [])}
     said = {f"{h:02d}:{m:02d}" for t in out.turns for h, m in an.times_in(t.reply) if m is not None}
     assert said <= set(EVENING) and "19:00" in said and "19:15" not in said

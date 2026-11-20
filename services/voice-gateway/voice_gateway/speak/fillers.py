@@ -10,7 +10,9 @@ model's own preamble usually covers the gap.)
 
 FillerPolicy (pure): a filler is played only when
   * a ToolStarted arrived for a tool other than end_call and
-    transfer_to_staff (those say their own fixed sentence),
+    transfer_to_staff (those say their own fixed sentence), and that tool
+    is still running (once it finished the answer is one model round away:
+    a filler then only delays it, it plays to its end),
   * no assistant audio is playing or queued and none arrived within
     SpeakConfig.filler_delay_ms after the tool started,
   * no filler in the last filler_cooldown_ms, at most one per turn,
@@ -74,6 +76,11 @@ class FillerPolicy:
     def due(self, now_ms: int, language: str, *, assistant_busy: bool) -> int | None:
         """The filler index to play now, or None."""
         if self.pending_since is None or self.played_this_turn:
+            return None
+        if self.tool_done_ms is not None and self.tool_done_ms >= self.pending_since:
+            # The lookup is done: the model's answer is a round away. Live 2026-11-20 a filler started 70 ms before
+            # the reply and held it back 1.5 s (a filler plays to its end); the opener already broke the silence.
+            self.pending_since = None
             return None
         if assistant_busy:
             self.last_audio_ms = now_ms

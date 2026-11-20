@@ -148,6 +148,21 @@ def candidates_for(caller_e164: str | None, cfg: LanguageConfig, *, current: str
     return tuple(out[:5])
 
 
+def second_candidates(first: tuple[str, ...], cfg: LanguageConfig) -> tuple[str, ...] | None:
+    """The second identify-language stream of the first utterance: cfg.always_candidates plus the
+    second_identify_candidates the first stream does not have (Transcribe takes at most 5 options per stream).
+    None when nothing is new."""
+    new = []
+    for code in cfg.second_identify_candidates:
+        code = pa_language.normalise(code)
+        if code not in first and code not in new and languages.to_transcribe(code):
+            new.append(code)
+    if not new:
+        return None
+    base = [pa_language.normalise(c) for c in cfg.always_candidates]
+    return tuple(dict.fromkeys(base + new))[:5]
+
+
 def strip_names(text: str, names: tuple[str, ...]) -> str:
     """The text without the tenant's proper nouns (case-insensitive, whole
     words). A multi-word name goes as a phrase and, for its longer words

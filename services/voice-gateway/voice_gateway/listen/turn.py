@@ -7,10 +7,17 @@ assistant context (TurnConfig):
 
   tail kind (classify_tail)          threshold
   complete clause                    base_silence_ms
+  complete clause answering the      answer_silence_ms (two words or more:
+    assistant's question                "Nej, ... tack" goes on after one)
   short answer after a yes/no or     short_answer_silence_ms
     number question ("ja", "fyra")
   after an open question             open_question_silence_ms (minimum)
-  filler ("ehm", "öh", "um", "uh")   filler_silence_ms
+  a number that completes a time     base_silence_ms (the clause is done:
+    ("klockan sju", "kl 19:00") or     "klockan sju" is said in one go),
+    a final ending in . ? ! after a    after a number question
+    single number word                 answer_silence_ms + 200
+  filler ("ehm", "öh", "um", "uh")   filler_silence_ms (max_silence_ms right
+                                       after a dangling word: "för ehm")
   dangling word ("för", "och",       dangling_silence_ms
     "till", "klockan", "and", "for")
   number being spoken ("noll sju     number_silence_ms
@@ -20,8 +27,11 @@ assistant context (TurnConfig):
 
 Turn end: silence since VadPause >= threshold -> wait up to
 SttConfig.final_wait_ms for the SttFinal covering the speech (a final
-already in: end at once) -> TurnEnd with the final text (else the last
-partial, reason "silence"). max_utterance_ms of speech -> TurnEnd
+already in: end at once; a partial whose last word ends within
+TurnConfig.covered_slack_ms of the end of speech, on a complete clause of
+two words or more (never a short answer: "Nej ... tack"), covers it too: Transcribe's final comes about 550 ms after
+the last word, the partial about 100 ms) -> TurnEnd with the final text
+(else the last partial, reason "silence"). max_utterance_ms of speech -> TurnEnd
 "max_length". Speech under min_speech_ms with no words is noise: no turn.
 Several finals in one turn are joined with a space. Word lists per
 language live in TAILS (sv and en complete; de, fr, es, ar, pl, tr, it
@@ -113,7 +123,11 @@ TAILS: dict[str, dict[str, frozenset[str]]] = {
 }
 
 _TOKEN = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
+# A number right after these is a clock time said in one go ("klockan sju", "kl 19"): the clause is complete.
+TIME_MARKERS = frozenset("klockan kl halv kvart at um om à alle saat godzina godzinę".split())
+_SENTENCE_END = re.compile(r"[.?!]\s*$")
 _HESITATION = re.compile(r"^(?:e+h*m*|ä+h*m*|ö+h*m*|u+[hm]+|h+m+|m{2,}|er+m*|a+h+m+)$")
+IDENTIFY_FINAL_WAIT_MS = 900   # the most a turn waits for the identify stream's final (first utterance)
 EMPTY_GRACE_MS = 1500        # speech heard but no words yet: Transcribe may lag, wait this long before dropping
 # A hesitation sound Transcribe leaves out. Live on booqy-dev (2026-11-20) "boka bord för, ehm... fyra" came back as
 # "boka bord för." with nothing for the "ehm": the turn ended 1.4 s after it, inside the caller's pause. A voiced
@@ -165,6 +179,9 @@ class TurnDetector:
     def __init__(self, cfg: TurnConfig, stt: SttConfig, *, language: str = "sv") -> None:
         self.cfg, self.stt, self.language = cfg, stt, language
         self.ctx: AssistantContext | None = None
+        # False while the live stream identifies the language (the first utterance): its final carries the
+        # language scores, so the turn waits for it instead of ending on a partial (the Listener sets this).
+        self.partial_ends = True
         self.reset()
 
     # --- state -------------------------------------------------------------------------------
@@ -179,6 +196,7 @@ class TurnDetector:
         self._last_hold: tuple[str, int] | None = None
         self._ignore_before = -1
         self._burst: tuple[int, int] | None = None   # (start, end) of the last voiced stretch after a pause
+        self._sticky_burst = False                   # this pause was judged a hesitation (wordless burst)
 
     def _clear_text(self) -> None:
         self._finals: list[str] = []
@@ -186,12 +204,17 @@ class TurnDetector:
         self._partial = ""
         self._covered = False
         self._last_word_ms = -1                 # audio time the last reported word ends
+        self._partial_word_ms = -1              # the same for the latest partial only
 
     def set_context(self, ctx: AssistantContext) -> None:
         self.ctx = ctx
 
     def set_language(self, language: str) -> None:
         self.language = language
+
+    def text(self) -> str:
+        """What the caller said so far in this turn (finals and the latest partial)."""
+        return self._text() if self._state in ("speaking", "paused") else ""
 
     def _text(self) -> str:
         return re.sub(r"\s+", " ", " ".join(self._finals + ([self._partial] if self._partial else []))).strip()
@@ -206,24 +229,75 @@ class TurnDetector:
             return "yes_no"
         return ctx.asked_question
 
+    def _kind(self, text: str, asked) -> TailKind:
+        """classify_tail, with a number that completes a time (or a final that ends the sentence after one
+        number word) counted as a complete clause."""
+        kind = classify_tail(text, self.language, asked)
+        if kind != "number":
+            return kind
+        toks = _tokens(text)
+        is_num = lambda t: any(c.isdigit() for c in t) or t in (TAILS.get(self.language) or {}).get("number", ())
+        if len(toks) > 1 and toks[-2] in TIME_MARKERS:
+            return "complete"
+        if len(toks) > 1 and is_num(toks[-2]):
+            return kind                                  # digits in a row: a phone number being read
+        if self._covered and self._finals and _SENTENCE_END.search(self._finals[-1]):
+            return "complete"
+        return kind
+
+    def _after_dangling(self, text: str) -> bool:
+        """The hesitation sounds at the end follow a dangling word ("för ehm", "for um")."""
+        sets = TAILS.get(self.language) or {}
+        filler, dangling = sets.get("filler", frozenset()), sets.get("dangling", frozenset())
+        toks = _tokens(text)
+        words = frozenset().union(*sets.values()) if sets else frozenset()
+        # a lone letter is a hesitation fragment too (live 2026-11-20: "ehm" came back as "N.")
+        while toks and (toks[-1] in filler or _HESITATION.match(toks[-1]) or (
+                len(toks[-1]) == 1 and toks[-1].isalpha() and toks[-1] not in ONE_LETTER_WORDS
+                and toks[-1] not in words)):
+            toks.pop()
+        return bool(toks) and toks[-1] in dangling
+
+    def _covering_partial(self) -> bool:
+        """The latest partial already holds the caller's last words (its last word ends near the end of speech)."""
+        return bool(self._partial) and self._partial_word_ms >= self._eos - self.cfg.covered_slack_ms
+
     def _decide(self) -> tuple[int, str | None]:
         cfg, asked = self.cfg, self._asked()
-        kind = classify_tail(self._text(), self.language, asked)
+        text = self._text()
+        kind = self._kind(text, asked)
         thr, reason = cfg.base_silence_ms, None
-        if self._wordless_burst():
-            longest = kind in ("dangling", "filler")
+        if self._sticky_burst or self._wordless_burst():
+            # Sticky for the pause: live voice-A the final of "för" arrived inside the pause with its end time
+            # stretched over the "ehm", the burst no longer looked wordless and the wait fell back to 1400 ms.
+            longest = kind in ("dangling", "filler") or (self._sticky_burst and self._after_dangling(text))
+            self._sticky_burst = self._state == "paused" and longest      # only "för ... ehm" stays held
             return (cfg.max_silence_ms if longest else min(cfg.filler_silence_ms, cfg.max_silence_ms)), "filler"
         if kind == "short_answer":
             thr = cfg.short_answer_silence_ms
         elif kind == "filler":
             thr, reason = cfg.filler_silence_ms, "filler"
+            if self._after_dangling(text):
+                thr = cfg.max_silence_ms              # "för, ehm...": the caller is looking for the word
         elif kind == "dangling":
             thr, reason = cfg.dangling_silence_ms, "dangling"
         elif kind == "number":
             thr, reason = cfg.number_silence_ms, "number"
-        if asked == "open" and thr < cfg.open_question_silence_ms:
+        words = len(_tokens(text))
+        if kind == "complete" and asked is not None and words >= 2:
+            thr = min(thr, cfg.answer_silence_ms)        # the caller answered the question (one word: "Nej ... tack")
+        elif kind == "number" and asked == "number":
+            thr = cfg.answer_silence_ms + 200            # a number given to a number question
+        elif asked == "open" and thr < cfg.open_question_silence_ms:
             thr, reason = cfg.open_question_silence_ms, "open_question"
         return min(thr, cfg.max_silence_ms), (reason if thr > cfg.base_silence_ms else None)
+
+    def ends_on_partial(self) -> bool:
+        """The turn may end on the latest partial (no wait for the final)."""
+        # Not a short answer: "Nej ... tack, det går bra" goes on after a comma pause (fake voice-E), the final says.
+        text = self._text()
+        return self.partial_ends and self._covering_partial() and len(_tokens(text)) >= 2 \
+            and self._kind(text, self._asked()) == "complete"
 
     def _wordless_burst(self) -> bool:
         """The caller's last voiced stretch (after a pause, short) brought no word: a hesitation sound."""
@@ -259,6 +333,7 @@ class TurnDetector:
             if self._state == "paused":
                 self._burst = (self._pause_start + ev.pause_ms, ev.at_ms)    # end set at the next pause
                 self._state, self._pause_start, self._last_hold = "speaking", None, None
+                self._sticky_burst = False
             elif self._state in ("idle", "ended"):
                 self._begin(ev.at_ms, ev.at_ms)
             return []
@@ -279,12 +354,14 @@ class TurnDetector:
         self._clear_text()
         self._state, self._speech_start, self._eos = "speaking", speech_start, now
         self._pause_start, self._last_hold, self._speech_ms, self._burst = None, None, 0, None
+        self._sticky_burst = False
 
     def on_partial(self, ev: SttPartial) -> list[TurnHold | TurnEnd]:
         if self._state in ("idle", "ended"):
             return []
         self._partial, self._covered = ev.text.strip(), False
-        self._last_word_ms = max(self._last_word_ms, ev.at_ms if ev.last_word_ms is None else ev.last_word_ms)
+        self._partial_word_ms = ev.at_ms if ev.last_word_ms is None else ev.last_word_ms
+        self._last_word_ms = max(self._last_word_ms, self._partial_word_ms)
         return list(self._hold(ev.at_ms)) if self._state == "paused" else []
 
     def on_final(self, ev: SttFinal) -> list[TurnHold | TurnEnd]:
@@ -318,11 +395,15 @@ class TurnDetector:
         silence = now_ms - self._pause_start
         if silence < thr:
             return out
-        if self._covered:
+        if self._covered or self.ends_on_partial():
             return out + (self._end("silence", now_ms) if self._text() else self._drop())
         waited = silence - thr
         if self._text():
-            return out + (self._end("silence", now_ms) if waited >= self.stt.final_wait_ms else [])
+            # the identify stream's final carries the language scores and, live, the words a lagging partial left
+            # out (lang-G: "klockan sju" was lost): wait longer for it on the first utterance
+            final_wait = self.stt.final_wait_ms if self.partial_ends else max(self.stt.final_wait_ms,
+                                                                              IDENTIFY_FINAL_WAIT_MS)
+            return out + (self._end("silence", now_ms) if waited >= final_wait else [])
         return out + (self._drop() if waited >= max(self.stt.final_wait_ms, EMPTY_GRACE_MS) else [])
 
     def _drop(self) -> list:

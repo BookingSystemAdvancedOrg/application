@@ -60,6 +60,7 @@ logged with the call tag only.
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass, field
 
 from voice_gateway import languages, log
@@ -70,9 +71,10 @@ from voice_gateway.clock import Clock
 from voice_gateway.config import GatewayConfig
 from voice_gateway.events import (AgentSentence, AgentTurnDone, AssistantContext, BargeIn, CallEnded, CallState,
                                   EventBus, LanguageAction, PlaybackFinished, PlaybackStarted, ProviderAction,
-                                  StateChanged, TurnEnd, VadPause, VadStart)
+                                  StateChanged, SttFinal, SttPartial, TurnEnd, VadPause, VadStart)
 from voice_gateway.listen.transcribe import SttFactory
 from voice_gateway.metrics import CallMetrics, MetricsRecorder
+from voice_gateway.speak.openers import OpenerPicker
 from voice_gateway.speak.tts import Tts
 
 TICK_MS = 100
@@ -82,6 +84,7 @@ TURN_SAVE_WAIT_MS = 12000          # a running turn may finish its writes before
 FINISH_WAIT_MS = 30000             # brain.finish (call row, metering) after the line is down
 TURN_MAX_MS = 25000                # a turn still running this long after the caller's turn end is stuck: error, end
 CALL_MAX_MS = (900 + 60) * 1000    # hard cap above the largest maxCallSeconds (900): no line, stream or task outlives it
+OPENER_DELAY_MS = 120              # the opener waits this long after the turn end: a caller who goes on gets none
 
 
 @dataclass
@@ -169,6 +172,8 @@ class CallOrchestrator:
         self._tasks: list[asyncio.Task] = []
         self._helpers: set[asyncio.Task] = set()
         self._fixed_seq = 0
+        self._openers = OpenerPicker(random.Random(components.rng_seed), cfg.speak.opener_chance)
+        self._ctx: AssistantContext | None = None
 
     # -- public ------------------------------------------------------------------------------
 
@@ -231,6 +236,10 @@ class CallOrchestrator:
         self._call_started_ms = self.clock.now_ms()
         self.speaker = self._make_speaker()
         self.listener = self._make_listener(info)
+        self.bus.listen(self._on_heard, SttPartial, SttFinal)      # after the listener's own handler: it has the words
+        warm = getattr(self.components.tts, "warm", None)
+        if warm is not None and self.cfg.brain.warm_connections:
+            self._spawn(self._safe(warm(self._language)))
         self._tasks = [asyncio.create_task(self.speaker.run(), name="speaker"),
                        asyncio.create_task(self.listener.run(), name="listener"),
                        asyncio.create_task(self._ticker(), name="ticker")]
@@ -320,6 +329,19 @@ class CallOrchestrator:
     def _on_bus(self, event) -> None:
         self._post("bus", event)
 
+    def _on_heard(self, event) -> None:
+        """Speculative availability (brain/prefetch.py): the caller's words so far, while they still speak."""
+        prefetch = getattr(self.brain, "prefetch", None)
+        heard = getattr(self.listener, "heard_so_far", None)
+        if prefetch is None or heard is None or self.state in (CallState.ENDING, CallState.ENDED):
+            return
+        try:
+            text = heard()
+            if text:
+                prefetch(text, self._language)
+        except Exception as exc:   # noqa: BLE001  (a prefetch is only a head start)
+            log.event("prefetch_failed", level="warning", call=self.tag, error=type(exc).__name__)
+
     def _post(self, kind: str, payload=None) -> None:
         if self._inbox is not None:
             self._inbox.put_nowait(_Msg(kind, payload))
@@ -366,7 +388,7 @@ class CallOrchestrator:
         if self.state == CallState.THINKING and turn is not None and not turn.audio and not turn.dropped \
                 and e.speech_start_ms - turn.end.at_ms <= self.cfg.call.continuation_grace_ms:
             turn.suppressed = True
-            if turn.items:
+            if turn.items or self.speaker_busy():      # the reply, or the opener that went before it
                 await self.speaker.flush(e.at_ms)
             log.event("reply_suppressed", call=self.tag, gen=turn.gen)
             self._listen("caller_continued")
@@ -428,8 +450,43 @@ class CallOrchestrator:
         turn = _Turn(self._gen, e, started_ms=self.clock.now_ms())
         self._turn = turn
         self._set(CallState.THINKING, "turn_end")
+        self._opener(turn)
         turn.task = asyncio.create_task(self._consume(turn, e.text, e.language or self._language,
                                                       languages.to_transcribe(e.language or self._language)))
+
+    def _opener(self, turn: _Turn) -> None:
+        """A short opener right at the turn end (speak/openers.py), never on a language switch (the short
+        disclosure comes first), never when the caller's words point to another language, never while
+        something else waits to be said first. It plays OPENER_DELAY_MS after the turn end unless the caller
+        went on meanwhile or the reply is already there."""
+        e = turn.end
+        play = getattr(self.speaker, "opener", None)
+        if play is None or not self.cfg.speak.opener or self._prefix or self.speaker_busy():
+            return
+        decision = e.language_decision
+        if decision is not None and decision.action != LanguageAction.KEEP:
+            return
+        if not languages_same(e.language or self._language, self._language) \
+                or getattr(self.speaker, "other_language_hint", False):
+            return
+        planned = getattr(self.brain, "lookup_planned", None)
+        lookup = bool(planned(e.text, self._language)) if planned else False
+        ctx = self._ctx
+        key = self._openers.pick(e.text, self._language, lookup=lookup,
+                                 awaiting_confirmation=bool(ctx and ctx.awaiting_confirmation),
+                                 asked=bool(ctx and ctx.asked_question),
+                                 available=getattr(self.components.clips, "has_opener", None))
+        if key:
+            self._spawn(self._play_opener(turn, play, key, lookup))
+
+    async def _play_opener(self, turn: _Turn, play, key: str, lookup: bool) -> None:
+        await self.clock.sleep_ms(OPENER_DELAY_MS)
+        voiced = getattr(self.listener, "caller_voiced", None)
+        if turn is not self._turn or turn.dropped or turn.audio or turn.items or self.speaker_busy() \
+                or self._caller_active or (voiced is not None and voiced()):
+            return
+        if play(self._language, key, lookup=lookup):
+            log.event("opener", call=self.tag, key=key, lookup=lookup)
 
     async def _consume(self, turn: _Turn, text: str, language: str, locale: str | None) -> None:
         try:
@@ -497,7 +554,9 @@ class CallOrchestrator:
                 return reason
         self._turn = None
         self._last_reply = turn
-        ctx = AssistantContext(self.clock.now_ms(), done.asked_question, done.awaiting_confirmation, self._language)
+        ctx = AssistantContext(self.clock.now_ms(), done.asked_question, done.awaiting_confirmation, self._language,
+                               question_topic(turn.items.values()) if done.asked_question else None)
+        self._ctx = ctx
         self.bus.publish(ctx)
         self.listener.set_context(ctx)
         if self._pending is not None:
@@ -688,3 +747,23 @@ class CallOrchestrator:
     _prefix_text: str | None = None
     _last_reply: _Turn | None = None
     _call_started_ms: int = 0
+
+
+def languages_same(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and a.split("-")[0].lower() == b.split("-")[0].lower()
+
+
+_TOPICS = (("party", ("hur många", "how many", "wie viele", "antal", "personer blir", "number of guests")),
+           ("time", ("vilken tid", "vilket klockslag", "what time", "which time", "um wie viel uhr", "när på")),
+           ("date", ("vilken dag", "vilket datum", "which day", "what day", "which date", "welchen tag")),
+           ("name", ("vilket namn", "ditt namn", "namn ska", "what name", "your name", "which name", "ihr name")))
+
+
+def question_topic(sentences) -> str | None:
+    """What the reply's last question asks for (listen/numbers.py reads a bare number by it)."""
+    texts = [str(t) for t in sentences if str(t).strip()]
+    last = texts[-1].lower() if texts else ""
+    for topic, words in _TOPICS:
+        if any(w in last for w in words):
+            return topic
+    return None

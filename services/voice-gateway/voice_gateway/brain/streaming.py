@@ -34,7 +34,9 @@ AgentSentence events:
   * sentence borders (., ?, ! and their CJK and Arabic forms, then a
     space), a short first chunk is joined with the next sentence
     (SpeakConfig.first_chunk_min_chars), a long clause is cut at its last
-    comma (SpeakConfig.clause_split_chars);
+    comma (SpeakConfig.clause_split_chars); the turn's first chunk ends at
+    its first comma once it has three words and first_chunk_min_chars
+    (SpeakConfig.first_clause: Polly starts on the first clause);
   * every sentence through agent.spoken_text(sentence, code); a sentence
     that cleans to nothing (an English note to itself, agent._META) is
     dropped; a sentence identical to one already streamed in this turn is
@@ -210,9 +212,27 @@ class StreamingAgentModel(RealAgentModel):
         self._local = threading.local()
 
     def client_for(self, seconds):
-        real = super().client_for(seconds)
+        # One client (and one warm connection pool) for the whole call: the parent keeps a client per whole second
+        # of time left, so the second round of a turn (fewer seconds left) opened a new TLS connection. The turn
+        # deadline is still kept: read_stream stops at it and agent._within stops waiting.
+        real = super().client_for(None if self.cfg.warm_connections else seconds)
         current = getattr(self._local, "round", None)
         return _TeeClient(real, self.sink, *current) if current else real
+
+    def warm(self) -> None:
+        """Opens the call's Bedrock connection with one tiny request (one output token) while the greeting plays.
+        Never fails the call."""
+        client = super().client_for(None)
+        if not self.model_id or not hasattr(client, "meta"):     # a botocore client only (tests inject fakes)
+            return
+        try:
+            answer = client.converse_stream(
+                modelId=self.model_id, messages=[{"role": "user", "content": [{"text": "Hej"}]}],
+                inferenceConfig={"maxTokens": 1}, additionalModelRequestFields={"thinking": {"type": "disabled"}})
+            for _ in answer.get("stream") or ():
+                pass
+        except Exception:   # noqa: BLE001  (only a warm-up)
+            pass
 
     def _once(self, args, left, deadline):
         with self._lock:
@@ -454,6 +474,15 @@ class TextStreamer:
         if final:
             self._buf = ""
             return buf
+        if first and self.speak.first_clause:
+            # The turn's first words go to Polly at the first comma (a clause of three words or more), not at the
+            # end of the sentence: first audio comes a sentence sooner. The reconciliation knows streamed clauses.
+            for m in re.finditer(r",\s", buf):
+                head = buf[:m.start() + 1]
+                if len(head.strip()) >= self.speak.first_chunk_min_chars and \
+                        len(head.split()) >= MIN_STREAMED_CLAUSE_WORDS:
+                    self._buf = buf[m.end():]
+                    return head
         if len(buf) > self.speak.clause_split_chars:
             cut = buf.rfind(", ", self.speak.first_chunk_min_chars)
             if cut > 0:

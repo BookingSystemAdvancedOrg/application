@@ -6,6 +6,8 @@ from voice_gateway.config import SttConfig, TurnConfig
 from voice_gateway.events import AssistantContext, SttFinal, SttPartial, TurnEnd, TurnHold, VadPause, VadResume, VadStart
 from voice_gateway.listen.turn import TurnDetector, classify_tail
 
+BASE = TurnConfig().base_silence_ms
+
 
 class Rig:
     """Drives a TurnDetector on a virtual clock the way the Listener does."""
@@ -105,7 +107,7 @@ def test_complete_clause_ends_after_the_base_silence_with_the_final_already_in()
     (end,) = r.ends()
     assert end.text == "Jag vill boka ett bord." and end.reason == "silence"
     assert end.eos_ms == 2500 and end.speech_start_ms == 1000 and end.language == "sv"
-    assert 2500 + 550 <= end.at_ms <= 2500 + 550 + 40
+    assert 2500 + BASE <= end.at_ms <= 2500 + BASE + 40
     assert end.confidence == pytest.approx(0.9)
 
 
@@ -117,7 +119,7 @@ def test_waits_for_the_final_up_to_final_wait_then_takes_the_last_partial():
     r.run_to(3000)
     (end,) = r.ends()
     assert end.text == "tisdag kväll" and end.reason == "silence"
-    assert 1500 + 550 + 350 <= end.at_ms <= 1500 + 550 + 350 + 40
+    assert 1500 + BASE + 350 <= end.at_ms <= 1500 + BASE + 350 + 40
 
 
 def test_final_arriving_after_the_threshold_ends_at_once():
@@ -139,7 +141,8 @@ def test_hesitation_scenario_for_ehm_fyra_personer():
     r.pause(2500)
     r.run_to(2500 + 1500)                                     # the 1.5 s hesitation pause
     assert r.ends() == []
-    assert [h.reason for h in r.holds()][:1] == ["filler"] and r.holds()[0].threshold_ms == 1600
+    # a filler right after a dangling word gets the longest wait (max_silence_ms)
+    assert [h.reason for h in r.holds()][:1] == ["filler"] and r.holds()[0].threshold_ms == 2200
     r.resume(4050, 1550)
     r.run_to(4600)
     r.partial(5000, "fyra personer")
@@ -149,6 +152,26 @@ def test_hesitation_scenario_for_ehm_fyra_personer():
     (end,) = r.ends()
     assert end.text == "Jag skulle vilja boka bord för, ehm. fyra personer." and end.speech_start_ms == 0
     assert end.eos_ms == 5200
+
+
+def test_a_lone_letter_after_a_dangling_word_is_a_hesitation_with_the_longest_wait():
+    """Live 2026-11-20: "ehm" came back as a final of its own, "N.", after "för."."""
+    r = Rig()
+    r.speak(0, 2000)
+    r.final(1500, "Jag skulle vilja boka bord för.")
+    r.final(2100, "N.", end=1990)
+    r.pause(2000)
+    r.run_to(2000 + 2000)
+    assert r.ends() == [] and r.holds()[-1].threshold_ms == 2200
+
+
+def test_a_filler_after_a_complete_clause_keeps_the_filler_wait():
+    r = Rig()
+    r.speak(0, 1500)
+    r.final(1400, "Vi är fyra ehm")
+    r.pause(1500)
+    r.run_to(1500 + 100)
+    assert r.holds()[0].reason == "filler" and r.holds()[0].threshold_ms == 1600
 
 
 def test_dangling_word_holds_longer_than_a_complete_clause():
@@ -192,17 +215,73 @@ def test_short_answers_are_quick_after_a_yes_no_question_and_slow_otherwise():
     r3.final(500, "Ja.")
     r3.pause(400)
     r3.run_to(1000)
-    assert r3.ends()[0].at_ms - 400 >= 550
+    assert r3.ends()[0].at_ms - 400 >= BASE
 
 
 def test_open_question_gives_the_caller_time_to_think():
     r = Rig(ctx={"asked": "open"})
     r.speak(0, 1000)
-    r.final(1100, "Anna Svensson.")
+    r.final(1100, "Anna.")                                    # one word: "Anna ... Svensson" may follow
     r.pause(1000)
     r.run_to(1000 + 800)
     assert r.ends() == [] and r.holds()[0].reason == "open_question" and r.holds()[0].threshold_ms == 900
     r.run_to(1000 + 960)
+    assert len(r.ends()) == 1
+
+
+def test_a_complete_answer_to_the_question_ends_sooner_than_the_base():
+    r = Rig(ctx={"asked": "open"})
+    r.speak(0, 1000)
+    r.final(1100, "Anna Svensson.")
+    r.pause(1000)
+    r.run_to(1000 + 430)
+    assert r.ends() == []
+    r.run_to(1000 + 490)
+    assert len(r.ends()) == 1 and r.holds() == []
+    r = Rig(ctx={"asked": "number"})                          # "hur många blir ni?" "vi är fyra"
+    r.speak(0, 1000)
+    r.final(1100, "Vi är fyra")
+    r.pause(1000)
+    r.run_to(1000 + 630)
+    assert r.ends() == []
+    r.run_to(1000 + 690)
+    assert len(r.ends()) == 1
+
+
+def test_a_partial_that_covers_the_end_of_speech_ends_without_waiting_for_the_final():
+    r = Rig(ctx={"asked": "open"})
+    r.speak(0, 1500)
+    r.partial(1450, "jag heter anna svensson")                # its last word ends at the end of speech
+    r.pause(1500)
+    r.run_to(1500 + 490)
+    (end,) = r.ends()
+    assert end.text == "jag heter anna svensson" and end.at_ms - 1500 <= 470
+    r = Rig()                                                 # the partial is behind the speech: wait for the final
+    r.speak(0, 1500)
+    r.partial(1000, "jag vill boka")
+    r.pause(1500)
+    r.run_to(1500 + BASE + 100)
+    assert r.ends() == []
+
+
+def test_a_time_said_in_one_go_completes_the_clause_and_a_phone_number_does_not():
+    r = Rig()
+    r.speak(0, 2000)
+    r.final(2100, "Jag vill boka bord för fyra personer i morgon klockan sju.", end=1990)
+    r.pause(2000)
+    r.run_to(2000 + BASE + 40)
+    assert len(r.ends()) == 1                                 # not the number wait (1100)
+    r = Rig()
+    r.speak(0, 2000)
+    r.final(2100, "noll sju tre fyra.", end=1990)
+    r.pause(2000)
+    r.run_to(2000 + 1000)
+    assert r.ends() == []                                     # digits in a row: the number wait
+    r = Rig()
+    r.speak(0, 2000)
+    r.final(2100, "boka för fyra.", end=1990)                 # one number, the recogniser ended the sentence
+    r.pause(2000)
+    r.run_to(2000 + BASE + 40)
     assert len(r.ends()) == 1
 
 
@@ -212,7 +291,7 @@ def test_threshold_is_capped_and_follows_the_context_and_language():
     r.partial(900, "ehm")
     r.pause(1000)
     assert r.td.threshold_ms() == 2200                        # max_silence_ms
-    assert Rig().td.threshold_ms() == 550                     # idle: the base
+    assert Rig().td.threshold_ms() == BASE                    # idle: the base
     r = Rig(language="en")
     r.speak(0, 1000)
     r.partial(900, "I would like to book for")
@@ -220,7 +299,7 @@ def test_threshold_is_capped_and_follows_the_context_and_language():
     assert r.td.threshold_ms() == 1400
     r.td.set_language("sv")
     r.td.set_context(AssistantContext(0, None, False, "sv"))
-    assert r.td.threshold_ms() == 550                         # "for" is not Swedish
+    assert r.td.threshold_ms() == BASE                        # "for" is not Swedish
 
 
 def test_max_utterance_ends_a_monologue():
@@ -241,10 +320,10 @@ def test_noise_is_not_a_turn():
     r2 = Rig()
     r2.speak(0, 600)                                          # voiced, but Transcribe heard no words at all
     r2.pause(600, 600)
-    r2.run_to(600 + 550 + 1400)
+    r2.run_to(600 + BASE + 1400)
     assert r2.ends() == []
-    r2.run_to(600 + 550 + 1700)
-    assert r2.ends() == [] and r2.td.threshold_ms() == 550
+    r2.run_to(600 + BASE + 1700)
+    assert r2.ends() == [] and r2.td.threshold_ms() == BASE
 
 
 def test_slow_transcribe_still_gets_the_turn_when_the_text_arrives_inside_the_grace():
@@ -320,3 +399,32 @@ def test_burst_with_words_is_not_a_hesitation():
     r.run_to(1900 + TurnConfig().base_silence_ms + 400)
     assert len(r.ends()) == 1
     assert not any(h.reason == "filler" for h in r.holds())
+
+
+def test_the_first_utterance_waits_longer_for_the_identify_final_and_never_ends_on_a_partial():
+    """Live lang-G: the identify stream's partial lagged and "klockan sju" was lost at 550 + 350 ms."""
+    r = Rig()
+    r.td.partial_ends = False
+    r.speak(0, 1500)
+    r.partial(1450, "jag vill boka bord för fyra på lördag")
+    r.pause(1500)
+    r.run_to(1500 + BASE + 600)
+    assert r.ends() == []                                     # neither the partial nor the 350 ms final wait
+    r.final(1500 + BASE + 700, "Jag vill boka bord för fyra på lördag klockan sju.", end=1490)
+    assert r.ends()[0].text.endswith("klockan sju.")
+
+
+def test_a_hesitation_pause_keeps_its_long_wait_when_a_late_final_stretches_the_last_word():
+    """Live voice-A: "för" then "ehm" (no word): the final of "för" came inside the pause with its end time over the
+    "ehm"; the wait must stay the longest, not fall back to the dangling 1400 ms."""
+    r = Rig()
+    r.speak(0, 1500)
+    r.partial(1200, "jag skulle vilja boka bord för")
+    r.pause(1500, 1500)
+    r.resume(1900, 400)                                       # "ehm", no word
+    r.pause(2300, 1900)
+    r.run_to(2500)
+    assert r.holds()[-1].threshold_ms == 2200
+    r.final(2700, "Jag skulle vilja boka bord för.", end=2250)  # its last word stretched over the "ehm"
+    r.run_to(2300 + 2000)
+    assert r.ends() == [] and r.holds()[-1].threshold_ms == 2200

@@ -73,6 +73,8 @@ from shared.features.phone_agent.tools import Executor
 
 from voice_gateway import languages, log
 from voice_gateway.audio.adapter import CallInfo
+from voice_gateway.brain.prefetch import (OneRoundModel, PrefetchInvoker, Slots, booking_intent, booking_slots,
+                                          plain_state_allows, throwaway_executor)
 from voice_gateway.brain.streaming import (StreamBridge, StreamingAgentModel, StreamSink, reconcile,
                                            split_sentences)
 from voice_gateway.clock import Clock
@@ -181,6 +183,16 @@ class AgentBrain:
         self._turn = 0
         self._lock = asyncio.Lock()
         self.tag: str | None = None
+        self._invoke: PrefetchInvoker | None = None
+        self._state: dict = {}                       # the call's toolState as of the last turn (lookup_planned)
+        self._location_pending = False
+        self._context: tuple | None = None           # (tenant_row, location, config, loc) for prefetches
+        self._today = None
+        self._now_time = None
+        self._prefetched: Slots | None = None
+        self._booking = False                        # the caller asked for a booking earlier in the call
+        self._prefetch_tasks: set[asyncio.Task] = set()
+        self.last_turn: dict = {}                    # the last turn's numbers (rounds sent to Bedrock, lookup)
 
     # -- helpers -----------------------------------------------------------------------------
 
@@ -200,6 +212,12 @@ class AgentBrain:
         if call is None:
             raise LookupError("call row missing")
         return call
+
+    def invoker(self) -> PrefetchInvoker:
+        """The tool Lambdas' invoke for this call: the application's, behind the prefetch cache (GET only)."""
+        if self._invoke is None:
+            self._invoke = PrefetchInvoker(self.app.invoker(), now_ms=self.clock.now_ms)
+        return self._invoke
 
     def _make_model(self) -> AgentModel:
         if self._model_factory is not None:
@@ -232,11 +250,82 @@ class AgentBrain:
         self._greeting = (call.get("disclosure") or {}).get("text") or ""
         self._allowed = tuple(x for x in session.allowed_languages({}, call) if languages.can_speak(x))
         names = await asyncio.to_thread(self._names, call)
+        self._location_pending = bool(call.get("locationPending"))
+        self._state = json.loads(call.get("toolState") or "{}")
+        if not self._location_pending and (self.cfg.brain.prefetch or self.cfg.brain.one_round):
+            try:
+                await asyncio.to_thread(self._load_context, call)
+            except Exception as exc:   # noqa: BLE001  (no prefetch, no planned lookup: the turn is as before)
+                log.event("brain_context_failed", level="warning", call=self.tag, error=type(exc).__name__)
+        if self.cfg.brain.warm_connections:
+            self._background(asyncio.to_thread(self._warm))
         sentences = tuple(split_sentences(self._greeting))
         log.event("brain_start", call=self.tag, location_pending=bool(call.get("locationPending")))
         return CallStart(self.call_id, self.tenant_id, self._language, self._greeting,
                          location_pending=bool(call.get("locationPending")), names=names, allowed=self._allowed,
                          greeting_sentences=sentences, disclosure_until=self._disclosure_index(sentences))
+
+    def _load_context(self, call) -> None:
+        tenant_row, location, config, loc = self.app._context(call["tenantId"], call["locationId"])
+        location = {**location, "locationId": call["locationId"]}
+        self._context = (tenant_row, location, config, loc)
+        self._today = session.local_today(location)
+        self._now_time = session.now_clock(location)
+
+    def _warm(self) -> None:
+        """Opens the Bedrock connection while the greeting plays (StreamingAgentModel.warm: one tiny request), so
+        the first turn does not pay for the TLS handshake and the client setup."""
+        warm = getattr(self.model, "warm", None)
+        if warm is not None:
+            warm()
+
+    def _background(self, coro) -> asyncio.Task:
+        task = asyncio.ensure_future(coro)
+        self._prefetch_tasks.add(task)
+        task.add_done_callback(self._prefetch_tasks.discard)
+        return task
+
+    # -- speculative availability (brain/prefetch.py) ------------------------------------------
+
+    def _slots(self, text: str, language: str | None) -> Slots | None:
+        if self._today is None:
+            return None
+        # "Fyra personer på fredag klockan sju." answers the agent's question after "jag vill boka bord": the booking
+        # words came in an earlier turn of the call
+        return booking_slots(text, language or self._language, self._today, need_intent=not self._booking)
+
+    def lookup_planned(self, text: str, language: str | None = None) -> bool:
+        """The next turn on `text` starts with the availability lookup (OneRoundModel): the opener may say "Jag
+        kollar.". Pure: the call state of the last turn, no I/O."""
+        if not self.cfg.brain.one_round or self._location_pending or not self.call_id:
+            return False
+        return self._slots(text, language) is not None and plain_state_allows(self._state)
+
+    def prefetch(self, text: str, language: str | None = None) -> bool:
+        """The caller's words so far name a booking's day, time and party: look up availability now (read only, a
+        throwaway executor, GET Lambda calls kept for the turn). True when a new prefetch started."""
+        if not self.cfg.brain.prefetch or self._context is None or not self.call_id or self._location_pending:
+            return False
+        slots = self._slots(text, language)
+        if slots is None or slots == self._prefetched or not plain_state_allows(self._state):
+            return False
+        self._prefetched = slots
+        gen = self.invoker().new_generation()
+        self._background(asyncio.to_thread(self._prefetch_sync, slots, gen, text, language or self._language))
+        return True
+
+    def _prefetch_sync(self, slots: Slots, gen: int, text: str, language: str) -> None:
+        started = self.clock.now_ms()
+        try:
+            call = self._call()
+            tenant_row, location, _, loc = self._context
+            executor = throwaway_executor(call=call, tenant_row=tenant_row, location=location, loc=loc,
+                                          invoke=self.invoker().prefetching(gen), today=self._today,
+                                          now_time=self._now_time, language=language, text=text)
+            executor.get_availability(slots.args())
+            log.event("prefetch", call=self.tag, ok=True, ms=self.clock.now_ms() - started)
+        except Exception as exc:   # noqa: BLE001  (the turn's own lookup asks the Lambda)
+            log.event("prefetch", call=self.tag, ok=False, error=type(exc).__name__)
 
     def _names(self, call) -> tuple[str, ...]:
         names = [call.get("restaurant")]
@@ -270,6 +359,7 @@ class AgentBrain:
         async with self._lock:
             self._turn += 1
             number = self._turn
+            self.last_turn = {}
             started = self.clock.now_ms()
             at = pa.now()
             call = await asyncio.to_thread(self._call)
@@ -328,6 +418,8 @@ class AgentBrain:
                 out["state"].get("outcome"), awaiting_confirmation(out["state"]), asked_question(out["reply"]),
                 self.clock.now_ms() - started, tuple(out["tools"]))
             log.event("brain_turn", call=self.tag, turn=number, rounds=done.rounds, cut=done.cut, error=done.error,
+                      bedrock_rounds=self.last_turn.get("bedrock_rounds"),
+                      lookup_first=self.last_turn.get("lookup_first"),
                       tools=list(done.tools), language=done.language, streamed=len(streamed),
                       actions=[a.name for a in done.actions], ms=done.latency_ms)
             self.bus.publish(done)
@@ -367,6 +459,11 @@ class AgentBrain:
             call, reply = session.choose_location(call, text, locations=options, at=at, lang=lang)
             if reply is not None:
                 return self._out(reply, lang, [], {}, None, lang)
+            self._location_pending = False
+            try:
+                self._load_context(call)
+            except Exception:   # noqa: BLE001  (no prefetch for this call)
+                self._context = None
         tenant_row, location, config, loc = app._context(call["tenantId"], call["locationId"])
         location = {**location, "locationId": call["locationId"]}
         started = pa.parse_iso(call.get("answeredAt")) or at
@@ -375,12 +472,21 @@ class AgentBrain:
             app.finish(call, at, "max_length")
             return self._out(copy.text(copy.MAX_LENGTH, lang), lang,
                              [{"name": "end_call", "arguments": {"reason": "max_length"}}], {}, None, lang)
+        state_now = json.loads(call.get("toolState") or "{}")
+        planned = None
+        if self.cfg.brain.one_round and plain_state_allows(state_now, call):
+            planned = booking_slots(text, lang, session.local_today(location), need_intent=not self._booking)
+        self._booking = self._booking or booking_intent(text)
+        model = OneRoundModel(self.model, planned)
         result, updated, state, actions = session.call_turn(
-            call, text, model=self.model, invoke=app.invoker(), voice=app.client("voice"), tenant_row=tenant_row,
+            call, text, model=model, invoke=self.invoker(), voice=app.client("voice"), tenant_row=tenant_row,
             location=location, loc=loc, config=config, at=at, add_callback=app.add_callback_for(app.updated_or(call)),
             send_sms=app.sms_sender(), asr_locale=asr_locale)
         if result.error:
             session.metric("ProviderErrors", 1)
+        self._state = state or {}
+        self._prefetched = None
+        self.last_turn = {"bedrock_rounds": model.real_rounds, "lookup_first": model.answered_first}
         now_lang = (updated or {}).get("language") or lang
         said = result.language if result.language and languages.can_speak(result.language) else now_lang
         if state.get("unsupported") and result.language == state.get("unsupported"):
@@ -420,6 +526,7 @@ class AgentBrain:
         calls.set_status(call, call["status"], [call["status"]], language=code,
                          languageSwitches=int(call.get("languageSwitches") or 0) + 1,
                          toolState=json.dumps(state, default=str))
+        self._state = state
         return said
 
     @property
@@ -440,6 +547,7 @@ class AgentBrain:
         if call.get("status") not in calls.OPEN:
             return
         state = not_heard_state(json.loads(call.get("toolState") or "{}"))
+        self._state = state
         messages = pa_agent.loads(call.get("agentMessages"))
         pa_agent.replace_last_reply(messages, (" ".join(heard) + " ...").strip())
         calls.set_status(call, call["status"], [call["status"]], toolState=json.dumps(state, default=str),

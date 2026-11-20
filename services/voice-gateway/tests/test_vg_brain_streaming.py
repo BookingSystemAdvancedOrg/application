@@ -318,7 +318,8 @@ def test_the_bridge_hops_threads_drops_stale_rounds_and_announces_only_real_tool
 
     history, emitted = bridge_run(fn)
     sentences = [e.text for e in history if isinstance(e, AgentSentence)]
-    assert sentences == ["Jag kollar bord åt dig, ett ögonblick.", "Klockan sju är ledigt.", "Tack för samtalet."]
+    # the turn's first clause goes to Polly on its own (SpeakConfig.first_clause)
+    assert sentences == ["Jag kollar bord åt dig,", "ett ögonblick.", "Klockan sju är ledigt.", "Tack för samtalet."]
     assert [e.text for e in emitted] == sentences
     assert [e.name for e in history if isinstance(e, ToolStarted)] == ["get_availability"]   # no filler for end_call
     finished = [e for e in history if isinstance(e, ToolFinished)]

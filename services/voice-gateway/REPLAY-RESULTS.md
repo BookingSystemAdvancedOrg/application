@@ -1,5 +1,75 @@
 # Live replay results (dev)
 
+## Latency pass (2026-11-20, later the same day)
+
+Same setup as below, but the restaurant faked (moto tables and tool Lambdas: no dev data written, nothing to clean
+up); real Transcribe, Polly and Bedrock `eu.anthropic.claude-haiku-5-5` on booqy-dev, silero VAD. Every scenario ran
+live twice (round 1 found the issues fixed in round 2); voice-A and voice-B ran a third time after the last two
+fixes. The table is the last run of each.
+
+**End of speech to first audio p50 1231 ms (target 1500; was 3835), p95 4161 ms, 46 answered turns.** The reply
+itself (without the opener) p50 2639 ms. Turn detection p50 710 ms (was 900): later turns 470 to 800 ms, first
+utterances about 1000 ms (the identify stream's final is waited for, it carries the language scores and, in lang-G
+round 1, words a lagging partial had lost). Openers played in 27 of 46 turns. Backchannels over the caller: 0.
+
+| Scenario | Behaviour checks | End of speech to first audio per turn (ms) | Notes |
+|---|---|---|---|
+| voice-A hesitation | pass | 1096 | "för, ehm... fyra" held (2200 ms), one "mm" in the pause |
+| voice-B backchannel | pass (1 backchannel, 0 overlaps) | 1103 | was 0 backchannels: the 220 ms "mm" fits the 450 ms pauses (two more runs: 1 each, 0 overlaps) |
+| voice-C correction | pass | 1530, 592, 633 | |
+| voice-D interruption | pass | 1016, 1857, 666 | |
+| voice-E fee rule | FAIL booked | 1114, 3383, 637, 633 | Transcribe again dropped "för åtta personer" and wrote "sju" as 17 |
+| voice-F unavailable | pass | 1238, 1758 | |
+| lang-A Swedish | FAIL booked | 1307, 3270, 665 | "för tre" came as "för 3:00" (read back as 3 now); script ends before the final yes |
+| lang-B English | FAIL booked | 1547, 924, 882 | script ends before the final yes |
+| lang-C Persian (fake STT) | pass apart from latency | 4221, 3899 | unsupported sentences, no opener (no voice) |
+| lang-D Arabic | FAIL booked | 1636, 723, 1027 | script ends before the final yes |
+| lang-E English to Swedish | pass apart from latency | 1538, 4660 | **back to Swedish now** (2 switches): the Swedish stream beside the English one heard "på svenska" |
+| lang-F uncertain | pass apart from latency | 3981, 4444 | "Okay." gets no opener (a bare yes to nothing) |
+| lang-G context across a switch | pass | 1234, 2046, 1832, 861, 926 | |
+| lang-H interruption | pass | 1501, 1227, 962 | |
+| lang-I German | FAIL booked | 1481, 699, 650 | script ends before the final yes |
+| lang-J Turkish | FAIL booked | 1790, 687, 731 | **Turkish found now** (sv to tr) by the second identify stream (round 1: en) |
+| lang-K Polish | FAIL booked | 1377, 662, 2030 | script ends before the final yes |
+
+"booked" fails where the scripted caller is not reactive (finding 6 below): no booking was ever written without a
+read-back and a clear yes.
+
+What changed (services/voice-gateway only):
+
+1. Opener (`speak/openers.py`): 120 ms after the turn end a pre-rendered clip in the call language, "Jag kollar."
+   only before a lookup that will run, "Då ska vi se." after a question, "Mm."/"Okej." otherwise (65 %, never the
+   same line twice), none after a bare yes or no to nothing, none on a language switch. 160 to 360 ms after the
+   turn end live.
+2. Turn detection: 450 ms for a two-word answer to the assistant's question, a partial that covers the end of
+   speech ends a complete clause without the final, "klockan sju" completes the clause, a filler after a dangling
+   word ("för ehm", "för. N.") waits the longest and stays held for the pause. voice-A has no cut-off.
+3. Speculative availability (`brain/prefetch.py`): get_availability from the partial transcript through a GET-only
+   cache on a throwaway executor; the turn's own lookup is served from it.
+4. One model round: the turn's first model call is answered with that get_availability call; booking turns take
+   one Bedrock round less (lang-A round 1: 2 rounds 4349 ms; voice-A round 2: 1 round, reply 2085 ms).
+5. Polly starts on the first clause; one Bedrock client per call and Bedrock and Polly connections opened while the
+   greeting plays; no filler once the lookup finished (round 1: a filler held the reply back 1.5 s).
+6. Swedish numbers (`listen/numbers.py`): "för 15:00 15:00", "för 3:00", "16:00 personer", "för en. Fyra
+   personer" read back from the context and the assistant's last question.
+7. Backchannels at 150 to 165 % and a tighter trim; one-syllable clips cut to 220 ms (were 320), fire from 160 ms.
+8. Language: a second identify stream (sv, en, tr, fi, es) beside the first utterance's (sv, en, ar, de, pl), and a
+   Swedish stream beside the live one while the call is in another language. Cost: about 10 s more Transcribe per
+   call, and double Transcribe minutes while away from Swedish.
+9. The awscrt InvalidStateError traceback on a cancelled stream is gone (the SDK's callbacks skip done futures).
+
+Fake replay (`python -m voice_gateway.replay all --summary`): 17 of 17 pass, 46 turns, p50 520 ms (the brain answers
+at once there). With the live costs on the virtual clock (`--sim-latency`): first audio p50 750 ms, p95 5114 ms,
+reply p50 2200 ms, detection p50 560 ms, 26 openers; the same run with every lever off: p50 2560 ms, p95 5634 ms.
+Tests: 636 passed, 10 skipped (full gateway suite); root CI environment 6446 passed, 28 skipped.
+
+Still open: language-switch turns (no opener before the short disclosure; 1.4 to 4.7 s), lang-C/F (no opener: no
+voice, a bare "Okay."), the reply itself (2.6 s p50: a Bedrock round is 1.3 to 1.8 s to its first token), Transcribe
+sv-SE still writing "sju" as 17, and the scripted callers.
+
+## Earlier run (before the latency pass)
+
+
 Run 2026-11-20, about 04:30 to 05:05 local, `VG_WORLD=dev python -m voice_gateway.replay` in live mode: real
 Transcribe streaming (eu-central-1), Polly (eu-central-1), Bedrock `eu.anthropic.claude-haiku-5-5` and the real dev
 tables and tool Lambdas of Restaurant 1 (dialed +46100000001, caller +46700000000). SMS notices and events recorded,

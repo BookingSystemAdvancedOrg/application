@@ -130,6 +130,52 @@ def _install_lid_patch() -> None:
     _PATCHED = True
 
 
+_QUIET = False
+
+
+def _install_cancel_patch() -> None:
+    """amazon-transcribe 0.6.4 hands a body chunk to the waiting future in awscrt's thread without checking it: a
+    stream cancelled while a chunk arrives (a reopen, a probe, the call's end) gets InvalidStateError and awscrt
+    prints its traceback (harmless, live 2026-11-20). A future that is already done or cancelled is skipped; the
+    chunk is kept as if nobody waited, which is what the SDK does then anyway."""
+    global _QUIET
+    if _QUIET:
+        return
+    from concurrent.futures import InvalidStateError
+    from amazon_transcribe.httpsession import AwsCrtHttpResponse
+
+    def give(future, value) -> bool:
+        try:
+            if not future.done():
+                future.set_result(value)
+                return True
+        except InvalidStateError:       # cancelled between the check and the call (another thread)
+            pass
+        return False
+
+    def on_body(self, chunk: bytes, **kwargs):
+        with self._chunk_lock:
+            while self._chunk_futures:
+                if give(self._chunk_futures.pop(0), chunk):
+                    return
+            self._received_chunks.append(chunk)
+
+    def on_complete(self, completion_future):
+        with self._chunk_lock:
+            while self._chunk_futures:
+                if give(self._chunk_futures.pop(0), b""):
+                    return
+
+    def on_headers(self, status_code, headers, **kwargs):
+        give(self._status_code_future, status_code)
+        give(self._headers_future, headers)
+
+    AwsCrtHttpResponse._on_body = on_body
+    AwsCrtHttpResponse._on_complete = on_complete
+    AwsCrtHttpResponse._on_headers = on_headers
+    _QUIET = True
+
+
 def _boto3_resolver():
     from amazon_transcribe.auth import Credentials, CredentialResolver
 
@@ -310,6 +356,7 @@ class TranscribeFactory:
         if self._client_factory is not None:
             return self._client_factory()
         _install_lid_patch()
+        _install_cancel_patch()
         from amazon_transcribe.client import TranscribeStreamingClient
         resolver = _boto3_resolver() if os.environ.get("AWS_PROFILE") else None
         return TranscribeStreamingClient(region=self.cfg.region, credential_resolver=resolver)
@@ -542,6 +589,14 @@ class Transcriber:
         self._identifying = False
         self._background: set[asyncio.Task] = set()
         self._closed = False
+        # A shadow stream beside the live one (listen/pipeline.py): the first utterance's second identify-language
+        # stream, or a start-language stream while the call is away from it. Fed the same frames, its finals are
+        # kept here and never published (the turn detector follows the live stream only). It never fails the call.
+        self._shadow: SttStream | None = None
+        self._shadow_mode: SttMode | None = None
+        self._shadow_task: asyncio.Task | None = None
+        self.shadow_results: list[SttFinal] = []
+        self.shadow_partial: SttPartial | None = None     # the shadow's latest partial (identify: it has the language)
 
     # --- helpers ---------------------------------------------------------------------------
 
@@ -693,6 +748,14 @@ class Transcriber:
             raise self._unavailable
         self._fed_end = max(self._fed_end, frame.end_ms)
         self._latest = max(self._latest, frame.end_ms)
+        shadow = self._shadow
+        if shadow is not None:
+            try:
+                await asyncio.wait_for(shadow.feed(frame), FEED_TIMEOUT_S)
+            except Exception as exc:
+                log.event("stt_shadow_failed", level="warning", error=type(exc).__name__)
+                if shadow is self._shadow:
+                    self._drop_shadow()
         stream = self._live
         if stream is None or stream is self._broken:
             return                                   # the ring keeps the audio: the reopen replays it
@@ -707,6 +770,67 @@ class Transcriber:
             self._last_sent = self._now()
         except Exception as exc:
             self._on_error(stream, exc)
+
+    # --- the shadow stream ---------------------------------------------------------------------
+
+    @property
+    def shadow_mode(self) -> SttMode | None:
+        return self._shadow_mode if self._shadow is not None else None
+
+    async def open_shadow(self, mode: SttMode) -> bool:
+        """Opens the shadow stream (closing any other) from the audio fed next. False when it cannot be opened."""
+        await self.close_shadow()
+        sid = self._new_id()
+        try:
+            stream = await asyncio.wait_for(self.factory.open(mode, stream_id=sid, audio_origin_ms=self._fed_end),
+                                            OPEN_TIMEOUT_S)
+        except Exception as exc:
+            log.event("stt_shadow_failed", level="warning", error=type(exc).__name__)
+            return False
+        self._shadow, self._shadow_mode, self.shadow_results, self.shadow_partial = stream, mode, [], None
+        self._shadow_task = asyncio.create_task(self._pump_shadow(stream))
+        return True
+
+    async def _pump_shadow(self, stream: SttStream) -> None:
+        try:
+            async for ev in stream.results():
+                if stream is not self._shadow or not ev.text.strip():
+                    continue
+                if isinstance(ev, SttFinal):
+                    self.shadow_results.append(dataclasses.replace(ev, at_ms=self._now()))
+                    self.shadow_partial = None
+                else:
+                    self.shadow_partial = ev
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if stream is self._shadow:
+                log.event("stt_shadow_failed", level="warning", error=type(exc).__name__)
+                self._drop_shadow()
+
+    def _drop_shadow(self) -> None:
+        stream, self._shadow, self._shadow_mode = self._shadow, None, None
+        if self._shadow_task is not None:
+            self._shadow_task.cancel()
+            self._shadow_task = None
+        if stream is not None:
+            self._spawn(self._close_quiet(stream))
+
+    async def close_shadow(self) -> None:
+        self._drop_shadow()
+
+    def shadow_finals(self, start_ms: int, end_ms: int) -> list[SttFinal]:
+        """The shadow's finals of the audio from start_ms to end_ms."""
+        return [f for f in self.shadow_results if f.end_ms > start_ms - 200 and f.start_ms < end_ms + 200]
+
+    async def wait_shadow(self, eos_ms: int, timeout_ms: int) -> None:
+        """Waits (at most timeout_ms) for a shadow final that reaches the end of speech."""
+        waited = 0
+        while self._shadow is not None and waited < timeout_ms:
+            if any(f.end_ms >= eos_ms - 400 for f in self.shadow_results):
+                return
+            await self.clock.sleep_ms(20)
+            waited += 20
 
     @property
     def identifying(self) -> bool:
@@ -784,9 +908,12 @@ class Transcriber:
 
     async def close(self) -> None:
         self._closed = True
-        for task in (self._pump_task, self._replay_task, *self._background):
+        shadow, self._shadow = self._shadow, None
+        for task in (self._pump_task, self._replay_task, self._shadow_task, *self._background):
             if task is not None:
                 task.cancel()
         live, self._live = self._live, None
         if live is not None:
             await self._close_quiet(live)
+        if shadow is not None:
+            await self._close_quiet(shadow)

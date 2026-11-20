@@ -6,6 +6,7 @@ import io
 
 import pytest
 
+from voice_gateway.speak.openers import MAX_OPENER_MS, OPENERS
 from voice_gateway.audio.frames import rms_dbfs
 from voice_gateway.backchannel import tokens as tk
 from voice_gateway.backchannel.clips import MAX_BACKCHANNEL_MS, ClipCache, trim
@@ -133,8 +134,12 @@ def test_warm_renders_tokens_and_fillers_with_gain():
         return tts, cache, n
 
     tts, cache, n = run(main())
-    expected = sum(len(tk.TOKENS[x]) + len(FILLERS.get(x, ())) for x in ("sv", "en"))
+    openers = sum(len(OPENERS[x]) for x in ("sv", "en"))
+    too_long = [k for k in cache.rejected if k.startswith("opener:")]      # FakeTts: 55 ms a letter
+    expected = sum(len(tk.TOKENS[x]) + len(FILLERS.get(x, ())) for x in ("sv", "en")) + openers - len(too_long)
     assert n == expected and len(cache) == expected
+    assert cache.opener("sv", "mm") is not None and cache.has_opener("en", "okay") and not cache.has_opener("fa", "mm")
+    assert all(c.duration_ms <= MAX_OPENER_MS for k, c in cache._clips.items() if k.startswith("opener:"))
     mm = cache.backchannel("sv", "mm")
     assert mm.key == "bc:sv:mm" and 150 <= mm.duration_ms <= 450
     assert abs(rms_dbfs(mm.pcm[640:-640]) - (-20 + BackchannelConfig().clip_volume_db)) < 1.0
@@ -173,3 +178,20 @@ def test_failed_or_too_long_clips_are_left_out():
     assert a.backchannel("sv", "okej") is None and a.backchannel("sv", "mm") is not None
     assert b.backchannel("sv", "precis") is None and "bc:sv:precis" in b.rejected
     assert all(c.duration_ms <= MAX_BACKCHANNEL_MS for c in [b.backchannel("sv", t) for t in ("mm", "ja")] if c)
+
+
+def test_one_syllable_backchannels_are_cut_to_fit_short_pauses():
+    from voice_gateway.backchannel.clips import BACKCHANNEL_TARGET_MS, shorten
+    long = tone(400)
+    out = shorten(long, BACKCHANNEL_TARGET_MS)
+    assert len(out) // 32 == BACKCHANNEL_TARGET_MS and len(out) % 640 == 0
+    assert abs(int.from_bytes(out[-2:], "little", signed=True)) < 200          # faded out, no click
+    assert shorten(tone(100), BACKCHANNEL_TARGET_MS) == tone(100)
+
+    async def main():
+        cache = ClipCache(FakeTts(ms_per_char=150), CFG, BackchannelConfig())   # every clip long
+        await cache.warm(("sv",))
+        return cache
+    cache = run(main())
+    assert cache.backchannel("sv", "mm").duration_ms <= BACKCHANNEL_TARGET_MS     # one syllable: cut
+    assert cache.backchannel("sv", "ja").duration_ms <= BACKCHANNEL_TARGET_MS

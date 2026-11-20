@@ -78,11 +78,21 @@ class LanguageConfig:
     poor_audio_misses_before_callback: int = 3
     low_asr_confidence: float = 0.4     # same as GARBLED_CONFIDENCE on the Connect line
     probe_on_hint: bool = True          # open a LID probe stream when the text hint or the model tag disagrees
+    # A second identify-language stream beside the first utterance's (Transcribe takes at most 5 options per
+    # stream): sv, en and these, minus what the first stream has. Billed like the main stream while it runs (call
+    # start to the first turn end, about 10 s). Empty: none.
+    second_identify_candidates: tuple[str, ...] = ("tr", "fi", "es")
+    # While the call is away from start_language, a fixed start_language stream runs beside the live one, so a
+    # caller going back to Swedish is heard as Swedish (the away stream writes it as nonsense). Billed like the
+    # main stream for the minutes away from Swedish.
+    shadow_start_language: bool = True
+    shadow_min_confidence: float = 0.75  # the start language stream's words this sure, the away stream's not
 
 
 @dataclass(frozen=True)
 class TurnConfig:
-    base_silence_ms: int = 550          # a complete-sounding clause
+    base_silence_ms: int = 550          # a complete-sounding clause (voice-B: 450 ms sentence pauses in a monologue)
+    answer_silence_ms: int = 450        # a complete clause of two words or more answering the assistant's question
     short_answer_silence_ms: int = 350  # "ja", "nej", "fyra" right after a yes/no or number question
     open_question_silence_ms: int = 900  # after an open question ("vilket namn?") people think
     filler_silence_ms: int = 1600       # tail is a filler: "ehm", "öh", "um"
@@ -91,6 +101,7 @@ class TurnConfig:
     max_silence_ms: int = 2200          # never wait longer than this after speech
     max_utterance_ms: int = 20000
     min_speech_ms: int = 120            # shorter voiced bursts are noise, never a turn
+    covered_slack_ms: int = 150         # a partial whose last word ends this close to the end of speech covers it
 
 
 @dataclass(frozen=True)
@@ -111,7 +122,7 @@ class BackchannelConfig:
     enabled: bool = True
     min_call_ms: int = 1000             # never in the first second of the call
     min_turn_speech_ms: int = 2500      # caller held the turn at least this long (ASSESSMENT)
-    pause_min_ms: int = 250             # fire window inside a caller pause
+    pause_min_ms: int = 160             # fire window inside a caller pause (a 220 ms "mm" fits a 450 ms pause)
     pause_max_ms: int = 600             # past this the turn detector may take the turn: never fire
     cooldown_ms: int = 4000             # never twice within this
     max_per_turn: int = 2
@@ -135,6 +146,9 @@ class SpeakConfig:
     filler_delay_ms: int = 700          # tool started and no assistant audio this long: play a filler
     filler_cooldown_ms: int = 5000
     backchannel_max_wait_ms: int = 150  # assistant audio waits at most this for a playing backchannel to end
+    first_clause: bool = True           # the first chunk of a turn may end at a comma (Polly starts on a clause)
+    opener: bool = True                 # a short pre-rendered opener ("Mm.", "Okej.") right at the turn end
+    opener_chance: float = 0.65         # chance of an opener on a turn without a certain lookup (varied, not always)
 
 
 @dataclass(frozen=True)
@@ -144,6 +158,10 @@ class BrainConfig:
     stream_sentences: bool = True       # False: non-streaming fallback (whole reply after the turn)
     hold_unknown_tag: bool = True       # a reply tagged with a language outside the voice table waits for TurnDone
     prompt_cache: bool = True           # Bedrock cachePoint after system and tools (verify model support)
+    prefetch: bool = True               # read-only availability lookups from partial transcripts (no hold, no write)
+    one_round: bool = True              # a booking request with day, time and party: the availability lookup runs
+    #                                     before the first model round (the model answers in one Bedrock round)
+    warm_connections: bool = True       # one Bedrock client per call, Bedrock and Polly connections opened at start
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,8 @@ it is real, so a scenario never writes dev data and there is nothing to clean up
   fullSlots               ["fri 19:00", ...] times that are taken (the rest of the evening stays free)
 
 `HarnessModel` is the agent model of fake mode: the application's scripted simulator (shared.agent_model), plus the
-four things the simulator does not do and a real model does: it reads a piece's `gloss` for languages it does not
+five things the simulator does not do and a real model does (the fifth: the prompt's step 2, the day's availability
+is looked up before a hold, and a free requested time is then held at once): it reads a piece's `gloss` for languages it does not
 know, understands "klockan sju" and "halv sju", tags every reply `[xx]`, and says the card guarantee's terms and the
 question before the read-back. Everything else (tools, read-back and clear-yes guard, availability) is the real code.
 """
@@ -113,6 +114,7 @@ class HarnessModel:
 
         class _Model(SimulatedAgentModel):
             def converse(self, system, messages, tools, *, max_tokens, timeout_s=None):
+                self._seen = messages
                 turn = super().converse(system, self._read(messages), tools, max_tokens=max_tokens, timeout_s=timeout_s)
                 if turn.text:
                     turn = Turn(f"[{self._language(messages)}] {turn.text}", turn.tool_uses, turn.stop_reason)
@@ -144,9 +146,39 @@ class HarnessModel:
                                 return languages[text]
                 return "sv"
 
+            def _booking_step(self, slots, offered, lang, *, hold):
+                """The prompt's step 2: the availability of the day first, also when the caller named the time (the
+                simulator holds at once); a free asked time is then held (_after_tool)."""
+                if hold and "time" in slots and "partySize" in slots and "date" in slots \
+                        and not self._looked_up(slots["date"], slots["partySize"]):
+                    return self._use("get_availability", {k: slots[k] for k in ("date", "partySize", "time")},
+                                     offered, lang)
+                return super()._booking_step(slots, offered, lang, hold=hold)
+
+            def _looked_up(self, day, party):
+                """get_availability for this day and party since the caller's last words."""
+                for m in reversed(getattr(self, "_seen", None) or []):
+                    blocks = _blocks(m)
+                    if m.get("role") == "user" and any(b.get("type") == "text" for b in blocks):
+                        return False
+                    for b in blocks:
+                        args = b.get("input") or {}
+                        if b.get("type") == "tool_use" and b.get("name") == "get_availability" \
+                                and args.get("date") == day and str(args.get("partySize")) == str(party):
+                            return True
+                return False
+
             def _after_tool(self, messages, block, offered, lang):
-                from shared.agent_model import _result
+                from shared.agent_model import ToolUse, _result
                 result = _result(block)
+                last = self._context(messages[:-1])[3] or {}
+                if last.get("name") == "get_availability" and result.get("requestedTimeFree") is True \
+                        and result.get("date") and result.get("partySize") and not result.get("code"):
+                    # The gateway looked availability up first (brain/prefetch.py, one round): the caller's own time
+                    # is free, so the model holds it, as the simulator does when it skips the lookup.
+                    return Turn(tool_uses=(ToolUse("h-" + str(block.get("tool_use_id")), "hold_table", {
+                        "date": result["date"], "time": result["requestedTime"],
+                        "partySize": result["partySize"]}),), stop_reason="tool_use")
                 terms = result.get("guaranteeTerms") if isinstance(result, dict) else None
                 last_use = self._context(messages[:-1])[3]
                 if terms and result.get("holdId") and (last_use or {}).get("name") == "hold_table" and terms.get("question"):

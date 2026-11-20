@@ -14,6 +14,7 @@ Rules:
     frame border (the agent never waits on an "mm");
   * a filler is dropped when assistant audio is ready before it starts;
     once started it plays to its end (it is short), then assistant audio;
+    an opener (speak/openers.py, at the caller's turn end) is the same;
   * pacing: frames go to the adapter through audio.buffers.PlayoutBuffer
     at the clock's pace, AudioConfig.playout_lead_ms ahead;
   * flush(barge_in_at_ms): adapter.clear(), PlayoutBuffer.clear(),
@@ -259,6 +260,21 @@ class OutputMixer:
             return False
         self._seq += 1
         item = _Item(f"filler:{language}:{index}#{self._seq}", "filler", language)
+        item.add(clip.pcm)
+        item.fed_all = True
+        self._current = item
+        return True
+
+    def request_opener(self, language: str, key: str) -> bool:
+        """A short opener at the caller's turn end (speak/openers.py): plays at once when the line is idle; the
+        reply's audio follows it (like a filler, it is short and plays to its end)."""
+        if self.busy or self.adapter.closed:
+            return False
+        clip = self.clips.opener(language, key)
+        if clip is None:
+            return False
+        self._seq += 1
+        item = _Item(f"opener:{language}:{key}#{self._seq}", "opener", language)
         item.add(clip.pcm)
         item.fed_all = True
         self._current = item

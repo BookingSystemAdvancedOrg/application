@@ -214,9 +214,17 @@ See `orchestrator.py` docstring for every transition. Key decisions:
 
 ### 6.3 Turn detection
 
-Thresholds by transcript tail (TurnConfig): complete 550, short answer after a yes/no or number question
-350, after an open question 900 minimum, filler 1600, dangling word 1400, number being spoken 1100,
-never above 2200; max utterance 20 s. TurnEnd waits at most 350 ms for the Transcribe final.
+Thresholds by transcript tail (TurnConfig): complete 550, a complete clause of two words or more that
+answers the assistant's question 450, short answer after a yes/no or number question 350, after an open
+question 900 minimum (one word), filler 1600 (2200 right after a dangling word: "för ehm", "för. N."),
+dangling word 1400, number being spoken 1100 (a number after "klockan", "kl", "halv" completes a time and
+gets the complete wait; so does a single number word the recogniser ended with a full stop; digits in a
+row stay a phone number), never above 2200; max utterance 20 s. TurnEnd waits at most 350 ms for the
+Transcribe final, except that a partial whose last word ends within 150 ms of the end of speech covers a
+complete clause of two words or more (never a short answer: "Nej ... tack, det går bra"), and never while
+the live stream identifies the language (its final carries the scores). Swedish numbers Transcribe writes
+as clock times ("för 15:00 15:00", "16:00 personer") are read back by `listen/numbers.py` before the brain
+and the prefetch see the text.
 Scenario voice A ("för, ehm... fyra personer"): "för" (dangling, 1400) then "ehm" (filler, 1600) hold
 the turn across the 1.5 s pause; at most one "mm" (backchannel inside the pause window).
 
@@ -227,6 +235,17 @@ the turn across the 1.5 s pause; at most one "mm" (backchannel inside the pause 
   >= 3 content words) or the explicit request switches before the brain runs: `brain.set_language`
   (the short disclosure in the new language is said first), the live stream reopens in that language
   with replay of the utterance from the ring buffer, and the TurnEnd text is the new stream's.
+- Beside it, a second identify stream for the first utterance only (`second_identify_candidates`: sv, en,
+  tr, fi, es, minus what the first has): Transcribe takes five options per stream, so Turkish (lang-J live)
+  had no place among sv, en, ar, de, pl. Its result is used when its top language is not in the first
+  stream, at p >= strong_p and above the first stream's top; it is waited for (at most 400 ms) only when
+  the first stream's top is under strong_p. It runs from call start to the first turn end, about 10 s of
+  extra Transcribe streaming per call (billed per second like the main stream).
+- Away from Swedish a fixed sv-SE stream runs beside the live one (`shadow_start_language`): when the
+  live stream's confidence is under 0.7 and the Swedish one's is 0.75 or more (and 0.1 higher), with three
+  content words and no other language hint, its text is the utterance (the explicit "på svenska" and the
+  Swedish words reach the tracker and the agent). It replaces the probe there, which could not finish in
+  time. Cost: the call's Transcribe minutes double while it is away from Swedish, nothing in Swedish.
 - Later utterances: a fixed-language stream (cheaper, custom vocabulary possible). A probe
   identify-language stream on the buffered utterance runs only when `wants_probe`: the text hint names
   another language (Arabic script with Persian letters gives fa), the caller asks for a language, or the
@@ -248,7 +267,9 @@ Rules in `backchannel/controller.py` (all thresholds in BackchannelConfig): call
 >= 2.5 s, pause between 250 and 600 ms, a clause of >= 4 new words, not a number tail, cooldown 4 s, at
 most 2 per turn, never in the first second, never over caller speech, never over or right after
 assistant audio, never while a read-back awaits the yes. Tokens per language pre-rendered at startup by
-Polly into ClipCache, -4 dB. Target: 1 or 2 per 8 s monologue, 0 overlaps (scenario voice B).
+Polly into ClipCache, -4 dB, read at 150 to 165% and trimmed at 20 dB; one-syllable tokens ("mm", "ja")
+cut to 220 ms with a fade, so they fit a 450 ms sentence pause (fire window from 200 ms). Target: 1 or 2
+per 8 s monologue, 0 overlaps (scenario voice B).
 
 ### 6.6 Barge-in, echo, not heard
 
@@ -262,11 +283,34 @@ to silence on the line (playout lead 60 ms keeps little audio queued). Unheard s
 
 One source at a time; assistant > filler > backchannel; a backchannel never delays the agent by more
 than 150 ms; a filler only when a real tool call started and nothing else is audible after 700 ms; fixed
-copy always Booqy's wording; TTS failure of a sentence -> copy.ERROR in the same language, never silence.
+copy always Booqy's wording; TTS failure of a sentence -> copy.ERROR in the same language, never silence;
+a filler only while the tool still runs (once it finished the answer is a model round away and a filler,
+which plays to its end, only delays it).
+
+Opener (`speak/openers.py`): 120 ms after a TurnEnd, unless the caller goes on or the reply is already
+there, a pre-rendered clip in the call language: "Jag kollar." only when the brain will run the
+availability lookup first (6.8), "Då ska vi se." after a question, "Mm." or "Okej." otherwise, at
+opener_chance and never the same line twice; none after a bare yes or no (unless it answers a read-back),
+none on a language switch (the short disclosure comes first) or when the caller's words point to another
+language. Clips over 650 ms are not kept. The reply's first chunk ends at its first comma (three words,
+18 characters), so Polly starts on a clause.
+
+### 6.8 Speculative availability and one model round
+
+`brain/prefetch.py`. While the caller speaks, the partial text (numbers read back first) is parsed with the
+phone agent's own readers (readback.clock_times, dates, weekdays, party_sizes; read only). Day, time and
+party complete in a booking request (or after booking words earlier in the call), nothing else in toolState
+(no live hold, no move, no language question, no pending disclosure): a throwaway executor on a copy of the
+toolState runs get_availability through a PrefetchInvoker, which keeps only GET answers, each served once
+within 20 s; newer slots drop older entries. At the turn, the same conditions on the final text make the
+first model call answer with that get_availability tool use (the prompt's step 2); agent.run_turn runs it
+through the real executor and the model's first Bedrock round has the result. Holds, writes, read-backs and
+the clear yes stay the model's own and the guards are unchanged.
 
 ## 7. Metrics and logs
 
-Per turn (EMF, dimension language): EosToFirstAudio (target p50 under 1200), TurnDetectMs,
+Per turn (EMF, dimension language): EosToFirstAudio (target p50 under 1500; the opener counts, it is what
+the caller hears), EosToReplyAudio (the reply itself), OpenerPlayed, TurnDetectMs,
 FirstSentenceMs, TtsFirstAudioMs, FirstBackchannelMs, BackchannelOverlaps (target 0), BargeInStopMs
 (target under 300), BargeInDetectMs, Rounds, FillerPlayed. Per call: LanguageDetected and
 LanguageSwitch (by reason), FirstLanguage, Outcome, BargeIns, CallMs. Logs: `log.event` with the hashed

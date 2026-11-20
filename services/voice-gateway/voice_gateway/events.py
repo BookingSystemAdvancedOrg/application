@@ -147,7 +147,8 @@ class BargeIn:
 
 # --- speak / backchannel ---------------------------------------------------------------------
 
-PlaybackKind = Literal["assistant", "fixed", "filler", "backchannel"]
+# "opener": a short pre-rendered sound at the caller's turn end ("Mm.", "Okej."), before the reply (speak/openers.py)
+PlaybackKind = Literal["assistant", "fixed", "filler", "backchannel", "opener"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +270,7 @@ class AssistantContext:
     asked_question: Literal["yes_no", "open", "number", None]
     awaiting_confirmation: bool
     language: str
+    topic: Literal["party", "time", "date", "name", None] = None   # what the last question asked for (listen/numbers.py)
 
 
 @dataclass(frozen=True, slots=True)

@@ -220,6 +220,11 @@ class VadSegmenter:
         return self._state == "speaking"
 
     @property
+    def voiced(self) -> bool:
+        """Voice on the line now: speaking, or a voiced run not confirmed yet."""
+        return self._state == "speaking" or self._run_start is not None
+
+    @property
     def paused(self) -> bool:
         return self._state == "paused"
 

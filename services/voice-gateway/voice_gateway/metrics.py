@@ -14,9 +14,13 @@ interruption opens.
 
 Definitions (all ms on the call clock; TurnMetrics keeps absolute times,
 the derived numbers are in `summary()`):
-  eos_to_first_audio     TurnEnd.eos_ms -> first PlaybackStarted (kind assistant
-                         or fixed) of the reply; THE latency number (target p50
-                         under 1200, ASSESSMENT)
+  eos_to_first_audio     TurnEnd.eos_ms -> first PlaybackStarted (kind assistant,
+                         fixed or opener) after it; THE latency number (target p50
+                         under 1500): what the caller hears first, the opener
+                         ("Mm.", speak/openers.py) when one played
+  eos_to_reply_audio     TurnEnd.eos_ms -> first assistant or fixed PlaybackStarted
+                         (the reply itself, without the opener)
+  opener_played          bool
   turn_end_to_first_audio TurnEnd.at_ms -> same (excludes the turn detector wait)
   turn_detect            TurnEnd.at_ms - TurnEnd.eos_ms (what endpointing costs)
   first_sentence         TurnEnd.at_ms -> first AgentSentence
@@ -54,6 +58,8 @@ class TurnMetrics:
     turn_end_ms: int | None = None
     first_sentence_ms: int | None = None
     first_audio_ms: int | None = None
+    first_reply_ms: int | None = None
+    opener_played: bool = False
     first_backchannel_ms: int | None = None
     backchannels: int = 0
     backchannel_overlaps: int = 0
@@ -71,6 +77,12 @@ class TurnMetrics:
         if self.eos_ms is None or self.first_audio_ms is None:
             return None
         return self.first_audio_ms - self.eos_ms
+
+    @property
+    def eos_to_reply_audio(self) -> int | None:
+        if self.eos_ms is None or self.first_reply_ms is None:
+            return None
+        return self.first_reply_ms - self.eos_ms
 
     @property
     def turn_end_to_first_audio(self) -> int | None:
@@ -92,12 +104,13 @@ class TurnMetrics:
 
     @property
     def tts_first_audio(self) -> int | None:
-        if self.first_sentence_ms is None or self.first_audio_ms is None:
+        if self.first_sentence_ms is None or self.first_reply_ms is None:
             return None
-        return self.first_audio_ms - self.first_sentence_ms
+        return self.first_reply_ms - self.first_sentence_ms
 
     def as_dict(self) -> dict:
         return {"turn": self.turn, "language": self.language, "eos_to_first_audio": self.eos_to_first_audio,
+                "eos_to_reply_audio": self.eos_to_reply_audio, "opener_played": self.opener_played,
                 "turn_end_to_first_audio": self.turn_end_to_first_audio, "turn_detect": self.turn_detect,
                 "first_sentence": self.first_sentence, "tts_first_audio": self.tts_first_audio,
                 "first_backchannel": self.first_backchannel_ms, "backchannels": self.backchannels,
@@ -120,7 +133,8 @@ class CallMetrics:
 
 
 # EMF names (DESIGN.md 7) -> TurnMetrics field or property.
-TURN_METRICS = (("EosToFirstAudio", "eos_to_first_audio"), ("TurnDetectMs", "turn_detect"),
+TURN_METRICS = (("EosToFirstAudio", "eos_to_first_audio"), ("EosToReplyAudio", "eos_to_reply_audio"),
+                ("TurnDetectMs", "turn_detect"),
                 ("FirstSentenceMs", "first_sentence"), ("TtsFirstAudioMs", "tts_first_audio"),
                 ("FirstBackchannelMs", "first_backchannel_ms"), ("BargeInStopMs", "barge_in_stop_ms"),
                 ("BargeInDetectMs", "barge_in_detect_ms"))
@@ -195,8 +209,14 @@ class MetricsRecorder:
             if self._reply is not None:
                 self._reply.filler_played = True
             return
-        if self._reply is not None and self._reply.first_audio_ms is None:
+        if self._reply is None:
+            return
+        if self._reply.first_audio_ms is None:
             self._reply.first_audio_ms = e.at_ms
+        if e.kind == "opener":
+            self._reply.opener_played = True
+        elif self._reply.first_reply_ms is None:
+            self._reply.first_reply_ms = e.at_ms
 
     def _finished(self, e: PlaybackFinished) -> None:
         if e.kind == "backchannel":
@@ -258,17 +278,20 @@ class MetricsRecorder:
         for name, attr in TURN_COUNTS:
             log.metric(name, getattr(turn, attr), "Count", language=turn.language)
         log.metric("FillerPlayed", int(turn.filler_played), "Count", language=turn.language)
+        log.metric("OpenerPlayed", int(turn.opener_played), "Count", language=turn.language)
 
     # -- result ------------------------------------------------------------------------------
 
     def summary(self) -> dict:
         turns = [t.as_dict() for t in self.call.turns]
         eos = [t["eos_to_first_audio"] for t in turns if t["eos_to_first_audio"] is not None]
+        reply = [t["eos_to_reply_audio"] for t in turns if t["eos_to_reply_audio"] is not None]
         return {"turns": turns, "language_detections": [list(x) for x in self.call.language_detections],
                 "language_switches": self.call.language_switches, "first_language": self.call.first_language,
                 "outcome": self.call.outcome, "barge_ins": self.call.barge_ins, "end_reason": self.call.end_reason,
                 "call_ms": self.call.call_ms, "eos_to_first_audio_p50": percentile(eos, 50),
                 "eos_to_first_audio_p90": percentile(eos, 90),
+                "eos_to_reply_audio_p50": percentile(reply, 50), "openers": sum(t["opener_played"] for t in turns),
                 "backchannels": sum(t["backchannels"] for t in turns),
                 "backchannel_overlaps": sum(t["backchannel_overlaps"] for t in turns),
                 "barge_in_stop_max": max((t["barge_in_stop"] for t in turns if t["barge_in_stop"] is not None),

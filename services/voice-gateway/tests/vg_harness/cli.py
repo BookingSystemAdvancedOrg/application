@@ -39,6 +39,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--noise-dbfs", type=float, default=None, help="line noise level")
     p.add_argument("--out-dir", default=None, help="where the WAV goes")
     p.add_argument("--warm", action="store_true", help="render the caller audio cache from Polly and exit")
+    p.add_argument("--sim-latency", action="store_true",
+                   help="fake mode with the live costs on the virtual clock (Bedrock rounds, tool calls, Polly, the final)")
+    p.add_argument("--config-json", default=None, help="GatewayConfig overrides as JSON (as VG_CONFIG_JSON)")
     return p
 
 
@@ -68,6 +71,13 @@ async def _one(scenario, args):
     from vg_harness.asserts import check
     from vg_harness.timeline import render
     options = {"wire": args.wire, "echo_db": args.echo_db, "noise_dbfs": args.noise_dbfs}
+    if args.config_json:
+        from voice_gateway.config import GatewayConfig
+        options["cfg"] = GatewayConfig.from_json(args.config_json)
+    if args.sim_latency:
+        if args.mode != "fake":
+            raise SystemExit("--sim-latency is for fake mode")
+        options["sim_latency"] = dict(runner.SIM_LATENCY)
     if args.out_dir:
         from pathlib import Path
         options["out_dir"] = Path(args.out_dir)
@@ -108,8 +118,14 @@ def main(argv: list[str] | None = None) -> int:
             status = max(status, 1)
         from vg_harness import analysis as an
         p50 = an.percentile(an.eos_to_first_audio(result.events), 0.5)
+        reply50 = an.percentile(an.eos_to_reply_audio(result.events), 0.5)
+        detect = [r.turn_detect for r in an.replies(result.events)]
         rows.append({"scenario": s.key, "pass": not failures and not result.error, "failures": failures,
-                     "error": result.error, "eos_to_first_audio_p50_ms": p50, "switches": an.switches(result.events),
+                     "error": result.error, "eos_to_first_audio_p50_ms": p50, "eos_to_reply_audio_p50_ms": reply50,
+                     "turn_detect_p50_ms": an.percentile(detect, 0.5), "openers": len(an.openers(result.events)),
+                     "eos_to_first_audio_ms": an.eos_to_first_audio(result.events),
+                     "eos_to_reply_audio_ms": an.eos_to_reply_audio(result.events), "turn_detect_ms": detect,
+                     "switches": an.switches(result.events),
                      "backchannels": len(an.backchannels(result.events)),
                      "overlaps": an.backchannel_overlaps(result.events), "wav": result.wav_path})
         if args.summary or args.json:
@@ -121,10 +137,21 @@ def main(argv: list[str] | None = None) -> int:
     elif args.summary:
         for r in rows:
             p50 = "-" if r["eos_to_first_audio_p50_ms"] is None else f"{r['eos_to_first_audio_p50_ms']:.0f} ms"
-            print(f"{'PASS' if r['pass'] else 'FAIL':4}  {r['scenario']:8} p50 {p50:>8}  backchannels {r['backchannels']}"
+            reply = "-" if r["eos_to_reply_audio_p50_ms"] is None else f"{r['eos_to_reply_audio_p50_ms']:.0f} ms"
+            detect = "-" if r["turn_detect_p50_ms"] is None else f"{r['turn_detect_p50_ms']:.0f} ms"
+            print(f"{'PASS' if r['pass'] else 'FAIL':4}  {r['scenario']:8} p50 {p50:>8} (reply {reply:>8}, detect "
+                  f"{detect:>7}, openers {r['openers']})  backchannels {r['backchannels']}"
                   f" overlaps {r['overlaps']}  switches {r['switches']}" + (f"  {r['error']}" if r["error"] else ""))
             for f in r["failures"]:
                 print(f"        {f}")
+        pooled = {k: [v for r in rows for v in r[k + "_ms"] if v is not None]
+                  for k in ("eos_to_first_audio", "eos_to_reply_audio", "turn_detect")}
+        if pooled["eos_to_first_audio"]:
+            p = {k: an.percentile(v, 0.5) for k, v in pooled.items()}
+            p95 = an.percentile(pooled["eos_to_first_audio"], 0.95)
+            print(f"ALL   {len(pooled['eos_to_first_audio'])} turns: end of speech to first audio p50 "
+                  f"{p['eos_to_first_audio']:.0f} ms (p95 {p95:.0f}), to the reply p50 {p['eos_to_reply_audio']:.0f} ms,"
+                  f" turn detection p50 {p['turn_detect']:.0f} ms; openers {sum(r['openers'] for r in rows)}")
     return status
 
 

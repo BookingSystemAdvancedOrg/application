@@ -109,11 +109,27 @@ class Speaker:
         self.fillers.on_assistant_audio(self.clock.now_ms())
         return item_id
 
+    def opener(self, language: str, key: str, *, lookup: bool = False) -> bool:
+        """Plays the opener `key` now if the line is idle (True when it plays). A "check" opener says the lookup
+        is being done: no filler repeats it this turn; any other counts as speech for the filler's wait."""
+        if not self.mixer.request_opener(language, key):
+            return False
+        now = self.clock.now_ms()
+        if lookup:
+            self.fillers.played_this_turn = True
+        self.fillers.on_assistant_audio(now)
+        return True
+
     async def flush(self, barge_in_at_ms: int) -> PlaybackFlushed:
         return await self.mixer.flush(barge_in_at_ms)
 
     async def drain(self, timeout_ms: int = 30000) -> None:
         await self.mixer.drain(timeout_ms)
+
+    @property
+    def other_language_hint(self) -> bool:
+        """The caller's words of the turn that just ended point to another language than the call's."""
+        return self._no_filler
 
     def set_language(self, language: str) -> None:
         self.language = language

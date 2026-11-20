@@ -26,9 +26,11 @@ from typing import Callable, Literal
 
 # Quick, as people say them: Polly reads a lone word like a dictionary entry,
 # so every token is sped up (checked live with Elin and Amy 2026-11-20:
-# "Mm." 420 -> 320 ms after the trim; two-beat tokens 400 to 520 ms).
-_Q = '<prosody rate="125%">{}</prosody>'
-_A = '<prosody rate="118%">{}</prosody>'
+# "Mm." 420 -> 320 ms after the trim at 125%; at 165% and the tighter trim of
+# clips.py "Mm." 260 and "Ja." 240 ms, cut to 220 ms; two-beat tokens 300 to
+# 400 ms, kept whole: the controller's fit rule decides where they fit).
+_Q = '<prosody rate="165%">{}</prosody>'
+_A = '<prosody rate="150%">{}</prosody>'
 
 TOKENS: dict[str, tuple[tuple[str, int, str], ...]] = {
     "sv": (("mm", 5, _Q.format("Mm.")), ("mhm", 2, _Q.format("Mhm.")), ("ja", 2, _A.format("Ja.")),
@@ -48,6 +50,9 @@ TOKENS: dict[str, tuple[tuple[str, int, str], ...]] = {
     "tr": (("hi-hi", 3, _Q.format("Hı hı.")), ("evet", 2, _A.format("Evet.")), ("tamam", 1, _A.format("Tamam."))),
     "ar": (("aha", 3, _Q.format("آها.")), ("naam", 2, _A.format("نعم.")), ("tayyib", 1, _A.format("طيب."))),
 }
+
+# One syllable: the clip may be cut to clips.BACKCHANNEL_TARGET_MS with a fade (a held "mmm" just ends sooner).
+SHORT_TOKENS = frozenset({"mm", "mh", "ja", "yeah", "si", "oui", "tak", "evet", "aha", "naam"})
 
 # Tokens that only say "go on" (safe in a hesitation or mid-clause).
 CONTINUERS = frozenset({"mm", "mm-hmm", "mhm", "mh", "hi-hi", "aha"})

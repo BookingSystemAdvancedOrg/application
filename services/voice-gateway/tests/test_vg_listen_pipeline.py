@@ -14,7 +14,11 @@ from voice_gateway.events import (AssistantContext, BargeIn, EventBus, LanguageA
 from voice_gateway.listen.pipeline import Listener
 from voice_gateway.listen.transcribe import FakeSttFactory, ScriptedUtterance, SttUnavailable
 
-CFG = GatewayConfig(vad=VadConfig(model="energy"))
+# The tests below count the streams the Listener opens: without the shadow streams (the second identify stream of the
+# first utterance, the start-language stream away from Swedish), which have their own tests at the end.
+CFG = GatewayConfig(vad=VadConfig(model="energy"),
+                    language=LanguageConfig(second_identify_candidates=(), shadow_start_language=False))
+SHADOWS = GatewayConfig(vad=VadConfig(model="energy"))
 
 
 class FakePlayback:
@@ -408,3 +412,94 @@ def test_polly_speech_over_a_simulated_phone_line_with_silero_vad():
     assert 800 - 100 <= end.speech_start_ms <= 800 + 400 and abs(end.eos_ms - clip_end) < 450
     assert 500 <= end.at_ms - end.eos_ms <= 1200
     assert len(r.events(VadStart)) == 1
+
+
+# --- shadow streams: Turkish on a +46 line, back to Swedish --------------------------------------
+
+def test_a_turkish_first_utterance_is_found_by_the_second_identify_stream():
+    """A +46 caller's first stream offers sv, en, ar, de, pl (Transcribe takes five): the second one sv, en, tr, fi,
+    es. Live 2026-11-20 Turkish was heard as English nonsense (lang-J)."""
+    async def body(clock):
+        line = ScriptedUtterance("t", "merhaba yarın akşam saat sekizde iki kişilik bir masa istiyorum", "tr",
+                                 (("tr", 0.95), ("en", 0.03)))
+        r = Rig(clock, [line], cfg=SHADOWS)
+        await r.start()
+        await r.adapter.caller.silence_ms(500)
+        await r.adapter.caller.say(speech(3200), label="t")
+        await r.adapter.caller.silence_ms(3000)
+        await r.stop()
+        return r
+    r = run(body)
+    (end,) = r.events(TurnEnd)
+    d = end.language_decision
+    assert (d.action, d.current, d.reason) == (LanguageAction.SWITCH, "tr", "first_utterance")
+    assert end.text.startswith("merhaba yarın") and end.language == "tr"
+    first, second = r.stt.opened[0].identify, r.stt.opened[1].identify
+    assert "tr" not in first and second == ("sv", "en", "tr", "fi", "es")
+    # the live stream goes Turkish, the identify shadow closes and a Swedish one opens (away from Swedish now)
+    assert [m.language for m in r.stt.opened[2:]] == ["tr", "sv"]
+    assert end.at_ms - end.eos_ms <= 1200                     # no re-transcription waited for
+
+
+def test_a_swedish_first_utterance_ignores_the_second_identify_stream():
+    async def body(clock):
+        line = ScriptedUtterance("s", "hej jag vill boka ett bord för fyra", "sv", (("sv", 0.96),))
+        r = Rig(clock, [line], cfg=SHADOWS)
+        await r.start()
+        await r.adapter.caller.silence_ms(500)
+        await r.adapter.caller.say(speech(2500), label="s")
+        await r.adapter.caller.silence_ms(3000)
+        await r.stop()
+        return r
+    r = run(body)
+    (end,) = r.events(TurnEnd)
+    assert end.language == "sv" and end.language_decision.action == LanguageAction.KEEP
+    assert [m.language for m in r.stt.opened[2:]] == ["sv"]           # the identify shadow closed, no other one
+
+
+def test_away_from_swedish_a_swedish_stream_runs_beside_and_brings_the_caller_back():
+    """lang-E live: Swedish on the en-GB stream came back as English nonsense at 0.66 and the explicit "på svenska"
+    was lost. The start-language stream hears the words, the explicit request switches back at once."""
+    async def body(clock):
+        script = [ScriptedUtterance("e", "hello do you have a table for four on friday evening", "en",
+                                    (("en", 0.95), ("sv", 0.03))),
+                  ScriptedUtterance("s", "förlåt vi kan ta det på svenska istället klockan sju passar bra", "sv",
+                                    (("sv", 0.95),))]
+        r = Rig(clock, script, cfg=SHADOWS)
+        await r.start()
+        taker = await r.take_turns()
+        await r.adapter.caller.silence_ms(500)
+        await r.adapter.caller.say(speech(3000), label="e")
+        await r.adapter.caller.silence_ms(2500)
+        assert r.listener.transcriber.shadow_mode.language == "sv"       # away from Swedish: the shadow runs
+        await r.adapter.caller.say(speech(3500, 180), label="s")         # the en stream mishears it: conf 0.3
+        await r.adapter.caller.silence_ms(3000)
+        await r.stop()
+        taker.cancel()
+        return r
+    r = run(body)
+    ends = r.events(TurnEnd)
+    assert [e.language for e in ends] == ["en", "sv"]
+    assert ends[1].language_decision.reason == "explicit" and ends[1].text.startswith("förlåt vi kan ta det")
+    assert [m.language for m in r.stt.opened[2:]] == ["en", "sv", "sv"]   # en live, sv shadow, sv live (no new shadow)
+    probes = [m for m in r.stt.opened[2:] if m.identify]
+    assert probes == []                                                  # the shadow replaced the probe
+
+
+def test_the_second_identify_streams_partial_names_the_language_before_its_final():
+    """Live lang-J: the Turkish final came 0.5 to 1 s after the turn end, its partials said tr from the first word."""
+    async def body(clock):
+        line = ScriptedUtterance("t", "merhaba yarın akşam saat sekizde iki kişilik bir masa istiyorum", "tr",
+                                 (("tr", 0.95),))
+        r = Rig(clock, [line], cfg=SHADOWS)
+        r.stt.final_delay_ms = 3000                       # no final from either stream before the turn ends
+        await r.start()
+        await r.adapter.caller.silence_ms(500)
+        await r.adapter.caller.say(speech(3200), label="t")
+        await r.adapter.caller.silence_ms(5000)
+        await r.stop()
+        return r
+    r = run(body)
+    end = r.events(TurnEnd)[0]
+    assert end.language_decision.action == LanguageAction.SWITCH and end.language == "tr"
+    assert end.text.startswith("merhaba")

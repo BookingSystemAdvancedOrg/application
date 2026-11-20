@@ -16,6 +16,7 @@ from voice_gateway.events import (AgentSentence, AgentTurnDone, BargeIn, CallEnd
 
 START_LANGUAGE = "sv"
 ASSISTANT_KINDS = ("assistant", "fixed")
+FIRST_AUDIO_KINDS = ASSISTANT_KINDS + ("opener",)     # what the caller hears first: the opener when one played
 
 
 def of(events, *types):
@@ -35,11 +36,16 @@ def percentile(values: list[int], q: float) -> float | None:
 class Reply:
     """One caller turn and the first audio that answered it."""
     turn_end: TurnEnd
-    first_audio_ms: int | None          # first assistant or fixed PlaybackStarted at or after the TurnEnd
+    first_audio_ms: int | None          # first assistant, fixed or opener PlaybackStarted at or after the TurnEnd
+    first_reply_ms: int | None = None   # first assistant or fixed PlaybackStarted (the reply without the opener)
 
     @property
     def eos_to_first_audio(self) -> int | None:
         return None if self.first_audio_ms is None else self.first_audio_ms - self.turn_end.eos_ms
+
+    @property
+    def eos_to_reply_audio(self) -> int | None:
+        return None if self.first_reply_ms is None else self.first_reply_ms - self.turn_end.eos_ms
 
     @property
     def turn_detect(self) -> int:
@@ -48,13 +54,23 @@ class Reply:
 
 def replies(events) -> list[Reply]:
     ends = of(events, TurnEnd)
-    starts = [e for e in of(events, PlaybackStarted) if e.kind in ASSISTANT_KINDS]
+    starts = [e for e in of(events, PlaybackStarted) if e.kind in FIRST_AUDIO_KINDS]
     out = []
     for i, end in enumerate(ends):
         limit = ends[i + 1].at_ms if i + 1 < len(ends) else None
-        first = next((s.at_ms for s in starts if s.at_ms >= end.at_ms and (limit is None or s.at_ms < limit)), None)
-        out.append(Reply(end, first))
+        inside = [s for s in starts if s.at_ms >= end.at_ms and (limit is None or s.at_ms < limit)]
+        first = next((s.at_ms for s in inside), None)
+        reply = next((s.at_ms for s in inside if s.kind in ASSISTANT_KINDS), None)
+        out.append(Reply(end, first, reply))
     return out
+
+
+def eos_to_reply_audio(events) -> list[int]:
+    return [r.eos_to_reply_audio for r in replies(events) if r.eos_to_reply_audio is not None]
+
+
+def openers(events) -> list[PlaybackStarted]:
+    return [e for e in of(events, PlaybackStarted) if e.kind == "opener"]
 
 
 def eos_to_first_audio(events) -> list[int]:

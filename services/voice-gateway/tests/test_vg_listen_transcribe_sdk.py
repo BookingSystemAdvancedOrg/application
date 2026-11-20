@@ -320,3 +320,28 @@ def test_live_transcriber_probe_and_reopen_end_to_end():
         return ev, t.last_probe_scores
     ev, scores = asyncio.run(main())
     assert ev is not None and ev.code == "en" and ev.score > 0.6, scores
+
+
+def test_a_chunk_for_a_cancelled_stream_is_kept_quietly_not_a_traceback():
+    """Live 2026-11-20: awscrt printed InvalidStateError when a stream was cancelled while a chunk arrived."""
+    pytest.importorskip("amazon_transcribe")
+    from concurrent.futures import Future
+
+    from amazon_transcribe.httpsession import AwsCrtHttpResponse
+    from voice_gateway.listen.transcribe import _install_cancel_patch
+
+    _install_cancel_patch()
+    response = AwsCrtHttpResponse()
+    gone, waiting = Future(), Future()
+    gone.cancel()
+    response._chunk_futures = [gone, waiting]
+    response._on_body(b"one")                       # skips the cancelled future, hands the chunk on
+    assert waiting.result() == b"one"
+    late = Future()
+    late.cancel()
+    response._chunk_futures = [late]
+    response._on_body(b"two")                       # nobody waits: kept, as the SDK does
+    assert response._received_chunks == [b"two"]
+    response._status_code_future.cancel()
+    response._on_headers(200, [])                   # no InvalidStateError either
+    assert response._headers_future.result() == []

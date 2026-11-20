@@ -1,0 +1,8 @@
+# Voice gateway runtime (python 3.13, linux/arm64 wheels checked 2026-11-20).
+# The shared/ code it imports needs boto3 (same pin as the application root).
+boto3==1.43.66
+amazon-transcribe==0.6.4
+awscrt==0.38.2
+numpy==2.5.5
+onnxruntime==1.32.0
+websockets==17.4

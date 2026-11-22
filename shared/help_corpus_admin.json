@@ -807,8 +807,9 @@
     "Öppna Bokningar.",
     "Tryck Ny bokning och välj Telefon eller Drop-in.",
     "Fyll i Antal personer, Datum, Tid och välj Bord.",
-    "Fyll i Namn och, om du vill, telefon, e-post och en anteckning.",
-    "Tryck Boka."
+    "Fyll i Namn och telefon. E-post och anteckning är valfria.",
+    "Tryck Boka.",
+    "Kräver bordet kortgaranti får gästen en kortlänk i sms. Bokningen visar Väntar på kort tills kortet är sparat, sedan går bekräftelsen ut."
    ],
    "actions": [
     {
@@ -1057,6 +1058,47 @@
      "to": "/bestallningar"
     }
    ],
+   "kind": "guide"
+  },
+  {
+   "id": "bestallning-larm",
+   "route": "/installningar",
+   "title": "Ljud och ruta vid ny beställning",
+   "audience": "all",
+   "feature": "ordering",
+   "keywords": [
+    "ny beställning",
+    "larm",
+    "ljud",
+    "pling",
+    "notis",
+    "ruta",
+    "popup",
+    "hörs inte",
+    "inget ljud",
+    "ipad",
+    "surfplatta",
+    "onlinebeställning"
+   ],
+   "answer": "När en gäst beställer online spelar Admin ett högt ljud och visar rutan Ny beställning, på vilken sida du än är. Kommer fler innan någon trycker OK läggs de överst i samma ruta, med ljud igen. Tryck på en rad för att öppna beställningen under Beställningar.",
+   "steps": [
+    "Tryck OK när ni har sett beställningarna. Nästa beställning öppnar en ny ruta.",
+    "Står det Tryck för att slå på ljudet i rutan: tryck där. iPad och telefon spelar ljud först efter ett tryck i appen.",
+    "Står iPaden eller telefonen på ljudlöst hörs inget ljud, men rutan visas ändå.",
+    "Ljudet slås på eller av för varje enhet under Inställningar, Den här enheten, Utseende och ljud, Ljud vid ny beställning. Testa spelar det."
+   ],
+   "actions": [
+    {
+     "id": "bestallning-larm-open",
+     "label": "Öppna Utseende och ljud",
+     "to": "/installningar",
+     "hash": "utseende"
+    }
+   ],
+   "highlight": [
+    "help:utseende:bestallningsljud"
+   ],
+   "area": "bestallningar",
    "kind": "guide"
   },
   {
@@ -2796,7 +2838,7 @@
    "answer": "Kortgaranti och avgifter för sen avbokning och no-show ställer ägaren in under Inställningar, Gäster, Avbokning och kortgaranti. Stripe måste vara klart först.",
    "steps": [
     "Öppna Inställningar, välj Gäster och sedan Avbokning och kortgaranti.",
-    "Slå på Kortgaranti vid onlinebokning och välj från hur många personer.",
+    "Slå på Kortgaranti vid bokning och välj från hur många personer.",
     "Ange när en avbokning räknas som sen och avgifterna per person.",
     "Tryck Spara policy."
    ],
@@ -4289,6 +4331,19 @@
    "area": "bokningar"
   },
   {
+   "id": "features-bokningar-NewReservationModal:telefon:field",
+   "kind": "element",
+   "route": "/bokningar",
+   "title": "Telefon",
+   "where": "Bokningar",
+   "text": "",
+   "highlight": [
+    "text:Telefon"
+   ],
+   "audience": "all",
+   "area": "bokningar"
+  },
+  {
    "id": "features-bokningar-NewReservationModal:telefon-valfritt:field",
    "kind": "element",
    "route": "/bokningar",
@@ -5106,6 +5161,21 @@
     "help:utseende:volym"
    ],
    "audience": "all"
+  },
+  {
+   "id": "features-installningar-AppearanceCard:ljud-vid-ny-bestallning:heading",
+   "kind": "element",
+   "route": "/installningar",
+   "hash": "utseende",
+   "title": "Ljud vid ny beställning",
+   "where": "Inställningar, Den här enheten, Utseende och ljud",
+   "text": "Ett högt ljud och en ruta när en gäst beställer online, på varje sida. Gäller den här enheten, oavsett klickljudet och volymen. På iPad och telefon hörs det efter första trycket i appen.",
+   "highlight": [
+    "help:utseende:bestallningsljud"
+   ],
+   "audience": "all",
+   "feature": "ordering",
+   "area": "bestallningar"
   },
   {
    "id": "features-installningar-BokforingCard:bokforing:heading",
@@ -6135,6 +6205,19 @@
    "text": "",
    "highlight": [
     "text:Namn"
+   ],
+   "audience": "all",
+   "area": "layout"
+  },
+  {
+   "id": "features-layout-editor-FloorBooking:telefon:field",
+   "kind": "element",
+   "route": "/layout",
+   "title": "Telefon",
+   "where": "Layout",
+   "text": "",
+   "highlight": [
+    "text:Telefon"
    ],
    "audience": "all",
    "area": "layout"

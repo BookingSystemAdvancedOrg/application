@@ -264,6 +264,12 @@ SYSTEM_SUB_PREFIX = "agent:"
 _SYSTEM_STATUS = "system"
 
 
+def is_system_sub(sub) -> bool:
+    """The caller is the phone agent's system principal (`agent:<l>`), not a
+    person: e.g. it may book by phone without a number (hidden caller ID)."""
+    return isinstance(sub, str) and sub.startswith(SYSTEM_SUB_PREFIX)
+
+
 def _usable_status(sub: str, status) -> bool:
     if status == "active":
         return True

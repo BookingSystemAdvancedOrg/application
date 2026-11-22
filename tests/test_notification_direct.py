@@ -1,6 +1,7 @@
 """notification: the feature notice entry (CONTRACTS.md 9.4, AP9)."""
 
 import pytest
+from botocore.exceptions import ClientError
 
 from tenant_support import LOC_A, LOC_B, TENANT_A, TENANT_B
 from test_notification import _outbox, _saved, booking, env, record, run  # env: fixture
@@ -70,3 +71,29 @@ def test_stream_path_unchanged(env):
     module, ses, _ = env
     assert run(module, record(booking(), event_name="INSERT")) == {"batchItemFailures": []}
     assert {c["Destination"]["ToAddresses"][0] for c in ses.calls} == {"anna@example.se", "soder@roma.se"}
+
+
+def test_reservations_guarantee_link_kind_is_sent_and_answers_status(env, monkeypatch, caplog):
+    """create-pending-reservation's card link SMS (RequestResponse): the
+    answer says whether it went out; counted as a booking SMS; never logged."""
+    module, ses, sns = env
+    counted = []
+    monkeypatch.setattr(module.finance, "count", lambda *a, **kw: counted.append(kw))
+    caplog.set_level("INFO")
+    link = {**SMS, "kind": "reservations.guarantee-link",
+            "text": "Roma: Lägg till ditt kort https://x.se/api/k/Ab3dE5fG7h"}
+
+    assert module.handler({"notice": link}, None) == {"status": "sent"}
+
+    (sent,) = sns.calls
+    assert sent["PhoneNumber"] == "+46701234567" and sent["Message"] == link["text"]
+    assert counted[-1]["sms"] == 1 and counted[-1]["smsBooking"] == 1
+    assert "+46701234567" not in caplog.text and "Ab3dE5fG7h" not in caplog.text
+    assert module.handler({"notice": {**link, "to": "+15551234567"}}, None) == {"status": "dropped",
+                                                                                "reason": "bad_phone"}
+    assert module.handler({"notice": {**link, "tenantId": TENANT_B}}, None) == {"status": "dropped",
+                                                                                "reason": "inactive"}
+    sns.fail = ["Throttling"]
+    with pytest.raises(ClientError):                                   # a FunctionError for the caller
+        module.handler({"notice": link}, None)
+    assert len(sns.calls) == 1

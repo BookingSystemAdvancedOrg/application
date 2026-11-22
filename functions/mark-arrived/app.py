@@ -28,7 +28,10 @@ PURPOSE:
       reserved/pending -> cancelled   restaurant cancels; frees the tables
     Guest notices: cancelling and moving to another date/time notify the
     guest (email/SMS via the Reservation stream) unless the body has
-    "notifyGuest": false. Table-only moves, arrivals and no-shows don't.
+    "notifyGuest": false. Table-only moves, arrivals and no-shows don't,
+    and neither does cancelling a booking still pending (waiting for the
+    card): its guest never got a confirmation, and its card page is closed
+    (best effort, guarantee.close_card_page).
 
     A move re-checks availability with the shared engine (ignoring the
     booking's own holds) and swaps holds, locks and - for a new date - the
@@ -59,6 +62,7 @@ ENV_VARS:
 Full details: docs/RESERVATIONS.md
 """
 
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -206,8 +210,10 @@ def _set_status(event, ctx, item):
             raise r.InvalidState("not_cancellable")
         if now >= ends:
             raise r.InvalidState("already_ended")
+        # A booking still waiting for the card never had a confirmation:
+        # cancelling it tells the guest nothing (it may be a mistyped number).
         notice = (r.notice(r.NOTICE_CANCELLED_BY_RESTAURANT, now)
-                  if notify and r.can_be_notified(item) else None)
+                  if notify and current != r.PENDING and r.can_be_notified(item) else None)
         return _status_update(item, r.CANCELLED_BY_RESTAURANT, ctx.sub, now, release=True,
                               reason=reason, notice=notice)
     raise ValueError("status must be arrived, reserved, no_show or cancelled")
@@ -506,6 +512,16 @@ def _edit(event, ctx, item):
     return r.staff_view(new_item)
 
 
+def _close_card_page(item):
+    """Best effort after staff cancel a booking still waiting for the card:
+    its card page (Stripe Checkout or the site's SetupIntent) is closed, so
+    the guest cannot add a card to a booking that no longer holds a table.
+    The cancel itself already stands; the log carries no personal data."""
+    result = guarantee.close_card_page(item, timeout=5)
+    if result != "none":
+        print(json.dumps({"cardPageOnCancel": result, "reservationId": item.get("reservationId")}))
+
+
 def handler(event, context):
     method, path = http.route(event)
     if path in (_STATUS, _PAYMENT):
@@ -521,7 +537,10 @@ def handler(event, context):
         ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
         item = r.load(location_id, http.path_id(event, "reservationId"))
         if path == _STATUS:
-            return http.respond(200, r.staff_view(_set_status(event, ctx, item)))
+            updated = _set_status(event, ctx, item)
+            if item.get("status") == r.PENDING and updated.get("status") == r.CANCELLED_BY_RESTAURANT:
+                _close_card_page(updated)
+            return http.respond(200, r.staff_view(updated))
         if path == _PAYMENT:
             return http.respond(200, r.staff_view(_payment(event, ctx, item)))
         return http.respond(200, _edit(event, ctx, item))

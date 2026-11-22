@@ -3842,12 +3842,25 @@ paths:
       summary: Book a table for a guest (staff)
       operationId: createManualReservation
       description: |
-        Phone bookings and walk-ins. Email and phone are optional (a phone
-        booking with `guarantee: link` needs the phone). Starts are
-        on the clock's half hours; a phone booking starts at least 30 minutes
-        from now. A walk-in (`source: walk_in`) is booked for today only (the
-        location's timezone) and may take a slot starting within 30 minutes
-        or one that is already running.
+        Phone bookings and walk-ins. Email is optional; the phone is optional
+        for walk-ins and `source: staff`, but a phone booking (`source:
+        phone`, the default) by a person needs it (400 `phone is required for
+        a phone booking`; the AI phone agent's system principal may book a
+        hidden caller ID without one). Starts are on the clock's half hours;
+        a phone booking starts at least 30 minutes from now. A walk-in
+        (`source: walk_in`) is booked for today only (the location's
+        timezone) and may take a slot starting within 30 minutes or one that
+        is already running.
+
+        Card guarantee by phone (`guarantee`, see ManualReservationRequest):
+        with `sms` Booqy texts the card link itself while the staff are on
+        the call. 400 `guarantee sms needs a mobile number` (not a Nordic
+        mobile number) or `guarantee sms needs the guest's own mobile
+        number` (the restaurant's own number or a filler like 070 000 00 00),
+        both before anything is booked; 429 `sms_limit` (60 link SMS per
+        location a day, 20 per staff user an hour); 502 `sms_failed` (the SMS
+        did not go out: nothing stays booked, the card page is closed); 503
+        `sms_unavailable` (the SMS cannot be sent from here: nothing booked).
       security:
         - bearerAuth: []
       x-required-groups:
@@ -3875,16 +3888,20 @@ paths:
                       guaranteeLink:
                         type: object
                         description: >-
-                          Only for a phone booking created pending with guarantee link: the page the guest
-                          adds the card on (send it to the guest only), and until when the table is held.
-                          PHONE_CARD_PAGE "site": the booking's manage link on the restaurant's site (page
-                          site, a SetupIntent like an online booking); otherwise a Stripe Checkout page
-                          (page stripe). With SHORT_LINK_BASE set, url is the short plain link to that page
-                          (GET /k/{code} on the restaurant's own site when live, e.g. https://example.se/api/k/Ab3dE5fG7h, else
-                          https://restaurang.booqy.se/api/k/Ab3dE5fG7h), safe to text.
+                          Only for a phone booking created pending for the card: until when the table is
+                          held, and the page the guest adds the card on. PHONE_CARD_PAGE "site": the
+                          booking's manage link on the restaurant's site (page site, a SetupIntent like an
+                          online booking); otherwise a Stripe Checkout page (page stripe). With guarantee
+                          link (the AI phone agent texts it) the answer carries url, the page's address (send
+                          it to the guest only; with SHORT_LINK_BASE set the short plain link, GET /k/{code}
+                          on the restaurant's own site when live, e.g. https://example.se/api/k/Ab3dE5fG7h,
+                          else https://restaurang.booqy.se/api/k/Ab3dE5fG7h, safe to text), and nothing
+                          else. With guarantee sms Booqy texted it: never the url, instead by, sends,
+                          textedAt, canResend and sms "sent".
                         properties:
                           url:
                             type: string
+                            description: guarantee link only.
                           expiresAt:
                             type: string
                             format: date-time
@@ -3893,6 +3910,31 @@ paths:
                           page:
                             type: string
                             enum: [site, stripe]
+                          by:
+                            type: string
+                            enum: [booqy]
+                            description: guarantee sms only.
+                          sends:
+                            type: integer
+                            description: guarantee sms only (1).
+                          textedAt:
+                            type: string
+                            format: date-time
+                            description: guarantee sms only.
+                          canResend:
+                            type: boolean
+                            description: guarantee sms only.
+                          sms:
+                            type: string
+                            enum: [sent]
+                            description: guarantee sms only.
+                      guaranteeSkipped:
+                        type: string
+                        enum: [too_soon]
+                        description: >-
+                          guarantee sms, and the policy asks a card, but the booking starts less than 47
+                          minutes ahead (its 32-minute hold could lapse after the start): reserved at once
+                          without a card (history cardSkipped too_soon).
         '400':
           $ref: '#/components/responses/NoStoreBadRequest'
         '401':
@@ -3903,8 +3945,80 @@ paths:
           $ref: '#/components/responses/ReservationNotFound'
         '409':
           $ref: '#/components/responses/ReservationConflict'
+        '429':
+          $ref: '#/components/responses/GuaranteeSmsLimit'
+        '502':
+          $ref: '#/components/responses/GuaranteeSmsFailed'
         '503':
-          $ref: '#/components/responses/ReservationServiceUnavailable'
+          $ref: '#/components/responses/GuaranteeSmsUnavailable'
+
+  /locations/{locationId}/reservations/{reservationId}/guarantee-link:
+    parameters:
+      - $ref: '#/components/parameters/LocationId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags:
+        - Reservations
+      summary: Send the card link SMS again (staff)
+      operationId: resendGuaranteeLink
+      description: |
+        The guest of a phone booking that waits for the card says no SMS
+        arrived: the same link goes again to the booking's own phone number
+        (also for a booking the AI phone agent made), with the minutes left.
+        At most 3 card link SMS per booking from Booqy (the first SMS and 2
+        resends; the AI phone agent's own resend during its call is not
+        counted), and only while at least 3 minutes of the window are left.
+        The counter is claimed before the SMS is sent, so a double click
+        texts once. No body (400 for any field). Counts against
+        the same SMS limits as a new booking (429 `sms_limit`). 502
+        `sms_failed`: the SMS did not go out; the booking stays pending (the
+        first SMS went out) and the send still counts.
+      security:
+        - bearerAuth: []
+      x-required-groups:
+        - staff_user
+        - owner_user
+      responses:
+        '200':
+          description: Sent; the booking (guaranteeLink.sends and textedAt updated).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/NoStoreBadRequest'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/NoStoreForbidden'
+        '404':
+          $ref: '#/components/responses/ReservationNotFound'
+        '409':
+          description: |
+            `not_pending` (the booking no longer waits for the card, or has
+            no card link), `link_closed` (less than 3 minutes left),
+            `resend_limit` (3 SMS sent), `not_textable` (the booking's number
+            is not a mobile number, is a filler like 070 000 00 00 or is the
+            restaurant's own), `changed_retry` (sent by someone else just
+            now).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: resend_limit
+        '429':
+          $ref: '#/components/responses/GuaranteeSmsLimit'
+        '502':
+          $ref: '#/components/responses/GuaranteeSmsFailed'
+        '503':
+          $ref: '#/components/responses/GuaranteeSmsUnavailable'
 
   /locations/{locationId}/reservations/{reservationId}:
     parameters:
@@ -9596,14 +9710,23 @@ components:
           description: Send the guest a confirmation (email, and SMS when enabled). Default true, false for walk_in.
         guarantee:
           type: string
-          enum: [link]
+          enum: [link, sms, waived]
           description: >-
-            Phone bookings only (source phone, phone required). When the location's card guarantee covers the
-            party, the booking is created pending (held 30 minutes) with a Stripe Checkout page (mode setup) on
-            the restaurant's account (or, with PHONE_CARD_PAGE "site", a SetupIntent and the booking's manage
-            link on the restaurant's site), and the answer carries guaranteeLink {url, expiresAt, minutes, page}
-            for the caller to text the guest. The booking turns reserved when the card is added (Stripe webhook). Without
-            a card requirement the booking is reserved as usual.
+            Phone bookings only (source phone). When the location's card guarantee covers the party, the
+            booking is created pending (held 30 minutes) with a Stripe Checkout page (mode setup) on the
+            restaurant's account (or, with PHONE_CARD_PAGE "site", a SetupIntent and the booking's manage link
+            on the restaurant's site). It turns reserved when the card is added (Stripe webhook or the manage
+            page), and the confirmation then always goes by SMS as well. Without a card requirement the booking
+            is reserved as usual.
+            `link` (phone required): the answer carries guaranteeLink {url, expiresAt, minutes, page} for the
+            caller (the AI phone agent) to text the guest.
+            `sms` (phone required): Booqy texts the link to the booking's phone at once and answers
+            guaranteeLink {by, sends, textedAt, canResend, minutes, expiresAt, page, sms}, never the url; a
+            Nordic mobile number only; no card is asked when the booking starts less than 47 minutes ahead
+            (guaranteeSkipped too_soon). The location's phone agent setting phoneGuarantee skip is honoured
+            only where the function is configured with PHONE_AGENT_TABLE_NAME (and read access to that
+            table); without it the card the policy asks for is asked.
+            `waived`: book without the card the policy asks for (staff decision, history guarantee_waived).
 
     ReservationUpdateRequest:
       type: object
@@ -9755,6 +9878,25 @@ components:
           type: integer
           minimum: 0
           description: Minutes beyond the rule's length after staff extended the end (0 when not extended or shortened).
+        guaranteeLink:
+          type: object
+          description: >-
+            A phone booking's card link by SMS (never its url, a bearer link): who texted it (booqy for a staff
+            booking, caller for the AI phone agent), how many SMS went out, the last one's time, and whether
+            staff may send it again (POST .../guarantee-link).
+          properties:
+            by:
+              type: string
+              enum: [booqy, caller]
+            sends:
+              type: integer
+              minimum: 1
+            textedAt:
+              type: string
+              format: date-time
+              description: The last SMS Booqy sent (absent when only the AI agent texted it).
+            canResend:
+              type: boolean
 
     ReservationList:
       type: object
@@ -14159,6 +14301,58 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error: table_taken
+    GuaranteeSmsLimit:
+      description: '`sms_limit`: too many card link SMS (per location a day, per staff user an hour). Book without the card, or later.'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error, retryAfter]
+            properties:
+              error:
+                type: string
+                enum: [sms_limit]
+              retryAfter:
+                type: integer
+                minimum: 1
+                description: >-
+                  Seconds until the limit lets the next card link SMS through, the same as Retry-After (a
+                  browser calling from another origin cannot read that header).
+          example:
+            error: sms_limit
+            retryAfter: 1800
+    GuaranteeSmsFailed:
+      description: '`sms_failed`: the card link SMS did not go out (Booqy''s side). A new booking was released (nothing stays booked).'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: sms_failed
+    GuaranteeSmsUnavailable:
+      description: |
+        `sms_unavailable`: the card link SMS cannot be sent from here
+        (nothing booked), or another reservation dependency is unavailable
+        (`reservation service unavailable`, `payment_unavailable`).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: sms_unavailable
     ReservationServiceUnavailable:
       description: A reservation dependency is unavailable.
       headers:

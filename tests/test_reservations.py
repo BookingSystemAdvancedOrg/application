@@ -627,11 +627,55 @@ def test_staff_phone_booking_without_email(env):
     response = env["m"]["create"].handler(event(
         "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
         body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
-              "name": "Telefonbokning", "source": "phone"}), None)
+              "name": "Telefonbokning", "phone": "070-111 22 33", "source": "phone"}), None)
     assert response["statusCode"] == 201, response
     body = body_of(response)
     assert body["source"] == "phone" and body["createdBy"] == STAFF_A_SUB and "manageToken" not in body
+    assert body["customerPhone"] == "+46701112233" and "customerEmail" not in body
     assert "table-a" not in free_tables_at(env, "18:00")
+
+
+def manual(env, who=STAFF_A, **extra):
+    payload = {"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2, "name": "Gäst",
+               **extra}
+    return env["m"]["create"].handler(event(
+        "POST", "/locations/{locationId}/reservations/manual", staff=who, body=payload), None)
+
+
+@pytest.mark.parametrize("who", [STAFF_A, OWNER_A])
+@pytest.mark.parametrize("extra", [{}, {"source": "phone"}, {"source": "phone", "phone": None}])
+def test_human_staff_phone_booking_needs_a_phone(env, who, extra):
+    response = manual(env, who, **extra)
+    assert response["statusCode"] == 400 and body_of(response) == err("phone is required for a phone booking")
+    assert body_of(response)["field"] == "phone"
+    assert "table-a" in free_tables_at(env, "18:00")
+
+
+def test_walk_in_and_staff_sources_need_no_phone(env):
+    env["clock"].value = datetime(2026, 9, 20, 15, 0, tzinfo=timezone.utc)  # 17:00 local, same day
+    walk_in = manual(env, source="walk_in")
+    staff = manual(env, source="staff", tableIds=["table-b"])
+    assert walk_in["statusCode"] == 201 and staff["statusCode"] == 201, (walk_in, staff)
+    assert "customerPhone" not in body_of(walk_in) and "customerPhone" not in body_of(staff)
+
+
+def test_agent_principal_may_book_by_phone_without_a_number(env):
+    """The AI phone agent books a hidden caller ID: its system principal
+    (agent:<l>, status system) is exempt from the phone rule."""
+    agent = f"agent:{LOC_A}"
+    env["res"].Table(USER_TABLE_DEFAULT).put_item(Item={
+        "PK": f"USER#{agent}", "SK": "PROFILE", "tenantId": TENANT_A, "role": "staff", "locationId": LOC_A,
+        "status": "system"})
+    e = event("POST", "/locations/{locationId}/reservations/manual",
+              body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
+                    "name": "Telefon", "source": "phone"})
+    with_tenant_claims(e, TENANT_A, "staff_user", agent)
+    response = env["m"]["create"].handler(e, None)
+    assert response["statusCode"] == 201, response
+    body = body_of(response)
+    assert body["createdBy"] == agent and body["source"] == "phone" and "customerPhone" not in body
+    assert shared_tenant.is_system_sub(agent) and not shared_tenant.is_system_sub(STAFF_A_SUB)
+    assert not shared_tenant.is_system_sub(None) and not shared_tenant.is_system_sub("human-agent:x")
 
 
 def test_walk_in_can_take_the_running_slot(env):
@@ -653,8 +697,8 @@ def test_bookings_need_thirty_minutes_lead_time(env):
     phone = env["m"]["create"].handler(event(
         "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
         body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
-              "name": "Telefon", "source": "phone"}), None)
-    assert phone["statusCode"] == 400
+              "name": "Telefon", "phone": "0701112233", "source": "phone"}), None)
+    assert phone["statusCode"] == 400 and "bookable" in body_of(phone)["error"]
     # 18:30 is the first start - and the half hour grid has no 18:02.
     assert guest_booking(env, start="18:30")["statusCode"] == 201
     assert guest_booking(env, start="18:02", tables=("table-a",))["statusCode"] == 400
@@ -707,7 +751,7 @@ def test_a_walk_in_is_booked_for_today_only(env):
     phone = env["m"]["create"].handler(event(
         "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
         body={"date": DAY, "startTime": "18:00", "tableIds": ["table-a"], "partySize": 2,
-              "name": "Telefon", "source": "phone"}), None)
+              "name": "Telefon", "phone": "0701112233", "source": "phone"}), None)
     assert phone["statusCode"] == 201, phone
 
 
@@ -738,7 +782,7 @@ def test_a_phone_booking_cannot_be_moved_inside_the_lead_time(env):
     phone = env["m"]["create"].handler(event(
         "POST", "/locations/{locationId}/reservations/manual", staff=STAFF_A,
         body={"date": DAY, "startTime": "20:00", "tableIds": ["table-a"], "partySize": 2,
-              "name": "Telefon", "source": "phone"}), None)
+              "name": "Telefon", "phone": "0701112233", "source": "phone"}), None)
     rid = body_of(phone)["reservationId"]
     env["clock"].value = datetime(2026, 9, 20, 15, 32, tzinfo=timezone.utc)  # 17:32 local
     assert edit(env, rid, {"startTime": "18:00"})["statusCode"] == 400
@@ -1027,7 +1071,7 @@ def staff_booking(env, **extra):
     ({"notifyGuest": False}, False),
     ({"source": "walk_in"}, False),              # standing in the restaurant
     ({"source": "walk_in", "notifyGuest": True}, True),
-    ({"phone": None}, False),                    # nothing to send to
+    ({"source": "staff", "phone": None}, False),  # nothing to send to
 ])
 def test_staff_booking_notice(env, extra, notified):
     if extra.get("source") == "walk_in":

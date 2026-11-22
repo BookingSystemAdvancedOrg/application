@@ -11,6 +11,7 @@ the admin app. Code: `shared/reservations.py` (data, locks, views),
 |---|---|---|
 | `POST /locations/{l}/reservations` | none (guest) | create-pending-reservation |
 | `POST /locations/{l}/reservations/manual` | JWT (staff: phone, walk-in) | create-pending-reservation |
+| `POST /locations/{l}/reservations/{r}/guarantee-link` | JWT (staff: send the card link SMS again) | create-pending-reservation |
 | `POST /locations/{l}/holds` | none (guest) + bot check | create-pending-reservation |
 | `DELETE /locations/{l}/holds/{h}` | none + `X-Manage-Token` | create-pending-reservation |
 | `GET /locations/{l}/reservations?date=` | JWT | get-reservation |
@@ -92,11 +93,13 @@ to `notification`, which sends once per notice id (OldImage with the same id
 | `confirmed` | create (online; staff unless `notifyGuest:false`, walk-ins opt in) | confirmation + link | email for online bookings |
 | `changed` | staff move to another date/time (`notifyGuest`) | new time + link | - |
 | `cancelled_by_guest` | guest cancel | receipt | email for online bookings |
-| `cancelled_by_restaurant` | staff cancel (`notifyGuest`) | notice (reason is never sent) | - |
+| `cancelled_by_restaurant` | staff cancel (`notifyGuest`; never for a booking still `pending`, whose guest had no confirmation) | notice (reason is never sent) | - |
 | `reminder` | `reservation-reminders` (every 15 min) | reminder + cancel link | - |
 
 Guests get email when they have an address; SMS too when the tenant turned
-`notifications.sms` on (sender = `senderName`). `notifications.reminderHours`
+`notifications.sms` on (sender = `senderName`), and always for the
+confirmation of a booking made with a card link by SMS (`guaranteeLink` on
+the item: the link SMS promised it; Nordic numbers only). `notifications.reminderHours`
 (default 24, 0 = off) sets the reminder; bookings made inside that window
 get none (the confirmation was just sent), and nothing within 1 h of the
 start. A reminder is claimed with one conditional update (`reminderSentAt`),
@@ -117,7 +120,7 @@ Reservation table:
 
 | Key | Item |
 |---|---|
-| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `linkVersion` (`manageTokenHash` on older bookings), `notice`, `reminderSentAt`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl` |
+| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `linkVersion` (`manageTokenHash` on older bookings), `notice`, `reminderSentAt`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl`; a phone booking with a card link also `guaranteeLink` {url, page, by, sends, textedAt} (Phone bookings) |
 | `LOCATION#<l>` / `RID#<id>` | pointer: id -> `date` (read a booking by id; moves update it) |
 
 Slot Occupancy table:
@@ -164,7 +167,9 @@ the payment functions (M4). Every change appends `{action, by, at, ...}` to
 `400` validation (message), `404` unknown / foreign / wrong token, `409`
 `table_taken`, `availability_changed`, `changed_retry` or a transition code
 (`too_early`, `grace_period_not_over`, `not_cancellable`, `already_started`,
-`not_movable`, ...), `503` dependency down.
+`not_movable`, ...), `429` `too_many_requests` (online) or `sms_limit` (card
+link SMS), `502` `sms_failed` (the card link SMS did not go out), `503`
+dependency down (`sms_unavailable` when the card link SMS cannot be sent).
 
 ## Card guarantee (M4)
 
@@ -190,22 +195,102 @@ fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 `authentication_required` - the restaurant settles those with the guest
 (a pay-by-link flow is a later addition).
 
-Phone bookings (the AI phone agent): `POST .../reservations/manual` with
-`source: phone`, a phone number and `guarantee: link` books a party the
-policy covers `pending` the same way (tables, snapshot, PENDING# marker),
-held 30 minutes plus a 2 minute margin, with a Customer + Checkout Session
-(mode setup, `locale` sv/en, `expires_at` 31 minutes) on the restaurant's
-account instead of a SetupIntent. The answer carries `guaranteeLink`
-{url, expiresAt, minutes}; the agent texts it to the caller ID (Nordic
-numbers only, a `phone-agent.guarantee-link` notice). The Checkout page's
-SetupIntent carries the booking's metadata: `setup_intent.succeeded` stores
-it as `setupIntentId` and turns the booking `reserved` (confirmation
-then). The page's `success_url` is the booking's manage page, whose
-`POST .../confirm` reads the completed Checkout Session and confirms it
-too; before expiring one, the expiry job asks Stripe the same way (when
-it has `STRIPE_SECRET_ARN`; Stripe down: it waits up to an hour). Unconfirmed
-ones expire as above, without a message. If the SMS cannot be sent the
-agent cancels the booking at once (no message) and offers the callback.
+### Phone bookings
+
+A phone booking (`POST .../reservations/manual`, `source: phone`, the
+default) by a person needs the guest's phone number (400 `phone is
+required for a phone booking`); walk-ins and `source: staff` do not. The
+AI phone agent's system principal (`agent:<l>`, `tenant.is_system_sub`)
+may book a hidden caller ID without one. The rule is for new bookings
+only: an edit may still clear a number.
+
+With `guarantee` set, a party the policy covers is booked `pending` the
+same way as online (tables, snapshot, PENDING# marker), held 30 minutes
+plus a 2 minute margin, with a Customer + Checkout Session (mode setup,
+`locale` sv/en, `expires_at` 31 minutes) on the restaurant's account
+instead of a SetupIntent:
+
+| `guarantee` | Who texts the link | Answer |
+|---|---|---|
+| `link` (AI agent) | the agent, to the caller ID (Nordic numbers only, a `phone-agent.guarantee-link` notice); if it cannot, the agent cancels the booking at once (no message) and offers the callback | `guaranteeLink` {url, expiresAt, minutes, page} |
+| `sms` (staff on the call) | Booqy, right after the booking is written: one invoke of `notification:live` (RequestResponse, kind `reservations.guarantee-link`, botocore retries off) to the booking's own number | `guaranteeLink` {by, sends, textedAt, canResend, minutes, expiresAt, page, sms: `sent`}, never the url |
+| `waived` (staff: "Boka utan kort") | nobody: reserved at once, history `guarantee_waived` by the staff user | the booking |
+
+Staff `sms` rules, checked before Stripe is asked or anything is written:
+a Nordic mobile number (`shared/sms.py` `textable`: Swedish 070/072/073/
+076/079, Norway 4/9, Denmark, Finland 04x/050, Iceland 6/7/8, within
+`SMS_ALLOWED_PREFIXES`; else 400 `guarantee sms needs a mobile number`),
+not the restaurant's own number or a filler such as 070 000 00 00 (400
+`guarantee sms needs the guest's own mobile number`),
+`NOTIFICATION_FUNCTION_NAME` set (else 503 `sms_unavailable`), and the
+request-guard counters `link-sms-loc` (60 per location a day) and
+`link-sms-sub` (20 per staff user an hour; 429 `sms_limit` with
+`retryAfter` seconds in the body as well as Retry-After), given back
+when nothing was sent (a timed-out invoke may have sent it and keeps its
+count). No card is asked (reserved at once, the normal confirmation) when
+the booking starts less than 47 minutes ahead (30 minute lead time, the
+32 minute hold and a 15 minute buffer, so a pending hold never lapses
+while the guest is seated): the 201 says `guaranteeSkipped: too_soon` and
+the `created` history entry `cardSkipped: too_soon`. The location's phone
+agent setting `phoneGuarantee` `skip` (the agent's rule) is honoured only
+where the function has `PHONE_AGENT_TABLE_NAME` and read access to the
+phone agent table; neither is configured today (an IAM change, owner
+decision), so staff phone bookings ask the card the policy asks for. The
+agent's `link` mode keeps its own rules (no lead or mobile rule).
+
+A failed SMS (an invoke error such as AccessDenied, a timeout, a
+FunctionError, a dropped notice, or too little Lambda time left to send
+and release) releases the booking at once: `expired`, history
+`link_failed`, tables free, marker gone, no notice, and the Checkout
+Session is expired (the site page's SetupIntent cancelled) and the
+booking's Stripe Customer (the guest's name and number on the
+restaurant's account) is deleted, both best effort and logged without
+personal data, so the link cannot complete later. The answer is 502
+`sms_failed` and nothing stays booked (the released row only shows among
+cancelled ones). In the rare case the release itself fails (a DynamoDB
+error, or the booking kept changing while still pending) it is logged as
+an error and left to the expiry sweep with its card page open, so the
+resend still works for a booking that holds tables. If the guest added the card in that
+same instant the release conflicts and the answer is the reserved 201.
+The link SMS never travels on the stream (no stream retry, no DLQ replay
+of a dead link); the confirmation after the card does, as every notice.
+
+Both texting modes store `guaranteeLink` {url, page, by: `booqy` |
+`caller`, sends, textedAt (Booqy's last SMS)} on the booking. The url is a
+bearer link (the same target as the `LINK#<code>` row): never in
+`staff_view`, `guest_view`, history, logs or the GDPR export. Staff views
+carry `guaranteeLink` {by, sends, textedAt?, canResend}.
+
+`POST .../reservations/{r}/guarantee-link` (staff, no body) texts the same
+link again to the booking's current number with the minutes left, also
+for agent bookings: only while `pending` (409 `not_pending`), with at
+least 3 minutes of the window left (`link_closed`), at most 3 SMS by
+Booqy's counter (the first and 2 resends, `resend_limit`; the AI agent's
+own resend during its call is not counted, so an agent booking may get
+one more) and the guest's own mobile number (`not_textable`: also a
+filler like 070 000 00 00 or the restaurant's own number, the same rule as
+the booking). It claims the
+counter first with a conditional update (`guaranteeLink.sends`,
+`textedAt`, history `link_resent`), so a double click texts once and the
+other click gets 409 `changed_retry`. A failed resend answers 502
+`sms_failed`: the booking stays pending (the first SMS went out) and the
+send still counts. Resends count against the same request-guard limits.
+
+Once the card is in, the confirmation always goes by SMS as well
+(`notification` ignores `notifications.sms` for a `confirmed` notice on a
+booking with `guaranteeLink`, agent and staff alike; still Nordic numbers
+only), because the link SMS promised it. An unticked "Skicka bekräftelse
+till gästen" does not stop it: `confirm_items` always sets the notice.
+Staff cancelling a booking that still waits for the card send the guest
+nothing.
+
+The Checkout page's SetupIntent carries the booking's metadata:
+`setup_intent.succeeded` stores it as `setupIntentId` and turns the
+booking `reserved` (confirmation then). The page's `success_url` is the
+booking's manage page, whose `POST .../confirm` reads the completed
+Checkout Session and confirms it too; before expiring one, the expiry job
+asks Stripe the same way (when it has `STRIPE_SECRET_ARN`; Stripe down: it
+waits up to an hour). Unconfirmed ones expire as above, without a message.
 `PHONE_CARD_PAGE=site` (create-pending-reservation; default `stripe`)
 texts the booking's manage link on the restaurant's own site instead: the
 booking gets a Customer + SetupIntent exactly like an online one

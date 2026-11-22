@@ -99,6 +99,9 @@ def test_phone_booking_with_guarantee_link_is_pending_with_a_checkout_page(gc):
     assert params["setup_intent_data"]["metadata"] == meta and params["metadata"] == meta
     assert "600 kr" in params["custom_text"]["submit"]["message"]
     assert not [c for c in gc["stripe"].calls if c["path"] == "/v1/setup_intents"]
+    # Stored for staff (who texted it, resends); the caller (the agent) texted it.
+    assert item["guaranteeLink"] == {"url": CHECKOUT_URL, "page": "stripe", "by": "caller", "sends": 1}
+    assert set(body) - {"guaranteeLink"} == set(gc["m"]["create"].r.staff_view(item)) - {"guaranteeLink"}
 
 
 def test_phone_booking_in_english_gets_an_english_checkout_page(gc):
@@ -116,7 +119,7 @@ def test_staff_bookings_without_the_link_and_small_parties_are_reserved(gc):
 
 
 @pytest.mark.parametrize("extra, message", [
-    ({"guarantee": "card"}, "guarantee must be link"),
+    ({"guarantee": "card"}, "guarantee must be link or sms"),
     ({"source": "walk_in"}, "guarantee link is for phone bookings"),
     ({"phone": None}, "guarantee link needs the guest's phone number"),
 ])

@@ -214,9 +214,13 @@ def _plain(value):
 
 
 def _export_view(item):
-    """A stored row without keys, link hashes and expiry."""
-    return {k: _plain(v) for k, v in item.items()
+    """A stored row without keys, link hashes, expiry and a phone booking's
+    card link url (a bearer link; by, sends and textedAt stay)."""
+    view = {k: _plain(v) for k, v in item.items()
             if k not in ("PK", "SK", "ttl") and not k.endswith("Hash")}
+    if isinstance(view.get("guaranteeLink"), dict):
+        view["guaranteeLink"] = {k: v for k, v in view["guaranteeLink"].items() if k != "url"}
+    return view
 
 
 _GUEST_EVENT_FIELDS = ("action", "at", "ip", "method", "version", "pdfSha256")

@@ -420,9 +420,10 @@ def _first_name(full):
 
 
 def guarantee_link_sms(item, tenant_row, location, link, minutes):
-    """The phone guest's SMS with the card guarantee link (the AI phone
-    agent): restaurant, day and time, guests, the link, how long the table
-    is held and the fees of the booking's snapshot."""
+    """The phone guest's SMS with the card link, sent by the AI agent or by
+    Booqy for a staff booking (create-pending-reservation, also a resend with
+    the minutes left): restaurant, day and time, guests, the link, how long
+    the table is held and the fees of the booking's snapshot."""
     lang = _lang(item)
     snap = item.get("guarantee") if isinstance(item.get("guarantee"), dict) else {}
     fees = []

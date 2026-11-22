@@ -365,6 +365,51 @@ def test_phone_only_booking_without_sms_sends_nothing_and_succeeds(env):
     assert ses.calls == [] and sns.calls == []
 
 
+def _sms_off():
+    boto3.resource("dynamodb", region_name=REGION).Table(TENANT_TABLE).update_item(
+        Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
+        UpdateExpression="SET notifications = :n", ExpressionAttributeValues={":n": {"sms": False}})
+    shared_tenant.reset_caches()
+
+
+CARD_LINK = {"url": "https://restaurang.booqy.se/api/k/Ab3dE5fG7h", "page": "stripe", "by": "booqy", "sends": 1}
+
+
+@pytest.mark.parametrize("by", ["booqy", "caller"])
+def test_card_link_confirmation_is_texted_with_sms_off(env, by):
+    """The card link SMS told the guest the confirmation comes by SMS once
+    the card is saved (staff or AI agent booking): it does, whatever the
+    tenant's SMS setting. Other notices of that booking follow the setting."""
+    module, ses, sns = env
+    _sms_off()
+    item = booking(source="phone", customerEmail=None, guaranteeLink={**CARD_LINK, "by": by},
+                   stripePaymentMethodId="pm_phone")
+
+    assert run(module, record(item, old={**item, "status": "pending", "notice": None})) == {"batchItemFailures": []}
+
+    (sent,) = sns.calls
+    assert sent["PhoneNumber"] == "+46701234567" and "Roma" in sent["Message"]
+    assert CARD_LINK["url"] not in sent["Message"] and ses.calls == []
+    sns.calls.clear()
+    reminder = {**item, "notice": {"id": "r" * 32, "type": "reminder", "at": NOW.isoformat()}}
+    run(module, record(reminder, old=item))
+    assert sns.calls == []                                                # the setting again
+    plain = booking(source="phone", customerEmail=None)
+    run(module, record(plain, event_name="INSERT"))
+    assert sns.calls == []
+
+
+@pytest.mark.parametrize("phone, sent", [("+46701234567", True), ("+4741234567", True),
+                                         ("+447700900123", False), ("+15551234567", False)])
+def test_card_link_confirmation_keeps_the_nordic_rule(env, phone, sent):
+    module, ses, sns = env
+    _sms_off()
+    item = booking(customerPhone=phone, source="phone", guaranteeLink=CARD_LINK)
+    run(module, record(item, event_name="INSERT"))
+    assert bool(sns.calls) is sent
+    assert [c["Destination"]["ToAddresses"] for c in ses.calls] == [["anna@example.se"]]   # the email too
+
+
 def test_fee_receipt_goes_to_the_guest_and_a_failed_fee_to_the_restaurant(env):
     module, ses, sns = env
     paid = booking(status="no_show_charged", payment={"kind": "no_show", "amount": 60000, "attempt": 1},

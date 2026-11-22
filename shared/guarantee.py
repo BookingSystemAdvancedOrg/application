@@ -38,7 +38,7 @@ from decimal import Decimal
 
 from botocore.exceptions import ClientError
 
-from shared import dynamo, refunds
+from shared import dynamo, refunds, sms
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -46,14 +46,25 @@ CURRENCY = "sek"
 MAX_FEE_PER_PERSON = 5000
 MAX_CUTOFF_HOURS = 168
 PENDING_MINUTES = 20
-# A phone booking (the AI phone agent, source "phone"): the guest gets an SMS
-# link to a Stripe-hosted Checkout page (mode setup) and has this long to add
-# the card. Stripe needs a Checkout Session to live at least 30 minutes, so
-# the page closes CHECKOUT_MARGIN after the window the guest is told, and the
-# booking (its tables) is held CHECKOUT_MARGIN after the page closes: a card
-# added in the last second still finds its booking.
+# A phone booking (source "phone": the AI phone agent, or staff who take the
+# call, the same window): the guest gets an SMS link to a Stripe-hosted
+# Checkout page (mode setup) and has this long to add the card. Stripe needs
+# a Checkout Session to live at least 30 minutes, so the page closes
+# CHECKOUT_MARGIN after the window the guest is told, and the booking (its
+# tables) is held CHECKOUT_MARGIN after the page closes: a card added in the
+# last second still finds its booking.
 PHONE_PENDING_MINUTES = 30
 CHECKOUT_MARGIN = timedelta(minutes=1)
+# A staff phone booking asks for the card only when the hold ends at least
+# this long before the start (so it starts 47 minutes ahead or later): a
+# pending hold must never lapse while the guest sits at the table.
+PHONE_LINK_MIN_LEAD = timedelta(minutes=15)
+# The card link SMS of one booking on its counter (guaranteeLink.sends):
+# at most this many, the first one included (the AI agent's own resend
+# during its call is not counted); a resend only while this many minutes
+# of the window are left.
+MAX_LINK_SMS = 3
+RESEND_MIN_MINUTES = 3
 
 # payment.status
 PAY_PENDING = "pending"          # charge started / outcome unknown - retry is safe
@@ -330,6 +341,74 @@ def phone_pending_expires(now):
     """pendingExpiresAt of a phone booking: the Checkout page closes first
     (the same window for the restaurant's own card page)."""
     return now + timedelta(minutes=PHONE_PENDING_MINUTES) + 2 * CHECKOUT_MARGIN
+
+
+def phone_link_fits(now, starts_at):
+    """A staff phone booking may wait for the card: its hold ends at least
+    PHONE_LINK_MIN_LEAD before the start."""
+    return starts_at >= phone_pending_expires(now) + PHONE_LINK_MIN_LEAD
+
+
+def link_minutes_left(item, now):
+    """Whole minutes the guest still has to add the card (the window the
+    SMS names; 0 without a hold)."""
+    expires = item.get("pendingExpiresAt")
+    if not expires:
+        return 0
+    return max(0, int((r.parse_iso(expires) - 2 * CHECKOUT_MARGIN - now).total_seconds() // 60))
+
+
+def link_view(item, now):
+    """What staff see of a phone booking's card link (never the url, a
+    bearer link): {by: "booqy" | "caller", sends, textedAt?, canResend}.
+    None without one."""
+    link = item.get("guaranteeLink")
+    if not isinstance(link, dict):
+        return None
+    sends = int(link.get("sends") or 1)
+    view = {"by": link.get("by"), "sends": sends}
+    if link.get("textedAt"):
+        view["textedAt"] = link["textedAt"]
+    phone = item.get("customerPhone")
+    # The restaurant's own number is refused by the resend itself (409
+    # not_textable): a view has no location row to compare with.
+    view["canResend"] = bool(item.get("status") == r.PENDING and link.get("url") and sends < MAX_LINK_SMS
+                             and link_minutes_left(item, now) >= RESEND_MIN_MINUTES
+                             and sms.textable(phone) and not sms.filler(phone))
+    return view
+
+
+def close_card_page(item, *, timeout=None):
+    """Best effort, for a phone booking released before its card came: the
+    Stripe Checkout Session is expired (or the site page's SetupIntent
+    cancelled), so no card can be added to a booking that no longer holds
+    a table. Returns "closed", "none" (nothing to close) or the error class."""
+    if item.get("checkoutSessionId"):
+        path = f"/v1/checkout/sessions/{item['checkoutSessionId']}/expire"
+    elif item.get("setupIntentId"):
+        path = f"/v1/setup_intents/{item['setupIntentId']}/cancel"
+    else:
+        return "none"
+    try:
+        stripe.request("POST", path, account=item.get("stripeAccountId"), timeout=timeout)
+    except (stripe.StripeError, stripe.StripeUnavailable) as exc:
+        return type(exc).__name__
+    return "closed"
+
+
+def forget_customer(item, *, timeout=None):
+    """Best effort, after close_card_page: the Stripe Customer made for a
+    booking that never was (the guest's name, phone and email on the
+    restaurant's account) is deleted. Returns "deleted", "none" or the
+    error class; never logs personal data."""
+    if not item.get("stripeCustomerId") or not item.get("stripeAccountId"):
+        return "none"
+    try:
+        stripe.request("DELETE", f"/v1/customers/{item['stripeCustomerId']}", account=item["stripeAccountId"],
+                       timeout=timeout)
+    except (stripe.StripeError, stripe.StripeUnavailable) as exc:
+        return type(exc).__name__
+    return "deleted"
 
 
 def retrieve_setup(item):

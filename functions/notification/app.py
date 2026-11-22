@@ -29,7 +29,11 @@ PURPOSE:
       the booking has a Nordic phone number (+46, +45, +47, +358, +354;
       SMS_ALLOWED_PREFIXES) - other numbers get the email only, so the
       public booking form can't be used to send SMS to expensive foreign
-      numbers. Restaurant emails go to the location's email unless
+      numbers. One exception to the setting: the confirmation of a booking
+      made with a card link by SMS (the item carries guaranteeLink: a phone
+      booking by staff or the AI agent) is always texted, because that SMS
+      told the guest the confirmation comes by SMS; the Nordic rule still
+      applies. Restaurant emails go to the location's email unless
       tenant.notifications.staffEmails is false.
 
     A record is sent once per notice id: when OldImage carries the same
@@ -79,7 +83,12 @@ PURPOSE:
     "tenant" | null}} sends one message the feature already wrote, with the
     restaurant's sender name and From, Reply-To, the SMS prefixes, part
     counting and the dev outbox. A bad payload is logged (never `to` or the
-    text) and dropped.
+    text) and dropped. A caller that must know the outcome invokes with
+    RequestResponse and reads the return value {"status": "sent" |
+    "dropped", "reason"?}; a send that fails (SNS, SES) raises, which that
+    caller sees as a FunctionError (nothing was sent). That is how
+    create-pending-reservation texts a staff phone booking's card link
+    (kind reservations.guarantee-link, counted as a booking SMS).
 
     Order SMS don't depend on tenant.notifications.sms - telling the guest
     the food is ready is what ordering is - but still go to Nordic numbers
@@ -151,8 +160,8 @@ _RETRYABLE = {
     "RequestTimeoutException", "LimitExceededException",
 }
 _STAFF_NOTICES = {"confirmed", "cancelled_by_guest"}
-# Sweden, Denmark, Norway, Finland (incl. Åland), Iceland.
-SMS_ALLOWED_PREFIXES = ("+46", "+45", "+47", "+358", "+354")
+# Sweden, Denmark, Norway, Finland (incl. Åland), Iceland (shared/sms.py).
+SMS_ALLOWED_PREFIXES = sms.NORDIC_PREFIXES
 
 _clients = {}
 
@@ -298,8 +307,7 @@ def _send_email(to, subject, text, html_body, *, source, reply_to, tenant_id=Non
 
 
 def _sms_prefixes():
-    raw = os.environ.get("SMS_ALLOWED_PREFIXES") or ",".join(SMS_ALLOWED_PREFIXES)
-    return tuple(p.strip() for p in raw.split(",") if p.strip().startswith("+"))
+    return sms.allowed_prefixes()
 
 
 def sms_allowed(phone):
@@ -395,11 +403,15 @@ def _reservation(record):
                                      "error": str(exc)}))
 
     phone = None if staff_only else new.get("customerPhone")
-    if phone and settings["sms"] and not sms_allowed(phone):
+    # A booking made with a card link by SMS (guaranteeLink): the guest was
+    # told the confirmation comes by SMS once the card is saved, so it does,
+    # whatever the tenant's SMS setting. Still Nordic numbers only.
+    sms_on = settings["sms"] or (kind == "confirmed" and isinstance(new.get("guaranteeLink"), dict))
+    if phone and sms_on and not sms_allowed(phone):
         logger.info(json.dumps({"skipped": "guest_sms", "reason": "country",
                                 "reservationId": new.get("reservationId")}))
         phone = None
-    if phone and settings["sms"]:
+    if phone and sms_on:
         try:
             _send_sms(phone, messages.guest_sms(kind, new, tenant_row, location, link), tenant_row, location_id,
                       kind="reminder" if kind == "reminder" else "booking")

@@ -316,7 +316,7 @@ service.
 ---
 
 ### 6. `create-pending-reservation`
-**Trigger:** API Gateway - `POST /reservations` - Auth: `NONE`
+**Trigger:** API Gateway - `POST /reservations` - Auth: `NONE`; staff routes `POST /locations/{locationId}/reservations/manual` and `POST /locations/{locationId}/reservations/{reservationId}/guarantee-link` (send a phone booking's card link SMS again) - Auth: `JWT` (docs/RESERVATIONS.md "Phone bookings")
 **Purpose:** The main booking entry point for customers (no login required). Validates the requested slot against the location's rules and the published layout, checks the customer's phone number against Payment Delinquency (refuse booking if they have unpaid debt from a prior no-show/late-cancel), then atomically holds the slot in Slot Occupancy and writes a new Reservation item with `status = "pending"`. This function is also where the Stripe SetupIntent should be created (card-on-file, no charge yet) so the frontend can confirm it with Stripe.js. Infrastructure supplies the server-side `STRIPE_SECRET_KEY`; the publishable key should come from frontend environment configuration.
 **Environment variables:**
 | Name | Meaning |
@@ -331,9 +331,11 @@ service.
 | `BOT_CHECK_ENFORCED` | `true`: online holds and bookings must come through the restaurant site's AWS WAF (header `x-booqy-waf`), otherwise 400 `bot_check_failed`; anything else lets them pass and logs the ones that skipped the WAF (`shared/bot_check.py`) |
 | `SITE_WAF_SECRET` | The shared value the restaurant sites' CloudFront sends as `x-booqy-waf` after the web ACL (infrastructure `network/waf-sites`) |
 | `CLOUDFRONT_EDGE_SECRET` | Lets the function trust the viewer IP and host passed by the restaurant site's CloudFront (`shared/http.py` `edge_header`) |
-| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`); manage-auth uses the same table for its per-IP forgot/reset password limits |
+| `REQUEST_GUARD_TABLE_NAME` | Attempt counters per IP address / phone / e-mail for online bookings (`shared/request_guard.py`), and the card link SMS counters of staff phone bookings (`link-sms-loc` 60 per location a day, `link-sms-sub` 20 per staff user an hour); manage-auth uses the same table for its per-IP forgot/reset password limits |
+| `NOTIFICATION_FUNCTION_NAME` | Alias ARN of `notification:live`: a staff phone booking (`guarantee: sms`) texts its card link through it (RequestResponse, kind `reservations.guarantee-link`); unset: 503 `sms_unavailable` before anything is booked |
+| `PHONE_AGENT_TABLE_NAME` | Optional: the phone agent's location setting `phoneGuarantee` `skip` (phone bookings never need a card) for staff phone bookings; unset: the card the policy asks for is asked |
 
-**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `dynamodb:UpdateItem` on the request-guard table.
+**AWS resource access:** Read-only on Location and Published Layout Snapshot; full `dynamodb:*` on Slot Occupancy, Reservation, and Payment Delinquency tables; `dynamodb:UpdateItem` on the request-guard table; `lambda:InvokeFunction` on the `notification` `live` alias only (the card link SMS).
 
 **Downstream:** Once `stripe-webhook` receives confirmation the SetupIntent succeeded, it flips this reservation's status to `reserved` - that's what actually confirms the booking and triggers the confirmation notification (see `notification` below). This function itself never sets `status = "reserved"`.
 
@@ -1191,7 +1193,7 @@ code. Staff: their own location only, no amounts; `PROFILE.insights.staffAccess`
 | 3 | `get-menu` | API GW `GET /locations/{locationId}/menu`; `GET /locations/{locationId}/menu/{proxy+}` | NONE on bare route; JWT on greedy route |
 | 4 | `manage-menu` | API GW `POST`/`PUT`/`DELETE /locations/{locationId}/menu/{proxy+}` | JWT |
 | 5 | `get-availability` | API GW `GET /locations/{locationId}/availability` | NONE |
-| 6 | `create-pending-reservation` | API GW `POST /reservations` | NONE |
+| 6 | `create-pending-reservation` | API GW `POST /reservations`; `POST /locations/{locationId}/reservations/manual`; `POST /locations/{locationId}/reservations/{reservationId}/guarantee-link` | NONE on the guest route; JWT on manual and guarantee-link |
 | 7 | `get-reservation` | API GW `GET /reservations/{reservationId}` | JWT |
 | 8 | `cancel-reservation` | API GW `POST /reservations/{reservationId}/cancel` | NONE |
 | 9 | `mark-arrived` | API GW `POST /reservations/{reservationId}/arrive` | JWT |

@@ -240,6 +240,8 @@ GUARDED = [
     ("get-reservation", "GET /locations/{locationId}/reservations/{reservationId}",
      {**L, "reservationId": "r1"}, "bokningar"),
     ("create-pending-reservation", "POST /locations/{locationId}/reservations/manual", L, "bokningar"),
+    ("create-pending-reservation", "POST /locations/{locationId}/reservations/{reservationId}/guarantee-link",
+     {**L, "reservationId": "r1"}, "bokningar"),
     ("mark-arrived", "POST /locations/{locationId}/reservations/{reservationId}/status",
      {**L, "reservationId": "r1"}, "bokningar"),
     ("mark-arrived", "PATCH /locations/{locationId}/reservations/{reservationId}",

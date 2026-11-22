@@ -107,6 +107,17 @@ location and forwards the restaurant's number.
   shortened (ids kept), the stored history is capped at 120 KB, and a provider retry of the same turn
   (same message history within 30 s) gets the same reply without running tools again (`lastTurn`, removed
   when the call is processed). The Connect line ends and meters the call when the agent says goodbye.
+- **Card link** (owner 2026-11-18): a party the location's card guarantee covers is booked with
+  `guarantee: link` (pending, 30 minutes, a Stripe Checkout page) and the agent texts the url itself
+  (`phone-agent.guarantee-link`). Since 2026-11-22 staff who take a call book the same way with
+  `guarantee: sms` and Booqy texts the link (docs/RESERVATIONS.md "Phone bookings"); the agent's request,
+  its 201 and its SMS path are unchanged, and the agent stays exempt from the staff rules (an `agent:` sub
+  may book without a number; no mobile or 47-minute rule). What changes for agent bookings: they store
+  `guaranteeLink` {url, page, by: `caller`, sends: 1}, so staff see the link in the booking and may send it
+  again (`POST .../reservations/{r}/guarantee-link`, at most 2 staff resends; the agent's own resend comes on top), and once the card is in the
+  confirmation always goes by SMS too, also at tenants with `notifications.sms` off. `phoneGuarantee`
+  `skip` would apply to staff phone bookings as well, but only once create-pending-reservation has
+  `PHONE_AGENT_TABLE_NAME` and read access to this table (not configured: an IAM change, owner decision).
 - **Counter-offers** (decision 13): requested time; a nearby table (`adjacent_pair` within 1.0 m on the
   same floor, `larger`, `phone_only`, each switchable per location); the three closest same-day times;
   the next day once; then a callback. `counterOffer` on the call row and `PhoneCall.Ended`: the accepted

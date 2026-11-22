@@ -107,6 +107,9 @@ EXPECTED_OPERATIONS = {
     "/locations/{locationId}/reservations/{reservationId}/confirm": frozenset(
         {"post"}
     ),
+    "/locations/{locationId}/reservations/{reservationId}/guarantee-link": frozenset(
+        {"post"}
+    ),
     "/locations/{locationId}/reservations/{reservationId}/payment": frozenset(
         {"post"}
     ),
@@ -282,6 +285,7 @@ STAFF_OPERATIONS = frozenset(
         ("/insights", "get"),
         ("/locations/{locationId}/reservations", "get"),
         ("/locations/{locationId}/reservations/manual", "post"),
+        ("/locations/{locationId}/reservations/{reservationId}/guarantee-link", "post"),
         ("/locations/{locationId}/reservations/{reservationId}", "get"),
         ("/locations/{locationId}/reservations/{reservationId}", "patch"),
         ("/locations/{locationId}/reservations/{reservationId}/status", "post"),

@@ -100,8 +100,9 @@ def _scalar(value):
     return str(value)
 
 
-def request(method, path, params=None, *, account=None, idempotency_key=None):
-    """One Stripe call. Returns the decoded JSON object."""
+def request(method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
+    """One Stripe call. Returns the decoded JSON object. `timeout`: seconds
+    (default 20) for a caller short of time."""
     headers = {
         "Authorization": f"Bearer {_api_key()}",
         "Stripe-Version": os.environ.get("STRIPE_API_VERSION", ""),
@@ -121,7 +122,7 @@ def request(method, path, params=None, *, account=None, idempotency_key=None):
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as response:
+        with urllib.request.urlopen(req, timeout=timeout or _TIMEOUT) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         try:

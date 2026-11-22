@@ -9,6 +9,9 @@ TRIGGER:
     POST /locations/{locationId}/reservations/{reservationId}/confirm
                                     -- Auth: NONE, header X-Manage-Token
                                        (card guarantee completed)
+    POST /locations/{locationId}/reservations/{reservationId}/guarantee-link
+                                    -- Auth: JWT (staff: send the card link
+                                       SMS again)
     POST   /locations/{locationId}/holds             -- Auth: NONE (guests)
     DELETE /locations/{locationId}/holds/{holdId}    -- Auth: NONE, header
                                                          X-Manage-Token
@@ -48,7 +51,10 @@ PURPOSE:
     Online bookings return the manage token (the guest's link to view or
     cancel the booking - an HMAC, never stored; shared/manage_link.py).
     Staff bookings may omit email/phone and may book the slot that is
-    already running (walk-ins).
+    already running (walk-ins), except that a phone booking (source
+    "phone") by a person needs the guest's phone number (400 "phone is
+    required for a phone booking"); the AI phone agent (an agent: sub) may
+    book a hidden caller ID without one.
 
     Booking length (shared/booking_rules.py bookingTimeRules): the rule of
     the local start time sets the end; the rule is snapshotted on the hold
@@ -84,21 +90,60 @@ PURPOSE:
     SetupIntent with Stripe and turns the booking "reserved" - that is
     when the confirmation goes out. Unconfirmed bookings expire
     (reservation-reminders). Staff bookings never ask for a card, except
-    a phone booking that asks for the guarantee link (below).
+    a phone booking with a guarantee link (below).
 
-    Phone guarantee link (the AI phone agent, POST .../reservations/manual
-    with source "phone", a phone number and "guarantee": "link"): when the
-    location's policy asks a card for the party, the booking is created
-    "pending" like an online one (same tables claimed, snapshot, marker),
-    held for guarantee.PHONE_PENDING_MINUTES (30) plus a small margin, with
-    a Stripe Customer + Checkout Session (mode setup) on the restaurant's
-    account instead of a SetupIntent. The answer carries
-    guaranteeLink {url, expiresAt, minutes}; the caller sends the SMS. The
-    Checkout page's SetupIntent carries the booking's metadata: the
-    setup_intent.succeeded webhook turns it reserved (confirmation then);
-    so does the guest's return to the booking's manage page (Checkout's
-    success_url), whose POST .../confirm reads the completed Checkout
-    Session. Without a card requirement the booking is reserved as usual.
+    Phone guarantee link (POST .../reservations/manual with source "phone",
+    a phone number and "guarantee"): when the location's policy asks a card
+    for the party, the booking is created "pending" like an online one (same
+    tables claimed, snapshot, marker), held for
+    guarantee.PHONE_PENDING_MINUTES (30) plus a small margin, with a Stripe
+    Customer + Checkout Session (mode setup) on the restaurant's account
+    instead of a SetupIntent. Who texts the link:
+      "link"    the caller does (the AI phone agent): the answer carries
+                guaranteeLink {url, expiresAt, minutes, page}.
+      "sms"     Booqy does (staff on the call), synchronously after the
+                booking is written: one invoke of notification:live
+                (RequestResponse, kind reservations.guarantee-link, botocore
+                retries off) to the booking's own number. A failed SMS (an
+                error, a timeout, a FunctionError or a dropped notice)
+                releases the booking at once (expired, history link_failed,
+                the Checkout page expired) and answers 502 "sms_failed"; a
+                card added in that instant keeps it reserved (201). The
+                answer carries guaranteeLink {by, sends, textedAt,
+                canResend, minutes, expiresAt, page, sms: "sent"}, never
+                the url. Rules, checked before Stripe is asked: a Nordic
+                mobile number (shared/sms.py textable, else 400 "guarantee
+                sms needs a mobile number"), not the restaurant's own number
+                or a filler like 070 000 00 00 (400 "guarantee sms needs the
+                guest's own mobile number"), NOTIFICATION_FUNCTION_NAME set
+                (else 503 "sms_unavailable"), at most 60 link SMS per
+                location a day and 20 per staff user an hour (429
+                "sms_limit"; given back when nothing was sent). No card is
+                asked when the booking starts less than 47 minutes ahead (the
+                hold could lapse after the start): reserved at once with
+                guaranteeSkipped "too_soon" (history cardSkipped). The
+                location's phone agent setting phoneGuarantee "skip" is
+                honoured only with PHONE_AGENT_TABLE_NAME and read access to
+                that table (not configured in Terraform today: the card is
+                asked).
+      "waived"  staff book without the card the policy asks for ("Boka utan
+                kort"): reserved at once, history guarantee_waived.
+    Both texting modes store guaranteeLink {url, page, by: "booqy" |
+    "caller", sends, textedAt?} on the booking (the url is a bearer link:
+    never in a view, history or log). POST .../guarantee-link sends the same
+    link again to the booking's own number: pending only (409
+    "not_pending"), at least 3 minutes of the window left ("link_closed"),
+    3 SMS on the booking's counter ("resend_limit"; the AI agent's own
+    resend during its call is not counted), the guest's own mobile number
+    ("not_textable", the same rule as the booking); the
+    counter is claimed first (a double click: 409 "changed_retry"); a
+    failed SMS answers 502 and keeps the booking pending.
+    The Checkout page's SetupIntent carries the booking's metadata: the
+    setup_intent.succeeded webhook turns it reserved (confirmation then,
+    always by SMS as well: notification); so does the guest's return to the
+    booking's manage page (Checkout's success_url), whose POST .../confirm
+    reads the completed Checkout Session. Without a card requirement the
+    booking is reserved as usual.
     PHONE_CARD_PAGE "site" instead texts the booking's manage link on the
     restaurant's own site: the booking gets a SetupIntent exactly like an
     online one (guaranteeLink.page "site"), the manage page's GET hands it
@@ -127,26 +172,45 @@ ENV_VARS:
         link's short form, shared/short_link.py; unset: the long URL)
     BOT_CHECK_ENFORCED, SITE_WAF_SECRET (bot check, shared/bot_check.py)
     REQUEST_GUARD_TABLE_NAME (attempt limits, shared/request_guard.py)
+    NOTIFICATION_FUNCTION_NAME (the notification:live alias ARN: staff phone
+        bookings text the card link through it; unset: 503 sms_unavailable)
+    PHONE_AGENT_TABLE_NAME (optional: the phone agent's phoneGuarantee
+        "skip"; unset: a staff phone booking asks the card the policy asks)
+
+AWS RESOURCE ACCESS:
+    Read on the location and published layout tables; item access on slot
+    occupancy, reservation and payment delinquency; GetSecretValue on the
+    Stripe key and the link signing key; UpdateItem on the request-guard
+    table; lambda:InvokeFunction on notification:live (the card link SMS,
+    RequestResponse).
 
 Full details: docs/RESERVATIONS.md
 """
 
+import json
+import logging
 import os
 from datetime import timedelta
 
-from botocore.exceptions import BotoCoreError, ClientError
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError, ConnectionClosedError, ReadTimeoutError
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import bot_check, request_guard, short_link, site, tenant
+from shared import bot_check, messages, request_guard, short_link, site, sms, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 _ONLINE = "/locations/{locationId}/reservations"
 _MANUAL = "/locations/{locationId}/reservations/manual"
 _CONFIRM = "/locations/{locationId}/reservations/{reservationId}/confirm"
 _HOLDS = "/locations/{locationId}/holds"
 _HOLD = "/locations/{locationId}/holds/{holdId}"
+_RESEND = "/locations/{locationId}/reservations/{reservationId}/guarantee-link"
 _HOLD_FIELDS = {"date", "startTime", "tableIds", "partySize", "turnstileToken"}
 _ONLINE_FIELDS = {
     "date", "startTime", "tableIds", "partySize", "name", "email", "phone",
@@ -164,6 +228,33 @@ IP_LIMIT = (10, 10 * 60)
 CONTACT_LIMIT = (5, 24 * 60 * 60)
 # Table holds per client - each blocks tables for up to 15 minutes.
 HOLD_IP_LIMIT = (8, 15 * 60)
+# A staff phone booking's "guarantee": "link" (the AI agent texts the card
+# link itself), "sms" (Booqy texts it), "waived" (staff book without the
+# card the policy asks for, logged in history).
+GUARANTEE_MODES = (None, "link", "sms", "waived")
+# Card link SMS Booqy sends (first texts and resends): per location a day and
+# per staff user an hour, counted before Stripe is asked and given back when
+# nothing was sent.
+LINK_SMS_LOCATION_LIMIT = (60, 24 * 60 * 60)
+LINK_SMS_STAFF_LIMIT = (20, 60 * 60)
+# The SMS invoke of notification:live (RequestResponse, botocore retries
+# off): connect 2 s, answer within 8 s (less when the Lambda is short of
+# time). Below connect + 1 s + the release's 3 s left, nothing is sent.
+LINK_SMS_CONNECT_SECONDS = 2
+LINK_SMS_READ_SECONDS = 8
+LINK_SMS_RELEASE_SECONDS = 3
+# Stripe's answer when the card page of a released booking is closed.
+CARD_PAGE_CLOSE_SECONDS = 5
+
+
+class SmsUnavailable(Exception):
+    """The card link SMS cannot be sent from this function
+    (NOTIFICATION_FUNCTION_NAME unset): 503 sms_unavailable, nothing booked."""
+
+
+class LinkSmsFailed(Exception):
+    """The card link SMS did not go out: a new booking was released, a
+    resend left the booking as it was. 502 sms_failed."""
 
 
 def _guard_online(event, data, guest, now):
@@ -187,7 +278,7 @@ def _max_online_party(location):
         return None
 
 
-def _create(event, *, staff):
+def _create(event, *, staff, lambda_context=None):
     location_id = http.path_id(event, "locationId")
     if staff:
         ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
@@ -211,13 +302,17 @@ def _create(event, *, staff):
         if source not in r.SOURCES - {"online"}:
             raise ValueError("source must be phone, walk_in or staff")
         notify = r.notify_flag({"notifyGuest": data.get("notifyGuest", source != "walk_in")})
-        link = data.get("guarantee")
-        if link not in (None, "link"):
-            raise ValueError("guarantee must be link")
-        if link and source != "phone":
-            raise ValueError("guarantee link is for phone bookings")
-        if link and not guest.get("customerPhone"):
-            raise ValueError("guarantee link needs the guest's phone number")
+        mode = data.get("guarantee")
+        if mode not in GUARANTEE_MODES:
+            raise ValueError("guarantee must be link or sms")
+        if mode and source != "phone":
+            raise ValueError(f"guarantee {mode} is for phone bookings")
+        if mode in ("link", "sms") and not guest.get("customerPhone"):
+            raise ValueError(f"guarantee {mode} needs the guest's phone number")
+        if source == "phone" and not guest.get("customerPhone") and not tenant.is_system_sub(ctx.sub):
+            # Staff on the call always get the number (the card link and the
+            # confirmation go to it); only the AI agent books a hidden caller ID.
+            raise ValueError("phone is required for a phone booking")
     else:
         notify = True
         source = "online"
@@ -236,7 +331,8 @@ def _create(event, *, staff):
         "party_size": party_size, "guest": guest, "source": source, "notify": notify,
     }
     if staff:
-        return _book(ctx, location_id, now, staff=True, link=bool(link), **booking)
+        return _book(ctx, location_id, now, staff=True, guarantee_mode=mode, lambda_context=lambda_context,
+                     **booking)
     if data.get("holdId") is not None:
         # The tables are already the guest's (held); the bot check was done
         # when they were held - only the per-guest limits apply here. As in
@@ -362,8 +458,122 @@ def _site_card_page(ctx, item):
         return None
 
 
+def _phone_card_skipped(tenant_id, location_id):
+    """The location's phone agent setting phoneGuarantee "skip": phone
+    bookings never need a card (the agent follows it as well). Read from the
+    phone agent table when this function has it (PHONE_AGENT_TABLE_NAME);
+    unset or unreadable: the card is asked."""
+    if not os.environ.get("PHONE_AGENT_TABLE_NAME"):
+        return False
+    from shared.features import phone_agent as pa  # local: only staff phone bookings need it
+    try:
+        return pa.phone_guarantee(pa.get_loc(tenant_id, location_id)) == "skip"
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning(json.dumps({"phoneGuarantee": "unreadable", "reason": type(exc).__name__}))
+        return False
+
+
+def _card_decision(ctx, location_id, now, starts_at, *, mode, party_size):
+    """(card, skipped) of a staff booking: card = it waits pending for the
+    card the guest adds from a phone link; skipped = why a card the policy
+    asks for is not asked ("waived" by staff, "too_soon": the hold could
+    lapse after the start, "phone_skip": the location's phoneGuarantee)."""
+    if not mode or not guarantee.required(ctx.location, ctx.tenant, party_size):
+        return False, None
+    if mode == "waived":
+        return False, "waived"
+    if mode == "sms":
+        if _phone_card_skipped(ctx.tenant_id, location_id):
+            return False, "phone_skip"
+        if not guarantee.phone_link_fits(now, starts_at):
+            return False, "too_soon"
+    return True, None
+
+
+def _same_number(phone, other):
+    try:
+        return isinstance(other, str) and r.normalize_phone(other) == phone
+    except ValueError:
+        return False
+
+
+def _own_mobile(ctx, phone):
+    """A number the card link may go to: a Nordic mobile (sms.textable),
+    not a filler like 070 000 00 00 and not the restaurant's own number."""
+    return (sms.textable(phone) and not sms.filler(phone)
+            and not _same_number(phone, (ctx.location or {}).get("phoneNumber")))
+
+
+def _link_sms_limits(ctx, location_id):
+    return [("link-sms-loc", location_id, *LINK_SMS_LOCATION_LIMIT),
+            ("link-sms-sub", ctx.sub, *LINK_SMS_STAFF_LIMIT)]
+
+
+def _claim_link_sms(ctx, location_id, item, now):
+    """Before Stripe is asked or anything written: the number takes the card
+    link SMS and the counters allow one more. Returns the counters (given
+    back when nothing is sent)."""
+    phone = item.get("customerPhone")
+    if not sms.textable(phone):
+        raise ValueError("guarantee sms needs a mobile number")
+    if sms.filler(phone) or _same_number(phone, (ctx.location or {}).get("phoneNumber")):
+        raise ValueError("guarantee sms needs the guest's own mobile number")
+    if not os.environ.get("NOTIFICATION_FUNCTION_NAME"):
+        raise SmsUnavailable()
+    return request_guard.check(_link_sms_limits(ctx, location_id), now)
+
+
+def _phone_card(ctx, item, now, ends_at, *, by):
+    """A phone booking with the card guarantee: pending until the guest adds
+    the card on the page the SMS links to. Updates the item (status, Stripe
+    ids, guaranteeLink) and returns (the link for the answer, the short link
+    row's Put or None)."""
+    account = guarantee.stripe_account(ctx.tenant, ctx.location)
+    expires = guarantee.phone_pending_expires(now)
+    item.update({
+        "status": r.PENDING,
+        "pendingExpiresAt": r.iso(expires),
+        "guarantee": guarantee.snapshot(ctx.location, item["partySize"]),
+        "stripeAccountId": account,
+        "history": [r.history_entry("created", item["createdBy"], now, status=r.PENDING, source=item["source"])],
+    })
+    page = _site_card_page(ctx, item) if phone_card_page() == "site" else None
+    if page:
+        # The restaurant's own card page: the booking's manage page shows
+        # the card form, exactly as after an online booking (SetupIntent).
+        customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
+        item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
+        url, done_url = page, page
+    else:
+        success_url, cancel_url = _return_urls(ctx, item)
+        customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
+                                                        success_url=success_url, lang=item.get("language"),
+                                                        now=now)
+        item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
+        url = session["url"]
+        done_url = success_url if success_url != FALLBACK_RETURN_URL else None
+    # The SMS carries a short plain link (shared/short_link.py), never the
+    # long URL: phones cut a link at # or %, which broke the Stripe page.
+    short_put = None
+    link_base = _short_link_base(ctx)
+    if link_base:
+        code = short_link.new_code()
+        short_put = short_link.put_op(code, table=r.reservation_table(), target=url, item=item,
+                                      expires=expires, serialize=r.serialize, done_url=done_url,
+                                      keep_until=ends_at)
+        url = short_link.url(code, link_base)
+    kind = "site" if page else "stripe"
+    # Stored for resends and for staff to see who texted it (shared/guarantee.py
+    # link_view). The url is a bearer link: never in a view, history or log.
+    item["guaranteeLink"] = {"url": url, "page": kind, "by": by, "sends": 1}
+    if by == "booqy":
+        item["guaranteeLink"]["textedAt"] = r.iso(now)
+    return {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
+            "page": kind}, short_put
+
+
 def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
-          party_size, guest, source, notify, link=False):
+          party_size, guest, source, notify, guarantee_mode=None, lambda_context=None):
     versions, context, slot, seats = _checked_slot(
         ctx, location_id, now, staff=staff, source=source, date_str=date_str,
         start_time=start_time, table_ids=table_ids, party_size=party_size)
@@ -399,90 +609,88 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
-    setup = checkout = short_put = None
-    if staff and link and guarantee.required(ctx.location, ctx.tenant, party_size):
-        # A phone booking with the card guarantee: pending until the guest
-        # adds the card on the Stripe page the SMS links to.
-        account = guarantee.stripe_account(ctx.tenant, ctx.location)
-        expires = guarantee.phone_pending_expires(now)
-        item.update({
-            "status": r.PENDING,
-            "pendingExpiresAt": r.iso(expires),
-            "guarantee": guarantee.snapshot(ctx.location, party_size),
-            "stripeAccountId": account,
-            "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
-        })
-        page = _site_card_page(ctx, item) if phone_card_page() == "site" else None
-        if page:
-            # The restaurant's own card page: the booking's manage page shows
-            # the card form, exactly as after an online booking (SetupIntent).
-            customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
+    card, skipped = (_card_decision(ctx, location_id, now, starts_at, mode=guarantee_mode, party_size=party_size)
+                     if staff else (False, None))
+    if skipped == "too_soon":
+        item["history"] = [r.history_entry("created", actor, now, status=r.RESERVED, source=source,
+                                           cardSkipped="too_soon")]
+    elif skipped == "waived":
+        item["history"].append(r.history_entry("guarantee_waived", actor, now))
+    texts = card and guarantee_mode == "sms"
+    counted = _claim_link_sms(ctx, location_id, item, now) if texts else []
+    try:
+        setup = checkout = short_put = None
+        if card:
+            checkout, short_put = _phone_card(ctx, item, now, ends_at, by="booqy" if texts else "caller")
+        elif not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
+            # Card guarantee: pending until the guest confirms the card; the
+            # confirmation (notice) is sent then, not now.
+            account = guarantee.stripe_account(ctx.tenant, ctx.location)
+            expires = now + timedelta(minutes=guarantee.PENDING_MINUTES)
+            item.update({
+                "status": r.PENDING,
+                "pendingExpiresAt": r.iso(expires),
+                "guarantee": guarantee.snapshot(ctx.location, party_size),
+                "stripeAccountId": account,
+                "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
+            })
+            customer_id, setup_intent_id, client_secret = guarantee.start_setup(item, account)
             item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
-            url, done_url = page, page
-        else:
-            success_url, cancel_url = _return_urls(ctx, item)
-            customer_id, session = guarantee.start_checkout(item, account, return_url=cancel_url,
-                                                            success_url=success_url, lang=item.get("language"),
-                                                            now=now)
-            item.update({"stripeCustomerId": customer_id, "checkoutSessionId": session["id"]})
-            url = session["url"]
-            done_url = success_url if success_url != FALLBACK_RETURN_URL else None
-        # The SMS carries a short plain link (shared/short_link.py), never the
-        # long URL: phones cut a link at # or %, which broke the Stripe page.
-        link_base = _short_link_base(ctx)
-        if link_base:
-            code = short_link.new_code()
-            short_put = short_link.put_op(code, table=r.reservation_table(), target=url, item=item,
-                                          expires=expires, serialize=r.serialize, done_url=done_url,
-                                          keep_until=ends_at)
-            url = short_link.url(code, link_base)
-        checkout = {"url": url, "minutes": guarantee.PHONE_PENDING_MINUTES, "expiresAt": r.iso(expires),
-                    "page": "site" if page else "stripe"}
-    elif not staff and guarantee.required(ctx.location, ctx.tenant, party_size):
-        # Card guarantee: pending until the guest confirms the card; the
-        # confirmation (notice) is sent then, not now.
-        account = guarantee.stripe_account(ctx.tenant, ctx.location)
-        expires = now + timedelta(minutes=guarantee.PENDING_MINUTES)
-        item.update({
-            "status": r.PENDING,
-            "pendingExpiresAt": r.iso(expires),
-            "guarantee": guarantee.snapshot(ctx.location, party_size),
-            "stripeAccountId": account,
-            "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
-        })
-        customer_id, setup_intent_id, client_secret = guarantee.start_setup(item, account)
-        item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
-        setup = {"clientSecret": client_secret, "stripeAccount": account, "expiresAt": r.iso(expires)}
-    elif notify and r.can_be_notified(item):
-        item["notice"] = r.notice(r.NOTICE_CONFIRMED, now)
-    # Built before the write: a missing signing key fails the request
-    # instead of leaving a booking whose link can't be sent.
-    manage_token = None if staff else manage_link.token_for(item)
-    pointer = {
-        **r.pointer_key(location_id, reservation_id),
-        "reservationId": reservation_id,
-        "date": date_str,
-        "tenantId": ctx.tenant_id,
-        "ttl": item["ttl"],
-    }
-    r.transact(
-        r.lock_updates(location_id, date_str, versions)
-        + r.hold_items(location_id, date_str, slot["startTime"], slot["endTime"],
-                       table_ids, reservation_id, ends_at, now=now)
-        + [
-            {"Put": {"TableName": r.reservation_table(), "Item": r.serialize(item),
-                     "ConditionExpression": "attribute_not_exists(PK)"}},
-            {"Put": {"TableName": r.reservation_table(), "Item": r.serialize(pointer),
-                     "ConditionExpression": "attribute_not_exists(PK)"}},
-        ]
-        + ([guarantee.marker_put(item)] if setup or checkout else [])
-        + ([short_put] if short_put else [])
-    )
+            setup = {"clientSecret": client_secret, "stripeAccount": account, "expiresAt": r.iso(expires)}
+        elif notify and r.can_be_notified(item):
+            item["notice"] = r.notice(r.NOTICE_CONFIRMED, now)
+        # Built before the write: a missing signing key fails the request
+        # instead of leaving a booking whose link can't be sent.
+        manage_token = None if staff else manage_link.token_for(item)
+        pointer = {
+            **r.pointer_key(location_id, reservation_id),
+            "reservationId": reservation_id,
+            "date": date_str,
+            "tenantId": ctx.tenant_id,
+            "ttl": item["ttl"],
+        }
+        r.transact(
+            r.lock_updates(location_id, date_str, versions)
+            + r.hold_items(location_id, date_str, slot["startTime"], slot["endTime"],
+                           table_ids, reservation_id, ends_at, now=now)
+            + [
+                {"Put": {"TableName": r.reservation_table(), "Item": r.serialize(item),
+                         "ConditionExpression": "attribute_not_exists(PK)"}},
+                {"Put": {"TableName": r.reservation_table(), "Item": r.serialize(pointer),
+                         "ConditionExpression": "attribute_not_exists(PK)"}},
+            ]
+            + ([guarantee.marker_put(item)] if setup or checkout else [])
+            + ([short_put] if short_put else [])
+        )
+    except Exception:
+        # Nothing was booked or texted: the SMS counters are given back.
+        request_guard.refund(counted)
+        raise
+
+    if texts:
+        # Booqy texts the link now, while the staff are still on the call: a
+        # failed SMS releases the booking at once (502) instead of a hold
+        # nobody can complete.
+        text = messages.guarantee_link_sms(item, ctx.tenant, ctx.location, item["guaranteeLink"]["url"],
+                                           guarantee.PHONE_PENDING_MINUTES)
+        result, maybe_sent = _send_link(ctx, item, text, lambda_context)
+        if result != "sent":
+            if not maybe_sent:
+                request_guard.refund(counted)
+            booked = _release_unsent(item, now, actor, lambda_context)
+            if booked is None:
+                raise LinkSmsFailed()
+            return http.respond(201, r.staff_view(booked))   # the card came in that same instant
 
     if staff:
         body = r.staff_view(item)
-        if checkout:
-            body["guaranteeLink"] = checkout
+        if texts:
+            body["guaranteeLink"] = {**guarantee.link_view(item, now), "minutes": checkout["minutes"],
+                                     "expiresAt": checkout["expiresAt"], "page": checkout["page"], "sms": "sent"}
+        elif checkout:
+            body["guaranteeLink"] = checkout     # the caller (AI agent) texts it: the url, as before
+        if skipped == "too_soon":
+            body["guaranteeSkipped"] = "too_soon"
         return http.respond(201, body)
     body = r.guest_view(item, ctx.location, now=now)
     if manage_token:
@@ -490,6 +698,187 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
     if setup:
         body["setup"] = setup
     return http.respond(201, body)
+
+
+# --- the card link SMS (notification:live, RequestResponse) -----------------------------------
+
+_lambda_clients = {}
+# The invoke reached notification but no answer came back (a read timeout or
+# a connection closed after the request went out): the SMS may have gone out.
+_MAYBE_SENT = (ReadTimeoutError, ConnectionClosedError)
+
+
+def _lambda_client(read_timeout=LINK_SMS_READ_SECONDS):
+    """One cached client per read timeout; botocore never retries (a retry
+    could text the guest twice)."""
+    client = _lambda_clients.get(read_timeout)
+    if client is None:
+        client = boto3.client("lambda", config=Config(
+            connect_timeout=LINK_SMS_CONNECT_SECONDS, read_timeout=read_timeout,
+            retries={"total_max_attempts": 1}))
+        _lambda_clients[read_timeout] = client
+    return client
+
+
+def _text_link(ctx, item, text, read_timeout=LINK_SMS_READ_SECONDS):
+    """Texts the card link to the booking's own phone through notification
+    (the feature notice, kind reservations.guarantee-link) and waits for the
+    answer. Returns (result, reason, maybe_sent): ("sent", None, False) or
+    ("failed", reason, maybe_sent). Any error, a FunctionError or a dropped
+    notice is a failure; maybe_sent is True when the request reached
+    notification but its answer was lost (the guest may have the SMS)."""
+    notice = {"version": 1, "kind": "reservations.guarantee-link", "tenantId": ctx.tenant_id,
+              "locationId": item["locationId"], "channel": "sms", "to": item["customerPhone"], "text": text,
+              "replyTo": None}
+    try:
+        answer = _lambda_client(read_timeout).invoke(
+            FunctionName=os.environ["NOTIFICATION_FUNCTION_NAME"], InvocationType="RequestResponse",
+            Payload=json.dumps({"notice": notice}).encode("utf-8"))
+        if answer.get("FunctionError"):
+            return "failed", "function_error", False
+        out = json.loads(answer["Payload"].read() or b"{}")
+    except ClientError as exc:
+        return "failed", exc.response.get("Error", {}).get("Code") or "ClientError", False
+    except (BotoCoreError, ValueError, KeyError) as exc:
+        return "failed", type(exc).__name__, isinstance(exc, _MAYBE_SENT)
+    if not isinstance(out, dict):
+        return "failed", "dropped", False
+    if out.get("status") == "sent":
+        return "sent", None, False
+    return "failed", str(out.get("reason") or "dropped"), False
+
+
+def _remaining_seconds(lambda_context):
+    remaining = getattr(lambda_context, "get_remaining_time_in_millis", None)
+    return remaining() / 1000 if callable(remaining) else None
+
+
+def _send_link(ctx, item, text, lambda_context):
+    """_text_link within the Lambda's time: with too little left to wait for
+    the answer and still release the booking, nothing is sent. Logged
+    without the phone, the text or the link. Returns (result, maybe_sent)."""
+    seconds = _remaining_seconds(lambda_context)
+    if seconds is not None and seconds < LINK_SMS_CONNECT_SECONDS + 1 + LINK_SMS_RELEASE_SECONDS:
+        result, reason, maybe_sent = "failed", "no_time", False
+    else:
+        read_timeout = LINK_SMS_READ_SECONDS if seconds is None else \
+            max(1, min(LINK_SMS_READ_SECONDS, int(seconds - 4)))
+        result, reason, maybe_sent = _text_link(ctx, item, text, read_timeout)
+    (logger.info if result == "sent" else logger.warning)(json.dumps({
+        "guaranteeLinkSms": result, "reservationId": item["reservationId"], "reason": reason,
+        "maybeSent": maybe_sent}))
+    return result, maybe_sent
+
+
+def _release_unsent(item, now, actor, lambda_context):
+    """The card link SMS of a new booking did not go out: release it
+    (expired, tables free, marker gone, history link_failed, no notice),
+    then close its card page and delete its Stripe Customer (the guest's
+    name and number, for a booking that never was). Returns the booking
+    when the guest added the card in that same instant (reserved), else
+    None. When it cannot be released (a DynamoDB error, or it kept changing
+    while still pending) it is logged as an error and left to the expiry
+    sweep with its card page open: a booking that still holds tables keeps
+    a working link (the resend), never a dead one."""
+    current, released, reason = item, False, None
+    for _ in range(2):
+        try:
+            r.transact(guarantee.expire_items(current, now, action="link_failed", actor=actor))
+            released = True
+            break
+        except r.Conflict:
+            reason = "conflict"
+            try:
+                current = r.load(item["locationId"], item["reservationId"])
+            except r.NotFound:
+                reason = "not_found"
+                break
+            except (BotoCoreError, ClientError) as exc:
+                reason = type(exc).__name__
+                break
+            if current.get("status") == r.RESERVED:
+                return current
+            if current.get("status") != r.PENDING:
+                released = True     # cancelled or expired meanwhile: nothing holds its tables
+                break
+        except (BotoCoreError, ClientError) as exc:
+            reason = type(exc).__name__
+            break
+    if not released:
+        logger.error(json.dumps({"guaranteeLinkRelease": "failed", "reservationId": item["reservationId"],
+                                 "reason": reason}))
+        return None
+    closed = _within_time(lambda_context, lambda timeout: guarantee.close_card_page(item, timeout=timeout))
+    forgotten = _within_time(lambda_context, lambda timeout: guarantee.forget_customer(item, timeout=timeout))
+    logger.info(json.dumps({"guaranteeLinkPage": closed, "guaranteeLinkCustomer": forgotten,
+                            "reservationId": item["reservationId"]}))
+    return None
+
+
+def _within_time(lambda_context, call):
+    """A best effort Stripe call bounded by CARD_PAGE_CLOSE_SECONDS and the
+    Lambda's time left; "no_time" when under 2 seconds are left."""
+    seconds = _remaining_seconds(lambda_context)
+    if seconds is not None and seconds < 2:
+        return "no_time"
+    return call(CARD_PAGE_CLOSE_SECONDS if seconds is None else max(1, min(CARD_PAGE_CLOSE_SECONDS, seconds - 1)))
+
+
+def _resend(event, lambda_context=None):
+    """Staff send the same card link again to the booking's own phone (the
+    guest says nothing arrived): only while it is pending, at most
+    guarantee.MAX_LINK_SMS texts on the booking's counter and while RESEND_MIN_MINUTES of
+    the window are left. The counter is claimed before the SMS goes, so a
+    double click texts once (the other gets 409 changed_retry); a failed SMS
+    keeps the booking and the counter."""
+    location_id = http.path_id(event, "locationId")
+    ctx = tenant.for_jwt(event, location_id=location_id, feature="reservations", area=("bokningar", "layout"))
+    http.body(event, allowed=set(), required=False)
+    item = r.load(location_id, http.path_id(event, "reservationId"))
+    link = item.get("guaranteeLink") if isinstance(item.get("guaranteeLink"), dict) else {}
+    if item.get("status") != r.PENDING or not link.get("url"):
+        raise r.InvalidState("not_pending")
+    now = r.now_utc()
+    left = guarantee.link_minutes_left(item, now)
+    if left < guarantee.RESEND_MIN_MINUTES:
+        raise r.InvalidState("link_closed")
+    sends = int(link.get("sends") or 1)
+    if sends >= guarantee.MAX_LINK_SMS:
+        raise r.InvalidState("resend_limit")
+    if not _own_mobile(ctx, item.get("customerPhone")):
+        raise r.InvalidState("not_textable")   # e.g. the phone was edited to the restaurant's own
+    if not os.environ.get("NOTIFICATION_FUNCTION_NAME"):
+        raise SmsUnavailable()
+    counted = request_guard.check(_link_sms_limits(ctx, location_id), now)
+    entry = r.history_entry("link_resent", ctx.sub, now, sends=sends + 1)
+    try:
+        r.transact([{"Update": {
+            "TableName": r.reservation_table(),
+            "Key": r.serialize(r.reservation_key(location_id, item["date"], item["reservationId"])),
+            "UpdateExpression": ("SET guaranteeLink.sends = :next, guaranteeLink.textedAt = :now, "
+                                 "updatedAt = :now, updatedBy = :by, "
+                                 "history = list_append(if_not_exists(history, :empty), :entry), "
+                                 "version = if_not_exists(version, :zero) + :one"),
+            "ConditionExpression": "#s = :pending AND guaranteeLink.sends = :old AND pendingExpiresAt = :exp",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": r.serialize({
+                ":next": sends + 1, ":now": r.iso(now), ":by": ctx.sub, ":entry": [entry], ":empty": [],
+                ":zero": 0, ":one": 1, ":pending": r.PENDING, ":old": sends, ":exp": item["pendingExpiresAt"],
+            }),
+        }}])
+    except Exception:
+        request_guard.refund(counted)
+        raise
+    updated = {**item, "guaranteeLink": {**link, "sends": sends + 1, "textedAt": r.iso(now)},
+               "updatedAt": r.iso(now), "updatedBy": ctx.sub, "version": int(item.get("version") or 0) + 1,
+               "history": list(item.get("history") or []) + [entry]}
+    text = messages.guarantee_link_sms(item, ctx.tenant, ctx.location, link["url"], left)
+    result, maybe_sent = _send_link(ctx, item, text, lambda_context)
+    if result != "sent":
+        if not maybe_sent:
+            request_guard.refund(counted)
+        raise LinkSmsFailed()
+    return http.respond(200, r.staff_view(updated))
 
 
 def _hold(event):
@@ -681,7 +1070,7 @@ def _confirm(event):
 
 def handler(event, context):
     method, path = http.route(event)
-    if path not in (_ONLINE, _MANUAL, _CONFIRM, _HOLDS, _HOLD):
+    if path not in (_ONLINE, _MANUAL, _CONFIRM, _HOLDS, _HOLD, _RESEND):
         return http.error(404, "not found")
     allowed = "DELETE" if path == _HOLD else "POST"
     if method != allowed:
@@ -693,13 +1082,24 @@ def handler(event, context):
             return _release(event)
         if path == _CONFIRM:
             return _confirm(event)
-        return _create(event, staff=path == _MANUAL)
+        if path == _RESEND:
+            return _resend(event, context)
+        return _create(event, staff=path == _MANUAL, lambda_context=context)
     except tenant.TenantError as exc:
         return exc.response()
     except request_guard.Limited as exc:
+        if exc.kind.startswith("link-sms"):
+            # The body repeats Retry-After: the admin calls the API from
+            # another origin, where the browser does not expose that header.
+            return http.respond(429, {"error": "sms_limit", "retryAfter": exc.retry_after},
+                                {"Retry-After": str(exc.retry_after)})
         return http.respond(429, {"error": "too_many_requests"}, {"Retry-After": str(exc.retry_after)})
     except bot_check.Unavailable:
         return http.error(503, "verification_unavailable")
+    except SmsUnavailable:
+        return http.error(503, "sms_unavailable")
+    except LinkSmsFailed:
+        return http.error(502, "sms_failed")
     except r.NotFound:
         return http.error(404, "not found")
     except r.InvalidState as exc:

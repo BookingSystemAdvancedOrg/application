@@ -418,6 +418,7 @@ No charge happens at booking - the card is saved via a Stripe SetupIntent instea
 | `stripeCustomerId` | String |
 | `stripePaymentMethodId` | String |
 | `stripePaymentIntentId` | String - only set if a charge actually occurs |
+| `guaranteeLink` | Map - phone bookings with a card link only: `url` (the short or long card page link; a bearer link, never in a view, history, log or export), `page` (`stripe`\|`site`), `by` (`booqy`: Booqy texted it for a staff booking; `caller`: the AI phone agent did), `sends` (card link SMS so far, at most 3), `textedAt` (ISO8601, Booqy's last SMS). docs/RESERVATIONS.md "Phone bookings" |
 | `ttl` | Number (Unix epoch) |
 
 `status` is exactly the state machine in `LAMBDA_REFERENCE.md`'s "Reservation status state machine" section, and `notification`'s DynamoDB Stream filters key off this same field. The "24 hours before booked time" cutoff compares against `bookedFor`, not `endsAt`.

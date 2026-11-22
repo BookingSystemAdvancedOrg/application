@@ -624,6 +624,11 @@ def staff_view(item):
     view["cardOnFile"] = _card_on_file(item)
     if item.get("bookedFor") and item.get("endsAt"):
         view["bookingRule"] = booking_rule(item)
+    if isinstance(item.get("guaranteeLink"), dict):
+        from shared import guarantee  # local: guarantee imports this module
+        # Who texted the card link, how often, and whether staff may send it
+        # again; never the url (a bearer link to the card page).
+        view["guaranteeLink"] = guarantee.link_view(item, now_utc())
     return view
 
 

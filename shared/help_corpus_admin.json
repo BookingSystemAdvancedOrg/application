@@ -806,7 +806,7 @@
    "steps": [
     "Öppna Bokningar.",
     "Tryck Ny bokning och välj Telefon eller Drop-in.",
-    "Fyll i Antal personer, Datum, Tid och välj Bord.",
+    "Fyll i Antal personer, Datum och Tid. Tryck sedan på ett eller flera lediga bord på bordskartan.",
     "Fyll i Namn och telefon. E-post och anteckning är valfria.",
     "Tryck Boka.",
     "Kräver bordet kortgaranti får gästen en kortlänk i sms. Bokningen visar Väntar på kort tills kortet är sparat, sedan går bekräftelsen ut."

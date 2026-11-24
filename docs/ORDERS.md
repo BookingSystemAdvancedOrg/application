@@ -31,6 +31,57 @@ restaurant's own till; a guest with a booking arrives and pays there too.
   status page, SMS ("Serveras till bord 5"), refunds and Statistik ("Vid
   bordet") still show and handle them.
 
+## Payment methods
+
+Stripe's Payment Element with dynamic payment methods on the restaurant's
+connected account offers what that account has activated, for SEK, on
+that device and for that amount (shared/payment_methods.py):
+
+| Method | How it shows | Settles | Refund |
+|---|---|---|---|
+| Card (Visa, Mastercard) | card form | at once | back to the card, 5-10 bank days |
+| Apple Pay, Google Pay | wallet button on a device that has one (the site's host must be registered on the account: shared/payment_domains.py) | at once | as card |
+| Swish | redirect to the app on a phone, QR code on a computer; 3 kr - 150 000 kr | at once | asynchronous, usually minutes; can fail (below) |
+| Klarna | redirect to Klarna; pay later, pay now or installments, up to 150 000 kr | when Klarna approves | via Klarna, up to 180 days |
+
+Stripe Link is off (`wallet_options.link.display = never`: its SMS code
+goes to the Link account's phone, not the guest's). PayPal is not offered:
+Stripe does not support it for direct charges on Connect.
+
+The restaurant turns Swish and Klarna on in its own Stripe Dashboard
+(Settings, Payment methods; accounts with the full Dashboard manage their
+own methods). Admin's Betalningar card lists each method's status from the
+account's capabilities (`GET /tenant` `stripe.paymentMethods`, kept current
+by `account.updated` in platform-stripe-webhook).
+
+**How it was paid:** when the order is settled, the PaymentIntent is read
+on the account (`expand latest_charge`) and `paidWith` stored: `{method:
+card | apple_pay | google_pay | swish | klarna | other, brand?, last4?}`
+(no payer details). Best effort: without an answer the order still
+confirms, without `paidWith` (receipt then says Kort (Stripe)). The
+receipt, the refund e-mails ("via Swish, oftast inom några minuter"), the
+guest's status page and admin's order card name the method.
+
+**Only paid confirms:** an order is confirmed on `payment_status = paid`
+only (checkout.session.completed, or async_payment_succeeded for a method
+that settles later); `unpaid` on completed waits.
+
+**A refund that fails** (`refund.failed`, Swish can refuse one after
+accepting it): Stripe puts the money back on the restaurant's balance. The
+refund stays recorded (the guest is still owed it), the failure is listed
+once per refund id in `refundFailed` with a `refund_failed` history entry,
+admin tells staff to pay the guest back another way, and the
+`order_refund_failed` notice e-mails the restaurant (location e-mail, also
+with staff e-mails off: the order may be from another day than the one on
+the screen). The guest's status page gets `refundIssue: true` (no amounts)
+and says the restaurant pays back another way instead of naming the
+method. Stripe drops a failed refund from the charge's `amount_refunded`
+while Booqy keeps it (the guest is owed it), so `charge.refunded` adds the
+failed amounts back before comparing. The accounting
+export books the balance coming back (`refund_failure`) to the OBS account
+with the same advice. A Dashboard refund has no order metadata: the
+webhook reads the PaymentIntent's.
+
 ## Flow
 
 1. **Open?** `GET /locations/{id}/ordering` - the owner's policy is on, the

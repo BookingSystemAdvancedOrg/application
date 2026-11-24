@@ -99,7 +99,12 @@ computed from the fee).
 | Stripe fees | balance transaction day | card fees | Stripe settlement |
 | Stripe payout | payout created | bank | Stripe settlement |
 | Payout failed / cancelled | that day | Stripe settlement | bank |
+| Refund that failed after it was made (`refund_failure`, e.g. Swish) | that day | Stripe settlement | OBS account, with a warning: pay the guest back another way |
 | Other Stripe movement (dispute, adjustment) | that day | Stripe settlement | OBS account, with a warning |
+
+Every Stripe method (card, Apple Pay, Google Pay, Swish, Klarna) lands on
+the same Stripe balance, so they all go through the settlement account;
+Stripe's fee per method arrives as the payment's fee.
 
 Every entry balances. A difference (payment not equal to the receipt) goes to
 rounding; above 1 kr it adds a warning. The export also compares, per day,

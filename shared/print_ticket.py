@@ -345,7 +345,7 @@ def _tab_ticket(ticket, location, *, width, copy, retry, allergy, fmt):
             t.rule()
             t.line("Kontrollera allergin innan maten går ut.", bold=True)
     t.rule()
-    t.line(f"Bord {str(ticket.get('tabId') or '')[:6]} r{ticket.get('round') or '?'}", center=True)
+    t.line(f"{_label(ticket.get('tableLabel'))} r{ticket.get('round') or '?'}", center=True)
     return t.done()
 
 

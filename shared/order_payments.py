@@ -29,6 +29,7 @@ from datetime import timedelta
 from botocore.exceptions import ClientError
 
 from shared import dynamo, refunds, orders as o
+from shared import payment_methods as pm
 from shared import stripe_client as stripe
 
 _LOCALES = {"sv": "sv", "en": "en"}
@@ -100,27 +101,38 @@ def settle_paid(item, session, now, actor, *, method="online"):
     giftcard: paid in full with a gift card."""
     if item.get("status") != o.PENDING_PAYMENT:
         return None
+    # Read before the number is taken: the receipt (order_confirmed notice)
+    # names the method. Best effort - None leaves the receipt at "Kort".
+    paid_with = pm.lookup(item.get("stripeAccountId"), session.get("payment_intent")) \
+        if method == "online" else None
     number = o.next_number(item["locationId"], item["date"])
     prep = int(item.get("prepMinutes") or 20)
-    entry = o.history_entry("paid", actor, now, status=o.CONFIRMED)
+    entry = o.history_entry("paid", actor, now, status=o.CONFIRMED,
+                            **({"paidWith": paid_with["method"]} if paid_with else {}))
+    values = {
+        ":confirmed": o.CONFIRMED, ":paid": o.PAY_PAID, ":number": number,
+        ":now": o.iso(now), ":ready": o.iso(now + timedelta(minutes=prep)),
+        ":pi": session.get("payment_intent") or "-",
+        ":notice": o.notice(o.NOTICE_CONFIRMED, now),
+        ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
+        ":pending": o.PENDING_PAYMENT, ":method": method,
+    }
+    extra = ""
+    if paid_with:
+        extra = "paidWith = :with, "
+        values[":with"] = paid_with
     try:
         result = dynamo.table(o.order_table()).update_item(
             Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
             UpdateExpression=(
                 "SET #s = :confirmed, paymentStatus = :paid, #n = :number, confirmedAt = :now, "
                 "readyEstimate = :ready, paymentIntentId = :pi, paymentMethod = :method, notice = :notice, updatedAt = :now, "
+                + extra +
                 "history = list_append(if_not_exists(history, :empty), :entry), "
                 "version = if_not_exists(version, :zero) + :one REMOVE #ttl"),
             ConditionExpression="attribute_exists(PK) AND #s = :pending",
             ExpressionAttributeNames={"#s": "status", "#n": "number", "#ttl": "ttl"},
-            ExpressionAttributeValues={
-                ":confirmed": o.CONFIRMED, ":paid": o.PAY_PAID, ":number": number,
-                ":now": o.iso(now), ":ready": o.iso(now + timedelta(minutes=prep)),
-                ":pi": session.get("payment_intent") or "-",
-                ":notice": o.notice(o.NOTICE_CONFIRMED, now),
-                ":entry": [entry], ":empty": [], ":zero": 0, ":one": 1,
-                ":pending": o.PENDING_PAYMENT, ":method": method,
-            },
+            ExpressionAttributeValues=values,
             ReturnValues="ALL_NEW",
         )
     except ClientError as exc:
@@ -272,6 +284,54 @@ def refund(item, amount, now, actor, *, reason=None, notify=True, notice_kind=o.
     return item
 
 
+def failed_refund_total(item):
+    """öre of refunds Stripe gave back to the balance (refundFailed)."""
+    return sum(int(e.get("amount") or 0) for e in item.get("refundFailed") or [] if isinstance(e, dict))
+
+
 def record_stripe_refund(item, amount_refunded, now):
-    """charge.refunded on the order's PaymentIntent: (item, result)."""
-    return refunds.from_stripe(_CardRefunds(item), item, amount_refunded, now)
+    """charge.refunded on the order's PaymentIntent: (item, result). A
+    failed refund stays in our total (the guest is still owed it, paid back
+    by hand) while Stripe drops it from amount_refunded: it is added back
+    before comparing, so a later Dashboard refund is still recorded."""
+    return refunds.from_stripe(_CardRefunds(item), item, int(amount_refunded or 0) + failed_refund_total(item), now)
+
+
+def record_refund_failure(item, refund, now):
+    """refund.failed on the order's payment (Swish reports some refunds as
+    failed after accepting them; Stripe puts the money back on the
+    restaurant's balance). The refund stays recorded - the guest is still
+    owed it, now from the restaurant directly - and the failure is listed
+    once per refund id (refundFailed) with a history entry, so the order
+    screen tells staff to pay the guest back another way, and the
+    order_refund_failed notice e-mails the restaurant (the order may be
+    from an earlier day). The accounting
+    export books the balance coming back (refund_failure) to the OBS
+    account with the same advice. Returns the result."""
+    refund_id = refund.get("id")
+    if not isinstance(refund_id, str) or not refund_id.startswith("re_"):
+        return "ignored"
+    entry = {"refundId": refund_id, "amount": int(refund.get("amount") or 0), "at": o.iso(now)}
+    method = (item.get("paidWith") or {}).get("method")
+    if method:
+        entry["method"] = method
+    history = o.history_entry("refund_failed", "stripe", now, amount=entry["amount"],
+                              reason=refund.get("failure_reason"))
+    try:
+        dynamo.table(o.order_table()).update_item(
+            Key=o.order_key(item["locationId"], item["date"], item["orderId"]),
+            UpdateExpression=(
+                "SET refundFailed = list_append(if_not_exists(refundFailed, :empty), :failed), "
+                "history = list_append(if_not_exists(history, :empty), :entry), updatedAt = :now, "
+                "notice = :notice, version = if_not_exists(version, :zero) + :one ADD refundFailedIds :ids"),
+            ConditionExpression="attribute_exists(PK) AND NOT contains(refundFailedIds, :id)",
+            ExpressionAttributeValues={":failed": [entry], ":entry": [history], ":empty": [], ":now": o.iso(now),
+                                       ":zero": 0, ":one": 1, ":ids": {refund_id}, ":id": refund_id,
+                                       # The restaurant gets an e-mail (notification): the order
+                                       # may be from another day than the one on the screen.
+                                       ":notice": o.notice(o.NOTICE_REFUND_FAILED, now)})
+    except ClientError as exc:
+        if _conditional_failed(exc):
+            return "already_recorded"
+        raise
+    return "refund_failed"

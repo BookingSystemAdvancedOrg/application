@@ -32,6 +32,8 @@ _DATE = {"type": "string", "description": "YYYY-MM-DD, from the calendar in your
 _TIME = {"type": "string", "description": "HH:MM, 24 hour clock, on the hour or half hour"}
 _PARTY = {"type": "integer", "minimum": 1, "description": "number of guests"}
 _CONFIRMED = {"type": "boolean", "description": "true only after the caller said a clear yes to your read-back"}
+_NEARBY_NAMES = ("`nearby` options name their tables in `tables`: say them as table names (bord 3), never an id or "
+                 "option key.")
 TOOLS = [
     {"name": "get_restaurant_info", "description": "Address, opening hours, special days and booking rules.",
      "input_schema": {"type": "object", "properties": {}}},
@@ -40,7 +42,7 @@ TOOLS = [
                     "nearest the wished time: offer those. A full day lists `nextDays` with free times. A result "
                     "with `code` and `say` (pastDate, beyondHorizon, largeParty, guaranteeRequired): follow `say`. "
                     "`guaranteeRequired` with times and a `say`: offer the times, and follow `say` (the fee rule "
-                    "in `guaranteeTerms` before the read-back, amounts only if the caller asks).",
+                    "in `guaranteeTerms` before the read-back, amounts only if the caller asks). " + _NEARBY_NAMES,
      "input_schema": {"type": "object", "required": ["date", "partySize"], "properties": {
          "date": _DATE, "partySize": _PARTY, "time": _TIME, "timeFrom": _TIME, "timeTo": _TIME}}},
     {"name": "hold_table",
@@ -50,11 +52,10 @@ TOOLS = [
                     "(`nearby` first if present, else exactly the times in `suggest`), or `code` and `say`. "
                     "`guaranteeRequired` with a holdId: first say `guaranteeTerms.sentence` and ask "
                     "`guaranteeTerms.question` (no amounts unless the caller asks), then the read-back also says "
-                    "the card link is texted.",
+                    "the card link is texted. " + _NEARBY_NAMES,
      "input_schema": {"type": "object", "required": ["date", "time", "partySize"], "properties": {
          "date": _DATE, "time": _TIME, "partySize": _PARTY,
-         "tableIds": {"type": "array", "items": {"type": "string"},
-                      "description": "only the tableIds of a `nearby` option the caller accepted"}}}},
+         "option": {"type": "string", "description": "only the `option` of a `nearby` option the caller accepted"}}}},
     {"name": "create_reservation",
      "description": "Book a held table, only after the caller said a clear yes to your read-back of day, time, "
                     "number of guests and name. When the party needs a card guarantee it texts the caller a link "
@@ -414,11 +415,40 @@ class Executor:
         if name not in TOOL_NAMES:
             return {"ok": False, "code": "unknown_tool"}
         try:
-            return getattr(self, name)(dict(args or {}))
+            return self._for_model(getattr(self, name)(dict(args or {})))
         except pa.PhoneAgentError as exc:
             return {"ok": False, "code": exc.code}
         except (TypeError, ValueError, KeyError):
             return {"ok": False, "code": "invalid_arguments"}
+
+    def _for_model(self, value):
+        """The tool result the model reads: every `nearby` option becomes
+        {option, tables, seats, kind}, so a table id never reaches the model
+        (or the caller). `option` is a key for hold_table; the same tables
+        keep their key for the whole call (state.nearbyRefs)."""
+        if isinstance(value, list):
+            return [self._for_model(v) for v in value]
+        if not isinstance(value, dict):
+            return value
+        out = {}
+        for key, item in value.items():
+            if key == "nearby" and isinstance(item, list):
+                out[key] = [self._nearby_option(n) for n in item if isinstance(n, dict)]
+            else:
+                out[key] = self._for_model(item)
+        return out
+
+    def _nearby_option(self, option):
+        if "option" in option and "tableIds" not in option:
+            return option      # already in the model's form
+        refs = self.state.setdefault("nearbyRefs", {})
+        ids = sorted(str(t) for t in option.get("tableIds") or [])
+        key = next((k for k, v in refs.items() if sorted(v) == ids), None)
+        if key is None:
+            key = f"n{len(refs) + 1}"
+            refs[key] = ids
+        return {"option": key, "tables": list(option.get("tables") or []), "seats": option.get("seats"),
+                "kind": option.get("kind")}
 
     # -- the turn deadline (agent.run_turn) ---------------------------------------------
 
@@ -777,14 +807,20 @@ class Executor:
         first = self._note_request(day, time)
         if day != first["date"]:
             self._reached("next_day")
-        wanted = [str(t) for t in args.get("tableIds") or []]
+        option = args.get("option")
+        if option is not None:   # the `option` key of a nearby option the model was given (_for_model)
+            wanted = list((self.state.get("nearbyRefs") or {}).get(str(option)) or [])
+            unknown = not wanted
+        else:                    # a legacy tableIds argument (a call running at deploy time)
+            wanted = [str(t) for t in args.get("tableIds") or []]
+            unknown = False
         result = self._offers(day, time, party)
         kind = None
-        if wanted:  # the nearby table the caller said yes to: must still be one of today's nearby options
+        if wanted or unknown:  # the nearby table the caller said yes to: must still be one of today's nearby options
             match = next((n for n in result.get("nearby") or [] if sorted(n["tableIds"]) == sorted(wanted)), None)
             if result.get("bookable") and sorted(result["tableIds"]) == sorted(wanted):
                 match = {"tableIds": wanted, "kind": None}
-            if not match:
+            if unknown or not match:
                 return self._spoken({**self._counter(result, time), "reason": "time_taken"}, day, party)
             table_ids, kind = match["tableIds"], match.get("kind")
         elif result.get("bookable"):

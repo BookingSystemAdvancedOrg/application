@@ -78,8 +78,11 @@ class FakeStripe:
         self.fail = None
         self.domains = []
         self.refunds = []
+        # How the guest paid: the latest charge's payment_method_details.
+        self.details = {"type": "card", "card": {"brand": "visa", "last4": "4242", "wallet": None}}
+        self.intent_metadata = {}
 
-    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
+    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
                            "key": idempotency_key})
         if self.fail:
@@ -107,6 +110,13 @@ class FakeStripe:
             if self.domains is None:
                 raise stripe_client.StripeUnavailable("down")
             return {"data": list(self.domains)} if method == "GET" else {"id": "pmd_1", **params}
+        if path.startswith("/v1/payment_method_domains/") and path.endswith("/validate"):
+            return {"id": path.split("/")[3]}
+        if path.startswith("/v1/payment_intents/") and method == "GET":
+            if self.details is None:
+                raise stripe_client.StripeUnavailable("down")
+            return {"id": path.rsplit("/", 1)[1], "metadata": dict(self.intent_metadata),
+                    "latest_charge": {"id": "ch_1", "payment_method_details": self.details}}
         raise AssertionError(path)
 
 
@@ -127,6 +137,7 @@ def env(monkeypatch):
         "ENVIRONMENT": "dev", "AWS_ACCESS_KEY_ID": "t", "AWS_SECRET_ACCESS_KEY": "t",
         "AWS_SESSION_TOKEN": "t", "AWS_DEFAULT_REGION": REGION, "ORDER_TABLE_NAME": ORDER_TABLE,
         "MENU_TABLE_NAME": MENU_TABLE, "CUSTOMER_SITE_URL": "https://dev123.cloudfront.net",
+        "STRIPE_SECRET_ARN": "arn:aws:secretsmanager:eu-north-1:1:secret:stripe",
         "NO_REPLY_EMAIL_ADDRESS": "no-reply@mail.example.se", "USER_TABLE_NAME": "test-user",
     }.items():
         monkeypatch.setenv(key, value)
@@ -1164,3 +1175,127 @@ def test_lines_without_a_categories_row_get_the_default_names(env):
     lines = stored(env, body_of(post_order(env))["orderId"])["lines"]
     assert [line.get("categoryName") for line in lines] == ["Varmrätter", "Drycker"]
 
+
+
+# --- how the guest paid (card, Apple Pay, Google Pay, Swish, Klarna) ------------------------------
+
+def test_paid_order_stores_how_it_was_paid_and_both_views_show_it(env):
+    env["stripe"].details = {"type": "swish", "swish": {"verified_phone_last4": "4567"}}
+    created = place_and_pay(env)
+    item = stored(env, created["orderId"])
+    assert item["paidWith"] == {"method": "swish"} and item["status"] == "confirmed"
+    (read,) = [c for c in env["stripe"].calls if c["path"] == "/v1/payment_intents/pi_1"]
+    assert read["method"] == "GET" and read["account"] == ACCOUNT and read["params"] == {"expand": ["latest_charge"]}
+    assert item["history"][-1]["paidWith"] == "swish"
+    guest = body_of(env["m"]["get"].handler(status_event(created["orderId"], created["statusToken"]), None))
+    assert guest["paidWith"] == {"method": "swish"}
+    staff = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY}), None))
+    (row,) = [o_ for o_ in staff["orders"] if o_["orderId"] == created["orderId"]]
+    assert row["paidWith"] == {"method": "swish"} and "refundFailed" not in row
+
+
+def test_apple_pay_keeps_the_card_brand_and_last_four(env):
+    env["stripe"].details = {"type": "card", "card": {"brand": "visa", "last4": "4242",
+                                                      "wallet": {"type": "apple_pay", "dynamic_last4": "0001"}}}
+    created = place_and_pay(env)
+    assert stored(env, created["orderId"])["paidWith"] == {"method": "apple_pay", "brand": "visa", "last4": "4242"}
+
+
+def test_stripe_not_answering_about_the_method_still_confirms_the_order(env):
+    env["stripe"].details = None
+    created = place_and_pay(env)
+    item = stored(env, created["orderId"])
+    assert item["status"] == "confirmed" and "paidWith" not in item
+
+
+def test_klarna_waiting_on_completed_confirms_only_when_stripe_says_paid(env):
+    env["stripe"].details = {"type": "klarna", "klarna": {"payment_method_category": "pay_later"}}
+    created = body_of(post_order(env))
+    unpaid = dict(env["stripe"].session, status="complete", payment_intent="pi_1")
+    assert body_of(webhook(env, stripe_event("checkout.session.completed", unpaid)))["result"] == "waiting"
+    assert stored(env, created["orderId"])["paymentStatus"] == "processing"
+    assert not [c for c in env["stripe"].calls if c["path"].startswith("/v1/payment_intents/")]
+    paid = paid_session(env, created["orderId"])
+    assert body_of(webhook(env, stripe_event("checkout.session.async_payment_succeeded", paid)))["result"] == "confirmed"
+    assert stored(env, created["orderId"])["paidWith"] == {"method": "klarna"}
+
+
+def _failed_refund(created, refund_id="re_9", amount=5000, metadata=None):
+    return {"id": refund_id, "object": "refund", "amount": amount, "payment_intent": "pi_1", "status": "failed",
+            "failure_reason": "declined",
+            "metadata": {"orderId": created["orderId"], "locationId": LOC_A} if metadata is None else metadata}
+
+
+def test_a_failed_swish_refund_is_listed_once_for_staff(env):
+    env["stripe"].details = {"type": "swish"}
+    created = place_and_pay(env)
+    body_of(set_status(env, created["orderId"], "cancelled"))
+    event = stripe_event("refund.failed", _failed_refund(created, amount=28550))
+    assert body_of(webhook(env, event))["result"] == "refund_failed"
+    assert body_of(webhook(env, event))["result"] == "already_recorded"
+    item = stored(env, created["orderId"])
+    assert item["refundFailed"] == [{"refundId": "re_9", "amount": 28550, "at": "2026-09-08T12:00:00Z",
+                                     "method": "swish"}]
+    assert item["paymentStatus"] == "refunded"  # the refund stays booked: the guest is still owed it
+    assert item["history"][-1]["action"] == "refund_failed"
+    staff = body_of(env["m"]["staff"].handler(staff_event("GET", query={"date": TODAY, "all": "true"}), None))
+    (row,) = [o_ for o_ in staff["orders"] if o_["orderId"] == created["orderId"]]
+    assert row["refundFailed"] == [{"amount": 28550, "at": "2026-09-08T12:00:00Z", "refundId": "re_9",
+                                    "method": "swish"}]
+    guest = body_of(env["m"]["get"].handler(status_event(created["orderId"], created["statusToken"]), None))
+    assert "refundFailed" not in guest
+
+
+def test_a_failed_dashboard_refund_finds_its_order_through_the_payment(env):
+    created = place_and_pay(env)
+    env["stripe"].intent_metadata = {"orderId": created["orderId"], "locationId": LOC_A}
+    refund = _failed_refund(created, metadata={})
+    assert body_of(webhook(env, stripe_event("refund.failed", refund)))["result"] == "refund_failed"
+    assert body_of(webhook(env, stripe_event("refund.failed", refund, account="acct_evil")))["result"] == "ignored"
+    other = dict(_failed_refund(created, refund_id="re_10"), payment_intent="pi_other")
+    assert body_of(webhook(env, stripe_event("refund.failed", other)))["result"] == "ignored"
+    assert len(stored(env, created["orderId"])["refundFailed"]) == 1
+
+
+def test_a_failed_refund_emails_the_restaurant_and_tells_the_guest_plainly(env, notify):
+    module, ses, sns = notify
+    set_location(env, email="kok@roma.se")
+    env["stripe"].details = {"type": "swish"}
+    created = place_and_pay(env)
+    set_status(env, created["orderId"], "cancelled")
+    webhook(env, stripe_event("refund.failed", _failed_refund(created, amount=28550)))
+    item = stored(env, created["orderId"])
+    assert item["notice"]["type"] == "order_refund_failed"
+    ses.calls.clear()
+    assert module.handler({"Records": [order_record(item)]}, None) == {"batchItemFailures": []}
+    (mail,) = ses.calls
+    assert mail["Destination"]["ToAddresses"] == ["kok@roma.se"]
+    text = mail["Message"]["Body"]["Text"]["Data"]
+    assert "Återbetalningen på 285,50 kr för beställning #1" in text and "gästens Swish" in text
+    assert "Betala tillbaka till gästen på annat sätt" in text
+    assert "anna@example.se" not in text and "070" not in text and sns.calls == []
+    guest = body_of(env["m"]["get"].handler(status_event(created["orderId"], created["statusToken"]), None))
+    assert guest["refundIssue"] is True and "refundFailed" not in guest
+
+
+def test_a_dashboard_refund_after_a_failed_one_is_still_recorded(env):
+    created = place_and_pay(env)
+    oid = created["orderId"]
+    env["m"]["staff"].handler(staff_event("POST", f"{oid}/refund", body={"amount": 10000, "notifyGuest": False}),
+                              None)
+    assert stored(env, oid)["refund"]["amount"] == 10000
+    webhook(env, stripe_event("refund.failed", _failed_refund(created, refund_id="re_f1", amount=10000)))
+    # Stripe now counts 0 refunded; a 50 kr Dashboard refund arrives as amount_refunded 5000
+    charge = {"payment_intent": "pi_1", "amount_refunded": 5000, "metadata": {"orderId": oid, "locationId": LOC_A}}
+    assert body_of(webhook(env, stripe_event("charge.refunded", charge)))["result"] == "recorded"
+    item = stored(env, oid)
+    assert item["refund"]["amount"] == 15000
+    assert o.refundable_amount(item) == 28550 - 15000
+
+
+def test_an_unreadable_payment_on_a_failed_refund_is_ignored_not_retried(env):
+    created = place_and_pay(env)
+    env["stripe"].fail = stripe_client.StripeError(404, {"code": "resource_missing"})
+    response = webhook(env, stripe_event("refund.failed", _failed_refund(created, metadata={})))
+    env["stripe"].fail = None
+    assert response["statusCode"] == 200 and body_of(response)["result"] == "ignored:payment_intent_unreadable"

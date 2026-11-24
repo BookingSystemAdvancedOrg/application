@@ -38,7 +38,7 @@ from decimal import Decimal
 
 from botocore.exceptions import ClientError
 
-from shared import dynamo, refunds, sms
+from shared import dynamo, payment_methods, refunds, sms
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -412,8 +412,23 @@ def forget_customer(item, *, timeout=None):
 
 
 def retrieve_setup(item):
-    return stripe.request("GET", f"/v1/setup_intents/{item['setupIntentId']}",
+    # payment_method expanded: the card's brand, last four and wallet
+    # (Apple Pay, Google Pay) are stored for staff (guaranteeCard).
+    return stripe.request("GET", f"/v1/setup_intents/{item['setupIntentId']}", {"expand": ["payment_method"]},
                           account=item["stripeAccountId"])
+
+
+def with_card_details(intent, account):
+    """A webhook's SetupIntent names its payment method by id only: read it
+    (best effort) so the confirmation stores guaranteeCard too."""
+    pm = (intent or {}).get("payment_method")
+    if not isinstance(pm, str) or not pm.startswith("pm_") or not account:
+        return intent
+    try:
+        found = stripe.request("GET", f"/v1/payment_methods/{pm}", account=account, timeout=8)
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        return intent
+    return {**intent, "payment_method": found} if isinstance(found, dict) and found.get("id") == pm else intent
 
 
 def card_hold_open(item, now):
@@ -453,7 +468,8 @@ def checkout_setup(item):
     if not item.get("checkoutSessionId"):
         return None
     session = stripe.request("GET", f"/v1/checkout/sessions/{item['checkoutSessionId']}",
-                             {"expand": ["setup_intent"]}, account=item["stripeAccountId"])
+                             {"expand": ["setup_intent", "setup_intent.payment_method"]},
+                             account=item["stripeAccountId"])
     intent = session.get("setup_intent")
     return intent if session.get("status") == "complete" and isinstance(intent, dict) else None
 
@@ -473,15 +489,22 @@ def setup_matches(intent, item):
             and intent.get("customer") == item.get("stripeCustomerId"))
 
 
-def confirm_items(item, payment_method, now, actor, setup_intent_id=None):
+def confirm_items(item, payment_method, now, actor, setup_intent_id=None, card=None):
     """Transaction item: pending -> reserved with the card stored + the
     guest's confirmation notice. `setup_intent_id`: a phone booking's
-    Checkout SetupIntent, stored now (the booking had none)."""
-    entry = r.history_entry("guarantee_confirmed", actor, now, status=r.RESERVED)
+    Checkout SetupIntent, stored now (the booking had none). `card`: how it
+    was saved (shared/payment_methods.py: card, Apple Pay, Google Pay with
+    brand and last four), shown to staff as guaranteeCard."""
+    entry = r.history_entry("guarantee_confirmed", actor, now, status=r.RESERVED,
+                            paidWith=(card or {}).get("method"))
     expression = ("SET #s = :reserved, stripePaymentMethodId = :pm, updatedAt = :now, "
                   "updatedBy = :by, notice = :notice, "
                   "history = list_append(if_not_exists(history, :empty), :entry), "
                   "version = if_not_exists(version, :zero) + :one")
+    extra_values = {}
+    if card:
+        expression += ", guaranteeCard = :card"
+        extra_values[":card"] = card
     if setup_intent_id:
         expression += ", setupIntentId = :seti"
         condition = "#s = :pending AND attribute_not_exists(setupIntentId)"
@@ -498,7 +521,7 @@ def confirm_items(item, payment_method, now, actor, setup_intent_id=None):
                 ":reserved": r.RESERVED, ":pending": r.PENDING, ":pm": payment_method,
                 ":now": r.iso(now), ":by": actor, ":seti": setup_intent_id or item["setupIntentId"],
                 ":notice": r.notice(r.NOTICE_CONFIRMED, now), ":entry": [entry], ":empty": [],
-                ":zero": 0, ":one": 1,
+                ":zero": 0, ":one": 1, **extra_values,
             }),
         }
     }
@@ -528,13 +551,15 @@ def confirm_if_ready(item, now, actor, *, intent=None):
     if not setup_matches(intent, item) or intent.get("status") != "succeeded":
         raise r.InvalidState("card_not_confirmed")
     payment_method = intent.get("payment_method")
+    card = None
     if isinstance(payment_method, dict):
+        card = payment_methods.from_details(payment_method)
         payment_method = payment_method.get("id")
     if not isinstance(payment_method, str):
         raise r.InvalidState("card_not_confirmed")
     adopted = None if item.get("setupIntentId") else intent["id"]
     try:
-        r.transact([confirm_items(item, payment_method, now, actor, adopted)] + marker_delete_ops(item)
+        r.transact([confirm_items(item, payment_method, now, actor, adopted, card)] + marker_delete_ops(item)
                    + (r.keep_hold_items(item) if item.get("fromHold") else []))
     except r.Conflict:
         fresh = r.load(item["locationId"], item["reservationId"])
@@ -544,6 +569,8 @@ def confirm_if_ready(item, now, actor, *, intent=None):
             raise r.InvalidState("expired") from None
         raise
     done = {**item, "status": r.RESERVED, "stripePaymentMethodId": payment_method}
+    if card:
+        done["guaranteeCard"] = card
     if adopted:
         done["setupIntentId"] = adopted
     return done

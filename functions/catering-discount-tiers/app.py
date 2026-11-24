@@ -7,6 +7,9 @@ TRIGGER:
     PUT    /locations/{locationId}/catering/discount-tiers/{tierId}  -- Auth: JWT (owner)
     DELETE /locations/{locationId}/catering/discount-tiers/{tierId}  -- Auth: JWT (owner)
 
+    Booqy Console dev twin seeder (dev only, prod answers 400): {"booqyConsole": ...}
+    becomes the owner's API Gateway event, seed routes only (shared/console_invoke.py dev_twin_entry).
+
 PURPOSE:
     The restaurant's volume discounts for catering: a tier gives
     `discountPercent` off the dishes when the TOTAL number of portions is
@@ -22,7 +25,7 @@ ENV_VARS:
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import catering as c
-from shared import dynamo, http, tenant
+from shared import console_invoke, dynamo, http, tenant
 
 _COLLECTION = "/locations/{locationId}/catering/discount-tiers"
 _ITEM = "/locations/{locationId}/catering/discount-tiers/{tierId}"
@@ -39,6 +42,17 @@ def _owner(event):
     return location_id
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py), and only for the routes it seeds with; any other
+# console call (refunds, resends, messages to guests) is refused. Everything
+# else is API Gateway, hooks and schedules as before.
+TWIN_ROUTES = frozenset({
+    "GET /locations/{locationId}/catering/discount-tiers",
+    "POST /locations/{locationId}/catering/discount-tiers",
+})
+
+
+@console_invoke.dev_twin_entry(routes=TWIN_ROUTES)
 def handler(event, context):
     method, path = http.route(event)
     try:

@@ -449,7 +449,7 @@ def _cancel(event):
             if item.get("paid"):
                 item = _refund_rest(item, account, ctx, now)
             elif intent:  # paid at Stripe, invoice.paid not here yet: all of it back
-                cs.refund_payment(account, intent, item["requestId"])
+                cs.refund_payment(account, intent, item["requestId"], item["locationId"])
             # paid by Bankgiro: the restaurant pays back by hand
             refund_note = "refunded" if intent else "refund_manually"
     c.transact([

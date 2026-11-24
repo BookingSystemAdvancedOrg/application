@@ -231,6 +231,8 @@ def _public_tenant(ctx, row):
             "chargesEnabled": bool(stripe.get("chargesEnabled")),
             "payoutsEnabled": bool(stripe.get("payoutsEnabled")),
             "detailsSubmitted": bool(stripe.get("detailsSubmitted")),
+            # Card (with Apple Pay and Google Pay), Swish, Klarna on the account.
+            **({"paymentMethods": stripe["paymentMethods"]} if isinstance(stripe.get("paymentMethods"), dict) else {}),
         },
         "primaryDomain": row.get("primaryDomain"),
         "domains": _domains(tenant_id, row.get("primaryDomain")),
@@ -706,7 +708,7 @@ def handler(event, context):
         body = json.loads(event.get("body") or "null")
         # Dev twins (dev only): the seeder accepts the DPA for Booqy's own twin.
         dev_twin_dpa = (method, path) == ("POST", "/tenant/dpa/accept") and \
-            os.environ.get("ENVIRONMENT") != "prod"
+            os.environ.get("ENVIRONMENT") == "dev"
         if not dev_twin_dpa and (path != "/tenant" or method not in ("GET", "PATCH") or (
                 method == "PATCH" and (not isinstance(body, dict) or set(body) != {"staffAccess"}))):
             return _error(HTTPStatus.FORBIDDEN.value, "console may only read the account and edit staffAccess")

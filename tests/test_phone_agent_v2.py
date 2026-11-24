@@ -722,3 +722,44 @@ def test_a_cut_call_turn_is_saved_and_the_next_one_resumes_with_the_note(live, m
     assert phone.say("Okej") == "Vad roligt."
     assert "# Continue" not in prompts[0] and "# Continue" in prompts[1]
     assert "resume" not in json.loads(phone.row()["toolState"])
+
+
+# --- nearby options reach the model as an option key and table names, never ids ---------------
+
+def test_nearby_options_carry_table_names_and_an_option_key_never_ids(env):
+    env.availability.set(TOMORROW, ["18:00", "20:00"], staff={"19:00": {"t2a": 2, "t2b": 2, "t2c": 2}})
+    ex = _ex(env)
+    answer = ex.run("get_availability", {"date": TOMORROW, "partySize": 4, "time": "19:00"})
+    (option,) = answer["nearby"]
+    assert set(option) == {"option", "tables", "seats", "kind"}
+    assert option == {"option": "n1", "tables": ["Table 1", "Table 2"], "seats": 4, "kind": "adjacent_pair"}
+    counter = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4})
+    assert counter["held"] is False and counter["nearby"][0]["option"] == "n1"   # same tables, same key
+    for result in (answer, counter):
+        dumped = json.dumps(result)
+        assert not any(t in dumped for t in ("t2a", "t2b", "t2c", "tableIds"))
+    held = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4, "option": "n1"})
+    assert held["holdId"] and ex.state["proposals"][held["holdId"]]["tableIds"] == ["t2a", "t2b"]
+    assert not any(t in json.dumps(held) for t in ("t2a", "t2b"))
+
+
+def test_an_unknown_nearby_option_is_answered_with_the_counter_offer(env):
+    env.availability.set(TOMORROW, ["18:00", "20:00"], staff={"19:00": {"t2a": 2, "t2b": 2}})
+    ex = _ex(env)
+    refused = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4, "option": "n9"})
+    assert refused["held"] is False and refused["reason"] == "time_taken" and "holdId" not in refused
+    assert [n["option"] for n in refused["nearby"]] == ["n1"]
+
+
+def test_a_legacy_table_ids_argument_still_holds_a_nearby_pair(env):
+    env.availability.set(TOMORROW, ["18:00", "20:00"], staff={"19:00": {"t2a": 2, "t2b": 2}})
+    ex = _ex(env)
+    held = ex.run("hold_table", {"date": TOMORROW, "time": "19:00", "partySize": 4, "tableIds": ["t2b", "t2a"]})
+    assert held["holdId"] and sorted(ex.state["proposals"][held["holdId"]]["tableIds"]) == ["t2a", "t2b"]
+
+
+def test_hold_table_schema_takes_an_option_not_table_ids():
+    by = {t["name"]: t for t in TOOLS}
+    props = by["hold_table"]["input_schema"]["properties"]
+    assert "option" in props and "tableIds" not in props
+    assert "never an id" in by["hold_table"]["description"] and "never an id" in by["get_availability"]["description"]

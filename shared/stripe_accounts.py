@@ -1,7 +1,14 @@
 """A restaurant's Stripe connected account as stored on its tenant row.
 
 PROFILE.stripe = {accountId, chargesEnabled, payoutsEnabled,
-detailsSubmitted, requirementsDue, disconnected, eventCreated, updatedAt}.
+detailsSubmitted, requirementsDue, paymentMethods, disconnected,
+eventCreated, updatedAt}.
+
+paymentMethods = {card, swish, klarna}: the account's capability status
+(active, pending, inactive, unrequested) for the methods the site's
+payment steps offer. Apple Pay and Google Pay ride on card; the restaurant
+turns Swish and Klarna on in its own Stripe Dashboard (an account with the
+full Dashboard manages its own payment methods).
 The onboarding workflow creates the account and the STRIPE_ACCOUNT#<acct> /
 TENANT row; platform-stripe-webhook keeps the status fields current (same
 fields as Booqy Console's "Check status with Stripe").
@@ -26,12 +33,29 @@ def _table():
     return dynamo.table(os.environ["TENANT_TABLE_NAME"])
 
 
+# paymentMethods key -> the account capability behind it
+METHOD_CAPABILITIES = {"card": "card_payments", "swish": "swish_payments", "klarna": "klarna_payments"}
+_CAPABILITY_STATES = ("active", "pending", "inactive", "unrequested")
+
+
+def payment_methods_of(account: dict) -> dict:
+    capabilities = account.get("capabilities") if isinstance(account.get("capabilities"), dict) else {}
+    out = {}
+    for key, capability in METHOD_CAPABILITIES.items():
+        value = capabilities.get(capability)
+        if isinstance(value, dict):  # an expanded capability object
+            value = value.get("status")
+        out[key] = value if value in _CAPABILITY_STATES else "unrequested"
+    return out
+
+
 def state_of(account: dict) -> dict:
     """Status fields from a v1 account object (Stripe answers for Accounts
     v2 accounts in the v1 shape too)."""
     requirements = account.get("requirements") or {}
     due = requirements.get("currently_due") or []
     return {
+        "paymentMethods": payment_methods_of(account),
         "chargesEnabled": bool(account.get("charges_enabled")),
         "payoutsEnabled": bool(account.get("payouts_enabled")),
         "detailsSubmitted": bool(account.get("details_submitted")),

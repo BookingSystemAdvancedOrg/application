@@ -1312,3 +1312,114 @@ def test_payment_for_a_cancelled_occurrence_is_refunded(env):
     assert pay(env)["result"] == "refunded:cancelled"
     assert tickets(env) == [] and env.stripe.refunds()[-1]["key"] == "ticket-late-01ORDERAAAAAAAAAAAAAAAAAAA"
     assert occ_row(env)["held"] == 0
+
+
+# --- dev twin seed calls (shared/console_invoke.py, booqy-console devtwin.py) ----------------------
+
+def seed_call(method, path, route, body=None, tenant_id=TENANT_A):
+    call = {"operator": "devtwin", "tenantId": tenant_id, "method": method, "path": path, "route": route}
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+TWIN_EVENT = "devtwin_test_event"
+
+
+def twin_event_body():
+    """The seed's one test event: two ticket types, one evening 30 days ahead (18:00 to 22:00 UTC)."""
+    day = (NOW + timedelta(days=30)).strftime("%Y-%m-%d")
+    return {"eventId": TWIN_EVENT, "title": "Testkväll med livemusik",
+            "description": "Testevenemang i Booqys testmiljö. Inga riktiga biljetter säljs.",
+            "occurrences": [{"startAt": f"{day}T18:00:00Z", "endAt": f"{day}T22:00:00Z", "capacity": 40}],
+            "ticketTypes": [
+                {"typeId": "devtwin_standard", "name": "Standard", "priceOre": 25000, "vatRate": 6,
+                 "perOrderMax": 6, "sortOrder": 1},
+                {"typeId": "devtwin_middag", "name": "Middag och musik", "priceOre": 69500, "vatRate": 12,
+                 "capacity": 20, "includes": "Tre rätter", "perOrderMax": 4, "sortOrder": 2}],
+            "settings": {"perOrderMax": 6, "transferAllowed": True, "resaleAllowed": False}}
+
+
+def test_dev_twin_seed_publishes_a_test_event_in_dev_and_is_refused_in_prod(env, monkeypatch):
+    path = f"/locations/{LOC_A}/events"
+    create_seed = seed_call("POST", path, L, twin_event_body())
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    refused = env.api.handler(create_seed, None)
+    assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused"
+    assert not env.table.get_item(Key=et.event_key(TENANT_A, TWIN_EVENT)).get("Item")
+    assert env.api.handler({"job": "something else"}, None)["code"] == "unknown_event"
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+
+    created = env.api.handler(create_seed, None)
+    assert created["statusCode"] == 201, created
+    body = json.loads(created["body"])
+    assert body["status"] == "draft" and body["version"] == 1 and len(body["ticketTypes"]) == 2
+    assert env.table.get_item(Key=et.event_key(TENANT_A, TWIN_EVENT))["Item"]["updatedBy"] == "operator:devtwin"
+    # a rerun of the create is the same event, not a second one
+    assert env.api.handler(create_seed, None)["statusCode"] == 201
+    publish_seed = seed_call("POST", f"{path}/{TWIN_EVENT}/publish", L + "/{eventId}/publish", {"version": 1})
+    published_now = env.api.handler(publish_seed, None)
+    assert published_now["statusCode"] == 200, published_now
+    assert json.loads(published_now["body"])["status"] == "published"
+    status, listing = call(env, "GET", "/public/locations/{locationId}/events", params={"locationId": LOC_A})
+    assert status == 200 and [e["eventId"] for e in listing["events"]] == [TWIN_EVENT]
+    assert listing["events"][0]["fromPriceSek"] == 250
+    # another tenant's location stays out of reach
+    foreign = seed_call("POST", f"/locations/{LOC_B}/events", L, twin_event_body())
+    assert env.api.handler(foreign, None)["statusCode"] == 404
+
+
+def test_ordinary_jwt_event_calls_are_unchanged_by_the_dev_twin_entry(env):
+    assert create(env)[0] == 201
+    assert create(env, claims=STAFF_A, event_id=E2)[1]["error"] == "owner_only"
+    status, listing = call(env, "GET", L, params={"locationId": LOC_A}, claims=STAFF_A)
+    assert status == 200 and [e["eventId"] for e in listing["events"]] == [E1]
+
+
+def test_dev_twin_seed_reads_its_events_by_route_template(env, monkeypatch):
+    """The reads the seed decides on: the owner list with nextOccurrence and
+    one event by {eventId}."""
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    path = f"/locations/{LOC_A}/events"
+    assert env.api.handler(seed_call("POST", path, L, twin_event_body()), None)["statusCode"] == 201
+    listed = env.api.handler(seed_call("GET", path, L), None)
+    assert listed["statusCode"] == 200, listed
+    [row] = json.loads(listed["body"])["events"]
+    day = (NOW + timedelta(days=30)).strftime("%Y-%m-%d")
+    assert row["eventId"] == TWIN_EVENT and row["status"] == "draft" and row["nextOccurrence"] == f"{day}T18:00:00Z"
+    view = env.api.handler(seed_call("GET", f"{path}/{TWIN_EVENT}", L + "/{eventId}"), None)
+    assert view["statusCode"] == 200 and json.loads(view["body"])["version"] == 1
+    misfit = env.api.handler(seed_call("GET", f"{path}/{TWIN_EVENT}", L), None)
+    assert misfit["statusCode"] == 400  # the path doesn't fit the route template
+
+
+def test_dev_twin_entry_refuses_refunds_and_cancels(env, monkeypatch):
+    """Refunds and a cancelled evening (Stripe refunds, email to every ticket
+    holder) stay out of the console's reach, also in dev."""
+    all_tickets = sold(env)
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    stripe_calls, mails = len(env.stripe.calls), len(env.mail.calls)
+    ticket_id = all_tickets[0]["ticketId"]
+    for method, path, route, body in (
+            ("POST", f"/locations/{LOC_A}/events/tickets/{ticket_id}/refund", L + "/tickets/{ticketId}/refund",
+             {"txId": "01TXREFUNDAAAAAAAAAAAAAAAA", "reason": "Test"}),
+            ("POST", f"/locations/{LOC_A}/events/{E1}/occurrences/{OCC1}/cancel", OCC + "/cancel",
+             {"jobId": "01JOBAAAAAAAAAAAAAAAAAAAAA", "version": 1}),
+            ("PUT", f"/locations/{LOC_A}/events/{E1}", L + "/{eventId}", {"version": 2, "title": "Ny"}),
+            ("POST", f"/public/locations/{LOC_A}/events/checkout", "/public/locations/{locationId}/events/checkout",
+             {"orderId": "01ORDERTWINAAAAAAAAAAAAAAA"})):
+        refused = env.api.handler(seed_call(method, path, route, body), None)
+        assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused", route
+    assert [t["status"] for t in tickets(env)] == [t["status"] for t in all_tickets]
+    assert len(env.stripe.calls) == stripe_calls and len(env.mail.calls) == mails
+
+
+def test_sweep_and_hooks_still_run_in_prod_with_the_dev_twin_entry(env, monkeypatch):
+    published(env)
+    buy(env, qty=4)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    env.clock.value = NOW + timedelta(minutes=16)
+    assert env.api.handler({"job": "sweep"})["expired"] == 1
+    assert occ_row(env)["held"] == 0
+    out = env.api.handler({"hook": "tenant.purge", "tenantId": TENANT_A, "locationIds": [LOC_A], "round": 1})
+    assert out["ok"] and out["done"]

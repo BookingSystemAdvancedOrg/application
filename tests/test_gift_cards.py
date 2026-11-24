@@ -612,3 +612,80 @@ def test_code_format():
     assert gc.normalize_code(gc.display_code(code).lower()) == code
     assert gc.normalize_code("O0IL-1111-2222-3333") == "0011111122223333"
     assert gc.normalize_code("short") is None
+
+
+# --- dev twin seed calls (shared/console_invoke.py, booqy-console devtwin.py) ----------------------
+
+def seed_call(method, path, body=None, tenant_id=TENANT_A, route=None):
+    call = {"operator": "devtwin", "tenantId": tenant_id, "method": method, "path": path}
+    if route is not None:
+        call["route"] = route
+    if body is not None:
+        call["body"] = body
+    return {"booqyConsole": call}
+
+
+TWIN_SETTINGS = {"enabled": True, "amountsSek": [200, 500, 1000], "customMinSek": 200, "customMaxSek": 5000,
+                 "validityMonths": 12, "version": 0}
+
+
+def test_dev_twin_seed_sets_gift_cards_up_in_dev_and_is_refused_in_prod(env, monkeypatch):
+    seed = seed_call("PUT", "/tenant/gift-cards/settings", TWIN_SETTINGS)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    refused = env.api.handler(seed, None)
+    assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused"
+    assert not env.res.Table(TABLE).get_item(Key=gc.settings_key(TENANT_A)).get("Item")
+    # Scheduler and hook invokes carry no console call and pass in prod as before.
+    assert env.api.handler({"job": "something else"}, None)["code"] == "unknown_event"
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+
+    current = env.api.handler(seed_call("GET", "/tenant/gift-cards/settings"), None)
+    assert current["statusCode"] == 200 and json.loads(current["body"])["version"] == 0
+    saved = env.api.handler(seed, None)
+    assert saved["statusCode"] == 200, saved
+    assert json.loads(saved["body"]) == {**TWIN_SETTINGS, "version": 1}
+    row = env.res.Table(TABLE).get_item(Key=gc.settings_key(TENANT_A))["Item"]
+    assert row["updatedBy"] == "operator:devtwin" and row["tenantId"] == TENANT_A
+    status, offer = http_call(env, "GET", OFFER, params={"locationId": LOC_A})
+    assert status == 200 and offer["amountsSek"] == [200, 500, 1000] and offer["validityMonths"] == 12
+    # the seed writes only its own tenant
+    assert not env.res.Table(TABLE).get_item(Key=gc.settings_key(TENANT_B)).get("Item")
+
+
+def test_ordinary_jwt_calls_are_unchanged_by_the_dev_twin_entry(env):
+    assert enable(env)[0] == 200
+    status, body = http_call(env, "GET", "/tenant/gift-cards/settings", claims=OWNER_A)
+    assert status == 200 and body["version"] == 1
+    assert http_call(env, "GET", "/tenant/gift-cards/settings", claims=STAFF_A)[1]["error"] == "no_access"
+    assert http_call(env, "GET", "/tenant/gift-cards/settings")[0] == 401
+
+
+def test_dev_twin_entry_refuses_routes_the_seed_does_not_use(env, monkeypatch):
+    """Refund, adjust and resend (Stripe refunds, a new code emailed to the
+    buyer) stay out of the console's reach, also in dev."""
+    _, card_id = issue(env)
+    mails, stripe_calls = len(env.mail.calls), len(env.stripe.calls)
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    for action, body in (("refund", {"txId": "01REFUNDAAAAAAAAAAAAAAAAAA", "reason": "Test"}),
+                         ("adjust", {"txId": "01ADJUSTAAAAAAAAAAAAAAAAAA", "deltaSek": -100, "reason": "Test"}),
+                         ("resend", {"to": "buyer"})):
+        refused = env.api.handler(seed_call("POST", f"/tenant/gift-cards/{card_id}/{action}", body,
+                                            route="/tenant/gift-cards/{cardId}/" + action), None)
+        assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused", action
+    refused = env.api.handler(seed_call("POST", "/public/locations/loc/gift-cards/checkout", {"amountSek": 500},
+                                        route="/public/locations/{locationId}/gift-cards/checkout"), None)
+    assert json.loads(refused["body"])["error"] == "console_refused"
+    card = gc.get_card(TENANT_A, card_id)
+    assert card["status"] == "active" and int(card["balanceOre"]) == 50000
+    assert len(env.mail.calls) == mails and len(env.stripe.calls) == stripe_calls
+
+
+def test_hooks_and_jobs_still_run_in_prod_with_the_dev_twin_entry(env, monkeypatch):
+    _, card_id = issue(env)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    env.clock.value = NOW + timedelta(days=24 * 31 + 3)
+    assert env.api.handler({"job": "nightly"})["expired"] == 1
+    assert gc.get_card(TENANT_A, card_id)["status"] == "expired"
+    answer = hook(env, "tenant.purge", tenantId=TENANT_A, locationIds=[LOC_A, LOC_A2], round=1)
+    assert answer["ok"] and answer["done"]
+    assert not env.res.Table(TABLE).get_item(Key=gc.settings_key(TENANT_A)).get("Item")

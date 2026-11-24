@@ -120,7 +120,7 @@ Reservation table:
 
 | Key | Item |
 |---|---|
-| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `linkVersion` (`manageTokenHash` on older bookings), `notice`, `reminderSentAt`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl`; a phone booking with a card link also `guaranteeLink` {url, page, by, sends, textedAt} (Phone bookings) |
+| `LOCATION#<l>` / `RESERVATION#<date>#<id>` | the booking: times (`bookedFor`/`endsAt` UTC, local `date`/`startTime`/`endTime`, `timezone`), `tableIds`, `tableLabels` (Table names), `seats`, `partySize`, `layoutVersion`, guest fields, `source` (online/phone/walk_in/staff), `status`, `linkVersion` (`manageTokenHash` on older bookings), `notice`, `reminderSentAt`, `termsAcceptedAt`, `history[]`, `version`, `tenantId`, `ttl`; a phone booking with a card link also `guaranteeLink` {url, page, by, sends, textedAt} (Phone bookings) |
 | `LOCATION#<l>` / `RID#<id>` | pointer: id -> `date` (read a booking by id; moves update it) |
 
 Slot Occupancy table:
@@ -132,6 +132,38 @@ Slot Occupancy table:
 
 `ttl` on a booking = visit end + `RESERVATION_RETENTION_DAYS` (default 395,
 ~13 months): guest data is deleted automatically after that.
+
+## Table names
+
+A person never reads or hears a table id: not in emails, SMS, printed
+slips, screens, aria-labels, phone agent speech or the tool results the
+phone model reads. Ids stay in machine fields only (API JSON, URLs, DOM
+data attributes, the GDPR export).
+
+A table is named by its label (`shared/table_names.py`, the same count as
+admin `src/shared/tables.ts` tablesFromLayout and the site kit's
+labelTables): its own label, else its number 1, 2, 3 over all floors of the
+layout version that applies to the slot (floors by level, tables in drawing
+order). A label that starts with a digit gets the word ("Bord 3", "Table 3"
+in English); an own name ("Bar") is shown as it is.
+
+- `get-availability` gives every slot table a `label` from that slot's own
+  `layoutVersion` (also on `unavailable` entries).
+- `tableLabels` on a reservation is a snapshot aligned with `tableIds`,
+  stamped from the slot's layout version by create-pending-reservation
+  (online, staff, walk-in, phone, holds), mark-arrived (a move or a table
+  change) and waitlist (offers and seats). It is not refreshed when a later
+  layout version renumbers tables.
+- A slot after a scheduled layout cutover is named by the pending version
+  (its `label` and the booking's `tableLabels`). A client naming a booking
+  uses `tableLabels` first, then the booking's `layoutVersion`, and the
+  active layout last: the active layout alone gives other numbers (or no
+  name for a table that is new in the pending version) until the cutover.
+  If the switch is stopped or moved later, the booking keeps the pending
+  labels.
+- Where the layout is not read (notification, stripe webhook, guest manage
+  page), the name comes from `tableLabels`. Bookings made before 2026-11-24
+  have no snapshot: the staff email says "Bord: se bokningen i admin".
 
 ## Double-booking protection
 
@@ -189,6 +221,17 @@ location's (or tenant's) Stripe account can take charges.
 | Staff marks no-show | tables freed, no-show fee charged (`chargeFee: false` waives) -> `no_show_charged` / `no_show_charge_failed` |
 | `POST .../payment {action: charge}` | retry; an interrupted attempt reuses its Stripe idempotency key (never charges twice), a declined one starts a new attempt |
 | `POST .../payment {action: refund}` | owner only, partial or full; Dashboard refunds arrive via `charge.refunded` |
+
+**Methods:** card (Visa, Mastercard), Apple Pay and Google Pay (wallets
+on a card: the SetupIntent stays `payment_method_types: ["card"]`, the
+site's host is registered on the account first, shared/payment_domains.py).
+Swish is single-use, Klarna's saved methods are for a customer who is
+present (on-demand, subscriptions) and PayPal is not offered for direct
+charges, so none of them can carry a later no-show or late-cancel fee. The
+card that secures the booking is stored as `guaranteeCard` (`{method:
+card | apple_pay | google_pay, brand, last4}`, staff view only): from the
+SetupIntent with `payment_method` expanded on `POST .../confirm`, from the
+PaymentMethod on the webhook (best effort).
 
 Guests get a receipt (`fee_charged` notice), the restaurant an email when a
 fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as

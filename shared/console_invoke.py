@@ -26,8 +26,13 @@ manage-user additionally treats this caller as able to manage owners
 Dev twins (dev only, booqy-console docs/DEV-TWINS.md): the console sets up a
 customer's twin in dev through the admin's own functions (create-location,
 get-menu, manage-menu, pre-signed-url, the layout functions, google-business,
-phone-agent, tenant-account's DPA). Those call unwrap(event, dev_only=True): in prod such
-a call is refused, so prod keeps the Users tab and nothing more. A call for a
+phone-agent, catering-settings, catering-discount-tiers, gift-cards, waitlist,
+events-tickets, tenant-account's DPA). Those call unwrap(event, dev_only=True): such a
+call is taken only where ENVIRONMENT is "dev" (prod, or a Lambda without the
+variable, refuses it), so prod keeps the Users tab and nothing more.
+dev_twin_entry(routes={...}) also limits a function to the routes the seed
+uses: a console call for any other routeKey (refunds, resends, guest SMS)
+is refused. A call for a
 route with path parameters names its API Gateway route template:
 
     {"booqyConsole": {..., "method": "PUT", "path": "/locations/01abc",
@@ -95,11 +100,12 @@ def unwrap(event: dict, *, prefix: str = "", dev_only: bool = False) -> dict:
 
     prefix: the route prefix the function's own paths carry in API Gateway
     ("" for tenant-account's /tenant, the proxy path for manage-user).
-    dev_only: refuse console calls in prod (the dev twin seeder's functions)."""
+    dev_only: take console calls only where ENVIRONMENT is "dev" (the dev twin
+    seeder's functions); prod and a missing variable refuse them."""
     _OPERATOR.set(None)
     if not isinstance(event, dict) or KEY not in event:
         return event
-    if dev_only and os.environ.get("ENVIRONMENT") == "prod":
+    if dev_only and os.environ.get("ENVIRONMENT") != "dev":
         raise Refused("console calls are dev only here")
     if "requestContext" in event or "routeKey" in event or "rawPath" in event:
         raise Refused("console call mixed with API Gateway fields")
@@ -158,15 +164,31 @@ def operator() -> Optional[str]:
     return _OPERATOR.get()
 
 
-def dev_twin_entry(handler):
+def dev_twin_entry(handler=None, *, routes=None):
     """Lets a function's Lambda handler take the dev twin seeder's console
-    calls (dev only; prod answers 400). API Gateway events pass unchanged."""
-    @functools.wraps(handler)
-    def wrapped(event, context=None):
-        try:
-            event = unwrap(event, dev_only=True)
-        except Refused as exc:
-            return {"statusCode": 400, "headers": {"Content-Type": "application/json"},
-                    "body": json.dumps({"error": "console_refused", "message": str(exc)})}
-        return handler(event, context)
-    return wrapped
+    calls (dev only; elsewhere 400). API Gateway, hook and scheduler events
+    pass unchanged.
+
+    routes: the routeKeys ("PUT /locations/{locationId}/waitlist/settings")
+    a console call may reach; any other is refused (400), so the console can't
+    refund, resend or text a guest through this entry. None allows every route."""
+    allowed = frozenset(routes) if routes is not None else None
+
+    def refuse(message):
+        return {"statusCode": 400, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "console_refused", "message": message})}
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapped(event, context=None):
+            try:
+                event = unwrap(event, dev_only=True)
+            except Refused as exc:
+                return refuse(str(exc))
+            if allowed is not None and is_operator() and event.get("routeKey") not in allowed:
+                _OPERATOR.set(None)
+                return refuse("route is not open to the dev twin seeder")
+            return fn(event, context)
+        return wrapped
+
+    return decorate(handler) if handler is not None else decorate

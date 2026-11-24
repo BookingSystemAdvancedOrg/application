@@ -81,3 +81,45 @@ def test_query_becomes_query_string_parameters(monkeypatch):
     assert console_invoke.unwrap(_call(), dev_only=True)["queryStringParameters"] is None
     with pytest.raises(console_invoke.Refused):
         console_invoke.unwrap(_call(query={"size": 12}), dev_only=True)
+
+
+@pytest.mark.parametrize("environment", [None, "", "prod", "staging", "Dev"])
+def test_dev_only_calls_need_environment_dev(monkeypatch, environment):
+    """Fail closed: a Lambda without ENVIRONMENT (or with any other value)
+    refuses the seeder's calls instead of taking them."""
+    if environment is None:
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+    else:
+        monkeypatch.setenv("ENVIRONMENT", environment)
+    with pytest.raises(console_invoke.Refused, match="dev only"):
+        console_invoke.unwrap(_call(route="/locations/{locationId}"), dev_only=True)
+    assert not console_invoke.is_operator()
+
+
+def test_dev_twin_entry_route_allowlist(monkeypatch):
+    seen = []
+
+    @console_invoke.dev_twin_entry(routes={"PUT /locations/{locationId}", "GET /tenant/settings"})
+    def handler(event, context):
+        seen.append((event, console_invoke.is_operator()))
+        return {"statusCode": 200}
+
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    assert handler(_call(route="/locations/{locationId}"), None) == {"statusCode": 200}
+    assert seen[-1][1] is True
+    assert handler(_call(method="GET", path="/tenant/settings"), None) == {"statusCode": 200}
+    # A route the seed doesn't use: refused before the handler runs, operator cleared.
+    for other in (_call(method="POST", path="/locations/loc-1/refund", route="/locations/{locationId}/refund"),
+                  _call(method="DELETE", route="/locations/{locationId}"),
+                  _call(method="PUT", path="/locations/loc-1")):
+        refused = handler(other, None)
+        assert refused["statusCode"] == 400 and json.loads(refused["body"])["error"] == "console_refused"
+        assert not console_invoke.is_operator()
+    assert len(seen) == 2
+    # API Gateway, hook and scheduler events are not console calls: any route passes.
+    api = {"routeKey": "POST /locations/{locationId}/refund", "requestContext": {}}
+    assert handler(api, None) == {"statusCode": 200} and seen[-1] == (api, False)
+    assert handler({"job": "sweep"}, None) == {"statusCode": 200} and seen[-1] == ({"job": "sweep"}, False)
+    # The allowlist doesn't open prod.
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    assert handler(_call(route="/locations/{locationId}"), None)["statusCode"] == 400

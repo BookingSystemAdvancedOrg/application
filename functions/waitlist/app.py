@@ -16,6 +16,8 @@ TRIGGER:
     POST /public/waitlist/{token}/accept                        F9 take the offered table -> booking
     POST /public/waitlist/{token}/leave                         F10
 
+    Booqy Console dev twin seeder (dev only, prod answers 400): {"booqyConsole": ...}
+    becomes the owner's API Gateway event, seed routes only (shared/console_invoke.py dev_twin_entry).
     EventBridge Scheduler (one-time)  {"waitlistJob": {"action": "expire", locationId, date, entryId}}
     Lambda invoke (no requestContext): {"hook": ...} privacy.export, privacy.erase, tenant.purge
 
@@ -47,7 +49,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import availability, booking_rules, events, guarantee, http, manage_link, request_guard, site, tenant
-from shared import bot_check
+from shared import bot_check, console_invoke, table_names
 from shared import reservations as r
 from shared.features import waitlist as wl
 
@@ -230,6 +232,9 @@ def _reservation(ctx, entry, context, slot, seats, table_ids, now, *, day, statu
         "history": [r.history_entry("held" if status == r.HELD else "created", by, now, status=status,
                                     source="waitlist")],
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     if status == r.HELD:
         item.update({"holdOnly": True, "fromHold": True, "pendingExpiresAt": r.iso(hold_expires),
                      "ttl": int(hold_expires.timestamp()) + 2 * 86400})
@@ -808,6 +813,17 @@ ROUTES = {
 }
 
 
+# Booqy Console's dev twin seeder may call this as the twin's owner (dev only,
+# shared/console_invoke.py), and only for the routes it seeds with; any other
+# console call (refunds, resends, messages to guests) is refused. Everything
+# else is API Gateway, hooks and schedules as before.
+TWIN_ROUTES = frozenset({
+    "GET /locations/{locationId}/waitlist",
+    "PUT /locations/{locationId}/waitlist/settings",
+})
+
+
+@console_invoke.dev_twin_entry(routes=TWIN_ROUTES)
 def handler(event, context=None):
     if isinstance(event, dict) and "requestContext" not in event:
         if "hook" in event:

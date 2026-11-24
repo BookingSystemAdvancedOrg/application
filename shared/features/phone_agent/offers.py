@@ -16,6 +16,8 @@ next day once; then a callback.
 
 import math
 
+from shared import table_names
+
 
 NEARBY_GAP_M = 1.0  # [NEEDS YOUR OK: the 1.0 m gap]
 NEARBY_KINDS = ("adjacent_pair", "larger", "phone_only")
@@ -54,6 +56,17 @@ def edge_gap(a, b):
 
 def _tables(layout):
     return {e["elementId"]: e for e in (layout or {}).get("elements") or [] if e.get("type") == "table"}
+
+
+def layout_labels(layout):
+    """{tableId: label} for the public active layout body. That body
+    (list-layout-version `_customer_layout`) moves the floors into `floors`,
+    so they are put back as floor elements first: otherwise the tables are
+    numbered in drawing order instead of by floor level (admin, site kit)."""
+    layout = layout or {}
+    floors = [{"type": "floor", "elementId": f.get("floorId"), "name": f.get("name"), "level": f.get("level")}
+              for f in layout.get("floors") or [] if isinstance(f, dict)]
+    return table_names.labels_by_id(floors + [e for e in layout.get("elements") or [] if e.get("type") != "floor"])
 
 
 def nearby(guest, staff, layout, time, party_size, *, nearby_tables=True, phone_only_tables=True):
@@ -96,6 +109,13 @@ def nearby(guest, staff, layout, time, party_size, *, nearby_tables=True, phone_
                    and free[t] >= party_size)
     if phone:
         out.append({"tableIds": [phone[0][1]], "seats": phone[0][0], "kind": "phone_only"})
+    # Names for the caller ("Table 3"), never ids: the slot's own layout
+    # version (get-availability `label`), else the active layout's numbering.
+    names = {t["tableId"]: t["label"] for t in staff_slot.get("tables") or [] if t.get("label")}
+    if not names:
+        names = layout_labels(layout)
+    for option in out:
+        option["tables"] = [table_names.table_title(names.get(t), "en") for t in option["tableIds"]]
     return out
 
 

@@ -117,6 +117,7 @@ T_FEES = "Stripe-avgifter"
 T_PAYOUT = "Utbetalning från Stripe till bank"
 T_PAYOUT_BACK = "Utbetalning tillbaka till Stripe"
 T_STRIPE_OTHER = "Övrig Stripe-händelse (kontrollera)"
+T_REFUND_FAILED = "Återbetalning som inte gick fram (Stripe)"
 T_REFUNDS_OWED = "Återbetalning catering att göra"
 T_ROUNDING = "Öresavrundning"
 
@@ -640,6 +641,15 @@ def stripe_events(transactions, tz):
             out.append(transfer(day, "stripe", "bank", amount, T_PAYOUT_BACK))
         elif kind in ("stripe_fee", "tax_fee", "network_cost"):
             out.append(transfer(day, "cardFees", "stripe", -amount, T_FEES))
+        elif kind == "refund_failure" and amount:
+            # A refund the guest's bank or Swish turned down after it was
+            # made: the money is back on the Stripe balance and the guest is
+            # still owed it. The refund stays booked; this waits on the OBS
+            # account until the restaurant pays back another way.
+            event = transfer(day, "stripe", "unclassified", amount, T_REFUND_FAILED)
+            event.warnings.append("En återbetalning gick inte fram och pengarna är tillbaka hos Stripe. Betala "
+                                  "tillbaka till kunden på annat sätt och boka mot OBS-kontot.")
+            out.append(event)
         elif amount:
             event = transfer(day, "stripe", "unclassified", amount, T_STRIPE_OTHER)
             event.warnings.append(f"Stripe-händelse av typen {kind} bokad mot OBS-konto.")
@@ -647,7 +657,7 @@ def stripe_events(transactions, tz):
     return out, charges
 
 
-_NOT_CARD = (T_FEES, T_PAYOUT, T_PAYOUT_BACK, T_STRIPE_OTHER)
+_NOT_CARD = (T_FEES, T_PAYOUT, T_PAYOUT_BACK, T_STRIPE_OTHER, T_REFUND_FAILED)
 
 
 def reconcile(events, charges, first, last):

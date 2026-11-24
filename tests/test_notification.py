@@ -563,3 +563,64 @@ def test_an_ics_bug_never_blocks_the_confirmation(env, monkeypatch):
     guest = next(c for c in ses.calls if c["Destination"]["ToAddresses"] == ["anna@example.se"])
     assert guest["Message"]["Subject"]["Data"] == "Bokningsbekräftelse - Roma Södermalm"
     assert "Attachments" not in guest
+
+
+# --- table names: the staff email never shows a table id (docs/RESERVATIONS.md "Table names") ---
+
+UUID_A = "8ed5290e-8b84-49cc-ac46-dc5438db5181"
+UUID_B = "1c3f9a2b-0d4e-4f5a-9b6c-7d8e9f0a1b2c"
+
+
+def _staff_mails(ses):
+    return [c for c in ses.calls if c["Destination"]["ToAddresses"] == ["soder@roma.se"]]
+
+
+def test_staff_email_names_the_tables_by_their_labels(env):
+    module, ses, _ = env
+    run(module, record(booking(tableIds=[UUID_A, UUID_B], tableLabels=["3", "Bar"]), event_name="INSERT"))
+    (staff,) = _staff_mails(ses)
+    text = staff["Message"]["Body"]["Text"]["Data"]
+    assert "Bord: 3, Bar" in text
+    assert UUID_A not in text and UUID_B not in text
+
+
+def _confirmed():
+    return booking(tableIds=[UUID_A]), None, "INSERT"
+
+
+def _cancelled_by_guest():
+    return (booking(tableIds=[UUID_A], status="cancelled",
+                    notice={"id": "c" * 32, "type": "cancelled_by_guest", "at": NOW.isoformat()}),
+            booking(tableIds=[UUID_A]), "MODIFY")
+
+
+def _fee_failed():
+    return (booking(tableIds=[UUID_A], status="no_show_charge_failed", source="phone",
+                    payment={"kind": "no_show", "amount": 60000, "attempt": 1, "error": "card_declined"},
+                    notice={"id": "e" * 32, "type": "fee_failed", "at": NOW.isoformat()}),
+            booking(tableIds=[UUID_A]), "MODIFY")
+
+
+@pytest.mark.parametrize("make", [_confirmed, _cancelled_by_guest, _fee_failed])
+def test_staff_email_of_an_old_booking_never_shows_the_table_id(env, make):
+    module, ses, _ = env
+    new, old, event_name = make()
+    run(module, record(new, old=old, event_name=event_name))
+    (staff,) = _staff_mails(ses)
+    subject, text = staff["Message"]["Subject"]["Data"], staff["Message"]["Body"]["Text"]["Data"]
+    assert "Bord: se bokningen i admin" in text
+    assert UUID_A not in subject and UUID_A not in text
+
+
+@pytest.mark.parametrize("kind", ["confirmed", "cancelled_by_guest", "fee_failed"])
+def test_messages_staff_email_uses_labels_or_a_neutral_line(kind):
+    from shared import messages
+    extra = {"payment": {"kind": "no_show", "amount": 60000, "error": "card_declined"}} if kind == "fee_failed" else {}
+    labelled = booking(tableIds=[UUID_A, UUID_B], tableLabels=["3", "4"], **extra)
+    old = booking(tableIds=[UUID_A], **extra)
+    loc = {"name": "Södermalm"}
+    tenant = {"name": "Roma"}
+    subject, text = messages.staff_email(kind, labelled, tenant, loc, "https://admin.example.se")
+    assert "Bord: 3, 4" in text and UUID_A not in subject + text and UUID_B not in subject + text
+    subject, text = messages.staff_email(kind, old, tenant, loc, "https://admin.example.se")
+    assert "Bord: se bokningen i admin" in text and UUID_A not in subject + text

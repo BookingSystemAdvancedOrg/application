@@ -465,14 +465,14 @@ def test_guest_view_explains_every_table_it_does_not_offer(env):
     slot = next(s for s in guest_view(env, 5)["slots"] if s["startTime"] == "18:00")
     assert slot["options"] == [{"tableIds": ["table-c"], "seats": 6}]
     assert slot["unavailable"] == [
-        {"tableId": "table-a", "reason": "phone"},
-        {"tableId": "table-b", "minParty": 2, "maxParty": 4, "reason": "too_small"},
+        {"tableId": "table-a", "label": "1", "reason": "phone"},
+        {"tableId": "table-b", "label": "2", "minParty": 2, "maxParty": 4, "reason": "too_small"},
     ]
     two = next(s for s in guest_view(env, 2)["slots"] if s["startTime"] == "18:00")
     assert two["options"] == [{"tableIds": ["table-b"], "seats": 4}]
     assert two["unavailable"] == [
-        {"tableId": "table-a", "reason": "phone"},
-        {"tableId": "table-c", "minParty": 3, "maxParty": 6, "reason": "too_large"},
+        {"tableId": "table-a", "label": "1", "reason": "phone"},
+        {"tableId": "table-c", "label": "3", "minParty": 3, "maxParty": 6, "reason": "too_large"},
     ]
     # A party nothing fits gets no slot at all (nothing to explain on a table).
     assert guest_view(env, 1)["slots"] == []
@@ -480,7 +480,7 @@ def test_guest_view_explains_every_table_it_does_not_offer(env):
     # A guest's booking shows as booked - nothing else about it.
     assert guest_booking(env, tables=("table-c",), party=4)["statusCode"] == 201
     three = next(s for s in guest_view(env, 3)["slots"] if s["startTime"] == "18:00")
-    assert {"tableId": "table-c", "reason": "booked"} in three["unavailable"]
+    assert {"tableId": "table-c", "label": "3", "reason": "booked"} in three["unavailable"]
 
 
 def test_guest_view_tells_a_staff_block_from_a_booking(env):
@@ -490,7 +490,7 @@ def test_guest_view_tells_a_staff_block_from_a_booking(env):
         "source": "manual_block", "createdBy": "staff", "createdAt": "2026-09-08T10:00:00Z",
         "ttl": 4102444800})
     slot = next(s for s in guest_view(env, 4)["slots"] if s["startTime"] == "18:00")
-    assert {"tableId": "table-c", "reason": "blocked"} in slot["unavailable"]
+    assert {"tableId": "table-c", "label": "3", "reason": "blocked"} in slot["unavailable"]
     # The staff view has no reasons at all.
     staff_slot = next(s for s in body_of(env["m"]["avail"].handler(
         {"requestContext": {"http": {"method": "GET"}}, "pathParameters": {"locationId": LOC_A},
@@ -1289,3 +1289,66 @@ def test_staff_bookings_need_no_bot_check(bot_check):
 def test_until_enforced_no_check_is_made(env, monkeypatch):
     monkeypatch.delenv("BOT_CHECK_ENFORCED", raising=False)
     assert online_attempt(env)["statusCode"] == 201
+
+
+# --- table names (docs/RESERVATIONS.md "Table names"): table-a/b/c are 1/2/3 --------------
+
+def test_online_booking_stamps_the_table_labels_and_the_guest_sees_them(env):
+    created = body_of(guest_booking(env))
+    assert created["tableLabels"] == ["2"] and created["tableIds"] == ["table-b"]
+    assert stored_item(env, created["reservationId"])["tableLabels"] == ["2"]
+    guest = body_of(guest_get(env, created["reservationId"], created["manageToken"]))
+    assert guest["tableLabels"] == ["2"]
+    (row,) = body_of(staff_list(env))["items"]
+    assert row["tableLabels"] == ["2"]
+
+
+def test_staff_phone_and_walk_in_bookings_are_stamped(env):
+    phone = manual(env, OWNER_A, source="phone", phone="070-111 22 33")
+    assert phone["statusCode"] == 201, phone
+    assert body_of(phone)["tableLabels"] == ["1"]
+    env["clock"].value = datetime(2026, 9, 20, 15, 0, tzinfo=timezone.utc)  # 17:00 local, same day
+    walk = manual(env, source="walk_in", tableIds=["table-c"], startTime="17:00")
+    assert walk["statusCode"] == 201, walk
+    assert body_of(walk)["tableLabels"] == ["3"]
+    assert stored_item(env, body_of(walk)["reservationId"])["tableLabels"] == ["3"]
+
+
+def test_a_table_move_restamps_the_labels_without_a_history_field(env):
+    rid = body_of(manual(env, OWNER_A, source="staff"))["reservationId"]
+    moved = edit(env, rid, {"tableIds": ["table-c"]})
+    assert moved["statusCode"] == 200, moved
+    assert body_of(moved)["tableLabels"] == ["3"]
+    item = stored_item(env, rid)
+    assert item["tableLabels"] == ["3"]
+    assert "tableLabels" not in item["history"][-1]["fields"]
+    assert "tableIds" in item["history"][-1]["fields"]
+
+
+def test_a_same_value_patch_on_an_old_booking_writes_nothing(env):
+    rid = body_of(manual(env, OWNER_A, source="staff"))["reservationId"]
+    table = env["res"].Table(RESERVATION_TABLE)
+    table.update_item(Key={"PK": f"LOCATION#{LOC_A}", "SK": f"RESERVATION#{DAY}#{rid}"},
+                      UpdateExpression="REMOVE tableLabels")
+    before = stored_item(env, rid)
+    response = edit(env, rid, {"tableIds": ["table-a"]})
+    assert response["statusCode"] == 200, response
+    assert stored_item(env, rid) == before
+    assert "tableLabels" not in body_of(response)
+
+
+def test_a_date_move_keeps_the_labels_on_the_new_row(env):
+    created = body_of(guest_booking(env))
+    moved = edit(env, created["reservationId"], {"date": "2026-09-21"})
+    assert moved["statusCode"] == 200, moved
+    assert stored_item(env, created["reservationId"], day="2026-09-21")["tableLabels"] == ["2"]
+
+
+def test_guest_view_of_an_old_booking_has_no_labels_but_keeps_table_ids():
+    item = {"reservationId": "r" * 32, "status": "reserved", "date": DAY, "startTime": "18:00",
+            "endTime": "20:00", "bookedFor": "2026-09-20T16:00:00Z", "endsAt": "2026-09-20T18:00:00Z",
+            "tableIds": ["table-b"], "partySize": 2}
+    view = shared_r.guest_view(item, now=NOW)
+    assert "tableLabels" not in view and view["tableIds"] == ["table-b"]
+    view = shared_r.guest_view({**item, "tableLabels": ["2"]}, now=NOW)
+    assert view["tableLabels"] == ["2"]

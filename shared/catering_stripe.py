@@ -1,14 +1,19 @@
 """Stripe for catering, on the restaurant's connected account (direct
 charges, platform key + Stripe-Account header, shared/stripe_client.py).
 
-    private guest   Checkout (card / Swish / Klarna as the account allows)
-                    right after signing; Stripe also creates a paid receipt
+    private guest   Checkout right after signing: card, Apple Pay, Google
+                    Pay, Swish, Klarna - what the account has activated
+                    (dynamic payment methods; Swish and Klarna up to
+                    150 000 kr, shared/payment_methods.py); Stripe also creates a paid receipt
                     invoice in the account's invoice numbering series.
                     embedded: ui_mode "elements", paid with Stripe's Payment
                     Element on the site's own page (same session and events).
     company         Stripe Invoice (send_invoice, due in paymentTermsDays),
                     created and sent when the offer is signed; Stripe e-mails
-                    it and the overdue reminders.
+                    it and the overdue reminders. Paid by card on Stripe's
+                    invoice page (Apple Pay and Google Pay ride on it) or by
+                    Bankgiro: Klarna and Swish are for consumers (Stripe
+                    Invoicing has no Swish), so the invoice names card only.
 
 Every line carries the account's inclusive tax rate for the offer's VAT rate
 (12 % or 6 %, shared/catering.py vat_rate_for; prices on the offer include
@@ -134,6 +139,7 @@ def invoice(item, offer, account, settings):
         "auto_advance": False,
         "currency": c.CURRENCY,
         "pending_invoice_items_behavior": "exclude",
+        "payment_settings": {"payment_method_types": ["card"]},
         "custom_fields": custom_fields,
         "description": f"Catering {item.get('deliveryDate')} enligt signerad offert v{int(offer['version'])}",
         "metadata": _metadata(item, offer),
@@ -158,10 +164,13 @@ def invoice(item, offer, account, settings):
     return final
 
 
-def refund_payment(account, payment_intent, request_id, *, idempotency_key=None):
+def refund_payment(account, payment_intent, request_id, location_id=None, *, idempotency_key=None):
+    """locationId on the refund: a refund.failed finds its request by it
+    (a company invoice's PaymentIntent carries no metadata of its own)."""
+    metadata = {"requestId": request_id, **({"locationId": location_id} if location_id else {})}
     return stripe.request("POST", "/v1/refunds", {
         "payment_intent": payment_intent, "reason": "requested_by_customer",
-        "metadata": {"requestId": request_id},
+        "metadata": metadata,
     }, account=account, idempotency_key=idempotency_key or f"cat-refund-{request_id}")
 
 
@@ -184,10 +193,10 @@ def invoice_payment_intent(account, invoice):
     return None
 
 
-def refund_late_payment(account, payment_intent, request_id):
+def refund_late_payment(account, payment_intent, request_id, location_id=None):
     """A Checkout payment that completed after the request was cancelled
     or expired: refunded in full (one key per payment intent)."""
-    return refund_payment(account, payment_intent, request_id,
+    return refund_payment(account, payment_intent, request_id, location_id,
                           idempotency_key=f"cat-refund-late-{payment_intent}")
 
 

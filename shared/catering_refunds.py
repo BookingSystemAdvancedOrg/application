@@ -135,5 +135,8 @@ def refund(item, account, amount, now, actor, *, reason=None, notify=True, cance
 
 
 def record_stripe_refund(item, amount_refunded, now):
-    """charge.refunded on the request's payment: (item, result)."""
-    return refunds.from_stripe(_Catering(item), item, amount_refunded, now)
+    """charge.refunded on the request's payment: (item, result). Failed
+    refunds (refundFailed) stay in refundedAmount but not in Stripe's
+    amount_refunded, so they are added back before comparing."""
+    failed = sum(int(e.get("amount") or 0) for e in item.get("refundFailed") or [] if isinstance(e, dict))
+    return refunds.from_stripe(_Catering(item), item, int(amount_refunded or 0) + failed, now)

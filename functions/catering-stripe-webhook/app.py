@@ -25,6 +25,16 @@ PURPOSE:
                                                  never counted twice)
       credit_note.created                        noted only (its card refund
                                                  arrives as charge.refunded)
+      refund.failed                              a refund Stripe gave back to
+                                                 the balance (Swish can refuse
+                                                 one after accepting it): listed
+                                                 once (refundFailed), the
+                                                 restaurant pays back another way
+
+    How it was paid (paidWith, shared/payment_methods.py: card, Apple Pay,
+    Google Pay, Swish, Klarna) is read from the PaymentIntent when a
+    private guest's payment confirms and when a company pays its invoice
+    by card; best effort, the payment settles regardless.
 
     Matched by metadata (locationId, requestId) and the event's connected
     account = the request's stripeAccountId. Every event is written first
@@ -50,6 +60,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from shared import catering as c
 from shared import catering_refunds as cr
 from shared import catering_stripe as cs
+from shared import payment_methods as pm
 from shared import refunds
 from shared import stripe_client as stripe
 
@@ -123,14 +134,19 @@ def _session(kind, session, account, stripe_event, now):
     if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         if session.get("payment_status") != "paid":
             return _audit(item, stripe_event, now, "waiting")
+        paid_with = None
         for _ in range(3):
             if item["status"] != c.SIGNED:
                 return _audit(item, stripe_event, now, _settled_or_refund(item, session, account))
-            if _update(item, to_status=c.CONFIRMED, sets=[
-                    "paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
-                    "receiptInvoiceId = :inv"],
-                    values={":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
-                            ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"}):
+            paid_with = paid_with or pm.lookup(account, session.get("payment_intent"))
+            sets = ["paid = :t", "paidAt = :now", "paymentIntentId = :pi", "notice = :n", "updatedAt = :now",
+                    "receiptInvoiceId = :inv"]
+            values = {":t": True, ":now": c.iso(now), ":pi": session.get("payment_intent") or "-",
+                      ":n": c.notice(c.N_CONFIRMED, now), ":inv": session.get("invoice") or "-"}
+            if paid_with:
+                sets.append("paidWith = :with")
+                values[":with"] = paid_with
+            if _update(item, to_status=c.CONFIRMED, sets=sets, values=values):
                 return _audit(item, stripe_event, now, "confirmed")
             item = c.load(item["locationId"], item["requestId"])  # lost a race: settle against the new state
         raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
@@ -151,7 +167,7 @@ def _settled_or_refund(item, session, account):
         logger.error(json.dumps({"lateCateringPayment": "no_payment_intent", "requestId": item["requestId"],
                                  "session": session.get("id")}))
         return "late_payment_unrefunded"
-    cs.refund_late_payment(account, intent, item["requestId"])
+    cs.refund_late_payment(account, intent, item["requestId"], item["locationId"])
     logger.warning(json.dumps({"lateCateringPayment": "refunded", "requestId": item["requestId"],
                                "status": item["status"]}))
     return "refunded_late_payment"
@@ -180,11 +196,66 @@ def _invoice(kind, invoice, account, stripe_event, now):
         values[":t"] = True
         if item["status"] == c.DELIVERED:
             to_status = c.CLOSED
+        # Paid by card on Stripe's invoice page (not Bankgiro marked by hand).
+        intent = None if invoice.get("paid_out_of_band") else _invoice_intent(account, invoice)
+        paid_with = pm.lookup(account, intent) if intent else None
+        if paid_with:
+            sets.append("paidWith = :with")
+            values[":with"] = paid_with
     for _ in range(3):
         if _update(item, to_status=to_status, sets=sets, values=values):
             return _audit(item, stripe_event, now, status)
         item = c.load(item["locationId"], item["requestId"])
         to_status = c.CLOSED if kind == "invoice.paid" and item["status"] == c.DELIVERED else None
+    raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
+
+
+def _invoice_intent(account, invoice):
+    try:
+        return cs.invoice_payment_intent(account, invoice)
+    except (stripe.StripeError, stripe.StripeUnavailable):
+        return None  # how it was paid is a display detail; the payment is mirrored regardless
+
+
+def _refund_failed(refund, account, stripe_event, now):
+    """refund.failed: the refund stays recorded (the guest is still owed
+    it, now from the restaurant directly); the failure is listed once per
+    refund id with an audit row."""
+    meta = refund.get("metadata") or {}
+    intent = refund.get("payment_intent")
+    if not (meta.get("requestId") and meta.get("locationId")) and isinstance(intent, str) and intent.startswith("pi_"):
+        # Started in the Stripe Dashboard, or a refund from before refunds
+        # carried locationId: the request is on the PaymentIntent.
+        try:
+            meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+        except stripe.StripeError as exc:
+            logger.warning(json.dumps({"ignored": "refund_failed_unreadable", "code": exc.code}))
+            return "ignored:payment_intent_unreadable"
+    item = _request(meta, account)
+    refund_id = refund.get("id")
+    if not item or not isinstance(refund_id, str) or not refund_id.startswith("re_"):
+        return "ignored"
+    for _ in range(3):
+        if any(e.get("refundId") == refund_id for e in item.get("refundFailed") or []):
+            return _audit(item, stripe_event, now, "already_recorded")
+        entry = {"refundId": refund_id, "amount": int(refund.get("amount") or 0), "at": c.iso(now)}
+        method = (item.get("paidWith") or {}).get("method")
+        if method:
+            entry["method"] = method
+        try:
+            c.transact([
+                c.head_update(item, sets=["refundFailed = list_append(if_not_exists(refundFailed, :empty), :rf)",
+                                          "updatedAt = :now"],
+                              values={":rf": [entry], ":empty": [], ":now": c.iso(now)}),
+                c.audit_put(item["requestId"], "refund_failed", "stripe", now, amount=entry["amount"],
+                            reason=refund.get("failure_reason")),
+            ])
+        except c.InvalidState:
+            item = c.load(item["locationId"], item["requestId"])
+            continue
+        logger.error(json.dumps({"refundFailed": item["requestId"], "locationId": item["locationId"],
+                                 "amount": entry["amount"], "reason": refund.get("failure_reason")}))
+        return _audit(item, stripe_event, now, "refund_failed")
     raise ClientError({"Error": {"Code": "Conflict", "Message": "retry"}}, "UpdateItem")
 
 
@@ -234,6 +305,8 @@ def handler(event, context):
             result = _invoice(kind, obj, account, stripe_event, now)
         elif kind in ("charge.refunded", "credit_note.created"):
             result = _refund(kind, obj, account, stripe_event, now)
+        elif kind == "refund.failed":
+            result = _refund_failed(obj, account, stripe_event, now)
         else:
             result = "ignored:type"
     except (BotoCoreError, ClientError, stripe.StripeError, stripe.StripeUnavailable, refunds.Changed):

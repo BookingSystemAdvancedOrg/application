@@ -198,7 +198,7 @@ from botocore.exceptions import BotoCoreError, ClientError, ConnectionClosedErro
 from zoneinfo import ZoneInfo
 
 from shared import availability, booking_rules, consent, guarantee, http, manage_link, marketing
-from shared import bot_check, messages, request_guard, short_link, site, sms, tenant
+from shared import bot_check, messages, payment_domains, request_guard, short_link, site, sms, table_names, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -440,6 +440,13 @@ def _short_link_base(ctx):
     return own if own and short_link.PLAIN_URL.fullmatch(own) else default
 
 
+def _wallet_domains(ctx, account):
+    """Apple Pay and Google Pay in the site's card form need the site's
+    hosts registered on the restaurant's Stripe account (best effort,
+    shared/payment_domains.py); the card itself always works."""
+    payment_domains.ensure(account, lambda: site.hosts(ctx.tenant_id, ctx.tenant))
+
+
 def _site_card_page(ctx, item):
     """The booking's manage link on the restaurant's site, or None (then the
     Stripe page) when the tenant's live site has no card step yet (tenant
@@ -541,6 +548,7 @@ def _phone_card(ctx, item, now, ends_at, *, by):
     if page:
         # The restaurant's own card page: the booking's manage page shows
         # the card form, exactly as after an online booking (SetupIntent).
+        _wallet_domains(ctx, account)
         customer_id, setup_intent_id, _secret = guarantee.start_setup(item, account)
         item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
         url, done_url = page, page
@@ -609,6 +617,9 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
         "history": [r.history_entry("created", actor, now, status=r.RESERVED, source=source)],
         "ttl": r.retention_ttl(ends_at),
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     card, skipped = (_card_decision(ctx, location_id, now, starts_at, mode=guarantee_mode, party_size=party_size)
                      if staff else (False, None))
     if skipped == "too_soon":
@@ -634,6 +645,7 @@ def _book(ctx, location_id, now, *, staff, date_str, start_time, table_ids,
                 "stripeAccountId": account,
                 "history": [r.history_entry("created", actor, now, status=r.PENDING, source=source)],
             })
+            _wallet_domains(ctx, account)
             customer_id, setup_intent_id, client_secret = guarantee.start_setup(item, account)
             item.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
             setup = {"clientSecret": client_secret, "stripeAccount": account, "expiresAt": r.iso(expires)}
@@ -932,6 +944,9 @@ def _hold(event):
         # An abandoned hold is gone from the table two days after it ran out.
         "ttl": int(expires.timestamp()) + 2 * 86400,
     }
+    labels = table_names.stamp(table_ids, slot["tables"])
+    if labels:
+        item["tableLabels"] = labels
     token = manage_link.token_for(item)
     pointer = {
         **r.pointer_key(location_id, hold_id),
@@ -950,7 +965,7 @@ def _hold(event):
             guarantee.marker_put(item),
         ]
     )
-    return http.respond(201, {
+    body = {
         "holdId": hold_id,
         "manageToken": token,
         "expiresAt": r.iso(expires),
@@ -964,7 +979,10 @@ def _hold(event):
         "extendable": slot["rule"]["extensionAllowed"],
         "ruleName": slot["rule"].get("name"),
         "cardRequired": guarantee.required(ctx.location, ctx.tenant, party_size),
-    })
+    }
+    if labels:
+        body["tableLabels"] = labels
+    return http.respond(201, body)
 
 
 def _held(event, location_id, hold_id):
@@ -1023,6 +1041,7 @@ def _book_held(event, ctx, location_id, now, hold_id, *, date_str, start_time, t
         account = guarantee.stripe_account(ctx.tenant, ctx.location)
         booked.update({"status": r.PENDING, "guarantee": guarantee.snapshot(ctx.location, party_size),
                        "stripeAccountId": account})
+        _wallet_domains(ctx, account)
         customer_id, setup_intent_id, client_secret = guarantee.start_setup(booked, account)
         booked.update({"stripeCustomerId": customer_id, "setupIntentId": setup_intent_id})
         setup = {"clientSecret": client_secret, "stripeAccount": account,

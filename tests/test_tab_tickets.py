@@ -113,7 +113,7 @@ def test_bar_without_printer_prints_on_the_kitchen_printer_with_its_own_heading(
     assert "Runda 1 · Anna · 18:42 · 4 gäster" in food
     assert "Väntar: Varmrätt 3, Efterrätt 2" in food and "Väntar: Dryck 1" in drinks
     assert "+ Bröd: Surdeg" in food and "Utan lök" in food
-    assert f"Bord {TAB_ID[:6]} r1" in food and "Köksnota, ej kvitto" in food
+    assert "Bord 3 r1" in food and TAB_ID[:6] not in food and "Köksnota, ej kvitto" in food
     assert all(j["status"] == "PRINTED" for j in p.order_jobs(LOC_A, f"{TAB_ID}r1"))
     # "Skriv ut igen" on the kitchen display falls back too
     status, body = api(env, "POST", f"tickets/{TAB_ID}r1/bar/print", role="staff_user")
@@ -237,6 +237,20 @@ def test_move_relabels_open_tickets_and_prints_flyttad_where_tickets_went(env):
     tt.dispatch_move(TENANT_A, LOC_A, again, round_(3, "move", [], fromLabel="7", toLabel="9"), NOW)
     assert tickets_of(f"{TAB_ID}r2")["kok"]["tableLabel"] == "7"
     assert tickets_of(f"{TAB_ID}r1")["kok"]["tableLabel"] == "9"
+
+
+def test_a_flyttad_slip_without_a_from_label_prints_no_table_id(env):
+    kitchen, secret = kitchen_only_printer(env)
+    tt.dispatch_round(TENANT_A, LOC_A, tab(ITEMS), round_(1, "order", ["i1", "i2"]), NOW)
+    drain(star_print, env, kitchen, secret)
+    moved = tab(ITEMS, tableId="el-7", tableLabel="7")
+    env["clock"]["now"] = NOW + timedelta(minutes=5)
+    tt.dispatch_move(TENANT_A, LOC_A, moved, round_(2, "move", [], fromTable="el-3", toTable="el-7", toLabel="7"),
+                     env["clock"]["now"])
+    slips = tickets_of(f"{TAB_ID}r2")
+    assert r.view(slips["kok"]).get("fromLabel") is None
+    docs = drain(star_print, env, kitchen, secret)
+    assert docs and all("Bord ? -> Bord 7" in d and "el-3" not in d and TAB_ID[:6] not in d for d in docs)
 
 
 def test_failed_table_order_job_leaves_the_banner_by_age(env):

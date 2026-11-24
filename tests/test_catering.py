@@ -86,7 +86,7 @@ class FakeStripe:
         self.session_status = "open"
         self.out_of_band = False
 
-    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
+    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
                            "key": idempotency_key})
         if path == "/v1/tax_rates" and method == "GET":
@@ -124,6 +124,12 @@ class FakeStripe:
             return {"id": "re_1", "amount": (params or {}).get("amount")}
         if path == "/v1/payment_method_domains":
             return {"data": []} if method == "GET" else {"id": "pmd_1"}
+        if path == "/v1/invoice_payments":
+            return {"data": [{"payment": {"payment_intent": "pi_inv"}}]} if not self.out_of_band else {"data": []}
+        if path.startswith("/v1/payment_intents/") and method == "GET":
+            details = getattr(self, "details", None) or {"type": "card", "card": {"brand": "visa", "last4": "4242"}}
+            return {"id": path.rsplit("/", 1)[1], "metadata": getattr(self, "intent_metadata", {}),
+                    "latest_charge": {"id": "ch_1", "payment_method_details": details}}
         raise AssertionError(path)
 
 
@@ -156,6 +162,7 @@ def env(monkeypatch):
         "SCHEDULER_INVOKE_ROLE_ARN": "arn:aws:iam::1:role/sched", "SCHEDULER_DLQ_ARN": "arn:aws:sqs:x:1:dlq",
         "DOCUMENT_LOCK_MODE": "GOVERNANCE", "DOCUMENT_LOCK_DAYS": "1",
         "SIGNING_WEBHOOK_URL": "https://api.example.se/webhooks/signing/catering",
+        "STRIPE_SECRET_ARN": "arn:aws:secretsmanager:eu-north-1:1:secret:stripe",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("REQUEST_GUARD_TABLE_NAME", raising=False)
@@ -940,3 +947,86 @@ def test_offers_sent_before_the_choice_hash_as_before():
            "totals": {"subtotal": 100, "discount": 0, "deliveryFee": 0, "total": 100, "vat": 11}}
     document = c.offer_document(item, old, {}, {}, {})
     assert "cleaningFee" not in document and "equipmentReturn" not in document
+
+
+# --- how the guest paid ---------------------------------------------------------------------------
+
+def test_private_guest_paying_with_swish_is_shown_to_both_sides(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token)
+    env.stripe.details = {"type": "swish"}
+    session = {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+               "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "checkout.session.completed", session))["result"] == "confirmed"
+    assert c.load(LOC_A, rid)["paidWith"] == {"method": "swish"}
+    assert body_of(guest(env, "GET", "", rid, token))["paidWith"] == {"method": "swish"}
+    assert body_of(staff(env, "GET", "", request_id=rid))["paidWith"] == {"method": "swish"}
+
+
+def test_company_invoice_offers_card_only_and_a_card_payment_is_named(env):
+    rid, _token = signed(env, **COMPANY)
+    item = c.load(LOC_A, rid)
+    env.m["lifecycle"].handler({"Records": [stream_record(item, old={**item, "status": "offer_sent"})]},
+                               SimpleNamespace(invoked_function_arn="arn:fn"))
+    invoice = next(x for x in env.stripe.calls if x["path"] == "/v1/invoices")
+    assert invoice["params"]["payment_settings"] == {"payment_method_types": ["card"]}
+    env.stripe.details = {"type": "card", "card": {"brand": "visa", "last4": "4242", "wallet": {"type": "google_pay"}}}
+    paid = {"id": "in_1", "status": "paid", "payment_intent": "pi_inv",
+            "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "invoice.paid", paid))["result"] == "paid"
+    assert c.load(LOC_A, rid)["paidWith"] == {"method": "google_pay", "brand": "visa", "last4": "4242"}
+
+
+def test_bankgiro_payment_names_no_stripe_method(env):
+    rid, _token = signed(env, **COMPANY)
+    item = c.load(LOC_A, rid)
+    env.m["lifecycle"].handler({"Records": [stream_record(item, old={**item, "status": "offer_sent"})]},
+                               SimpleNamespace(invoked_function_arn="arn:fn"))
+    paid = {"id": "in_1", "status": "paid", "paid_out_of_band": True,
+            "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "invoice.paid", paid))["result"] == "paid"
+    assert "paidWith" not in c.load(LOC_A, rid)
+
+
+def test_failed_refund_is_listed_once_on_the_request(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token)
+    env.stripe.details = {"type": "swish"}
+    webhook(env, "checkout.session.completed", {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+                                                "metadata": {"locationId": LOC_A, "requestId": rid}})
+    refund = {"id": "re_7", "amount": 50000, "payment_intent": "pi_cat", "status": "failed",
+              "failure_reason": "declined", "metadata": {"locationId": LOC_A, "requestId": rid}}
+    assert body_of(webhook(env, "refund.failed", refund))["result"] == "refund_failed"
+    assert body_of(webhook(env, "refund.failed", refund))["result"] == "already_recorded"
+    item = c.load(LOC_A, rid)
+    assert [(e["refundId"], e["amount"], e["method"]) for e in item["refundFailed"]] == [("re_7", 50000, "swish")]
+    assert body_of(staff(env, "GET", "", request_id=rid))["refundFailed"][0]["amount"] == 50000
+    env.stripe.intent_metadata = {"locationId": LOC_A, "requestId": rid}
+    dashboard = dict(refund, id="re_8", metadata={})
+    assert body_of(webhook(env, "refund.failed", dashboard))["result"] == "refund_failed"
+    assert len(c.load(LOC_A, rid)["refundFailed"]) == 2
+
+
+def test_a_failed_late_payment_refund_finds_its_request_through_the_payment(env):
+    rid, token = signed(env)
+    guest(env, "POST", "/checkout", rid, token)
+    env.stripe.details = {"type": "swish"}
+    webhook(env, "checkout.session.completed", {"id": "cs_cat_1", "payment_status": "paid", "payment_intent": "pi_cat",
+                                                "metadata": {"locationId": LOC_A, "requestId": rid}})
+    env.stripe.intent_metadata = {"locationId": LOC_A, "requestId": rid}
+    old_style = {"id": "re_9", "amount": 1000, "payment_intent": "pi_cat", "status": "failed",
+                 "metadata": {"requestId": rid}}  # a refund from before refunds carried locationId
+    assert body_of(webhook(env, "refund.failed", old_style))["result"] == "refund_failed"
+
+
+def test_catering_refunds_carry_the_location():
+    from shared import catering_stripe as cs_mod
+    seen = []
+    import shared.stripe_client as sc
+    original = sc.request
+    sc.request = lambda method, path, params=None, **kw: seen.append(params) or {"id": "re_1"}
+    try:
+        cs_mod.refund_late_payment("acct_x", "pi_1", "req_1", "loc_1")
+    finally:
+        sc.request = original
+    assert seen[0]["metadata"] == {"requestId": "req_1", "locationId": "loc_1"}

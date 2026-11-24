@@ -1061,7 +1061,7 @@ _GUEST_FIELDS = ("requestId", "locationId", "status", "customerType", "customerN
                  "currentOfferVersion", "validUntil", "signedAt", "signedOfferVersion", "paid",
                  "invoiceNumber", "invoiceUrl", "invoiceStatus", "declineReason", "cancelReason",
                  "changeMessage", "delivered", "equipmentReturn", "serviceIncluded", "restaurantSignedAt",
-                 "signatory")
+                 "signatory", "paidWith")
 _SIGNER_FIELDS = ("name", "role", "method", "signedAt")
 
 

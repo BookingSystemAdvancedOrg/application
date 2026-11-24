@@ -34,6 +34,7 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from shared import dynamo, menu, orders, routing
+from shared.table_names import table_title, tables_from_layout  # noqa: F401 (re-exported)
 
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
@@ -1015,44 +1016,7 @@ def set_dispatched(location_id, tab, round_number, stations):
     return strip_keys(result["Attributes"])
 
 
-# --- tables (port of admin src/shared/tables.ts tablesFromLayout) --------------------
-
-def tables_from_layout(elements):
-    """The published layout's tables numbered like the booking site and
-    admin: floors by level (drawing order on ties), tables in drawing order,
-    numbered 1, 2, 3 ... over all floors; a table's own label wins. With no
-    floors every element is one floor; with floors, a table without a known
-    floor is left out (as in admin)."""
-    elements = [e for e in elements or [] if isinstance(e, dict)]
-    floors = sorted((e for e in elements if e.get("type") == "floor"), key=lambda f: _num(f.get("level")))
-    if not floors:
-        groups = [(None, None, [e for e in elements if e.get("type") != "floor"])]
-    else:
-        groups = [(f.get("elementId"), f.get("name"), [e for e in elements if e.get("type") != "floor"
-                                                         and e.get("floorId") == f.get("elementId")])
-                  for f in floors]
-    out = []
-    for floor_id, floor_name, members in groups:
-        for el in members:
-            if el.get("type") != "table":
-                continue
-            label = str(el.get("label") or "").strip() or str(len(out) + 1)
-            out.append({"tableId": el["elementId"], "label": label, "seats": int(_num(el.get("seats"))),
-                        "floorId": floor_id, "floorName": floor_name})
-    return out
-
-
-def _num(value):
-    try:
-        return float(value) if value is not None else 0
-    except (TypeError, ValueError):
-        return 0
-
-
-def table_title(label):
-    """"Bord 3"; a table with its own name ("Bar") is shown as it is."""
-    return f"Bord {label}" if re.match(r"\d", label or "") else (label or "Bord")
-
+# --- tables (naming lives in shared/table_names.py) ---------------------------------
 
 def read_tables(location_id):
     """Tables of the active published layout (LAYOUT#ACTIVATION ->

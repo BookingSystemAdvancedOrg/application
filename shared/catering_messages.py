@@ -92,6 +92,12 @@ def _refunded_lead(item, name):
     amount = money(notice.get("amount") or 0)
     if notice.get("manual"):
         lead = f"{name} betalar tillbaka {amount} för din catering {_when(item)} till samma konto som du betalade från."
+    elif (item.get("paidWith") or {}).get("method") == "swish":
+        lead = (f"{name} har betalat tillbaka {amount} för din catering {_when(item)}. Pengarna kommer via "
+                "Swish, oftast inom några minuter.")
+    elif (item.get("paidWith") or {}).get("method") == "klarna":
+        lead = (f"{name} har betalat tillbaka {amount} för din catering {_when(item)}. Klarna justerar din "
+                "betalning inom några bankdagar.")
     else:
         lead = (f"{name} har betalat tillbaka {amount} för din catering {_when(item)}. Pengarna syns på "
                 "samma betalsätt inom 5-10 bankdagar.")

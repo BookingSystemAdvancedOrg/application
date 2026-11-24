@@ -68,7 +68,7 @@ from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from shared import availability, booking_rules, guarantee, http, refunds, tenant
+from shared import availability, booking_rules, guarantee, http, refunds, table_names, tenant
 from shared import reservations as r
 from shared import stripe_client as stripe
 
@@ -392,6 +392,7 @@ def _edit(event, ctx, item):
     moving = any(k in data for k in ("date", "startTime", "tableIds"))
     ops = []
     new_item = dict(item)
+    restamp, table_labels = False, None
 
     if moving or (party != item.get("partySize") and party > int(item.get("seats", 0))):
         if item["status"] not in r.ACTIVE:
@@ -427,6 +428,10 @@ def _edit(event, ctx, item):
         occupancies = availability.query_occupancies(location_id, new_date) if context["slots"] else []
         free = availability.free_tables(context, occupancies, ignore_reservation_id=item["reservationId"])
         slot, seats = r.check_tables(context, free, new_start, new_tables, party, None)
+        # The tables' names in this slot's layout version; not a tracked
+        # change (history fields and a no-op PATCH stay as they are).
+        table_labels = table_names.stamp(new_tables, slot["tables"])
+        restamp = True
 
         old_keys = {(item["date"], item["startTime"], item["endTime"], t) for t in old_tables}
         new_keys = {(new_date, slot["startTime"], slot["endTime"], t) for t in new_tables}
@@ -462,6 +467,11 @@ def _edit(event, ctx, item):
 
     entry = r.history_entry("edited", ctx.sub, now, fields=sorted(changes))
     new_item.update(changes)
+    if restamp:
+        if table_labels:
+            new_item["tableLabels"] = table_labels
+        else:
+            new_item.pop("tableLabels", None)
     # A notice is a one-shot signal: the rewritten row never carries an old
     # one (a date move is a new row = stream INSERT, which would resend it).
     new_item.pop("notice", None)

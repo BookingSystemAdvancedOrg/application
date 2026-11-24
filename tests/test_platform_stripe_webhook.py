@@ -200,3 +200,11 @@ def test_trailing_slash_and_base64_body(app):
     event["isBase64Encoded"] = True
     res = app.handler(event, None)
     assert json.loads(res["body"])["result"] == "applied"
+
+
+def test_payment_method_status_is_stored_and_shown_in_admin(app):
+    evt = _updated(ACCT_A)
+    evt["data"]["object"]["capabilities"] = {"card_payments": "active", "swish_payments": "active",
+                                             "klarna_payments": "pending", "link_payments": "active"}
+    assert json.loads(app.handler(_event(evt), None)["body"])["result"] == "applied"
+    assert _profile(TENANT_A)["paymentMethods"] == {"card": "active", "swish": "active", "klarna": "pending"}

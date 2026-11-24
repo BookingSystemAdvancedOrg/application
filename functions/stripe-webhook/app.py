@@ -129,7 +129,7 @@ def _setup_succeeded(obj, account, now):
     if not item or item["status"] != r.PENDING:
         return "ignored"
     try:
-        guarantee.confirm_if_ready(item, now, "stripe", intent=obj)
+        guarantee.confirm_if_ready(item, now, "stripe", intent=guarantee.with_card_details(obj, account))
     except r.InvalidState as exc:
         return f"ignored:{exc.code}"
     return "confirmed"

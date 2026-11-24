@@ -9340,11 +9340,11 @@ components:
     CateringRequest:
       type: object
       additionalProperties: true
-      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, restaurantSignedAt, sentToCustomerAt (the signed version reached the guest), capacityLeft, settings).
+      description: The head item for staff (status, customer, request snapshot, offer, offers, history, signing {offerVersion, pdfSha256, restaurant?, customer?}, restaurantSignedAt, sentToCustomerAt (the signed version reached the guest), capacityLeft, settings, paidWith (PaidWith, a private guest's payment or a company invoice paid by card), refundFailed (RefundFailed[])).
     CateringGuestView:
       type: object
       additionalProperties: true
-      description: The guest's fields, the current offer, canSign, canAccept, canPay, documents [offer, signed], signedBy, signedMethod.
+      description: The guest's fields, the current offer, canSign, canAccept, canPay, documents [offer, signed], signedBy, signedMethod, paidWith (PaidWith).
     CateringDishInput:
       type: object
       additionalProperties: false
@@ -9865,6 +9865,10 @@ components:
             additionalProperties: true
         cardOnFile:
           type: boolean
+        guaranteeCard:
+          allOf:
+            - $ref: '#/components/schemas/PaidWith'
+          description: The card that secures the booking (card, Apple Pay or Google Pay), once saved.
         guarantee:
           $ref: '#/components/schemas/GuaranteeSnapshot'
         payment:
@@ -10205,6 +10209,16 @@ components:
               type: boolean
             detailsSubmitted:
               type: boolean
+            paymentMethods:
+              type: object
+              description: >-
+                The restaurant's Stripe capabilities for what the site's
+                payment steps offer (Apple Pay and Google Pay ride on card).
+                Present once Stripe has sent an account update.
+              properties:
+                card: {$ref: '#/components/schemas/CapabilityStatus'}
+                swish: {$ref: '#/components/schemas/CapabilityStatus'}
+                klarna: {$ref: '#/components/schemas/CapabilityStatus'}
         primaryDomain:
           type: string
           nullable: true
@@ -10798,6 +10812,10 @@ components:
             - 12
             - 25
 
+    CapabilityStatus:
+      type: string
+      enum: [active, pending, inactive, unrequested]
+
     OrderVat:
       type: object
       properties:
@@ -10820,6 +10838,37 @@ components:
         - completed
         - cancelled
         - failed
+
+    PaidWith:
+      type: object
+      description: >-
+        How a payment was made (shared/payment_methods.py). Apple Pay and
+        Google Pay are wallets on a card and keep its brand and last four.
+        Nothing else of the payer is stored.
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [card, apple_pay, google_pay, swish, klarna, paypal, link, other]
+        brand:
+          type: string
+          description: Card and wallets only (visa, mastercard, amex, ...).
+        last4:
+          type: string
+          pattern: '^[0-9]{4}$'
+          description: Card and wallets only.
+
+    RefundFailed:
+      type: object
+      description: >-
+        A refund Stripe gave back to the restaurant's balance after it was
+        made (Swish can refuse one after accepting it). The refund stays
+        recorded: the restaurant pays the guest back another way.
+      properties:
+        amount: {type: integer, description: öre}
+        at: {type: string, format: date-time}
+        refundId: {type: string}
+        method: {type: string, description: The order's paidWith.method.}
 
     GuestOrder:
       type: object
@@ -10876,6 +10925,8 @@ components:
           format: date-time
         language:
           type: string
+        paidWith:
+          $ref: '#/components/schemas/PaidWith'
         location:
           type: object
           properties:
@@ -10932,6 +10983,10 @@ components:
               description: What an owner refund can still give back (card part, öre).
             giftCard:
               type: object
+            refundFailed:
+              type: array
+              items:
+                $ref: '#/components/schemas/RefundFailed'
             history:
               type: array
               items:

@@ -471,3 +471,14 @@ def test_console_accepts_the_dpa_for_a_dev_twin_outside_prod_only(app, monkeypat
     assert response["statusCode"] == 200, response
     stored = tenants.get_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"})["Item"]["dpa"]
     assert stored["acceptedBySub"] == "operator:lamo"
+
+
+def test_get_shows_the_payment_methods_of_the_stripe_account(app):
+    module, tenants = app
+    tenants.update_item(Key={"PK": f"TENANT#{TENANT_A}", "SK": "PROFILE"},
+                        UpdateExpression="SET stripe.paymentMethods = :m",
+                        ExpressionAttributeValues={":m": {"card": "active", "swish": "inactive",
+                                                          "klarna": "unrequested"}})
+    shared_tenant.reset_caches()
+    body = body_of(module.handler(make_event(), None))
+    assert body["stripe"]["paymentMethods"] == {"card": "active", "swish": "inactive", "klarna": "unrequested"}

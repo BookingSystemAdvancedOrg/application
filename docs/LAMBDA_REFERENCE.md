@@ -1068,7 +1068,7 @@ Full details: `docs/ORDERS.md`.
 
 ### 23. `webhook-payment-intent`
 **Trigger:** Lambda Function URL (Stripe Connect endpoint for orders) - Auth: Stripe signature
-**Purpose:** `checkout.session.completed` / `async_payment_succeeded` with `payment_status=paid` → order `confirmed` (daily number, ready estimate, `order_confirmed` notice); `expired` / `async_payment_failed` → `failed`; `charge.refunded` → refund recorded. Matched by metadata + connected account + session id and amount; all writes conditional.
+**Purpose:** `checkout.session.completed` / `async_payment_succeeded` with `payment_status=paid` → order `confirmed` (daily number, ready estimate, `order_confirmed` notice); `expired` / `async_payment_failed` → `failed`; `charge.refunded` → refund recorded; `refund.failed` → listed on the order (`refundFailed`, staff pay back another way). How it was paid (`paidWith`: card, Apple Pay, Google Pay, Swish, Klarna) is read from the PaymentIntent with the platform key (`STRIPE_SECRET_ARN`) when the order is settled. Matched by metadata + connected account + session id and amount; all writes conditional.
 
 ### 24. `get-order`
 **Trigger:** API Gateway - `GET /locations/{locationId}/ordering`, `GET /locations/{locationId}/order-status/{orderId}` (header `X-Order-Token`) - Auth: `NONE`

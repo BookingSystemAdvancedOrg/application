@@ -190,6 +190,17 @@ location's (or tenant's) Stripe account can take charges.
 | `POST .../payment {action: charge}` | retry; an interrupted attempt reuses its Stripe idempotency key (never charges twice), a declined one starts a new attempt |
 | `POST .../payment {action: refund}` | owner only, partial or full; Dashboard refunds arrive via `charge.refunded` |
 
+**Methods:** card (Visa, Mastercard), Apple Pay and Google Pay (wallets
+on a card: the SetupIntent stays `payment_method_types: ["card"]`, the
+site's host is registered on the account first, shared/payment_domains.py).
+Swish is single-use, Klarna's saved methods are for a customer who is
+present (on-demand, subscriptions) and PayPal is not offered for direct
+charges, so none of them can carry a later no-show or late-cancel fee. The
+card that secures the booking is stored as `guaranteeCard` (`{method:
+card | apple_pay | google_pay, brand, last4}`, staff view only): from the
+SetupIntent with `payment_method` expanded on `POST .../confirm`, from the
+PaymentMethod on the webhook (best effort).
+
 Guests get a receipt (`fee_charged` notice), the restaurant an email when a
 fee fails (`fee_failed`). Off-session charges that need 3-D Secure fail as
 `authentication_required` - the restaurant settles those with the guest

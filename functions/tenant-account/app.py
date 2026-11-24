@@ -231,6 +231,8 @@ def _public_tenant(ctx, row):
             "chargesEnabled": bool(stripe.get("chargesEnabled")),
             "payoutsEnabled": bool(stripe.get("payoutsEnabled")),
             "detailsSubmitted": bool(stripe.get("detailsSubmitted")),
+            # Card (with Apple Pay and Google Pay), Swish, Klarna on the account.
+            **({"paymentMethods": stripe["paymentMethods"]} if isinstance(stripe.get("paymentMethods"), dict) else {}),
         },
         "primaryDomain": row.get("primaryDomain"),
         "domains": _domains(tenant_id, row.get("primaryDomain")),

@@ -57,6 +57,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from shared import booking_rules, dynamo, http, manage_link, menu, safe_compare
+from shared import payment_methods
 
 _deserializer = TypeDeserializer()
 
@@ -640,6 +641,8 @@ def guest_view(item, location=None):
         "readyEstimate": item.get("readyEstimate"),
         "readyAt": item.get("readyAt"),
         "language": item.get("language", "sv"),
+        # How it was paid (Swish, Klarna, Apple Pay, "Visa ****4242"...).
+        "paidWith": payment_methods.view(item.get("paidWith")),
     }
     if location:
         view["location"] = {k: location.get(k) for k in ("name", "address", "phoneNumber")}
@@ -676,6 +679,10 @@ def staff_view(item):
         "refund": _refund_view(item.get("refund")),
         "giftCard": _gift_view(item.get("giftCard")),
         "paymentMethod": item.get("paymentMethod"),
+        # Refunds Stripe gave back to the balance (Swish can refuse one after
+        # accepting it): the restaurant pays the guest back another way.
+        "refundFailed": [{k: e[k] for k in ("amount", "at", "refundId", "method") if k in e}
+                         for e in item.get("refundFailed") or []] or None,
         "history": item.get("history") or [],
         # What an owner refund can still give back (card part, öre).
         "refundable": refundable_amount(item),

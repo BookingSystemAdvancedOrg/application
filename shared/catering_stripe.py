@@ -1,14 +1,19 @@
 """Stripe for catering, on the restaurant's connected account (direct
 charges, platform key + Stripe-Account header, shared/stripe_client.py).
 
-    private guest   Checkout (card / Swish / Klarna as the account allows)
-                    right after signing; Stripe also creates a paid receipt
+    private guest   Checkout right after signing: card, Apple Pay, Google
+                    Pay, Swish, Klarna - what the account has activated
+                    (dynamic payment methods; Swish and Klarna up to
+                    150 000 kr, shared/payment_methods.py); Stripe also creates a paid receipt
                     invoice in the account's invoice numbering series.
                     embedded: ui_mode "elements", paid with Stripe's Payment
                     Element on the site's own page (same session and events).
     company         Stripe Invoice (send_invoice, due in paymentTermsDays),
                     created and sent when the offer is signed; Stripe e-mails
-                    it and the overdue reminders.
+                    it and the overdue reminders. Paid by card on Stripe's
+                    invoice page (Apple Pay and Google Pay ride on it) or by
+                    Bankgiro: Klarna and Swish are for consumers (Stripe
+                    Invoicing has no Swish), so the invoice names card only.
 
 Every line carries the account's inclusive tax rate for the offer's VAT rate
 (12 % or 6 %, shared/catering.py vat_rate_for; prices on the offer include
@@ -134,6 +139,7 @@ def invoice(item, offer, account, settings):
         "auto_advance": False,
         "currency": c.CURRENCY,
         "pending_invoice_items_behavior": "exclude",
+        "payment_settings": {"payment_method_types": ["card"]},
         "custom_fields": custom_fields,
         "description": f"Catering {item.get('deliveryDate')} enligt signerad offert v{int(offer['version'])}",
         "metadata": _metadata(item, offer),

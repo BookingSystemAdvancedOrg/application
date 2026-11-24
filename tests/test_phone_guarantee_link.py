@@ -35,7 +35,7 @@ class CheckoutStripe(FakeStripe):
     down = False
     rid = None
 
-    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
+    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         if path.startswith("/v1/setup_intents/") and method == "GET":
             self.calls.append({"method": method, "path": path, "params": params or {},
                                "account": account, "key": idempotency_key})
@@ -49,7 +49,7 @@ class CheckoutStripe(FakeStripe):
             if method == "GET":
                 if self.down:
                     raise stripe_client.StripeUnavailable("down")
-                assert path == "/v1/checkout/sessions/cs_test_1" and params == {"expand": ["setup_intent"]}
+                assert path == "/v1/checkout/sessions/cs_test_1" and params == {"expand": ["setup_intent", "setup_intent.payment_method"]}
                 return {"id": "cs_test_1", "status": "complete" if self.completed else "open",
                         "setup_intent": self.completed}
             return {"id": "cs_test_1", "url": CHECKOUT_URL, "setup_intent": None}

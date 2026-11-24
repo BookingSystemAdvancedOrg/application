@@ -37,7 +37,7 @@ class FakeStripe:
         self.setup_status = "succeeded"
         self.charge = "succeeded"  # succeeded | processing | decline | unavailable | auth
 
-    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None):
+    def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         self.calls.append({"method": method, "path": path, "params": params or {},
                            "account": account, "key": idempotency_key})
         if path == "/v1/customers":
@@ -45,8 +45,11 @@ class FakeStripe:
         if path == "/v1/setup_intents":
             return {"id": "seti_1", "client_secret": "seti_1_secret_abc"}
         if path.startswith("/v1/setup_intents/"):
+            pm = "pm_card"
+            if "payment_method" in (params or {}).get("expand", []):
+                pm = {"id": "pm_card", "type": "card", "card": {"brand": "visa", "last4": "4242", "wallet": None}}
             return {"id": "seti_1", "status": self.setup_status, "customer": "cus_1",
-                    "payment_method": "pm_card", "metadata": {"reservationId": self.rid}}
+                    "payment_method": pm, "metadata": {"reservationId": self.rid}}
         if path == "/v1/payment_intents":
             mode = self.charge
             if mode == "unavailable":
@@ -61,6 +64,11 @@ class FakeStripe:
             return {"id": f"pi_{len(self.calls)}", "status": mode}
         if path == "/v1/refunds":
             return {"id": "re_1", "amount": params.get("amount")}
+        if path == "/v1/payment_method_domains":
+            return {"data": [{"id": "pmd_1", "enabled": True}]} if method == "GET" else {"id": "pmd_1"}
+        if path.startswith("/v1/payment_methods/"):
+            return {"id": path.rsplit("/", 1)[1], "type": "card",
+                    "card": {"brand": "mastercard", "last4": "4444", "wallet": {"type": "apple_pay"}}}
         raise AssertionError(f"unexpected Stripe call {method} {path}")
 
     def keys(self, path):
@@ -499,3 +507,37 @@ def test_client_maps_errors(monkeypatch):
                                  idempotency_key="refund-1")["id"] == "pi_1"
     assert seen["headers"]["Stripe-account"] == "acct_1" and seen["headers"]["Idempotency-key"] == "refund-1"
     assert seen["headers"]["Stripe-version"] == "2026-07-29.dahlia" and seen["data"] == b"amount=5"
+
+
+# --- which card (card, Apple Pay, Google Pay) ------------------------------------------------------
+
+def test_online_card_step_registers_the_site_for_apple_pay_and_google_pay(g, monkeypatch):
+    from shared import payment_domains, site
+    payment_domains.reset_cache()
+    monkeypatch.setattr(site, "hosts", lambda tenant_id, row: ["roma.dev.booqy.se"])
+    book(g)
+    domains = [c for c in g["stripe"].calls if c["path"] == "/v1/payment_method_domains"]
+    assert [(c["method"], c["params"], c["account"]) for c in domains] == [
+        ("GET", {"domain_name": "roma.dev.booqy.se", "limit": 1}, ACCOUNT)]
+    payment_domains.reset_cache()
+
+
+def test_confirm_stores_the_card_for_staff_only(g):
+    _, body = book(g)
+    rid = body["reservationId"]
+    confirmed = body_of(confirm(g, rid, body["manageToken"]))
+    item = stored(g, rid)
+    assert item["guaranteeCard"] == {"method": "card", "brand": "visa", "last4": "4242"}
+    assert item["history"][-1]["paidWith"] == "card"
+    assert "guaranteeCard" not in json.dumps(confirmed)
+    from shared import reservations as res_mod
+    assert res_mod.staff_view(item)["guaranteeCard"] == {"method": "card", "brand": "visa", "last4": "4242"}
+
+
+def test_webhook_reads_the_wallet_of_the_card(g, hook):
+    _, body = book(g)
+    rid = body["reservationId"]
+    obj = {"id": "seti_1", "status": "succeeded", "customer": "cus_1", "payment_method": "pm_card",
+           "metadata": {"reservationId": rid, "locationId": LOC_A}}
+    assert body_of(hook(stripe_event("setup_intent.succeeded", obj)))["result"] == "confirmed"
+    assert stored(g, rid)["guaranteeCard"] == {"method": "apple_pay", "brand": "mastercard", "last4": "4444"}

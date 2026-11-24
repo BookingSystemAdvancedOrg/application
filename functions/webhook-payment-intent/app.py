@@ -22,6 +22,14 @@ PURPOSE:
                                                refund whose answer was lost and
                                                records Dashboard refunds, never
                                                twice (shared/refunds.py)
+      refund.failed                            a refund Stripe gave back to the
+                                               balance (Swish can refuse one
+                                               after accepting it): listed on
+                                               the order (refundFailed) once,
+                                               staff pay the guest back another
+                                               way. A Dashboard refund carries
+                                               no order metadata: the
+                                               PaymentIntent's is read then
 
     Confirming writes the order_confirmed notice: the Order table's stream
     sends the guest's SMS and receipt e-mail (notification).
@@ -44,7 +52,9 @@ PURPOSE:
 
 ENV_VARS:
     ENVIRONMENT, TENANT_TABLE_NAME, LOCATION_TABLE_NAME, LOCATION_ID_INDEX_NAME,
-    ORDER_TABLE_NAME, ORDER_STRIPE_WEBHOOK_SECRET_ARN (whsec_..., plain string)
+    ORDER_TABLE_NAME, ORDER_STRIPE_WEBHOOK_SECRET_ARN (whsec_..., plain string),
+    STRIPE_SECRET_ARN, STRIPE_API_VERSION (how an order was paid, the
+    PaymentIntent behind a failed Dashboard refund)
 """
 
 import base64
@@ -167,6 +177,22 @@ def _charge_refunded(charge, account, now):
     return result
 
 
+def _refund_failed(refund, account, now):
+    meta = refund.get("metadata") or {}
+    intent = refund.get("payment_intent")
+    if not meta.get("orderId") and isinstance(intent, str) and intent.startswith("pi_"):
+        # Started in the Stripe Dashboard: the order is on the PaymentIntent.
+        meta = (stripe.request("GET", f"/v1/payment_intents/{intent}", account=account) or {}).get("metadata")
+    item = _order(meta, account)
+    if not item or not intent or item.get("paymentIntentId") != intent:
+        return "ignored"
+    result = order_payments.record_refund_failure(item, refund, now)
+    if result == "refund_failed":
+        logger.error(json.dumps({"refundFailed": item["orderId"], "locationId": item["locationId"],
+                                 "amount": refund.get("amount"), "reason": refund.get("failure_reason")}))
+    return result
+
+
 _SESSION_EVENTS = ("checkout.session.completed", "checkout.session.async_payment_succeeded",
                    "checkout.session.async_payment_failed", "checkout.session.expired")
 
@@ -198,9 +224,11 @@ def handler(event, context):
             result = _session_event(kind, obj, account, now)
         elif kind == "charge.refunded":
             result = _charge_refunded(obj, account, now)
+        elif kind == "refund.failed":
+            result = _refund_failed(obj, account, now)
         else:
             result = "ignored:type"
-    except (BotoCoreError, ClientError, feature_hooks.HookFailed, refunds.Changed):
+    except (BotoCoreError, ClientError, feature_hooks.HookFailed, refunds.Changed, stripe.StripeUnavailable):
         logger.exception("webhook %s failed transiently", stripe_event.get("id"))
         return _respond(500, {"error": "retry"})
     logger.info(json.dumps({"event": stripe_event.get("id"), "type": kind, "result": result}))

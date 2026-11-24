@@ -622,6 +622,12 @@ def booking_rule(item):
 def staff_view(item):
     view = {f: item.get(f) for f in _STAFF_FIELDS if f in item}
     view["cardOnFile"] = _card_on_file(item)
+    if _card_on_file(item) and isinstance(item.get("guaranteeCard"), dict):
+        from shared import payment_methods  # local: keep this module's imports small
+        # Which card secures the booking: "Visa ****4242", Apple Pay, Google Pay.
+        card = payment_methods.view(item["guaranteeCard"])
+        if card:
+            view["guaranteeCard"] = card
     if item.get("bookedFor") and item.get("endsAt"):
         view["bookingRule"] = booking_rule(item)
     if isinstance(item.get("guaranteeLink"), dict):

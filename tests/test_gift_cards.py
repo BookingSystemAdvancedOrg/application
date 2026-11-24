@@ -45,12 +45,13 @@ class FakeStripe:
                            "key": idempotency_key})
         if self.fail:
             raise stripe.StripeUnavailable("down")
+        offers = {"payment_method_types": list(self.offers)} if getattr(self, "offers", None) is not None else {}
         if path == "/v1/payment_intents":
             pid = f"pi_{idempotency_key[-10:]}"
-            return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"]}
+            return {"id": pid, "client_secret": f"{pid}_secret", "amount": params["amount"], **offers}
         if method == "GET" and path.startswith("/v1/payment_intents/"):
             pid = path.rsplit("/", 1)[-1]
-            return {"id": pid, "client_secret": f"{pid}_secret", "status": "requires_payment_method"}
+            return {"id": pid, "client_secret": f"{pid}_secret", "status": "requires_payment_method", **offers}
         return {"id": f"re_{len(self.calls)}", "status": "succeeded"}
 
 
@@ -689,3 +690,17 @@ def test_hooks_and_jobs_still_run_in_prod_with_the_dev_twin_entry(env, monkeypat
     answer = hook(env, "tenant.purge", tenantId=TENANT_A, locationIds=[LOC_A, LOC_A2], round=1)
     assert answer["ok"] and answer["done"]
     assert not env.res.Table(TABLE).get_item(Key=gc.settings_key(TENANT_A)).get("Item")
+
+
+def test_gift_card_checkout_offers_only_card_swish_and_klarna(env, monkeypatch):
+    """Owner 2026-11-24: allowed_payment_method_types, never automatic methods;
+    the retry names the same methods."""
+    monkeypatch.setenv("STRIPE_API_VERSION", "2026-07-29.dahlia")
+    env.stripe.offers = ["card", "klarna"]
+    enable(env)
+    status, first = buy(env)
+    assert status == 200 and first["methods"] == ["card", "klarna"]
+    params = env.stripe.calls[0]["params"]
+    assert params["allowed_payment_method_types"] == ["card", "swish", "klarna"]
+    assert "automatic_payment_methods" not in params
+    assert buy(env)[1]["methods"] == ["card", "klarna"]

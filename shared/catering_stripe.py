@@ -2,9 +2,10 @@
 charges, platform key + Stripe-Account header, shared/stripe_client.py).
 
     private guest   Checkout right after signing: card, Apple Pay, Google
-                    Pay, Swish, Klarna - what the account has activated
-                    (dynamic payment methods; Swish and Klarna up to
-                    150 000 kr, shared/payment_methods.py); Stripe also creates a paid receipt
+                    Pay, Swish, Klarna - of those, what the account has
+                    activated, nothing else it has on (Swish and Klarna up
+                    to 150 000 kr, shared/payment_methods.py checkout_session);
+                    Stripe also creates a paid receipt
                     invoice in the account's invoice numbering series.
                     embedded: ui_mode "elements", paid with Stripe's Payment
                     Element on the site's own page (same session and events).
@@ -22,6 +23,7 @@ Idempotency keys make every create safe to retry.
 """
 
 from shared import catering as c
+from shared import payment_methods as pm
 from shared import stripe_client as stripe
 
 _tax_cache = {}
@@ -102,8 +104,8 @@ def checkout(item, offer, account, success_url, cancel_url, now, attempt, *, emb
             "max_redemptions": 1,
         }, account=account, idempotency_key=f"coupon-{item['requestId']}-v{int(offer['version'])}")
         params["discounts"] = [{"coupon": coupon["id"]}]
-    return stripe.request("POST", "/v1/checkout/sessions", params, account=account,
-                          idempotency_key=f"checkout-{item['requestId']}-{attempt}")
+    # Only card (Apple Pay, Google Pay), Swish and Klarna (shared/payment_methods.py).
+    return pm.checkout_session(params, account=account, idempotency_key=f"checkout-{item['requestId']}-{attempt}")
 
 
 def _days_until_due(offer, settings):

@@ -25,6 +25,10 @@ ADR: `infrastructure/docs/adr/ADR-K-events-tickets.md`. Contract:
   `seatsLeft >= qty` and puts the pending order in one transaction, so the
   last seats are never sold twice. A type's cap is the smaller of its
   `capacity` and an early-bird `tier.untilSold`.
+- Payment methods: only card (Apple Pay, Google Pay), Swish and Klarna
+  (`allowed_payment_method_types`, shared/payment_methods.py
+  `payment_intent`, docs/ORDERS.md Payment methods); the checkout answer
+  (and its retry) carries `methods`, the ones the intent offers.
 - Payment: a PaymentIntent on the restaurant's connected account, key
   `ticket-<orderId>`, metadata `kind=ticket`. Tickets are issued only by
   the `stripe.event` hook for the order's own `stripeAccountId`; free

@@ -28,6 +28,10 @@ ADR: `infrastructure/docs/adr/ADR-E-gift-cards.md`. Contract: CONTRACTS.md 6.E, 
   `version`/status/expiry conditions + append-only TX `attribute_not_exists`
   + `TXREF#<txId>`). Same `txId` -> stored result; another amount -> 409
   `changed_retry`. Concurrent writers retry on the version and never go negative.
+- **Payment methods**: only card (Apple Pay, Google Pay), Swish and Klarna
+  (`allowed_payment_method_types`, shared/payment_methods.py
+  `payment_intent`, docs/ORDERS.md Payment methods); the answer carries
+  `methods`, the ones the intent offers (also on a retry).
 - **Checkout retry** (E2, same `purchaseId`): the stored PaymentIntent is
   read back (`GET /v1/payment_intents/<id>` on the same connected account)
   and its client secret returned; no second create. A declined attempt

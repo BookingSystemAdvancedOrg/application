@@ -86,6 +86,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import bot_check, console_invoke, dynamo, events, http, orders, request_guard, site, tenant
+from shared import payment_methods as pm
 from shared import stripe_client as stripe
 from shared.features import events_tickets as et
 from shared.features.events_tickets import media, passes, qr, series
@@ -1421,8 +1422,9 @@ def checkout(event):
         _issue(ctx.tenant_id, order, None)
         return http.respond(200, {"amountSek": 0, "expiresAt": order["expiresAt"]})
     try:
-        intent = stripe.request("POST", "/v1/payment_intents", {
-            "amount": amount, "currency": "sek", "automatic_payment_methods": {"enabled": "true"},
+        # Only card (Apple Pay, Google Pay), Swish and Klarna (shared/payment_methods.py).
+        intent = pm.payment_intent({
+            "amount": amount, "currency": "sek",
             "description": f"Biljetter {ev['title'][:60]}", "receipt_email": buyer,
             "metadata": {"kind": "ticket", "tenantId": ctx.tenant_id, "locationId": location_id, "orderId": order_id},
         }, account=account, idempotency_key=f"ticket-{order_id}")
@@ -1432,8 +1434,12 @@ def checkout(event):
         raise et.EventsError(502, "stripe_unavailable")
     et.table().update_item(Key=et.order_key(ctx.tenant_id, order_id), UpdateExpression="SET paymentIntentId = :p",
                            ExpressionAttributeValues={":p": intent["id"]})
-    return http.respond(200, {"clientSecret": intent["client_secret"], "amountSek": amount / 100,
-                              "expiresAt": order["expiresAt"], "stripeAccount": account})
+    out = {"clientSecret": intent["client_secret"], "amountSek": amount / 100, "expiresAt": order["expiresAt"],
+           "stripeAccount": account}
+    methods = pm.offered(intent)
+    if methods is not None:
+        out["methods"] = methods
+    return http.respond(200, out)
 
 
 def _resale_lines(ctx, ev, occ, raw_ids, at, order_id, buyer_hash):
@@ -1503,6 +1509,9 @@ def _checkout_retry(ctx, order, body):
         except (stripe.StripeError, stripe.StripeUnavailable):
             raise et.EventsError(502, "stripe_unavailable")
         out.update({"clientSecret": intent["client_secret"], "stripeAccount": order["stripeAccountId"]})
+        methods = pm.offered(intent)
+        if methods is not None:
+            out["methods"] = methods
     return http.respond(200, out)
 
 

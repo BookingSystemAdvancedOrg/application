@@ -6,9 +6,16 @@ eventCreated, updatedAt}.
 
 paymentMethods = {card, swish, klarna}: the account's capability status
 (active, pending, inactive, unrequested) for the methods the site's
-payment steps offer. Apple Pay and Google Pay ride on card; the restaurant
-turns Swish and Klarna on in its own Stripe Dashboard (an account with the
-full Dashboard manages its own payment methods).
+payment steps offer. Apple Pay and Google Pay ride on card.
+Card, Swish and Klarna are meant to be on for every restaurant (owner
+2026-11-24). Booqy does not request Swish or Klarna through the API: the
+platform's payment method settings for connected accounts (Stripe
+Dashboard, Settings, Connect, Payment methods, "On by default") make
+Stripe request each capability for eligible accounts, new and existing.
+Stripe may still need the restaurant to activate a method or accept its
+terms in its own Stripe Dashboard (Swish's terms), and leaves it out for an
+ineligible account; the status here shows which (infrastructure
+docs/PLATFORM-SETUP.md, docs/TENANT-ONBOARDING.md).
 The onboarding workflow creates the account and the STRIPE_ACCOUNT#<acct> /
 TENANT row; platform-stripe-webhook keeps the status fields current (same
 fields as Booqy Console's "Check status with Stripe").

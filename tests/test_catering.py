@@ -85,6 +85,7 @@ class FakeStripe:
         self.invoice_status = "open"
         self.session_status = "open"
         self.out_of_band = False
+        self.offers = None  # the created session's payment_method_types; None = Stripe did not say
 
     def __call__(self, method, path, params=None, *, account=None, idempotency_key=None, timeout=None):
         self.calls.append({"method": method, "path": path, "params": params or {}, "account": account,
@@ -98,7 +99,8 @@ class FakeStripe:
         if path == "/v1/checkout/sessions":
             n = sum(1 for x in self.calls if x["path"] == "/v1/checkout/sessions")
             return {"id": f"cs_cat_{n}", "url": f"https://checkout.stripe.com/c/cs_cat_{n}",
-                    "client_secret": f"cs_cat_{n}_secret_x"}
+                    "client_secret": f"cs_cat_{n}_secret_x",
+                    **({"payment_method_types": list(self.offers)} if self.offers is not None else {})}
         if path.startswith("/v1/checkout/sessions/") and path.endswith("/expire"):
             if self.session_status != "open":
                 raise stripe_client.StripeError(400, {"code": "checkout_session_not_open"})
@@ -1030,3 +1032,17 @@ def test_catering_refunds_carry_the_location():
     finally:
         sc.request = original
     assert seen[0]["metadata"] == {"requestId": "req_1", "locationId": "loc_1"}
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_catering_checkout_offers_only_card_swish_and_klarna(env, embedded):
+    """Owner 2026-11-24: Amazon Pay or anything else the account has on never shows."""
+    env.monkeypatch.setenv("STRIPE_API_VERSION", "2026-07-29.dahlia")
+    env.stripe.offers = ["card", "swish", "klarna"]
+    rid, token = signed(env)
+    body = body_of(guest(env, "POST", "/checkout", rid, token, {"embedded": True} if embedded else None))
+    call = next(x for x in env.stripe.calls if x["path"] == "/v1/checkout/sessions")
+    assert call["key"] == f"checkout-{rid}-1"
+    assert "amazon_pay" in call["params"]["excluded_payment_method_types"]
+    assert not {"card", "swish", "klarna"} & set(call["params"]["excluded_payment_method_types"])
+    assert body["methods"] == ["card", "swish", "klarna"]

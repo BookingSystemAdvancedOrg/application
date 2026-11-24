@@ -9,7 +9,7 @@ ENV_VARS:
 Errors:
     StripeError        -- Stripe answered 4xx: a real decision (card declined,
                           authentication required, invalid request). Carries
-                          type / code / decline_code.
+                          type / code / decline_code / param.
     StripeUnavailable  -- network error, timeout, 429 or 5xx: nothing is known
                           about the outcome; retry with the SAME idempotency key.
 """
@@ -39,6 +39,7 @@ class StripeError(Exception):
         self.type = error.get("type")
         self.code = error.get("code")
         self.decline_code = error.get("decline_code")
+        self.param = error.get("param")
         self.payment_intent = error.get("payment_intent")
 
 

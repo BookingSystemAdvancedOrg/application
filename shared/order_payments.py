@@ -20,6 +20,10 @@
              left): Refund with an explicit amount, key refund-<orderId>-<n>
              (shared/refunds.py: reserved, capped, recorded once)
 
+Methods: only card (Apple Pay, Google Pay), Swish and Klarna; whatever else
+the account has on is never offered (shared/payment_methods.py
+checkout_session).
+
 Only payment_status == "paid" confirms: Swish/Klarna complete the session
 first and settle later (checkout.session.async_payment_*).
 """
@@ -67,8 +71,8 @@ def create_checkout(item, account, success_url, cancel_url, now, *, embedded=Fal
     else:
         params.update({"locale": _LOCALES.get(item.get("language"), "sv"),
                        "success_url": success_url, "cancel_url": cancel_url})
-    return stripe.request("POST", "/v1/checkout/sessions", params, account=account,
-                          idempotency_key=f"checkout-{item['orderId']}")
+    # Only card (Apple Pay, Google Pay), Swish and Klarna (shared/payment_methods.py).
+    return pm.checkout_session(params, account=account, idempotency_key=f"checkout-{item['orderId']}")
 
 
 def retrieve_session(item):

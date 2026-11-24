@@ -26,7 +26,9 @@ PURPOSE:
          embedded step).
 
     Response 201: {orderId, statusToken, totalAmount} plus checkoutUrl
-    (hosted) or {clientSecret, stripeAccount} (embedded). The site keeps
+    (hosted) or {clientSecret, stripeAccount} (embedded), and methods
+    (["card", "swish", "klarna"], the allowed ones this session offers;
+    absent when Stripe did not say). The site keeps
     statusToken (it opens /bestallning/<locationId>/<orderId> after
     payment) and sends the guest to checkoutUrl, or shows the Payment
     Element for clientSecret on the restaurant's account. The order becomes
@@ -69,6 +71,7 @@ from datetime import timedelta
 from botocore.exceptions import BotoCoreError, ClientError
 
 from shared import consent, dynamo, feature_hooks, http, manage_link, marketing, order_payments, payment_domains
+from shared import payment_methods
 from shared import request_guard
 from shared import site
 from shared import marketing_offer as offer
@@ -361,6 +364,9 @@ def _write_and_checkout(ctx, location_id, mode, guest, policy, account, local_da
                             "mode": mode, "total": total}))
     payment = ({"clientSecret": session["client_secret"], "stripeAccount": account}
                if embedded else {"checkoutUrl": session["url"]})
+    methods = payment_methods.offered(session)
+    if methods is not None:
+        payment["methods"] = methods  # the allowed methods this session offers (shared/payment_methods.py)
     if gift:
         payment.update(giftCard={"last4": gift["last4"], "debitedOre": gift["debitedOre"]}, chargedAmount=charge)
     return http.respond(201, {"orderId": order_id, "locationId": location_id, **payment,
